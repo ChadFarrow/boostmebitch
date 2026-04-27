@@ -9,9 +9,12 @@ import { hasNwc, nwcKeysend, nwcPayInvoice } from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
 import { fetchLnInvoice } from './lnaddr';
 
-// TLV custom record numbers for podcast boostagrams (Podcasting 2.0 spec)
+// TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
+// The boostagram JSON already carries `sender_id`, so we don't add a separate
+// sender TLV — that key (696969) is also reused by some shared nodes (e.g.
+// getalby.com) for sub-account routing, and would collide with recipient
+// customKey/customValue pairs.
 const TLV_BOOSTAGRAM = 7629169;
-const TLV_SENDER = 696969; // sender pubkey (used by some clients)
 
 export type Rail = 'nwc' | 'webln';
 
@@ -39,19 +42,41 @@ export function splitSats(total: number, recipients: ValueRecipient[]): number[]
   return allocated;
 }
 
-function tlvHexFor(boostagram: Boostagram): { type: number; value: string }[] {
-  const json = JSON.stringify(boostagram);
-  const hex = Buffer.from(json, 'utf8').toString('hex');
-  return [{ type: TLV_BOOSTAGRAM, value: hex }];
+// NIP-47 pay_keysend expects { type, value } where value is hex-encoded.
+function tlvHexFor(
+  boostagram: Boostagram,
+  recipient: ValueRecipient,
+): { type: number; value: string }[] {
+  const records: { type: number; value: string }[] = [
+    {
+      type: TLV_BOOSTAGRAM,
+      value: Buffer.from(JSON.stringify(boostagram), 'utf8').toString('hex'),
+    },
+  ];
+  if (recipient.customKey && recipient.customValue) {
+    const ck = Number(recipient.customKey);
+    if (Number.isFinite(ck)) {
+      records.push({
+        type: ck,
+        value: Buffer.from(recipient.customValue, 'utf8').toString('hex'),
+      });
+    }
+  }
+  return records;
 }
 
-function recordsForKeysend(boostagram: Boostagram): Record<string, string> {
-  // WebLN customRecords use string keys, hex-encoded values.
-  const json = JSON.stringify(boostagram);
-  const hex = Buffer.from(json, 'utf8').toString('hex');
-  const records: Record<string, string> = { [String(TLV_BOOSTAGRAM)]: hex };
-  if (boostagram.sender_id) {
-    records[String(TLV_SENDER)] = Buffer.from(boostagram.sender_id, 'utf8').toString('hex');
+// WebLN providers (Alby, Mutiny) hex-encode customRecords values internally
+// before putting them on the wire. Pass plain UTF-8 strings — pre-hexing
+// here causes double-encoding and Helipad can't JSON.parse the boostagram.
+function recordsForKeysend(
+  boostagram: Boostagram,
+  recipient: ValueRecipient,
+): Record<string, string> {
+  const records: Record<string, string> = {
+    [String(TLV_BOOSTAGRAM)]: JSON.stringify(boostagram),
+  };
+  if (recipient.customKey && recipient.customValue) {
+    records[recipient.customKey] = recipient.customValue;
   }
   return records;
 }
@@ -89,14 +114,14 @@ async function payOne(
       const preimage = await nwcKeysend({
         pubkey: recipient.address,
         amount_msat: sats * 1000,
-        tlv_records: tlvHexFor(recPerRecipient),
+        tlv_records: tlvHexFor(recPerRecipient, recipient),
       });
       return { ...base, ok: true, preimage };
     } else {
       const preimage = await weblnKeysend({
         pubkey: recipient.address,
         amount_sat: sats,
-        customRecords: recordsForKeysend(recPerRecipient),
+        customRecords: recordsForKeysend(recPerRecipient, recipient),
       });
       return { ...base, ok: true, preimage };
     }
