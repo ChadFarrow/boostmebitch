@@ -16,7 +16,7 @@ function authHeaders() {
     'X-Auth-Key': key,
     'X-Auth-Date': ts,
     'Authorization': hash,
-    'User-Agent': process.env.APP_NAME ?? 'podcast-v4v-app/0.1',
+    'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1',
   };
 }
 

@@ -3,7 +3,7 @@
 
 import { nwc } from '@getalby/sdk';
 
-const STORAGE_KEY = 'pv4v:nwc_uri';
+const STORAGE_KEY = 'bmb:nwc_uri';
 
 export function saveNwcUri(uri: string) {
   localStorage.setItem(STORAGE_KEY, uri);

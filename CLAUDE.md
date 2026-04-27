@@ -4,13 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Names
 
-This is one project under three names. They all refer to the same thing:
+- **`boostmebitch`** — repo, working directory, npm package name, and `APP_NAME` default for the Podcast Index `User-Agent`.
+- **"Boost Me Bitch"** — display name in the page header and `<title>`.
+- **`BoostMeBitch`** — `app_name` in the boostagram TLV JSON and `client` tag on published Nostr notes (CamelCase, no spaces — matches Helipad-aggregator convention used by Fountain, StableKraft, etc.).
 
-- `boostmebitch` — repo / working directory.
-- `podcast-v4v-app` — `package.json` name and `APP_NAME` default in `lib/pi.ts`.
-- `PV4V` — UI brand, `client` tag on published Nostr notes, `app_name` in the boostagram TLV.
-
-The README lives at the repo root and describes the architecture in detail; treat it as the spec.
+The README at the repo root describes the architecture in detail; treat it as the spec.
 
 ## Commands
 
@@ -49,7 +47,7 @@ Components fetch via the local API routes (`fetch('/api/feed?id=…')`) — they
 
 ## Nostr publish shape
 
-`publishBoostNote()` in `lib/nostr.ts` builds a kind:1 with NIP-73 tags (`i`/`k` pairs for `podcast:guid:…` and `podcast:item:guid:…`), an `r` tag for the feed URL, an `amount` tag in millisats, and `t` tags `boostagram` + `value4value`. The `client` tag uses `boostagram.app_name` (defaults to `PV4V`). If you change tags, double-check NIP-73 and the boost-aggregator contract — Helipad-style ingestion depends on the existing shape.
+`publishBoostNote()` in `lib/nostr.ts` builds a kind:1 with NIP-73 tags (`i`/`k` pairs for `podcast:guid:…` and `podcast:item:guid:…`), an `r` tag for the feed URL, an `amount` tag in millisats, and `t` tags `boostagram` + `value4value`. The `client` tag uses `boostagram.app_name` (defaults to `BoostMeBitch`). If you change tags, double-check NIP-73 and the boost-aggregator contract — Helipad-style ingestion depends on the existing shape.
 
 The auto-formatted note body lives in `formatContent()` in the same file. Override per call with `contentOverride`.
 
@@ -63,11 +61,12 @@ Zustand store (`lib/store.ts`) holds: `identity`, `current` (episode + podcast),
 
 Everything else lives in `localStorage` on the device and is never sent server-side:
 
-- `pv4v:nwc_uri` — NWC URI (`saveNwcUri`/`loadNwcUri` in `lib/v4v/nwc.ts`)
-- `pv4v:relays` — JSON array of relay URLs; falls back to `DEFAULT_RELAYS` (`lib/nostr.ts`)
-- `pv4v:sender_name` — last "From" name typed into the boost modal
+- `bmb:nwc_uri` — NWC URI (`saveNwcUri`/`loadNwcUri` in `lib/v4v/nwc.ts`)
+- `bmb:relays` — JSON array of relay URLs; falls back to `DEFAULT_RELAYS` (`lib/nostr.ts`)
+- `bmb:sender_name` — last "From" name typed into the boost modal
+- `bmb:npub` — sentinel for silent re-login on page load (`components/nostr-auth.tsx`)
 
-If you add another persisted field, follow the `pv4v:*` prefix.
+If you add another persisted field, follow the `bmb:*` prefix.
 
 ## Styling tokens
 

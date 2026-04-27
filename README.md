@@ -1,4 +1,4 @@
-# PV4V — Podcast Boost Station
+# Boost Me Bitch — Podcast Boost Station
 
 Search, listen, and boost Podcasting 2.0 shows over Lightning.
 Sign in with Nostr (NIP-07). Pay via NWC (NIP-47), WebLN, or Lightning Address.
@@ -85,7 +85,7 @@ Built in `lib/nostr.ts` → `publishBoostNote()`. Kind:1 event with:
 | `i`, `k` | `podcast:item:guid:<item-guid>` + `k=podcast:item:guid` (NIP-73) |
 | `r`     | RSS feed URL |
 | `amount` | total sats sent, in millisats |
-| `client` | `PV4V` |
+| `client` | `BoostMeBitch` |
 | `t`     | `boostagram`, `value4value` |
 
 Content is auto-formatted as:
@@ -116,7 +116,7 @@ wss://nos.lol
 wss://relay.nostr.band
 ```
 
-Override at runtime by writing to `localStorage.pv4v:relays` as a JSON array. (Could expose a settings UI; left as an exercise.)
+Override at runtime by writing to `localStorage.bmb:relays` as a JSON array. (Could expose a settings UI; left as an exercise.)
 
 ---
 

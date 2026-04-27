@@ -20,9 +20,9 @@ export default function Home() {
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-4">
           <div className="flex items-baseline gap-2">
             <span className="text-bolt text-2xl">⚡</span>
-            <h1 className="font-display text-2xl">PV4V</h1>
+            <h1 className="font-display text-2xl">Boost Me Bitch</h1>
             <span className="text-[10px] text-muted uppercase tracking-widest hidden sm:inline">
-              boost station
+              podcasting 2.0
             </span>
           </div>
           <div className="flex-1" />

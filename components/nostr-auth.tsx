@@ -17,7 +17,7 @@ export function NostrAuth() {
 
   useEffect(() => {
     // Auto-sign-in if extension is already present and previously approved
-    const stored = localStorage.getItem('pv4v:npub');
+    const stored = localStorage.getItem('bmb:npub');
     if (stored && !identity && typeof window !== 'undefined' && window.nostr) {
       loginWithExtension()
         .then((id) => { setIdentity(id); loadProfile(id); })
@@ -30,7 +30,7 @@ export function NostrAuth() {
     try {
       const id = await loginWithExtension();
       setIdentity(id);
-      localStorage.setItem('pv4v:npub', id.npub);
+      localStorage.setItem('bmb:npub', id.npub);
       loadProfile(id);
     } catch (e: any) {
       setErr(e?.message ?? 'sign-in failed');
@@ -39,7 +39,7 @@ export function NostrAuth() {
 
   function signout() {
     setIdentity(null);
-    localStorage.removeItem('pv4v:npub');
+    localStorage.removeItem('bmb:npub');
   }
 
   if (identity) {

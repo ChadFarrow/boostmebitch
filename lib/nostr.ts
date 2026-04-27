@@ -67,7 +67,7 @@ export const DEFAULT_RELAYS = [
   'wss://relay.nostr.band',
 ];
 
-const RELAYS_KEY = 'pv4v:relays';
+const RELAYS_KEY = 'bmb:relays';
 
 export function loadRelays(): string[] {
   if (typeof window === 'undefined') return DEFAULT_RELAYS;
@@ -172,7 +172,7 @@ export async function publishBoostNote(
   }
   if (podcast.url) tags.push(['r', podcast.url]);
   if (sentMsat > 0) tags.push(['amount', String(sentMsat)]);
-  tags.push(['client', boostagram.app_name ?? 'PV4V']);
+  tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);
   tags.push(['t', 'boostagram']);
   tags.push(['t', 'value4value']);
 

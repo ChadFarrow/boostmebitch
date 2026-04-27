@@ -39,7 +39,7 @@ export function BoostModal({ episode, podcast, positionSec, onClose }: Props) {
 
   useEffect(() => {
     setRail(pickRail());
-    const stored = localStorage.getItem('pv4v:sender_name');
+    const stored = localStorage.getItem('bmb:sender_name');
     if (stored) setName(stored);
   }, []);
 
@@ -59,10 +59,10 @@ export function BoostModal({ episode, podcast, positionSec, onClose }: Props) {
 
   async function go() {
     if (!rail) return;
-    if (name) localStorage.setItem('pv4v:sender_name', name);
+    if (name) localStorage.setItem('bmb:sender_name', name);
 
     const boostagram: Boostagram = {
-      app_name: 'PV4V',
+      app_name: 'BoostMeBitch',
       app_version: '0.1.0',
       podcast: podcast.title,
       episode: episode.title,
