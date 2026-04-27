@@ -1,0 +1,105 @@
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: #0a0a08;
+  color: #f5f1e8;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* Subtle paper-grain texture over the whole canvas */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  opacity: 0.05;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/></filter><rect width='160' height='160' filter='url(%23n)' opacity='0.6'/></svg>");
+  mix-blend-mode: overlay;
+}
+
+@layer components {
+  .stamp {
+    @apply inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] uppercase tracking-[0.18em] font-mono border border-bone/30;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
+           border border-bone bg-bone text-ink transition
+           hover:bg-bolt hover:border-bolt active:translate-y-px;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
+           border border-bone/40 text-bone transition
+           hover:border-bone hover:bg-bone/5 active:translate-y-px;
+  }
+  .btn-bolt {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
+           border border-bolt bg-bolt text-ink transition
+           hover:bg-bone hover:border-bone active:translate-y-px;
+  }
+  .input {
+    @apply w-full bg-transparent border border-bone/30 px-3 py-2 font-mono text-sm
+           placeholder:text-muted focus:border-bolt focus:outline-none;
+  }
+  .card {
+    @apply border border-bone/20 bg-ink/40;
+  }
+  .hairline {
+    @apply border-t border-bone/20;
+  }
+}
+
+/* Marquee headline */
+.headline {
+  font-family: 'Bricolage Grotesque', system-ui, sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.04em;
+  line-height: 0.85;
+}
+
+/* Audio player progress slider */
+input[type='range'].seek {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  width: 100%;
+}
+input[type='range'].seek::-webkit-slider-runnable-track {
+  height: 2px;
+  background: rgba(245, 241, 232, 0.25);
+}
+input[type='range'].seek::-moz-range-track {
+  height: 2px;
+  background: rgba(245, 241, 232, 0.25);
+}
+input[type='range'].seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  height: 12px;
+  width: 12px;
+  background: #fae500;
+  margin-top: -5px;
+  border-radius: 0;
+  cursor: pointer;
+}
+input[type='range'].seek::-moz-range-thumb {
+  height: 12px;
+  width: 12px;
+  background: #fae500;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: #0a0a08; }
+::-webkit-scrollbar-thumb { background: #1f1d18; }
+::-webkit-scrollbar-thumb:hover { background: #2a271f; }

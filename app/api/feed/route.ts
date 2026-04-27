@@ -1,0 +1,17 @@
+import { NextResponse } from 'next/server';
+import { getEpisodes, getPodcast } from '@/lib/pi';
+
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const id = Number(searchParams.get('id'));
+  if (!id) return NextResponse.json({ error: 'missing id' }, { status: 400 });
+  try {
+    const [podcast, episodes] = await Promise.all([getPodcast(id), getEpisodes(id, 50)]);
+    if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
+    // Episodes inherit the channel value block when they don't have their own.
+    const filled = episodes.map((e) => ({ ...e, value: e.value ?? podcast.value }));
+    return NextResponse.json({ podcast, episodes: filled });
+  } catch (e: any) {
+    return NextResponse.json({ error: e?.message ?? 'feed fetch failed' }, { status: 500 });
+  }
+}
