@@ -8,9 +8,9 @@ import { hasWebln as hasWeblnFn } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays, type PublishedNote } from '@/lib/nostr';
 
 interface Props {
-  episode: Episode;
   podcast: Podcast;
-  positionSec: number;
+  episode?: Episode;       // omit for show-level boosts
+  positionSec?: number;    // only meaningful when episode is present
   onClose: () => void;
 }
 
@@ -20,7 +20,7 @@ type PublishState =
   | { kind: 'done'; note: PublishedNote }
   | { kind: 'error'; message: string };
 
-export function BoostModal({ episode, podcast, positionSec, onClose }: Props) {
+export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props) {
   const identity = useApp((s) => s.identity);
   const [sats, setSats] = useState(500);
   const [msg, setMsg] = useState('');
@@ -45,11 +45,18 @@ export function BoostModal({ episode, podcast, positionSec, onClose }: Props) {
 
   useEffect(() => {
     setRail(pickRail());
-    const stored = localStorage.getItem('bmb:sender_name');
-    if (stored) setName(stored);
-  }, []);
+    setName((current) => {
+      if (current) return current;                                  // preserve typing
+      const stored = localStorage.getItem('bmb:sender_name');
+      if (stored) return stored;                                    // saved override
+      return identity?.profile?.display_name
+          || identity?.profile?.name
+          || '';
+    });
+  }, [identity?.profile?.display_name, identity?.profile?.name]);
 
-  const value = episode.value!;
+  const isShowBoost = !episode;
+  const value = (episode?.value ?? podcast.value)!;
   const splits = useMemo(() => splitSats(sats, value.recipients), [sats, value.recipients]);
 
   function connectNwc() {
@@ -71,16 +78,22 @@ export function BoostModal({ episode, podcast, positionSec, onClose }: Props) {
       app_name: 'BoostMeBitch',
       app_version: '0.1.0',
       podcast: podcast.title,
-      episode: episode.title,
       feedID: podcast.id,
-      itemID: episode.id,
       url: podcast.url,
-      ts: Math.floor(positionSec),
+      ts: episode ? Math.floor(positionSec) : 0,
       value_msat_total: sats * 1000,
       message: msg || undefined,
       sender_name: name || undefined,
       sender_id: identity?.pubkey,
       action: 'boost',
+      uuid: crypto.randomUUID(),
+      remote_feed_guid: podcast.podcastGuid,
+      ...(episode && {
+        episode: episode.title,
+        itemID: episode.id,
+        episode_guid: episode.guid,
+        remote_item_guid: episode.guid,
+      }),
     };
 
     setRunning(true);
@@ -132,9 +145,15 @@ export function BoostModal({ episode, podcast, positionSec, onClose }: Props) {
         >×</button>
 
         <div className="p-5 border-b border-bone/15">
-          <div className="stamp text-bolt border-bolt/60 mb-2">⚡ BOOST</div>
-          <h3 className="font-display text-2xl leading-tight">{episode.title}</h3>
-          <p className="text-xs text-muted mt-1">{podcast.title} · @ {Math.floor(positionSec)}s</p>
+          <div className="stamp text-bolt border-bolt/60 mb-2">
+            {isShowBoost ? '⚡ BOOST SHOW' : '⚡ BOOST'}
+          </div>
+          <h3 className="font-display text-2xl leading-tight">
+            {episode?.title ?? podcast.title}
+          </h3>
+          {episode && (
+            <p className="text-xs text-muted mt-1">{podcast.title} · @ {Math.floor(positionSec)}s</p>
+          )}
         </div>
 
         <div className="p-5 space-y-4">

@@ -54,12 +54,17 @@ export interface Boostagram {
   itemID?: number;
   url?: string;
   ts?: number;            // playback timestamp in seconds
-  value_msat?: number;    // total value of boost in msats
-  value_msat_total?: number;
+  value_msat?: number;    // per-leg amount in msats (set per recipient in v4v/boost.ts)
+  value_msat_total?: number; // total boost amount in msats (same on every leg)
   message?: string;
   sender_name?: string;
   sender_id?: string;     // nostr pubkey if signed in
   action: 'boost' | 'stream' | 'auto';
+  name?: string;             // recipient name, set per leg in lib/v4v/boost.ts
+  uuid?: string;             // unique boost ID — shared across all legs
+  remote_feed_guid?: string; // RSS <podcast:guid> (NIP-73)
+  episode_guid?: string;     // RSS item <guid>
+  remote_item_guid?: string; // duplicate of episode_guid for aggregator compat
 }
 
 export interface BoostResult {
@@ -68,4 +73,14 @@ export interface BoostResult {
   ok: boolean;
   preimage?: string;
   error?: string;
+}
+
+export interface FavoritePodcast {
+  id: number;             // Podcast Index feed ID
+  podcastGuid: string;    // canonical NIP-73 identifier (key)
+  title: string;
+  author?: string;
+  image?: string;
+  url?: string;           // RSS feed URL
+  addedAt: number;        // unix ms — used for sort + last-write-wins merge
 }

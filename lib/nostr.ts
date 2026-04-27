@@ -178,7 +178,7 @@ export interface PublishedNote {
 
 interface PublishArgs {
   podcast: Podcast;
-  episode: Episode;
+  episode?: Episode;        // omit for show-level boosts
   boostagram: Boostagram;
   results: BoostResult[];
   relays?: string[];
@@ -202,7 +202,7 @@ function formatContent(args: PublishArgs): string {
     ? `Boosted ${sentSats}/${totalSats} sats`
     : `Boosted ${sentSats} sats`;
   lines.push(`${amountLine} → ${podcast.title}`);
-  lines.push(`📻 ${episode.title}`);
+  if (episode?.title) lines.push(`📻 ${episode.title}`);
   if (podcast.url) lines.push('', podcast.url);
   return lines.join('\n');
 }
@@ -226,7 +226,7 @@ export async function publishBoostNote(
     tags.push(['i', `podcast:guid:${podcast.podcastGuid}`]);
     tags.push(['k', 'podcast:guid']);
   }
-  if (episode.guid) {
+  if (episode?.guid) {
     tags.push(['i', `podcast:item:guid:${episode.guid}`]);
     tags.push(['k', 'podcast:item:guid']);
   }
@@ -269,3 +269,103 @@ export async function publishBoostNote(
     failedRelays: failed,
   };
 }
+
+// ── NIP-51 favorites (kind:30003 bookmark set) ───────────────────────────────
+
+export const FAVORITES_D_TAG = 'boostmebitch:favorites';
+
+export interface FavoritesEvent {
+  guids: string[];
+  updatedAt: number; // unix seconds, from event.created_at
+}
+
+export async function fetchFavoriteGuids(
+  pubkey: string,
+  queryRelays?: string[],
+): Promise<FavoritesEvent | null> {
+  const useRelays = queryRelays ?? DEFAULT_RELAYS;
+  const pool = new SimplePool();
+  try {
+    const events = await pool.querySync(useRelays, {
+      kinds: [30003],
+      authors: [pubkey],
+      '#d': [FAVORITES_D_TAG],
+      limit: 1,
+    });
+    if (!events.length) return null;
+    const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
+    const guids: string[] = [];
+    for (const tag of newest.tags) {
+      if (tag[0] !== 'i' || !tag[1]) continue;
+      const m = /^podcast:guid:(.+)$/.exec(tag[1]);
+      if (m) guids.push(m[1]);
+    }
+    return { guids, updatedAt: newest.created_at };
+  } catch {
+    return null;
+  } finally {
+    pool.close(useRelays);
+  }
+}
+
+export async function publishFavorites(
+  guids: string[],
+  relays: string[],
+): Promise<PublishedNote> {
+  if (typeof window === 'undefined' || !window.nostr) {
+    throw new Error('No Nostr signer available');
+  }
+  const tags: string[][] = [
+    ['d', FAVORITES_D_TAG],
+    ['title', 'Favorite Podcasts'],
+  ];
+  for (const guid of guids) {
+    tags.push(['i', `podcast:guid:${guid}`]);
+    tags.push(['k', 'podcast:guid']);
+  }
+  const template: EventTemplate = {
+    kind: 30003,
+    created_at: Math.floor(Date.now() / 1000),
+    tags,
+    content: '',
+  };
+  const signed = await window.nostr.signEvent(template);
+
+  const pool = new SimplePool();
+  const accepted: string[] = [];
+  const failed: string[] = [];
+  const publishes = pool.publish(relays, signed);
+  await Promise.allSettled(
+    publishes.map((p, i) =>
+      p
+        .then(() => accepted.push(relays[i]))
+        .catch(() => failed.push(relays[i])),
+    ),
+  );
+  pool.close(relays);
+
+  return {
+    id: signed.id,
+    nevent: nip19.neventEncode({ id: signed.id, relays: accepted.slice(0, 3) }),
+    acceptedRelays: accepted,
+    failedRelays: failed,
+  };
+}
+
+// Debounced wrapper — collapses rapid heart-toggles into a single signing prompt.
+let publishFavoritesTimer: ReturnType<typeof setTimeout> | null = null;
+export function schedulePublishFavorites(
+  getGuids: () => string[],
+  relays: string[],
+  delayMs = 1500,
+) {
+  if (publishFavoritesTimer) clearTimeout(publishFavoritesTimer);
+  publishFavoritesTimer = setTimeout(() => {
+    publishFavoritesTimer = null;
+    publishFavorites(getGuids(), relays).catch((e) => {
+      // eslint-disable-next-line no-console
+      console.warn('[favorites] publish failed:', e?.message ?? e);
+    });
+  }, delayMs);
+}
+

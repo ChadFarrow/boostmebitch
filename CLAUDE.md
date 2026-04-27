@@ -37,14 +37,45 @@ Components fetch via the local API routes (`fetch('/api/feed?id=…')`) — they
 
 ## Nostr identity enrichment
 
-`loginWithExtension()` only returns `{ pubkey, npub }` from NIP-07. After login, `components/nostr-auth.tsx:loadProfile` runs in the background and merges two more pieces onto the identity:
+`loginWithExtension()` only returns `{ pubkey, npub }` from NIP-07. After login, `components/nostr-auth.tsx:loadProfile` runs in the background and merges three more pieces onto the identity:
 
-- **Profile metadata (kind:0):** `name`, `display_name`, `picture`, `nip05`, `about` — used to render the avatar + display name in the header. Falls back to the truncated npub.
-- **NIP-65 relay list (kind:10002):** `writeRelays` is the union of unmarked entries and entries marked `write`. Used as the publish target for boost notes when present.
+- **Profile metadata (kind:0):** `name`, `display_name`, `picture`, `nip05`, `about` — used to render the avatar + display name in the header. Also auto-fills the boost modal's "From" field.
+- **NIP-65 relay list (kind:10002):** `writeRelays` is the union of unmarked entries and entries marked `write`. Used as the publish target for boost notes and favorites events when present.
+- **NIP-51 favorites (kind:30003 with `d:boostmebitch:favorites`):** the user's saved-podcast set. See "Favorites" below.
 
-Both queries run against `DEFAULT_RELAYS`. If a user has neither event on those relays, we fall back to the npub-only header and the default publish set respectively. We do NOT fetch contacts (kind:3), DMs, reactions, or anything else — the only NIP-07 permissions ever requested are `getPublicKey` (login) and `signEvent` (each boost).
+All three queries run against `DEFAULT_RELAYS`. If a user has none of those events on those relays, we fall back to the npub-only header, default publish set, and empty favorites respectively. We do NOT fetch contacts (kind:3), DMs, reactions, or anything else — the only NIP-07 permissions ever requested are `getPublicKey` (login) and `signEvent` (each boost or favorites mutation).
 
-`resolvePublishRelays(identity)` in `lib/nostr.ts` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded. The boost modal reads this via `useMemo` and passes it explicitly to `publishBoostNote`.
+`resolvePublishRelays(identity)` in `lib/nostr.ts` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded.
+
+## Favorites (NIP-51 kind:30003)
+
+Logged-in users can ♡ a podcast row to favorite it. Storage is split:
+
+- **Authoritative:** a NIP-51 kind:30003 event, `d`-tag `boostmebitch:favorites`, with one `i: podcast:guid:<guid>` + `k: podcast:guid` per favorite. Published to the user's NIP-65 write relays.
+- **Cache:** localStorage `bmb:favorites:<npub>` (or `bmb:favorites:guest` when not signed in) holds the full `FavoritePodcast[]` so the left "Favorites" panel renders instantly without re-resolving GUIDs.
+
+Toggle UX: each click is optimistic and updates Zustand + localStorage immediately. Publishing to Nostr is **debounced 1.5 s** via `schedulePublishFavorites` so rapid hearting collapses into a single signing prompt.
+
+Hydration on login (in `loadProfile`):
+1. Fetch the user's kind:30003 event.
+2. Compare `event.created_at` (s) vs the newest `addedAt` (ms) in the local cache.
+3. If Nostr is newer or local is empty, adopt the Nostr guid set; resolve unknown guids via `/api/by-guid` (which proxies Podcast Index `/podcasts/byguid`).
+4. If local is newer, push it back up to Nostr (debounced).
+
+Sign-out clears the in-memory favorites; the per-npub localStorage cache is left in place so re-signing in is fast.
+
+What this code deliberately doesn't do: episode-level favorites, multiple lists/categories, or any "share this list" UI. The kind:30003 is publicly readable to anyone with the user's pubkey + relay set.
+
+## Show-level boost
+
+`BoostModal` now accepts `episode` as optional. When omitted (`isShowBoost = !episode`), the modal:
+
+- Headlines the podcast title and skips the playback-timestamp line.
+- Reads the value block from `podcast.value` instead of `episode.value`.
+- Builds a boostagram with `podcast`, `feedID`, `url`, `remote_feed_guid`, but skips `episode`, `itemID`, `episode_guid`, `remote_item_guid`. `ts: 0`.
+- The Nostr boost note's auto-formatted body skips the `📻 <episode>` line and the `podcast:item:guid:` `i`-tag.
+
+The "⚡ BOOST" button at the top-right of `EpisodeList`'s header opens the modal in this mode (gated on `podcast.value.recipients.length > 0`). The per-episode boost path in `Player` is unchanged.
 
 ## Boost flow invariants
 

@@ -1,9 +1,10 @@
 'use client';
 import { useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
-import { PodcastResults, EpisodeList } from '@/components/lists';
+import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
+import { useApp } from '@/lib/store';
 
 import type { Podcast } from '@/lib/types';
 
@@ -12,6 +13,11 @@ export default function Home() {
   const [selected, setSelected] = useState<Podcast | null>(null);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
+  const favorites = useApp((s) => s.favorites);
+  const hasFavorites = Object.keys(favorites).length > 0;
+
+  const showFavoritesPanel = !query && hasFavorites;
+  const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel;
 
   return (
     <main className="min-h-screen pb-32">
@@ -32,17 +38,11 @@ export default function Home() {
 
       {/* Hero */}
       <section className="max-w-7xl mx-auto px-4 pt-10 pb-6">
-        <div className="grid lg:grid-cols-[1fr_auto] gap-4 items-end">
-          <h2 className="headline text-5xl sm:text-6xl lg:text-7xl">
-            search<span className="text-bolt">.</span>{' '}
-            listen<span className="text-bolt">.</span>{' '}
-            <span className="text-bolt animate-bolt">boost</span><span className="text-bone">.</span>
-          </h2>
-          <p className="text-xs text-muted max-w-xs lg:text-right">
-            Podcasting 2.0 over Lightning. NIP-07 sign-in.
-            Splits respected. Boostagrams included.
-          </p>
-        </div>
+        <h2 className="headline text-5xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
+          search<span className="text-bolt">.</span>{' '}
+          listen<span className="text-bolt">.</span>{' '}
+          <span className="text-bolt animate-bolt">boost</span><span className="text-bone">.</span>
+        </h2>
         <div className="mt-8 max-w-xl">
           <SearchBar
             onResults={(f, q) => { setFeeds(f); setQuery(q); if (!f.length) setSelected(null); }}
@@ -53,17 +53,30 @@ export default function Home() {
 
       {/* Results grid */}
       <section className="max-w-7xl mx-auto px-4 pt-2">
-        {(loading || feeds.length > 0 || selected) ? (
+        {showLeftRightLayout ? (
           <div className="grid lg:grid-cols-[minmax(0,360px)_1fr] gap-6">
             <aside className="card p-3 max-h-[70vh] overflow-y-auto">
               <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
-                {loading ? 'searching…' : query ? `${feeds.length} feeds` : 'feeds'}
+                {loading
+                  ? 'searching…'
+                  : query
+                    ? `${feeds.length} feeds`
+                    : showFavoritesPanel
+                      ? `${Object.keys(favorites).length} favorites`
+                      : 'feeds'}
               </div>
-              <PodcastResults
-                feeds={feeds}
-                selected={selected?.id ?? null}
-                onSelect={setSelected}
-              />
+              {query || feeds.length > 0 || loading ? (
+                <PodcastResults
+                  feeds={feeds}
+                  selected={selected?.id ?? null}
+                  onSelect={setSelected}
+                />
+              ) : (
+                <FavoritesList
+                  selected={selected?.id ?? null}
+                  onSelect={setSelected}
+                />
+              )}
             </aside>
             <section className="card p-4 min-h-[40vh]">
               <EpisodeList feedId={selected?.id ?? null} />

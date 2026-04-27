@@ -1,7 +1,61 @@
 'use client';
-import { useEffect, useState } from 'react';
-import type { Episode, Podcast } from '@/lib/types';
+import { useEffect, useMemo, useState } from 'react';
+import type { Episode, Podcast, FavoritePodcast } from '@/lib/types';
 import { useApp } from '@/lib/store';
+import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
+import { BoostModal } from './boost-modal';
+
+function FavHeart({ podcast }: { podcast: Podcast }) {
+  const guid = podcast.podcastGuid;
+  const isFav = useApp((s) => s.isFavorite(guid));
+  const addFavorite = useApp((s) => s.addFavorite);
+  const removeFavorite = useApp((s) => s.removeFavorite);
+  const identity = useApp((s) => s.identity);
+
+  if (!guid) return null; // can't favorite a podcast without a canonical GUID
+
+  function toggle(e: React.MouseEvent) {
+    e.stopPropagation();
+    e.preventDefault();
+    if (isFav) {
+      removeFavorite(guid!);
+    } else {
+      const fav: FavoritePodcast = {
+        id: podcast.id,
+        podcastGuid: guid!,
+        title: podcast.title,
+        author: podcast.author,
+        image: podcast.image,
+        url: podcast.url,
+        addedAt: Date.now(),
+      };
+      addFavorite(fav);
+    }
+    if (identity) {
+      schedulePublishFavorites(
+        () => Object.keys(useApp.getState().favorites),
+        resolvePublishRelays(identity),
+      );
+    }
+  }
+
+  return (
+    <button
+      onClick={toggle}
+      aria-label={isFav ? 'Unfavorite' : 'Favorite'}
+      title={
+        identity
+          ? (isFav ? 'Unfavorite (synced to Nostr)' : 'Favorite (syncs to Nostr)')
+          : (isFav ? 'Unfavorite' : 'Favorite (sign in with Nostr to sync)')
+      }
+      className={`flex-shrink-0 transition text-lg leading-none ${
+        isFav ? 'text-nostr' : 'text-bone/40 hover:text-nostr'
+      }`}
+    >
+      {isFav ? '♥' : '♡'}
+    </button>
+  );
+}
 
 export function PodcastResults({
   feeds,
@@ -40,8 +94,64 @@ export function PodcastResults({
             </div>
             <div className="text-xs text-muted truncate">{p.author}</div>
           </div>
+          <FavHeart podcast={p} />
         </li>
       ))}
+    </ul>
+  );
+}
+
+export function FavoritesList({
+  selected,
+  onSelect,
+}: {
+  selected: number | null;
+  onSelect: (p: Podcast) => void;
+}) {
+  const favorites = useApp((s) => s.favorites);
+  const list = useMemo(
+    () =>
+      Object.values(favorites).sort((a, b) => b.addedAt - a.addedAt),
+    [favorites],
+  );
+
+  if (!list.length) return null;
+
+  // Render the same shape as PodcastResults but from the FavoritePodcast cache.
+  // Click selects; the right pane (EpisodeList) keys off the feed id.
+  return (
+    <ul className="divide-y divide-bone/10">
+      {list.map((p) => {
+        const minimal: Podcast = {
+          id: p.id,
+          podcastGuid: p.podcastGuid,
+          title: p.title,
+          author: p.author,
+          image: p.image,
+          url: p.url,
+        };
+        return (
+          <li
+            key={p.podcastGuid}
+            onClick={() => onSelect(minimal)}
+            className={`flex gap-3 py-3 px-1 cursor-pointer group transition ${
+              selected === p.id ? 'bg-bolt/10' : 'hover:bg-bone/5'
+            }`}
+          >
+            {p.image ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={p.image} alt="" className="w-14 h-14 object-cover border border-bone/20 flex-shrink-0" />
+            ) : (
+              <div className="w-14 h-14 border border-bone/20 bg-line flex-shrink-0" />
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="font-display text-base leading-tight truncate">{p.title}</div>
+              <div className="text-xs text-muted truncate">{p.author}</div>
+            </div>
+            <FavHeart podcast={minimal} />
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -51,6 +161,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
     podcast: null, episodes: [],
   });
   const [loading, setLoading] = useState(false);
+  const [showBoostOpen, setShowBoostOpen] = useState(false);
   const play = useApp((s) => s.play);
   const current = useApp((s) => s.current);
 
@@ -73,20 +184,34 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   if (loading) return <div className="text-muted text-sm py-8">loading episodes…</div>;
   if (!data.podcast) return <div className="text-muted text-sm py-8">not found</div>;
 
+  const showHasValue = !!data.podcast.value && data.podcast.value.recipients?.length > 0;
+
   return (
     <div>
-      <header className="flex gap-4 pb-4 border-b border-bone/15">
+      <header className="flex gap-4 pb-4 border-b border-bone/15 items-start">
         {data.podcast.image && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={data.podcast.image} alt="" className="w-20 h-20 object-cover border border-bone/20" />
+          <img src={data.podcast.image} alt="" className="w-20 h-20 object-cover border border-bone/20 flex-shrink-0" />
         )}
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <h2 className="font-display text-2xl leading-tight">{data.podcast.title}</h2>
           <p className="text-xs text-muted mt-1">{data.podcast.author}</p>
           {data.podcast.value && (
             <p className="stamp mt-2 text-bolt border-bolt/60">
               ⚡ {data.podcast.value.recipients.length} recipients · {data.podcast.value.method}
             </p>
+          )}
+        </div>
+        <div className="flex flex-col items-end gap-2 flex-shrink-0">
+          <FavHeart podcast={data.podcast} />
+          {showHasValue && (
+            <button
+              onClick={() => setShowBoostOpen(true)}
+              className="btn-bolt"
+              title="Boost the show"
+            >
+              ⚡ BOOST
+            </button>
           )}
         </div>
       </header>
@@ -116,6 +241,13 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           );
         })}
       </ul>
+
+      {showBoostOpen && data.podcast && showHasValue && (
+        <BoostModal
+          podcast={data.podcast}
+          onClose={() => setShowBoostOpen(false)}
+        />
+      )}
     </div>
   );
 }

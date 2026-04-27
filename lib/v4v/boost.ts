@@ -108,6 +108,7 @@ async function payOne(
     const recPerRecipient: Boostagram = {
       ...boostagram,
       value_msat: sats * 1000,
+      name: recipient.name,
     };
 
     if (rail === 'nwc') {

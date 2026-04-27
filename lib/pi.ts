@@ -82,6 +82,24 @@ export async function getPodcast(feedId: number): Promise<Podcast | null> {
   };
 }
 
+export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
+  const data = await pi<any>(`/podcasts/byguid?guid=${encodeURIComponent(guid)}`);
+  const f = data.feed;
+  if (!f || (Array.isArray(f) && !f.length)) return null;
+  // PI returns either a feed object or (rarely) an array; normalize.
+  const feed = Array.isArray(f) ? f[0] : f;
+  return {
+    id: feed.id,
+    podcastGuid: feed.podcastGuid,
+    title: feed.title,
+    author: feed.author,
+    description: feed.description,
+    image: feed.image || feed.artwork,
+    url: feed.url,
+    value: normalizeValue(feed.value),
+  };
+}
+
 export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> {
   const data = await pi<any>(
     `/episodes/byfeedid?id=${feedId}&max=${max}&fulltext`,
