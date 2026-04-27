@@ -27,9 +27,18 @@ declare global {
   }
 }
 
+export interface ProfileMetadata {
+  name?: string;
+  display_name?: string;
+  picture?: string;
+  nip05?: string;
+  about?: string;
+}
+
 export interface NostrIdentity {
   pubkey: string;        // hex
   npub: string;          // bech32
+  profile?: ProfileMetadata;
 }
 
 // ── Login ────────────────────────────────────────────────────────────────────
@@ -72,6 +81,30 @@ export function loadRelays(): string[] {
 
 export function saveRelays(relays: string[]) {
   localStorage.setItem(RELAYS_KEY, JSON.stringify(relays));
+}
+
+// ── Profile metadata (kind:0) ────────────────────────────────────────────────
+
+export async function fetchProfile(
+  pubkey: string,
+  relays?: string[],
+): Promise<ProfileMetadata | null> {
+  const useRelays = relays ?? loadRelays();
+  const pool = new SimplePool();
+  try {
+    const events = await pool.querySync(useRelays, {
+      kinds: [0],
+      authors: [pubkey],
+      limit: 1,
+    });
+    if (!events.length) return null;
+    const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
+    return JSON.parse(newest.content) as ProfileMetadata;
+  } catch {
+    return null;
+  } finally {
+    pool.close(useRelays);
+  }
 }
 
 // ── Boost note publish ───────────────────────────────────────────────────────
