@@ -39,6 +39,7 @@ export interface NostrIdentity {
   pubkey: string;        // hex
   npub: string;          // bech32
   profile?: ProfileMetadata;
+  writeRelays?: string[]; // from NIP-65 kind:10002 (write or unmarked entries)
 }
 
 // ── Login ────────────────────────────────────────────────────────────────────
@@ -105,6 +106,65 @@ export async function fetchProfile(
   } finally {
     pool.close(useRelays);
   }
+}
+
+// ── NIP-65 relay list (kind:10002) ───────────────────────────────────────────
+
+export interface RelayList {
+  write: string[];
+  read: string[];
+}
+
+export async function fetchRelayList(
+  pubkey: string,
+  queryRelays?: string[],
+): Promise<RelayList | null> {
+  const useRelays = queryRelays ?? DEFAULT_RELAYS;
+  const pool = new SimplePool();
+  try {
+    const events = await pool.querySync(useRelays, {
+      kinds: [10002],
+      authors: [pubkey],
+      limit: 1,
+    });
+    if (!events.length) return null;
+    const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
+    const write = new Set<string>();
+    const read = new Set<string>();
+    for (const tag of newest.tags) {
+      if (tag[0] !== 'r' || !tag[1]) continue;
+      const url = tag[1].trim().replace(/\/$/, '');
+      if (!url) continue;
+      const marker = tag[2];
+      if (!marker) { write.add(url); read.add(url); }
+      else if (marker === 'write') write.add(url);
+      else if (marker === 'read') read.add(url);
+    }
+    return { write: Array.from(write), read: Array.from(read) };
+  } catch {
+    return null;
+  } finally {
+    pool.close(useRelays);
+  }
+}
+
+/**
+ * Effective relay set for publishing the user's events.
+ * Priority: explicit localStorage override → identity NIP-65 write relays → DEFAULT_RELAYS.
+ * Capped at 20 to keep publish latency bounded.
+ */
+export function resolvePublishRelays(identity: NostrIdentity | null): string[] {
+  if (typeof window !== 'undefined') {
+    const raw = localStorage.getItem(RELAYS_KEY);
+    if (raw) {
+      try {
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr) && arr.length) return arr.slice(0, 20);
+      } catch { /* fall through */ }
+    }
+  }
+  if (identity?.writeRelays?.length) return identity.writeRelays.slice(0, 20);
+  return DEFAULT_RELAYS;
 }
 
 // ── Boost note publish ───────────────────────────────────────────────────────

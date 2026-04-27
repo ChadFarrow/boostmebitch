@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { loginWithExtension, shortNpub, fetchProfile, type NostrIdentity } from '@/lib/nostr';
+import { loginWithExtension, shortNpub, fetchProfile, fetchRelayList, type NostrIdentity } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 
 export function NostrAuth() {
@@ -10,8 +10,14 @@ export function NostrAuth() {
 
   async function loadProfile(id: NostrIdentity) {
     try {
-      const profile = await fetchProfile(id.pubkey);
-      if (profile) setIdentity({ ...id, profile });
+      const [profile, relayList] = await Promise.all([
+        fetchProfile(id.pubkey),
+        fetchRelayList(id.pubkey),
+      ]);
+      const enriched: NostrIdentity = { ...id };
+      if (profile) enriched.profile = profile;
+      if (relayList?.write?.length) enriched.writeRelays = relayList.write;
+      setIdentity(enriched);
     } catch { /* ignore — keep bare identity */ }
   }
 

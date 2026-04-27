@@ -5,7 +5,7 @@ import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { hasNwc, saveNwcUri, clearNwcUri } from '@/lib/v4v/nwc';
 import { hasWebln as hasWeblnFn } from '@/lib/v4v/webln';
-import { publishBoostNote, loadRelays, type PublishedNote } from '@/lib/nostr';
+import { publishBoostNote, resolvePublishRelays, type PublishedNote } from '@/lib/nostr';
 
 interface Props {
   episode: Episode;
@@ -35,7 +35,13 @@ export function BoostModal({ episode, podcast, positionSec, onClose }: Props) {
   const [shareNostr, setShareNostr] = useState(true);
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
 
-  const relays = useMemo(() => loadRelays(), []);
+  const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
+  const relaySource: 'override' | 'nip65' | 'default' =
+    typeof window !== 'undefined' && localStorage.getItem('bmb:relays')
+      ? 'override'
+      : identity?.writeRelays?.length
+        ? 'nip65'
+        : 'default';
 
   useEffect(() => {
     setRail(pickRail());
@@ -107,6 +113,7 @@ export function BoostModal({ episode, podcast, positionSec, onClose }: Props) {
           episode,
           boostagram,
           results: collected,
+          relays,
         });
         setPubState({ kind: 'done', note });
       } catch (e: any) {
@@ -232,9 +239,19 @@ export function BoostModal({ episode, podcast, positionSec, onClose }: Props) {
                 Share boost on Nostr
               </div>
               <div className="text-muted mt-0.5 leading-relaxed">
-                {identity
-                  ? `Publishes a kind:1 note tagged with NIP-73 podcast refs to ${relays.length} relays.`
-                  : 'Sign in with Nostr to enable.'}
+                {identity ? (
+                  <>
+                    Publishes a kind:1 note tagged with NIP-73 podcast refs to {relays.length} relays.
+                    {relaySource === 'nip65' && (
+                      <span className="text-nostr/80"> · using your NIP-65 list</span>
+                    )}
+                    {relaySource === 'default' && (
+                      <span className="text-muted/70"> · using defaults (no NIP-65 found)</span>
+                    )}
+                  </>
+                ) : (
+                  'Sign in with Nostr to enable.'
+                )}
               </div>
             </div>
           </label>

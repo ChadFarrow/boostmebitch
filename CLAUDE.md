@@ -35,6 +35,17 @@ The Podcast Index credentials (`PODCAST_INDEX_KEY` / `PODCAST_INDEX_SECRET`) mus
 
 Components fetch via the local API routes (`fetch('/api/feed?id=…')`) — they never call Podcast Index directly.
 
+## Nostr identity enrichment
+
+`loginWithExtension()` only returns `{ pubkey, npub }` from NIP-07. After login, `components/nostr-auth.tsx:loadProfile` runs in the background and merges two more pieces onto the identity:
+
+- **Profile metadata (kind:0):** `name`, `display_name`, `picture`, `nip05`, `about` — used to render the avatar + display name in the header. Falls back to the truncated npub.
+- **NIP-65 relay list (kind:10002):** `writeRelays` is the union of unmarked entries and entries marked `write`. Used as the publish target for boost notes when present.
+
+Both queries run against `DEFAULT_RELAYS`. If a user has neither event on those relays, we fall back to the npub-only header and the default publish set respectively. We do NOT fetch contacts (kind:3), DMs, reactions, or anything else — the only NIP-07 permissions ever requested are `getPublicKey` (login) and `signEvent` (each boost).
+
+`resolvePublishRelays(identity)` in `lib/nostr.ts` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded. The boost modal reads this via `useMemo` and passes it explicitly to `publishBoostNote`.
+
 ## Boost flow invariants
 
 `components/boost-modal.tsx` orchestrates the user flow; `lib/v4v/boost.ts` is the engine. A few rules are load-bearing:
