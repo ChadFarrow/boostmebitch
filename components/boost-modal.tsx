@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import confetti from 'canvas-confetti';
 import type { Episode, Podcast, Boostagram } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
@@ -7,6 +8,17 @@ import { hasNwc, saveNwcUri, clearNwcUri } from '@/lib/v4v/nwc';
 import { hasWebln as hasWeblnFn } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays, type PublishedNote } from '@/lib/nostr';
 import { BoltIcon } from './icons';
+
+// Brand-coloured celebration: bolt yellow, nostr magenta, bone.
+function fireConfetti() {
+  const colors = ['#fae500', '#ff2d92', '#f5f1e8'];
+  // Burst from slightly below the modal so particles rain UP across the
+  // sticky header and rail picker rather than piling at the top.
+  confetti({ particleCount: 80, spread: 70, startVelocity: 55, origin: { y: 0.7 }, colors });
+  setTimeout(() => {
+    confetti({ particleCount: 50, spread: 100, startVelocity: 45, origin: { y: 0.7 }, colors });
+  }, 200);
+}
 
 interface Props {
   podcast: Podcast;
@@ -110,6 +122,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       });
       setResults(collected);
       setPaymentDone(true);
+      if (collected.some((r) => r.ok)) fireConfetti();
     } catch (e: any) {
       alert(e?.message ?? 'boost failed');
       setRunning(false);
