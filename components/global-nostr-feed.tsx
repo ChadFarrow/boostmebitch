@@ -6,7 +6,7 @@ import {
   shortNpub,
   type DiscoveredNote,
 } from '@/lib/nostr';
-import { publishReply, publishRepost } from '@/lib/nostr/interactions';
+import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/interactions';
 import { sendZap } from '@/lib/v4v/zap';
 import { useApp } from '@/lib/store';
 import type { Podcast } from '@/lib/types';
@@ -116,32 +116,55 @@ function NoteCard({
       ? Math.round(note.amountMsat / 1000)
       : null;
 
-  const [replyOpen, setReplyOpen] = useState(false);
-  const [replyDraft, setReplyDraft] = useState('');
-  const [replyState, setReplyState] = useState<ActionState>('idle');
-  const [replyErr, setReplyErr] = useState<string | null>(null);
+  const [composerMode, setComposerMode] = useState<'reply' | 'quote' | null>(null);
+  const [composerDraft, setComposerDraft] = useState('');
+  const [composerState, setComposerState] = useState<ActionState>('idle');
+  const [composerErr, setComposerErr] = useState<string | null>(null);
 
   const [repostState, setRepostState] = useState<ActionState>('idle');
   const [repostErr, setRepostErr] = useState<string | null>(null);
 
   const [zapOpen, setZapOpen] = useState(false);
 
-  async function onReply() {
-    if (!identity || !replyDraft.trim()) return;
-    setReplyState('busy');
-    setReplyErr(null);
+  function openComposer(mode: 'reply' | 'quote') {
+    setComposerMode((curr) => (curr === mode ? null : mode));
+    setComposerErr(null);
+    setComposerState('idle');
+  }
+
+  function closeComposer() {
+    setComposerMode(null);
+    setComposerDraft('');
+    setComposerErr(null);
+    setComposerState('idle');
+  }
+
+  async function onSendComposer() {
+    if (!identity || !composerMode) return;
+    // Quote reposts allow an empty body (the nevent reference is appended
+    // automatically); replies require typed text.
+    if (composerMode === 'reply' && !composerDraft.trim()) return;
+    setComposerState('busy');
+    setComposerErr(null);
     try {
-      await publishReply({
-        parent: note.rawEvent,
-        content: replyDraft.trim(),
-        relays: resolvePublishRelays(identity),
-      });
-      setReplyState('done');
-      setReplyDraft('');
-      setReplyOpen(false);
+      if (composerMode === 'reply') {
+        await publishReply({
+          parent: note.rawEvent,
+          content: composerDraft.trim(),
+          relays: resolvePublishRelays(identity),
+        });
+      } else {
+        await publishQuoteRepost({
+          parent: note.rawEvent,
+          comment: composerDraft,
+          relays: resolvePublishRelays(identity),
+        });
+      }
+      setComposerState('done');
+      closeComposer();
     } catch (e) {
-      setReplyErr(getErrorMessage(e, 'reply failed'));
-      setReplyState('error');
+      setComposerErr(getErrorMessage(e, `${composerMode} failed`));
+      setComposerState('error');
     }
   }
 
@@ -221,11 +244,11 @@ function NoteCard({
           {linkify(stripNostrUris(note.content))}
         </p>
 
-        <div className="flex items-center gap-3 mt-2 text-[11px]">
+        <div className="flex items-center gap-3 mt-2 text-[11px] flex-wrap">
           {identity ? (
             <>
               <button
-                onClick={() => setReplyOpen((v) => !v)}
+                onClick={() => openComposer('reply')}
                 className="text-muted hover:text-nostr"
                 aria-label="Reply"
                 title="Reply"
@@ -242,6 +265,14 @@ function NoteCard({
                 {repostState === 'done' ? '🔁 reposted' : repostState === 'busy' ? '🔁 …' : '🔁 repost'}
               </button>
               <button
+                onClick={() => openComposer('quote')}
+                className="text-muted hover:text-nostr"
+                aria-label="Quote"
+                title="Quote repost"
+              >
+                ↗ quote
+              </button>
+              <button
                 onClick={() => setZapOpen(true)}
                 className="text-muted hover:text-bolt"
                 aria-label="Zap"
@@ -251,7 +282,7 @@ function NoteCard({
               </button>
             </>
           ) : (
-            <span className="text-muted">sign in to reply / repost / zap</span>
+            <span className="text-muted">sign in to reply / repost / quote / zap</span>
           )}
           <span className="flex-1" />
           <a
@@ -266,30 +297,41 @@ function NoteCard({
 
         {repostErr && <p className="text-[11px] text-red-400 mt-1">{repostErr}</p>}
 
-        {replyOpen && identity && (
+        {composerMode && identity && (
           <div className="mt-2 border-t border-bone/15 pt-2">
+            <div className="text-[10px] uppercase tracking-widest text-muted mb-1">
+              {composerMode === 'reply' ? 'replying' : 'quoting'} ↩ {name}
+            </div>
             <textarea
-              value={replyDraft}
-              onChange={(e) => setReplyDraft(e.target.value)}
-              placeholder="reply on Nostr…"
+              value={composerDraft}
+              onChange={(e) => setComposerDraft(e.target.value)}
+              placeholder={
+                composerMode === 'reply'
+                  ? 'reply on Nostr…'
+                  : 'add a comment (optional) — the original note is auto-attached'
+              }
               rows={3}
               className="input w-full resize-y text-sm"
             />
             <div className="flex items-center gap-2 mt-2">
               <button
-                onClick={onReply}
-                disabled={replyState === 'busy' || !replyDraft.trim()}
+                onClick={onSendComposer}
+                disabled={
+                  composerState === 'busy' ||
+                  (composerMode === 'reply' && !composerDraft.trim())
+                }
                 className="btn text-xs disabled:opacity-50"
               >
-                {replyState === 'busy' ? 'sending…' : 'send reply'}
+                {composerState === 'busy'
+                  ? 'sending…'
+                  : composerMode === 'reply'
+                    ? 'send reply'
+                    : 'send quote'}
               </button>
-              <button
-                onClick={() => { setReplyOpen(false); setReplyDraft(''); setReplyErr(null); setReplyState('idle'); }}
-                className="btn-ghost text-xs"
-              >
+              <button onClick={closeComposer} className="btn-ghost text-xs">
                 cancel
               </button>
-              {replyErr && <span className="text-[11px] text-red-400">{replyErr}</span>}
+              {composerErr && <span className="text-[11px] text-red-400">{composerErr}</span>}
             </div>
           </div>
         )}

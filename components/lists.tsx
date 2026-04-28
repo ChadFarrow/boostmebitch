@@ -208,13 +208,13 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
 
   return (
     <div ref={containerRef}>
-      <header className="flex gap-4 pb-4 border-b border-bone/15 items-start">
+      <header className="flex flex-wrap items-start gap-4 pb-4 border-b border-bone/15">
         {data.podcast.image && (
           // eslint-disable-next-line @next/next/no-img-element
           <img src={data.podcast.image} alt="" className="w-20 h-20 object-cover border border-bone/20 flex-shrink-0" />
         )}
-        <div className="min-w-0 flex-1">
-          <h2 className="font-display text-2xl leading-tight">{data.podcast.title}</h2>
+        <div className="min-w-0 flex-1 basis-40">
+          <h2 className="font-display text-2xl leading-tight break-words">{data.podcast.title}</h2>
           <p className="text-xs text-muted mt-1">{data.podcast.author}</p>
           {data.podcast.value && (
             <p className="stamp mt-2 text-bolt border-bolt/60">
@@ -222,7 +222,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
             </p>
           )}
         </div>
-        <div className="flex flex-col items-end gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
           <FavHeart podcast={data.podcast} />
           {showHasValue && (
             <button
@@ -235,7 +235,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           )}
         </div>
       </header>
-      <ul className="divide-y divide-bone/10">
+      <ul className="divide-y divide-bone/10 max-h-[60vh] overflow-y-auto">
         {data.episodes.map((e) => {
           const playing = current?.episode.id === e.id;
           return (
