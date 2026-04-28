@@ -88,9 +88,11 @@ export default function Home() {
         )}
       </section>
 
-      <section className="max-w-7xl mx-auto px-4 pt-12">
-        <GlobalNostrFeed />
-      </section>
+      {!selected && (
+        <section className="max-w-7xl mx-auto px-4 pt-12">
+          <GlobalNostrFeed />
+        </section>
+      )}
 
       <Player />
     </main>
