@@ -187,21 +187,14 @@ interface PublishArgs {
 }
 
 function formatContent(args: PublishArgs): string {
-  const { podcast, episode, boostagram, results } = args;
-  const sentSats = results
-    .filter((r) => r.ok)
-    .reduce((sum, r) => sum + r.sats, 0);
-  const totalSats = results.reduce((sum, r) => sum + r.sats, 0);
-  const partial = sentSats !== totalSats;
+  const { podcast, episode, boostagram } = args;
+  const totalSats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
 
   const lines: string[] = ['⚡ Boost ⚡', ''];
   if (boostagram.message?.trim()) {
     lines.push(boostagram.message.trim(), '');
   }
-  const amountLine = partial
-    ? `Boosted ${sentSats}/${totalSats} sats`
-    : `Boosted ${sentSats} sats`;
-  lines.push(`${amountLine} → ${podcast.title}`);
+  lines.push(`Boosted ${totalSats} sats → ${podcast.title}`);
   if (episode?.title) lines.push(`📻 ${episode.title}`);
   if (podcast.url) lines.push('', podcast.url);
   return lines.join('\n');
@@ -216,9 +209,9 @@ export async function publishBoostNote(
 
   const { podcast, episode, boostagram, results } = args;
   const relays = args.relays ?? loadRelays();
-  const sentMsat = results
-    .filter((r) => r.ok)
-    .reduce((sum, r) => sum + r.sats * 1000, 0);
+  const totalMsat =
+    boostagram.value_msat_total ??
+    results.reduce((sum, r) => sum + r.sats * 1000, 0);
 
   // NIP-73 external content tags + boost-specific metadata
   const tags: string[][] = [];
@@ -231,7 +224,7 @@ export async function publishBoostNote(
     tags.push(['k', 'podcast:item:guid']);
   }
   if (podcast.url) tags.push(['r', podcast.url]);
-  if (sentMsat > 0) tags.push(['amount', String(sentMsat)]);
+  if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
   tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);
   tags.push(['t', 'boostagram']);
   tags.push(['t', 'value4value']);
