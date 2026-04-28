@@ -13,7 +13,6 @@ export { fetchProfile } from './profile';
 
 export {
   DEFAULT_RELAYS,
-  DISCOVERY_RELAYS,
   fetchRelayList,
   resolvePublishRelays,
 } from './relays';
