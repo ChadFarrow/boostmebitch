@@ -7,7 +7,9 @@
 import type { Boostagram, ValueBlock, ValueRecipient, BoostResult } from '@/lib/types';
 import { hasNwc, nwcKeysend, nwcPayInvoice } from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
+import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
+import { registerBoostMetadata } from './boostbox';
 
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
@@ -16,13 +18,17 @@ import { fetchLnInvoice } from './lnaddr';
 // customKey/customValue pairs.
 const TLV_BOOSTAGRAM = 7629169;
 
-export type Rail = 'nwc' | 'webln';
+export type Rail = 'nwc' | 'webln' | 'spark';
 
 // Re-export so callers can import from one place
 export type { BoostResult };
 
+// Priority: NWC (explicit user setup) > Spark (auto-provisioned self-custodial)
+// > WebLN (browser extension fallback). Users can override per-boost in the
+// modal; this is just the default.
 export function pickRail(): Rail | null {
   if (hasNwc()) return 'nwc';
+  if (hasSpark()) return 'spark';
   if (hasWebln()) return 'webln';
   return null;
 }
@@ -81,6 +87,12 @@ function recordsForKeysend(
   return records;
 }
 
+// Toggle BoostBox sidechannel for lnaddress legs. When on, the boostagram is
+// POSTed to BoostBox first and the returned `desc` string (which carries the
+// short URL aggregators look for) is passed as the LNURL-pay comment. Default
+// off so the existing comment-only behavior is preserved.
+const BOOSTBOX_ENABLED = process.env.NEXT_PUBLIC_BOOSTBOX_ENABLED === 'true';
+
 async function payOne(
   recipient: ValueRecipient,
   sats: number,
@@ -92,19 +104,38 @@ async function payOne(
 
   try {
     if (recipient.type === 'lnaddress') {
+      const recPerRecipient: Boostagram = {
+        ...boostagram,
+        value_msat: sats * 1000,
+        name: recipient.name,
+      };
+      let comment = boostagram.message;
+      if (BOOSTBOX_ENABLED) {
+        const bb = await registerBoostMetadata(recPerRecipient);
+        if (bb) comment = bb.desc;
+      }
       const invoice = await fetchLnInvoice({
         address: recipient.address,
         amount_msat: sats * 1000,
-        comment: boostagram.message,
+        comment,
       });
-      const preimage =
-        rail === 'nwc'
-          ? await nwcPayInvoice(invoice)
-          : await weblnPayInvoice(invoice);
+      let preimage: string;
+      if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);
+      else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
+      else preimage = await weblnPayInvoice(invoice);
       return { ...base, ok: true, preimage };
     }
 
-    // type === 'node' → keysend
+    // type === 'node' → keysend. Spark has no keysend path, so node-pubkey
+    // legs degrade with a clear error rather than silently failing the boost.
+    if (rail === 'spark') {
+      return {
+        ...base,
+        ok: false,
+        error: 'Spark rail does not support keysend (node-pubkey recipient)',
+      };
+    }
+
     const recPerRecipient: Boostagram = {
       ...boostagram,
       value_msat: sats * 1000,
@@ -139,7 +170,7 @@ export async function sendBoost(args: {
   onProgress?: (r: BoostResult, index: number, total: number) => void;
 }): Promise<BoostResult[]> {
   const rail = args.rail ?? pickRail();
-  if (!rail) throw new Error('No payment provider available (connect NWC or WebLN)');
+  if (!rail) throw new Error('No payment provider available (connect NWC, Spark, or WebLN)');
 
   const recipients = args.value.recipients;
   const splits = splitSats(args.totalSats, recipients);

@@ -40,3 +40,10 @@ export {
   schedulePublishFavorites,
   type FavoritesEvent,
 } from './favorites';
+
+export {
+  WALLET_BACKUP_KIND,
+  WALLET_BACKUP_D_TAG,
+  fetchEncryptedMnemonic,
+  publishEncryptedMnemonic,
+} from './wallet-backup';
