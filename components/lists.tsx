@@ -58,6 +58,47 @@ function FavHeart({ podcast }: { podcast: Podcast }) {
   );
 }
 
+// One row used by both the search-results panel and the favorites panel.
+// `showV4VStamp` is on for search results (where the value-block is known)
+// and off for favorites (the cache only carries metadata, not value).
+function PodcastRow({
+  podcast,
+  selected,
+  onSelect,
+  showV4VStamp,
+}: {
+  podcast: Podcast;
+  selected: boolean;
+  onSelect: (p: Podcast) => void;
+  showV4VStamp: boolean;
+}) {
+  return (
+    <li
+      onClick={() => onSelect(podcast)}
+      className={`flex gap-3 py-3 px-1 cursor-pointer group transition ${
+        selected ? 'bg-bolt/10' : 'hover:bg-bone/5'
+      }`}
+    >
+      {podcast.image ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={podcast.image} alt="" className="w-14 h-14 object-cover border border-bone/20 flex-shrink-0" />
+      ) : (
+        <div className="w-14 h-14 border border-bone/20 bg-line flex-shrink-0" />
+      )}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
+          {showV4VStamp && podcast.value && (
+            <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
+          )}
+        </div>
+        <div className="text-xs text-muted truncate">{podcast.author}</div>
+      </div>
+      <FavHeart podcast={podcast} />
+    </li>
+  );
+}
+
 export function PodcastResults({
   feeds,
   selected,
@@ -73,30 +114,13 @@ export function PodcastResults({
   return (
     <ul className="divide-y divide-bone/10">
       {feeds.map((p) => (
-        <li
+        <PodcastRow
           key={p.id}
-          onClick={() => onSelect(p)}
-          className={`flex gap-3 py-3 px-1 cursor-pointer group transition ${
-            selected === p.id ? 'bg-bolt/10' : 'hover:bg-bone/5'
-          }`}
-        >
-          {p.image ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={p.image} alt="" className="w-14 h-14 object-cover border border-bone/20 flex-shrink-0" />
-          ) : (
-            <div className="w-14 h-14 border border-bone/20 bg-line flex-shrink-0" />
-          )}
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-display text-base leading-tight truncate">{p.title}</span>
-              {p.value && (
-                <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
-              )}
-            </div>
-            <div className="text-xs text-muted truncate">{p.author}</div>
-          </div>
-          <FavHeart podcast={p} />
-        </li>
+          podcast={p}
+          selected={selected === p.id}
+          onSelect={onSelect}
+          showV4VStamp
+        />
       ))}
     </ul>
   );
@@ -118,11 +142,11 @@ export function FavoritesList({
 
   if (!list.length) return null;
 
-  // Render the same shape as PodcastResults but from the FavoritePodcast cache.
-  // Click selects; the right pane (EpisodeList) keys off the feed id.
   return (
     <ul className="divide-y divide-bone/10">
       {list.map((p) => {
+        // FavoritePodcast → Podcast: the cache doesn't carry the value block,
+        // so the value-aware stamp is hidden via showV4VStamp={false}.
         const minimal: Podcast = {
           id: p.id,
           podcastGuid: p.podcastGuid,
@@ -132,25 +156,13 @@ export function FavoritesList({
           url: p.url,
         };
         return (
-          <li
+          <PodcastRow
             key={p.podcastGuid}
-            onClick={() => onSelect(minimal)}
-            className={`flex gap-3 py-3 px-1 cursor-pointer group transition ${
-              selected === p.id ? 'bg-bolt/10' : 'hover:bg-bone/5'
-            }`}
-          >
-            {p.image ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={p.image} alt="" className="w-14 h-14 object-cover border border-bone/20 flex-shrink-0" />
-            ) : (
-              <div className="w-14 h-14 border border-bone/20 bg-line flex-shrink-0" />
-            )}
-            <div className="min-w-0 flex-1">
-              <div className="font-display text-base leading-tight truncate">{p.title}</div>
-              <div className="text-xs text-muted truncate">{p.author}</div>
-            </div>
-            <FavHeart podcast={minimal} />
-          </li>
+            podcast={minimal}
+            selected={selected === p.id}
+            onSelect={onSelect}
+            showV4VStamp={false}
+          />
         );
       })}
     </ul>
