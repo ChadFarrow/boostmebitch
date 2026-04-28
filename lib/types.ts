@@ -20,6 +20,7 @@ export interface ValueBlock {
 export interface Podcast {
   id: number;
   podcastGuid?: string;   // namespace UUID for NIP-73 podcast:guid:
+  itunesId?: number;      // Apple Podcasts ID — used by pod.link smart-links
   title: string;
   author?: string;
   description?: string;

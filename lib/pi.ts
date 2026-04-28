@@ -73,6 +73,7 @@ export async function getPodcast(feedId: number): Promise<Podcast | null> {
   return {
     id: f.id,
     podcastGuid: f.podcastGuid,
+    itunesId: typeof f.itunesId === 'number' ? f.itunesId : undefined,
     title: f.title,
     author: f.author,
     description: f.description,
@@ -91,6 +92,7 @@ export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
   return {
     id: feed.id,
     podcastGuid: feed.podcastGuid,
+    itunesId: typeof feed.itunesId === 'number' ? feed.itunesId : undefined,
     title: feed.title,
     author: feed.author,
     description: feed.description,

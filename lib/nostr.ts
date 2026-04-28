@@ -186,8 +186,17 @@ interface PublishArgs {
   contentOverride?: string;
 }
 
-function podcastIndexUrl(podcast: Podcast): string | null {
-  return podcast.id ? `https://podcastindex.org/podcast/${podcast.id}` : null;
+/**
+ * Best public landing page for a podcast, in preference order:
+ *  1. pod.link smart-link by Apple iTunes ID — auto-routes the visitor to
+ *     their preferred podcast app on click
+ *  2. Podcast Index page — human-readable feed metadata
+ *  3. raw RSS feed URL
+ */
+function podcastLandingUrl(podcast: Podcast): string | null {
+  if (podcast.itunesId) return `https://pod.link/${podcast.itunesId}`;
+  if (podcast.id) return `https://podcastindex.org/podcast/${podcast.id}`;
+  return podcast.url ?? null;
 }
 
 function formatContent(args: PublishArgs): string {
@@ -200,7 +209,7 @@ function formatContent(args: PublishArgs): string {
   }
   lines.push(`Boosted ${totalSats} sats → ${podcast.title}`);
   if (episode?.title) lines.push(`📻 ${episode.title}`);
-  const link = podcastIndexUrl(podcast) ?? podcast.url;
+  const link = podcastLandingUrl(podcast);
   if (link) lines.push('', link);
   return lines.join('\n');
 }
@@ -228,7 +237,7 @@ export async function publishBoostNote(
     tags.push(['i', `podcast:item:guid:${episode.guid}`]);
     tags.push(['k', 'podcast:item:guid']);
   }
-  const linkUrl = podcastIndexUrl(podcast) ?? podcast.url;
+  const linkUrl = podcastLandingUrl(podcast);
   if (linkUrl) tags.push(['r', linkUrl]);
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
   tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);
