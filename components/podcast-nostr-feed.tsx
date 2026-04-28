@@ -1,13 +1,15 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { fetchPodcastNotes, type DiscoveredNote } from '@/lib/nostr';
+import { storage } from '@/lib/storage';
 import { NoteCard } from './nostr-note-card';
 
 /**
  * Per-podcast Nostr stream — same card UI as <GlobalNostrFeed>, but the relay
  * query is scoped to a single show via NIP-73 `#i: podcast:guid:<guid>`. Used
  * inside <EpisodeList> so selecting a podcast surfaces just that show's
- * boosts and chatter.
+ * boosts and chatter. Stale-while-revalidate: paints the cached
+ * DiscoveredNote[] (5-min TTL) immediately, then refreshes in the background.
  */
 export function PodcastNostrFeed({
   podcastGuid,
@@ -16,7 +18,10 @@ export function PodcastNostrFeed({
   podcastGuid: string;
   podcastTitle?: string;
 }) {
-  const [notes, setNotes] = useState<DiscoveredNote[] | null>(null);
+  const cacheKey = `podcast:${podcastGuid}`;
+  const [notes, setNotes] = useState<DiscoveredNote[] | null>(() =>
+    storage.feedNotes.get(cacheKey),
+  );
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -26,6 +31,7 @@ export function PodcastNostrFeed({
     try {
       const result = await fetchPodcastNotes(podcastGuid);
       setNotes(result);
+      storage.feedNotes.set(cacheKey, result);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'failed to load nostr feed');
     } finally {
@@ -34,7 +40,7 @@ export function PodcastNostrFeed({
   }
 
   useEffect(() => {
-    setNotes(null);
+    setNotes(storage.feedNotes.get(cacheKey));
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [podcastGuid]);

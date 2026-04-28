@@ -1,41 +1,63 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { fetchAllPodcastNotes, type DiscoveredNote } from '@/lib/nostr';
+import { storage } from '@/lib/storage';
 import type { Podcast } from '@/lib/types';
 import { NoteCard } from './nostr-note-card';
 
-// Module-level cache so repeat references to the same podcast don't fan out
-// into duplicate /api/by-guid round-trips while the user is on the page.
-const podcastCache = new Map<string, Podcast | null>();
+// In-memory mirror of storage.podcastMeta — avoids re-parsing localStorage on
+// every NoteCard render within the same page session.
+const podcastMem = new Map<string, Podcast | null>();
 
 async function resolvePodcast(guid: string): Promise<Podcast | null> {
-  if (podcastCache.has(guid)) return podcastCache.get(guid) ?? null;
+  if (podcastMem.has(guid)) return podcastMem.get(guid) ?? null;
+  const cached = storage.podcastMeta.get(guid);
+  if (cached) {
+    podcastMem.set(guid, cached);
+    return cached;
+  }
   try {
     const r = await fetch(`/api/by-guid?guid=${encodeURIComponent(guid)}`);
     if (!r.ok) {
-      podcastCache.set(guid, null);
+      podcastMem.set(guid, null);
       return null;
     }
     const { podcast } = (await r.json()) as { podcast: Podcast };
-    podcastCache.set(guid, podcast ?? null);
-    return podcast ?? null;
+    if (podcast) {
+      podcastMem.set(guid, podcast);
+      storage.podcastMeta.set(guid, podcast);
+      return podcast;
+    }
+    podcastMem.set(guid, null);
+    return null;
   } catch {
-    podcastCache.set(guid, null);
+    podcastMem.set(guid, null);
     return null;
   }
 }
 
 /**
  * Global stream of every kind:1 note tagged with NIP-73 podcast identifiers,
- * across all podcasts and clients. Each note's `podcast:guid:` reference is
- * resolved against `/api/by-guid` so the show title + artwork render as
- * context.
+ * across all podcasts and clients. Stale-while-revalidate: on mount we paint
+ * the last cached DiscoveredNote[] (5-min TTL in localStorage) instantly,
+ * then re-query relays in the background and replace.
  */
 export function GlobalNostrFeed() {
-  const [notes, setNotes] = useState<DiscoveredNote[] | null>(null);
+  const [notes, setNotes] = useState<DiscoveredNote[] | null>(() => storage.feedNotes.get('global'));
   const [podcasts, setPodcasts] = useState<Record<string, Podcast | null>>({});
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  function resolveGuids(notes: DiscoveredNote[]) {
+    const guids = Array.from(
+      new Set(notes.map((n) => n.podcastGuid).filter((g): g is string => !!g)),
+    );
+    for (const guid of guids) {
+      resolvePodcast(guid).then((p) => {
+        setPodcasts((prev) => ({ ...prev, [guid]: p }));
+      });
+    }
+  }
 
   async function load() {
     setLoading(true);
@@ -43,16 +65,8 @@ export function GlobalNostrFeed() {
     try {
       const result = await fetchAllPodcastNotes();
       setNotes(result);
-      // Resolve unique podcast guids in the background; UI fills in as each
-      // resolution lands.
-      const guids = Array.from(
-        new Set(result.map((n) => n.podcastGuid).filter((g): g is string => !!g)),
-      );
-      for (const guid of guids) {
-        resolvePodcast(guid).then((p) => {
-          setPodcasts((prev) => ({ ...prev, [guid]: p }));
-        });
-      }
+      storage.feedNotes.set('global', result);
+      resolveGuids(result);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'failed to load nostr feed');
     } finally {
@@ -61,7 +75,11 @@ export function GlobalNostrFeed() {
   }
 
   useEffect(() => {
+    // Resolve cached notes' podcast metadata immediately so cards from the
+    // SWR paint render with show context, not just guids.
+    if (notes && notes.length > 0) resolveGuids(notes);
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
