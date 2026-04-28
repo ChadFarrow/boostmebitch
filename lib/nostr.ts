@@ -70,18 +70,20 @@ export const DEFAULT_RELAYS = [
 
 const RELAYS_KEY = 'bmb:relays';
 
-export function loadRelays(): string[] {
-  if (typeof window === 'undefined') return DEFAULT_RELAYS;
-  const raw = localStorage.getItem(RELAYS_KEY);
-  if (!raw) return DEFAULT_RELAYS;
-  try {
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) && arr.length ? arr : DEFAULT_RELAYS;
-  } catch { return DEFAULT_RELAYS; }
-}
+// ── Pool lifecycle helper ────────────────────────────────────────────────────
+// Wraps `new SimplePool()` + `pool.close()` so callers can't forget the
+// teardown. Used for every kind:0 / 10002 / 30003 query and every publish.
 
-export function saveRelays(relays: string[]) {
-  localStorage.setItem(RELAYS_KEY, JSON.stringify(relays));
+async function withPool<T>(
+  relays: string[],
+  fn: (pool: SimplePool) => Promise<T>,
+): Promise<T> {
+  const pool = new SimplePool();
+  try {
+    return await fn(pool);
+  } finally {
+    pool.close(relays);
+  }
 }
 
 // ── Profile metadata (kind:0) ────────────────────────────────────────────────
@@ -90,62 +92,54 @@ export async function fetchProfile(
   pubkey: string,
   relays?: string[],
 ): Promise<ProfileMetadata | null> {
-  const useRelays = relays ?? loadRelays();
-  const pool = new SimplePool();
-  try {
-    const events = await pool.querySync(useRelays, {
-      kinds: [0],
-      authors: [pubkey],
-      limit: 1,
-    });
-    if (!events.length) return null;
-    const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
-    return JSON.parse(newest.content) as ProfileMetadata;
-  } catch {
-    return null;
-  } finally {
-    pool.close(useRelays);
-  }
+  const useRelays = relays ?? DEFAULT_RELAYS;
+  return withPool(useRelays, async (pool) => {
+    try {
+      const events = await pool.querySync(useRelays, {
+        kinds: [0],
+        authors: [pubkey],
+        limit: 1,
+      });
+      if (!events.length) return null;
+      const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
+      return JSON.parse(newest.content) as ProfileMetadata;
+    } catch {
+      return null;
+    }
+  });
 }
 
 // ── NIP-65 relay list (kind:10002) ───────────────────────────────────────────
-
-export interface RelayList {
-  write: string[];
-  read: string[];
-}
+// We only need the write side — we never read events from arbitrary relays
+// based on someone's read list. Drop `read` from the parser and the type.
 
 export async function fetchRelayList(
   pubkey: string,
   queryRelays?: string[],
-): Promise<RelayList | null> {
+): Promise<{ write: string[] } | null> {
   const useRelays = queryRelays ?? DEFAULT_RELAYS;
-  const pool = new SimplePool();
-  try {
-    const events = await pool.querySync(useRelays, {
-      kinds: [10002],
-      authors: [pubkey],
-      limit: 1,
-    });
-    if (!events.length) return null;
-    const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
-    const write = new Set<string>();
-    const read = new Set<string>();
-    for (const tag of newest.tags) {
-      if (tag[0] !== 'r' || !tag[1]) continue;
-      const url = tag[1].trim().replace(/\/$/, '');
-      if (!url) continue;
-      const marker = tag[2];
-      if (!marker) { write.add(url); read.add(url); }
-      else if (marker === 'write') write.add(url);
-      else if (marker === 'read') read.add(url);
+  return withPool(useRelays, async (pool) => {
+    try {
+      const events = await pool.querySync(useRelays, {
+        kinds: [10002],
+        authors: [pubkey],
+        limit: 1,
+      });
+      if (!events.length) return null;
+      const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
+      const write = new Set<string>();
+      for (const tag of newest.tags) {
+        if (tag[0] !== 'r' || !tag[1]) continue;
+        const url = tag[1].trim().replace(/\/$/, '');
+        if (!url) continue;
+        const marker = tag[2];
+        if (!marker || marker === 'write') write.add(url);
+      }
+      return { write: Array.from(write) };
+    } catch {
+      return null;
     }
-    return { write: Array.from(write), read: Array.from(read) };
-  } catch {
-    return null;
-  } finally {
-    pool.close(useRelays);
-  }
+  });
 }
 
 /**
@@ -214,15 +208,42 @@ function formatContent(args: PublishArgs): string {
   return lines.join('\n');
 }
 
-export async function publishBoostNote(
-  args: PublishArgs,
+// Sign + publish a single event template across the given relays. Used by
+// both publishBoostNote (kind:1) and publishFavorites (kind:30003).
+async function signAndPublish(
+  template: EventTemplate,
+  relays: string[],
 ): Promise<PublishedNote> {
   if (typeof window === 'undefined' || !window.nostr) {
     throw new Error('No Nostr signer available');
   }
+  const signed = await window.nostr.signEvent(template);
 
+  return withPool(relays, async (pool) => {
+    const accepted: string[] = [];
+    const failed: string[] = [];
+    const publishes = pool.publish(relays, signed);
+    await Promise.allSettled(
+      publishes.map((p, i) =>
+        p
+          .then(() => accepted.push(relays[i]))
+          .catch(() => failed.push(relays[i])),
+      ),
+    );
+    return {
+      id: signed.id,
+      nevent: nip19.neventEncode({ id: signed.id, relays: accepted.slice(0, 3) }),
+      acceptedRelays: accepted,
+      failedRelays: failed,
+    };
+  });
+}
+
+export async function publishBoostNote(
+  args: PublishArgs,
+): Promise<PublishedNote> {
   const { podcast, episode, boostagram, results } = args;
-  const relays = args.relays ?? loadRelays();
+  const relays = args.relays ?? DEFAULT_RELAYS;
   const totalMsat =
     boostagram.value_msat_total ??
     results.reduce((sum, r) => sum + r.sats * 1000, 0);
@@ -251,31 +272,7 @@ export async function publishBoostNote(
     content: args.contentOverride ?? formatContent(args),
   };
 
-  const signed = await window.nostr.signEvent(template);
-
-  // Publish to relays. SimplePool returns one promise per relay.
-  const pool = new SimplePool();
-  const accepted: string[] = [];
-  const failed: string[] = [];
-
-  const publishes = pool.publish(relays, signed);
-  await Promise.allSettled(
-    publishes.map((p, i) =>
-      p
-        .then(() => accepted.push(relays[i]))
-        .catch(() => failed.push(relays[i])),
-    ),
-  );
-
-  // Don't keep the pool open — simple fire-and-forget
-  pool.close(relays);
-
-  return {
-    id: signed.id,
-    nevent: nip19.neventEncode({ id: signed.id, relays: accepted.slice(0, 3) }),
-    acceptedRelays: accepted,
-    failedRelays: failed,
-  };
+  return signAndPublish(template, relays);
 }
 
 // ── NIP-51 favorites (kind:30003 bookmark set) ───────────────────────────────
@@ -292,37 +289,33 @@ export async function fetchFavoriteGuids(
   queryRelays?: string[],
 ): Promise<FavoritesEvent | null> {
   const useRelays = queryRelays ?? DEFAULT_RELAYS;
-  const pool = new SimplePool();
-  try {
-    const events = await pool.querySync(useRelays, {
-      kinds: [30003],
-      authors: [pubkey],
-      '#d': [FAVORITES_D_TAG],
-      limit: 1,
-    });
-    if (!events.length) return null;
-    const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
-    const guids: string[] = [];
-    for (const tag of newest.tags) {
-      if (tag[0] !== 'i' || !tag[1]) continue;
-      const m = /^podcast:guid:(.+)$/.exec(tag[1]);
-      if (m) guids.push(m[1]);
+  return withPool(useRelays, async (pool) => {
+    try {
+      const events = await pool.querySync(useRelays, {
+        kinds: [30003],
+        authors: [pubkey],
+        '#d': [FAVORITES_D_TAG],
+        limit: 1,
+      });
+      if (!events.length) return null;
+      const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
+      const guids: string[] = [];
+      for (const tag of newest.tags) {
+        if (tag[0] !== 'i' || !tag[1]) continue;
+        const m = /^podcast:guid:(.+)$/.exec(tag[1]);
+        if (m) guids.push(m[1]);
+      }
+      return { guids, updatedAt: newest.created_at };
+    } catch {
+      return null;
     }
-    return { guids, updatedAt: newest.created_at };
-  } catch {
-    return null;
-  } finally {
-    pool.close(useRelays);
-  }
+  });
 }
 
 export async function publishFavorites(
   guids: string[],
   relays: string[],
 ): Promise<PublishedNote> {
-  if (typeof window === 'undefined' || !window.nostr) {
-    throw new Error('No Nostr signer available');
-  }
   const tags: string[][] = [
     ['d', FAVORITES_D_TAG],
     ['title', 'Favorite Podcasts'],
@@ -337,27 +330,7 @@ export async function publishFavorites(
     tags,
     content: '',
   };
-  const signed = await window.nostr.signEvent(template);
-
-  const pool = new SimplePool();
-  const accepted: string[] = [];
-  const failed: string[] = [];
-  const publishes = pool.publish(relays, signed);
-  await Promise.allSettled(
-    publishes.map((p, i) =>
-      p
-        .then(() => accepted.push(relays[i]))
-        .catch(() => failed.push(relays[i])),
-    ),
-  );
-  pool.close(relays);
-
-  return {
-    id: signed.id,
-    nevent: nip19.neventEncode({ id: signed.id, relays: accepted.slice(0, 3) }),
-    acceptedRelays: accepted,
-    failedRelays: failed,
-  };
+  return signAndPublish(template, relays);
 }
 
 // Debounced wrapper — collapses rapid heart-toggles into a single signing prompt.
@@ -376,4 +349,3 @@ export function schedulePublishFavorites(
     });
   }, delayMs);
 }
-
