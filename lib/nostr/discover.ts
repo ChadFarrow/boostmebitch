@@ -1,6 +1,6 @@
 import { nip19, type Event } from 'nostr-tools';
 import { withPool } from './pool';
-import { DISCOVERY_RELAYS } from './relays';
+import { DEFAULT_RELAYS } from './relays';
 import type { ProfileMetadata } from './auth';
 
 export interface DiscoveredNote {
@@ -75,7 +75,7 @@ export async function fetchPodcastNotes(
   podcastGuid: string,
   opts: FetchOpts = {},
 ): Promise<DiscoveredNote[]> {
-  const relays = opts.relays ?? DISCOVERY_RELAYS;
+  const relays = opts.relays ?? DEFAULT_RELAYS;
   const limit = opts.limit ?? 100;
 
   return withPool(relays, async (pool) => {
@@ -102,7 +102,7 @@ export async function fetchPodcastNotes(
 export async function fetchAllPodcastNotes(
   opts: FetchOpts = {},
 ): Promise<DiscoveredNote[]> {
-  const relays = opts.relays ?? DISCOVERY_RELAYS;
+  const relays = opts.relays ?? DEFAULT_RELAYS;
   const limit = opts.limit ?? 100;
 
   return withPool(relays, async (pool) => {
