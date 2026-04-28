@@ -1,0 +1,34 @@
+// Barrel re-export so callers can keep using `@/lib/nostr` after the split.
+// New code can import from the specific submodule (`@/lib/nostr/favorites`)
+// for clearer dependency graphs.
+
+export {
+  loginWithExtension,
+  shortNpub,
+  type NostrIdentity,
+  type ProfileMetadata,
+} from './auth';
+
+export { fetchProfile } from './profile';
+
+export {
+  DEFAULT_RELAYS,
+  fetchRelayList,
+  resolvePublishRelays,
+} from './relays';
+
+export {
+  publishBoostNote,
+} from './boost-notes';
+
+export {
+  type PublishedNote,
+} from './publish';
+
+export {
+  FAVORITES_D_TAG,
+  fetchFavoriteGuids,
+  publishFavorites,
+  schedulePublishFavorites,
+  type FavoritesEvent,
+} from './favorites';
