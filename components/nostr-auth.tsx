@@ -11,6 +11,7 @@ import {
   type NostrIdentity,
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
+import { getErrorMessage } from '@/lib/util';
 import type { FavoritePodcast, Podcast } from '@/lib/types';
 
 function loadCachedFavorites(npub: string): Record<string, FavoritePodcast> {
@@ -140,8 +141,8 @@ export function NostrAuth() {
       setIdentity(id);
       localStorage.setItem('bmb:npub', id.npub);
       loadProfile(id);
-    } catch (e: any) {
-      setErr(e?.message ?? 'sign-in failed');
+    } catch (e) {
+      setErr(getErrorMessage(e, 'sign-in failed'));
     } finally { setBusy(false); }
   }
 

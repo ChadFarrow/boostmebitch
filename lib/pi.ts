@@ -50,26 +50,9 @@ function normalizeValue(v: any): ValueBlock | null {
   };
 }
 
-export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]> {
-  const data = await pi<any>(
-    `/search/byterm?q=${encodeURIComponent(query)}&max=${max}&fulltext`,
-  );
-  return (data.feeds ?? []).map((f: any) => ({
-    id: f.id,
-    podcastGuid: f.podcastGuid,
-    title: f.title,
-    author: f.author,
-    description: f.description,
-    image: f.image || f.artwork,
-    url: f.url,
-    value: normalizeValue(f.value),
-  }));
-}
-
-export async function getPodcast(feedId: number): Promise<Podcast | null> {
-  const data = await pi<any>(`/podcasts/byfeedid?id=${feedId}`);
-  const f = data.feed;
-  if (!f) return null;
+// One canonical mapping from PI feed shape → our Podcast type. Used by every
+// fetch endpoint so a new field is added in one place.
+function buildPodcast(f: any): Podcast {
   return {
     id: f.id,
     podcastGuid: f.podcastGuid,
@@ -83,23 +66,24 @@ export async function getPodcast(feedId: number): Promise<Podcast | null> {
   };
 }
 
+export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]> {
+  const data = await pi<any>(
+    `/search/byterm?q=${encodeURIComponent(query)}&max=${max}&fulltext`,
+  );
+  return (data.feeds ?? []).map(buildPodcast);
+}
+
+export async function getPodcast(feedId: number): Promise<Podcast | null> {
+  const data = await pi<any>(`/podcasts/byfeedid?id=${feedId}`);
+  return data.feed ? buildPodcast(data.feed) : null;
+}
+
 export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
   const data = await pi<any>(`/podcasts/byguid?guid=${encodeURIComponent(guid)}`);
   const f = data.feed;
   if (!f || (Array.isArray(f) && !f.length)) return null;
   // PI returns either a feed object or (rarely) an array; normalize.
-  const feed = Array.isArray(f) ? f[0] : f;
-  return {
-    id: feed.id,
-    podcastGuid: feed.podcastGuid,
-    itunesId: typeof feed.itunesId === 'number' ? feed.itunesId : undefined,
-    title: feed.title,
-    author: feed.author,
-    description: feed.description,
-    image: feed.image || feed.artwork,
-    url: feed.url,
-    value: normalizeValue(feed.value),
-  };
+  return buildPodcast(Array.isArray(f) ? f[0] : f);
 }
 
 export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> {

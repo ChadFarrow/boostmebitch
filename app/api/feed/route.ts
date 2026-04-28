@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getEpisodes, getPodcast } from '@/lib/pi';
+import { getErrorMessage } from '@/lib/util';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -11,7 +12,7 @@ export async function GET(req: Request) {
     // Episodes inherit the channel value block when they don't have their own.
     const filled = episodes.map((e) => ({ ...e, value: e.value ?? podcast.value }));
     return NextResponse.json({ podcast, episodes: filled });
-  } catch (e: any) {
-    return NextResponse.json({ error: e?.message ?? 'feed fetch failed' }, { status: 500 });
+  } catch (e) {
+    return NextResponse.json({ error: getErrorMessage(e, 'feed fetch failed') }, { status: 500 });
   }
 }

@@ -7,6 +7,7 @@ import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/l
 import { hasNwc, saveNwcUri, clearNwcUri } from '@/lib/v4v/nwc';
 import { hasWebln as hasWeblnFn } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays, type PublishedNote } from '@/lib/nostr';
+import { getErrorMessage } from '@/lib/util';
 import { BoltIcon } from './icons';
 
 // Brand-coloured celebration: bolt yellow, nostr magenta, bone.
@@ -123,8 +124,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       setResults(collected);
       setPaymentDone(true);
       if (collected.some((r) => r.ok)) fireConfetti();
-    } catch (e: any) {
-      alert(e?.message ?? 'boost failed');
+    } catch (e) {
+      alert(getErrorMessage(e, 'boost failed'));
       setRunning(false);
       return;
     } finally {
@@ -143,8 +144,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           relays,
         });
         setPubState({ kind: 'done', note });
-      } catch (e: any) {
-        setPubState({ kind: 'error', message: e?.message ?? 'publish failed' });
+      } catch (e) {
+        setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
       }
     }
   }
