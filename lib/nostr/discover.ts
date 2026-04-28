@@ -25,17 +25,88 @@ interface FetchOpts {
   limit?: number;
 }
 
-function buildNote(e: Event, relays: string[], profile: ProfileMetadata | null): DiscoveredNote {
+// Pull every event id this note quote-references, plus relay hints. Sources:
+// `q`/`e` tags (NIP-18) and any `nostr:nevent…` / `nostr:note…` URI inline in
+// content. Used to resolve Fountain-style boosts where the kind:1 wrapper
+// carries no `amount` tag and the actual payment lives in a quoted kind:9735
+// zap receipt.
+function parseQuoteRefs(e: Event): { ids: string[]; relayHints: string[] } {
+  const ids = new Set<string>();
+  const relays = new Set<string>();
+  for (const t of e.tags) {
+    if ((t[0] === 'q' || t[0] === 'e') && typeof t[1] === 'string' && t[1].length === 64) {
+      ids.add(t[1]);
+      if (typeof t[2] === 'string' && t[2].startsWith('wss://')) relays.add(t[2]);
+    }
+  }
+  const NOSTR_RE = /nostr:(n(?:event|ote)1[023456789acdefghjklmnpqrstuvwxyz]+)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = NOSTR_RE.exec(e.content)) !== null) {
+    try {
+      const decoded = nip19.decode(m[1]);
+      if (decoded.type === 'nevent') {
+        ids.add(decoded.data.id);
+        for (const r of decoded.data.relays ?? []) relays.add(r);
+      } else if (decoded.type === 'note') {
+        ids.add(decoded.data);
+      }
+    } catch {
+      // skip malformed refs
+    }
+  }
+  return { ids: [...ids], relayHints: [...relays] };
+}
+
+// Returns msat amount from a kind:9735 zap receipt, preferring the explicit
+// `amount` tag. NIP-57 says receipts SHOULD include it; if a client omits it
+// the bolt11 invoice carries the amount but parsing that is heavier and we
+// can add it later if real-world events need it.
+function zapReceiptAmountMsat(e: Event): number | null {
+  if (e.kind !== 9735) return null;
+  const tag = e.tags.find((t) => t[0] === 'amount')?.[1];
+  const n = tag ? Number(tag) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function buildNote(
+  e: Event,
+  relays: string[],
+  profile: ProfileMetadata | null,
+  quoted: Map<string, Event>,
+): DiscoveredNote {
   const amountTag = e.tags.find((t) => t[0] === 'amount')?.[1];
-  const amountMsat = amountTag ? Number(amountTag) : null;
+  let amountMsat: number | null = amountTag ? Number(amountTag) : null;
+  if (!Number.isFinite(amountMsat) || (amountMsat ?? 0) <= 0) amountMsat = null;
   const client = e.tags.find((t) => t[0] === 'client')?.[1] ?? null;
+
+  // Fountain et al. publish the payment as a kind:9735 zap receipt and post
+  // a separate kind:1 narrative note that quote-references the receipt. The
+  // wrapper note carries the NIP-73 podcast tags but no amount of its own,
+  // so we resolve the first quoted zap receipt and adopt its amount.
+  let viaZapReceipt = false;
+  if (amountMsat === null) {
+    const { ids } = parseQuoteRefs(e);
+    for (const id of ids) {
+      const q = quoted.get(id);
+      if (!q) continue;
+      const m = zapReceiptAmountMsat(q);
+      if (m !== null) {
+        amountMsat = m;
+        viaZapReceipt = true;
+        break;
+      }
+    }
+  }
+
   // Different apps tag boosts differently: BoostMeBitch and Helipad-style
   // aggregators emit `t:boostagram`; some clients (Fountain, Wavlake
-  // variants) may omit it but still emit a positive `amount` tag. Treat
-  // either as a boost so the ⚡ stamp shows up consistently.
+  // variants) may omit it but still emit a positive `amount` tag, or wrap
+  // a kind:9735 zap receipt as above. Treat any of those as a boost so the
+  // ⚡ stamp shows up consistently.
   const isBoost =
     e.tags.some((t) => t[0] === 't' && (t[1] === 'boostagram' || t[1] === 'value4value')) ||
-    (Number.isFinite(amountMsat) && (amountMsat ?? 0) > 0);
+    (amountMsat !== null && amountMsat > 0) ||
+    viaZapReceipt;
   const podcastGuid =
     e.tags
       .find((t) => t[0] === 'i' && t[1]?.startsWith('podcast:guid:'))
@@ -55,7 +126,7 @@ function buildNote(e: Event, relays: string[], profile: ProfileMetadata | null):
     }),
     createdAt: e.created_at,
     content: e.content,
-    amountMsat: Number.isFinite(amountMsat) ? amountMsat : null,
+    amountMsat,
     client,
     isBoost,
     podcastGuid,
@@ -135,9 +206,57 @@ async function assembleNotes(
   );
 
   const authors = Array.from(new Set(unique.map((e) => e.pubkey)));
-  const profiles = await fetchProfiles(pool, relays, authors);
+  const [profiles, quoted] = await Promise.all([
+    fetchProfiles(pool, relays, authors),
+    fetchQuotedEvents(pool, relays, unique),
+  ]);
 
-  return unique.map((e) => buildNote(e, relays, profiles.get(e.pubkey) ?? null));
+  return unique.map((e) =>
+    buildNote(e, relays, profiles.get(e.pubkey) ?? null, quoted),
+  );
+}
+
+// Batch-fetch every event quote-referenced by the given notes. Used to
+// resolve kind:9735 zap receipts that wrapper kind:1 notes (Fountain) point
+// at — see the kind:9735 fallback in buildNote.
+async function fetchQuotedEvents(
+  pool: import('nostr-tools').SimplePool,
+  relays: string[],
+  notes: Event[],
+): Promise<Map<string, Event>> {
+  const out = new Map<string, Event>();
+  const ids = new Set<string>();
+  const hintRelays = new Set<string>();
+  for (const e of notes) {
+    const refs = parseQuoteRefs(e);
+    for (const id of refs.ids) ids.add(id);
+    for (const r of refs.relayHints) hintRelays.add(r);
+  }
+  if (ids.size === 0) return out;
+  // Cap to keep latency bounded; the original relay set is always preferred,
+  // hints fill in extras up to the cap.
+  const queryRelays = Array.from(
+    new Set([...relays, ...hintRelays]),
+  ).slice(0, 12);
+  let events: Event[] = [];
+  try {
+    events = await pool.querySync(queryRelays, {
+      ids: Array.from(ids),
+    });
+  } catch {
+    return out;
+  } finally {
+    const extras = queryRelays.filter((r) => !relays.includes(r));
+    if (extras.length) {
+      try {
+        pool.close(extras);
+      } catch {
+        // ignore close errors
+      }
+    }
+  }
+  for (const e of events) out.set(e.id, e);
+  return out;
 }
 
 async function fetchProfiles(
