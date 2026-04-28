@@ -54,7 +54,25 @@ export default function Home() {
 
       {/* Results grid */}
       <section className="max-w-7xl mx-auto px-4 pt-2">
-        {showLeftRightLayout ? (
+        {selected ? (
+          // Detail "page" — once a podcast is picked, the search/favorites
+          // aside hides so the episode list + per-podcast Nostr feed get the
+          // full viewport. The back button returns the user to whatever
+          // panel they were on (search results or favorites are preserved
+          // in state).
+          <div>
+            <button
+              onClick={() => setSelected(null)}
+              className="btn-ghost text-xs mb-3"
+              aria-label="Back"
+            >
+              ← back to results
+            </button>
+            <section className="card p-4 min-h-[40vh]">
+              <EpisodeList feedId={selected.id} />
+            </section>
+          </div>
+        ) : showLeftRightLayout ? (
           <div className="grid lg:grid-cols-[minmax(0,360px)_1fr] gap-6">
             <aside className="card p-3 max-h-[70vh] overflow-y-auto">
               <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
@@ -69,18 +87,18 @@ export default function Home() {
               {query || feeds.length > 0 || loading ? (
                 <PodcastResults
                   feeds={feeds}
-                  selected={selected?.id ?? null}
+                  selected={null}
                   onSelect={setSelected}
                 />
               ) : (
                 <FavoritesList
-                  selected={selected?.id ?? null}
+                  selected={null}
                   onSelect={setSelected}
                 />
               )}
             </aside>
             <section className="card p-4 min-h-[40vh]">
-              <EpisodeList feedId={selected?.id ?? null} />
+              <EpisodeList feedId={null} />
             </section>
           </div>
         ) : (
