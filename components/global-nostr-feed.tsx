@@ -1,7 +1,16 @@
 'use client';
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
-import { fetchAllPodcastNotes, shortNpub, type DiscoveredNote } from '@/lib/nostr';
+import {
+  fetchAllPodcastNotes,
+  resolvePublishRelays,
+  shortNpub,
+  type DiscoveredNote,
+} from '@/lib/nostr';
+import { publishReply, publishRepost } from '@/lib/nostr/interactions';
+import { sendZap } from '@/lib/v4v/zap';
+import { useApp } from '@/lib/store';
 import type { Podcast } from '@/lib/types';
+import { getErrorMessage } from '@/lib/util';
 
 // http(s) URLs only — bech32 nostr: URIs are stripped from the content via
 // stripNostrUris before this runs since they're noise to a non-Nostr-savvy
@@ -88,6 +97,8 @@ async function resolvePodcast(guid: string): Promise<Podcast | null> {
   }
 }
 
+type ActionState = 'idle' | 'busy' | 'done' | 'error';
+
 function NoteCard({
   note,
   podcast,
@@ -95,6 +106,7 @@ function NoteCard({
   note: DiscoveredNote;
   podcast: Podcast | null;
 }) {
+  const identity = useApp((s) => s.identity);
   const name =
     note.author?.display_name?.trim() ||
     note.author?.name?.trim() ||
@@ -103,6 +115,51 @@ function NoteCard({
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)
       : null;
+
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyDraft, setReplyDraft] = useState('');
+  const [replyState, setReplyState] = useState<ActionState>('idle');
+  const [replyErr, setReplyErr] = useState<string | null>(null);
+
+  const [repostState, setRepostState] = useState<ActionState>('idle');
+  const [repostErr, setRepostErr] = useState<string | null>(null);
+
+  const [zapOpen, setZapOpen] = useState(false);
+
+  async function onReply() {
+    if (!identity || !replyDraft.trim()) return;
+    setReplyState('busy');
+    setReplyErr(null);
+    try {
+      await publishReply({
+        parent: note.rawEvent,
+        content: replyDraft.trim(),
+        relays: resolvePublishRelays(identity),
+      });
+      setReplyState('done');
+      setReplyDraft('');
+      setReplyOpen(false);
+    } catch (e) {
+      setReplyErr(getErrorMessage(e, 'reply failed'));
+      setReplyState('error');
+    }
+  }
+
+  async function onRepost() {
+    if (!identity || repostState === 'busy' || repostState === 'done') return;
+    setRepostState('busy');
+    setRepostErr(null);
+    try {
+      await publishRepost({
+        parent: note.rawEvent,
+        relays: resolvePublishRelays(identity),
+      });
+      setRepostState('done');
+    } catch (e) {
+      setRepostErr(getErrorMessage(e, 'repost failed'));
+      setRepostState('error');
+    }
+  }
 
   return (
     <article className="card p-3 flex gap-3">
@@ -163,16 +220,184 @@ function NoteCard({
         <p className="text-sm text-bone whitespace-pre-wrap break-words mt-1.5">
           {linkify(stripNostrUris(note.content))}
         </p>
-        <a
-          href={`https://njump.me/${note.nevent}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-block text-[11px] text-muted hover:text-nostr mt-2"
-        >
-          view on nostr →
-        </a>
+
+        <div className="flex items-center gap-3 mt-2 text-[11px]">
+          {identity ? (
+            <>
+              <button
+                onClick={() => setReplyOpen((v) => !v)}
+                className="text-muted hover:text-nostr"
+                aria-label="Reply"
+                title="Reply"
+              >
+                💬 reply
+              </button>
+              <button
+                onClick={onRepost}
+                disabled={repostState === 'busy' || repostState === 'done'}
+                className="text-muted hover:text-nostr disabled:opacity-60"
+                aria-label="Repost"
+                title="Repost"
+              >
+                {repostState === 'done' ? '🔁 reposted' : repostState === 'busy' ? '🔁 …' : '🔁 repost'}
+              </button>
+              <button
+                onClick={() => setZapOpen(true)}
+                className="text-muted hover:text-bolt"
+                aria-label="Zap"
+                title="Zap (NIP-57)"
+              >
+                ⚡ zap
+              </button>
+            </>
+          ) : (
+            <span className="text-muted">sign in to reply / repost / zap</span>
+          )}
+          <span className="flex-1" />
+          <a
+            href={`https://njump.me/${note.nevent}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-muted hover:text-nostr"
+          >
+            view on nostr →
+          </a>
+        </div>
+
+        {repostErr && <p className="text-[11px] text-red-400 mt-1">{repostErr}</p>}
+
+        {replyOpen && identity && (
+          <div className="mt-2 border-t border-bone/15 pt-2">
+            <textarea
+              value={replyDraft}
+              onChange={(e) => setReplyDraft(e.target.value)}
+              placeholder="reply on Nostr…"
+              rows={3}
+              className="input w-full resize-y text-sm"
+            />
+            <div className="flex items-center gap-2 mt-2">
+              <button
+                onClick={onReply}
+                disabled={replyState === 'busy' || !replyDraft.trim()}
+                className="btn text-xs disabled:opacity-50"
+              >
+                {replyState === 'busy' ? 'sending…' : 'send reply'}
+              </button>
+              <button
+                onClick={() => { setReplyOpen(false); setReplyDraft(''); setReplyErr(null); setReplyState('idle'); }}
+                className="btn-ghost text-xs"
+              >
+                cancel
+              </button>
+              {replyErr && <span className="text-[11px] text-red-400">{replyErr}</span>}
+            </div>
+          </div>
+        )}
+
+        {zapOpen && identity && (
+          <ZapDialog
+            note={note}
+            identity={identity}
+            onClose={() => setZapOpen(false)}
+          />
+        )}
       </div>
     </article>
+  );
+}
+
+function ZapDialog({
+  note,
+  identity,
+  onClose,
+}: {
+  note: DiscoveredNote;
+  identity: NonNullable<ReturnType<typeof useApp.getState>['identity']>;
+  onClose: () => void;
+}) {
+  const [amount, setAmount] = useState(100);
+  const [comment, setComment] = useState('');
+  const [state, setState] = useState<ActionState>('idle');
+  const [err, setErr] = useState<string | null>(null);
+
+  const lud = note.author?.lud16 || note.author?.lud06;
+  const canZap = !!lud;
+
+  async function onZap() {
+    if (!canZap) return;
+    setState('busy');
+    setErr(null);
+    try {
+      await sendZap({
+        recipientPubkey: note.pubkey,
+        recipientLud16: note.author?.lud16,
+        recipientLud06: note.author?.lud06,
+        amountSats: amount,
+        comment: comment.trim() || undefined,
+        eventId: note.id,
+        relays: resolvePublishRelays(identity),
+      });
+      setState('done');
+      setTimeout(onClose, 800);
+    } catch (e) {
+      setErr(getErrorMessage(e, 'zap failed'));
+      setState('error');
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-40 bg-ink/80 backdrop-blur-sm grid place-items-center px-4">
+      <div className="card p-4 max-w-sm w-full">
+        <header className="flex items-center justify-between mb-3">
+          <h3 className="font-display text-lg">⚡ Zap {note.author?.display_name || note.author?.name || shortNpub(note.npub, 6)}</h3>
+          <button onClick={onClose} className="text-muted hover:text-bone text-xl leading-none">×</button>
+        </header>
+        {!canZap && (
+          <p className="text-sm text-red-400">
+            This author has no Lightning address on their Nostr profile, so they can&apos;t receive zaps.
+          </p>
+        )}
+        {canZap && (
+          <>
+            <label className="block text-[11px] uppercase tracking-widest text-muted mb-1">amount (sats)</label>
+            <input
+              type="number"
+              min={1}
+              value={amount}
+              onChange={(e) => setAmount(Math.max(1, Number(e.target.value) || 0))}
+              className="input w-full mb-3"
+            />
+            <div className="flex gap-2 mb-3">
+              {[21, 100, 500, 1000].map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setAmount(n)}
+                  className="btn-ghost text-xs flex-1"
+                >
+                  {n}
+                </button>
+              ))}
+            </div>
+            <label className="block text-[11px] uppercase tracking-widest text-muted mb-1">comment (optional)</label>
+            <input
+              type="text"
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              placeholder="great post"
+              className="input w-full mb-3"
+            />
+            <button
+              onClick={onZap}
+              disabled={state === 'busy' || state === 'done'}
+              className="btn-bolt w-full"
+            >
+              {state === 'busy' ? 'paying…' : state === 'done' ? 'zapped ⚡' : `Send ${amount} sats`}
+            </button>
+            {err && <p className="text-xs text-red-400 mt-2">{err}</p>}
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
