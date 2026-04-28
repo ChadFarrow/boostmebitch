@@ -85,17 +85,44 @@ The "⚡ BOOST" button at the top-right of `EpisodeList`'s header opens the moda
 2. **Rail priority is NWC over WebLN.** `pickRail()` in `lib/v4v/boost.ts` returns `'nwc'` if a URI is saved, else `'webln'`, else `null`. The modal lets the user override but defaults to this.
 3. **Episode value-block fallback happens server-side.** `app/api/feed/route.ts` does `e.value ?? podcast.value` before returning. Components assume `episode.value` is populated when the channel has one — don't re-implement the fallback in the modal.
 4. **Splits use weights, not percentages.** `splitSats()` floors per-recipient, then dumps the remainder onto the first non-fee recipient. `ValueRecipient.split` is a weight; total weight is the denominator.
-5. **TLV records:** boostagram JSON goes in record `7629169` (Podcasting 2.0 standard); sender pubkey goes in `696969` for clients that read it. Both are constants in `lib/v4v/boost.ts`. Keep the JSON shape compatible with Helipad / Fountain / BoostBot ingestion (see README).
+5. **TLV records:** boostagram JSON goes in record `7629169` (Podcasting 2.0 standard) — that's the only TLV we add for boost metadata. The `sender_id` field already lives inside the JSON; we deliberately do **not** also emit a separate `696969` sender record because that key collides with shared-node sub-account routing (e.g. getalby.com uses `customKey=696969 customValue=<sub-account>`). Per-recipient `customKey`/`customValue` from the value block IS attached to the keysend so payments to shared nodes route to the right sub-account. Keep the JSON shape compatible with Helipad / Fountain / Castamatic ingestion.
+6. **WebLN customRecords are plain JSON, not hex.** WebLN providers (Alby, Mutiny) hex-encode `customRecords` values internally before putting them on the wire. Pre-hexing here causes double-encoding and Helipad can't `JSON.parse` the boostagram. NWC's `pay_keysend` is the opposite — NIP-47 spec requires hex-encoded TLV values. See `tlvHexFor` (NWC) vs `recordsForKeysend` (WebLN) in `lib/v4v/boost.ts` — they look symmetric but the wire formats are genuinely different.
+7. **Note amount is intent, not actual.** `formatContent` and the `amount` tag use `boostagram.value_msat_total` (what the user clicked Send on), not the sum of successful legs. A user who boosts 100 sats and has one leg fail still posts "Boosted 100 sats" — the partial breakdown is visible in the modal and Helipad.
 
 ## Nostr publish shape
 
-`publishBoostNote()` in `lib/nostr/` builds a kind:1 with NIP-73 tags (`i`/`k` pairs for `podcast:guid:…` and `podcast:item:guid:…`), an `r` tag for the feed URL, an `amount` tag in millisats, and `t` tags `boostagram` + `value4value`. The `client` tag uses `boostagram.app_name` (defaults to `BoostMeBitch`). If you change tags, double-check NIP-73 and the boost-aggregator contract — Helipad-style ingestion depends on the existing shape.
+`publishBoostNote()` in `lib/nostr/boost-notes.ts` builds a kind:1 with:
 
-The auto-formatted note body lives in `formatContent()` in the same file. Override per call with `contentOverride`.
+- NIP-73 `i`/`k` tag pairs for `podcast:guid:<feed-guid>` and (when an episode is in scope) `podcast:item:guid:<item-guid>`.
+- `r` tag pointing at the **best public landing page** via `podcastLandingUrl`: prefers `https://pod.link/<itunesId>` (smart deep-link that auto-routes to the user's podcast app), falls back to `https://podcastindex.org/podcast/<feedId>`, then the raw RSS feed URL.
+- `amount` tag in millisats — uses `boostagram.value_msat_total` (intent), not the sum of successful legs.
+- `client` tag — `boostagram.app_name`, defaults to `BoostMeBitch`.
+- `t` tags `boostagram` + `value4value`.
+
+Publish target is `resolvePublishRelays(identity)`: localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Kept to a max of 20 relays.
+
+The auto-formatted note body lives in `formatContent()` in the same file (override per call with `contentOverride`):
+
+```
+⚡ Boost ⚡
+
+[boostagram message, if present]
+
+Boosted N sats → [podcast title]
+📻 [episode title, omitted on show-level boosts]
+
+[pod.link or PI URL]
+```
+
+Same `signAndPublish` helper handles both kind:1 boost notes and kind:30003 favorites, so a third event kind would be ~10 lines.
 
 ## v4v-toolkit swap-out boundary
 
-`lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets / signers. Components import only from these three entry points: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence helpers), `lib/nostr/` (auth + publish). When swapping in `v4v-toolkit`, replace internals here without touching `components/` or `app/`.
+`lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets / signers. Components import only from these three entry points: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence helpers), `lib/nostr/` barrel (auth + publish). When swapping in `v4v-toolkit`, replace internals here without touching `components/` or `app/`.
+
+## Background art and the canvas-bg gotcha
+
+`app/layout.tsx` renders the hero collage (`public/hero.jpg`) as a fixed full-viewport layer behind everything, with a 75% ink overlay and `<Image fill priority />` so it gets AVIF/WebP optimization. The `<html>` element carries `bg-ink` (NOT `<body>`); this matters because a `body` background propagates to the canvas and would paint over the fixed image layer regardless of z-index. If someone moves `bg-ink` back onto `<body>` the art will silently disappear. Same `hero.jpg` doubles as the OG image via `metadata.openGraph.images`.
 
 ## State + persistence
 
@@ -123,6 +150,7 @@ Reusable element classes (`.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.input`, 
 
 ## Conventions worth keeping
 
-- `<img>` over `next/image` for podcast artwork — `next.config.mjs` already allows all HTTPS hosts, but the README documents the choice as intentional (avoiding per-host config). Don't migrate.
+- `<img>` over `next/image` for podcast artwork — `next.config.mjs` already allows all HTTPS hosts, but the README documents the choice as intentional (avoiding per-host config). The hero/OG art at `public/hero.jpg` IS served via `next/image` because it's a known local asset and we want AVIF/WebP for LCP.
 - Native HTML5 `<audio>` plays the enclosure URL directly — no proxy, no transcoding.
-- API routes return `{ error }` JSON with appropriate status codes; clients tend to swallow errors silently (e.g. `lists.tsx` just `.finally(() => setLoading(false))`). When adding new routes, match the shape so a future error UI can render uniformly.
+- API routes return `{ error }` JSON with appropriate status codes via `getErrorMessage(e, fallback)` from `lib/util.ts`; clients swallow errors silently. When adding new routes, match the shape so a future error UI can render uniformly.
+- Inline SVG icons (`components/icons.tsx:BoltIcon`) on yellow buttons instead of `⚡` emoji — the colored emoji is invisible on `bg-bolt`. Use the icon component, not the emoji, for any new bolt-yellow button. Other places (yellow text on dark bg, V4V stamps) keep the emoji because the colored glyph reads fine.
