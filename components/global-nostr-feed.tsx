@@ -3,11 +3,13 @@ import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { fetchAllPodcastNotes, shortNpub, type DiscoveredNote } from '@/lib/nostr';
 import type { Podcast } from '@/lib/types';
 
-// Matches http(s) URLs and bech32 nostr: URIs (nevent/note/npub/nprofile/naddr).
-// The bech32 charset is restricted to nostr-tools' alphabet so we don't grab
-// trailing prose by accident.
-const LINK_RE =
-  /(https?:\/\/[^\s]+|nostr:n(?:event|ote|pub|profile|addr)1[023456789acdefghjklmnpqrstuvwxyz]+)/gi;
+// http(s) URLs only — bech32 nostr: URIs are stripped from the content via
+// stripNostrUris before this runs since they're noise to a non-Nostr-savvy
+// reader and the "view on nostr →" footer link already exposes the source
+// event.
+const LINK_RE = /(https?:\/\/[^\s]+)/gi;
+const NOSTR_URI_RE =
+  /nostr:n(?:event|ote|pub|profile|addr)1[023456789acdefghjklmnpqrstuvwxyz]+/gi;
 
 // Trailing punctuation that's almost always sentence/grammar, not part of the
 // URL — peel it off and render outside the anchor.
@@ -20,22 +22,28 @@ function splitTrailingPunct(token: string): { token: string; trailing: string } 
   return { token, trailing };
 }
 
+// Drop bech32 nostr: URIs from the displayed content, then collapse any blank
+// lines or stranded whitespace they leave behind.
+function stripNostrUris(text: string): string {
+  return text
+    .replace(NOSTR_URI_RE, '')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 function linkify(text: string): ReactNode[] {
   const parts: ReactNode[] = [];
   let cursor = 0;
   let m: RegExpExecArray | null;
-  // Reset because we declared with /g.
   LINK_RE.lastIndex = 0;
   while ((m = LINK_RE.exec(text)) !== null) {
     if (m.index > cursor) parts.push(text.slice(cursor, m.index));
     const { token, trailing } = splitTrailingPunct(m[0]);
-    const href = token.startsWith('nostr:')
-      ? `https://njump.me/${token.slice('nostr:'.length)}`
-      : token;
     parts.push(
       <a
         key={`l-${m.index}`}
-        href={href}
+        href={token}
         target="_blank"
         rel="noopener noreferrer"
         className="text-nostr break-all hover:underline underline-offset-2"
@@ -153,7 +161,7 @@ function NoteCard({
         )}
 
         <p className="text-sm text-bone whitespace-pre-wrap break-words mt-1.5">
-          {linkify(note.content)}
+          {linkify(stripNostrUris(note.content))}
         </p>
         <a
           href={`https://njump.me/${note.nevent}`}
