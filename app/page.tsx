@@ -4,6 +4,7 @@ import { SearchBar } from '@/components/search-bar';
 import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
+import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { useApp } from '@/lib/store';
 
 import type { Podcast } from '@/lib/types';
@@ -85,6 +86,10 @@ export default function Home() {
         ) : (
           <EmptyState />
         )}
+      </section>
+
+      <section className="max-w-7xl mx-auto px-4 pt-12">
+        <GlobalNostrFeed />
       </section>
 
       <Player />

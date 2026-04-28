@@ -19,6 +19,7 @@ export {
 } from './relays';
 
 export {
+  fetchAllPodcastNotes,
   fetchPodcastNotes,
   type DiscoveredNote,
 } from './discover';
