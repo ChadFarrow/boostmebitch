@@ -201,13 +201,8 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
                   {r.fee && <span className="stamp text-muted border-bone/30">fee</span>}
                 </div>
                 <div className="text-[11px] text-muted font-mono break-all">
-                  {r.type} · {addr}
+                  {addr}
                 </div>
-                {r.customKey && r.customValue && (
-                  <div className="text-[11px] text-muted font-mono break-all">
-                    customKey {r.customKey} · customValue {r.customValue}
-                  </div>
-                )}
               </div>
               <div className="text-right flex-shrink-0">
                 <div className="font-display text-sm text-bolt">{r.split}</div>
