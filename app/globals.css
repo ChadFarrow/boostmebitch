@@ -50,10 +50,10 @@ body::before {
            placeholder:text-muted focus:border-bolt focus:outline-none;
   }
   .card {
-    @apply border border-bone/20 bg-ink/40;
+    @apply border border-bone/40 bg-ink/40;
   }
   .hairline {
-    @apply border-t border-bone/20;
+    @apply border-t border-bone/40;
   }
 }
 
