@@ -1,7 +1,54 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { fetchAllPodcastNotes, shortNpub, type DiscoveredNote } from '@/lib/nostr';
 import type { Podcast } from '@/lib/types';
+
+// Matches http(s) URLs and bech32 nostr: URIs (nevent/note/npub/nprofile/naddr).
+// The bech32 charset is restricted to nostr-tools' alphabet so we don't grab
+// trailing prose by accident.
+const LINK_RE =
+  /(https?:\/\/[^\s]+|nostr:n(?:event|ote|pub|profile|addr)1[023456789acdefghjklmnpqrstuvwxyz]+)/gi;
+
+// Trailing punctuation that's almost always sentence/grammar, not part of the
+// URL — peel it off and render outside the anchor.
+function splitTrailingPunct(token: string): { token: string; trailing: string } {
+  let trailing = '';
+  while (token.length > 0 && /[.,;:!?)\]]$/.test(token)) {
+    trailing = token.slice(-1) + trailing;
+    token = token.slice(0, -1);
+  }
+  return { token, trailing };
+}
+
+function linkify(text: string): ReactNode[] {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+  // Reset because we declared with /g.
+  LINK_RE.lastIndex = 0;
+  while ((m = LINK_RE.exec(text)) !== null) {
+    if (m.index > cursor) parts.push(text.slice(cursor, m.index));
+    const { token, trailing } = splitTrailingPunct(m[0]);
+    const href = token.startsWith('nostr:')
+      ? `https://njump.me/${token.slice('nostr:'.length)}`
+      : token;
+    parts.push(
+      <a
+        key={`l-${m.index}`}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-nostr break-all hover:underline underline-offset-2"
+      >
+        {token}
+      </a>,
+    );
+    if (trailing) parts.push(<Fragment key={`t-${m.index}`}>{trailing}</Fragment>);
+    cursor = m.index + m[0].length;
+  }
+  if (cursor < text.length) parts.push(text.slice(cursor));
+  return parts;
+}
 
 function timeAgo(unixSec: number): string {
   const diff = Date.now() / 1000 - unixSec;
@@ -106,7 +153,7 @@ function NoteCard({
         )}
 
         <p className="text-sm text-bone whitespace-pre-wrap break-words mt-1.5">
-          {note.content}
+          {linkify(note.content)}
         </p>
         <a
           href={`https://njump.me/${note.nevent}`}
