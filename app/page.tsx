@@ -4,6 +4,7 @@ import { SearchBar } from '@/components/search-bar';
 import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
+import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { useApp } from '@/lib/store';
 
 import type { Podcast } from '@/lib/types';
@@ -38,7 +39,7 @@ export default function Home() {
 
       {/* Hero */}
       <section className="max-w-7xl mx-auto px-4 pt-10 pb-6">
-        <h2 className="headline text-5xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
+        <h2 className="headline text-4xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
           search<span className="text-bolt">.</span>{' '}
           listen<span className="text-bolt">.</span>{' '}
           <span className="text-bolt animate-bolt">boost</span><span className="text-bone">.</span>
@@ -85,6 +86,10 @@ export default function Home() {
         ) : (
           <EmptyState />
         )}
+      </section>
+
+      <section className="max-w-7xl mx-auto px-4 pt-12">
+        <GlobalNostrFeed />
       </section>
 
       <Player />

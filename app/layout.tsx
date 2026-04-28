@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import Image from 'next/image';
 import './globals.css';
 
@@ -18,6 +18,12 @@ export const metadata: Metadata = {
     description: 'Search, listen, and boost Podcasting 2.0 shows over Lightning.',
     images: ['/hero.jpg'],
   },
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

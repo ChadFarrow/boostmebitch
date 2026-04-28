@@ -5,7 +5,6 @@ import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 import { BoostModal } from './boost-modal';
 import { BoltIcon } from './icons';
-import { PodcastNostrFeed } from './podcast-nostr';
 
 function FavHeart({ podcast }: { podcast: Podcast }) {
   const guid = podcast.podcastGuid;
@@ -262,10 +261,6 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           );
         })}
       </ul>
-
-      {data.podcast.podcastGuid && (
-        <PodcastNostrFeed podcastGuid={data.podcast.podcastGuid} />
-      )}
 
       {showBoostOpen && data.podcast && showHasValue && (
         <BoostModal

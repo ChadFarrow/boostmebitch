@@ -13,6 +13,7 @@ export interface DiscoveredNote {
   amountMsat: number | null;
   client: string | null;
   isBoost: boolean;        // `t:boostagram` tag OR a positive `amount` tag
+  podcastGuid: string | null; // first podcast:guid: ref on the note (the show)
   episodeGuids: string[];  // any podcast:item:guid: refs on the note
   author: ProfileMetadata | null;
 }
@@ -21,6 +22,45 @@ interface FetchOpts {
   relays?: string[];
   /** Cap on raw kind:1 events fetched; default 100. */
   limit?: number;
+}
+
+function buildNote(e: Event, relays: string[], profile: ProfileMetadata | null): DiscoveredNote {
+  const amountTag = e.tags.find((t) => t[0] === 'amount')?.[1];
+  const amountMsat = amountTag ? Number(amountTag) : null;
+  const client = e.tags.find((t) => t[0] === 'client')?.[1] ?? null;
+  // Different apps tag boosts differently: BoostMeBitch and Helipad-style
+  // aggregators emit `t:boostagram`; some clients (Fountain, Wavlake
+  // variants) may omit it but still emit a positive `amount` tag. Treat
+  // either as a boost so the ⚡ stamp shows up consistently.
+  const isBoost =
+    e.tags.some((t) => t[0] === 't' && (t[1] === 'boostagram' || t[1] === 'value4value')) ||
+    (Number.isFinite(amountMsat) && (amountMsat ?? 0) > 0);
+  const podcastGuid =
+    e.tags
+      .find((t) => t[0] === 'i' && t[1]?.startsWith('podcast:guid:'))
+      ?.[1]
+      ?.slice('podcast:guid:'.length) ?? null;
+  const episodeGuids = e.tags
+    .filter((t) => t[0] === 'i' && t[1]?.startsWith('podcast:item:guid:'))
+    .map((t) => t[1].slice('podcast:item:guid:'.length));
+  return {
+    id: e.id,
+    pubkey: e.pubkey,
+    npub: nip19.npubEncode(e.pubkey),
+    nevent: nip19.neventEncode({
+      id: e.id,
+      relays: relays.slice(0, 3),
+      author: e.pubkey,
+    }),
+    createdAt: e.created_at,
+    content: e.content,
+    amountMsat: Number.isFinite(amountMsat) ? amountMsat : null,
+    client,
+    isBoost,
+    podcastGuid,
+    episodeGuids,
+    author: profile,
+  };
 }
 
 /**
@@ -47,51 +87,55 @@ export async function fetchPodcastNotes(
     } catch {
       return [];
     }
-    if (!events.length) return [];
-
-    // Dedupe by id (relays often return overlapping copies) and sort newest first.
-    const byId = new Map<string, Event>();
-    for (const e of events) byId.set(e.id, e);
-    const unique = Array.from(byId.values()).sort(
-      (a, b) => b.created_at - a.created_at,
-    );
-
-    const authors = Array.from(new Set(unique.map((e) => e.pubkey)));
-    const profiles = await fetchProfiles(pool, relays, authors);
-
-    return unique.map((e) => {
-      const amountTag = e.tags.find((t) => t[0] === 'amount')?.[1];
-      const amountMsat = amountTag ? Number(amountTag) : null;
-      const client = e.tags.find((t) => t[0] === 'client')?.[1] ?? null;
-      // Different apps tag boosts differently: BoostMeBitch and Helipad-style
-      // aggregators emit `t:boostagram`; some clients (Fountain, Wavlake
-      // variants) may omit it but still emit a positive `amount` tag. Treat
-      // either as a boost so the ⚡ stamp shows up consistently.
-      const isBoost =
-        e.tags.some((t) => t[0] === 't' && (t[1] === 'boostagram' || t[1] === 'value4value')) ||
-        (Number.isFinite(amountMsat) && (amountMsat ?? 0) > 0);
-      const episodeGuids = e.tags
-        .filter((t) => t[0] === 'i' && t[1]?.startsWith('podcast:item:guid:'))
-        .map((t) => t[1].slice('podcast:item:guid:'.length));
-      return {
-        id: e.id,
-        pubkey: e.pubkey,
-        npub: nip19.npubEncode(e.pubkey),
-        nevent: nip19.neventEncode({
-          id: e.id,
-          relays: relays.slice(0, 3),
-          author: e.pubkey,
-        }),
-        createdAt: e.created_at,
-        content: e.content,
-        amountMsat: Number.isFinite(amountMsat) ? amountMsat : null,
-        client,
-        isBoost,
-        episodeGuids,
-        author: profiles.get(e.pubkey) ?? null,
-      };
-    });
+    return await assembleNotes(pool, relays, events);
   });
+}
+
+/**
+ * Fetch the global stream of every kind:1 note tagged with NIP-73 podcast
+ * identifiers across ALL podcasts. Filters by `#k: ['podcast:guid',
+ * 'podcast:item:guid']` so any client that follows the Podcasting 2.0 NIP-73
+ * convention is included regardless of which show.
+ */
+export async function fetchAllPodcastNotes(
+  opts: FetchOpts = {},
+): Promise<DiscoveredNote[]> {
+  const relays = opts.relays ?? DISCOVERY_RELAYS;
+  const limit = opts.limit ?? 100;
+
+  return withPool(relays, async (pool) => {
+    let events: Event[] = [];
+    try {
+      events = await pool.querySync(relays, {
+        kinds: [1],
+        '#k': ['podcast:guid', 'podcast:item:guid'],
+        limit,
+      });
+    } catch {
+      return [];
+    }
+    return await assembleNotes(pool, relays, events);
+  });
+}
+
+async function assembleNotes(
+  pool: import('nostr-tools').SimplePool,
+  relays: string[],
+  events: Event[],
+): Promise<DiscoveredNote[]> {
+  if (!events.length) return [];
+
+  // Dedupe by id (relays often return overlapping copies) and sort newest first.
+  const byId = new Map<string, Event>();
+  for (const e of events) byId.set(e.id, e);
+  const unique = Array.from(byId.values()).sort(
+    (a, b) => b.created_at - a.created_at,
+  );
+
+  const authors = Array.from(new Set(unique.map((e) => e.pubkey)));
+  const profiles = await fetchProfiles(pool, relays, authors);
+
+  return unique.map((e) => buildNote(e, relays, profiles.get(e.pubkey) ?? null));
 }
 
 async function fetchProfiles(
