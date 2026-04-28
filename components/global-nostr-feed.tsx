@@ -1,26 +1,42 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { fetchAllPodcastNotes, type DiscoveredNote } from '@/lib/nostr';
+import {
+  fetchAllPodcastNotes,
+  useNostrFeed,
+  type DiscoveredNote,
+} from '@/lib/nostr';
+import { storage } from '@/lib/storage';
 import type { Podcast } from '@/lib/types';
+import { FeedSection } from './feed-section';
 import { NoteCard } from './nostr-note-card';
 
-// Module-level cache so repeat references to the same podcast don't fan out
-// into duplicate /api/by-guid round-trips while the user is on the page.
-const podcastCache = new Map<string, Podcast | null>();
+// In-memory mirror of storage.podcastMeta — avoids re-parsing localStorage on
+// every NoteCard render within the same page session.
+const podcastMem = new Map<string, Podcast | null>();
 
 async function resolvePodcast(guid: string): Promise<Podcast | null> {
-  if (podcastCache.has(guid)) return podcastCache.get(guid) ?? null;
+  if (podcastMem.has(guid)) return podcastMem.get(guid) ?? null;
+  const cached = storage.podcastMeta.get(guid);
+  if (cached) {
+    podcastMem.set(guid, cached);
+    return cached;
+  }
   try {
     const r = await fetch(`/api/by-guid?guid=${encodeURIComponent(guid)}`);
     if (!r.ok) {
-      podcastCache.set(guid, null);
+      podcastMem.set(guid, null);
       return null;
     }
     const { podcast } = (await r.json()) as { podcast: Podcast };
-    podcastCache.set(guid, podcast ?? null);
-    return podcast ?? null;
+    if (podcast) {
+      podcastMem.set(guid, podcast);
+      storage.podcastMeta.set(guid, podcast);
+      return podcast;
+    }
+    podcastMem.set(guid, null);
+    return null;
   } catch {
-    podcastCache.set(guid, null);
+    podcastMem.set(guid, null);
     return null;
   }
 }
@@ -32,76 +48,53 @@ async function resolvePodcast(guid: string): Promise<Podcast | null> {
  * context.
  */
 export function GlobalNostrFeed() {
-  const [notes, setNotes] = useState<DiscoveredNote[] | null>(null);
+  const { notes, loading, err, refresh } = useNostrFeed({
+    cacheKey: 'global',
+    fetcher: fetchAllPodcastNotes,
+  });
   const [podcasts, setPodcasts] = useState<Record<string, Podcast | null>>({});
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
-  async function load() {
-    setLoading(true);
-    setErr(null);
-    try {
-      const result = await fetchAllPodcastNotes();
-      setNotes(result);
-      // Resolve unique podcast guids in the background; UI fills in as each
-      // resolution lands.
-      const guids = Array.from(
-        new Set(result.map((n) => n.podcastGuid).filter((g): g is string => !!g)),
-      );
-      for (const guid of guids) {
-        resolvePodcast(guid).then((p) => {
-          setPodcasts((prev) => ({ ...prev, [guid]: p }));
-        });
-      }
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'failed to load nostr feed');
-    } finally {
-      setLoading(false);
-    }
-  }
-
+  // Resolve podcast metadata for every unique guid that appears in `notes` —
+  // covers both the SWR cache paint and every refresh.
   useEffect(() => {
-    load();
-  }, []);
+    if (!notes) return;
+    const guids = Array.from(
+      new Set(notes.map((n) => n.podcastGuid).filter((g): g is string => !!g)),
+    );
+    for (const guid of guids) {
+      if (guid in podcasts) continue;
+      resolvePodcast(guid).then((p) => {
+        setPodcasts((prev) => ({ ...prev, [guid]: p }));
+      });
+    }
+  }, [notes, podcasts]);
 
   return (
-    <section>
-      <header className="flex items-center justify-between border-b border-bone/15 pb-2 mb-4">
+    <FeedSection
+      heading={
         <h2 className="font-display text-2xl">
           <span className="text-nostr">#</span> Global boost feed
         </h2>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="btn-ghost text-xs"
-          title="Re-query relays"
-        >
-          {loading ? 'loading…' : 'refresh'}
-        </button>
-      </header>
-      <p className="text-xs text-muted mb-4">
-        Every public Nostr post tagged with a Podcasting 2.0 <code>podcast:guid</code> identifier —
-        boosts, comments, and chatter from any client following the convention (Fountain, Wavlake,
-        BoostMeBitch, etc.).
-      </p>
-      {err && <p className="text-sm text-red-400">{err}</p>}
-      {!err && notes === null && loading && (
-        <p className="text-sm text-muted">searching nostr relays…</p>
+      }
+      description={
+        <p className="text-xs text-muted mb-4">
+          Every public Nostr post tagged with a Podcasting 2.0 <code>podcast:guid</code> identifier
+          — boosts, comments, and chatter from any client following the convention (Fountain,
+          Wavlake, BoostMeBitch, etc.).
+        </p>
+      }
+      notes={notes}
+      loading={loading}
+      err={err}
+      emptyMessage="no nostr activity surfaced from these relays yet."
+      onRefresh={refresh}
+      renderNote={(n: DiscoveredNote) => (
+        <NoteCard
+          key={n.id}
+          note={n}
+          podcast={n.podcastGuid ? podcasts[n.podcastGuid] ?? null : null}
+        />
       )}
-      {!err && notes !== null && notes.length === 0 && (
-        <p className="text-sm text-muted">no nostr activity surfaced from these relays yet.</p>
-      )}
-      {!err && notes !== null && notes.length > 0 && (
-        <div className="space-y-2">
-          {notes.map((n) => (
-            <NoteCard
-              key={n.id}
-              note={n}
-              podcast={n.podcastGuid ? podcasts[n.podcastGuid] ?? null : null}
-            />
-          ))}
-        </div>
-      )}
-    </section>
+    />
   );
 }
