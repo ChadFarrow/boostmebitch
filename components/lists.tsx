@@ -4,6 +4,7 @@ import type { Episode, Podcast, FavoritePodcast } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 import { BoostModal } from './boost-modal';
+import { BoltIcon } from './icons';
 
 function FavHeart({ podcast }: { podcast: Podcast }) {
   const guid = podcast.podcastGuid;
@@ -210,7 +211,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
               className="btn-bolt"
               title="Boost the show"
             >
-              ⚡ BOOST
+              <BoltIcon /> BOOST
             </button>
           )}
         </div>

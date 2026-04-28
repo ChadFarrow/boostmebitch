@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { BoostModal } from './boost-modal';
+import { BoltIcon } from './icons';
 
 function fmt(t: number) {
   if (!isFinite(t)) return '0:00';
@@ -76,7 +77,7 @@ export function Player() {
               className="btn-bolt disabled:opacity-40 disabled:cursor-not-allowed"
               title={hasValue ? 'Send a boost' : 'Episode has no value block'}
             >
-              ⚡ BOOST
+              <BoltIcon /> BOOST
             </button>
           </div>
         </div>

@@ -6,6 +6,7 @@ import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/l
 import { hasNwc, saveNwcUri, clearNwcUri } from '@/lib/v4v/nwc';
 import { hasWebln as hasWeblnFn } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays, type PublishedNote } from '@/lib/nostr';
+import { BoltIcon } from './icons';
 
 interface Props {
   podcast: Podcast;
@@ -343,7 +344,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           <button onClick={onClose} className="btn-ghost">{paymentDone ? 'Close' : 'Cancel'}</button>
           {!paymentDone && (
             <button onClick={go} disabled={!rail || running} className="btn-bolt disabled:opacity-40">
-              {running ? '⚡ sending…' : `⚡ Send ${sats} sat`}
+              <BoltIcon />
+              {running ? 'sending…' : `Send ${sats} sat`}
             </button>
           )}
         </div>
