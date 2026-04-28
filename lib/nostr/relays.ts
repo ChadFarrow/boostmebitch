@@ -9,6 +9,15 @@ export const DEFAULT_RELAYS = [
   'wss://relay.nostr.band',
 ];
 
+// Read-only relay set used for discovering other users' notes (kind:1) tagged
+// with NIP-73 podcast identifiers. Fountain's relay aggregates a lot of
+// podcast-tagged activity that doesn't always make it to the general-purpose
+// relays in DEFAULT_RELAYS, so it gets added here.
+export const DISCOVERY_RELAYS = [
+  ...DEFAULT_RELAYS,
+  'wss://relay.fountain.fm',
+];
+
 // NIP-65 relay list (kind:10002). We only consume the write side — we never
 // read events from arbitrary relays based on someone's read list, so the
 // parser drops it.
