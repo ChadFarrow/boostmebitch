@@ -11,18 +11,9 @@ import {
   type NostrIdentity,
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
+import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import type { FavoritePodcast, Podcast } from '@/lib/types';
-
-function loadCachedFavorites(npub: string): Record<string, FavoritePodcast> {
-  if (typeof window === 'undefined') return {};
-  try {
-    const raw = localStorage.getItem(`bmb:favorites:${npub}`);
-    return raw ? (JSON.parse(raw) as Record<string, FavoritePodcast>) : {};
-  } catch {
-    return {};
-  }
-}
 
 async function resolveGuidToFavorite(guid: string): Promise<FavoritePodcast | null> {
   try {
@@ -44,89 +35,89 @@ async function resolveGuidToFavorite(guid: string): Promise<FavoritePodcast | nu
   }
 }
 
+/**
+ * Reconcile the user's local favorites cache with their NIP-51 kind:30003
+ * event. Last-write-wins on event.created_at vs the newest cache.addedAt.
+ * Resolves unknown guids via /api/by-guid in the background.
+ */
+async function hydrateFavorites(identity: NostrIdentity): Promise<void> {
+  const setFavorites = useApp.getState().setFavorites;
+  const cached = storage.favorites.get(identity.npub);
+  const cachedGuids = Object.keys(cached);
+  const favEvent = await fetchFavoriteGuids(identity.pubkey);
+
+  if (!favEvent) {
+    // No Nostr event yet; if we have local favorites, push them up.
+    const local = useApp.getState().favorites;
+    if (Object.keys(local).length > 0) {
+      setFavorites(local);
+      schedulePublishFavorites(
+        () => Object.keys(useApp.getState().favorites),
+        resolvePublishRelays(identity),
+      );
+    }
+    return;
+  }
+
+  // localStorage doesn't carry an event timestamp; the most recent `addedAt`
+  // in the cache is a reasonable proxy.
+  const localNewest = cachedGuids.reduce(
+    (max, g) => Math.max(max, cached[g].addedAt ?? 0),
+    0,
+  );
+  const nostrNewer = favEvent.updatedAt * 1000 >= localNewest;
+  const targetGuids = nostrNewer ? favEvent.guids : cachedGuids;
+
+  // Fill from cache first (cheap), then resolve unknown guids via PI.
+  const next: Record<string, FavoritePodcast> = {};
+  const unresolved: string[] = [];
+  for (const guid of targetGuids) {
+    if (cached[guid]) next[guid] = cached[guid];
+    else unresolved.push(guid);
+  }
+  setFavorites(next);
+
+  if (unresolved.length > 0) {
+    const resolved = await Promise.all(unresolved.map(resolveGuidToFavorite));
+    const merged = { ...useApp.getState().favorites };
+    for (const fav of resolved) {
+      if (fav) merged[fav.podcastGuid] = fav;
+    }
+    setFavorites(merged);
+  }
+
+  if (!nostrNewer && cachedGuids.length > 0) {
+    schedulePublishFavorites(
+      () => Object.keys(useApp.getState().favorites),
+      resolvePublishRelays(identity),
+    );
+  }
+}
+
 export function NostrAuth() {
   const identity = useApp((s) => s.identity);
   const setIdentity = useApp((s) => s.setIdentity);
   const setFavorites = useApp((s) => s.setFavorites);
-  const favorites = useApp((s) => s.favorites);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function loadProfile(id: NostrIdentity) {
     try {
-      const [profile, relayList, favEvent] = await Promise.all([
+      const [profile, relayList] = await Promise.all([
         fetchProfile(id.pubkey),
         fetchRelayList(id.pubkey),
-        fetchFavoriteGuids(id.pubkey),
       ]);
       const enriched: NostrIdentity = { ...id };
       if (profile) enriched.profile = profile;
       if (relayList?.write?.length) enriched.writeRelays = relayList.write;
       setIdentity(enriched);
-
-      const cached = loadCachedFavorites(id.npub);
-      const cachedGuids = Object.keys(cached);
-
-      if (!favEvent) {
-        // No Nostr event yet; if we have local favorites, push them up.
-        const local = useApp.getState().favorites;
-        if (Object.keys(local).length > 0) {
-          // Persist under new npub key in case user just signed in
-          setFavorites(local);
-          schedulePublishFavorites(
-            () => Object.keys(useApp.getState().favorites),
-            resolvePublishRelays(enriched),
-          );
-        }
-        return;
-      }
-
-      // We have a Nostr event. Decide whether it or the local cache is newer.
-      // localStorage doesn't carry an event timestamp; the most recent
-      // `addedAt` in the cache is a reasonable proxy.
-      const localNewest = cachedGuids.reduce(
-        (max, g) => Math.max(max, cached[g].addedAt ?? 0),
-        0,
-      );
-      const nostrNewer = favEvent.updatedAt * 1000 >= localNewest;
-
-      const targetGuids = nostrNewer ? favEvent.guids : cachedGuids;
-      const next: Record<string, FavoritePodcast> = {};
-
-      // Fill from cache first (cheap), then resolve unknown guids via PI.
-      const unresolved: string[] = [];
-      for (const guid of targetGuids) {
-        if (cached[guid]) {
-          next[guid] = cached[guid];
-        } else {
-          unresolved.push(guid);
-        }
-      }
-      setFavorites(next);
-
-      if (unresolved.length > 0) {
-        const resolved = await Promise.all(unresolved.map(resolveGuidToFavorite));
-        const merged = { ...useApp.getState().favorites };
-        for (const fav of resolved) {
-          if (fav) merged[fav.podcastGuid] = fav;
-        }
-        setFavorites(merged);
-      }
-
-      // If local was newer (we kept localGuids above), push the local set up
-      // to Nostr so the relay event catches up.
-      if (!nostrNewer && cachedGuids.length > 0) {
-        schedulePublishFavorites(
-          () => Object.keys(useApp.getState().favorites),
-          resolvePublishRelays(enriched),
-        );
-      }
+      await hydrateFavorites(enriched);
     } catch { /* ignore — keep bare identity */ }
   }
 
   useEffect(() => {
     // Auto-sign-in if extension is already present and previously approved
-    const stored = localStorage.getItem('bmb:npub');
+    const stored = storage.npub.get();
     if (stored && !identity && typeof window !== 'undefined' && window.nostr) {
       loginWithExtension()
         .then((id) => { setIdentity(id); loadProfile(id); })
@@ -139,7 +130,7 @@ export function NostrAuth() {
     try {
       const id = await loginWithExtension();
       setIdentity(id);
-      localStorage.setItem('bmb:npub', id.npub);
+      storage.npub.set(id.npub);
       loadProfile(id);
     } catch (e) {
       setErr(getErrorMessage(e, 'sign-in failed'));
@@ -149,7 +140,7 @@ export function NostrAuth() {
   function signout() {
     setIdentity(null);
     setFavorites({});
-    localStorage.removeItem('bmb:npub');
+    storage.npub.clear();
   }
 
   if (identity) {

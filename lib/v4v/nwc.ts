@@ -2,23 +2,13 @@
 // When v4v-toolkit ships its own NWC client, swap this file's imports.
 
 import { nwc } from '@getalby/sdk';
+import { storage } from '../storage';
 
-const STORAGE_KEY = 'bmb:nwc_uri';
-
-export function saveNwcUri(uri: string) {
-  localStorage.setItem(STORAGE_KEY, uri);
-}
-export function loadNwcUri(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(STORAGE_KEY);
-}
-export function clearNwcUri() {
-  localStorage.removeItem(STORAGE_KEY);
-}
-
-export function hasNwc(): boolean {
-  return !!loadNwcUri();
-}
+// Re-export the URI accessors so existing call sites keep their imports.
+export const saveNwcUri = (uri: string) => storage.nwcUri.set(uri);
+export const loadNwcUri = () => storage.nwcUri.get();
+export const clearNwcUri = () => storage.nwcUri.clear();
+export const hasNwc = () => storage.nwcUri.has();
 
 function client() {
   const uri = loadNwcUri();

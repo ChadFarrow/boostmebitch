@@ -3,6 +3,7 @@
 
 import { nip19, SimplePool, type Event, type EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, Podcast, BoostResult } from './types';
+import { storage } from './storage';
 
 declare global {
   interface Window {
@@ -67,8 +68,6 @@ export const DEFAULT_RELAYS = [
   'wss://nos.lol',
   'wss://relay.nostr.band',
 ];
-
-const RELAYS_KEY = 'bmb:relays';
 
 // ── Pool lifecycle helper ────────────────────────────────────────────────────
 // Wraps `new SimplePool()` + `pool.close()` so callers can't forget the
@@ -148,15 +147,8 @@ export async function fetchRelayList(
  * Capped at 20 to keep publish latency bounded.
  */
 export function resolvePublishRelays(identity: NostrIdentity | null): string[] {
-  if (typeof window !== 'undefined') {
-    const raw = localStorage.getItem(RELAYS_KEY);
-    if (raw) {
-      try {
-        const arr = JSON.parse(raw);
-        if (Array.isArray(arr) && arr.length) return arr.slice(0, 20);
-      } catch { /* fall through */ }
-    }
-  }
+  const override = storage.relays.get();
+  if (override) return override.slice(0, 20);
   if (identity?.writeRelays?.length) return identity.writeRelays.slice(0, 20);
   return DEFAULT_RELAYS;
 }

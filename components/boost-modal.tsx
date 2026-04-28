@@ -7,6 +7,7 @@ import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/l
 import { hasNwc, saveNwcUri, clearNwcUri } from '@/lib/v4v/nwc';
 import { hasWebln as hasWeblnFn } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays, type PublishedNote } from '@/lib/nostr';
+import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { BoltIcon } from './icons';
 
@@ -51,7 +52,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
   const relaySource: 'override' | 'nip65' | 'default' =
-    typeof window !== 'undefined' && localStorage.getItem('bmb:relays')
+    storage.relays.isOverridden()
       ? 'override'
       : identity?.writeRelays?.length
         ? 'nip65'
@@ -60,9 +61,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   useEffect(() => {
     setRail(pickRail());
     setName((current) => {
-      if (current) return current;                                  // preserve typing
-      const stored = localStorage.getItem('bmb:sender_name');
-      if (stored) return stored;                                    // saved override
+      if (current) return current;                              // preserve typing
+      const stored = storage.senderName.get();
+      if (stored) return stored;                                // saved override
       return identity?.profile?.display_name
           || identity?.profile?.name
           || '';
@@ -86,7 +87,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
   async function go() {
     if (!rail) return;
-    if (name) localStorage.setItem('bmb:sender_name', name);
+    if (name) storage.senderName.set(name);
 
     const boostagram: Boostagram = {
       app_name: 'BoostMeBitch',
