@@ -186,6 +186,10 @@ interface PublishArgs {
   contentOverride?: string;
 }
 
+function podcastIndexUrl(podcast: Podcast): string | null {
+  return podcast.id ? `https://podcastindex.org/podcast/${podcast.id}` : null;
+}
+
 function formatContent(args: PublishArgs): string {
   const { podcast, episode, boostagram } = args;
   const totalSats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
@@ -196,7 +200,8 @@ function formatContent(args: PublishArgs): string {
   }
   lines.push(`Boosted ${totalSats} sats → ${podcast.title}`);
   if (episode?.title) lines.push(`📻 ${episode.title}`);
-  if (podcast.url) lines.push('', podcast.url);
+  const link = podcastIndexUrl(podcast) ?? podcast.url;
+  if (link) lines.push('', link);
   return lines.join('\n');
 }
 
@@ -223,7 +228,8 @@ export async function publishBoostNote(
     tags.push(['i', `podcast:item:guid:${episode.guid}`]);
     tags.push(['k', 'podcast:item:guid']);
   }
-  if (podcast.url) tags.push(['r', podcast.url]);
+  const linkUrl = podcastIndexUrl(podcast) ?? podcast.url;
+  if (linkUrl) tags.push(['r', linkUrl]);
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
   tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);
   tags.push(['t', 'boostagram']);
