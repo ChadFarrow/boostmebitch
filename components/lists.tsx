@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, FavoritePodcast } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
@@ -176,6 +176,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   });
   const [loading, setLoading] = useState(false);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
   const current = useApp((s) => s.current);
 
@@ -186,22 +187,28 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
       .then((r) => r.json())
       .then((d) => setData({ podcast: d.podcast, episodes: d.episodes }))
       .finally(() => setLoading(false));
+    // Below the lg: breakpoint the search aside sits above this panel and
+    // takes most of the viewport, so a tap on a result wouldn't visibly move
+    // anything without this nudge.
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
   }, [feedId]);
 
   if (!feedId) {
     return (
-      <div className="text-muted text-sm py-12 text-center px-4 border border-dashed border-bone/15">
+      <div ref={containerRef} className="text-muted text-sm py-12 text-center px-4 border border-dashed border-bone/15">
         select a podcast on the left to see episodes
       </div>
     );
   }
-  if (loading) return <div className="text-muted text-sm py-8">loading episodes…</div>;
-  if (!data.podcast) return <div className="text-muted text-sm py-8">not found</div>;
+  if (loading) return <div ref={containerRef} className="text-muted text-sm py-8">loading episodes…</div>;
+  if (!data.podcast) return <div ref={containerRef} className="text-muted text-sm py-8">not found</div>;
 
   const showHasValue = !!data.podcast.value && data.podcast.value.recipients?.length > 0;
 
   return (
-    <div>
+    <div ref={containerRef}>
       <header className="flex gap-4 pb-4 border-b border-bone/15 items-start">
         {data.podcast.image && (
           // eslint-disable-next-line @next/next/no-img-element
