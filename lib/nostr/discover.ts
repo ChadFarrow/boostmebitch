@@ -57,15 +57,49 @@ function parseQuoteRefs(e: Event): { ids: string[]; relayHints: string[] } {
   return { ids: [...ids], relayHints: [...relays] };
 }
 
-// Returns msat amount from a kind:9735 zap receipt, preferring the explicit
-// `amount` tag. NIP-57 says receipts SHOULD include it; if a client omits it
-// the bolt11 invoice carries the amount but parsing that is heavier and we
-// can add it later if real-world events need it.
+// Returns msat amount from a kind:9735 zap receipt. NIP-57 says receipts
+// SHOULD include an `amount` tag and MUST include a `bolt11` tag; many
+// implementations (Fountain among them) skip the explicit `amount` and
+// only ship the invoice. Read `amount` first, fall back to parsing the
+// invoice HRP.
 function zapReceiptAmountMsat(e: Event): number | null {
   if (e.kind !== 9735) return null;
-  const tag = e.tags.find((t) => t[0] === 'amount')?.[1];
-  const n = tag ? Number(tag) : NaN;
-  return Number.isFinite(n) && n > 0 ? n : null;
+  const amountTag = e.tags.find((t) => t[0] === 'amount')?.[1];
+  const fromTag = amountTag ? Number(amountTag) : NaN;
+  if (Number.isFinite(fromTag) && fromTag > 0) return fromTag;
+  const bolt11 = e.tags.find((t) => t[0] === 'bolt11')?.[1];
+  if (typeof bolt11 === 'string' && bolt11.length > 0) {
+    const fromInvoice = bolt11AmountMsat(bolt11);
+    if (fromInvoice !== null) return fromInvoice;
+  }
+  return null;
+}
+
+// Parse the HRP of a bolt11 invoice and return msat. Format:
+// `ln<chain><amount?><multiplier?>1<data>`. Multipliers convert to BTC,
+// then to msat (1 BTC = 1e11 msat). Returns null if the invoice has no
+// embedded amount or doesn't parse — many invoices are amountless.
+function bolt11AmountMsat(invoice: string): number | null {
+  const lower = invoice.toLowerCase();
+  const sep = lower.lastIndexOf('1');
+  if (sep < 4) return null;
+  const hrp = lower.slice(0, sep);
+  // Longest-match chain prefixes first so `bcrt` doesn't get truncated to `bc`.
+  const m = /^ln(?:bcrt|tbs|bc|tb|sb)(\d+)([munp]?)$/.exec(hrp);
+  if (!m) return null;
+  const digits = Number(m[1]);
+  if (!Number.isFinite(digits) || digits <= 0) return null;
+  const factors: Record<string, number> = {
+    '': 1e11, // BTC
+    m: 1e8, // milli-BTC
+    u: 1e5, // micro-BTC
+    n: 1e2, // nano-BTC (1 sat = 1000 msat = 10n)
+    p: 0.1, // pico-BTC
+  };
+  const factor = factors[m[2] ?? ''];
+  if (factor === undefined) return null;
+  const msat = Math.round(digits * factor);
+  return msat > 0 ? msat : null;
 }
 
 function buildNote(
