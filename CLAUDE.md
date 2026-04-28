@@ -30,7 +30,7 @@ Path alias: `@/*` maps to the repo root (`tsconfig.json` `baseUrl: "."`). Import
 The Podcast Index credentials (`PODCAST_INDEX_KEY` / `PODCAST_INDEX_SECRET`) must never reach the browser. Enforced by file conventions, not bundler config:
 
 - **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`, hits Podcast Index). Imported only by `app/api/search/route.ts` and `app/api/feed/route.ts`. Never import it from anything in `components/` or from `app/page.tsx`.
-- **Browser-only:** `lib/store.ts` (Zustand, `'use client'`), `lib/v4v/nwc.ts` / `webln.ts` / `lnaddr.ts`, `lib/nostr.ts` — they all touch `window.*` or `localStorage`. SSR guards exist (`typeof window === 'undefined'`) but assume client context.
+- **Browser-only:** `lib/store.ts` (Zustand, `'use client'`), `lib/v4v/nwc.ts` / `webln.ts` / `lnaddr.ts`, `lib/nostr/`, `lib/storage.ts` — they all touch `window.*` or `localStorage`. SSR guards exist (`typeof window === 'undefined'`) but assume client context.
 - **Isomorphic:** `lib/types.ts` (pure types), `lib/v4v/boost.ts` (orchestration logic; pulled in by client code).
 
 Components fetch via the local API routes (`fetch('/api/feed?id=…')`) — they never call Podcast Index directly.
@@ -45,7 +45,7 @@ Components fetch via the local API routes (`fetch('/api/feed?id=…')`) — they
 
 All three queries run against `DEFAULT_RELAYS`. If a user has none of those events on those relays, we fall back to the npub-only header, default publish set, and empty favorites respectively. We do NOT fetch contacts (kind:3), DMs, reactions, or anything else — the only NIP-07 permissions ever requested are `getPublicKey` (login) and `signEvent` (each boost or favorites mutation).
 
-`resolvePublishRelays(identity)` in `lib/nostr.ts` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded.
+`resolvePublishRelays(identity)` in `lib/nostr/` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded.
 
 ## Favorites (NIP-51 kind:30003)
 
@@ -79,7 +79,7 @@ The "⚡ BOOST" button at the top-right of `EpisodeList`'s header opens the moda
 
 ## Boost flow invariants
 
-`components/boost-modal.tsx` orchestrates the user flow; `lib/v4v/boost.ts` is the engine. A few rules are load-bearing:
+`components/boost-modal/index.tsx` orchestrates the user flow (state + `go()`), with render-only slice components in the same folder; `lib/v4v/boost.ts` is the engine. A few rules are load-bearing:
 
 1. **Lightning first, then Nostr.** `publishBoostNote` only fires after `sendBoost` returns *and* at least one recipient succeeded (`collected.some(r => r.ok)`). This prevents false "I boosted" notes when payments all fail. Don't reorder.
 2. **Rail priority is NWC over WebLN.** `pickRail()` in `lib/v4v/boost.ts` returns `'nwc'` if a URI is saved, else `'webln'`, else `null`. The modal lets the user override but defaults to this.
@@ -89,26 +89,27 @@ The "⚡ BOOST" button at the top-right of `EpisodeList`'s header opens the moda
 
 ## Nostr publish shape
 
-`publishBoostNote()` in `lib/nostr.ts` builds a kind:1 with NIP-73 tags (`i`/`k` pairs for `podcast:guid:…` and `podcast:item:guid:…`), an `r` tag for the feed URL, an `amount` tag in millisats, and `t` tags `boostagram` + `value4value`. The `client` tag uses `boostagram.app_name` (defaults to `BoostMeBitch`). If you change tags, double-check NIP-73 and the boost-aggregator contract — Helipad-style ingestion depends on the existing shape.
+`publishBoostNote()` in `lib/nostr/` builds a kind:1 with NIP-73 tags (`i`/`k` pairs for `podcast:guid:…` and `podcast:item:guid:…`), an `r` tag for the feed URL, an `amount` tag in millisats, and `t` tags `boostagram` + `value4value`. The `client` tag uses `boostagram.app_name` (defaults to `BoostMeBitch`). If you change tags, double-check NIP-73 and the boost-aggregator contract — Helipad-style ingestion depends on the existing shape.
 
 The auto-formatted note body lives in `formatContent()` in the same file. Override per call with `contentOverride`.
 
 ## v4v-toolkit swap-out boundary
 
-`lib/v4v/*` and `lib/nostr.ts` are intentionally the only files that talk to wallets / signers. Components import only from these three entry points: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence helpers), `lib/nostr.ts` (auth + publish). When swapping in `v4v-toolkit`, replace internals here without touching `components/` or `app/`.
+`lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets / signers. Components import only from these three entry points: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence helpers), `lib/nostr/` (auth + publish). When swapping in `v4v-toolkit`, replace internals here without touching `components/` or `app/`.
 
 ## State + persistence
 
 Zustand store (`lib/store.ts`) holds: `identity`, `current` (episode + podcast), `isPlaying`, `positionSec`. No persistence — state is in-memory only.
 
-Everything else lives in `localStorage` on the device and is never sent server-side:
+Everything else lives in `localStorage` on the device and is never sent server-side. **All `bmb:*` keys are accessed through typed helpers in `lib/storage.ts`** — don't call `localStorage.getItem`/`setItem` directly anywhere else.
 
-- `bmb:nwc_uri` — NWC URI (`saveNwcUri`/`loadNwcUri` in `lib/v4v/nwc.ts`)
-- `bmb:relays` — JSON array of relay URLs; falls back to `DEFAULT_RELAYS` (`lib/nostr.ts`)
-- `bmb:sender_name` — last "From" name typed into the boost modal
-- `bmb:npub` — sentinel for silent re-login on page load (`components/nostr-auth.tsx`)
+- `bmb:nwc_uri` — NWC URI (`storage.nwcUri`); `lib/v4v/nwc.ts` re-exports save/load/clear/has wrappers.
+- `bmb:relays` — JSON array, manual publish-relay override (`storage.relays`); when absent, `resolvePublishRelays` falls back to NIP-65 then `DEFAULT_RELAYS`.
+- `bmb:sender_name` — last "From" name typed into the boost modal (`storage.senderName`).
+- `bmb:npub` — sentinel for silent re-login on page load (`storage.npub`).
+- `bmb:favorites:<npub>` / `bmb:favorites:guest` — per-identity favorites cache (`storage.favorites.get(npub) / .set(npub, …)`).
 
-If you add another persisted field, follow the `bmb:*` prefix.
+If you add another persisted field, add a typed accessor to `lib/storage.ts` and follow the `bmb:*` prefix.
 
 ## Styling tokens
 
