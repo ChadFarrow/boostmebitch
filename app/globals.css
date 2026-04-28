@@ -108,3 +108,13 @@ input[type='range'].seek::-moz-range-thumb {
 ::-webkit-scrollbar-track { background: #0a0a08; }
 ::-webkit-scrollbar-thumb { background: #1f1d18; }
 ::-webkit-scrollbar-thumb:hover { background: #2a271f; }
+
+/* iOS Safari auto-zooms any focused input/textarea/select with font-size <
+   16px and doesn't zoom back out on blur, leaving the whole page stuck at
+   2x. The design uses text-sm (14px) on inputs, so force a 16px floor on
+   touch devices only — desktop visuals are untouched. */
+@media (hover: none) and (pointer: coarse) {
+  input, textarea, select {
+    font-size: 16px;
+  }
+}
