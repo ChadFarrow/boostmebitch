@@ -44,6 +44,10 @@ body::before {
     @apply inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-mono uppercase tracking-wider
            border border-bolt bg-bolt text-ink transition
            hover:bg-bone hover:border-bone active:translate-y-px;
+    /* Force the ⚡ emoji to render as a monochrome glyph that inherits
+       text-ink, otherwise the yellow Apple/Win bolt is invisible on the
+       yellow button background. */
+    font-variant-emoji: text;
   }
   .input {
     @apply w-full bg-transparent border border-bone/30 px-3 py-2 font-mono text-sm
