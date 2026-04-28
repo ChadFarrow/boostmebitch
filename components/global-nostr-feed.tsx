@@ -1,8 +1,13 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { fetchAllPodcastNotes, type DiscoveredNote } from '@/lib/nostr';
+import {
+  fetchAllPodcastNotes,
+  useNostrFeed,
+  type DiscoveredNote,
+} from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import type { Podcast } from '@/lib/types';
+import { FeedSection } from './feed-section';
 import { NoteCard } from './nostr-note-card';
 
 // In-memory mirror of storage.podcastMeta — avoids re-parsing localStorage on
@@ -38,88 +43,58 @@ async function resolvePodcast(guid: string): Promise<Podcast | null> {
 
 /**
  * Global stream of every kind:1 note tagged with NIP-73 podcast identifiers,
- * across all podcasts and clients. Stale-while-revalidate: on mount we paint
- * the last cached DiscoveredNote[] (5-min TTL in localStorage) instantly,
- * then re-query relays in the background and replace.
+ * across all podcasts and clients. Each note's `podcast:guid:` reference is
+ * resolved against `/api/by-guid` so the show title + artwork render as
+ * context.
  */
 export function GlobalNostrFeed() {
-  const [notes, setNotes] = useState<DiscoveredNote[] | null>(() => storage.feedNotes.get('global'));
+  const { notes, loading, err, refresh } = useNostrFeed({
+    cacheKey: 'global',
+    fetcher: fetchAllPodcastNotes,
+  });
   const [podcasts, setPodcasts] = useState<Record<string, Podcast | null>>({});
-  const [loading, setLoading] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
 
-  function resolveGuids(notes: DiscoveredNote[]) {
+  // Resolve podcast metadata for every unique guid that appears in `notes` —
+  // covers both the SWR cache paint and every refresh.
+  useEffect(() => {
+    if (!notes) return;
     const guids = Array.from(
       new Set(notes.map((n) => n.podcastGuid).filter((g): g is string => !!g)),
     );
     for (const guid of guids) {
+      if (guid in podcasts) continue;
       resolvePodcast(guid).then((p) => {
         setPodcasts((prev) => ({ ...prev, [guid]: p }));
       });
     }
-  }
-
-  async function load() {
-    setLoading(true);
-    setErr(null);
-    try {
-      const result = await fetchAllPodcastNotes();
-      setNotes(result);
-      storage.feedNotes.set('global', result);
-      resolveGuids(result);
-    } catch (e) {
-      setErr(e instanceof Error ? e.message : 'failed to load nostr feed');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    // Resolve cached notes' podcast metadata immediately so cards from the
-    // SWR paint render with show context, not just guids.
-    if (notes && notes.length > 0) resolveGuids(notes);
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [notes, podcasts]);
 
   return (
-    <section>
-      <header className="flex items-center justify-between border-b border-bone/15 pb-2 mb-4">
+    <FeedSection
+      heading={
         <h2 className="font-display text-2xl">
           <span className="text-nostr">#</span> Global boost feed
         </h2>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="btn-ghost text-xs"
-          title="Re-query relays"
-        >
-          {loading ? 'loading…' : 'refresh'}
-        </button>
-      </header>
-      <p className="text-xs text-muted mb-4">
-        Every public Nostr post tagged with a Podcasting 2.0 <code>podcast:guid</code> identifier —
-        boosts, comments, and chatter from any client following the convention (Fountain, Wavlake,
-        BoostMeBitch, etc.).
-      </p>
-      {err && <p className="text-sm text-red-400">{err}</p>}
-      {!err && notes === null && loading && (
-        <p className="text-sm text-muted">searching nostr relays…</p>
+      }
+      description={
+        <p className="text-xs text-muted mb-4">
+          Every public Nostr post tagged with a Podcasting 2.0 <code>podcast:guid</code> identifier
+          — boosts, comments, and chatter from any client following the convention (Fountain,
+          Wavlake, BoostMeBitch, etc.).
+        </p>
+      }
+      notes={notes}
+      loading={loading}
+      err={err}
+      emptyMessage="no nostr activity surfaced from these relays yet."
+      onRefresh={refresh}
+      renderNote={(n: DiscoveredNote) => (
+        <NoteCard
+          key={n.id}
+          note={n}
+          podcast={n.podcastGuid ? podcasts[n.podcastGuid] ?? null : null}
+        />
       )}
-      {!err && notes !== null && notes.length === 0 && (
-        <p className="text-sm text-muted">no nostr activity surfaced from these relays yet.</p>
-      )}
-      {!err && notes !== null && notes.length > 0 && (
-        <div className="space-y-2">
-          {notes.map((n) => (
-            <NoteCard
-              key={n.id}
-              note={n}
-              podcast={n.podcastGuid ? podcasts[n.podcastGuid] ?? null : null}
-            />
-          ))}
-        </div>
-      )}
-    </section>
+    />
   );
 }

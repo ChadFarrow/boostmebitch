@@ -24,6 +24,8 @@ export {
   type DiscoveredNote,
 } from './discover';
 
+export { useNostrFeed } from './use-feed';
+
 export {
   publishBoostNote,
 } from './boost-notes';
