@@ -171,7 +171,6 @@ export function FavoritesList({
 }
 
 function ValueBlockDetails({ value }: { value: ValueBlock }) {
-  const totalWeight = value.recipients.reduce((s, r) => s + (r.split || 0), 0);
   const suggestedSats =
     value.suggested && Number.isFinite(parseFloat(value.suggested))
       ? Math.round(parseFloat(value.suggested) * 100_000_000)
@@ -187,7 +186,6 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
       </div>
       <ul className="space-y-2">
         {value.recipients.map((r, i) => {
-          const pct = totalWeight > 0 ? (r.split / totalWeight) * 100 : 0;
           const isLnAddr = r.type === 'lnaddress';
           const addr =
             isLnAddr || r.address.length <= 20
@@ -212,8 +210,7 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
                 )}
               </div>
               <div className="text-right flex-shrink-0">
-                <div className="font-display text-sm text-bolt">{pct.toFixed(1)}%</div>
-                <div className="text-[10px] text-muted">weight {r.split}</div>
+                <div className="font-display text-sm text-bolt">{r.split}</div>
               </div>
             </li>
           );
