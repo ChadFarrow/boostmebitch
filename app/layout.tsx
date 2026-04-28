@@ -22,9 +22,13 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen antialiased bg-ink relative">
-        <div aria-hidden className="fixed inset-0 -z-10">
+    // bg-ink on <html> makes the canvas dark so there's no white flash before
+    // the hero image loads. We deliberately keep <body> background-free so the
+    // fixed image layer below is visible through it (setting bg on <body>
+    // propagates to the canvas and would cover the image).
+    <html lang="en" className="bg-ink">
+      <body className="min-h-screen antialiased">
+        <div aria-hidden className="fixed inset-0 pointer-events-none">
           <Image
             src="/hero.jpg"
             alt=""
@@ -35,7 +39,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           />
           <div className="absolute inset-0 bg-ink/75" />
         </div>
-        {children}
+        <div className="relative z-0">
+          {children}
+        </div>
       </body>
     </html>
   );
