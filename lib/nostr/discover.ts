@@ -16,6 +16,7 @@ export interface DiscoveredNote {
   podcastGuid: string | null; // first podcast:guid: ref on the note (the show)
   episodeGuids: string[];  // any podcast:item:guid: refs on the note
   author: ProfileMetadata | null;
+  rawEvent: Event;         // signed source event — needed to thread replies and to embed in NIP-18 reposts
 }
 
 interface FetchOpts {
@@ -60,6 +61,7 @@ function buildNote(e: Event, relays: string[], profile: ProfileMetadata | null):
     podcastGuid,
     episodeGuids,
     author: profile,
+    rawEvent: e,
   };
 }
 

@@ -33,6 +33,8 @@ export interface ProfileMetadata {
   picture?: string;
   nip05?: string;
   about?: string;
+  lud16?: string;        // Lightning address (user@domain) — used by NIP-57 zaps
+  lud06?: string;        // bech32-encoded LNURL — older spec, fallback when lud16 is absent
 }
 
 export interface NostrIdentity {
