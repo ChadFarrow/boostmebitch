@@ -112,9 +112,11 @@ input[type='range'].seek::-moz-range-thumb {
 /* iOS Safari auto-zooms any focused input/textarea/select with font-size <
    16px and doesn't zoom back out on blur, leaving the whole page stuck at
    2x. The design uses text-sm (14px) on inputs, so force a 16px floor on
-   touch devices only — desktop visuals are untouched. */
+   touch devices only — desktop visuals are untouched. !important wins
+   against Tailwind's .text-sm class (same-specificity tie that the utility
+   would otherwise win on cascade order). */
 @media (hover: none) and (pointer: coarse) {
   input, textarea, select {
-    font-size: 16px;
+    font-size: 16px !important;
   }
 }

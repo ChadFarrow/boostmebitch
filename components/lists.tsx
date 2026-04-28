@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Episode, Podcast, FavoritePodcast } from '@/lib/types';
+import type { Episode, Podcast, FavoritePodcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 import { BoostModal } from './boost-modal';
@@ -170,17 +170,72 @@ export function FavoritesList({
   );
 }
 
+function ValueBlockDetails({ value }: { value: ValueBlock }) {
+  const totalWeight = value.recipients.reduce((s, r) => s + (r.split || 0), 0);
+  const suggestedSats =
+    value.suggested && Number.isFinite(parseFloat(value.suggested))
+      ? Math.round(parseFloat(value.suggested) * 100_000_000)
+      : null;
+
+  return (
+    <div className="border-b border-bone/15 pb-4 mb-1">
+      <div className="text-[11px] uppercase tracking-widest text-muted pt-3 pb-2 flex items-center justify-between gap-4 flex-wrap">
+        <span>value-block splits ({value.type} · {value.method})</span>
+        {suggestedSats !== null && (
+          <span className="text-bolt">suggested: {suggestedSats} sats / min</span>
+        )}
+      </div>
+      <ul className="space-y-2">
+        {value.recipients.map((r, i) => {
+          const pct = totalWeight > 0 ? (r.split / totalWeight) * 100 : 0;
+          const isLnAddr = r.type === 'lnaddress';
+          const addr =
+            isLnAddr || r.address.length <= 20
+              ? r.address
+              : `${r.address.slice(0, 8)}…${r.address.slice(-8)}`;
+          return (
+            <li key={i} className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap text-sm">
+                  <span className="font-display">
+                    {r.name?.trim() || <span className="text-muted">(unnamed)</span>}
+                  </span>
+                  {r.fee && <span className="stamp text-muted border-bone/30">fee</span>}
+                </div>
+                <div className="text-[11px] text-muted font-mono break-all">
+                  {r.type} · {addr}
+                </div>
+                {r.customKey && r.customValue && (
+                  <div className="text-[11px] text-muted font-mono break-all">
+                    customKey {r.customKey} · customValue {r.customValue}
+                  </div>
+                )}
+              </div>
+              <div className="text-right flex-shrink-0">
+                <div className="font-display text-sm text-bolt">{pct.toFixed(1)}%</div>
+                <div className="text-[10px] text-muted">weight {r.split}</div>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
 export function EpisodeList({ feedId }: { feedId: number | null }) {
   const [data, setData] = useState<{ podcast: Podcast | null; episodes: Episode[] }>({
     podcast: null, episodes: [],
   });
   const [loading, setLoading] = useState(false);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
+  const [valueOpen, setValueOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
   const current = useApp((s) => s.current);
 
   useEffect(() => {
+    setValueOpen(false);
     if (!feedId) { setData({ podcast: null, episodes: [] }); return; }
     setLoading(true);
     fetch(`/api/feed?id=${feedId}`)
@@ -218,9 +273,16 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           <h2 className="font-display text-2xl leading-tight break-words">{data.podcast.title}</h2>
           <p className="text-xs text-muted mt-1">{data.podcast.author}</p>
           {data.podcast.value && (
-            <p className="stamp mt-2 text-bolt border-bolt/60">
+            <button
+              type="button"
+              onClick={() => setValueOpen((v) => !v)}
+              className="stamp mt-2 text-bolt border-bolt/60 hover:bg-bolt/10 transition cursor-pointer"
+              aria-expanded={valueOpen}
+              title={valueOpen ? 'Hide split details' : 'Show split details'}
+            >
               ⚡ {data.podcast.value.recipients.length} recipients · {data.podcast.value.method}
-            </p>
+              <span className="ml-1">{valueOpen ? '▾' : '▸'}</span>
+            </button>
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
@@ -236,6 +298,9 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           )}
         </div>
       </header>
+      {valueOpen && data.podcast.value && (
+        <ValueBlockDetails value={data.podcast.value} />
+      )}
       <ul className="divide-y divide-bone/10 max-h-[60vh] overflow-y-auto">
         {data.episodes.map((e) => {
           const playing = current?.episode.id === e.id;
