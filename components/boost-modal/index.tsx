@@ -45,8 +45,13 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const [running, setRunning] = useState(false);
   const [paymentDone, setPaymentDone] = useState(false);
 
-  const [shareNostr, setShareNostr] = useState(true);
+  const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
+
+  function handleShareNostrChange(v: boolean) {
+    setShareNostr(v);
+    storage.shareNostr.set(v);
+  }
 
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
   const relaySource: RelaySource =
@@ -166,7 +171,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           <SenderName value={name} onChange={setName} identity={identity} />
           <NostrShareToggle
             checked={shareNostr}
-            onChange={setShareNostr}
+            onChange={handleShareNostrChange}
             identity={identity}
             relayCount={relays.length}
             relaySource={relaySource}
