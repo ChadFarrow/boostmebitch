@@ -9,23 +9,46 @@
 // lib/v4v/boost.ts. lnaddress legs work because payOne fetches a BOLT11 from
 // the LNURL-pay endpoint first.
 //
-// SDK wiring is intentionally stubbed below: the package name and exact init
-// signature for @breeztech/breez-sdk-spark may shift, and we don't want the
-// dependency to break `next build` until we wire it for real. Drop the real
-// import + connect call into the TODO blocks; the rest of the rail
-// (hasSpark / sparkPayInvoice / sparkDisconnect) is the stable surface that
-// boost.ts depends on.
+// Init is two-stage because the SDK ships as a WebAssembly module. The
+// default export of '@breeztech/breez-sdk-spark' is the WASM loader; it
+// must run once before any other SDK call. We dynamic-import inside
+// sparkInitFromMnemonic so the ~1MB WASM payload only lands in the bundle
+// the first time a user actually opens a Spark wallet.
 
-// Replace `unknown` with the real SDK instance type when wiring.
-type SparkSdk = unknown;
+import { sha256 } from '@noble/hashes/sha2.js';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 
-// Sentinel used by stub-mode init so hasSpark() flips true and the rail
-// becomes selectable in the UI before the real SDK is wired. Replace this
-// with the actual connect() return value when uncommenting the TODOs below.
-const STUB_SDK: SparkSdk = { __stub: true };
+// SDK instance + module references are loosely typed because the SDK's
+// generated wasm bindings change frequently across minor versions; we
+// pin the public surface (hasSpark / sparkPayInvoice / sparkDisconnect)
+// and let TypeScript validate at the call boundary.
+type SparkSdk = {
+  sendPayment: (req: any) => Promise<any>;
+  prepareSendPayment: (req: any) => Promise<any>;
+  receivePayment: (req: any) => Promise<any>;
+  disconnect: () => Promise<void>;
+  getInfo: (req: any) => Promise<any>;
+  addEventListener: (listener: { onEvent: (e: SparkSdkEvent) => void }) => Promise<string>;
+  removeEventListener: (id: string) => Promise<boolean>;
+};
+
+// Mirror of @breeztech/breez-sdk-spark's SdkEvent discriminated union.
+// Re-declared here so callers can subscribe without dragging the SDK
+// types into client components.
+export type SparkSdkEvent =
+  | { type: 'synced' }
+  | { type: 'unclaimedDeposits'; unclaimedDeposits: unknown[] }
+  | { type: 'claimedDeposits'; claimedDeposits: unknown[] }
+  | { type: 'newDeposits'; newDeposits: unknown[] }
+  | { type: 'paymentSucceeded'; payment: unknown }
+  | { type: 'paymentPending'; payment: unknown }
+  | { type: 'paymentFailed'; payment: unknown }
+  | { type: 'optimization'; optimizationEvent: unknown }
+  | { type: 'lightningAddressChanged'; lightningAddress?: unknown };
 
 let sdk: SparkSdk | null = null;
 let activePubkey: string | null = null;
+let wasmInitialized = false;
 
 // Components reading hasSpark() during render need to refresh when the
 // module-level state flips outside their own tree (e.g. the auto-restore in
@@ -53,6 +76,15 @@ export function sparkOwner(): string | null {
   return activePubkey;
 }
 
+// storageDir suffix derived from the mnemonic so two wallets for the same
+// pubkey (rare but possible: disconnect → create-new with new seed) get
+// different SDK storage directories. Keying on ownerPubkey alone would
+// collide and either fail the second init or corrupt the first wallet.
+function walletStorageDir(ownerPubkey: string, mnemonic: string): string {
+  const walletId = bytesToHex(sha256(utf8ToBytes(mnemonic))).slice(0, 8);
+  return `bmb-spark-${ownerPubkey.slice(0, 8)}-${walletId}`;
+}
+
 /**
  * Initialize the Spark SDK from a BIP-39 mnemonic. Call this once after
  * wallet-backup.ts hands you the decrypted seed, or after a fresh mnemonic
@@ -61,35 +93,38 @@ export function sparkOwner(): string | null {
 export async function sparkInitFromMnemonic(args: {
   mnemonic: string;
   ownerPubkey: string;
-  network?: 'mainnet' | 'testnet';
+  // Spark SDK supports `mainnet` and `regtest` only — there's no public
+  // testnet for Spark. Use `regtest` against a local node for development;
+  // first-boost smoke testing on mainnet with a few sats is the realistic
+  // path.
+  network?: 'mainnet' | 'regtest';
 }): Promise<void> {
-  // TODO(spark-sdk): wire the real SDK init.
-  //
-  //   const { connect, defaultConfig } = await import('@breeztech/breez-sdk-spark');
-  //   const config = defaultConfig({
-  //     network: args.network ?? 'mainnet',
-  //     apiKey: process.env.NEXT_PUBLIC_BREEZ_API_KEY,
-  //   });
-  //   sdk = await connect({
-  //     mnemonic: args.mnemonic,
-  //     // WARNING: storageDir keyed on ownerPubkey alone collides if the user
-  //     // ever creates a second wallet for the same Nostr identity (e.g.
-  //     // disconnect → Create new). The Breez SDK will either reject the
-  //     // init or corrupt the existing wallet's state. Before flipping this
-  //     // on, switch the suffix to a wallet-specific id — e.g. the first 8
-  //     // hex chars of sha256(mnemonic) — so each seed gets its own dir:
-  //     //   const walletId = sha256(args.mnemonic).slice(0, 8);
-  //     //   storageDir: `bmb-spark-${args.ownerPubkey.slice(0, 8)}-${walletId}`,
-  //     // The SparkWallet UI already confirms the relay-side overwrite; the
-  //     // disk-side guard has to live here.
-  //     storageDir: `bmb-spark-${args.ownerPubkey.slice(0, 8)}`,
-  //     config,
-  //   });
-  //   activePubkey = args.ownerPubkey;
-  //
-  // Stub-mode: register the wallet as initialized so the UI surfaces it.
-  // Payments still throw (sparkPayInvoice) until the real SDK lands.
-  sdk = STUB_SDK;
+  const apiKey = process.env.NEXT_PUBLIC_BREEZ_API_KEY;
+  if (!apiKey) {
+    throw new Error(
+      'NEXT_PUBLIC_BREEZ_API_KEY is not set. Add it to .env.local and restart the dev server.',
+    );
+  }
+
+  // Dynamic import keeps the WASM out of the initial bundle.
+  const mod = await import('@breeztech/breez-sdk-spark');
+  if (!wasmInitialized) {
+    // Default export loads + instantiates the WebAssembly binary. Idempotent
+    // per-load but cheap to guard.
+    await (mod.default as () => Promise<void>)();
+    wasmInitialized = true;
+  }
+
+  const config = mod.defaultConfig(args.network ?? 'mainnet');
+  config.apiKey = apiKey;
+
+  const instance = await mod.connect({
+    config,
+    seed: { type: 'mnemonic', mnemonic: args.mnemonic },
+    storageDir: walletStorageDir(args.ownerPubkey, args.mnemonic),
+  });
+
+  sdk = instance as unknown as SparkSdk;
   activePubkey = args.ownerPubkey;
   notify();
 }
@@ -97,18 +132,21 @@ export async function sparkInitFromMnemonic(args: {
 /** Pay a BOLT11 invoice via the Spark SDK. Returns the payment preimage. */
 export async function sparkPayInvoice(invoice: string): Promise<string> {
   if (!sdk) throw new Error('Spark wallet not initialized');
-  // TODO(spark-sdk):
-  //   const res = await (sdk as any).sendPayment({ paymentRequest: invoice });
-  //   return res.payment.preimage;
-  void invoice;
-  throw new Error('Spark SDK not yet wired — see TODO in lib/v4v/spark.ts');
+  // Two-step prepare-then-send is required by the Spark SDK so the caller
+  // could surface fees ahead of the user committing. We don't expose the
+  // estimate today but pass through the prepareResponse as the SDK requires.
+  const prepared = await sdk.prepareSendPayment({ paymentRequest: invoice });
+  const res = await sdk.sendPayment({ prepareResponse: prepared });
+  const preimage = res?.payment?.preimage ?? res?.payment?.details?.htlcDetails?.preimage;
+  if (!preimage) throw new Error('Spark sendPayment returned no preimage');
+  return preimage as string;
 }
 
 /**
- * Generate a fresh BIP-39 mnemonic. Stub-mode uses @scure/bip39 directly so
- * the relay backup flow is exercisable before the SDK lands; swap this for
- * the SDK's own helper once wired (the resulting mnemonic should be format-
- * compatible — both produce standard BIP-39 phrases).
+ * Generate a fresh BIP-39 mnemonic. Uses @scure/bip39 directly — the SDK
+ * also ships a helper but @scure is already on disk via nostr-tools and
+ * produces format-compatible output, so we don't pay the WASM init cost
+ * just to mint a phrase.
  */
 export async function sparkGenerateMnemonic(): Promise<string> {
   const { generateMnemonic } = await import('@scure/bip39');
@@ -118,8 +156,63 @@ export async function sparkGenerateMnemonic(): Promise<string> {
 
 /** Tear down the SDK on sign-out. */
 export async function sparkDisconnect(): Promise<void> {
-  // TODO(spark-sdk): await (sdk as any)?.disconnect();
+  if (sdk) {
+    try { await sdk.disconnect(); } catch { /* best effort */ }
+  }
   sdk = null;
   activePubkey = null;
   notify();
+}
+
+/** Fetch the wallet's current balance + identity pubkey. */
+export async function sparkGetInfo(): Promise<{ balanceSats: number; identityPubkey?: string } | null> {
+  if (!sdk) return null;
+  try {
+    const info = await sdk.getInfo({});
+    return {
+      balanceSats: Number(info?.balanceSats ?? 0),
+      identityPubkey: info?.identityPubkey,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Subscribe to SDK events (`paymentSucceeded`, `claimedDeposits`, `synced`,
+ * etc.). Returns an unsubscribe fn. Use this instead of polling getInfo —
+ * the balance reflects the new state synchronously inside the event,
+ * because the SDK has already finished its claim/settle bookkeeping.
+ */
+export async function subscribeSparkEvents(
+  onEvent: (e: SparkSdkEvent) => void,
+): Promise<() => void> {
+  if (!sdk) return () => {};
+  const id = await sdk.addEventListener({ onEvent });
+  return () => {
+    if (sdk) sdk.removeEventListener(id).catch(() => {});
+  };
+}
+
+/**
+ * Generate a BOLT11 invoice the user can pay from any other Lightning wallet
+ * to fund this Spark wallet. Returns the invoice string and the fee Spark
+ * will charge to settle the incoming payment (in sats).
+ */
+export async function sparkReceiveInvoice(args: {
+  amountSats?: number;
+  description?: string;
+}): Promise<{ invoice: string; feeSats: number }> {
+  if (!sdk) throw new Error('Spark wallet not initialized');
+  const res = await (sdk as any).receivePayment({
+    paymentMethod: {
+      type: 'bolt11Invoice',
+      description: args.description ?? 'BoostMeBitch Spark deposit',
+      amountSats: args.amountSats,
+    },
+  });
+  return {
+    invoice: String(res?.paymentRequest ?? ''),
+    feeSats: Number(res?.fee ?? 0),
+  };
 }
