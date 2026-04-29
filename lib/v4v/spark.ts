@@ -137,7 +137,6 @@ export async function sparkPayInvoice(invoice: string): Promise<string> {
   // estimate today but pass through the prepareResponse as the SDK requires.
   const prepared = await sdk.prepareSendPayment({ paymentRequest: invoice });
   const res = await sdk.sendPayment({ prepareResponse: prepared });
-  console.log('[spark] sendPayment response:', JSON.stringify(res, (_k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
   const payment = res?.payment;
   if (!payment) throw new Error('Spark sendPayment returned no payment');
   const status = String(payment.status ?? '').toLowerCase();
