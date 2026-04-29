@@ -8,6 +8,7 @@ import type { Boostagram, ValueBlock, ValueRecipient, BoostResult } from '@/lib/
 import { hasNwc, nwcKeysend, nwcPayInvoice } from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
 import { fetchLnInvoice } from './lnaddr';
+import { storeBoostMetadata } from './boostbox';
 
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
@@ -92,16 +93,32 @@ async function payOne(
 
   try {
     if (recipient.type === 'lnaddress') {
+      // LNURL invoices can't carry a TLV boostagram, so park the metadata
+      // in BoostBox and put its `desc` (containing the lookup URL) in the
+      // LUD-21 comment. Falls back to the plain message if BoostBox is
+      // unreachable or the recipient doesn't allow comments.
+      const stored = await storeBoostMetadata({
+        boostagram,
+        recipient,
+        splitWeight: recipient.split,
+        legMsat: sats * 1000,
+      });
       const invoice = await fetchLnInvoice({
         address: recipient.address,
         amount_msat: sats * 1000,
-        comment: boostagram.message,
+        comment: stored?.desc ?? boostagram.message,
       });
       const preimage =
         rail === 'nwc'
           ? await nwcPayInvoice(invoice)
           : await weblnPayInvoice(invoice);
-      return { ...base, ok: true, preimage };
+      return {
+        ...base,
+        ok: true,
+        preimage,
+        boostboxUrl: stored?.url,
+        boostboxId: stored?.url?.split('/').pop() || undefined,
+      };
     }
 
     // type === 'node' → keysend
