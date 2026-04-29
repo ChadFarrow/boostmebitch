@@ -138,9 +138,20 @@ export async function sparkPayInvoice(invoice: string): Promise<string> {
   const prepared = await sdk.prepareSendPayment({ paymentRequest: invoice });
   const res = await sdk.sendPayment({ prepareResponse: prepared });
   console.log('[spark] sendPayment response:', JSON.stringify(res, (_k, v) => typeof v === 'bigint' ? v.toString() : v, 2));
-  const preimage = res?.payment?.preimage ?? res?.payment?.details?.htlcDetails?.preimage;
-  if (!preimage) throw new Error('Spark sendPayment returned no preimage');
-  return preimage as string;
+  const payment = res?.payment;
+  if (!payment) throw new Error('Spark sendPayment returned no payment');
+  const status = String(payment.status ?? '').toLowerCase();
+  if (status === 'failed') throw new Error('Spark payment failed');
+  // status: 'completed' | 'pending' both mean the HTLC routed and sats are
+  // committed. preimage is optional on Payment.details.htlcDetails — it's
+  // undefined while htlcStatus === 'waitingForPreimage', which is common at
+  // the moment sendPayment resolves. Don't gate boost success on it; the
+  // BoostResult.preimage field is optional and unread by the UI.
+  const preimage: string =
+    payment.details?.htlcDetails?.preimage ??
+    payment.details?.preimage ??
+    '';
+  return preimage;
 }
 
 /**
