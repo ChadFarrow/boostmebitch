@@ -7,9 +7,18 @@ import { signAndPublish, type PublishedNote } from './publish';
 
 export const FAVORITES_D_TAG = 'boostmebitch:favorites';
 
+// Podcasting 2.0 podcast:guid is a UUID (v5 in spec, but tolerate any version).
+// Older versions of this app (and some other clients) wrote feed IDs or
+// live-episode strings into the i-tag — drop those on read so we don't ship
+// junk to /api/by-guid.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export interface FavoritesEvent {
   guids: string[];
   updatedAt: number; // unix seconds, from event.created_at
+  /** Guids the relay event had that didn't match UUID shape — exposed so
+   *  callers can offer the user a one-shot "clean up favorites" republish. */
+  droppedGuids: string[];
 }
 
 export async function fetchFavoriteGuids(
@@ -28,12 +37,15 @@ export async function fetchFavoriteGuids(
       if (!events.length) return null;
       const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
       const guids: string[] = [];
+      const droppedGuids: string[] = [];
       for (const tag of newest.tags) {
         if (tag[0] !== 'i' || !tag[1]) continue;
         const m = /^podcast:guid:(.+)$/.exec(tag[1]);
-        if (m) guids.push(m[1]);
+        if (!m) continue;
+        if (UUID_RE.test(m[1])) guids.push(m[1]);
+        else droppedGuids.push(m[1]);
       }
-      return { guids, updatedAt: newest.created_at };
+      return { guids, updatedAt: newest.created_at, droppedGuids };
     } catch {
       return null;
     }
