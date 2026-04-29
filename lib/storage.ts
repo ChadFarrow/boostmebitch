@@ -13,6 +13,7 @@ const KEYS = {
   nwcUri: 'bmb:nwc_uri',
   relays: 'bmb:relays',
   senderName: 'bmb:sender_name',
+  shareNostr: 'bmb:share_nostr',
   favoritesPrefix: 'bmb:favorites',
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
@@ -102,6 +103,16 @@ export const storage = {
   senderName: {
     get: () => safeGet(KEYS.senderName),
     set: (v: string) => safeSet(KEYS.senderName, v),
+  },
+
+  /**
+   * Whether the boost modal defaults to publishing a Nostr note. Unset = true
+   * (existing behavior); user can flip to false to make every boost private
+   * (Lightning only) until they re-enable it.
+   */
+  shareNostr: {
+    get: (): boolean => safeGet(KEYS.shareNostr) !== '0',
+    set: (v: boolean) => safeSet(KEYS.shareNostr, v ? '1' : '0'),
   },
 
   /**
