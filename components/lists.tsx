@@ -7,6 +7,15 @@ import { BoostModal } from './boost-modal';
 import { BoltIcon } from './icons';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 
+function fmtDuration(t: number) {
+  if (!isFinite(t) || t <= 0) return '';
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
+  const s = Math.floor(t % 60).toString().padStart(2, '0');
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s}`;
+  return `${m}:${s}`;
+}
+
 function FavHeart({ podcast }: { podcast: Podcast }) {
   const guid = podcast.podcastGuid;
   const isFav = useApp((s) => s.isFavorite(guid));
@@ -309,7 +318,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                 <div className="text-sm font-display leading-tight truncate">{e.title}</div>
                 <div className="text-[11px] text-muted flex gap-2 mt-0.5">
                   {e.datePublished && <span>{new Date(e.datePublished * 1000).toLocaleDateString()}</span>}
-                  {e.duration && <span>· {Math.round(e.duration / 60)}m</span>}
+                  {e.duration && <span>· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
                 </div>
               </div>

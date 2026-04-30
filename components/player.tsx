@@ -6,8 +6,10 @@ import { BoltIcon } from './icons';
 
 function fmt(t: number) {
   if (!isFinite(t)) return '0:00';
-  const m = Math.floor(t / 60);
+  const h = Math.floor(t / 3600);
+  const m = Math.floor((t % 3600) / 60);
   const s = Math.floor(t % 60).toString().padStart(2, '0');
+  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s}`;
   return `${m}:${s}`;
 }
 

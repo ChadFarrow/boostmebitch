@@ -5,6 +5,7 @@ import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
+import { BoltIcon } from '@/components/icons';
 import { useApp } from '@/lib/store';
 
 import type { Podcast } from '@/lib/types';
@@ -15,6 +16,16 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [favoritesCollapsed, setFavoritesCollapsed] = useState(false);
+  const [searchKey, setSearchKey] = useState(0);
+
+  function goHome() {
+    setFeeds([]);
+    setSelected(null);
+    setQuery('');
+    setLoading(false);
+    setSearchKey((n) => n + 1);
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
+  }
   const favorites = useApp((s) => s.favorites);
   const hasFavorites = Object.keys(favorites).length > 0;
 
@@ -27,13 +38,18 @@ export default function Home() {
       {/* Header */}
       <header className="border-b border-bone/15 sticky top-0 z-20 bg-ink/90 backdrop-blur">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-4">
-          <div className="flex items-baseline gap-2">
-            <span className="text-bolt text-2xl">⚡</span>
-            <h1 className="font-display text-2xl">Boost Me Bitch</h1>
+          <button
+            type="button"
+            onClick={goHome}
+            className="flex items-baseline gap-2 hover:opacity-80 transition"
+            aria-label="Go to home"
+          >
+            <BoltIcon className="w-6 h-6 text-bolt" />
+            <span className="font-display text-2xl">Boost Me Bitch</span>
             <span className="text-[10px] text-muted uppercase tracking-widest hidden sm:inline">
               podcasting 2.0
             </span>
-          </div>
+          </button>
           <div className="flex-1" />
           <NostrAuth />
         </div>
@@ -48,6 +64,7 @@ export default function Home() {
         </h2>
         <div className="mt-8 max-w-xl">
           <SearchBar
+            key={searchKey}
             onResults={(f, q) => { setFeeds(f); setQuery(q); if (!f.length) setSelected(null); }}
             onLoading={setLoading}
           />
