@@ -3,7 +3,7 @@ import { Fragment, type ReactNode } from 'react';
 import type { StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { shortNpub } from '@/lib/nostr';
-import { DefaultAvatar } from './default-avatar';
+import { Avatar } from './avatar';
 
 const LINK_RE = /(https?:\/\/[^\s]+)/gi;
 
@@ -79,16 +79,10 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
 
   return (
     <article className="card p-3 flex gap-3 border-bolt/40">
-      {profile?.picture ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={profile.picture}
-          alt=""
-          className="w-9 h-9 rounded-full object-cover border border-bone/20 flex-shrink-0"
-        />
-      ) : identity?.pubkey ? (
-        <DefaultAvatar
+      {identity?.pubkey ? (
+        <Avatar
           pubkey={identity.pubkey}
+          picture={profile?.picture}
           name={name}
           className="w-9 h-9 rounded-full border border-bone/20 flex-shrink-0 text-sm"
         />
