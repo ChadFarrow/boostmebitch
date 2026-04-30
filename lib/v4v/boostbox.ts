@@ -8,6 +8,7 @@
 //
 // @see https://github.com/ChadFarrow/boostbox
 
+import { nip19 } from 'nostr-tools';
 import type { Boostagram, ValueRecipient } from '@/lib/types';
 
 interface BoostBoxResponse {
@@ -59,7 +60,7 @@ function buildPayload(
     app_version: boostagram.app_version,
     sender_name: boostagram.sender_name,
     sender_id: boostagram.sender_id,
-    sender_npub: boostagram.sender_id,
+    sender_npub: boostagram.sender_id ? nip19.npubEncode(boostagram.sender_id) : undefined,
     recipient_name: recipient.name,
     recipient_address: recipient.address,
     feed_guid: boostagram.remote_feed_guid,

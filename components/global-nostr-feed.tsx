@@ -100,7 +100,6 @@ export function GlobalNostrFeed() {
         boost: b,
       }));
     }
-    const noteIds = new Set(notes.map((n) => n.id));
     const items: FeedItem[] = notes.map((note) => ({
       kind: 'note' as const,
       ts: note.createdAt * 1000,
@@ -108,9 +107,13 @@ export function GlobalNostrFeed() {
       note,
     }));
     for (const b of storedBoosts) {
-      // Dedupe: drop the local entry if its published note already came back
-      // from a relay — the discovered NoteCard is richer.
-      if (b.noteId && noteIds.has(b.noteId)) continue;
+      // Dedupe: once we've published the boost note, hide the local card.
+      // The user's NIP-65 write set may not intersect DEFAULT_RELAYS (used
+      // by fetchAllPodcastNotes), so we can't rely on the discovered set
+      // catching every published boost — but we'd rather risk a missing
+      // card than a permanent duplicate. Failed publishes leave noteId
+      // undefined and surface as locals indefinitely.
+      if (b.noteId) continue;
       items.push({
         kind: 'boost' as const,
         ts: b.ts,

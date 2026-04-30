@@ -103,10 +103,17 @@ async function payOne(
         splitWeight: recipient.split,
         legMsat: sats * 1000,
       });
+      // Concat desc + user message so recipients without BoostBox-aware
+      // tooling still see the typed message. fetchLnInvoice truncates to
+      // commentAllowed if the combined string exceeds the recipient's cap.
+      const userMsg = boostagram.message?.trim() || undefined;
+      const comment = stored?.desc
+        ? userMsg ? `${stored.desc} — ${userMsg}` : stored.desc
+        : userMsg;
       const invoice = await fetchLnInvoice({
         address: recipient.address,
         amount_msat: sats * 1000,
-        comment: stored?.desc ?? boostagram.message,
+        comment,
       });
       const preimage =
         rail === 'nwc'
