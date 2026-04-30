@@ -242,7 +242,8 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   if (!feedId) {
     return (
       <div ref={containerRef} className="text-muted text-sm py-12 text-center px-4 border border-dashed border-bone/15">
-        select a podcast on the left to see episodes
+        <span className="lg:hidden">select a podcast above to see episodes</span>
+        <span className="hidden lg:inline">select a podcast on the left to see episodes</span>
       </div>
     );
   }
