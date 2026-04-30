@@ -74,6 +74,39 @@ export interface BoostResult {
   ok: boolean;
   preimage?: string;
   error?: string;
+  // Set on LNURL legs when BoostBox accepted the metadata. The URL is the
+  // public landing page; the id is the last path segment.
+  boostboxUrl?: string;
+  boostboxId?: string;
+}
+
+/**
+ * One sent boost, captured locally for the "My Boosts" panel. Indexed by uuid.
+ * Stored in `bmb:boosts:<npub>` (or `:guest` when signed out).
+ */
+export interface StoredBoost {
+  uuid: string;
+  ts: number;                  // unix ms — when the user confirmed
+  podcastTitle: string;
+  podcastId?: number;
+  podcastGuid?: string;
+  podcastImage?: string;
+  episodeTitle?: string;
+  episodeGuid?: string;
+  sats: number;                // intent total, in sats
+  message?: string;
+  senderName?: string;
+  noteId?: string;             // nostr event id of the boost note, if published
+  legs: StoredBoostLeg[];
+}
+
+export interface StoredBoostLeg {
+  recipient: string;           // node pubkey or lightning address
+  recipientName?: string;
+  sats: number;
+  ok: boolean;
+  error?: string;
+  boostboxUrl?: string;         // present on LNURL legs when BoostBox accepted
 }
 
 export interface FavoritePodcast {

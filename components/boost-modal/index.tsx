@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import confetti from 'canvas-confetti';
-import type { Episode, Podcast, Boostagram } from '@/lib/types';
+import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { publishBoostNote, resolvePublishRelays } from '@/lib/nostr';
@@ -36,6 +36,7 @@ interface Props {
 
 export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props) {
   const identity = useApp((s) => s.identity);
+  const bumpBoosts = useApp((s) => s.bumpBoosts);
   const [sats, setSats] = useState(500);
   const [msg, setMsg] = useState('');
   const [name, setName] = useState('');
@@ -125,6 +126,35 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       setRunning(false);
     }
 
+    // Persist the boost locally so the user's "view" surface (the global feed)
+    // can render it. Logged regardless of rail; the Nostr publish step below
+    // patches in `noteId` for dedupe against the relay-discovered version.
+    if (collected.some((r) => r.ok)) {
+      const stored: StoredBoost = {
+        uuid: boostagram.uuid!,
+        ts: Date.now(),
+        podcastTitle: podcast.title,
+        podcastId: podcast.id,
+        podcastGuid: podcast.podcastGuid,
+        podcastImage: episode?.image ?? podcast.image,
+        episodeTitle: episode?.title,
+        episodeGuid: episode?.guid,
+        sats,
+        message: msg || undefined,
+        senderName: name || undefined,
+        legs: collected.map((r) => ({
+          recipient: r.recipient.address,
+          recipientName: r.recipient.name,
+          sats: r.sats,
+          ok: r.ok,
+          error: r.error,
+          boostboxUrl: r.boostboxUrl,
+        })),
+      };
+      storage.boosts.add(identity?.npub, stored);
+      bumpBoosts();
+    }
+
     // Publish to nostr if signed in & opted in & at least one payment landed
     if (shareNostr && identity && collected.some((r) => r.ok)) {
       setPubState({ kind: 'publishing' });
@@ -137,6 +167,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           relays,
         });
         setPubState({ kind: 'done', note });
+        storage.boosts.update(identity.npub, boostagram.uuid!, { noteId: note.id });
+        bumpBoosts();
       } catch (e) {
         setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
       }

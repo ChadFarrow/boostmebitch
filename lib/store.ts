@@ -22,6 +22,11 @@ interface AppState {
   addFavorite: (p: FavoritePodcast) => void;
   removeFavorite: (guid: string) => void;
   setFavorites: (next: Record<string, FavoritePodcast>) => void;
+
+  // Increments whenever a boost is written to localStorage so feed surfaces
+  // can re-derive without polling. Source of truth stays in storage.boosts.
+  boostsTick: number;
+  bumpBoosts: () => void;
 }
 
 export const useApp = create<AppState>((set, get) => ({
@@ -57,4 +62,7 @@ export const useApp = create<AppState>((set, get) => ({
     storage.favorites.set(s.identity?.npub, next);
     return { favorites: next };
   }),
+
+  boostsTick: 0,
+  bumpBoosts: () => set((s) => ({ boostsTick: s.boostsTick + 1 })),
 }));

@@ -29,7 +29,7 @@ Path alias: `@/*` maps to the repo root (`tsconfig.json` `baseUrl: "."`). Import
 
 The Podcast Index credentials (`PODCAST_INDEX_KEY` / `PODCAST_INDEX_SECRET`) must never reach the browser. Enforced by file conventions, not bundler config:
 
-- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`, hits Podcast Index). Imported only by `app/api/search/route.ts` and `app/api/feed/route.ts`. Never import it from anything in `components/` or from `app/page.tsx`.
+- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`, hits Podcast Index). Imported only by `app/api/search/route.ts` and `app/api/feed/route.ts`. Never import it from anything in `components/` or from `app/page.tsx`. The BoostBox proxy at `app/api/lightning/boostbox/route.ts` follows the same pattern — it reads `BOOSTBOX_URL` / `BOOSTBOX_API_KEY` and forwards to the upstream service so the API key never reaches the browser.
 - **Browser-only:** `lib/store.ts` (Zustand, `'use client'`), `lib/v4v/nwc.ts` / `webln.ts` / `lnaddr.ts`, `lib/nostr/`, `lib/storage.ts` — they all touch `window.*` or `localStorage`. SSR guards exist (`typeof window === 'undefined'`) but assume client context.
 - **Isomorphic:** `lib/types.ts` (pure types), `lib/v4v/boost.ts` (orchestration logic; pulled in by client code).
 
@@ -88,6 +88,7 @@ The "⚡ BOOST" button at the top-right of `EpisodeList`'s header opens the moda
 5. **TLV records:** boostagram JSON goes in record `7629169` (Podcasting 2.0 standard) — that's the only TLV we add for boost metadata. The `sender_id` field already lives inside the JSON; we deliberately do **not** also emit a separate `696969` sender record because that key collides with shared-node sub-account routing (e.g. getalby.com uses `customKey=696969 customValue=<sub-account>`). Per-recipient `customKey`/`customValue` from the value block IS attached to the keysend so payments to shared nodes route to the right sub-account. Keep the JSON shape compatible with Helipad / Fountain / Castamatic ingestion.
 6. **WebLN customRecords are plain JSON, not hex.** WebLN providers (Alby, Mutiny) hex-encode `customRecords` values internally before putting them on the wire. Pre-hexing here causes double-encoding and Helipad can't `JSON.parse` the boostagram. NWC's `pay_keysend` is the opposite — NIP-47 spec requires hex-encoded TLV values. See `tlvHexFor` (NWC) vs `recordsForKeysend` (WebLN) in `lib/v4v/boost.ts` — they look symmetric but the wire formats are genuinely different.
 7. **Note amount is intent, not actual.** `formatContent` and the `amount` tag use `boostagram.value_msat_total` (what the user clicked Send on), not the sum of successful legs. A user who boosts 100 sats and has one leg fail still posts "Boosted 100 sats" — the partial breakdown is visible in the modal and Helipad.
+8. **BoostBox is LNURL-only.** `lib/v4v/boostbox.ts` POSTs the metadata via the `/api/lightning/boostbox` proxy *before* `fetchLnInvoice`, then puts the returned `desc` (`rss::payment::boost <url>`) in the LUD-21 `comment` field. Keysend recipients are untouched — TLV `7629169` already carries the boostagram inline. Failure of the BoostBox call is non-fatal; the LNURL leg falls back to `boostagram.message` as the comment so the payment still goes through.
 
 ## Nostr publish shape
 
@@ -135,6 +136,7 @@ Everything else lives in `localStorage` on the device and is never sent server-s
 - `bmb:sender_name` — last "From" name typed into the boost modal (`storage.senderName`).
 - `bmb:npub` — sentinel for silent re-login on page load (`storage.npub`).
 - `bmb:favorites:<npub>` / `bmb:favorites:guest` — per-identity favorites cache (`storage.favorites.get(npub) / .set(npub, …)`).
+- `bmb:boosts:<npub>` / `bmb:boosts:guest` — local log of sent boosts (`storage.boosts`), capped at 200 newest-first. Each entry holds the boostagram intent + per-leg results, with the BoostBox URL on each LNURL leg and the published Nostr `noteId` patched in once `publishBoostNote` resolves. The Zustand `boostsTick` (`bumpBoosts()`) wakes up subscribers — `GlobalNostrFeed` mixes these into the relay-discovered notes and dedupes any whose `noteId` matches a returned note.
 
 If you add another persisted field, add a typed accessor to `lib/storage.ts` and follow the `bmb:*` prefix.
 
