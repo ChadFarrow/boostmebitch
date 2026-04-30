@@ -5,7 +5,7 @@
 // raw key strings live in exactly one file and SSR/quota guards aren't
 // duplicated across components.
 
-import type { FavoritePodcast, Podcast } from './types';
+import type { FavoritePodcast, Podcast, StoredBoost } from './types';
 import type { DiscoveredNote } from './nostr';
 
 const KEYS = {
@@ -13,10 +13,14 @@ const KEYS = {
   nwcUri: 'bmb:nwc_uri',
   relays: 'bmb:relays',
   senderName: 'bmb:sender_name',
+  shareNostr: 'bmb:share_nostr',
   favoritesPrefix: 'bmb:favorites',
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
+  boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
 } as const;
+
+const BOOSTS_CAP = 200;
 
 const isBrowser = () => typeof window !== 'undefined';
 
@@ -37,6 +41,10 @@ function safeRemove(key: string) {
 
 function favKey(npub: string | null | undefined) {
   return `${KEYS.favoritesPrefix}:${npub ?? 'guest'}`;
+}
+
+function boostsKey(npub: string | null | undefined) {
+  return `${KEYS.boostsPrefix}:${npub ?? 'guest'}`;
 }
 
 // Generic time-bounded cache cell. `t` is the unix-ms write time; `v` is the
@@ -105,6 +113,16 @@ export const storage = {
   },
 
   /**
+   * Whether the boost modal defaults to publishing a Nostr note. Unset = true
+   * (existing behavior); user can flip to false to make every boost private
+   * (Lightning only) until they re-enable it.
+   */
+  shareNostr: {
+    get: (): boolean => safeGet(KEYS.shareNostr) !== '0',
+    set: (v: boolean) => safeSet(KEYS.shareNostr, v ? '1' : '0'),
+  },
+
+  /**
    * /api/by-guid resolutions, persisted across sessions. 7-day TTL — show
    * titles + artwork barely change so a longer window is fine, and the
    * payload is small (~200 B per guid).
@@ -127,6 +145,44 @@ export const storage = {
       getTimed<DiscoveredNote[]>(`${KEYS.feedNotesPrefix}:${key}`, FEED_NOTES_TTL_MS),
     set: (key: string, v: DiscoveredNote[]) =>
       setTimed(`${KEYS.feedNotesPrefix}:${key}`, v),
+  },
+
+  /**
+   * Sent-boost log, namespaced by npub (`:guest` when signed out). Used by the
+   * "view your sends" surface that intermixes with the global Nostr feed.
+   * Capped at BOOSTS_CAP newest-first; oldest entries are dropped on overflow.
+   */
+  boosts: {
+    get: (npub: string | null | undefined): StoredBoost[] => {
+      const raw = safeGet(boostsKey(npub));
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? (parsed as StoredBoost[]) : [];
+      } catch {
+        return [];
+      }
+    },
+    set: (npub: string | null | undefined, list: StoredBoost[]) => {
+      const trimmed = list.slice(0, BOOSTS_CAP);
+      safeSet(boostsKey(npub), JSON.stringify(trimmed));
+    },
+    add: (npub: string | null | undefined, entry: StoredBoost) => {
+      const list = storage.boosts.get(npub);
+      storage.boosts.set(npub, [entry, ...list]);
+    },
+    update: (
+      npub: string | null | undefined,
+      uuid: string,
+      patch: Partial<StoredBoost>,
+    ) => {
+      const list = storage.boosts.get(npub);
+      const idx = list.findIndex((b) => b.uuid === uuid);
+      if (idx < 0) return;
+      const next = [...list];
+      next[idx] = { ...next[idx], ...patch };
+      storage.boosts.set(npub, next);
+    },
   },
 
   /** Favorites are namespaced by npub; signed-out users use `:guest`. */

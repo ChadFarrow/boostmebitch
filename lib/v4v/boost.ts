@@ -9,7 +9,7 @@ import { hasNwc, nwcKeysend, nwcPayInvoice } from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
-import { registerBoostMetadata } from './boostbox';
+import { storeBoostMetadata } from './boostbox';
 
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
@@ -87,12 +87,6 @@ function recordsForKeysend(
   return records;
 }
 
-// Toggle BoostBox sidechannel for lnaddress legs. When on, the boostagram is
-// POSTed to BoostBox first and the returned `desc` string (which carries the
-// short URL aggregators look for) is passed as the LNURL-pay comment. Default
-// off so the existing comment-only behavior is preserved.
-const BOOSTBOX_ENABLED = process.env.NEXT_PUBLIC_BOOSTBOX_ENABLED === 'true';
-
 async function payOne(
   recipient: ValueRecipient,
   sats: number,
@@ -104,16 +98,23 @@ async function payOne(
 
   try {
     if (recipient.type === 'lnaddress') {
-      const recPerRecipient: Boostagram = {
-        ...boostagram,
-        value_msat: sats * 1000,
-        name: recipient.name,
-      };
-      let comment = boostagram.message;
-      if (BOOSTBOX_ENABLED) {
-        const bb = await registerBoostMetadata(recPerRecipient);
-        if (bb) comment = bb.desc;
-      }
+      // LNURL invoices can't carry a TLV boostagram, so park the metadata
+      // in BoostBox and put its `desc` (containing the lookup URL) in the
+      // LUD-21 comment. Falls back to the plain message if BoostBox is
+      // unreachable or the recipient doesn't allow comments.
+      const stored = await storeBoostMetadata({
+        boostagram,
+        recipient,
+        splitWeight: recipient.split,
+        legMsat: sats * 1000,
+      });
+      // Concat desc + user message so recipients without BoostBox-aware
+      // tooling still see the typed message. fetchLnInvoice truncates to
+      // commentAllowed if the combined string exceeds the recipient's cap.
+      const userMsg = boostagram.message?.trim() || undefined;
+      const comment = stored?.desc
+        ? userMsg ? `${stored.desc} — ${userMsg}` : stored.desc
+        : userMsg;
       const invoice = await fetchLnInvoice({
         address: recipient.address,
         amount_msat: sats * 1000,
@@ -123,7 +124,13 @@ async function payOne(
       if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);
       else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
       else preimage = await weblnPayInvoice(invoice);
-      return { ...base, ok: true, preimage };
+      return {
+        ...base,
+        ok: true,
+        preimage,
+        boostboxUrl: stored?.url,
+        boostboxId: stored?.url?.split('/').pop() || undefined,
+      };
     }
 
     // type === 'node' → keysend. Spark has no keysend path, so node-pubkey

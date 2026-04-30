@@ -1,14 +1,14 @@
 'use client';
 import type { ReactNode } from 'react';
-import type { DiscoveredNote } from '@/lib/nostr';
 
 /**
  * Shared shell for the global + per-podcast Nostr feeds. Owns the
  * header / refresh-button / loading / error / empty / list state machine so
  * each surface only configures its title, description, empty message, and
- * the per-note renderer.
+ * the per-item renderer. Generic in the item type so the global feed can
+ * mix Nostr notes with locally-stored boosts.
  */
-export function FeedSection({
+export function FeedSection<T>({
   heading,
   description,
   notes,
@@ -17,16 +17,19 @@ export function FeedSection({
   emptyMessage,
   onRefresh,
   renderNote,
+  itemKey,
   className = '',
 }: {
   heading: ReactNode;
   description?: ReactNode;
-  notes: DiscoveredNote[] | null;
+  notes: T[] | null;
   loading: boolean;
   err: string | null;
   emptyMessage: string;
   onRefresh: () => void;
-  renderNote: (note: DiscoveredNote) => ReactNode;
+  renderNote: (item: T) => ReactNode;
+  /** Optional stable React key per item; defaults to array index. */
+  itemKey?: (item: T) => string;
   className?: string;
 }) {
   return (
@@ -51,7 +54,11 @@ export function FeedSection({
         <p className="text-sm text-muted">{emptyMessage}</p>
       )}
       {!err && notes !== null && notes.length > 0 && (
-        <div className="space-y-2">{notes.map(renderNote)}</div>
+        <div className="space-y-2">
+          {notes.map((item, i) => (
+            <div key={itemKey ? itemKey(item) : i}>{renderNote(item)}</div>
+          ))}
+        </div>
       )}
     </section>
   );
