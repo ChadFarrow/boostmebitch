@@ -1,6 +1,7 @@
 import { nip19, type Event } from 'nostr-tools';
 import { withPool } from './pool';
 import { DEFAULT_RELAYS } from './relays';
+import { storage } from '../storage';
 import type { ProfileMetadata } from './auth';
 
 export interface DiscoveredNote {
@@ -293,28 +294,17 @@ async function fetchQuotedEvents(
   return out;
 }
 
-async function fetchProfiles(
-  pool: import('nostr-tools').SimplePool,
-  relays: string[],
-  authors: string[],
-): Promise<Map<string, ProfileMetadata>> {
-  const out = new Map<string, ProfileMetadata>();
-  if (!authors.length) return out;
-  let events: Event[] = [];
-  try {
-    events = await pool.querySync(relays, {
-      kinds: [0],
-      authors,
-    });
-  } catch {
-    return out;
-  }
-  // Newest kind:0 wins per pubkey.
+// Reduce a list of kind:0 events to "newest per pubkey, parsed". Skips events
+// whose content isn't valid JSON.
+function newestProfilesByAuthor(
+  events: Event[],
+): Map<string, ProfileMetadata> {
   const newest = new Map<string, Event>();
   for (const e of events) {
     const prev = newest.get(e.pubkey);
     if (!prev || e.created_at > prev.created_at) newest.set(e.pubkey, e);
   }
+  const out = new Map<string, ProfileMetadata>();
   for (const [pubkey, e] of newest) {
     try {
       out.set(pubkey, JSON.parse(e.content) as ProfileMetadata);
@@ -322,5 +312,125 @@ async function fetchProfiles(
       // ignore unparseable content
     }
   }
+  return out;
+}
+
+// Pull NIP-65 (kind:10002) for the given authors and return the union of
+// their write-marked / unmarked relay URLs. Used as a fallback hint set when
+// the default-relay batch couldn't find a profile — the author may publish
+// their kind:0 only to their personal write relays.
+async function fetchAuthorWriteRelays(
+  pool: import('nostr-tools').SimplePool,
+  relays: string[],
+  authors: string[],
+): Promise<string[]> {
+  let events: Event[] = [];
+  try {
+    events = await pool.querySync(relays, {
+      kinds: [10002],
+      authors,
+    });
+  } catch {
+    return [];
+  }
+  const newest = new Map<string, Event>();
+  for (const e of events) {
+    const prev = newest.get(e.pubkey);
+    if (!prev || e.created_at > prev.created_at) newest.set(e.pubkey, e);
+  }
+  const urls = new Set<string>();
+  for (const e of newest.values()) {
+    for (const tag of e.tags) {
+      if (tag[0] !== 'r' || !tag[1]) continue;
+      const url = tag[1].trim().replace(/\/$/, '');
+      if (!url || !url.startsWith('wss://')) continue;
+      const marker = tag[2];
+      if (!marker || marker === 'write') urls.add(url);
+    }
+  }
+  return Array.from(urls);
+}
+
+async function fetchProfiles(
+  pool: import('nostr-tools').SimplePool,
+  relays: string[],
+  authors: string[],
+): Promise<Map<string, ProfileMetadata>> {
+  const out = new Map<string, ProfileMetadata>();
+  if (!authors.length) return out;
+
+  // 1. Serve from per-pubkey localStorage cache where possible. `null` means
+  //    "we recently looked and they have no kind:0" — skip the fetch.
+  //    `undefined` means stale or never cached — fetch.
+  const toFetch: string[] = [];
+  for (const pubkey of authors) {
+    const cached = storage.profile.get(pubkey);
+    if (cached === undefined) toFetch.push(pubkey);
+    else if (cached !== null) out.set(pubkey, cached);
+  }
+  if (!toFetch.length) return out;
+
+  // 2. First pass: batch-query the standard relay set.
+  let firstPassOk = false;
+  let events: Event[] = [];
+  try {
+    events = await pool.querySync(relays, {
+      kinds: [0],
+      authors: toFetch,
+    });
+    firstPassOk = true;
+  } catch {
+    // swallow — fall through to NIP-65 pass below
+  }
+  for (const [pubkey, profile] of newestProfilesByAuthor(events)) {
+    out.set(pubkey, profile);
+    storage.profile.set(pubkey, profile);
+  }
+
+  // 3. NIP-65 fallback: for any author still missing, look up their write
+  //    relays via kind:10002 and re-query kind:0 against the union. Cap the
+  //    extra relay set so latency stays bounded.
+  const missing = toFetch.filter((p) => !out.has(p));
+  let fallbackRan = false;
+  if (missing.length) {
+    const extras = await fetchAuthorWriteRelays(pool, relays, missing);
+    const fallbackRelays = Array.from(new Set([...relays, ...extras])).slice(0, 12);
+    const opened = fallbackRelays.filter((r) => !relays.includes(r));
+    if (opened.length) {
+      try {
+        let fbEvents: Event[] = [];
+        try {
+          fbEvents = await pool.querySync(fallbackRelays, {
+            kinds: [0],
+            authors: missing,
+          });
+          fallbackRan = true;
+        } catch {
+          // ignore — leave still-missing authors for negative caching below
+        }
+        for (const [pubkey, profile] of newestProfilesByAuthor(fbEvents)) {
+          out.set(pubkey, profile);
+          storage.profile.set(pubkey, profile);
+        }
+      } finally {
+        try {
+          pool.close(opened);
+        } catch {
+          // ignore close errors
+        }
+      }
+    }
+  }
+
+  // 4. Negative-cache anything still missing so a returning visitor doesn't
+  //    re-issue the same lookups within the miss-TTL. Only do this when at
+  //    least one pass actually completed — if both threw we genuinely don't
+  //    know whether the profile exists.
+  if (firstPassOk || fallbackRan) {
+    for (const p of toFetch) {
+      if (!out.has(p)) storage.profile.setMiss(p);
+    }
+  }
+
   return out;
 }

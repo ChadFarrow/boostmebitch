@@ -6,7 +6,7 @@
 // duplicated across components.
 
 import type { FavoritePodcast, Podcast, StoredBoost } from './types';
-import type { DiscoveredNote } from './nostr';
+import type { DiscoveredNote, ProfileMetadata } from './nostr';
 
 const KEYS = {
   npub: 'bmb:npub',
@@ -18,6 +18,7 @@ const KEYS = {
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
+  profilePrefix: 'bmb:profile',       // kind:0 metadata, keyed by pubkey (hex)
 } as const;
 
 const BOOSTS_CAP = 200;
@@ -73,6 +74,8 @@ function setTimed<T>(key: string, value: T) {
 
 const PODCAST_META_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const FEED_NOTES_TTL_MS = 5 * 60 * 1000;             // 5 minutes
+const PROFILE_TTL_MS = 7 * 24 * 60 * 60 * 1000;      // 7 days for found profiles
+const PROFILE_MISS_TTL_MS = 60 * 60 * 1000;          // 1 hour for known-missing
 
 export const storage = {
   npub: {
@@ -182,6 +185,36 @@ export const storage = {
       next[idx] = { ...next[idx], ...patch };
       storage.boosts.set(npub, next);
     },
+  },
+
+  /**
+   * Per-pubkey kind:0 cache shared across every feed surface. Stores both
+   * found profiles (7-day TTL) and known-missing pubkeys (1-hour negative TTL)
+   * so we don't hammer relays for authors who haven't published metadata.
+   *
+   * `get` is tri-state:
+   *   - ProfileMetadata → fresh hit, use it
+   *   - null            → fresh negative hit, skip the network
+   *   - undefined       → stale or never cached, caller should fetch
+   */
+  profile: {
+    get: (pubkey: string): ProfileMetadata | null | undefined => {
+      const raw = safeGet(`${KEYS.profilePrefix}:${pubkey}`);
+      if (!raw) return undefined;
+      try {
+        const cell = JSON.parse(raw) as CacheCell<ProfileMetadata | null>;
+        if (!cell || typeof cell.t !== 'number') return undefined;
+        const ttl = cell.v === null ? PROFILE_MISS_TTL_MS : PROFILE_TTL_MS;
+        if (Date.now() - cell.t > ttl) return undefined;
+        return cell.v;
+      } catch {
+        return undefined;
+      }
+    },
+    set: (pubkey: string, v: ProfileMetadata) =>
+      setTimed(`${KEYS.profilePrefix}:${pubkey}`, v),
+    setMiss: (pubkey: string) =>
+      setTimed<ProfileMetadata | null>(`${KEYS.profilePrefix}:${pubkey}`, null),
   },
 
   /** Favorites are namespaced by npub; signed-out users use `:guest`. */
