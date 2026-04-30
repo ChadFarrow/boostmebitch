@@ -1,5 +1,11 @@
 'use client';
-import { fetchPodcastNotes, useNostrFeed, type DiscoveredNote } from '@/lib/nostr';
+import {
+  fetchPodcastNotes,
+  useNostrFeed,
+  useViewerReposts,
+  type DiscoveredNote,
+} from '@/lib/nostr';
+import { useApp } from '@/lib/store';
 import { FeedSection } from './feed-section';
 import { NoteCard } from './nostr-note-card';
 
@@ -21,6 +27,8 @@ export function PodcastNostrFeed({
     fetcher: () => fetchPodcastNotes(podcastGuid),
     deps: [podcastGuid],
   });
+  const identity = useApp((s) => s.identity);
+  const repostedIds = useViewerReposts(notes, identity);
 
   return (
     <FeedSection
@@ -36,7 +44,9 @@ export function PodcastNostrFeed({
       err={err}
       emptyMessage="no nostr notes tagged this podcast yet — be the first to boost."
       onRefresh={refresh}
-      renderNote={(n: DiscoveredNote) => <NoteCard key={n.id} note={n} />}
+      renderNote={(n: DiscoveredNote) => (
+        <NoteCard key={n.id} note={n} repostedIds={repostedIds} />
+      )}
     />
   );
 }

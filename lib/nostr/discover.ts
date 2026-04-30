@@ -18,6 +18,36 @@ export interface DiscoveredNote {
   episodeGuids: string[];  // any podcast:item:guid: refs on the note
   author: ProfileMetadata | null;
   rawEvent: Event;         // signed source event — needed to thread replies and to embed in NIP-18 reposts
+  replies: DiscoveredNote[]; // direct replies (NIP-10), oldest-first; recursive
+}
+
+// Defensive caps so a single noisy thread can't blow up the relay query budget.
+const MAX_THREAD_DEPTH = 6;
+const MAX_REPLIES_PER_THREAD = 200;
+const REPLY_QUERY_LIMIT = 500;
+
+/**
+ * Resolve the direct parent event id for a kind:1 reply per NIP-10:
+ *  - `mention` markers are ignored.
+ *  - If any e-tag has marker `reply`, that's the parent.
+ *  - Else if any e-tag has marker `root`, that's the parent (direct reply to root).
+ *  - Else (legacy positional), the last unmarked e-tag is the parent.
+ *  - Returns null when the event has no e-tag — i.e. it's top-level.
+ */
+function getParentEventId(e: Event): string | null {
+  const eTags = e.tags.filter(
+    (t) =>
+      t[0] === 'e' &&
+      typeof t[1] === 'string' &&
+      t[1].length === 64 &&
+      t[3] !== 'mention',
+  );
+  if (eTags.length === 0) return null;
+  const replyTag = eTags.find((t) => t[3] === 'reply');
+  if (replyTag) return replyTag[1];
+  const rootTag = eTags.find((t) => t[3] === 'root');
+  if (rootTag) return rootTag[1];
+  return eTags[eTags.length - 1][1];
 }
 
 interface FetchOpts {
@@ -108,6 +138,7 @@ function buildNote(
   relays: string[],
   profile: ProfileMetadata | null,
   quoted: Map<string, Event>,
+  replies: DiscoveredNote[] = [],
 ): DiscoveredNote {
   const amountTag = e.tags.find((t) => t[0] === 'amount')?.[1];
   let amountMsat: number | null = amountTag ? Number(amountTag) : null;
@@ -168,6 +199,7 @@ function buildNote(
     episodeGuids,
     author: profile,
     rawEvent: e,
+    replies,
   };
 }
 
@@ -233,22 +265,136 @@ async function assembleNotes(
 ): Promise<DiscoveredNote[]> {
   if (!events.length) return [];
 
-  // Dedupe by id (relays often return overlapping copies) and sort newest first.
+  // Dedupe by id (relays often return overlapping copies).
   const byId = new Map<string, Event>();
   for (const e of events) byId.set(e.id, e);
-  const unique = Array.from(byId.values()).sort(
-    (a, b) => b.created_at - a.created_at,
+  const uniqueEvents = Array.from(byId.values());
+
+  // Split into top-level (no e-tag) and reply candidates. publishReply()
+  // inherits the parent's NIP-73 i/k tags, so replies authored by this app
+  // arrive on the same `#i: podcast:guid:` query as their parent boost — we
+  // pull them out of the top-level list here so they only render nested.
+  const topLevelEvents: Event[] = [];
+  const seedReplies: Event[] = [];
+  for (const e of uniqueEvents) {
+    if (getParentEventId(e) === null) topLevelEvents.push(e);
+    else seedReplies.push(e);
+  }
+  topLevelEvents.sort((a, b) => b.created_at - a.created_at);
+
+  const childrenByParent = await fetchReplyTree(
+    pool,
+    relays,
+    topLevelEvents.map((e) => e.id),
+    seedReplies,
   );
 
-  const authors = Array.from(new Set(unique.map((e) => e.pubkey)));
+  // Flatten the entire tree so profile + quoted resolution covers every
+  // author once, not N+1.
+  const allTreeEvents: Event[] = [...topLevelEvents];
+  function collectChildren(parentId: string): void {
+    const children = childrenByParent.get(parentId);
+    if (!children) return;
+    for (const c of children) {
+      allTreeEvents.push(c);
+      collectChildren(c.id);
+    }
+  }
+  for (const e of topLevelEvents) collectChildren(e.id);
+
+  const authors = Array.from(new Set(allTreeEvents.map((e) => e.pubkey)));
   const [profiles, quoted] = await Promise.all([
     fetchProfiles(pool, relays, authors),
-    fetchQuotedEvents(pool, relays, unique),
+    fetchQuotedEvents(pool, relays, allTreeEvents),
   ]);
 
-  return unique.map((e) =>
-    buildNote(e, relays, profiles.get(e.pubkey) ?? null, quoted),
-  );
+  function build(e: Event): DiscoveredNote {
+    const children = childrenByParent.get(e.id) ?? [];
+    const replies = [...children]
+      .sort((a, b) => a.created_at - b.created_at)
+      .map(build);
+    return buildNote(e, relays, profiles.get(e.pubkey) ?? null, quoted, replies);
+  }
+
+  return topLevelEvents.map(build);
+}
+
+/**
+ * Breadth-first reply discovery. Starting from the top-level note ids, batch
+ * one relay query per depth level: `{ kinds:[1], '#e': [...idsAtThisLevel] }`.
+ * Stops when no new ids are found, when MAX_THREAD_DEPTH is hit, or when a
+ * single root subtree exceeds MAX_REPLIES_PER_THREAD events.
+ *
+ * `seedReplies` are events that came in on the original tag-based query and
+ * are themselves replies; they're placed iteratively against known ancestors
+ * before BFS so we don't refetch them.
+ */
+async function fetchReplyTree(
+  pool: import('nostr-tools').SimplePool,
+  relays: string[],
+  rootIds: string[],
+  seedReplies: Event[],
+): Promise<Map<string, Event[]>> {
+  const childrenByParent = new Map<string, Event[]>();
+  const allEventsById = new Map<string, Event>();
+  const rootByEventId = new Map<string, string>();
+  const eventsPerRoot = new Map<string, number>();
+
+  for (const id of rootIds) rootByEventId.set(id, id);
+
+  function addReply(parentId: string, replyEvent: Event): boolean {
+    if (allEventsById.has(replyEvent.id)) return false;
+    const root = rootByEventId.get(parentId);
+    if (!root) return false; // orphan — parent unknown
+    if ((eventsPerRoot.get(root) ?? 0) >= MAX_REPLIES_PER_THREAD) return false;
+    allEventsById.set(replyEvent.id, replyEvent);
+    rootByEventId.set(replyEvent.id, root);
+    eventsPerRoot.set(root, (eventsPerRoot.get(root) ?? 0) + 1);
+    const arr = childrenByParent.get(parentId) ?? [];
+    arr.push(replyEvent);
+    childrenByParent.set(parentId, arr);
+    return true;
+  }
+
+  // Iteratively place seed replies whose ancestor chain is already known.
+  // Repeats until a pass makes no progress so depth-N seeds find their depth-(N-1)
+  // seed parents.
+  let progress = true;
+  while (progress) {
+    progress = false;
+    for (const e of seedReplies) {
+      if (allEventsById.has(e.id)) continue;
+      const parentId = getParentEventId(e);
+      if (!parentId) continue;
+      if (rootByEventId.has(parentId) && addReply(parentId, e)) progress = true;
+    }
+  }
+
+  // BFS down. Frontier on each round = ids whose direct replies we still need
+  // to fetch. Start from every event we currently know about.
+  let frontier = new Set<string>(rootByEventId.keys());
+  for (let depth = 0; depth < MAX_THREAD_DEPTH; depth++) {
+    if (frontier.size === 0) break;
+    let events: Event[] = [];
+    try {
+      events = await pool.querySync(relays, {
+        kinds: [1],
+        '#e': Array.from(frontier),
+        limit: REPLY_QUERY_LIMIT,
+      });
+    } catch {
+      break;
+    }
+    const nextFrontier = new Set<string>();
+    for (const e of events) {
+      const parentId = getParentEventId(e);
+      if (!parentId) continue;
+      if (addReply(parentId, e)) nextFrontier.add(e.id);
+    }
+    frontier = nextFrontier;
+  }
+
+  return childrenByParent;
 }
 
 // Batch-fetch every event quote-referenced by the given notes. Used to

@@ -1,5 +1,5 @@
 'use client';
-import { Fragment, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import {
   resolvePublishRelays,
   shortNpub,
@@ -83,13 +83,19 @@ type ActionState = 'idle' | 'busy' | 'done' | 'error';
  * `podcast` is the show this note references — if provided, a small
  * "→ podcast title" line renders under the author header. The per-podcast
  * feed leaves it out since every card on that surface is about the same show.
+ *
+ * `repostedIds` is the set of note ids the signed-in viewer has previously
+ * reposted (kind:6 events) — used to seed the repost button into its "done"
+ * state across reloads. The same set is threaded down through nested replies.
  */
 export function NoteCard({
   note,
   podcast,
+  repostedIds,
 }: {
   note: DiscoveredNote;
   podcast?: Podcast | null;
+  repostedIds?: Set<string>;
 }) {
   const identity = useApp((s) => s.identity);
   const name =
@@ -106,8 +112,18 @@ export function NoteCard({
   const [composerState, setComposerState] = useState<ActionState>('idle');
   const [composerErr, setComposerErr] = useState<string | null>(null);
 
-  const [repostState, setRepostState] = useState<ActionState>('idle');
+  const alreadyReposted = repostedIds?.has(note.id) ?? false;
+  const [repostState, setRepostState] = useState<ActionState>(
+    alreadyReposted ? 'done' : 'idle',
+  );
   const [repostErr, setRepostErr] = useState<string | null>(null);
+
+  // Promote idle → done if the persisted set arrives after mount (login race
+  // or async useViewerReposts resolution). Don't downgrade — once the user has
+  // pressed repost in this session we always show 'done'.
+  useEffect(() => {
+    if (alreadyReposted && repostState === 'idle') setRepostState('done');
+  }, [alreadyReposted, repostState]);
 
   const [zapOpen, setZapOpen] = useState(false);
 
@@ -168,6 +184,7 @@ export function NoteCard({
   }
 
   return (
+    <div>
     <article className="card p-3 flex gap-3">
       <Avatar
         pubkey={note.pubkey}
@@ -232,9 +249,13 @@ export function NoteCard({
               <button
                 onClick={onRepost}
                 disabled={repostState === 'busy' || repostState === 'done'}
-                className="text-muted hover:text-nostr disabled:opacity-60"
+                className={
+                  repostState === 'done'
+                    ? 'text-nostr disabled:opacity-100'
+                    : 'text-muted hover:text-nostr disabled:opacity-60'
+                }
                 aria-label="Repost"
-                title="Repost"
+                title={repostState === 'done' ? 'Already reposted' : 'Repost'}
               >
                 {repostState === 'done' ? '🔁 reposted' : repostState === 'busy' ? '🔁 …' : '🔁 repost'}
               </button>
@@ -319,6 +340,14 @@ export function NoteCard({
         )}
       </div>
     </article>
+    {note.replies.length > 0 && (
+      <div className="mt-3 ml-6 pl-3 border-l-2 border-nostr/30 space-y-3">
+        {note.replies.map((r) => (
+          <NoteCard key={r.id} note={r} repostedIds={repostedIds} />
+        ))}
+      </div>
+    )}
+    </div>
   );
 }
 

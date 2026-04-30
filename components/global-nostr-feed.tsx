@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchAllPodcastNotes,
   useNostrFeed,
+  useViewerReposts,
   type DiscoveredNote,
 } from '@/lib/nostr';
 import { piMaybeUp, resolvePodcastByGuid } from '@/lib/podcast-meta';
@@ -47,6 +48,7 @@ export function GlobalNostrFeed() {
   const attempted = useRef<Set<string>>(new Set());
   const identity = useApp((s) => s.identity);
   const boostsTick = useApp((s) => s.boostsTick);
+  const repostedIds = useViewerReposts(notes, identity);
 
   // Re-read the localStorage log whenever a boost is sent or the active
   // identity changes. Per-npub key isolation is handled by storage.boosts.
@@ -146,6 +148,7 @@ export function GlobalNostrFeed() {
           <NoteCard
             note={item.note}
             podcast={item.note.podcastGuid ? podcasts[item.note.podcastGuid] ?? null : null}
+            repostedIds={repostedIds}
           />
         ) : (
           <BoostCard boost={item.boost} />

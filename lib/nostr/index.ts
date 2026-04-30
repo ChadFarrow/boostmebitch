@@ -25,6 +25,8 @@ export {
 
 export { useNostrFeed } from './use-feed';
 
+export { fetchViewerReposts, useViewerReposts } from './viewer-state';
+
 export {
   publishBoostNote,
 } from './boost-notes';
