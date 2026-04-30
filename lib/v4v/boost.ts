@@ -87,6 +87,81 @@ function recordsForKeysend(
   return records;
 }
 
+// LNURL recipients: park metadata in BoostBox (so the desc URL rides in the
+// LUD-21 comment), fetch a BOLT11 from the LNURL-pay callback, then pay it
+// on whichever rail the boost is using. Failure of BoostBox is non-fatal —
+// the user's typed message becomes the comment instead.
+async function payLnurl(
+  recipient: ValueRecipient,
+  sats: number,
+  rail: Rail,
+  boostagram: Boostagram,
+): Promise<BoostResult> {
+  const stored = await storeBoostMetadata({
+    boostagram,
+    recipient,
+    splitWeight: recipient.split,
+    legMsat: sats * 1000,
+  });
+  // Concat desc + user message so recipients without BoostBox-aware tooling
+  // still see the typed message. fetchLnInvoice truncates to commentAllowed
+  // if the combined string exceeds the recipient's cap.
+  const userMsg = boostagram.message?.trim() || undefined;
+  const comment = stored?.desc
+    ? userMsg ? `${stored.desc} — ${userMsg}` : stored.desc
+    : userMsg;
+  const invoice = await fetchLnInvoice({
+    address: recipient.address,
+    amount_msat: sats * 1000,
+    comment,
+  });
+  let preimage: string;
+  if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);
+  else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
+  else preimage = await weblnPayInvoice(invoice);
+  return {
+    recipient,
+    sats,
+    ok: true,
+    preimage,
+    boostboxUrl: stored?.url,
+    boostboxId: stored?.url?.split('/').pop() || undefined,
+  };
+}
+
+// Keysend (type === 'node'): boostagram TLV rides inline on the payment.
+// Spark has no keysend path, so node-pubkey legs surface a clear error
+// rather than silently failing the boost — caught by payOne's wrapper.
+async function payKeysend(
+  recipient: ValueRecipient,
+  sats: number,
+  rail: Rail,
+  boostagram: Boostagram,
+): Promise<BoostResult> {
+  if (rail === 'spark') {
+    throw new Error('Spark rail does not support keysend (node-pubkey recipient)');
+  }
+  const recPerRecipient: Boostagram = {
+    ...boostagram,
+    value_msat: sats * 1000,
+    name: recipient.name,
+  };
+  if (rail === 'nwc') {
+    const preimage = await nwcKeysend({
+      pubkey: recipient.address,
+      amount_msat: sats * 1000,
+      tlv_records: tlvHexFor(recPerRecipient, recipient),
+    });
+    return { recipient, sats, ok: true, preimage };
+  }
+  const preimage = await weblnKeysend({
+    pubkey: recipient.address,
+    amount_sat: sats,
+    customRecords: recordsForKeysend(recPerRecipient, recipient),
+  });
+  return { recipient, sats, ok: true, preimage };
+}
+
 async function payOne(
   recipient: ValueRecipient,
   sats: number,
@@ -95,75 +170,10 @@ async function payOne(
 ): Promise<BoostResult> {
   const base: BoostResult = { recipient, sats, ok: false };
   if (sats <= 0) return { ...base, ok: true };
-
   try {
-    if (recipient.type === 'lnaddress') {
-      // LNURL invoices can't carry a TLV boostagram, so park the metadata
-      // in BoostBox and put its `desc` (containing the lookup URL) in the
-      // LUD-21 comment. Falls back to the plain message if BoostBox is
-      // unreachable or the recipient doesn't allow comments.
-      const stored = await storeBoostMetadata({
-        boostagram,
-        recipient,
-        splitWeight: recipient.split,
-        legMsat: sats * 1000,
-      });
-      // Concat desc + user message so recipients without BoostBox-aware
-      // tooling still see the typed message. fetchLnInvoice truncates to
-      // commentAllowed if the combined string exceeds the recipient's cap.
-      const userMsg = boostagram.message?.trim() || undefined;
-      const comment = stored?.desc
-        ? userMsg ? `${stored.desc} — ${userMsg}` : stored.desc
-        : userMsg;
-      const invoice = await fetchLnInvoice({
-        address: recipient.address,
-        amount_msat: sats * 1000,
-        comment,
-      });
-      let preimage: string;
-      if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);
-      else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
-      else preimage = await weblnPayInvoice(invoice);
-      return {
-        ...base,
-        ok: true,
-        preimage,
-        boostboxUrl: stored?.url,
-        boostboxId: stored?.url?.split('/').pop() || undefined,
-      };
-    }
-
-    // type === 'node' → keysend. Spark has no keysend path, so node-pubkey
-    // legs degrade with a clear error rather than silently failing the boost.
-    if (rail === 'spark') {
-      return {
-        ...base,
-        ok: false,
-        error: 'Spark rail does not support keysend (node-pubkey recipient)',
-      };
-    }
-
-    const recPerRecipient: Boostagram = {
-      ...boostagram,
-      value_msat: sats * 1000,
-      name: recipient.name,
-    };
-
-    if (rail === 'nwc') {
-      const preimage = await nwcKeysend({
-        pubkey: recipient.address,
-        amount_msat: sats * 1000,
-        tlv_records: tlvHexFor(recPerRecipient, recipient),
-      });
-      return { ...base, ok: true, preimage };
-    } else {
-      const preimage = await weblnKeysend({
-        pubkey: recipient.address,
-        amount_sat: sats,
-        customRecords: recordsForKeysend(recPerRecipient, recipient),
-      });
-      return { ...base, ok: true, preimage };
-    }
+    return recipient.type === 'lnaddress'
+      ? await payLnurl(recipient, sats, rail, boostagram)
+      : await payKeysend(recipient, sats, rail, boostagram);
   } catch (e: any) {
     return { ...base, ok: false, error: e?.message ?? String(e) };
   }

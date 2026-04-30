@@ -47,3 +47,5 @@ export {
   fetchEncryptedMnemonic,
   publishEncryptedMnemonic,
 } from './wallet-backup';
+
+export { hydrateFavorites } from './favorites-hydrator';

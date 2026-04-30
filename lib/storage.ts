@@ -39,12 +39,11 @@ function safeRemove(key: string) {
   try { localStorage.removeItem(key); } catch { /* ignore */ }
 }
 
-function favKey(npub: string | null | undefined) {
-  return `${KEYS.favoritesPrefix}:${npub ?? 'guest'}`;
-}
-
-function boostsKey(npub: string | null | undefined) {
-  return `${KEYS.boostsPrefix}:${npub ?? 'guest'}`;
+// Per-identity storage keys: signed-out users share a single `:guest` bucket;
+// signed-in users get one bucket per npub. Centralized so the convention
+// lives in exactly one place.
+function identityKey(prefix: string, npub: string | null | undefined) {
+  return `${prefix}:${npub ?? 'guest'}`;
 }
 
 // Generic time-bounded cache cell. `t` is the unix-ms write time; `v` is the
@@ -154,7 +153,7 @@ export const storage = {
    */
   boosts: {
     get: (npub: string | null | undefined): StoredBoost[] => {
-      const raw = safeGet(boostsKey(npub));
+      const raw = safeGet(identityKey(KEYS.boostsPrefix, npub));
       if (!raw) return [];
       try {
         const parsed = JSON.parse(raw);
@@ -165,7 +164,7 @@ export const storage = {
     },
     set: (npub: string | null | undefined, list: StoredBoost[]) => {
       const trimmed = list.slice(0, BOOSTS_CAP);
-      safeSet(boostsKey(npub), JSON.stringify(trimmed));
+      safeSet(identityKey(KEYS.boostsPrefix, npub), JSON.stringify(trimmed));
     },
     add: (npub: string | null | undefined, entry: StoredBoost) => {
       const list = storage.boosts.get(npub);
@@ -188,7 +187,7 @@ export const storage = {
   /** Favorites are namespaced by npub; signed-out users use `:guest`. */
   favorites: {
     get: (npub: string | null | undefined): Record<string, FavoritePodcast> => {
-      const raw = safeGet(favKey(npub));
+      const raw = safeGet(identityKey(KEYS.favoritesPrefix, npub));
       if (!raw) return {};
       try {
         const parsed = JSON.parse(raw);
@@ -200,7 +199,7 @@ export const storage = {
       }
     },
     set: (npub: string | null | undefined, v: Record<string, FavoritePodcast>) => {
-      safeSet(favKey(npub), JSON.stringify(v));
+      safeSet(identityKey(KEYS.favoritesPrefix, npub), JSON.stringify(v));
     },
   },
 };
