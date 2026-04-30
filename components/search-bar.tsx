@@ -31,7 +31,7 @@ export function SearchBar({ onResults, onLoading }: Props) {
         className="input pl-8"
         value={q}
         onChange={(e) => setQ(e.target.value)}
-        placeholder="search podcasts… (try ‘homegrown hits’)"
+        placeholder="search podcasts… (try ‘bowl after bowl’)"
       />
     </div>
   );
