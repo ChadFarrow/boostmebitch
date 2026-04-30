@@ -14,6 +14,7 @@ export default function Home() {
   const [selected, setSelected] = useState<Podcast | null>(null);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
+  const [favoritesCollapsed, setFavoritesCollapsed] = useState(false);
   const favorites = useApp((s) => s.favorites);
   const hasFavorites = Object.keys(favorites).length > 0;
 
@@ -76,22 +77,30 @@ export default function Home() {
         ) : showLeftRightLayout ? (
           <div className="grid lg:grid-cols-[minmax(0,360px)_1fr] gap-6">
             <aside className="card p-3 max-h-[70vh] overflow-y-auto">
-              <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
-                {loading
-                  ? 'searching…'
-                  : query
-                    ? `${feeds.length} feeds`
-                    : showFavoritesPanel
-                      ? `${Object.keys(favorites).length} favorites`
-                      : 'feeds'}
-              </div>
+              {showFavoritesPanel && !query && !loading ? (
+                <button
+                  type="button"
+                  onClick={() => setFavoritesCollapsed((v) => !v)}
+                  aria-expanded={!favoritesCollapsed}
+                  className="w-full text-[11px] uppercase tracking-widest text-muted mb-2 px-1 flex items-center justify-between gap-2 hover:text-bone"
+                >
+                  <span>{Object.keys(favorites).length} favorites</span>
+                  <span aria-hidden className="text-bone/60">
+                    {favoritesCollapsed ? '▸' : '▾'}
+                  </span>
+                </button>
+              ) : (
+                <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
+                  {loading ? 'searching…' : query ? `${feeds.length} feeds` : 'feeds'}
+                </div>
+              )}
               {query || feeds.length > 0 || loading ? (
                 <PodcastResults
                   feeds={feeds}
                   selected={null}
                   onSelect={setSelected}
                 />
-              ) : (
+              ) : favoritesCollapsed ? null : (
                 <FavoritesList
                   selected={null}
                   onSelect={setSelected}
