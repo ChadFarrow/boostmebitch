@@ -1,6 +1,6 @@
 import { nip19, type Event } from 'nostr-tools';
 import { withPool } from './pool';
-import { DEFAULT_RELAYS } from './relays';
+import { DEFAULT_RELAYS, PROFILE_RELAYS } from './relays';
 import { storage } from '../storage';
 import type { ProfileMetadata } from './auth';
 
@@ -318,20 +318,32 @@ function newestProfilesByAuthor(
 // Pull NIP-65 (kind:10002) for the given authors and return the union of
 // their write-marked / unmarked relay URLs. Used as a fallback hint set when
 // the default-relay batch couldn't find a profile — the author may publish
-// their kind:0 only to their personal write relays.
+// their kind:0 only to their personal write relays. Queries the union of
+// the caller's relays + PROFILE_RELAYS so authors whose NIP-65 only lives
+// on purplepag.es still get resolved.
 async function fetchAuthorWriteRelays(
   pool: import('nostr-tools').SimplePool,
   relays: string[],
   authors: string[],
 ): Promise<string[]> {
+  const queryRelays = Array.from(new Set([...relays, ...PROFILE_RELAYS]));
+  const opened = queryRelays.filter((r) => !relays.includes(r));
   let events: Event[] = [];
   try {
-    events = await pool.querySync(relays, {
+    events = await pool.querySync(queryRelays, {
       kinds: [10002],
       authors,
     });
   } catch {
     return [];
+  } finally {
+    if (opened.length) {
+      try {
+        pool.close(opened);
+      } catch {
+        // ignore close errors
+      }
+    }
   }
   const newest = new Map<string, Event>();
   for (const e of events) {
@@ -370,17 +382,30 @@ async function fetchProfiles(
   }
   if (!toFetch.length) return out;
 
-  // 2. First pass: batch-query the standard relay set.
+  // 2. First pass: batch-query the standard relay set unioned with the
+  //    profile-outbox relays (purplepag.es etc.). The outbox relays exist
+  //    specifically to host kind:0 for arbitrary authors, so this catches
+  //    the common case where an author's profile isn't on DEFAULT_RELAYS.
+  const firstPassRelays = Array.from(new Set([...relays, ...PROFILE_RELAYS]));
+  const firstPassExtras = firstPassRelays.filter((r) => !relays.includes(r));
   let firstPassOk = false;
   let events: Event[] = [];
   try {
-    events = await pool.querySync(relays, {
+    events = await pool.querySync(firstPassRelays, {
       kinds: [0],
       authors: toFetch,
     });
     firstPassOk = true;
   } catch {
     // swallow — fall through to NIP-65 pass below
+  } finally {
+    if (firstPassExtras.length) {
+      try {
+        pool.close(firstPassExtras);
+      } catch {
+        // ignore close errors
+      }
+    }
   }
   for (const [pubkey, profile] of newestProfilesByAuthor(events)) {
     out.set(pubkey, profile);

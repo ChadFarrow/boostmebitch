@@ -10,6 +10,16 @@ export const DEFAULT_RELAYS = [
   'wss://relay.fountain.fm',
 ];
 
+// Dedicated outbox relays for kind:0 (profile metadata) and kind:10002
+// (NIP-65 relay lists). purplepag.es is the de facto standard profile
+// outbox used by Damus, Amethyst, etc. — authors whose primary relays
+// don't intersect DEFAULT_RELAYS still tend to have their kind:0 mirrored
+// here. Always unioned into kind:0 / kind:10002 lookups so the global
+// feed can render display names + avatars for arbitrary authors.
+export const PROFILE_RELAYS = [
+  'wss://purplepag.es',
+];
+
 // NIP-65 relay list (kind:10002). We only consume the write side — we never
 // read events from arbitrary relays based on someone's read list, so the
 // parser drops it.
