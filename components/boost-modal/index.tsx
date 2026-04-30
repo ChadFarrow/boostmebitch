@@ -12,7 +12,6 @@ import { RailPicker } from './rail-picker';
 import { AmountInput } from './amount-input';
 import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
-import { NostrShareToggle, type RelaySource } from './nostr-share-toggle';
 import { SplitsPreview, LightningStatus } from './splits-preview';
 import { PublishStatus, type PublishState } from './publish-status';
 
@@ -55,7 +54,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   }
 
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
-  const relaySource: RelaySource =
+  const relaySource: 'override' | 'nip65' | 'default' =
     storage.relays.isOverridden()
       ? 'override'
       : identity?.writeRelays?.length
@@ -201,13 +200,44 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           <AmountInput sats={sats} onChange={setSats} />
           <MessageInput value={msg} onChange={setMsg} />
           <SenderName value={name} onChange={setName} identity={identity} />
-          <NostrShareToggle
-            checked={shareNostr}
-            onChange={handleShareNostrChange}
-            identity={identity}
-            relayCount={relays.length}
-            relaySource={relaySource}
-          />
+          <label
+            className={`card flex items-start gap-3 p-3 cursor-pointer transition ${
+              !identity ? 'opacity-40 cursor-not-allowed' : ''
+            } ${shareNostr && identity ? '!border-nostr/60' : ''}`}
+          >
+            <input
+              type="checkbox"
+              checked={shareNostr && !!identity}
+              disabled={!identity}
+              onChange={(e) => handleShareNostrChange(e.target.checked)}
+              className="accent-nostr mt-0.5"
+            />
+            <div className="flex-1 text-xs">
+              <div className="text-bone flex items-center gap-2">
+                <span className={shareNostr && identity ? 'text-nostr' : 'text-muted'}>◆</span>
+                {identity && !shareNostr ? 'Private boost — Lightning only' : 'Share boost on Nostr'}
+              </div>
+              <div className="text-muted mt-0.5 leading-relaxed">
+                {identity ? (
+                  shareNostr ? (
+                    <>
+                      Publishes a kind:1 note tagged with NIP-73 podcast refs to {relays.length} relays.
+                      {relaySource === 'nip65' && (
+                        <span className="text-nostr/80"> · using your NIP-65 list</span>
+                      )}
+                      {relaySource === 'default' && (
+                        <span className="text-muted/70"> · using defaults (no NIP-65 found)</span>
+                      )}
+                    </>
+                  ) : (
+                    'No Nostr note will be published. Only the Lightning payment goes out.'
+                  )
+                ) : (
+                  'Sign in with Nostr to enable.'
+                )}
+              </div>
+            </div>
+          </label>
           <SplitsPreview recipients={value.recipients} splits={splits} results={results} />
           <LightningStatus results={results} totalRecipients={value.recipients.length} />
           <PublishStatus state={pubState} />
