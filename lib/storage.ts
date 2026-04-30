@@ -18,7 +18,7 @@ const KEYS = {
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
-  profilePrefix: 'bmb:profile',       // kind:0 metadata, keyed by pubkey (hex)
+  profilePrefix: 'bmb:profile2',      // kind:0 metadata, keyed by pubkey (hex). Bumped from `:profile` to wipe stale negative-cache entries from before purplepag.es was added to the lookup path.
 } as const;
 
 const BOOSTS_CAP = 200;
