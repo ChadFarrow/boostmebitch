@@ -14,7 +14,7 @@ The README at the repo root describes the architecture in detail; treat it as th
 
 ```bash
 npm install
-cp .env.example .env.local       # then fill in PI key + secret
+cp .env.example .env.local       # then fill in PI key + secret + Breez key
 npm run dev                       # next dev
 npm run build                     # next build
 npm run start                     # next start (prod)
@@ -25,25 +25,30 @@ There is **no test runner, no typecheck script, and no formatter configured.** `
 
 Path alias: `@/*` maps to the repo root (`tsconfig.json` `baseUrl: "."`). Imports look like `@/lib/types`, `@/components/player`.
 
+`.env.local` keys: `PODCAST_INDEX_KEY` / `PODCAST_INDEX_SECRET` (server-only, used by `lib/pi.ts`) and `NEXT_PUBLIC_BREEZ_API_KEY` (browser-readable; the Spark SDK initializes in the client because it's a self-custodial wallet — the key gates SDK usage, not user funds). `APP_NAME` is optional, defaults to `boostmebitch`.
+
 ## Server vs client boundary (don't cross it)
 
 The Podcast Index credentials (`PODCAST_INDEX_KEY` / `PODCAST_INDEX_SECRET`) must never reach the browser. Enforced by file conventions, not bundler config:
 
-- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`, hits Podcast Index). Imported only by `app/api/search/route.ts` and `app/api/feed/route.ts`. Never import it from anything in `components/` or from `app/page.tsx`. The BoostBox proxy at `app/api/lightning/boostbox/route.ts` follows the same pattern — it reads `BOOSTBOX_URL` / `BOOSTBOX_API_KEY` and forwards to the upstream service so the API key never reaches the browser.
-- **Browser-only:** `lib/store.ts` (Zustand, `'use client'`), `lib/v4v/nwc.ts` / `webln.ts` / `lnaddr.ts`, `lib/nostr/`, `lib/storage.ts` — they all touch `window.*` or `localStorage`. SSR guards exist (`typeof window === 'undefined'`) but assume client context.
+- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`, hits Podcast Index) and `lib/rss.ts` (raw RSS parser used by the dev feed loader). Imported only by route handlers under `app/api/*`. Never import either from `components/` or from `app/page.tsx`. The BoostBox proxy at `app/api/lightning/boostbox/route.ts` follows the same pattern — it reads `BOOSTBOX_URL` / `BOOSTBOX_API_KEY` and forwards to the upstream service so the API key never reaches the browser.
+- **Browser-only:** `lib/store.ts` (Zustand, `'use client'`), `lib/v4v/nwc.ts` / `webln.ts` / `lnaddr.ts` / `spark.ts` / `boostbox.ts`, `lib/nostr/`, `lib/storage.ts`, `lib/podcast-meta.ts` — they all touch `window.*`, `localStorage`, `sessionStorage`, IndexedDB (Breez SDK), or load WASM. SSR guards exist (`typeof window === 'undefined'`) but assume client context.
 - **Isomorphic:** `lib/types.ts` (pure types), `lib/v4v/boost.ts` (orchestration logic; pulled in by client code).
 
 Components fetch via the local API routes (`fetch('/api/feed?id=…')`) — they never call Podcast Index directly.
 
 ## Nostr identity enrichment
 
-`loginWithExtension()` only returns `{ pubkey, npub }` from NIP-07. After login, `components/nostr-auth.tsx:loadProfile` runs in the background and merges three more pieces onto the identity:
+`loginWithExtension()` only returns `{ pubkey, npub }` from NIP-07. After login (or after the fast-path identity hydration described below), `components/nostr-auth.tsx:loadProfile` runs in the background and merges four more pieces onto/around the identity:
 
 - **Profile metadata (kind:0):** `name`, `display_name`, `picture`, `nip05`, `about` — used to render the avatar + display name in the header. Also auto-fills the boost modal's "From" field.
 - **NIP-65 relay list (kind:10002):** `writeRelays` is the union of unmarked entries and entries marked `write`. Used as the publish target for boost notes and favorites events when present.
 - **NIP-51 favorites (kind:30003 with `d:boostmebitch:favorites`):** the user's saved-podcast set. See "Favorites" below.
+- **Spark wallet backup (kind:30078 with `d:boostmebitch:wallet:spark`):** NIP-44 v2 encrypted-to-self mnemonic. Best-effort silent restore: if found, `sparkInitFromMnemonic` runs in the background and the account-menu's Spark section flips to "wallet ready" without user action. Failures (no NIP-44 in signer, no backup yet, decrypt error) are swallowed — user can hit "Create new" or "Restore from Nostr" manually.
 
-All three queries run against `DEFAULT_RELAYS`. If a user has none of those events on those relays, we fall back to the npub-only header, default publish set, and empty favorites respectively. We do NOT fetch contacts (kind:3), DMs, reactions, or anything else — the only NIP-07 permissions ever requested are `getPublicKey` (login) and `signEvent` (each boost or favorites mutation).
+All queries run against `DEFAULT_RELAYS`. If a user has none of those events on those relays, we fall back to the npub-only header, default publish set, empty favorites, and empty wallet respectively. NIP-07 permissions ever requested: `getPublicKey` (login), `signEvent` (each boost / favorites / wallet mutation), and `nip44.encrypt`/`nip44.decrypt` (wallet backup only). We do NOT fetch contacts (kind:3), DMs, reactions, or anything else.
+
+**Fast-path identity hydration:** on page load, `nostr-auth.tsx` decodes the cached `bmb:npub` synchronously via `nip19.decode` and sets a bare `{ pubkey, npub }` identity *immediately* — the avatar shows up in the header within one frame. The signer (`window.nostr.getPublicKey`) is only called lazily, when the user actually needs to sign something. Profile / relay-list / favorites / wallet enrich asynchronously after that.
 
 `resolvePublishRelays(identity)` in `lib/nostr/` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded.
 
@@ -64,7 +69,35 @@ Hydration on login (in `loadProfile`):
 
 Sign-out clears the in-memory favorites; the per-npub localStorage cache is left in place so re-signing in is fast.
 
+**UUID filter at parse:** `lib/nostr/favorites.ts` enforces a UUID shape on every `i: podcast:guid:<value>` tag in the relay event. Older versions of this app (and some other clients reusing the d-tag) wrote feed IDs and arbitrary strings into the i-tag. Those are returned as `droppedGuids` and never sent to PI. When the count is non-zero, `nostr-auth.tsx` registers `window.bmbCleanFavorites()` so the user can republish a cleaned event from devtools.
+
 What this code deliberately doesn't do: episode-level favorites, multiple lists/categories, or any "share this list" UI. The kind:30003 is publicly readable to anyone with the user's pubkey + relay set.
+
+## Wallets — account menu (top right)
+
+All wallet config lives in the avatar dropdown rendered by `components/nostr-auth.tsx:AccountMenu`. The boost modal's rail picker (`components/boost-modal/rail-picker.tsx`) is a pure tab selector — no setup affordances. The hint line at the bottom of the picker points users back to the menu when no rail is configured.
+
+Three wallet sub-cards, each its own component:
+
+- `components/nwc-wallet.tsx` — paste a `nostr+walletconnect://` URI / disconnect. Persists to `bmb:nwc_uri` via `lib/v4v/nwc.ts`.
+- `components/spark-wallet.tsx` — Create new (BIP-39 → mnemonic display → NIP-44 encrypt-to-self → kind:30078 publish → SDK init), Restore from Nostr (fetch + decrypt + init), Disconnect. Once initialized, `<ReadyPanel>` shows the live balance + a deposit-invoice generator (BOLT11 + QR + copy + auto-dismiss when the payment lands).
+- `components/webln-wallet.tsx` — auto-detects `window.webln`. "Enable for this site" pre-authorizes so the first boost doesn't pause for a permission prompt.
+
+Wallet state changes (Spark init / disconnect / auto-restore landing) propagate to the UI via the `subscribeSpark()` listener pattern in `lib/v4v/spark.ts`. The menu re-reads `hasSpark()` on every notification — works whether the menu is closed or already open when state flips.
+
+## Spark rail (Breez SDK)
+
+`lib/v4v/spark.ts` wraps `@breeztech/breez-sdk-spark`. The package ships as a WASM module with multiple entry points; we use the default browser export and the SDK's default export (`initBreezSDK`) as a one-shot WASM loader. Init is two-stage and the WASM only lands in the bundle the first time a user opens a Spark wallet (dynamic import inside `sparkInitFromMnemonic`).
+
+Load-bearing rules:
+
+1. **BOLT11 only.** Spark cannot keysend. `lib/v4v/boost.ts` rejects every `node`-type recipient on the Spark rail per-leg with a clear error, never silently. lnaddress recipients work because `payOne` fetches a BOLT11 from the LNURL-pay callback first.
+2. **Network is `mainnet` or `regtest` — there is no public testnet for Spark.** First end-to-end boost moves real sats. Use `network: 'regtest'` against a local node for development; the type union enforces this.
+3. **`storageDir` is keyed on `(ownerPubkey[:8], sha256(mnemonic)[:8])`.** Two wallets for the same npub get different SDK directories — `walletStorageDir()` does the hashing. Keying on pubkey alone collides if a user disconnects + creates fresh; the SDK either rejects re-init or corrupts existing wallet state.
+4. **Two-step send.** `sparkPayInvoice(invoice)` runs `sdk.prepareSendPayment({ paymentRequest })` then `sdk.sendPayment({ prepareResponse })`. Preimage extracted from `payment.preimage` or `payment.details.htlcDetails.preimage` depending on the payment shape.
+5. **Events drive the balance, not polling.** `sparkInitFromMnemonic` exposes `subscribeSparkEvents()` wrapping the SDK's `addEventListener`. `paymentSucceeded`, `claimedDeposits`, `newDeposits`, `synced` trigger an immediate `sparkGetInfo()` refresh in `<ReadyPanel>`. `paymentSucceeded`/`claimedDeposits`/`newDeposits` also auto-dismiss any outstanding deposit invoice.
+
+The mnemonic is published encrypt-to-self as kind:30078 with `d:boostmebitch:wallet:spark` — see `lib/nostr/wallet-backup.ts`. Anyone with the user's nsec can decrypt; the Nostr backup is convenience, not the only copy. The seed-display step in `<SparkWallet>` is the user's chance to write it down. Re-create flow checks for an existing backup and confirms before overwriting (kind:30078 is a NIP-33 replaceable event — newer wins, prior backup is gone forever from relays).
 
 ## Show-level boost
 
@@ -82,7 +115,7 @@ The "⚡ BOOST" button at the top-right of `EpisodeList`'s header opens the moda
 `components/boost-modal/index.tsx` orchestrates the user flow (state + `go()`), with render-only slice components in the same folder; `lib/v4v/boost.ts` is the engine. A few rules are load-bearing:
 
 1. **Lightning first, then Nostr.** `publishBoostNote` only fires after `sendBoost` returns *and* at least one recipient succeeded (`collected.some(r => r.ok)`). This prevents false "I boosted" notes when payments all fail. Don't reorder.
-2. **Rail priority is NWC over WebLN.** `pickRail()` in `lib/v4v/boost.ts` returns `'nwc'` if a URI is saved, else `'webln'`, else `null`. The modal lets the user override but defaults to this.
+2. **Rail priority is NWC > Spark > WebLN.** `pickRail()` in `lib/v4v/boost.ts` returns `'nwc'` if a URI is saved, else `'spark'` if a Spark wallet is initialized, else `'webln'` if a browser provider is detected, else `null`. The modal lets the user override but defaults to this. Spark only handles BOLT11 / lnaddress legs — see "Spark rail" above.
 3. **Episode value-block fallback happens server-side.** `app/api/feed/route.ts` does `e.value ?? podcast.value` before returning. Components assume `episode.value` is populated when the channel has one — don't re-implement the fallback in the modal.
 4. **Splits use weights, not percentages.** `splitSats()` floors per-recipient, then dumps the remainder onto the first non-fee recipient. `ValueRecipient.split` is a weight; total weight is the denominator.
 5. **TLV records:** boostagram JSON goes in record `7629169` (Podcasting 2.0 standard) — that's the only TLV we add for boost metadata. The `sender_id` field already lives inside the JSON; we deliberately do **not** also emit a separate `696969` sender record because that key collides with shared-node sub-account routing (e.g. getalby.com uses `customKey=696969 customValue=<sub-account>`). Per-recipient `customKey`/`customValue` from the value block IS attached to the keysend so payments to shared nodes route to the right sub-account. Keep the JSON shape compatible with Helipad / Fountain / Castamatic ingestion.
@@ -119,7 +152,28 @@ Same `signAndPublish` helper handles both kind:1 boost notes and kind:30003 favo
 
 ## v4v-toolkit swap-out boundary
 
-`lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets / signers. Components import only from these three entry points: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence helpers), `lib/nostr/` barrel (auth + publish). When swapping in `v4v-toolkit`, replace internals here without touching `components/` or `app/`.
+`lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets / signers. Components import only from these entry points: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence), `lib/v4v/spark.ts` (Spark wallet surface), `lib/nostr/` barrel (auth + publish + wallet backup). When swapping in `v4v-toolkit`, replace internals here without touching `components/` or `app/`.
+
+## /api/by-guid resilience and PI breaker
+
+`/api/by-guid` 5xxs when the Podcast Index keys are missing or PI is down. Without protection, a returning user with a 100-guid favorites set hammers the broken endpoint on every reload — and StrictMode + Fast Refresh can amplify that into thousands of dev requests.
+
+`lib/podcast-meta.ts` is the single resolver everyone uses (favorites hydrator, global Nostr feed, future surfaces). Four guards stacked:
+
+1. In-memory `Map<guid, Podcast | null>` — fastest path within a page session, also caches misses so the same guid is only attempted once per load.
+2. `storage.podcastMeta` (localStorage, 7-day TTL) — survives reloads.
+3. **Circuit breaker.** First 5xx response trips `sessionStorage['bmb:pi:dead'] = '1'`. Persists across reloads in the same tab (a hard refresh starts a new session). `piMaybeUp()` lets callers gate parallel batches before firing fetches.
+4. Network.
+
+Callers that fan out (favorites hydrator, global Nostr feed) use a **probe-first-then-batch** pattern: await one `resolvePodcastByGuid` first, check `piMaybeUp()`, only then fire `Promise.all` over the rest. One wasted fetch per page load instead of N.
+
+The global feed's resolver runs in a `useEffect` that depends only on `notes` (not on the local `podcasts` state). Tracking which guids have been attempted lives in a `useRef<Set<string>>` so `setPodcasts` doesn't re-fire the effect — that pattern caused a fetch storm where cancelled-but-already-in-flight requests kept pinning the dev server.
+
+## Dev RSS feed loader
+
+`lib/rss.ts` + `app/api/feed-by-url/route.ts` parse a raw Podcasting 2.0 RSS feed into the same `{ podcast, episodes }` shape that `/api/feed` returns from PI. The empty-state on `app/page.tsx` has a "Load test feed (Bowl After Bowl)" button that hits the URL endpoint, bypassing PI entirely. `EpisodeList` accepts an optional `feedUrl` prop that swaps to the URL-based endpoint when set. Synthetic negative `feedId` distinguishes dev-loaded feeds from real PI results in logs.
+
+This was added so the app is exercisable locally without `PODCAST_INDEX_KEY` configured.
 
 ## Background art and the canvas-bg gotcha
 
@@ -136,7 +190,15 @@ Everything else lives in `localStorage` on the device and is never sent server-s
 - `bmb:sender_name` — last "From" name typed into the boost modal (`storage.senderName`).
 - `bmb:npub` — sentinel for silent re-login on page load (`storage.npub`).
 - `bmb:favorites:<npub>` / `bmb:favorites:guest` — per-identity favorites cache (`storage.favorites.get(npub) / .set(npub, …)`).
+- `bmb:pmeta:<guid>` — `/api/by-guid` resolution cache, 7-day TTL (`storage.podcastMeta`). Used by the favorites hydrator, global Nostr feed, and any future surface that needs a `Podcast` from a guid.
+- `bmb:feed:<key>` — last `DiscoveredNote[]` per feed surface, 5-minute TTL (`storage.feedNotes`). Drives the global feed's stale-while-revalidate paint.
 - `bmb:boosts:<npub>` / `bmb:boosts:guest` — local log of sent boosts (`storage.boosts`), capped at 200 newest-first. Each entry holds the boostagram intent + per-leg results, with the BoostBox URL on each LNURL leg and the published Nostr `noteId` patched in once `publishBoostNote` resolves. The Zustand `boostsTick` (`bumpBoosts()`) wakes up subscribers — `GlobalNostrFeed` mixes these into the relay-discovered notes and dedupes any whose `noteId` matches a returned note.
+
+`sessionStorage` (per-tab, not per-device):
+
+- `bmb:pi:dead` — circuit-breaker sentinel set when `/api/by-guid` returns 5xx. Persists across reloads in the same tab, cleared on hard refresh into a new tab.
+
+External persistence: the **Spark wallet's mnemonic** lives encrypted on Nostr relays as kind:30078 (publicly readable, private to the user's nsec). The Breez SDK's own wallet state (UTXOs, payment history, etc.) lives in IndexedDB managed by the SDK at `bmb-spark-<pubkey:8>-<sha256(mnemonic):8>`.
 
 If you add another persisted field, add a typed accessor to `lib/storage.ts` and follow the `bmb:*` prefix.
 

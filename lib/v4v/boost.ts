@@ -7,6 +7,7 @@
 import type { Boostagram, ValueBlock, ValueRecipient, BoostResult } from '@/lib/types';
 import { hasNwc, nwcKeysend, nwcPayInvoice } from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
+import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
 import { storeBoostMetadata } from './boostbox';
 
@@ -17,13 +18,17 @@ import { storeBoostMetadata } from './boostbox';
 // customKey/customValue pairs.
 const TLV_BOOSTAGRAM = 7629169;
 
-export type Rail = 'nwc' | 'webln';
+export type Rail = 'nwc' | 'webln' | 'spark';
 
 // Re-export so callers can import from one place
 export type { BoostResult };
 
+// Priority: NWC (explicit user setup) > Spark (auto-provisioned self-custodial)
+// > WebLN (browser extension fallback). Users can override per-boost in the
+// modal; this is just the default.
 export function pickRail(): Rail | null {
   if (hasNwc()) return 'nwc';
+  if (hasSpark()) return 'spark';
   if (hasWebln()) return 'webln';
   return null;
 }
@@ -115,10 +120,10 @@ async function payOne(
         amount_msat: sats * 1000,
         comment,
       });
-      const preimage =
-        rail === 'nwc'
-          ? await nwcPayInvoice(invoice)
-          : await weblnPayInvoice(invoice);
+      let preimage: string;
+      if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);
+      else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
+      else preimage = await weblnPayInvoice(invoice);
       return {
         ...base,
         ok: true,
@@ -128,7 +133,16 @@ async function payOne(
       };
     }
 
-    // type === 'node' → keysend
+    // type === 'node' → keysend. Spark has no keysend path, so node-pubkey
+    // legs degrade with a clear error rather than silently failing the boost.
+    if (rail === 'spark') {
+      return {
+        ...base,
+        ok: false,
+        error: 'Spark rail does not support keysend (node-pubkey recipient)',
+      };
+    }
+
     const recPerRecipient: Boostagram = {
       ...boostagram,
       value_msat: sats * 1000,
@@ -163,7 +177,7 @@ export async function sendBoost(args: {
   onProgress?: (r: BoostResult, index: number, total: number) => void;
 }): Promise<BoostResult[]> {
   const rail = args.rail ?? pickRail();
-  if (!rail) throw new Error('No payment provider available (connect NWC or WebLN)');
+  if (!rail) throw new Error('No payment provider available (connect NWC, Spark, or WebLN)');
 
   const recipients = args.value.recipients;
   const splits = splitSats(args.totalSats, recipients);

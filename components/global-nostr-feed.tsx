@@ -1,10 +1,11 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchAllPodcastNotes,
   useNostrFeed,
   type DiscoveredNote,
 } from '@/lib/nostr';
+import { piMaybeUp, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
 import type { Podcast, StoredBoost } from '@/lib/types';
@@ -12,36 +13,11 @@ import { FeedSection } from './feed-section';
 import { NoteCard } from './nostr-note-card';
 import { BoostCard } from './boost-card';
 
-// In-memory mirror of storage.podcastMeta — avoids re-parsing localStorage on
-// every NoteCard render within the same page session.
-const podcastMem = new Map<string, Podcast | null>();
-
-async function resolvePodcast(guid: string): Promise<Podcast | null> {
-  if (podcastMem.has(guid)) return podcastMem.get(guid) ?? null;
-  const cached = storage.podcastMeta.get(guid);
-  if (cached) {
-    podcastMem.set(guid, cached);
-    return cached;
-  }
-  try {
-    const r = await fetch(`/api/by-guid?guid=${encodeURIComponent(guid)}`);
-    if (!r.ok) {
-      podcastMem.set(guid, null);
-      return null;
-    }
-    const { podcast } = (await r.json()) as { podcast: Podcast };
-    if (podcast) {
-      podcastMem.set(guid, podcast);
-      storage.podcastMeta.set(guid, podcast);
-      return podcast;
-    }
-    podcastMem.set(guid, null);
-    return null;
-  } catch {
-    podcastMem.set(guid, null);
-    return null;
-  }
-}
+// UUID-shaped podcast:guid filter. Some clients post boost notes with
+// non-UUID values in the i-tag (feed IDs, episode strings); those will
+// never resolve via PI's /podcasts/byguid endpoint, so we drop them at
+// the source instead of round-tripping a 404.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Discriminated union of feed items. `ts` is unix ms across both kinds so
 // they sort cleanly. Notes use `createdAt * 1000`; stored boosts use the
@@ -63,6 +39,12 @@ export function GlobalNostrFeed() {
     fetcher: fetchAllPodcastNotes,
   });
   const [podcasts, setPodcasts] = useState<Record<string, Podcast | null>>({});
+  // Tracks guids we've already kicked off a resolve for. Lives in a ref
+  // (not state) so updating it doesn't re-fire the effect — putting it in
+  // deps with the effect's own setPodcasts created a fetch storm where
+  // cancelled-but-already-in-flight requests kept hitting the network on
+  // every render cycle.
+  const attempted = useRef<Set<string>>(new Set());
   const identity = useApp((s) => s.identity);
   const boostsTick = useApp((s) => s.boostsTick);
 
@@ -74,20 +56,33 @@ export function GlobalNostrFeed() {
     [identity?.npub, boostsTick],
   );
 
-  // Resolve podcast metadata for every unique guid that appears in `notes` —
-  // covers both the SWR cache paint and every refresh.
+  // Resolve podcast metadata for every unique guid in `notes`. Probe-first
+  // pattern: do the first fetch sequentially so the breaker can trip before
+  // the rest of the batch fires in parallel.
   useEffect(() => {
     if (!notes) return;
     const guids = Array.from(
       new Set(notes.map((n) => n.podcastGuid).filter((g): g is string => !!g)),
-    );
-    for (const guid of guids) {
-      if (guid in podcasts) continue;
-      resolvePodcast(guid).then((p) => {
-        setPodcasts((prev) => ({ ...prev, [guid]: p }));
+    ).filter((g) => UUID_RE.test(g) && !attempted.current.has(g));
+    if (guids.length === 0) return;
+    for (const g of guids) attempted.current.add(g);
+    let cancelled = false;
+    (async () => {
+      const [first, ...rest] = guids;
+      const firstPodcast = await resolvePodcastByGuid(first);
+      if (cancelled) return;
+      setPodcasts((prev) => ({ ...prev, [first]: firstPodcast }));
+      if (!piMaybeUp()) return;
+      const restPodcasts = await Promise.all(rest.map(resolvePodcastByGuid));
+      if (cancelled) return;
+      setPodcasts((prev) => {
+        const next = { ...prev };
+        rest.forEach((g, i) => { next[g] = restPodcasts[i]; });
+        return next;
       });
-    }
-  }, [notes, podcasts]);
+    })();
+    return () => { cancelled = true; };
+  }, [notes]);
 
   const merged = useMemo<FeedItem[] | null>(() => {
     if (notes === null) {
