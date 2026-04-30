@@ -5,6 +5,7 @@ import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
+import { BoltIcon } from '@/components/icons';
 import { useApp } from '@/lib/store';
 
 import type { Podcast } from '@/lib/types';
@@ -43,7 +44,7 @@ export default function Home() {
             className="flex items-baseline gap-2 hover:opacity-80 transition"
             aria-label="Go to home"
           >
-            <span className="text-bolt text-2xl">⚡</span>
+            <BoltIcon className="w-6 h-6 text-bolt" />
             <span className="font-display text-2xl">Boost Me Bitch</span>
             <span className="text-[10px] text-muted uppercase tracking-widest hidden sm:inline">
               podcasting 2.0
