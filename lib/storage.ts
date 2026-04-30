@@ -18,7 +18,7 @@ const KEYS = {
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
-  profilePrefix: 'bmb:profile2',      // kind:0 metadata, keyed by pubkey (hex). Bumped from `:profile` to wipe stale negative-cache entries from before purplepag.es was added to the lookup path.
+  profilePrefix: 'bmb:profile3',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion so stale negative-cache entries don't pin missing profiles for the 1-hour miss TTL.
 } as const;
 
 const BOOSTS_CAP = 200;
@@ -75,7 +75,7 @@ function setTimed<T>(key: string, value: T) {
 const PODCAST_META_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const FEED_NOTES_TTL_MS = 5 * 60 * 1000;             // 5 minutes
 const PROFILE_TTL_MS = 7 * 24 * 60 * 60 * 1000;      // 7 days for found profiles
-const PROFILE_MISS_TTL_MS = 60 * 60 * 1000;          // 1 hour for known-missing
+const PROFILE_MISS_TTL_MS = 15 * 60 * 1000;          // 15 min for known-missing — short so PROFILE_RELAYS additions / temporary relay outages re-resolve naturally on the user's next visit
 
 export const storage = {
   npub: {

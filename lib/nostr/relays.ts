@@ -11,13 +11,23 @@ export const DEFAULT_RELAYS = [
 ];
 
 // Dedicated outbox relays for kind:0 (profile metadata) and kind:10002
-// (NIP-65 relay lists). purplepag.es is the de facto standard profile
-// outbox used by Damus, Amethyst, etc. — authors whose primary relays
-// don't intersect DEFAULT_RELAYS still tend to have their kind:0 mirrored
-// here. Always unioned into kind:0 / kind:10002 lookups so the global
-// feed can render display names + avatars for arbitrary authors.
+// (NIP-65 relay lists). Always unioned into kind:0 / kind:10002 lookups
+// so the global feed can render display names + avatars for arbitrary
+// authors whose primary relays don't intersect DEFAULT_RELAYS.
+//
+//  - purplepag.es: the de facto standard profile outbox (Damus, Amethyst).
+//  - nostr.bitcoiner.social: Bitcoin-community relay; many podcast/V4V
+//    authors publish their metadata here (e.g. Jupiter Broadcasting hosts).
+//  - eden.nostr.land: broadly-mirrored aggregator; catches profiles whose
+//    publisher only chose niche relays.
+//
+// querySync runs all relays in parallel with a per-relay 4.4s eose timeout,
+// so the added relays don't compound latency — wall time is bounded by the
+// slowest single relay.
 export const PROFILE_RELAYS = [
   'wss://purplepag.es',
+  'wss://nostr.bitcoiner.social',
+  'wss://eden.nostr.land',
 ];
 
 // NIP-65 relay list (kind:10002). We only consume the write side — we never
