@@ -10,6 +10,7 @@ import { sendZap } from '@/lib/v4v/zap';
 import { useApp } from '@/lib/store';
 import type { Podcast } from '@/lib/types';
 import { getErrorMessage } from '@/lib/util';
+import { DefaultAvatar } from './default-avatar';
 
 // http(s) URLs only — bech32 nostr: URIs are stripped from the content via
 // stripNostrUris before this runs since they're noise to a non-Nostr-savvy
@@ -176,7 +177,11 @@ export function NoteCard({
           className="w-9 h-9 rounded-full object-cover border border-bone/20 flex-shrink-0"
         />
       ) : (
-        <div className="w-9 h-9 rounded-full border border-bone/20 bg-line flex-shrink-0" />
+        <DefaultAvatar
+          pubkey={note.pubkey}
+          name={note.author?.display_name || note.author?.name}
+          className="w-9 h-9 rounded-full border border-bone/20 flex-shrink-0 text-sm"
+        />
       )}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap text-xs">
