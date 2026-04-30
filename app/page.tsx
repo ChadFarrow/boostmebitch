@@ -9,22 +9,17 @@ import { useApp } from '@/lib/store';
 
 import type { Podcast } from '@/lib/types';
 
-// Hardcoded test feed for local dev when PODCAST_INDEX_KEY isn't set.
-// Bypasses search and loads via /api/feed-by-url.
-const DEV_FEED_URL = 'https://feed.bowlafterbowl.com/feed.xml';
-
 export default function Home() {
   const [feeds, setFeeds] = useState<Podcast[]>([]);
   const [selected, setSelected] = useState<Podcast | null>(null);
-  const [devFeedUrl, setDevFeedUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const favorites = useApp((s) => s.favorites);
   const hasFavorites = Object.keys(favorites).length > 0;
 
   const showFavoritesPanel = !query && hasFavorites;
-  const showLeftRightLayout = loading || feeds.length > 0 || selected || devFeedUrl || showFavoritesPanel;
-  const inDetailView = !!(selected || devFeedUrl);
+  const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel;
+  const inDetailView = !!selected;
 
   return (
     <main className="min-h-screen pb-32">
@@ -68,14 +63,14 @@ export default function Home() {
           // in state).
           <div>
             <button
-              onClick={() => { setSelected(null); setDevFeedUrl(null); }}
+              onClick={() => setSelected(null)}
               className="btn-ghost text-xs mb-3"
               aria-label="Back"
             >
               ← back to results
             </button>
             <section className="card p-4 min-h-[40vh]">
-              <EpisodeList feedId={selected?.id ?? null} feedUrl={devFeedUrl} />
+              <EpisodeList feedId={selected!.id} />
             </section>
           </div>
         ) : showLeftRightLayout ? (
@@ -108,7 +103,7 @@ export default function Home() {
             </section>
           </div>
         ) : (
-          <EmptyState onLoadDevFeed={() => setDevFeedUrl(DEV_FEED_URL)} />
+          <EmptyState />
         )}
       </section>
 
@@ -123,30 +118,20 @@ export default function Home() {
   );
 }
 
-function EmptyState({ onLoadDevFeed }: { onLoadDevFeed: () => void }) {
+function EmptyState() {
   return (
-    <>
-      <div className="grid sm:grid-cols-3 gap-4 mt-6">
-        {[
-          { n: '01', t: 'Search', d: 'Powered by the Podcast Index. V4V-enabled feeds get a yellow stamp.' },
-          { n: '02', t: 'Listen', d: 'Full-fidelity playback from the original enclosure URL.' },
-          { n: '03', t: 'Boost', d: 'Splits go out via NWC or WebLN. Boostagrams ride along in TLV 7629169.' },
-        ].map((step) => (
-          <article key={step.n} className="card p-4">
-            <div className="font-mono text-bolt text-sm">{step.n}</div>
-            <div className="font-display text-xl mt-1">{step.t}</div>
-            <p className="text-xs text-muted mt-1.5 leading-relaxed">{step.d}</p>
-          </article>
-        ))}
-      </div>
-      <div className="mt-6 text-center">
-        <button onClick={onLoadDevFeed} className="btn-ghost text-xs">
-          Load test feed (Bowl After Bowl)
-        </button>
-        <div className="text-[10px] text-muted mt-1">
-          dev shortcut — bypasses Podcast Index, loads RSS directly
-        </div>
-      </div>
-    </>
+    <div className="grid sm:grid-cols-3 gap-4 mt-6">
+      {[
+        { n: '01', t: 'Search', d: 'Powered by the Podcast Index. V4V-enabled feeds get a yellow stamp.' },
+        { n: '02', t: 'Listen', d: 'Full-fidelity playback from the original enclosure URL.' },
+        { n: '03', t: 'Boost', d: 'Splits go out via NWC or WebLN. Boostagrams ride along in TLV 7629169.' },
+      ].map((step) => (
+        <article key={step.n} className="card p-4">
+          <div className="font-mono text-bolt text-sm">{step.n}</div>
+          <div className="font-display text-xl mt-1">{step.t}</div>
+          <p className="text-xs text-muted mt-1.5 leading-relaxed">{step.d}</p>
+        </article>
+      ))}
+    </div>
   );
 }

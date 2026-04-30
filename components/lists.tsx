@@ -215,7 +215,7 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
   );
 }
 
-export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUrl?: string | null }) {
+export function EpisodeList({ feedId }: { feedId: number | null }) {
   const [data, setData] = useState<{ podcast: Podcast | null; episodes: Episode[] }>({
     podcast: null, episodes: [],
   });
@@ -228,21 +228,18 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
 
   useEffect(() => {
     setValueOpen(false);
-    if (!feedId && !feedUrl) { setData({ podcast: null, episodes: [] }); return; }
+    if (!feedId) { setData({ podcast: null, episodes: [] }); return; }
     setLoading(true);
-    const endpoint = feedUrl
-      ? `/api/feed-by-url?url=${encodeURIComponent(feedUrl)}`
-      : `/api/feed?id=${feedId}`;
-    fetch(endpoint)
+    fetch(`/api/feed?id=${feedId}`)
       .then((r) => r.json())
       .then((d) => setData({ podcast: d.podcast, episodes: d.episodes }))
       .finally(() => setLoading(false));
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [feedId, feedUrl]);
+  }, [feedId]);
 
-  if (!feedId && !feedUrl) {
+  if (!feedId) {
     return (
       <div ref={containerRef} className="text-muted text-sm py-12 text-center px-4 border border-dashed border-bone/15">
         select a podcast on the left to see episodes

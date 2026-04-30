@@ -31,7 +31,7 @@ Path alias: `@/*` maps to the repo root (`tsconfig.json` `baseUrl: "."`). Import
 
 The Podcast Index credentials (`PODCAST_INDEX_KEY` / `PODCAST_INDEX_SECRET`) must never reach the browser. Enforced by file conventions, not bundler config:
 
-- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`, hits Podcast Index) and `lib/rss.ts` (raw RSS parser used by the dev feed loader). Imported only by route handlers under `app/api/*`. Never import either from `components/` or from `app/page.tsx`. The BoostBox proxy at `app/api/lightning/boostbox/route.ts` follows the same pattern — it reads `BOOSTBOX_URL` / `BOOSTBOX_API_KEY` and forwards to the upstream service so the API key never reaches the browser.
+- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`, hits Podcast Index). Imported only by route handlers under `app/api/*`. Never import it from `components/` or from `app/page.tsx`. The BoostBox proxy at `app/api/lightning/boostbox/route.ts` follows the same pattern — it reads `BOOSTBOX_URL` / `BOOSTBOX_API_KEY` and forwards to the upstream service so the API key never reaches the browser.
 - **Browser-only:** `lib/store.ts` (Zustand, `'use client'`), `lib/v4v/nwc.ts` / `webln.ts` / `lnaddr.ts` / `spark.ts` / `boostbox.ts`, `lib/nostr/`, `lib/storage.ts`, `lib/podcast-meta.ts` — they all touch `window.*`, `localStorage`, `sessionStorage`, IndexedDB (Breez SDK), or load WASM. SSR guards exist (`typeof window === 'undefined'`) but assume client context.
 - **Isomorphic:** `lib/types.ts` (pure types), `lib/v4v/boost.ts` (orchestration logic; pulled in by client code).
 
@@ -168,12 +168,6 @@ Same `signAndPublish` helper handles both kind:1 boost notes and kind:30003 favo
 Callers that fan out (favorites hydrator, global Nostr feed) use a **probe-first-then-batch** pattern: await one `resolvePodcastByGuid` first, check `piMaybeUp()`, only then fire `Promise.all` over the rest. One wasted fetch per page load instead of N.
 
 The global feed's resolver runs in a `useEffect` that depends only on `notes` (not on the local `podcasts` state). Tracking which guids have been attempted lives in a `useRef<Set<string>>` so `setPodcasts` doesn't re-fire the effect — that pattern caused a fetch storm where cancelled-but-already-in-flight requests kept pinning the dev server.
-
-## Dev RSS feed loader
-
-`lib/rss.ts` + `app/api/feed-by-url/route.ts` parse a raw Podcasting 2.0 RSS feed into the same `{ podcast, episodes }` shape that `/api/feed` returns from PI. The empty-state on `app/page.tsx` has a "Load test feed (Bowl After Bowl)" button that hits the URL endpoint, bypassing PI entirely. `EpisodeList` accepts an optional `feedUrl` prop that swaps to the URL-based endpoint when set. Synthetic negative `feedId` distinguishes dev-loaded feeds from real PI results in logs.
-
-This was added so the app is exercisable locally without `PODCAST_INDEX_KEY` configured.
 
 ## Background art and the canvas-bg gotcha
 
