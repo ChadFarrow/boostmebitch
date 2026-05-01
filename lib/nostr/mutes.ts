@@ -2,6 +2,7 @@ import type { EventTemplate } from 'nostr-tools';
 import { withPool, QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, type PublishedNote } from './publish';
+import { getNip04 } from './signer';
 
 // NIP-51 mute list (kind:10000).
 //
@@ -100,7 +101,7 @@ export async function fetchMutedPubkeys(
       let unreadablePrivateContent: string | undefined;
 
       if (newest.content) {
-        const nip04 = typeof window !== 'undefined' ? window.nostr?.nip04 : undefined;
+        const nip04 = getNip04();
         if (!nip04) {
           unreadablePrivateContent = newest.content;
           // eslint-disable-next-line no-console
@@ -164,7 +165,7 @@ export async function publishMuteList(
     // Preserve verbatim — we never decoded it, so we mustn't rewrite it.
     content = state.unreadablePrivateContent;
   } else if (state.privatePubkeys.length > 0 || state.privateOtherTags.length > 0) {
-    const nip04 = typeof window !== 'undefined' ? window.nostr?.nip04 : undefined;
+    const nip04 = getNip04();
     if (nip04) {
       const innerTags: string[][] = [
         ...state.privateOtherTags,

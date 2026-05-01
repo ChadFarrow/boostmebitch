@@ -19,6 +19,7 @@
 import { withPool, FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish, type PublishedNote } from './publish';
 import { DEFAULT_RELAYS, resolvePublishRelays } from './relays';
+import { requireNip44 } from './signer';
 import type { NostrIdentity } from './auth';
 
 // Read-side relay set for the wallet backup. We always query the union of
@@ -48,15 +49,6 @@ function readRelays(identity: NostrIdentity): string[] {
 export const WALLET_BACKUP_KIND = 30078;
 export const WALLET_BACKUP_D_TAG = 'boostmebitch:wallet:spark';
 
-function ensureNip44() {
-  if (typeof window === 'undefined' || !window.nostr?.nip44) {
-    throw new Error(
-      'Nostr signer does not expose NIP-44. Use Alby or nos2x with NIP-44 support.',
-    );
-  }
-  return window.nostr.nip44;
-}
-
 /** Decrypt the user's stored mnemonic, or null if no backup exists yet. */
 export async function fetchEncryptedMnemonic(
   identity: NostrIdentity,
@@ -74,8 +66,7 @@ export async function fetchEncryptedMnemonic(
   });
   if (!event || !event.content) return null;
 
-  const nip44 = ensureNip44();
-  return nip44.decrypt(identity.pubkey, event.content);
+  return requireNip44().decrypt(identity.pubkey, event.content);
 }
 
 /** Encrypt-to-self and publish a new wallet backup event. */
@@ -83,8 +74,7 @@ export async function publishEncryptedMnemonic(
   identity: NostrIdentity,
   mnemonic: string,
 ): Promise<PublishedNote> {
-  const nip44 = ensureNip44();
-  const ciphertext = await nip44.encrypt(identity.pubkey, mnemonic);
+  const ciphertext = await requireNip44().encrypt(identity.pubkey, mnemonic);
 
   return signAndPublish(
     {
