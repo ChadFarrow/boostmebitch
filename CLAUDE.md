@@ -55,6 +55,23 @@ All queries run against `DEFAULT_RELAYS`. If a user has none of those events on 
 
 `resolvePublishRelays(identity)` in `lib/nostr/` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded.
 
+## Signers (NIP-07 extension + Amber NIP-55)
+
+The whole codebase reads from `window.nostr` (publish.ts, mutes.ts, wallet-backup.ts, zap.ts, boost.ts). Two signer paths feed that surface:
+
+- **NIP-07 extension** (Alby, nos2x, etc., desktop). Already at `window.nostr` when present; we just call it.
+- **Amber on Android** (NIP-55, see `lib/nostr/amber.ts`). A native app, not an extension. We polyfill `window.nostr` with an `AmberSigner` instance that dispatches each request to the Amber app via the `nostrsigner:` URL scheme and reads the result back from the system clipboard. Round-trip looks like: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<get_public_key|sign_event|nip04_encrypt|...>` (no callbackUrl per spec — Amber returns via clipboard) → user approves in Amber → user returns → first user gesture (pointerdown/touchstart/keydown anywhere on the page) reads the clipboard with fresh transient activation. `lib/nostr/signer.ts:activateAmberSigner()` installs the polyfill and `deactivateAmberSigner()` restores the original. `restoreAmberSigner(pubkey)` is the synchronous fast-path on page load — `nostr-auth.tsx`'s useEffect calls it when `storage.signer.get() === 'amber'`.
+
+The button label declares the signer the click will use: "Sign in with Nostr" when `window.nostr` is present, "Sign in with Amber" otherwise on Android, neither on desktop without an extension. While an Amber sign-in is in flight, `<AmberCompletion>` always renders a "◆ Continue from Amber" recovery button + "Paste manually" textarea — these are shown unconditionally because `visibilitychange` is unreliable on standalone-PWA returns and we can't gate the recovery UI on lifecycle detection.
+
+**Capability helpers** in `lib/nostr/signer.ts`: `getNip04()` / `getNip44()` (return the API or null) and `requireNip44()` (throws a user-facing error). Use these instead of inlining `typeof window !== 'undefined' && window.nostr?.nipXX` — the wallet backup uses `requireNip44`, mutes use `getNip04` with policies that vary by call site (warn-and-degrade-to-public on encrypt; warn-and-preserve-as-opaque-blob on decrypt).
+
+## PWA install
+
+`public/manifest.json` + `public/sw.js` + `<SwRegister>` (`components/sw-register.tsx`, mounted in `app/layout.tsx`) make the app installable. Display mode is `standalone`; manifest icons live at `public/icons/icon-{192,512}.png` + `public/icon.svg` (mask-friendly). iPhone splash screens are in `public/splash/` and referenced via `<link rel="apple-touch-startup-image">` in the layout. Header padding includes `pt-[env(safe-area-inset-top)]` so the bolt + title clear the iPhone notch / dynamic island in standalone mode.
+
+The service worker has **no precaching** — Next.js emits hashed bundle URLs that change every build, so any stale cache would silently break the app for installed users. Every request goes straight to the network, exactly as it would without a SW. The empty `fetch` handler exists only so Chrome / Edge surface the install prompt.
+
 ## Favorites (NIP-51 kind:30003)
 
 Logged-in users can ♡ a podcast row to favorite it. Storage is split:
@@ -95,9 +112,9 @@ Non-`p` tags (e.g. `e` muted threads, `t` hashtags, `word` keywords) on the rela
 
 Filtering is at render time: `<NoteCard>` early-returns null for muted authors, the feed components filter top-level notes by `mutedPubkeys`, and reply rendering filters before mapping so an all-muted reply tree leaves no empty divider div. Unmute → instant uncovering on next paint, no refetch needed.
 
-Storage: `bmb:muted:<npub>` (or `bmb:muted:guest`) holds the full `MuteListState` JSON. Hydration mirrors the favorites pattern (last-write-wins on `event.created_at`).
+Storage: `bmb:muted:<npub>` (or `bmb:muted:guest`) holds the full `MuteListState` JSON. `storage.muted.get/set` traffics in `MuteListState` directly — the legacy `{ pubkeys, otherTags, updatedAt }` shape from earlier versions is auto-promoted to public-only on read by a private `coerceToMuteState` helper inside `lib/storage.ts`. Hydration mirrors the favorites pattern (last-write-wins on `event.created_at`).
 
-The account-menu surfaces a "Muted accounts (N)" disclosure when the set is non-empty, with avatar + display name + an unmute button per row.
+The account-menu surfaces a "Muted accounts (N)" collapsible disclosure when the set is non-empty (collapsed by default — tap to expand). Per-pubkey kind:0 lookups only fire while the section is expanded so a long mute list doesn't pay the resolve cost on every menu open.
 
 ## Podcast artwork (`components/podcast-cover.tsx`)
 
@@ -132,6 +149,10 @@ Load-bearing rules:
 5. **Events drive the balance, not polling.** `sparkInitFromMnemonic` exposes `subscribeSparkEvents()` wrapping the SDK's `addEventListener`. `paymentSucceeded`, `claimedDeposits`, `newDeposits`, `synced` trigger an immediate `sparkGetInfo()` refresh in `<ReadyPanel>`. `paymentSucceeded`/`claimedDeposits`/`newDeposits` also auto-dismiss any outstanding deposit invoice.
 
 The mnemonic is published encrypt-to-self as kind:30078 with `d:boostmebitch:wallet:spark` — see `lib/nostr/wallet-backup.ts`. Anyone with the user's nsec can decrypt; the Nostr backup is convenience, not the only copy. The seed-display step in `<SparkWallet>` is the user's chance to write it down. Re-create flow checks for an existing backup and confirms before overwriting (kind:30078 is a NIP-33 replaceable event — newer wins, prior backup is gone forever from relays).
+
+**Restore-side relay union.** `fetchEncryptedMnemonic` queries the union of `resolvePublishRelays(identity)` + `DEFAULT_RELAYS` (deduped, capped at 20) with the longer 8s `FEED_QUERY_MAX_WAIT_MS`. Otherwise a fresh Android sign-in via Amber, where NIP-65 (kind:10002) hasn't hydrated yet when the user taps Restore, falls back to `DEFAULT_RELAYS` and misses a backup that lives on the user's outbox relays. `publishEncryptedMnemonic` stays on `resolvePublishRelays(identity)` — backups only go to intended write relays.
+
+**Post-restore balance race.** `<ReadyPanel>` attaches the SDK event listener BEFORE the first `getInfo()` call so any `synced` event from this point on is caught, then re-polls at 2s/5s/12s after mount. Otherwise Breez Spark's initial sync after `connect()` can complete between our `connect` resolving and the listener attaching, leaving the panel showing a cached 0 balance forever (the user's previous workaround was disconnect+reconnect).
 
 ## Show-level boost
 
@@ -219,10 +240,11 @@ The global feed's resolver runs in a `useEffect` that depends only on `notes` (n
 
 ## State + persistence
 
-Zustand store (`lib/store.ts`) holds: `identity`, `current` (episode + podcast), `isPlaying`, `positionSec`. No persistence — state is in-memory only.
+Zustand store (`lib/store.ts`) holds: `identity`, `current` (episode + podcast), `isPlaying`, `positionSec`, `selectedPodcast` (lifted out of `app/page.tsx` so a podcast-name link inside a `<NoteCard>` can route into the detail view without prop-drilling), `favorites`, `mutedPubkeys`, and `boostsTick`. No persistence — state is in-memory only.
 
 Everything else lives in `localStorage` on the device and is never sent server-side. **All `bmb:*` keys are accessed through typed helpers in `lib/storage.ts`** — don't call `localStorage.getItem`/`setItem` directly anywhere else.
 
+- `bmb:signer` — `'amber'` when the active signer is Amber via the AmberSigner polyfill; absent otherwise (NIP-07 extension or signed out). Read on page load to decide whether `restoreAmberSigner` needs to reinstall the polyfill onto `window.nostr` before any signing operation runs (`storage.signer`).
 - `bmb:nwc_uri` — NWC URI (`storage.nwcUri`); `lib/v4v/nwc.ts` re-exports save/load/clear/has wrappers.
 - `bmb:relays` — JSON array, manual publish-relay override (`storage.relays`); when absent, `resolvePublishRelays` falls back to NIP-65 then `DEFAULT_RELAYS`.
 - `bmb:sender_name` — last "From" name typed into the boost modal (`storage.senderName`).
@@ -232,7 +254,7 @@ Everything else lives in `localStorage` on the device and is never sent server-s
 - `bmb:muted:<npub>` / `bmb:muted:guest` — per-identity NIP-51 kind:10000 mute-list cache (`storage.muted`). Stores `{ publicPubkeys, publicOtherTags, privatePubkeys, privateOtherTags, unreadablePrivateContent?, updatedAt }`.
 - `bmb:profile3:<pubkey>` — kind:0 metadata cache (`storage.profile`). 7-day TTL on hits, 15-minute TTL on misses (so PROFILE_RELAYS additions or temporary outages re-resolve naturally). Used both for note authors in the global feed and for the signed-in user's own header. The `3` suffix is a schema version — bump it when the cached shape changes.
 - `bmb:pmeta:<guid>` — `/api/by-guid` resolution cache, 7-day TTL (`storage.podcastMeta`). Used by the favorites hydrator, global Nostr feed, and any future surface that needs a `Podcast` from a guid.
-- `bmb:feed:<key>` — last `DiscoveredNote[]` per feed surface (`storage.feedNotes`). **No TTL** — every `useNostrFeed` mount paints the cache regardless of age, then runs an incremental `since`-bounded refresh that prepends new events. Keys: `'global'` for the global feed, `'podcast:<guid>'` per podcast.
+- `bmb:feed:<key>` — last `DiscoveredNote[]` per feed surface (`storage.feedNotes`). Stored as a bare JSON array, **no TTL** — every `useNostrFeed` mount paints the cache regardless of age, then runs an incremental `since`-bounded refresh that prepends new events. The legacy `{ t, v }` wrapper from earlier versions is still tolerated on read so existing caches survive a deploy. Keys: `'global'` for the global feed, `'podcast:<guid>'` per podcast.
 - `bmb:boosts:<npub>` / `bmb:boosts:guest` — local log of sent boosts (`storage.boosts`), capped at 200 newest-first. Each entry holds the boostagram intent + per-leg results, with the BoostBox URL on each LNURL leg and the published Nostr `noteId` patched in once `publishBoostNote` resolves. The Zustand `boostsTick` (`bumpBoosts()`) wakes up subscribers — `GlobalNostrFeed` mixes these into the relay-discovered notes and dedupes any whose `noteId` matches a returned note.
 
 `sessionStorage` (per-tab, not per-device):
@@ -256,6 +278,8 @@ Reusable element classes (`.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.input`, 
 ## Conventions worth keeping
 
 - **Podcast artwork goes through `<PodcastCover>`** (`components/podcast-cover.tsx`). It uses `<img>` (not `next/image` — `next.config.mjs` allows all HTTPS hosts, but per-host configuration would still be needed for `next/image`'s optimizer), tries `image` then `artwork` on `onError`, and falls back to a deterministic colored-initial tile so a dead URL never leaves a phantom border. The hero/OG art at `public/hero.jpg` IS served via `next/image` because it's a known local asset and we want AVIF/WebP for LCP.
+- **Auxiliary relay sets in `lib/nostr/discover.ts`** open extras (PROFILE_RELAYS, NIP-65 hints, quote-ref relay hints) on top of the base set. Wrap those in `withExtraRelays(pool, baseRelays, extraRelays, fn)` from `lib/nostr/pool.ts` — it deduplicates the union, runs your query inside the closure, and closes only the newly-opened extras in `finally` (swallowing close errors). Don't write the open / track-opened / try-finally / close pattern inline; four near-identical copies were collapsed into the helper.
+- **Browse-mode layout** in `app/page.tsx` is single-column. Selecting a podcast (search result, favorite, or a podcast-name link inside a Nostr note card) sets `selectedPodcast` in the Zustand store, which flips to the detail view (full-width episode list + per-podcast Nostr feed). Don't re-introduce a right-pane "select a podcast on the left" empty state — it lied about behavior, the click flips the whole layout.
 - Native HTML5 `<audio>` plays the enclosure URL directly — no proxy, no transcoding.
 - API routes return `{ error }` JSON with appropriate status codes via `getErrorMessage(e, fallback)` from `lib/util.ts`; clients swallow errors silently. When adding new routes, match the shape so a future error UI can render uniformly.
 - Inline SVG icons (`components/icons.tsx:BoltIcon`) on yellow buttons instead of `⚡` emoji — the colored emoji is invisible on `bg-bolt`. Use the icon component, not the emoji, for any new bolt-yellow button. Other places (yellow text on dark bg, V4V stamps) keep the emoji because the colored glyph reads fine.
