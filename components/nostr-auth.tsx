@@ -266,16 +266,19 @@ function AmberCompletion({ onSubmit }: { onSubmit: (value: string) => boolean })
     }
   }
 
-  if (!returned) {
-    return (
-      <span className="text-[10px] text-muted mt-1 max-w-[260px] text-right">
-        Approve the request in Amber, then return here.
-      </span>
-    );
-  }
-
+  // Always render the recovery UI. In standalone-PWA mode on Android the
+  // `visibilitychange` event is unreliable when returning from Amber via the
+  // intent system, so we can't gate the action button on `returned` — we
+  // were getting users stuck at "Approve…" with no path to complete the
+  // flow. The hint copy still flips off once we DO see the page come back,
+  // so the auto-clipboard path keeps its happy-path UX where it works.
   return (
     <div className="flex flex-col items-end gap-1 mt-1 max-w-[280px]">
+      {!returned && (
+        <span className="text-[10px] text-muted text-right">
+          Approve in Amber, then come back and tap below.
+        </span>
+      )}
       <button onClick={readClipboard} className="btn-bolt text-[11px] py-1 px-3">
         ◆ Continue from Amber
       </button>

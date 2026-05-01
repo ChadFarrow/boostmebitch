@@ -146,16 +146,18 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('pageshow', onReturned);
+      window.removeEventListener('focus', onReturned);
       if (pendingResolver?.resolve === acceptManual) pendingResolver = null;
     };
 
-    // Path 1: clipboard read on tab return
-    const onVisibility = async () => {
-      if (document.visibilityState === 'hidden') {
-        wentHidden = true;
-        return;
-      }
-      if (!wentHidden) return;
+    // Path 1: clipboard read on tab return. In standalone-PWA mode on
+    // Android, `visibilitychange` doesn't always fire when the user returns
+    // from Amber via the OS intent return; `pageshow` and `focus` fill the
+    // gap on those browsers. Whichever event fires first wins; the others
+    // become no-ops once `settled` flips inside `finish`.
+    const tryReadClipboard = async () => {
+      if (!wentHidden || settled) return;
       try {
         const text = await navigator.clipboard.readText();
         if (text && looksLikeAmberResult(text, opts.type)) {
@@ -165,7 +167,17 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
         // Clipboard read denied or unavailable — fall through to manual paste.
       }
     };
+    const onVisibility = async () => {
+      if (document.visibilityState === 'hidden') {
+        wentHidden = true;
+        return;
+      }
+      await tryReadClipboard();
+    };
+    const onReturned = () => { void tryReadClipboard(); };
     document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('pageshow', onReturned);
+    window.addEventListener('focus', onReturned);
 
     // Path 2: manual paste — register a resolver the UI can call
     const acceptManual: PendingResolver = (raw) => finish(raw);
