@@ -6,6 +6,7 @@ import {
   loginWithAmber,
   restoreAmberSigner,
   clearAmberSigner,
+  isLikelyAndroid,
   shortNpub,
   fetchProfile,
   fetchRelayList,
@@ -128,11 +129,11 @@ export function NostrAuth() {
   }, [identity, setIdentity, setFavorites, setMutedPubkeys]);
 
   // Single sign-in entry point. Routing rules:
-  //   - If a NIP-07 extension is installed (window.nostr present), use it.
-  //   - Else, fall through to Amber via NIP-55 deep links. Works on Android
-  //     where Amber is installed; on desktop / iOS without Amber the popup
-  //     shows an unknown-scheme error and the user gets the manual-paste
-  //     affordance below the button.
+  //   - NIP-07 extension present (window.nostr) → use it.
+  //   - Otherwise on Android → Amber via NIP-55 deep links.
+  //   - Otherwise (desktop / iOS without extension) → surface a clear error
+  //     rather than opening a popup that navigates to `nostrsigner:` and
+  //     leaves a blank tab the OS can't dispatch.
   async function signin() {
     setBusy(true); setErr(null);
     try {
@@ -141,9 +142,13 @@ export function NostrAuth() {
       if (hasExtension) {
         id = await loginWithExtension();
         storage.signer.clear();
-      } else {
+      } else if (isLikelyAndroid()) {
         id = await loginWithAmber();
         storage.signer.set('amber');
+      } else {
+        throw new Error(
+          'No Nostr signer found. Install a NIP-07 extension (Alby, nos2x), or use Amber on Android.',
+        );
       }
       setIdentity(id);
       storage.npub.set(id.npub);
