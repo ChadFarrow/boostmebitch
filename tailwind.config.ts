@@ -6,7 +6,7 @@ const config: Config = {
     extend: {
       colors: {
         ink: '#0a0a08',
-        bone: '#f5f1e8',
+        bone: '#fdfaf3',
         bolt: '#fae500',
         nostr: '#ff2d92',
         muted: '#8a857a',
