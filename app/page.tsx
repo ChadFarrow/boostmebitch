@@ -92,42 +92,40 @@ export default function Home() {
             </section>
           </div>
         ) : showLeftRightLayout ? (
-          <div className="grid lg:grid-cols-[minmax(0,360px)_1fr] gap-6">
-            <aside className="card p-3 max-h-[70vh] overflow-y-auto">
-              {showFavoritesPanel && !query && !loading ? (
-                <button
-                  type="button"
-                  onClick={() => setFavoritesCollapsed((v) => !v)}
-                  aria-expanded={!favoritesCollapsed}
-                  className="w-full text-[11px] uppercase tracking-widest text-muted mb-2 px-1 flex items-center justify-between gap-2 hover:text-bone"
-                >
-                  <span>{Object.keys(favorites).length} favorites</span>
-                  <span aria-hidden className="text-bone/60">
-                    {favoritesCollapsed ? '▸' : '▾'}
-                  </span>
-                </button>
-              ) : (
-                <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
-                  {loading ? 'searching…' : query ? `${feeds.length} feeds` : 'feeds'}
-                </div>
-              )}
-              {query || feeds.length > 0 || loading ? (
-                <PodcastResults
-                  feeds={feeds}
-                  selected={null}
-                  onSelect={setSelected}
-                />
-              ) : favoritesCollapsed ? null : (
-                <FavoritesList
-                  selected={null}
-                  onSelect={setSelected}
-                />
-              )}
-            </aside>
-            <section className="card p-4 min-h-[40vh]">
-              <EpisodeList feedId={null} />
-            </section>
-          </div>
+          // Browse mode: just the aside. Clicking a row flips to detail view
+          // (`inDetailView` branch above) so this layer never needs to host
+          // an episode pane.
+          <aside className="card p-3 max-w-xl mx-auto max-h-[70vh] overflow-y-auto">
+            {showFavoritesPanel && !query && !loading ? (
+              <button
+                type="button"
+                onClick={() => setFavoritesCollapsed((v) => !v)}
+                aria-expanded={!favoritesCollapsed}
+                className="w-full text-[11px] uppercase tracking-widest text-muted mb-2 px-1 flex items-center justify-between gap-2 hover:text-bone"
+              >
+                <span>{Object.keys(favorites).length} favorites</span>
+                <span aria-hidden className="text-bone/60">
+                  {favoritesCollapsed ? '▸' : '▾'}
+                </span>
+              </button>
+            ) : (
+              <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
+                {loading ? 'searching…' : query ? `${feeds.length} feeds` : 'feeds'}
+              </div>
+            )}
+            {query || feeds.length > 0 || loading ? (
+              <PodcastResults
+                feeds={feeds}
+                selected={null}
+                onSelect={setSelected}
+              />
+            ) : favoritesCollapsed ? null : (
+              <FavoritesList
+                selected={null}
+                onSelect={setSelected}
+              />
+            )}
+          </aside>
         ) : (
           <EmptyState />
         )}
