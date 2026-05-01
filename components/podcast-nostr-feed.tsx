@@ -25,7 +25,7 @@ export function PodcastNostrFeed({
 }) {
   const { notes, loading, err, refresh } = useNostrFeed({
     cacheKey: `podcast:${podcastGuid}`,
-    fetcher: () => fetchPodcastNotes(podcastGuid),
+    fetcher: (opts) => fetchPodcastNotes(podcastGuid, opts),
     deps: [podcastGuid],
   });
   const identity = useApp((s) => s.identity);

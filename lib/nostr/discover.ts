@@ -54,6 +54,11 @@ interface FetchOpts {
   relays?: string[];
   /** Cap on raw kind:1 events fetched; default 100. */
   limit?: number;
+  /** Unix seconds. Forwarded to the relay as `since`, so only events with
+   *  `created_at >= since` are returned. Used by `useNostrFeed.refresh` to
+   *  pull only new boosts on a manual refresh instead of re-downloading the
+   *  entire feed. */
+  since?: number;
 }
 
 // Pull every event id this note quote-references, plus relay hints. Sources:
@@ -223,6 +228,7 @@ export async function fetchPodcastNotes(
         kinds: [1],
         '#i': [`podcast:guid:${podcastGuid}`],
         limit,
+        ...(opts.since !== undefined ? { since: opts.since } : {}),
       }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
     } catch {
       return [];
@@ -250,6 +256,7 @@ export async function fetchAllPodcastNotes(
         kinds: [1],
         '#k': ['podcast:guid', 'podcast:item:guid'],
         limit,
+        ...(opts.since !== undefined ? { since: opts.since } : {}),
       }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
     } catch {
       return [];
