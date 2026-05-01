@@ -49,7 +49,9 @@ Components fetch via the local API routes (`fetch('/api/feed?id=…')`) — they
 
 All queries run against `DEFAULT_RELAYS`. If a user has none of those events on those relays, we fall back to the npub-only header, default publish set, empty favorites, empty mute list, and empty wallet respectively. NIP-07 permissions ever requested: `getPublicKey` (login), `signEvent` (each boost / favorites / mute / wallet mutation), `nip04.encrypt`/`nip04.decrypt` (private mute list only), and `nip44.encrypt`/`nip44.decrypt` (wallet backup only). We do NOT fetch contacts (kind:3), DMs, reactions, or anything else.
 
-**Fast-path identity hydration:** on page load, `nostr-auth.tsx` decodes the cached `bmb:npub` synchronously via `nip19.decode` and sets a bare `{ pubkey, npub }` identity *immediately* — the avatar shows up in the header within one frame. The signer (`window.nostr.getPublicKey`) is only called lazily, when the user actually needs to sign something. Profile / relay-list / favorites / wallet enrich asynchronously after that.
+**Fast-path identity hydration:** on page load, `nostr-auth.tsx` decodes the cached `bmb:npub` synchronously via `nip19.decode` and sets a bare `{ pubkey, npub }` identity *immediately*. It also reads `storage.profile.get(pubkey)`, `storage.favorites.get(npub)`, and `storage.muted.get(npub)` and applies them to the store within the same frame — so the header avatar+name, favorites panel, and mute filter are all populated from cache before any relay round-trip. The signer (`window.nostr.getPublicKey`) is only called lazily, when the user actually needs to sign something. `loadProfile` then refreshes profile / relay-list / favorites / mutes / Spark backup *in parallel* (one `Promise.all`), bounded by the relay query timeout described below.
+
+**Relay query timeouts.** Every `pool.querySync` site passes a `maxWait` from `lib/nostr/pool.ts`: `QUERY_MAX_WAIT_MS = 4000` for single-author lookups (kind:0, kind:10000, kind:10002, kind:30003, kind:30078, kind:6) and `FEED_QUERY_MAX_WAIT_MS = 8000` for broad feed scans (kind:1 with `#i`/`#k` filters, the reply-tree BFS, profile/quoted-event bulk fetches). Without these, a relay that never sends EOSE would keep the WebSocket open and pin the browser tab in the loading state. The 4s/8s split is a tradeoff: short enough to bound the favicon spinner, long enough that broad scans return complete results.
 
 `resolvePublishRelays(identity)` in `lib/nostr/` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded.
 
@@ -65,14 +67,45 @@ Toggle UX: each click is optimistic and updates Zustand + localStorage immediate
 Hydration on login (in `loadProfile`):
 1. Fetch the user's kind:30003 event.
 2. Compare `event.created_at` (s) vs the newest `addedAt` (ms) in the local cache.
-3. If Nostr is newer or local is empty, adopt the Nostr guid set; resolve unknown guids via `/api/by-guid` (which proxies Podcast Index `/podcasts/byguid`).
+3. If Nostr is newer or local is empty, adopt the Nostr guid set; resolve unknown guids via `/api/by-guid` (which proxies Podcast Index `/podcasts/byguid`). Cached entries that lack `artwork` are also re-resolved so older caches written before that field existed get auto-backfilled.
 4. If local is newer, push it back up to Nostr (debounced).
+
+The hydrator preserves each entry's original `addedAt` when refreshing it via `/api/by-guid` — backfilling artwork doesn't reshuffle the favorites list. The favorites panel itself sorts alphabetically by `title` via `localeCompare({ sensitivity: 'base' })`.
+
+`FavoritePodcast` carries both `image` and `artwork`. `<PodcastCover>` (see "Podcast artwork" below) tries them in order and falls back to a colored-initial tile, so a dead `image` URL doesn't leave a phantom border in the favorites row.
 
 Sign-out clears the in-memory favorites; the per-npub localStorage cache is left in place so re-signing in is fast.
 
 **UUID filter at parse:** `lib/nostr/favorites.ts` enforces a UUID shape on every `i: podcast:guid:<value>` tag in the relay event. Older versions of this app (and some other clients reusing the d-tag) wrote feed IDs and arbitrary strings into the i-tag. Those are returned as `droppedGuids` and never sent to PI. When the count is non-zero, `nostr-auth.tsx` registers `window.bmbCleanFavorites()` so the user can republish a cleaned event from devtools.
 
 What this code deliberately doesn't do: episode-level favorites, multiple lists/categories, or any "share this list" UI. The kind:30003 is publicly readable to anyone with the user's pubkey + relay set.
+
+## Mutes (NIP-51 kind:10000)
+
+Logged-in users can hide an author's notes from the global / per-podcast feeds via the 🚫 button on each `<NoteCard>`. The mute list lives at NIP-51 kind:10000 so it interoperates with Damus / Amethyst / Coracle.
+
+The kind:10000 event holds two parallel lists in `lib/nostr/mutes.ts:MuteListState`:
+
+- **Public** `p`-tags in the event's plaintext tag array.
+- **Private** `p`-tags inside an NIP-04-encrypted-to-self JSON tag-array in `event.content`. Damus defaults to private; we follow that lead — `mutePubkey()` writes new mutes to the private list, and `unmutePubkey()` removes from both lists.
+
+When the signer doesn't expose `nip04`, the read path parks the raw ciphertext in `unreadablePrivateContent` and the publish path passes that blob through verbatim — so we never destroy private mutes set in another client. New mutes degrade to public p-tags in that case.
+
+Non-`p` tags (e.g. `e` muted threads, `t` hashtags, `word` keywords) on the relay event are also preserved verbatim through the round-trip, even though we never render them.
+
+Filtering is at render time: `<NoteCard>` early-returns null for muted authors, the feed components filter top-level notes by `mutedPubkeys`, and reply rendering filters before mapping so an all-muted reply tree leaves no empty divider div. Unmute → instant uncovering on next paint, no refetch needed.
+
+Storage: `bmb:muted:<npub>` (or `bmb:muted:guest`) holds the full `MuteListState` JSON. Hydration mirrors the favorites pattern (last-write-wins on `event.created_at`).
+
+The account-menu surfaces a "Muted accounts (N)" disclosure when the set is non-empty, with avatar + display name + an unmute button per row.
+
+## Podcast artwork (`components/podcast-cover.tsx`)
+
+`<PodcastCover image artwork title seed className />` is the canonical podcast artwork slot. It tries `image` first, falls back to `artwork` on `onError`, and finally renders a deterministic colored-initial tile (hue derived from `seed ?? title`). Used by the show-detail header, the search/favorites row, and each episode-list row.
+
+The two-URL fallback exists because PI returns RSS `<image><url>` as `image` and `<itunes:image>` as `artwork` — the two often disagree. Homegrown Hits in particular has a dead `bowlafterbowl.com` `<image>` but a working `<itunes:image>`. Always pass both fields when you have them; the renderer handles the rest.
+
+The `Podcast` and `FavoritePodcast` types carry both `image` and `artwork`; episodes also expose `image` and `feedImage` (the channel artwork PI returns alongside each item) so the per-episode cover can fall back to the show art when the item lacks its own.
 
 ## Wallets — account menu (top right)
 
@@ -155,6 +188,16 @@ Same `signAndPublish` helper handles both kind:1 boost notes and kind:30003 favo
 
 `lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets / signers. Components import only from these entry points: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence), `lib/v4v/spark.ts` (Spark wallet surface), `lib/nostr/` barrel (auth + publish + wallet backup). When swapping in `v4v-toolkit`, replace internals here without touching `components/` or `app/`.
 
+## Feed loading (`useNostrFeed`)
+
+`lib/nostr/use-feed.ts` is the stale-while-revalidate hook behind the global and per-podcast feeds. Three rules are load-bearing:
+
+1. **Cache always paints first.** `storage.feedNotes.get(cacheKey)` returns whatever's in localStorage regardless of age (no TTL gate). The hook sets that into state synchronously inside the mount effect so a hard refresh paints the last-seen feed within one frame.
+2. **Refresh is incremental.** `refresh()` reads the newest `created_at` from the current `notes` and asks the relay for events with `since: newest + 1`. Novel events (deduped by id) are prepended onto the existing list; the merged result is written back to cache. The first load (or any load with empty notes) falls back to a full fetch with no `since`. This is much faster than re-downloading the whole feed and tolerates the wider 8s `FEED_QUERY_MAX_WAIT_MS` without making the user wait.
+3. **No auto-refresh.** Refresh fires on mount and when the user clicks the refresh button — never on a timer. Components that need to "wake" the feed after a local mutation (e.g. `boostsTick` after a sent boost) do so by reading directly from their own source of truth and intermixing it client-side, not by re-fetching from relays.
+
+Trade-off worth knowing: incremental refresh only catches new top-level boosts. New replies under an existing note, or new zaps stacked onto an existing boost, won't surface until that root event is re-fetched. There's no force-full-reload affordance today; if needed, the hook would need to expose a separate action.
+
 ## /api/by-guid resilience and PI breaker
 
 `/api/by-guid` 5xxs when the Podcast Index keys are missing or PI is down. Without protection, a returning user with a 100-guid favorites set hammers the broken endpoint on every reload — and StrictMode + Fast Refresh can amplify that into thousands of dev requests.
@@ -183,10 +226,13 @@ Everything else lives in `localStorage` on the device and is never sent server-s
 - `bmb:nwc_uri` — NWC URI (`storage.nwcUri`); `lib/v4v/nwc.ts` re-exports save/load/clear/has wrappers.
 - `bmb:relays` — JSON array, manual publish-relay override (`storage.relays`); when absent, `resolvePublishRelays` falls back to NIP-65 then `DEFAULT_RELAYS`.
 - `bmb:sender_name` — last "From" name typed into the boost modal (`storage.senderName`).
+- `bmb:share_nostr` — '0' or absent. When '0', the boost modal defaults to **not** publishing a Nostr note for new boosts (`storage.shareNostr`).
 - `bmb:npub` — sentinel for silent re-login on page load (`storage.npub`).
 - `bmb:favorites:<npub>` / `bmb:favorites:guest` — per-identity favorites cache (`storage.favorites.get(npub) / .set(npub, …)`).
+- `bmb:muted:<npub>` / `bmb:muted:guest` — per-identity NIP-51 kind:10000 mute-list cache (`storage.muted`). Stores `{ publicPubkeys, publicOtherTags, privatePubkeys, privateOtherTags, unreadablePrivateContent?, updatedAt }`.
+- `bmb:profile3:<pubkey>` — kind:0 metadata cache (`storage.profile`). 7-day TTL on hits, 15-minute TTL on misses (so PROFILE_RELAYS additions or temporary outages re-resolve naturally). Used both for note authors in the global feed and for the signed-in user's own header. The `3` suffix is a schema version — bump it when the cached shape changes.
 - `bmb:pmeta:<guid>` — `/api/by-guid` resolution cache, 7-day TTL (`storage.podcastMeta`). Used by the favorites hydrator, global Nostr feed, and any future surface that needs a `Podcast` from a guid.
-- `bmb:feed:<key>` — last `DiscoveredNote[]` per feed surface, 5-minute TTL (`storage.feedNotes`). Drives the global feed's stale-while-revalidate paint.
+- `bmb:feed:<key>` — last `DiscoveredNote[]` per feed surface (`storage.feedNotes`). **No TTL** — every `useNostrFeed` mount paints the cache regardless of age, then runs an incremental `since`-bounded refresh that prepends new events. Keys: `'global'` for the global feed, `'podcast:<guid>'` per podcast.
 - `bmb:boosts:<npub>` / `bmb:boosts:guest` — local log of sent boosts (`storage.boosts`), capped at 200 newest-first. Each entry holds the boostagram intent + per-leg results, with the BoostBox URL on each LNURL leg and the published Nostr `noteId` patched in once `publishBoostNote` resolves. The Zustand `boostsTick` (`bumpBoosts()`) wakes up subscribers — `GlobalNostrFeed` mixes these into the relay-discovered notes and dedupes any whose `noteId` matches a returned note.
 
 `sessionStorage` (per-tab, not per-device):
@@ -201,7 +247,7 @@ If you add another persisted field, add a typed accessor to `lib/storage.ts` and
 
 Tailwind config (`tailwind.config.ts`) defines a small custom palette used everywhere — don't introduce new colors without adding them here:
 
-- `ink` (background), `bone` (foreground), `bolt` (Lightning yellow), `nostr` (magenta), `muted` (secondary text), `line` (subtle borders).
+- `ink` (`#0a0a08`, background), `bone` (`#fdfaf3`, foreground — bright warm cream for contrast against the dark hero), `bolt` (`#fae500`, Lightning yellow), `nostr` (`#ff2d92`, magenta), `muted` (`#8a857a`, secondary text), `line` (`#1f1d18`, subtle borders).
 - Fonts: `font-display` (Bricolage Grotesque), `font-mono` (JetBrains Mono).
 - Animation: `animate-bolt` is a 1.4s opacity pulse used on the hero.
 
@@ -209,7 +255,7 @@ Reusable element classes (`.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.input`, 
 
 ## Conventions worth keeping
 
-- `<img>` over `next/image` for podcast artwork — `next.config.mjs` already allows all HTTPS hosts, but the README documents the choice as intentional (avoiding per-host config). The hero/OG art at `public/hero.jpg` IS served via `next/image` because it's a known local asset and we want AVIF/WebP for LCP.
+- **Podcast artwork goes through `<PodcastCover>`** (`components/podcast-cover.tsx`). It uses `<img>` (not `next/image` — `next.config.mjs` allows all HTTPS hosts, but per-host configuration would still be needed for `next/image`'s optimizer), tries `image` then `artwork` on `onError`, and falls back to a deterministic colored-initial tile so a dead URL never leaves a phantom border. The hero/OG art at `public/hero.jpg` IS served via `next/image` because it's a known local asset and we want AVIF/WebP for LCP.
 - Native HTML5 `<audio>` plays the enclosure URL directly — no proxy, no transcoding.
 - API routes return `{ error }` JSON with appropriate status codes via `getErrorMessage(e, fallback)` from `lib/util.ts`; clients swallow errors silently. When adding new routes, match the shape so a future error UI can render uniformly.
 - Inline SVG icons (`components/icons.tsx:BoltIcon`) on yellow buttons instead of `⚡` emoji — the colored emoji is invisible on `bg-bolt`. Use the icon component, not the emoji, for any new bolt-yellow button. Other places (yellow text on dark bg, V4V stamps) keep the emoji because the colored glyph reads fine.
