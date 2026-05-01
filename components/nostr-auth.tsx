@@ -26,6 +26,7 @@ import {
 } from '@/lib/nostr';
 import { getLatestPendingAmber, submitManualAmberResult, subscribeAmberStage } from '@/lib/nostr/amber';
 import { hasSpark, sparkInitFromMnemonic } from '@/lib/v4v/spark';
+import { hasWebln } from '@/lib/v4v/webln';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -860,8 +861,20 @@ function AccountMenu({
           <div className="mt-4 text-[11px] uppercase tracking-widest text-bone/60">Spark</div>
           <SparkWallet />
 
-          <div className="mt-4 text-[11px] uppercase tracking-widest text-bone/60">WebLN</div>
-          <WeblnWallet />
+          {/* WebLN is browser-extension only (Alby on desktop, Mutiny's
+              in-app browser, Kiwi on Android). Hide the whole sub-card
+              on platforms where window.webln isn't injected — most
+              users on iOS / Android / vanilla desktop without Alby
+              will never see it light up, so the empty "Not detected"
+              hint was just clutter. Re-check on every menu open so an
+              extension install in the same session shows up next time
+              the avatar is clicked. */}
+          {hasWebln() && (
+            <>
+              <div className="mt-4 text-[11px] uppercase tracking-widest text-bone/60">WebLN</div>
+              <WeblnWallet />
+            </>
+          )}
 
           <MutedAccountsSection />
 
