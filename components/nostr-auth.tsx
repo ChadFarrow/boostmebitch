@@ -39,16 +39,17 @@ export function NostrAuth() {
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Detected at mount: whether a NIP-07 extension exposed window.nostr, and
-  // whether we look Android. Both gate which sign-in path the click takes
-  // and how the button labels itself, so we read once and don't change
-  // mid-session.
-  const [hasExtension, setHasExtension] = useState(false);
-  const [android, setAndroid] = useState(false);
-  useEffect(() => {
-    setHasExtension(typeof window !== 'undefined' && !!window.nostr);
-    setAndroid(isLikelyAndroid());
-  }, []);
+  // Detected synchronously on first client render: whether a NIP-07
+  // extension exposed window.nostr, and whether we look Android. Both gate
+  // which sign-in path the click takes and how the button labels itself,
+  // so we read in the useState initializer (not a useEffect) — otherwise
+  // the SSR'd "Sign in with Nostr" paints first and flips to "Sign in
+  // with Amber" after mount, producing a visible flicker on every reload
+  // for Android users. SSR sees no `window` / `navigator` and returns
+  // false for both; the brief hydration mismatch on the button label is
+  // suppressed in the JSX below.
+  const [hasExtension] = useState(() => typeof window !== 'undefined' && !!window.nostr);
+  const [android] = useState(() => isLikelyAndroid());
 
   async function loadProfile(id: NostrIdentity) {
     // Dedupe across remounts (StrictMode runs effects twice in dev; Fast
@@ -208,7 +209,11 @@ export function NostrAuth() {
     <div className="flex flex-col items-end gap-1">
       <button onClick={signin} disabled={busy} className="btn-ghost">
         <span className="text-nostr">◆</span>
-        {buttonLabel}
+        {/* suppressHydrationWarning: SSR can't read navigator.userAgent, so
+            the server pass renders the desktop label and the client pass
+            renders the platform-correct one. That's intentional — see the
+            useState initializers above. */}
+        <span suppressHydrationWarning>{buttonLabel}</span>
       </button>
       {err && <span className="text-[10px] text-nostr/80 max-w-[260px] text-right">{err}</span>}
       {busy && signerKind === 'amber' && <AmberCompletion onSubmit={submitManualPaste} />}
