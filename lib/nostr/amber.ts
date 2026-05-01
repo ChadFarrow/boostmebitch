@@ -84,7 +84,14 @@ function buildSignerUrl(opts: InvokeOptions, callbackUrl: string): string {
   params.set('type', opts.type);
   params.set('compressionType', 'none');
   params.set('returnType', opts.returnType ?? 'signature');
-  params.set('callbackUrl', callbackUrl);
+  // Amber appends the raw result to the callbackUrl verbatim — there's no
+  // automatic param name. Per the NIP-55 example
+  // (https://github.com/nostr-protocol/nips/blob/master/55.md), the
+  // convention is to terminate the callback URL with `&event=` so the
+  // final URL is `…?id=<id>&event=<result>`. Without this suffix, the
+  // result mashes onto the end of the URL with no separator and the
+  // callback page can't parse it.
+  params.set('callbackUrl', `${callbackUrl}&event=`);
   if (opts.pubkey) params.set('pubkey', opts.pubkey);
   // Payload (event JSON / plaintext / ciphertext) goes immediately after the
   // scheme, URI-encoded. Empty payload for get_public_key.
