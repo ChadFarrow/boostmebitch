@@ -6,7 +6,6 @@ import {
   loginWithAmber,
   restoreAmberSigner,
   clearAmberSigner,
-  isLikelyAndroid,
   shortNpub,
   fetchProfile,
   fetchRelayList,
@@ -128,29 +127,29 @@ export function NostrAuth() {
     loadProfile(bare);
   }, [identity, setIdentity, setFavorites, setMutedPubkeys]);
 
+  // Single sign-in entry point. Routing rules:
+  //   - If a NIP-07 extension is installed (window.nostr present), use it.
+  //   - Else, fall through to Amber via NIP-55 deep links. Works on Android
+  //     where Amber is installed; on desktop / iOS without Amber the popup
+  //     shows an unknown-scheme error and the user gets the manual-paste
+  //     affordance below the button.
   async function signin() {
     setBusy(true); setErr(null);
     try {
-      const id = await loginWithExtension();
+      const hasExtension = typeof window !== 'undefined' && !!window.nostr;
+      let id: NostrIdentity;
+      if (hasExtension) {
+        id = await loginWithExtension();
+        storage.signer.clear();
+      } else {
+        id = await loginWithAmber();
+        storage.signer.set('amber');
+      }
       setIdentity(id);
       storage.npub.set(id.npub);
-      storage.signer.clear();
       loadProfile(id);
     } catch (e) {
       setErr(getErrorMessage(e, 'sign-in failed'));
-    } finally { setBusy(false); }
-  }
-
-  async function signinWithAmber() {
-    setBusy(true); setErr(null);
-    try {
-      const id = await loginWithAmber();
-      setIdentity(id);
-      storage.npub.set(id.npub);
-      storage.signer.set('amber');
-      loadProfile(id);
-    } catch (e) {
-      setErr(getErrorMessage(e, 'Amber sign-in failed'));
     } finally { setBusy(false); }
   }
 
@@ -182,35 +181,16 @@ export function NostrAuth() {
     return <AccountMenu identity={identity} onSignOut={signout} />;
   }
 
-  // On Android, surface the Amber button first since the NIP-07 path needs a
-  // browser extension that isn't widely available on mobile. Desktop / iOS
-  // see the extension button first; Amber stays available as a fallback for
-  // anyone with a custom setup (e.g. browser DevTools port-forwarding).
-  const androidFirst = isLikelyAndroid();
-
-  const extensionButton = (
-    <button onClick={signin} disabled={busy} className="btn-ghost">
-      <span className="text-nostr">◆</span>
-      {busy ? 'Connecting…' : 'Sign in with Nostr'}
-    </button>
-  );
-
-  const amberButton = (
-    <button
-      onClick={signinWithAmber}
-      disabled={busy}
-      className="btn-ghost"
-      title="Sign in with the Amber Android signer"
-    >
-      <span className="text-nostr">◆</span>
-      {busy ? 'Connecting…' : 'Sign in with Amber'}
-    </button>
-  );
-
+  // The button auto-routes: NIP-07 extension if present, otherwise Amber
+  // via NIP-55 deep links. The manual-paste affordance only appears once
+  // we've actually fallen through to the Amber path, where the cross-browser
+  // / cross-tab callback can fail silently.
   return (
     <div className="flex flex-col items-end gap-1">
-      {androidFirst ? amberButton : extensionButton}
-      {androidFirst ? extensionButton : amberButton}
+      <button onClick={signin} disabled={busy} className="btn-ghost">
+        <span className="text-nostr">◆</span>
+        {busy ? 'Connecting…' : 'Sign in with Nostr'}
+      </button>
       {err && <span className="text-[10px] text-nostr/80 max-w-[260px] text-right">{err}</span>}
       {busy && <AmberManualPaste onSubmit={submitManualPaste} />}
     </div>
