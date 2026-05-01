@@ -74,7 +74,6 @@ function setTimed<T>(key: string, value: T) {
 }
 
 const PODCAST_META_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
-const FEED_NOTES_TTL_MS = 5 * 60 * 1000;             // 5 minutes
 const PROFILE_TTL_MS = 7 * 24 * 60 * 60 * 1000;      // 7 days for found profiles
 const PROFILE_MISS_TTL_MS = 15 * 60 * 1000;          // 15 min for known-missing — short so PROFILE_RELAYS additions / temporary relay outages re-resolve naturally on the user's next visit
 
@@ -138,14 +137,23 @@ export const storage = {
   },
 
   /**
-   * Last DiscoveredNote[] per feed surface, used by the feeds for stale-while-
-   * revalidate rendering. 5-minute TTL keeps the cached feed fresh enough that
-   * the "instant render" case isn't surfacing very stale data on revisit.
-   * Keys: 'global' for the global feed, 'podcast:<guid>' per podcast.
+   * Last DiscoveredNote[] per feed surface. Used by `useNostrFeed` for the
+   * stale-while-revalidate paint: returned regardless of age (no TTL gate)
+   * because every mount also runs a `since`-bounded incremental refresh that
+   * prepends new events. Keys: 'global' for the global feed,
+   * 'podcast:<guid>' per podcast.
    */
   feedNotes: {
-    get: (key: string): DiscoveredNote[] | null =>
-      getTimed<DiscoveredNote[]>(`${KEYS.feedNotesPrefix}:${key}`, FEED_NOTES_TTL_MS),
+    get: (key: string): DiscoveredNote[] | null => {
+      const raw = safeGet(`${KEYS.feedNotesPrefix}:${key}`);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw) as CacheCell<DiscoveredNote[]>;
+        return parsed && Array.isArray(parsed.v) ? parsed.v : null;
+      } catch {
+        return null;
+      }
+    },
     set: (key: string, v: DiscoveredNote[]) =>
       setTimed(`${KEYS.feedNotesPrefix}:${key}`, v),
   },
