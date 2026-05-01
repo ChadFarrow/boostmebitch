@@ -149,7 +149,9 @@ export function FavoritesList({
   const favorites = useApp((s) => s.favorites);
   const list = useMemo(
     () =>
-      Object.values(favorites).sort((a, b) => b.addedAt - a.addedAt),
+      Object.values(favorites).sort((a, b) =>
+        (a.title ?? '').localeCompare(b.title ?? '', undefined, { sensitivity: 'base' }),
+      ),
     [favorites],
   );
 
