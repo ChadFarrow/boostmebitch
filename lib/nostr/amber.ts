@@ -100,13 +100,44 @@ export function getLatestPendingAmber(): { type: AmberRequestType } | null {
   return pendingResolver ? { type: pendingResolver.type } : null;
 }
 
-export function submitManualAmberResult(_id: string, value: string): boolean {
-  // _id ignored — single-flight model.
+export function submitManualAmberResult(value: string): boolean {
   if (!pendingResolver) return false;
   const trimmed = value.trim();
   if (!trimmed) return false;
   pendingResolver.resolve(trimmed);
   return true;
+}
+
+// Lifecycle stage of the in-flight Amber request, broadcast to UI listeners
+// so they don't have to re-implement visibility / focus / gesture detection.
+//
+//   'idle'     — no request in flight
+//   'awaiting' — request dispatched, no return signal yet
+//   'returned' — at least one lifecycle / gesture event hinted that the user
+//                came back from Amber. Same signal that triggers the
+//                clipboard auto-read.
+//
+// `<AmberCompletion>` subscribes via subscribeAmberStage to flip its hint
+// copy from "Approve in Amber…" to "If sign-in didn't complete, tap below."
+// Late subscribers receive the current stage on registration so a remount
+// mid-request paints correctly.
+export type AmberStage = 'idle' | 'awaiting' | 'returned';
+
+let currentStage: AmberStage = 'idle';
+const stageListeners = new Set<(s: AmberStage) => void>();
+
+function setStage(next: AmberStage) {
+  if (currentStage === next) return;
+  currentStage = next;
+  for (const fn of stageListeners) {
+    try { fn(next); } catch { /* ignore */ }
+  }
+}
+
+export function subscribeAmberStage(fn: (s: AmberStage) => void): () => void {
+  stageListeners.add(fn);
+  fn(currentStage);
+  return () => { stageListeners.delete(fn); };
 }
 
 async function invokeAmber(opts: InvokeOptions): Promise<string> {
@@ -118,6 +149,7 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
     pendingResolver.reject(new Error('Amber request superseded'));
     pendingResolver = null;
   }
+  setStage('awaiting');
 
   const signerUrl = buildSignerUrl(opts);
   // eslint-disable-next-line no-console
@@ -151,6 +183,7 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       document.removeEventListener('touchstart', onUserGesture, true);
       document.removeEventListener('keydown', onUserGesture, true);
       if (pendingResolver?.resolve === acceptManual) pendingResolver = null;
+      setStage('idle');
     };
 
     // We try the clipboard from two kinds of triggers:
@@ -175,6 +208,11 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
     // (URLs, plain text) is ignored.
     const tryReadClipboard = async (origin: string) => {
       if (settled) return;
+      // Any lifecycle / gesture event that triggered this read counts as
+      // "the user might be back" — promote stage so subscribed UI flips
+      // its hint copy. Once we've moved past 'awaiting' we stay there
+      // until cleanup; subsequent events don't need to re-fire setStage.
+      if (currentStage === 'awaiting') setStage('returned');
       let text: string;
       try {
         text = await navigator.clipboard.readText();

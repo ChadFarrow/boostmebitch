@@ -17,7 +17,7 @@ import {
   type NostrIdentity,
   type ProfileMetadata,
 } from '@/lib/nostr';
-import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/amber';
+import { getLatestPendingAmber, submitManualAmberResult, subscribeAmberStage } from '@/lib/nostr/amber';
 import { hasSpark, sparkInitFromMnemonic } from '@/lib/v4v/spark';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
@@ -168,7 +168,7 @@ export function NostrAuth() {
       setErr('No pending Amber request to attach this to.');
       return false;
     }
-    return submitManualAmberResult('', trimmed);
+    return submitManualAmberResult(trimmed);
   }
 
   function signout() {
@@ -221,33 +221,25 @@ export function NostrAuth() {
   );
 }
 
-// While an Amber request is in flight, watch for the tab regaining focus
-// after going hidden — that's the user returning from Amber. At that point
-// we surface a "Read from clipboard" button: tapping it grants the user
-// activation that navigator.clipboard.readText needs to succeed. The
-// existing manual-paste form is the secondary fallback if the clipboard
-// read is denied or the value doesn't match the expected shape.
+// While an Amber request is in flight, surface a "Read from clipboard"
+// button: tapping it grants the user activation that navigator.clipboard
+// .readText needs to succeed. The existing manual-paste form is the
+// secondary fallback if the clipboard read is denied or the value doesn't
+// match the expected shape.
+//
+// `returned` is driven by `subscribeAmberStage` — invokeAmber promotes the
+// stage to 'returned' on the SAME signals that drive its auto-clipboard
+// path (visibilitychange / pageshow / focus / pointerdown / touchstart /
+// keydown), so the hint copy and the underlying flow agree. A late mount
+// (e.g. after Fast Refresh) gets the current stage on subscribe.
 function AmberCompletion({ onSubmit }: { onSubmit: (value: string) => boolean }) {
   const [returned, setReturned] = useState(false);
   const [readErr, setReadErr] = useState<string | null>(null);
-  const wentHiddenRef = useRef(false);
 
-  useEffect(() => {
-    const onChange = () => {
-      if (document.visibilityState === 'hidden') {
-        wentHiddenRef.current = true;
-      } else if (wentHiddenRef.current) {
-        setReturned(true);
-      }
-    };
-    document.addEventListener('visibilitychange', onChange);
-    // Also fire once on mount in case the user is already back when this
-    // component mounts (race between dispatch and React render).
-    if (document.visibilityState === 'visible' && wentHiddenRef.current) {
-      setReturned(true);
-    }
-    return () => document.removeEventListener('visibilitychange', onChange);
-  }, []);
+  useEffect(
+    () => subscribeAmberStage((stage) => setReturned(stage === 'returned')),
+    [],
+  );
 
   async function readClipboard() {
     setReadErr(null);
