@@ -12,11 +12,15 @@ import type { Podcast } from '@/lib/types';
 
 export default function Home() {
   const [feeds, setFeeds] = useState<Podcast[]>([]);
-  const [selected, setSelected] = useState<Podcast | null>(null);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
   const [favoritesCollapsed, setFavoritesCollapsed] = useState(false);
   const [searchKey, setSearchKey] = useState(0);
+  // `selected` lives in the Zustand store so cross-component surfaces (e.g.
+  // the podcast-name link in a Nostr note card) can route into the detail
+  // view without prop-drilling through the feed components.
+  const selected = useApp((s) => s.selectedPodcast);
+  const setSelected = useApp((s) => s.selectPodcast);
 
   function goHome() {
     setFeeds([]);

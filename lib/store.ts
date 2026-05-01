@@ -19,6 +19,12 @@ interface AppState {
   setPlaying: (b: boolean) => void;
   setPosition: (s: number) => void;
 
+  // The podcast currently shown in the detail view. Lifted into the store so
+  // surfaces outside `app/page.tsx` (e.g. a podcast-name link in a Nostr note
+  // card) can navigate to a show without prop-drilling.
+  selectedPodcast: Podcast | null;
+  selectPodcast: (p: Podcast | null) => void;
+
   favorites: Record<string, FavoritePodcast>;
   isFavorite: (guid: string | undefined) => boolean;
   addFavorite: (p: FavoritePodcast) => void;
@@ -51,6 +57,9 @@ export const useApp = create<AppState>((set, get) => ({
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
   setPlaying: (b) => set({ isPlaying: b }),
   setPosition: (s) => set({ positionSec: s }),
+
+  selectedPodcast: null,
+  selectPodcast: (p) => set({ selectedPodcast: p }),
 
   // Hydrate from the guest cache on store creation; once a user signs in,
   // nostr-auth.tsx replaces this with the per-npub set.
