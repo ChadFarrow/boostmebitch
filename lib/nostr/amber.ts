@@ -2,43 +2,31 @@
 
 // NIP-55 Amber signer (Android).
 //
-// Amber is an Android-only Nostr signer app. There's no persistent web
-// connection — every request opens a tab navigating to a `nostrsigner:` deep
-// link, which launches Amber. After the user approves, Amber redirects to a
-// callback URL on our origin (handled by app/amber-callback/page.tsx).
+// Production Nostr web apps that target Amber use this flow:
 //
-// Result delivery is genuinely fragile across the Amber-version + Android-OS +
-// browser-routing matrix, so we listen on FOUR channels in parallel:
+//   1. Same-tab navigation to `nostrsigner:<payload>?type=…&returnType=…`
+//      with NO callbackUrl. Per NIP-55: "If you don't send a callback url,
+//      Signer Application will copy the result to the clipboard."
+//   2. Android's intent system hijacks the navigation; the browser tab stays
+//      on the original page while Amber comes to foreground.
+//   3. User approves; Amber writes the result (pubkey / signed event /
+//      ciphertext / plaintext) to the system clipboard and returns focus.
+//   4. The browser tab fires `visibilitychange` (visible again); we read the
+//      clipboard and resolve the pending request.
 //
-//   1. BroadcastChannel — same-origin pubsub, reaches across tabs in the same
-//      browser (the most common path when Amber's callback opens in a new tab
-//      of the same browser).
-//   2. window.opener.postMessage — when Amber returns to the popup we opened
-//      and the popup is still on our origin, the callback page can post back
-//      to its opener directly. Works even if BroadcastChannel is disabled.
-//   3. localStorage 'storage' event — fires across tabs of the same origin.
-//      Some browsers proxy this when BroadcastChannel is partitioned (private
-//      browsing, some Brave/Tor setups).
-//   4. Manual paste — last-resort UI affordance the caller can hook into via
-//      the exported `submitManualResult(id, result)` helper. Used when the
-//      callback URL opens in a different browser than boostmebitch (e.g. Amber
-//      defaulted to Brave but the app is in Chrome) so cross-process channels
-//      don't reach back.
+// This is what the user means when they describe other apps "switching to
+// Amber and back" seamlessly. There's no popup tab, no callback URL, no
+// cross-tab message passing — just a URL-scheme dispatch and a clipboard read.
 //
 // Trade-off worth knowing: each signEvent / nip04.* / nip44.* call shows the
 // Amber prompt. Background-published events that the rest of the app debounces
-// (favorites, mutes) will visibly prompt the user. That's inherent to NIP-55.
+// (favorites, mutes) will visibly switch to Amber. That's inherent to NIP-55.
+//
+// Manual paste is kept as a last-resort UI: if the clipboard read is denied
+// (private mode, browser policy, no user gesture) the user can still paste
+// the result by hand.
 
 import { nip19, type Event, type EventTemplate } from 'nostr-tools';
-
-export const AMBER_BROADCAST_CHANNEL = 'bmb:amber-result';
-export const AMBER_CALLBACK_PATH = '/amber-callback';
-export const AMBER_STORAGE_KEY_PREFIX = 'bmb:amber-result:';
-
-// 60s — 2 min was overlong; if the round-trip hasn't completed by 60s, the
-// user has either backgrounded the flow or the callback never reached us.
-// The manual-paste fallback handles the latter without forcing a long wait.
-const AMBER_TIMEOUT_MS = 60_000;
 
 export type AmberRequestType =
   | 'get_public_key'
@@ -48,18 +36,9 @@ export type AmberRequestType =
   | 'nip44_encrypt'
   | 'nip44_decrypt';
 
-export interface AmberResultMessage {
-  /** 32-hex-char request id; matches the `id` query param on the callback URL. */
-  id: string;
-  /** Hex pubkey, signed-event JSON, ciphertext, or plaintext (depending on type). */
-  result?: string;
-  /** Bare signature when Amber returns returnType=signature for sign_event. */
-  signature?: string;
-  /** Human-readable error message when Amber rejects or the user cancels. */
-  error?: string;
-  /** postMessage discriminator so we ignore unrelated cross-window messages. */
-  source?: 'bmb:amber';
-}
+// 60s — long enough for the Amber approve flow on a slow phone, short enough
+// that a forgotten request doesn't pin the busy state forever.
+const AMBER_TIMEOUT_MS = 60_000;
 
 interface InvokeOptions {
   type: AmberRequestType;
@@ -73,54 +52,60 @@ interface InvokeOptions {
   returnType?: 'signature' | 'event';
 }
 
-function randomId(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+function buildSignerUrl(opts: InvokeOptions): string {
+  // Match the NIP-55 spec example byte-for-byte. Params written raw, payload
+  // URI-encoded after the colon. NO callbackUrl → Amber uses clipboard for
+  // the return value.
+  let url = `nostrsigner:${encodeURIComponent(opts.payload ?? '')}`;
+  url += `?compressionType=none`;
+  url += `&returnType=${opts.returnType ?? 'signature'}`;
+  url += `&type=${opts.type}`;
+  if (opts.pubkey) url += `&pubkey=${opts.pubkey}`;
+  return url;
 }
 
-function buildSignerUrl(opts: InvokeOptions, callbackUrl: string): string {
-  const params = new URLSearchParams();
-  params.set('type', opts.type);
-  params.set('compressionType', 'none');
-  params.set('returnType', opts.returnType ?? 'signature');
-  // Amber appends the raw result to the callbackUrl verbatim — there's no
-  // automatic param name. Per the NIP-55 example
-  // (https://github.com/nostr-protocol/nips/blob/master/55.md), the
-  // convention is to terminate the callback URL with `&event=` so the
-  // final URL is `…?id=<id>&event=<result>`. Without this suffix, the
-  // result mashes onto the end of the URL with no separator and the
-  // callback page can't parse it.
-  params.set('callbackUrl', `${callbackUrl}&event=`);
-  if (opts.pubkey) params.set('pubkey', opts.pubkey);
-  // Payload (event JSON / plaintext / ciphertext) goes immediately after the
-  // scheme, URI-encoded. Empty payload for get_public_key.
-  return `nostrsigner:${encodeURIComponent(opts.payload ?? '')}?${params.toString()}`;
+// Best-effort sanity check on a clipboard read so we don't accidentally
+// resolve with an unrelated string the user happened to copy. Different
+// types have different shapes:
+//   - get_public_key: 64-hex-char or starts with `npub1`
+//   - sign_event: JSON object with a `sig` field
+//   - nip04/nip44: opaque ciphertext/plaintext — can't validate, accept anything
+function looksLikeAmberResult(text: string, type: AmberRequestType): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  if (type === 'get_public_key') {
+    return /^[0-9a-f]{64}$/i.test(t) || t.startsWith('npub1');
+  }
+  if (type === 'sign_event') {
+    if (!t.startsWith('{')) return false;
+    try {
+      const parsed = JSON.parse(t);
+      return typeof parsed === 'object' && parsed && typeof parsed.sig === 'string';
+    } catch {
+      return false;
+    }
+  }
+  // nip04/nip44 — no reliable shape check. Trust the caller.
+  return true;
 }
 
-// Track in-flight requests so the manual-paste UI (and any other recovery
-// path) can complete them. Keyed by id.
-type PendingResolver = (msg: AmberResultMessage) => void;
-const pending = new Map<string, { resolve: PendingResolver; type: AmberRequestType }>();
+// In-flight Amber requests, exposed so a manual-paste UI can resolve them
+// without going through the clipboard. Single-flight FIFO: there's no need
+// to handle concurrent Amber prompts because the user can only physically
+// approve one at a time.
+type PendingResolver = (raw: string) => void;
+let pendingResolver: { resolve: PendingResolver; reject: (e: Error) => void; type: AmberRequestType } | null = null;
 
-/** Tracker for the most-recent in-flight Amber request so a manual-paste UI
- *  can target it without having to thread the id through every component. */
-let latestPending: { id: string; type: AmberRequestType } | null = null;
-
-export function getLatestPendingAmber() {
-  return latestPending;
+export function getLatestPendingAmber(): { type: AmberRequestType } | null {
+  return pendingResolver ? { type: pendingResolver.type } : null;
 }
 
-/** Resolve a pending Amber request from outside the original promise chain
- *  (e.g. from a manual-paste form). Returns true if a matching request was
- *  found and resolved. */
-export function submitManualAmberResult(
-  id: string,
-  result: string,
-): boolean {
-  const entry = pending.get(id);
-  if (!entry) return false;
-  entry.resolve({ id, result });
+export function submitManualAmberResult(_id: string, value: string): boolean {
+  // _id ignored — single-flight model.
+  if (!pendingResolver) return false;
+  const trimmed = value.trim();
+  if (!trimmed) return false;
+  pendingResolver.resolve(trimmed);
   return true;
 }
 
@@ -128,127 +113,100 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
   if (typeof window === 'undefined') {
     throw new Error('Amber signer requires a browser environment');
   }
+  // Cancel any prior pending request — the user has restarted the flow.
+  if (pendingResolver) {
+    pendingResolver.reject(new Error('Amber request superseded'));
+    pendingResolver = null;
+  }
 
-  const id = randomId();
-  const callbackUrl = new URL(AMBER_CALLBACK_PATH, window.location.origin);
-  callbackUrl.searchParams.set('id', id);
-  const signerUrl = buildSignerUrl(opts, callbackUrl.toString());
-
+  const signerUrl = buildSignerUrl(opts);
   // eslint-disable-next-line no-console
-  console.info('[amber] →', opts.type, 'id=', id.slice(0, 8));
+  console.info('[amber] →', opts.type);
 
   return new Promise<string>((resolve, reject) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let channel: BroadcastChannel | null = null;
+    let wentHidden = false;
 
-    const accept = (msg: AmberResultMessage) => {
+    const finish = (raw: string | null, error?: string) => {
       if (settled) return;
-      if (msg.id !== id) return;
       settled = true;
       cleanup();
-      if (msg.error) {
+      if (error) {
         // eslint-disable-next-line no-console
-        console.warn('[amber] ✗', opts.type, msg.error);
-        return reject(new Error(msg.error));
+        console.warn('[amber] ✗', opts.type, error);
+        return reject(new Error(error));
       }
-      const value = msg.result ?? msg.signature;
-      if (!value) return reject(new Error('Amber returned no result'));
+      if (!raw) return reject(new Error('Amber returned no result'));
       // eslint-disable-next-line no-console
-      console.info('[amber] ✓', opts.type, 'len=', value.length);
-      resolve(value);
-    };
-
-    const onMessage = (e: MessageEvent) => {
-      if (e.origin && e.origin !== window.location.origin) return;
-      const msg = e.data as AmberResultMessage | undefined;
-      if (!msg || msg.source !== 'bmb:amber') return;
-      accept(msg);
-    };
-
-    const onStorage = (e: StorageEvent) => {
-      if (!e.key || !e.key.startsWith(AMBER_STORAGE_KEY_PREFIX)) return;
-      if (!e.newValue) return;
-      try {
-        const msg = JSON.parse(e.newValue) as AmberResultMessage;
-        accept(msg);
-      } catch {
-        /* ignore malformed entries */
-      }
+      console.info('[amber] ✓', opts.type, 'len=', raw.length);
+      resolve(raw);
     };
 
     const cleanup = () => {
-      pending.delete(id);
-      if (latestPending?.id === id) latestPending = null;
       if (timer) clearTimeout(timer);
-      try { channel?.close(); } catch { /* ignore */ }
-      window.removeEventListener('message', onMessage);
-      window.removeEventListener('storage', onStorage);
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (pendingResolver?.resolve === acceptManual) pendingResolver = null;
     };
 
-    // Path 1: BroadcastChannel
-    try {
-      channel = new BroadcastChannel(AMBER_BROADCAST_CHANNEL);
-      channel.onmessage = (e) => accept(e.data as AmberResultMessage);
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn('[amber] BroadcastChannel unavailable:', e);
-    }
+    // Path 1: clipboard read on tab return
+    const onVisibility = async () => {
+      if (document.visibilityState === 'hidden') {
+        wentHidden = true;
+        return;
+      }
+      if (!wentHidden) return;
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text && looksLikeAmberResult(text, opts.type)) {
+          finish(text.trim());
+        }
+      } catch {
+        // Clipboard read denied or unavailable — fall through to manual paste.
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
 
-    // Path 2: postMessage from the popup we opened
-    window.addEventListener('message', onMessage);
-
-    // Path 3: localStorage 'storage' events from a callback tab in the same browser
-    window.addEventListener('storage', onStorage);
-
-    // Path 4: manual paste — register so external callers can resolve us
-    pending.set(id, { resolve: accept, type: opts.type });
-    latestPending = { id, type: opts.type };
+    // Path 2: manual paste — register a resolver the UI can call
+    const acceptManual: PendingResolver = (raw) => finish(raw);
+    pendingResolver = {
+      resolve: acceptManual,
+      reject: (e) => finish(null, e.message),
+      type: opts.type,
+    };
 
     timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(
-        new Error(
-          'Amber did not return automatically. If you saw the request and approved it, ' +
-            'paste the pubkey/signature from Amber manually, or try again.',
-        ),
+      finish(
+        null,
+        'Amber did not respond. Make sure Amber is installed, or paste the result manually.',
       );
     }, AMBER_TIMEOUT_MS);
 
-    // Open the nostrsigner: deep link. We open a blank popup first then set
-    // its href because some Android browsers don't dispatch the OS intent if
-    // window.open is given a non-http URL directly — they show a blocked-popup
-    // notice instead. Two-step is more reliable across Chrome/Brave/Samsung.
-    let popup: Window | null = null;
+    // Dispatch nostrsigner: via same-tab navigation. Android intercepts the
+    // URL scheme and routes to Amber; the browser tab stays alive on the
+    // original page because the navigation was hijacked. If Amber isn't
+    // installed the browser will navigate to an error page — the timeout
+    // (and the user's reload) recover.
+    //
+    // We use an anchor click rather than `location.href = …` because some
+    // Android browsers handle custom URL schemes from `<a>` clicks more
+    // gracefully (intent picker shows up reliably; a bare assignment is
+    // sometimes silently blocked as a "navigation hint").
     try {
-      popup = window.open('', '_blank');
-    } catch {
-      /* will retry below */
-    }
-    if (popup) {
+      const a = document.createElement('a');
+      a.href = signerUrl;
+      a.rel = 'noopener';
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+    } catch (e) {
+      // Last resort: direct location nav.
       try {
-        popup.location.href = signerUrl;
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn('[amber] popup.location.href failed, falling back to window.open(url):', e);
-        try { popup.close(); } catch { /* ignore */ }
-        popup = null;
+        window.location.href = signerUrl;
+      } catch (e2) {
+        finish(null, `Failed to dispatch Amber: ${(e2 as Error).message}`);
       }
-    }
-    if (!popup) {
-      // Fallback: try the direct form. Some browsers prefer this for custom schemes.
-      popup = window.open(signerUrl, '_blank');
-    }
-    if (!popup) {
-      settled = true;
-      cleanup();
-      reject(
-        new Error(
-          'Browser blocked the Amber popup. Allow popups for this site and retry.',
-        ),
-      );
     }
   });
 }
@@ -276,9 +234,6 @@ export class AmberSigner implements AmberSignerInterface {
   async getPublicKey(): Promise<string> {
     if (this.cachedPubkey) return this.cachedPubkey;
     const raw = await invokeAmber({ type: 'get_public_key' });
-    // Older Amber versions return the npub bech32 string; newer versions
-    // return raw hex. Normalize to hex so the rest of the app sees the same
-    // shape as a NIP-07 extension.
     const trimmed = raw.trim();
     if (/^[0-9a-f]{64}$/i.test(trimmed)) {
       this.cachedPubkey = trimmed.toLowerCase();
@@ -323,9 +278,8 @@ export class AmberSigner implements AmberSignerInterface {
   };
 }
 
-/** Loose Android UA sniff. False negatives are fine — the Amber button is
- *  shown anyway when no NIP-07 extension is detected, so iOS / desktop users
- *  see it as a fallback option. */
+/** Loose Android UA sniff. Used to gate the Amber sign-in fallback so desktop
+ *  / iOS users don't get a dispatched URL their OS can't handle. */
 export function isLikelyAndroid(): boolean {
   if (typeof navigator === 'undefined') return false;
   return /android/i.test(navigator.userAgent);

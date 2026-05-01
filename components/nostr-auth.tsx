@@ -158,19 +158,16 @@ export function NostrAuth() {
     } finally { setBusy(false); }
   }
 
-  /** Manual-paste recovery for the case where Amber's callback URL opens in
-   *  a different browser than the app (Brave vs Chrome) — neither
-   *  BroadcastChannel nor postMessage cross that boundary. The user copies
-   *  the result from Amber and pastes it here. */
+  /** Manual-paste fallback for when the auto clipboard read is denied or
+   *  the user's setup needs a manual copy step. */
   function submitManualPaste(value: string): boolean {
     const trimmed = value.trim();
     if (!trimmed) return false;
-    const pending = getLatestPendingAmber();
-    if (!pending) {
+    if (!getLatestPendingAmber()) {
       setErr('No pending Amber request to attach this to.');
       return false;
     }
-    return submitManualAmberResult(pending.id, trimmed);
+    return submitManualAmberResult('', trimmed);
   }
 
   function signout() {
