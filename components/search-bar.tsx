@@ -28,11 +28,21 @@ export function SearchBar({ onResults, onLoading }: Props) {
       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs">⌕</span>
       <input
         autoFocus
-        className="input pl-8"
+        className="input pl-8 pr-8"
         value={q}
         onChange={(e) => setQ(e.target.value)}
         placeholder="search podcasts… (try ‘bowl after bowl’)"
       />
+      {q && (
+        <button
+          type="button"
+          onClick={() => setQ('')}
+          aria-label="Clear search"
+          className="absolute right-2 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-full text-muted hover:bg-line hover:text-bone"
+        >
+          ×
+        </button>
+      )}
     </div>
   );
 }
