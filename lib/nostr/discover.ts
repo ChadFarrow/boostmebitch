@@ -1,5 +1,5 @@
 import { nip19, type Event } from 'nostr-tools';
-import { withPool, FEED_QUERY_MAX_WAIT_MS } from './pool';
+import { withPool, withExtraRelays, FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS, PROFILE_RELAYS } from './relays';
 import { storage } from '../storage';
 import type { ProfileMetadata } from './auth';
@@ -421,28 +421,18 @@ async function fetchQuotedEvents(
     for (const r of refs.relayHints) hintRelays.add(r);
   }
   if (ids.size === 0) return out;
-  // Cap to keep latency bounded; the original relay set is always preferred,
-  // hints fill in extras up to the cap.
-  const queryRelays = Array.from(
-    new Set([...relays, ...hintRelays]),
-  ).slice(0, 12);
-  let events: Event[] = [];
-  try {
-    events = await pool.querySync(queryRelays, {
-      ids: Array.from(ids),
-    }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
-  } catch {
-    return out;
-  } finally {
-    const extras = queryRelays.filter((r) => !relays.includes(r));
-    if (extras.length) {
-      try {
-        pool.close(extras);
-      } catch {
-        // ignore close errors
-      }
+  // Cap the hint extras so a noisy quote-ref payload doesn't fan out to
+  // dozens of niche relays. The base relays are always preferred.
+  const cappedHints = Array.from(hintRelays).slice(0, Math.max(0, 12 - relays.length));
+  const events = await withExtraRelays(pool, relays, cappedHints, async (queryRelays) => {
+    try {
+      return await pool.querySync(queryRelays, {
+        ids: Array.from(ids),
+      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
+    } catch {
+      return [] as Event[];
     }
-  }
+  });
   for (const e of events) out.set(e.id, e);
   return out;
 }
@@ -479,25 +469,16 @@ async function fetchAuthorWriteRelays(
   relays: string[],
   authors: string[],
 ): Promise<string[]> {
-  const queryRelays = Array.from(new Set([...relays, ...PROFILE_RELAYS]));
-  const opened = queryRelays.filter((r) => !relays.includes(r));
-  let events: Event[] = [];
-  try {
-    events = await pool.querySync(queryRelays, {
-      kinds: [10002],
-      authors,
-    }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
-  } catch {
-    return [];
-  } finally {
-    if (opened.length) {
-      try {
-        pool.close(opened);
-      } catch {
-        // ignore close errors
-      }
+  const events = await withExtraRelays(pool, relays, PROFILE_RELAYS, async (queryRelays) => {
+    try {
+      return await pool.querySync(queryRelays, {
+        kinds: [10002],
+        authors,
+      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
+    } catch {
+      return [] as Event[];
     }
-  }
+  });
   const newest = new Map<string, Event>();
   for (const e of events) {
     const prev = newest.get(e.pubkey);
@@ -539,27 +520,20 @@ async function fetchProfiles(
   //    profile-outbox relays (purplepag.es etc.). The outbox relays exist
   //    specifically to host kind:0 for arbitrary authors, so this catches
   //    the common case where an author's profile isn't on DEFAULT_RELAYS.
-  const firstPassRelays = Array.from(new Set([...relays, ...PROFILE_RELAYS]));
-  const firstPassExtras = firstPassRelays.filter((r) => !relays.includes(r));
   let firstPassOk = false;
-  let events: Event[] = [];
-  try {
-    events = await pool.querySync(firstPassRelays, {
-      kinds: [0],
-      authors: toFetch,
-    }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
-    firstPassOk = true;
-  } catch {
-    // swallow — fall through to NIP-65 pass below
-  } finally {
-    if (firstPassExtras.length) {
-      try {
-        pool.close(firstPassExtras);
-      } catch {
-        // ignore close errors
-      }
+  const events = await withExtraRelays(pool, relays, PROFILE_RELAYS, async (queryRelays) => {
+    try {
+      const r = await pool.querySync(queryRelays, {
+        kinds: [0],
+        authors: toFetch,
+      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
+      firstPassOk = true;
+      return r;
+    } catch {
+      // swallow — fall through to NIP-65 pass below
+      return [] as Event[];
     }
-  }
+  });
   for (const [pubkey, profile] of newestProfilesByAuthor(events)) {
     out.set(pubkey, profile);
     storage.profile.set(pubkey, profile);
@@ -572,30 +546,24 @@ async function fetchProfiles(
   let fallbackRan = false;
   if (missing.length) {
     const extras = await fetchAuthorWriteRelays(pool, relays, missing);
-    const fallbackRelays = Array.from(new Set([...relays, ...extras])).slice(0, 12);
-    const opened = fallbackRelays.filter((r) => !relays.includes(r));
-    if (opened.length) {
-      try {
-        let fbEvents: Event[] = [];
+    const cappedExtras = extras.slice(0, Math.max(0, 12 - relays.length));
+    if (cappedExtras.length) {
+      const fbEvents = await withExtraRelays(pool, relays, cappedExtras, async (queryRelays) => {
         try {
-          fbEvents = await pool.querySync(fallbackRelays, {
+          const r = await pool.querySync(queryRelays, {
             kinds: [0],
             authors: missing,
           }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
           fallbackRan = true;
+          return r;
         } catch {
           // ignore — leave still-missing authors for negative caching below
+          return [] as Event[];
         }
-        for (const [pubkey, profile] of newestProfilesByAuthor(fbEvents)) {
-          out.set(pubkey, profile);
-          storage.profile.set(pubkey, profile);
-        }
-      } finally {
-        try {
-          pool.close(opened);
-        } catch {
-          // ignore close errors
-        }
+      });
+      for (const [pubkey, profile] of newestProfilesByAuthor(fbEvents)) {
+        out.set(pubkey, profile);
+        storage.profile.set(pubkey, profile);
       }
     }
   }

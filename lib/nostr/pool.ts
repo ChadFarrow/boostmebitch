@@ -30,3 +30,36 @@ export async function withPool<T>(
     pool.close(relays);
   }
 }
+
+/**
+ * Run `fn` with the union of `baseRelays` + `extraRelays` (deduped),
+ * closing only the newly-opened extras when done. Use inside a `withPool`
+ * scope when a sub-query needs extra relays beyond the outer base set so
+ * the extras are torn down before the outer pool exits — otherwise their
+ * sockets leak past the surrounding `withPool.finally` (which only closes
+ * its own relay list). Close errors are swallowed since extras going down
+ * mid-query is a normal condition we never want to propagate.
+ */
+export async function withExtraRelays<T>(
+  pool: SimplePool,
+  baseRelays: string[],
+  extraRelays: string[],
+  fn: (relays: string[]) => Promise<T>,
+): Promise<T> {
+  const baseSet = new Set(baseRelays);
+  const merged = [...baseRelays];
+  const opened: string[] = [];
+  for (const r of extraRelays) {
+    if (!baseSet.has(r)) {
+      merged.push(r);
+      opened.push(r);
+    }
+  }
+  try {
+    return await fn(merged);
+  } finally {
+    if (opened.length) {
+      try { pool.close(opened); } catch { /* ignore */ }
+    }
+  }
+}
