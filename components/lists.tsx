@@ -318,9 +318,24 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
               }`}
               onClick={() => data.podcast && play(e, data.podcast)}
             >
-              <button className="w-9 h-9 flex-shrink-0 border border-bone/40 group-hover:border-bolt grid place-items-center text-bone group-hover:text-bolt">
-                {playing ? '❚❚' : '▶'}
-              </button>
+              <div className="relative w-12 h-12 flex-shrink-0">
+                <PodcastCover
+                  image={e.image}
+                  artwork={e.feedImage || data.podcast?.artwork}
+                  title={e.title}
+                  seed={e.guid ?? String(e.id)}
+                  className="w-full h-full border border-bone/40 group-hover:border-bolt text-base"
+                />
+                <div
+                  className={`absolute inset-0 grid place-items-center bg-ink/55 transition pointer-events-none ${
+                    playing
+                      ? 'opacity-100 text-bolt'
+                      : 'opacity-0 group-hover:opacity-100 text-bone group-hover:text-bolt'
+                  }`}
+                >
+                  {playing ? '❚❚' : '▶'}
+                </div>
+              </div>
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-display leading-tight truncate">{e.title}</div>
                 <div className="text-[11px] text-muted flex gap-2 mt-0.5">
