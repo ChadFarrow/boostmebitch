@@ -199,24 +199,28 @@ export const storage = {
 
   /**
    * Last DiscoveredNote[] per feed surface. Used by `useNostrFeed` for the
-   * stale-while-revalidate paint: returned regardless of age (no TTL gate)
-   * because every mount also runs a `since`-bounded incremental refresh that
-   * prepends new events. Keys: 'global' for the global feed,
-   * 'podcast:<guid>' per podcast.
+   * stale-while-revalidate paint: returned regardless of age (no TTL) since
+   * every mount also runs a `since`-bounded incremental refresh that
+   * prepends new events. Stored as a bare array on disk; the legacy
+   * `{ t, v }` wrapper from earlier versions is still accepted on read so
+   * an existing user's cache survives the deploy. Keys: 'global' for the
+   * global feed, 'podcast:<guid>' per podcast.
    */
   feedNotes: {
     get: (key: string): DiscoveredNote[] | null => {
       const raw = safeGet(`${KEYS.feedNotesPrefix}:${key}`);
       if (!raw) return null;
       try {
-        const parsed = JSON.parse(raw) as CacheCell<DiscoveredNote[]>;
-        return parsed && Array.isArray(parsed.v) ? parsed.v : null;
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed as DiscoveredNote[];
+        if (parsed && Array.isArray(parsed.v)) return parsed.v as DiscoveredNote[];
+        return null;
       } catch {
         return null;
       }
     },
     set: (key: string, v: DiscoveredNote[]) =>
-      setTimed(`${KEYS.feedNotesPrefix}:${key}`, v),
+      safeSet(`${KEYS.feedNotesPrefix}:${key}`, JSON.stringify(v)),
   },
 
   /**
