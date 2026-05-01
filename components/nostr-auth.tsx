@@ -126,14 +126,7 @@ export function NostrAuth() {
     if (Object.keys(cachedFavorites).length > 0) setFavorites(cachedFavorites);
     const cachedMutes = storage.muted.get(stored);
     if (cachedMutes.publicPubkeys.length || cachedMutes.privatePubkeys.length) {
-      setMutedPubkeys(unionMutedPubkeys({
-        publicPubkeys: cachedMutes.publicPubkeys,
-        publicOtherTags: cachedMutes.publicOtherTags,
-        privatePubkeys: cachedMutes.privatePubkeys,
-        privateOtherTags: cachedMutes.privateOtherTags,
-        unreadablePrivateContent: cachedMutes.unreadablePrivateContent,
-        updatedAt: cachedMutes.updatedAt,
-      }));
+      setMutedPubkeys(unionMutedPubkeys(cachedMutes));
     }
     loadProfile(bare);
   }, [identity, setIdentity, setFavorites, setMutedPubkeys]);

@@ -18,29 +18,6 @@ import {
 import { resolvePublishRelays } from './relays';
 import type { NostrIdentity } from './auth';
 
-function loadCachedState(npub: string | null | undefined): MuteListState {
-  const raw = storage.muted.get(npub);
-  return {
-    publicPubkeys: raw.publicPubkeys,
-    publicOtherTags: raw.publicOtherTags,
-    privatePubkeys: raw.privatePubkeys,
-    privateOtherTags: raw.privateOtherTags,
-    unreadablePrivateContent: raw.unreadablePrivateContent,
-    updatedAt: raw.updatedAt,
-  };
-}
-
-function saveState(npub: string | null | undefined, state: MuteListState) {
-  storage.muted.set(npub, {
-    publicPubkeys: state.publicPubkeys,
-    publicOtherTags: state.publicOtherTags,
-    privatePubkeys: state.privatePubkeys,
-    privateOtherTags: state.privateOtherTags,
-    unreadablePrivateContent: state.unreadablePrivateContent,
-    updatedAt: state.updatedAt,
-  });
-}
-
 /**
  * Reconcile local mute-list cache with the NIP-51 kind:10000 event.
  * Last-write-wins on `event.created_at` (s) vs local cache `updatedAt` (s).
@@ -52,7 +29,7 @@ function saveState(npub: string | null | undefined, state: MuteListState) {
  */
 export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
   const setMutedPubkeys = useApp.getState().setMutedPubkeys;
-  const cached = loadCachedState(identity.npub);
+  const cached = storage.muted.get(identity.npub);
   const muteEvent = await fetchMutedPubkeys(identity.pubkey);
 
   if (!muteEvent) {
@@ -66,7 +43,7 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
       setMutedPubkeys(unionMutedPubkeys(cached));
       schedulePublishMuteList(
         identity.pubkey,
-        () => loadCachedState(identity.npub),
+        () => storage.muted.get(identity.npub),
         resolvePublishRelays(identity),
       );
     } else {
@@ -78,7 +55,7 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
 
   const nostrNewer = muteEvent.updatedAt >= cached.updatedAt;
   if (nostrNewer) {
-    saveState(identity.npub, muteEvent);
+    storage.muted.set(identity.npub, muteEvent);
     setMutedPubkeys(unionMutedPubkeys(muteEvent));
   } else {
     // Local is ahead. Keep our pubkeys + non-`p` tags, but adopt the relay's
@@ -91,11 +68,11 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
       unreadablePrivateContent: cached.unreadablePrivateContent ?? muteEvent.unreadablePrivateContent,
       updatedAt: cached.updatedAt,
     };
-    saveState(identity.npub, merged);
+    storage.muted.set(identity.npub, merged);
     setMutedPubkeys(unionMutedPubkeys(merged));
     schedulePublishMuteList(
       identity.pubkey,
-      () => loadCachedState(identity.npub),
+      () => storage.muted.get(identity.npub),
       resolvePublishRelays(identity),
     );
   }

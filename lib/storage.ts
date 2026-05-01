@@ -6,7 +6,7 @@
 // duplicated across components.
 
 import type { FavoritePodcast, Podcast, StoredBoost } from './types';
-import type { DiscoveredNote, ProfileMetadata } from './nostr';
+import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
 
 const KEYS = {
   npub: 'bmb:npub',
@@ -79,6 +79,52 @@ function setTimed<T>(key: string, value: T) {
 const PODCAST_META_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const PROFILE_TTL_MS = 7 * 24 * 60 * 60 * 1000;      // 7 days for found profiles
 const PROFILE_MISS_TTL_MS = 15 * 60 * 1000;          // 15 min for known-missing — short so PROFILE_RELAYS additions / temporary relay outages re-resolve naturally on the user's next visit
+
+// Mute-list shape coercion lives here (rather than in lib/nostr/mutes.ts) so
+// the storage layer owns every legacy-format migration. Two shapes accepted:
+//   - current: MuteListState directly (object with publicPubkeys etc.)
+//   - legacy:  `{ pubkeys, otherTags, updatedAt }` written before the
+//              public/private split — promoted to public-only.
+function emptyMuteState(): MuteListState {
+  return {
+    publicPubkeys: [],
+    publicOtherTags: [],
+    privatePubkeys: [],
+    privateOtherTags: [],
+    updatedAt: 0,
+  };
+}
+
+function coerceToMuteState(parsed: unknown): MuteListState {
+  if (!parsed || typeof parsed !== 'object') return emptyMuteState();
+  const p = parsed as Record<string, unknown>;
+  const stringArray = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  const tagArray = (v: unknown): string[][] =>
+    Array.isArray(v) ? v.filter((x): x is string[] => Array.isArray(x)) : [];
+  const ts = typeof p.updatedAt === 'number' ? p.updatedAt : 0;
+
+  // Legacy shape: only the unscoped `pubkeys` field, no `publicPubkeys`.
+  if (Array.isArray(p.pubkeys) && !Array.isArray(p.publicPubkeys)) {
+    return {
+      publicPubkeys: stringArray(p.pubkeys),
+      publicOtherTags: tagArray(p.otherTags),
+      privatePubkeys: [],
+      privateOtherTags: [],
+      updatedAt: ts,
+    };
+  }
+
+  return {
+    publicPubkeys: stringArray(p.publicPubkeys),
+    publicOtherTags: tagArray(p.publicOtherTags),
+    privatePubkeys: stringArray(p.privatePubkeys),
+    privateOtherTags: tagArray(p.privateOtherTags),
+    unreadablePrivateContent:
+      typeof p.unreadablePrivateContent === 'string' ? p.unreadablePrivateContent : undefined,
+    updatedAt: ts,
+  };
+}
 
 export const storage = {
   npub: {
@@ -242,77 +288,23 @@ export const storage = {
   },
 
   /**
-   * NIP-51 kind:10000 mute-list cache. Stores the full state from
-   * `lib/nostr/mutes.ts` — public + private p-tags, preserved non-`p` tags
-   * on each side, and any opaque private-content blob we couldn't decrypt.
-   * Read also tolerates the legacy `{ pubkeys, otherTags, updatedAt }` shape
-   * written by earlier versions of the app (treated as public-only).
+   * NIP-51 kind:10000 mute-list cache. Trafficks in `MuteListState` directly
+   * (public + private p-tags, preserved non-`p` tags on each side, and any
+   * opaque private-content blob we couldn't decrypt). Read also tolerates
+   * the legacy `{ pubkeys, otherTags, updatedAt }` shape written by earlier
+   * versions of the app — those are promoted to public-only.
    */
   muted: {
-    get: (npub: string | null | undefined): {
-      publicPubkeys: string[];
-      publicOtherTags: string[][];
-      privatePubkeys: string[];
-      privateOtherTags: string[][];
-      unreadablePrivateContent?: string;
-      updatedAt: number;
-    } => {
-      const empty = {
-        publicPubkeys: [],
-        publicOtherTags: [],
-        privatePubkeys: [],
-        privateOtherTags: [],
-        updatedAt: 0,
-      };
+    get: (npub: string | null | undefined): MuteListState => {
       const raw = safeGet(identityKey(KEYS.mutedPrefix, npub));
-      if (!raw) return empty;
+      if (!raw) return emptyMuteState();
       try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return empty;
-        // Legacy shape: { pubkeys, otherTags, updatedAt } — promote to public-only.
-        if (Array.isArray((parsed as any).pubkeys) && !Array.isArray((parsed as any).publicPubkeys)) {
-          return {
-            publicPubkeys: ((parsed as any).pubkeys as unknown[]).filter((p): p is string => typeof p === 'string'),
-            publicOtherTags: Array.isArray((parsed as any).otherTags)
-              ? ((parsed as any).otherTags as unknown[]).filter((t): t is string[] => Array.isArray(t))
-              : [],
-            privatePubkeys: [],
-            privateOtherTags: [],
-            updatedAt: typeof (parsed as any).updatedAt === 'number' ? (parsed as any).updatedAt : 0,
-          };
-        }
-        return {
-          publicPubkeys: Array.isArray(parsed.publicPubkeys)
-            ? parsed.publicPubkeys.filter((p: unknown): p is string => typeof p === 'string')
-            : [],
-          publicOtherTags: Array.isArray(parsed.publicOtherTags)
-            ? parsed.publicOtherTags.filter((t: unknown): t is string[] => Array.isArray(t))
-            : [],
-          privatePubkeys: Array.isArray(parsed.privatePubkeys)
-            ? parsed.privatePubkeys.filter((p: unknown): p is string => typeof p === 'string')
-            : [],
-          privateOtherTags: Array.isArray(parsed.privateOtherTags)
-            ? parsed.privateOtherTags.filter((t: unknown): t is string[] => Array.isArray(t))
-            : [],
-          unreadablePrivateContent:
-            typeof parsed.unreadablePrivateContent === 'string' ? parsed.unreadablePrivateContent : undefined,
-          updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
-        };
+        return coerceToMuteState(JSON.parse(raw));
       } catch {
-        return empty;
+        return emptyMuteState();
       }
     },
-    set: (
-      npub: string | null | undefined,
-      v: {
-        publicPubkeys: string[];
-        publicOtherTags: string[][];
-        privatePubkeys: string[];
-        privateOtherTags: string[][];
-        unreadablePrivateContent?: string;
-        updatedAt: number;
-      },
-    ) => {
+    set: (npub: string | null | undefined, v: MuteListState) => {
       safeSet(identityKey(KEYS.mutedPrefix, npub), JSON.stringify(v));
     },
   },
