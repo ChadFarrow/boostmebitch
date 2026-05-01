@@ -10,6 +10,7 @@ import type { DiscoveredNote, ProfileMetadata } from './nostr';
 
 const KEYS = {
   npub: 'bmb:npub',
+  signer: 'bmb:signer',               // 'amber' when Amber is the active signer; absent = NIP-07 extension or none
   nwcUri: 'bmb:nwc_uri',
   relays: 'bmb:relays',
   senderName: 'bmb:sender_name',
@@ -21,6 +22,8 @@ const KEYS = {
   profilePrefix: 'bmb:profile3',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion so stale negative-cache entries don't pin missing profiles for the 1-hour miss TTL.
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
 } as const;
+
+export type SignerKind = 'amber';
 
 const BOOSTS_CAP = 200;
 
@@ -82,6 +85,18 @@ export const storage = {
     get: () => safeGet(KEYS.npub),
     set: (v: string) => safeSet(KEYS.npub, v),
     clear: () => safeRemove(KEYS.npub),
+  },
+
+  /** Which signer the user picked. Absent = NIP-07 extension or signed out;
+   *  'amber' = use the Android Amber app via NIP-55 deep links. Read on page
+   *  load to decide whether to install the Amber polyfill onto window.nostr. */
+  signer: {
+    get: (): SignerKind | null => {
+      const v = safeGet(KEYS.signer);
+      return v === 'amber' ? 'amber' : null;
+    },
+    set: (v: SignerKind) => safeSet(KEYS.signer, v),
+    clear: () => safeRemove(KEYS.signer),
   },
 
   nwcUri: {

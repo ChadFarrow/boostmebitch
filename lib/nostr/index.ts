@@ -4,10 +4,16 @@
 
 export {
   loginWithExtension,
+  loginWithAmber,
+  restoreAmberSigner,
+  clearAmberSigner,
   shortNpub,
   type NostrIdentity,
   type ProfileMetadata,
 } from './auth';
+
+export { isAmberActive } from './signer';
+export { isLikelyAndroid } from './amber';
 
 export { fetchProfile } from './profile';
 
