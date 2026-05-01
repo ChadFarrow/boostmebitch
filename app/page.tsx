@@ -95,7 +95,7 @@ export default function Home() {
           // Browse mode: just the aside. Clicking a row flips to detail view
           // (`inDetailView` branch above) so this layer never needs to host
           // an episode pane.
-          <aside className="card p-3 max-w-3xl mx-auto max-h-[70vh] overflow-y-auto">
+          <aside className="card p-3 max-h-[70vh] overflow-y-auto">
             {showFavoritesPanel && !query && !loading ? (
               <button
                 type="button"
