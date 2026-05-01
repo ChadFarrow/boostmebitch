@@ -3,6 +3,10 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { nip19 } from 'nostr-tools';
 import {
   loginWithExtension,
+  loginWithAmber,
+  restoreAmberSigner,
+  clearAmberSigner,
+  isLikelyAndroid,
   shortNpub,
   fetchProfile,
   fetchRelayList,
@@ -98,6 +102,11 @@ export function NostrAuth() {
       if (decoded.type !== 'npub') return;
       pubkey = decoded.data;
     } catch { return; }
+    // If the user signed in with Amber, reinstall the AmberSigner polyfill on
+    // window.nostr before any signing operation runs. Synchronous; no popup.
+    if (storage.signer.get() === 'amber') {
+      restoreAmberSigner(pubkey);
+    }
     const bare: NostrIdentity = { pubkey, npub: stored };
     const cachedProfile = storage.profile.get(pubkey);
     if (cachedProfile) bare.profile = cachedProfile;
@@ -124,9 +133,23 @@ export function NostrAuth() {
       const id = await loginWithExtension();
       setIdentity(id);
       storage.npub.set(id.npub);
+      storage.signer.clear();
       loadProfile(id);
     } catch (e) {
       setErr(getErrorMessage(e, 'sign-in failed'));
+    } finally { setBusy(false); }
+  }
+
+  async function signinWithAmber() {
+    setBusy(true); setErr(null);
+    try {
+      const id = await loginWithAmber();
+      setIdentity(id);
+      storage.npub.set(id.npub);
+      storage.signer.set('amber');
+      loadProfile(id);
+    } catch (e) {
+      setErr(getErrorMessage(e, 'Amber sign-in failed'));
     } finally { setBusy(false); }
   }
 
@@ -135,18 +158,43 @@ export function NostrAuth() {
     setFavorites({});
     setMutedPubkeys(new Set());
     storage.npub.clear();
+    storage.signer.clear();
+    clearAmberSigner();
   }
 
   if (identity) {
     return <AccountMenu identity={identity} onSignOut={signout} />;
   }
 
+  // On Android, surface the Amber button first since the NIP-07 path needs a
+  // browser extension that isn't widely available on mobile. Desktop / iOS
+  // see the extension button first; Amber stays available as a fallback for
+  // anyone with a custom setup (e.g. browser DevTools port-forwarding).
+  const androidFirst = isLikelyAndroid();
+
+  const extensionButton = (
+    <button onClick={signin} disabled={busy} className="btn-ghost">
+      <span className="text-nostr">◆</span>
+      {busy ? 'Connecting…' : 'Sign in with Nostr'}
+    </button>
+  );
+
+  const amberButton = (
+    <button
+      onClick={signinWithAmber}
+      disabled={busy}
+      className="btn-ghost"
+      title="Sign in with the Amber Android signer"
+    >
+      <span className="text-nostr">◆</span>
+      {busy ? 'Connecting…' : 'Sign in with Amber'}
+    </button>
+  );
+
   return (
     <div className="flex flex-col items-end gap-1">
-      <button onClick={signin} disabled={busy} className="btn-ghost">
-        <span className="text-nostr">◆</span>
-        {busy ? 'Connecting…' : 'Sign in with Nostr'}
-      </button>
+      {androidFirst ? amberButton : extensionButton}
+      {androidFirst ? extensionButton : amberButton}
       {err && <span className="text-[10px] text-nostr/80 max-w-[260px] text-right">{err}</span>}
     </div>
   );
