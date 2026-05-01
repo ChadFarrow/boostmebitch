@@ -55,16 +55,61 @@ All queries run against `DEFAULT_RELAYS`. If a user has none of those events on 
 
 `resolvePublishRelays(identity)` in `lib/nostr/` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded.
 
-## Signers (NIP-07 extension + Amber NIP-55)
+## Signers (NIP-07 extension + Amber NIP-55 + NIP-46 bunker)
 
-The whole codebase reads from `window.nostr` (publish.ts, mutes.ts, wallet-backup.ts, zap.ts, boost.ts). Two signer paths feed that surface:
+The whole codebase reads from `window.nostr` (publish.ts, mutes.ts, wallet-backup.ts, zap.ts, boost.ts). Three signer paths feed that surface, swapped in/out by `lib/nostr/signer.ts`:
 
-- **NIP-07 extension** (Alby, nos2x, etc., desktop). Already at `window.nostr` when present; we just call it.
-- **Amber on Android** (NIP-55, see `lib/nostr/amber.ts`). A native app, not an extension. We polyfill `window.nostr` with an `AmberSigner` instance that dispatches each request to the Amber app via the `nostrsigner:` URL scheme and reads the result back from the system clipboard. Round-trip looks like: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<get_public_key|sign_event|nip04_encrypt|...>` (no callbackUrl per spec — Amber returns via clipboard) → user approves in Amber → user returns → first user gesture (pointerdown/touchstart/keydown anywhere on the page) reads the clipboard with fresh transient activation. `lib/nostr/signer.ts:activateAmberSigner()` installs the polyfill and `deactivateAmberSigner()` restores the original. `restoreAmberSigner(pubkey)` is the synchronous fast-path on page load — `nostr-auth.tsx`'s useEffect calls it when `storage.signer.get() === 'amber'`.
+- **NIP-07 extension** (Alby, nos2x, Flamingo, nostash on iOS Safari, etc.). Already at `window.nostr` when present; we just call it. We don't polyfill — the original injection wins. Sign-out clears `bmb:npub` but leaves `window.nostr` alone.
+- **Amber on Android** (NIP-55, `lib/nostr/amber.ts`). Native app, not an extension. We polyfill `window.nostr` with an `AmberSigner` instance that dispatches each request to Amber via the `nostrsigner:` URL scheme and reads the result back from the system clipboard. Round-trip: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<…>` (no callbackUrl per spec — Amber returns via clipboard) → user approves in Amber → user returns → first user gesture (`pointerdown`/`touchstart`/`keydown` anywhere on the page) reads the clipboard with fresh transient activation. `activateAmberSigner` installs the polyfill, `deactivateAmberSigner` restores the original. `restoreAmberSigner(pubkey)` is the synchronous fast-path on page load (no Amber prompt).
+- **NIP-46 bunker / remote signer** (`lib/nostr/bunker.ts`, wraps nostr-tools' `BunkerSigner`). Works everywhere. Two flows: paste a `bunker://` URI or generate a `nostrconnect://` URI for the user to feed their signer. The `BunkerAdapter` exposes the `Window['nostr']` shape; `activateBunkerSigner(adapter)` installs it. Reconnect on reload is async (`restoreBunkerSigner()` rebuilds the `BunkerSigner` from `bmb:bunker:{uri,clientSk}`); signing calls before it resolves throw, but nothing signs unprompted right after page load. Compatible with **Clave** (iOS-native, APNs-driven), **nsec.app** (web), **Amber-as-bunker** (Android), and Primal's signer.
 
-The button label declares the signer the click will use: "Sign in with Nostr" when `window.nostr` is present, "Sign in with Amber" otherwise on Android, neither on desktop without an extension. While an Amber sign-in is in flight, `<AmberCompletion>` always renders a "◆ Continue from Amber" recovery button + "Paste manually" textarea — these are shown unconditionally because `visibilitychange` is unreliable on standalone-PWA returns and we can't gate the recovery UI on lifecycle detection.
+### `lib/nostr/signer.ts` — the swap point
 
-**Capability helpers** in `lib/nostr/signer.ts`: `getNip04()` / `getNip44()` (return the API or null) and `requireNip44()` (throws a user-facing error). Use these instead of inlining `typeof window !== 'undefined' && window.nostr?.nipXX` — the wallet backup uses `requireNip44`, mutes use `getNip04` with policies that vary by call site (warn-and-degrade-to-public on encrypt; warn-and-preserve-as-opaque-blob on decrypt).
+Only one polyfill is active at a time. `captureOriginal()` snapshots the underlying NIP-07 extension on first activation so deactivation can restore it. `activateAmberSigner` and `activateBunkerSigner` each clear the other's instance before installing. `bmb:signer` holds `'amber' | 'bunker' | absent` so the fast-path useEffect knows what to restore.
+
+Capability accessors live here too: `getNip04()` / `getNip44()` (return the API or null) and `requireNip44()` (throws a user-facing error). Use these instead of inlining `typeof window !== 'undefined' && window.nostr?.nipXX` — the wallet backup uses `requireNip44`, mutes use `getNip04` with policies that vary by call site (warn-and-degrade-to-public on encrypt; warn-and-preserve-as-opaque-blob on decrypt).
+
+### Per-platform decision tree (`components/nostr-auth.tsx`)
+
+```
+extensionBrand = detectExtensionBrand()  // window.alby | window.nostr | null
+android        = isLikelyAndroid()
+ios            = isLikelyIOS()           // includes iPad-as-Mac UA fallback
+
+signerKind =
+  extension !== null ? 'extension'  // primary button → loginWithExtension
+  : android          ? 'amber'      // primary button → loginWithAmber
+  : ios              ? 'bunker'     // primary button → opens bunker disclosure
+  :                    'none'       // primary button → throws install hint
+```
+
+The primary button label derives from this:
+- `'Sign in with Alby'` when `extensionBrand === 'alby'` (only Alby exposes `window.alby` for brand detection; nos2x/Flamingo are indistinguishable, label stays generic)
+- `'Sign in with Amber'` when `signerKind === 'amber'`
+- `'Connect remote signer'` when `signerKind === 'bunker'` (iOS-without-extension)
+- `'Sign in with Nostr'` everywhere else
+
+**iOS surfaces the bunker flow as the primary path** because Safari iOS doesn't run NIP-07 extensions in PWA mode (and nostash is rare in-tab), so erroring on click was the wrong default. A small helper line under the iOS button names Clave (TestFlight) as the recommended pairing target.
+
+The standalone "◆ Use a remote signer" disclosure is always available on Android + desktop as a secondary path (in case someone wants to NIP-46 even though they could use Amber/extension); it's hidden on iOS to avoid duplicating the primary action.
+
+### Re-detection at runtime
+
+Two listeners in `nostr-auth.tsx` keep the UI honest:
+
+1. **Extension re-detection** on `window.focus` and `document.visibilitychange` — covers the user installing Alby (or any NIP-07 extension) while the page is already open. The button label updates without a reload.
+2. **Account-change detector** on `window.focus` while signed in via the extension path. Re-calls `getPublicKey()` (throttled to once per 30s to avoid prompt-spam on extensions without "always allow") and, if the active account in the extension changed, drives `loginWithExtension` + `completeSignIn` to switch identities. Multi-identity Alby / nos2x users are first-class.
+
+`signin()` itself also re-reads `detectExtensionBrand()` at click time so install-then-click works without waiting for the focus listener.
+
+### Lifecycle observables
+
+- **`subscribeAmberStage(fn)`** in `lib/nostr/amber.ts` — emits `'idle' | 'awaiting' | 'returned'` so `<AmberCompletion>` can flip its hint copy from "Approve in Amber, then come back…" to "If sign-in didn't complete, tap below." in lockstep with `invokeAmber`'s actual lifecycle. Replaces the duplicate visibilitychange listener that used to live in the component.
+- **`subscribeBunkerHealth(fn)`** in `lib/nostr/bunker.ts` — emits `boolean` (stale or not). Adapter calls run through `trackBunkerCall` with a 30s timeout; failures flip the flag, successful calls clear it. `<BunkerHealthBanner>` inside `<AccountMenu>` subscribes and shows "Signer disconnected — Reconnect" with a button calling `restoreBunkerSigner()`. Targets the iOS-PWA-suspended-WebSocket case.
+
+### Recovery UI (Amber)
+
+While an Amber sign-in is in flight, `<AmberCompletion>` always renders a "◆ Read clipboard manually" button + "Paste manually" textarea regardless of stage. We can't gate on `visibilitychange` because it's unreliable on standalone-PWA returns; the user always has a tap-able path.
 
 ## PWA install
 
@@ -132,9 +177,11 @@ Three wallet sub-cards, each its own component:
 
 - `components/nwc-wallet.tsx` — paste a `nostr+walletconnect://` URI / disconnect. Persists to `bmb:nwc_uri` via `lib/v4v/nwc.ts`.
 - `components/spark-wallet.tsx` — Create new (BIP-39 → mnemonic display → NIP-44 encrypt-to-self → kind:30078 publish → SDK init), Restore from Nostr (fetch + decrypt + init), Disconnect. Once initialized, `<ReadyPanel>` shows the live balance + a deposit-invoice generator (BOLT11 + QR + copy + auto-dismiss when the payment lands).
-- `components/webln-wallet.tsx` — auto-detects `window.webln`. "Enable for this site" pre-authorizes so the first boost doesn't pause for a permission prompt.
+- `components/webln-wallet.tsx` — only renders when `hasWebln()` returns true at menu-open time. WebLN is browser-extension-only (Alby on desktop, Mutiny's in-app browser, Kiwi on Android) so on iOS, vanilla Android, or desktop without Alby, the entire "WebLN" header + sub-card are hidden by the parent `<AccountMenu>` to avoid clutter. The component itself is just the "Enable for this site" pre-authorization affordance.
 
 Wallet state changes (Spark init / disconnect / auto-restore landing) propagate to the UI via the `subscribeSpark()` listener pattern in `lib/v4v/spark.ts`. The menu re-reads `hasSpark()` on every notification — works whether the menu is closed or already open when state flips.
+
+The account menu also surfaces a `<BunkerHealthBanner>` at the top of the dropdown when the NIP-46 transport is stale (signer disconnect detected via `subscribeBunkerHealth`). One-click reconnect via `restoreBunkerSigner()`.
 
 ## Spark rail (Breez SDK)
 
@@ -244,7 +291,8 @@ Zustand store (`lib/store.ts`) holds: `identity`, `current` (episode + podcast),
 
 Everything else lives in `localStorage` on the device and is never sent server-side. **All `bmb:*` keys are accessed through typed helpers in `lib/storage.ts`** — don't call `localStorage.getItem`/`setItem` directly anywhere else.
 
-- `bmb:signer` — `'amber'` when the active signer is Amber via the AmberSigner polyfill; absent otherwise (NIP-07 extension or signed out). Read on page load to decide whether `restoreAmberSigner` needs to reinstall the polyfill onto `window.nostr` before any signing operation runs (`storage.signer`).
+- `bmb:signer` — `'amber' | 'bunker'` when a polyfill signer is active; absent otherwise (NIP-07 extension or signed out). Read on page load: `'amber'` triggers the synchronous `restoreAmberSigner`, `'bunker'` kicks off async `restoreBunkerSigner` to rebuild the NIP-46 transport. Cleared on sign-out (`storage.signer`).
+- `bmb:bunker` — current NIP-46 session as `{ uri, clientSk }`. `uri` is a `bunker://` pointer (the generate-flow's `nostrconnect://` is converted via `bunkerUriForRestore` after the bunker connects so reload uses a deterministic pointer). `clientSk` is the hex-encoded client secret key — persisting it across reloads keeps the bunker treating us as the same logical client (no re-auth on every page load). One bunker at a time. Cleared by `clearBunkerSigner()` on sign-out (`storage.bunker`).
 - `bmb:nwc_uri` — NWC URI (`storage.nwcUri`); `lib/v4v/nwc.ts` re-exports save/load/clear/has wrappers.
 - `bmb:relays` — JSON array, manual publish-relay override (`storage.relays`); when absent, `resolvePublishRelays` falls back to NIP-65 then `DEFAULT_RELAYS`.
 - `bmb:sender_name` — last "From" name typed into the boost modal (`storage.senderName`).
