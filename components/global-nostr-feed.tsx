@@ -132,14 +132,6 @@ export function GlobalNostrFeed() {
           <span className="text-nostr">#</span> Global boost feed
         </h2>
       }
-      description={
-        <p className="text-xs text-muted mb-4">
-          Every public Nostr post tagged with a Podcasting 2.0 <code>podcast:guid</code> identifier
-          — boosts, comments, and chatter from any client following the convention (Fountain,
-          Wavlake, BoostMeBitch, etc.). Your own sends are intermixed locally, with BoostBox
-          metadata links where available.
-        </p>
-      }
       notes={merged}
       loading={loading}
       err={err}
