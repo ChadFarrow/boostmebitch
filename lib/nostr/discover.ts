@@ -1,5 +1,5 @@
 import { nip19, type Event } from 'nostr-tools';
-import { withPool, QUERY_MAX_WAIT_MS } from './pool';
+import { withPool, FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS, PROFILE_RELAYS } from './relays';
 import { storage } from '../storage';
 import type { ProfileMetadata } from './auth';
@@ -223,7 +223,7 @@ export async function fetchPodcastNotes(
         kinds: [1],
         '#i': [`podcast:guid:${podcastGuid}`],
         limit,
-      }, { maxWait: QUERY_MAX_WAIT_MS });
+      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
     } catch {
       return [];
     }
@@ -250,7 +250,7 @@ export async function fetchAllPodcastNotes(
         kinds: [1],
         '#k': ['podcast:guid', 'podcast:item:guid'],
         limit,
-      }, { maxWait: QUERY_MAX_WAIT_MS });
+      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
     } catch {
       return [];
     }
@@ -381,7 +381,7 @@ async function fetchReplyTree(
         kinds: [1],
         '#e': Array.from(frontier),
         limit: REPLY_QUERY_LIMIT,
-      }, { maxWait: QUERY_MAX_WAIT_MS });
+      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
     } catch {
       break;
     }
@@ -423,7 +423,7 @@ async function fetchQuotedEvents(
   try {
     events = await pool.querySync(queryRelays, {
       ids: Array.from(ids),
-    }, { maxWait: QUERY_MAX_WAIT_MS });
+    }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
   } catch {
     return out;
   } finally {
@@ -479,7 +479,7 @@ async function fetchAuthorWriteRelays(
     events = await pool.querySync(queryRelays, {
       kinds: [10002],
       authors,
-    }, { maxWait: QUERY_MAX_WAIT_MS });
+    }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
   } catch {
     return [];
   } finally {
@@ -540,7 +540,7 @@ async function fetchProfiles(
     events = await pool.querySync(firstPassRelays, {
       kinds: [0],
       authors: toFetch,
-    }, { maxWait: QUERY_MAX_WAIT_MS });
+    }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
     firstPassOk = true;
   } catch {
     // swallow — fall through to NIP-65 pass below
@@ -574,7 +574,7 @@ async function fetchProfiles(
           fbEvents = await pool.querySync(fallbackRelays, {
             kinds: [0],
             authors: missing,
-          }, { maxWait: QUERY_MAX_WAIT_MS });
+          }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
           fallbackRan = true;
         } catch {
           // ignore — leave still-missing authors for negative caching below
