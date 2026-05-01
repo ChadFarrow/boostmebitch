@@ -117,24 +117,41 @@ export async function sendZap(args: {
   }
 
   const cb = await fetch(cbUrl.toString());
-  const cbData = await cb.json().catch(() => null);
+  const cbText = await cb.text();
+  let cbData: Record<string, unknown> | null = null;
+  try { cbData = JSON.parse(cbText); } catch { /* non-JSON body */ }
+  // LUD-06 error shape is { status: 'ERROR', reason }; some non-compliant
+  // services use `message`, `error`, or just return a plain-text body. Try
+  // them all so the user sees the actual reason instead of "no invoice".
+  const reason =
+    (cbData?.reason as string | undefined) ??
+    (cbData?.message as string | undefined) ??
+    (cbData?.error as string | undefined) ??
+    (!cbData && cbText.trim() ? cbText.trim().slice(0, 200) : undefined);
   if (!cb.ok) {
-    const reason = cbData?.reason ?? cbData?.message;
     throw new Error(reason ? `LNURL service: ${reason}` : `LNURL callback failed (${cb.status})`);
   }
-  if (cbData?.status === 'ERROR') {
-    throw new Error(`LNURL service: ${cbData.reason ?? 'unknown error'}`);
+  if (cbData?.status === 'ERROR' || (reason && !cbData?.pr)) {
+    throw new Error(`LNURL service: ${reason ?? 'unknown error'}`);
   }
-  if (!cbData?.pr) throw new Error('LNURL callback returned no invoice');
+  const invoice = cbData?.pr;
+  if (typeof invoice !== 'string' || !invoice) {
+    throw new Error('LNURL callback returned no invoice');
+  }
 
   // Rail priority matches lib/v4v/boost.ts pickRail(): NWC > Spark > WebLN.
   // Without this, users with only Spark configured would silently fall back to
   // WebLN (or fail at the no-provider check above), which surprises people who
   // set up Spark expecting it to handle every Lightning leg the app sends.
-  const preimage = hasNwc()
-    ? await nwcPayInvoice(cbData.pr)
-    : hasSpark()
-      ? await sparkPayInvoice(cbData.pr)
-      : await weblnPayInvoice(cbData.pr);
+  const rail: 'NWC' | 'Spark' | 'WebLN' = hasNwc() ? 'NWC' : hasSpark() ? 'Spark' : 'WebLN';
+  let preimage: string;
+  try {
+    if (rail === 'NWC') preimage = await nwcPayInvoice(invoice);
+    else if (rail === 'Spark') preimage = await sparkPayInvoice(invoice);
+    else preimage = await weblnPayInvoice(invoice);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`${rail} wallet rejected the zap invoice: ${msg}`);
+  }
   return { preimage };
 }
