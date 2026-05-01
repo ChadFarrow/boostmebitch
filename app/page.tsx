@@ -40,7 +40,7 @@ export default function Home() {
   return (
     <main className="min-h-screen pb-32">
       {/* Header */}
-      <header className="border-b border-bone/15 sticky top-0 z-20 bg-ink/90 backdrop-blur">
+      <header className="border-b border-bone/15 sticky top-0 z-20 bg-ink/90 backdrop-blur pt-[env(safe-area-inset-top)]">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-4">
           <button
             type="button"
