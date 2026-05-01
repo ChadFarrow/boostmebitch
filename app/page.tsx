@@ -150,7 +150,7 @@ function EmptyState() {
       {[
         { n: '01', t: 'Search', d: 'Powered by the Podcast Index. V4V-enabled feeds get a yellow stamp.' },
         { n: '02', t: 'Listen', d: 'Full-fidelity playback from the original enclosure URL.' },
-        { n: '03', t: 'Boost', d: 'Splits go out via NWC or WebLN. Boostagrams ride along in TLV 7629169.' },
+        { n: '03', t: 'Boost', d: 'Send sats to the show — auto-split across every value-block recipient, with your message and an optional Nostr post attached.' },
       ].map((step) => (
         <article key={step.n} className="card p-4">
           <div className="font-mono text-bolt text-sm">{step.n}</div>
