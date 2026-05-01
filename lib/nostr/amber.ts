@@ -148,6 +148,9 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pageshow', onReturned);
       window.removeEventListener('focus', onReturned);
+      document.removeEventListener('pointerdown', onUserGesture, true);
+      document.removeEventListener('touchstart', onUserGesture, true);
+      document.removeEventListener('keydown', onUserGesture, true);
       if (pendingResolver?.resolve === acceptManual) pendingResolver = null;
     };
 
@@ -156,6 +159,16 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
     // from Amber via the OS intent return; `pageshow` and `focus` fill the
     // gap on those browsers. Whichever event fires first wins; the others
     // become no-ops once `settled` flips inside `finish`.
+    //
+    // The lifecycle events alone aren't enough though — `clipboard.readText`
+    // requires *transient user activation*, which a visibility change does
+    // not grant on Android Chrome (especially in installed-PWA mode).
+    // `onUserGesture` below covers that: we attach capture-phase listeners
+    // for the next pointerdown / touchstart / keydown anywhere on the page
+    // after `wentHidden` flips, and read the clipboard inside that handler
+    // where activation is fresh. Whatever the user taps next — anywhere —
+    // completes the sign-in silently. They never need to find a specific
+    // button.
     const tryReadClipboard = async () => {
       if (!wentHidden || settled) return;
       try {
@@ -175,9 +188,17 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       await tryReadClipboard();
     };
     const onReturned = () => { void tryReadClipboard(); };
+    const onUserGesture = () => { void tryReadClipboard(); };
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('pageshow', onReturned);
     window.addEventListener('focus', onReturned);
+    // Capture phase so we run before any element-specific click/keydown
+    // handlers consume the activation. Listeners are removed inside
+    // `cleanup()` so they only fire while a single Amber request is in
+    // flight.
+    document.addEventListener('pointerdown', onUserGesture, true);
+    document.addEventListener('touchstart', onUserGesture, true);
+    document.addEventListener('keydown', onUserGesture, true);
 
     // Path 2: manual paste — register a resolver the UI can call
     const acceptManual: PendingResolver = (raw) => finish(raw);

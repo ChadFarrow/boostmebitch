@@ -266,21 +266,22 @@ function AmberCompletion({ onSubmit }: { onSubmit: (value: string) => boolean })
     }
   }
 
-  // Always render the recovery UI. In standalone-PWA mode on Android the
-  // `visibilitychange` event is unreliable when returning from Amber via the
-  // intent system, so we can't gate the action button on `returned` — we
-  // were getting users stuck at "Approve…" with no path to complete the
-  // flow. The hint copy still flips off once we DO see the page come back,
-  // so the auto-clipboard path keeps its happy-path UX where it works.
+  // Recovery UI for Amber. Most of the time `invokeAmber` resolves silently
+  // on the first user gesture after return (its capture-phase pointerdown /
+  // touchstart / keydown listener reads the clipboard with fresh user
+  // activation). What renders here is the safety net for when that read
+  // fails — clipboard permission denied, ciphertext that doesn't match the
+  // expected shape, or Amber writing into a different browser than the one
+  // running the PWA.
   return (
     <div className="flex flex-col items-end gap-1 mt-1 max-w-[280px]">
-      {!returned && (
-        <span className="text-[10px] text-muted text-right">
-          Approve in Amber, then come back and tap below.
-        </span>
-      )}
-      <button onClick={readClipboard} className="btn-bolt text-[11px] py-1 px-3">
-        ◆ Continue from Amber
+      <span className="text-[10px] text-muted text-right">
+        {returned
+          ? 'If sign-in didn’t complete, tap below.'
+          : 'Approve in Amber, then come back — sign-in will finish on your next tap.'}
+      </span>
+      <button onClick={readClipboard} className="btn-ghost text-[10px] py-1 px-2">
+        ◆ Read clipboard manually
       </button>
       {readErr && <span className="text-[10px] text-nostr/80 text-right">{readErr}</span>}
       <AmberManualPaste onSubmit={onSubmit} />
