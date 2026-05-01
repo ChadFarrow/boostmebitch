@@ -36,6 +36,24 @@ import { WeblnWallet } from './webln-wallet';
 // Fast Refresh on every save).
 const pendingProfileLoad = new Map<string, Promise<void>>();
 
+// Detect which NIP-07 extension is installed (if any). We only have a
+// reliable signal for Alby — it injects `window.alby` alongside
+// `window.nostr`. nos2x and Flamingo only inject `window.nostr` so we
+// can't tell them apart from each other or from a plain "some
+// extension" install. Returns null when no extension is present.
+function detectExtensionBrand(): 'alby' | 'generic' | null {
+  if (typeof window === 'undefined') return null;
+  if (!window.nostr) return null;
+  if ((window as { alby?: unknown }).alby) return 'alby';
+  return 'generic';
+}
+
+// How long to wait between consecutive `getPublicKey()` checks during
+// the account-change detector. Each call may prompt the extension if
+// the user hasn't granted "always allow," so we don't want to fire on
+// every focus event.
+const EXTENSION_RECHECK_THROTTLE_MS = 30_000;
+
 export function NostrAuth() {
   const identity = useApp((s) => s.identity);
   const setIdentity = useApp((s) => s.setIdentity);
@@ -43,16 +61,21 @@ export function NostrAuth() {
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Detected synchronously on first client render: whether a NIP-07
-  // extension exposed window.nostr, and whether we look Android. Both gate
+  // Detected synchronously on first client render: which (if any) NIP-07
+  // extension is at window.nostr, and whether we look Android. Both gate
   // which sign-in path the click takes and how the button labels itself,
   // so we read in the useState initializer (not a useEffect) — otherwise
-  // the SSR'd "Sign in with Nostr" paints first and flips to "Sign in
-  // with Amber" after mount, producing a visible flicker on every reload
-  // for Android users. SSR sees no `window` / `navigator` and returns
-  // false for both; the brief hydration mismatch on the button label is
-  // suppressed in the JSX below.
-  const [hasExtension] = useState(() => typeof window !== 'undefined' && !!window.nostr);
+  // the SSR'd "Sign in with Nostr" paints first and flips after mount,
+  // producing a visible flicker on every reload. SSR sees no `window` /
+  // `navigator` and returns nothing; the brief hydration mismatch on the
+  // button label is suppressed in the JSX below.
+  //
+  // `extensionBrand` is settable so we can re-detect after mount: a user
+  // who installs Alby while the page is already open should see the
+  // label update on focus without a manual reload.
+  const [extensionBrand, setExtensionBrand] =
+    useState<'alby' | 'generic' | null>(detectExtensionBrand);
+  const hasExtension = extensionBrand !== null;
   const [android] = useState(() => isLikelyAndroid());
 
   async function loadProfile(id: NostrIdentity) {
@@ -145,6 +168,77 @@ export function NostrAuth() {
     loadProfile(bare);
   }, [identity, setIdentity, setFavorites, setMutedPubkeys]);
 
+  // Re-detect the NIP-07 extension on focus / visibility changes so a
+  // user who installs Alby (or any other extension) while the page is
+  // already open sees the button label update without a manual reload.
+  // The detection is cheap (just reads window.alby / window.nostr) so
+  // we don't throttle.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const recheck = () => {
+      const next = detectExtensionBrand();
+      setExtensionBrand((cur) => (cur !== next ? next : cur));
+    };
+    window.addEventListener('focus', recheck);
+    document.addEventListener('visibilitychange', recheck);
+    return () => {
+      window.removeEventListener('focus', recheck);
+      document.removeEventListener('visibilitychange', recheck);
+    };
+  }, []);
+
+  // Account-change detector for multi-identity NIP-07 extensions
+  // (Alby and nos2x both let the user switch active accounts in their
+  // own UI). When the tab regains focus we re-call getPublicKey() and,
+  // if it differs from the cached identity, re-sign-in with the new
+  // pubkey so the rest of the app sees the right user. Only runs on
+  // the implicit-extension path — Amber/bunker have their own caching.
+  // Throttled to EXTENSION_RECHECK_THROTTLE_MS to avoid hammering the
+  // extension (each call may prompt if "always allow" isn't set).
+  useEffect(() => {
+    if (!identity) return;
+    if (typeof window === 'undefined') return;
+    if (storage.signer.get() !== null) return;
+    if (!window.nostr) return;
+
+    let cancelled = false;
+    let lastCheck = 0;
+
+    const onFocus = async () => {
+      if (cancelled) return;
+      const now = Date.now();
+      if (now - lastCheck < EXTENSION_RECHECK_THROTTLE_MS) return;
+      lastCheck = now;
+      if (!window.nostr) return;
+      try {
+        const current = await window.nostr.getPublicKey();
+        if (cancelled) return;
+        if (!current || current === identity.pubkey) return;
+        // Extension switched accounts. Re-sign-in fresh — this clears
+        // identity/favorites/mutes and re-hydrates against the new
+        // pubkey via loadProfile.
+        try {
+          const newId = await loginWithExtension();
+          if (!cancelled) completeSignIn(newId, 'extension');
+        } catch {
+          // If the second call fails (extension locked, denied), drop
+          // identity so the user can sign in fresh manually.
+          if (!cancelled) signout();
+        }
+      } catch {
+        // Extension may be locked or have transiently disconnected;
+        // ignore and try again next focus.
+      }
+    };
+
+    window.addEventListener('focus', onFocus);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [identity]);
+
   // Single sign-in entry point. Routes by whatever signer the click
   // actually targets — the button label declares it up front so dispatching
   // to Amber on Android is an explicit choice the user makes, not an
@@ -152,13 +246,17 @@ export function NostrAuth() {
   async function signin() {
     setBusy(true); setErr(null);
     try {
-      if (hasExtension) {
+      // Re-read window.nostr at click time so a user who just installed
+      // an extension (mid-session) doesn't have to reload the page.
+      const brandNow = detectExtensionBrand();
+      if (brandNow !== extensionBrand) setExtensionBrand(brandNow);
+      if (brandNow) {
         completeSignIn(await loginWithExtension(), 'extension');
       } else if (android) {
         completeSignIn(await loginWithAmber(), 'amber');
       } else {
         throw new Error(
-          'No Nostr signer found. Install a NIP-07 extension (Alby, nos2x), use Amber on Android, or open the "Other sign-in" panel below for a remote-signer URI.',
+          'No Nostr signer found. Install a NIP-07 extension (Alby, nos2x), use Amber on Android, or use a remote signer below.',
         );
       }
     } catch (e) {
@@ -209,9 +307,11 @@ export function NostrAuth() {
       : 'none';
   const buttonLabel = busy
     ? 'Connecting…'
-    : signerKind === 'amber'
-      ? 'Sign in with Amber'
-      : 'Sign in with Nostr';
+    : extensionBrand === 'alby'
+      ? 'Sign in with Alby'
+      : signerKind === 'amber'
+        ? 'Sign in with Amber'
+        : 'Sign in with Nostr';
 
   // Common sign-in completion path used by both the primary button and
   // the OtherSignIn (bunker) disclosure. The login function has already
@@ -345,9 +445,10 @@ function OtherSignIn({
         type="button"
         onClick={() => setOpen(true)}
         disabled={disabled}
-        className="text-[10px] text-muted hover:text-nostr underline mt-1 disabled:opacity-30"
+        className="text-[11px] text-bone/70 hover:text-nostr mt-1 disabled:opacity-30 flex items-center gap-1"
       >
-        Other sign-in (NIP-46 / bunker)
+        <span className="text-nostr">◆</span>
+        Use a remote signer
       </button>
     );
   }
