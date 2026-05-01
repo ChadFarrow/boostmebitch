@@ -37,7 +37,7 @@ export function Player() {
 
   return (
     <>
-      <div className="fixed bottom-0 left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40">
+      <div className="fixed bottom-0 left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40 pb-[env(safe-area-inset-bottom)]">
         <audio
           ref={audio}
           onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
