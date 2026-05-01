@@ -5,6 +5,7 @@ import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 import { BoostModal } from './boost-modal';
 import { BoltIcon } from './icons';
+import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 
 function fmtDuration(t: number) {
@@ -89,12 +90,12 @@ function PodcastRow({
         selected ? 'bg-bolt/10' : 'hover:bg-bone/5'
       }`}
     >
-      {podcast.image ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={podcast.image} alt="" className="w-14 h-14 object-cover border border-bone/20 flex-shrink-0" />
-      ) : (
-        <div className="w-14 h-14 border border-bone/20 bg-line flex-shrink-0" />
-      )}
+      <PodcastCover
+        image={podcast.image}
+        title={podcast.title}
+        seed={podcast.podcastGuid ?? String(podcast.id)}
+        className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+      />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
@@ -264,10 +265,12 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   return (
     <div ref={containerRef}>
       <header className="flex flex-wrap items-start gap-4 pb-4 border-b border-bone/15">
-        {data.podcast.image && (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img src={data.podcast.image} alt="" className="w-20 h-20 object-cover border border-bone/20 flex-shrink-0" />
-        )}
+        <PodcastCover
+          image={data.podcast.image}
+          title={data.podcast.title}
+          seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
+          className="w-20 h-20 border border-bone/20 flex-shrink-0 text-3xl"
+        />
         <div className="min-w-0 flex-1 basis-40">
           <h2 className="font-display text-2xl leading-tight break-words">{data.podcast.title}</h2>
           <p className="text-xs text-muted mt-1">{data.podcast.author}</p>
