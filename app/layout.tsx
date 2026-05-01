@@ -1,11 +1,27 @@
 import type { Metadata, Viewport } from 'next';
 import Image from 'next/image';
 import './globals.css';
+import { ServiceWorkerRegister } from '@/components/sw-register';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://boostmebitch.vercel.app'),
   title: 'Boost Me Bitch — Podcast Boost Station',
   description: 'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
+  manifest: '/manifest.json',
+  applicationName: 'Boost Me Bitch',
+  appleWebApp: {
+    capable: true,
+    title: 'Boost Me Bitch',
+    statusBarStyle: 'black-translucent',
+  },
+  icons: {
+    icon: [
+      { url: '/icon.svg', type: 'image/svg+xml' },
+      { url: '/icons/icon-192.png', sizes: '192x192', type: 'image/png' },
+      { url: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' },
+    ],
+    apple: [{ url: '/icons/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
+  },
   openGraph: {
     title: 'Boost Me Bitch — Podcast Boost Station',
     description: 'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
@@ -24,6 +40,7 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
+  themeColor: '#0a0a08',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -48,6 +65,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div className="relative z-0">
           {children}
         </div>
+        <ServiceWorkerRegister />
       </body>
     </html>
   );
