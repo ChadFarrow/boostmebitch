@@ -48,6 +48,7 @@ export function GlobalNostrFeed() {
   const attempted = useRef<Set<string>>(new Set());
   const identity = useApp((s) => s.identity);
   const boostsTick = useApp((s) => s.boostsTick);
+  const mutedPubkeys = useApp((s) => s.mutedPubkeys);
   const repostedIds = useViewerReposts(notes, identity);
 
   // Re-read the localStorage log whenever a boost is sent or the active
@@ -97,12 +98,14 @@ export function GlobalNostrFeed() {
         boost: b,
       }));
     }
-    const items: FeedItem[] = notes.map((note) => ({
-      kind: 'note' as const,
-      ts: note.createdAt * 1000,
-      key: `note:${note.id}`,
-      note,
-    }));
+    const items: FeedItem[] = notes
+      .filter((note) => !mutedPubkeys.has(note.pubkey))
+      .map((note) => ({
+        kind: 'note' as const,
+        ts: note.createdAt * 1000,
+        key: `note:${note.id}`,
+        note,
+      }));
     for (const b of storedBoosts) {
       // Dedupe: once we've published the boost note, hide the local card.
       // The user's NIP-65 write set may not intersect DEFAULT_RELAYS (used
@@ -120,7 +123,7 @@ export function GlobalNostrFeed() {
     }
     items.sort((a, b) => b.ts - a.ts);
     return items;
-  }, [notes, storedBoosts]);
+  }, [notes, storedBoosts, mutedPubkeys]);
 
   return (
     <FeedSection<FeedItem>

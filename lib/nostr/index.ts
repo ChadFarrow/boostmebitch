@@ -51,3 +51,13 @@ export {
 } from './wallet-backup';
 
 export { hydrateFavorites } from './favorites-hydrator';
+
+export {
+  MUTES_KIND,
+  fetchMutedPubkeys,
+  publishMuteList,
+  schedulePublishMuteList,
+  type MuteListEvent,
+} from './mutes';
+
+export { hydrateMutes } from './mutes-hydrator';

@@ -1,4 +1,5 @@
 'use client';
+import { useMemo } from 'react';
 import {
   fetchPodcastNotes,
   useNostrFeed,
@@ -28,7 +29,12 @@ export function PodcastNostrFeed({
     deps: [podcastGuid],
   });
   const identity = useApp((s) => s.identity);
+  const mutedPubkeys = useApp((s) => s.mutedPubkeys);
   const repostedIds = useViewerReposts(notes, identity);
+  const visibleNotes = useMemo(
+    () => (notes ? notes.filter((n) => !mutedPubkeys.has(n.pubkey)) : notes),
+    [notes, mutedPubkeys],
+  );
 
   return (
     <FeedSection
@@ -39,7 +45,7 @@ export function PodcastNostrFeed({
           {podcastTitle ? <span className="text-muted text-sm"> · {podcastTitle}</span> : null}
         </h3>
       }
-      notes={notes}
+      notes={visibleNotes}
       loading={loading}
       err={err}
       emptyMessage="no nostr notes tagged this podcast yet — be the first to boost."

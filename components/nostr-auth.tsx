@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { nip19 } from 'nostr-tools';
 import {
   loginWithExtension,
@@ -8,12 +8,15 @@ import {
   fetchRelayList,
   fetchEncryptedMnemonic,
   hydrateFavorites,
+  hydrateMutes,
   type NostrIdentity,
+  type ProfileMetadata,
 } from '@/lib/nostr';
 import { hasSpark, sparkInitFromMnemonic } from '@/lib/v4v/spark';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
+import { Avatar } from './avatar';
 import { SparkWallet } from './spark-wallet';
 import { NwcWallet } from './nwc-wallet';
 import { WeblnWallet } from './webln-wallet';
@@ -27,6 +30,7 @@ export function NostrAuth() {
   const identity = useApp((s) => s.identity);
   const setIdentity = useApp((s) => s.setIdentity);
   const setFavorites = useApp((s) => s.setFavorites);
+  const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -52,6 +56,9 @@ export function NostrAuth() {
       if (relayList?.write?.length) enriched.writeRelays = relayList.write;
       setIdentity(enriched);
       await hydrateFavorites(enriched);
+      // Mute list hydration is best-effort and runs in the background — a
+      // missing kind:10000 just leaves the local cache untouched.
+      hydrateMutes(enriched).catch(() => {});
       // Best-effort Spark wallet restore. Silent on missing NIP-44 / no
       // backup yet — user can hit "Create wallet" manually in the account
       // menu (top-right).
@@ -101,6 +108,7 @@ export function NostrAuth() {
   function signout() {
     setIdentity(null);
     setFavorites({});
+    setMutedPubkeys(new Set());
     storage.npub.clear();
   }
 
@@ -201,6 +209,8 @@ function AccountMenu({
           <div className="mt-4 text-[11px] uppercase tracking-widest text-bone/60">WebLN</div>
           <WeblnWallet />
 
+          <MutedAccountsSection />
+
           <div className="border-t border-bone/15 mt-4 pt-3">
             <button
               onClick={() => { onSignOut(); setOpen(false); }}
@@ -211,6 +221,91 @@ function AccountMenu({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Muted accounts (NIP-51 kind:10000). Only renders when there's at least one
+// muted pubkey so the menu stays compact for users who haven't used the
+// feature. Profile names are best-effort from the kind:0 cache; an unresolved
+// pubkey falls back to its short-npub.
+function MutedAccountsSection() {
+  const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  const unmutePubkey = useApp((s) => s.unmutePubkey);
+  const pubkeys = useMemo(() => Array.from(mutedPubkeys), [mutedPubkeys]);
+  const [profiles, setProfiles] = useState<Record<string, ProfileMetadata | null>>({});
+
+  // Fill from cache synchronously, then resolve any uncached pubkeys in the
+  // background. Keeps the menu instant on open and lazy-fills missing names.
+  useEffect(() => {
+    if (pubkeys.length === 0) return;
+    const next: Record<string, ProfileMetadata | null> = {};
+    const unresolved: string[] = [];
+    for (const pk of pubkeys) {
+      const cached = storage.profile.get(pk);
+      if (cached !== undefined) next[pk] = cached;
+      else unresolved.push(pk);
+    }
+    setProfiles((prev) => ({ ...prev, ...next }));
+    if (unresolved.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const fetched = await Promise.all(
+        unresolved.map((pk) =>
+          fetchProfile(pk).then((p) => {
+            if (p) storage.profile.set(pk, p);
+            else storage.profile.setMiss(pk);
+            return [pk, p] as const;
+          }).catch(() => [pk, null] as const),
+        ),
+      );
+      if (cancelled) return;
+      setProfiles((prev) => {
+        const merged = { ...prev };
+        for (const [pk, p] of fetched) merged[pk] = p;
+        return merged;
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [pubkeys]);
+
+  if (pubkeys.length === 0) return null;
+
+  return (
+    <div className="mt-4">
+      <div className="text-[11px] uppercase tracking-widest text-bone/60 mb-2">
+        Muted accounts ({pubkeys.length})
+      </div>
+      <ul className="space-y-1.5 max-h-48 overflow-y-auto">
+        {pubkeys.map((pk) => {
+          const profile = profiles[pk];
+          const npub = (() => {
+            try { return nip19.npubEncode(pk); } catch { return pk.slice(0, 12); }
+          })();
+          const name =
+            profile?.display_name?.trim() ||
+            profile?.name?.trim() ||
+            shortNpub(npub, 6);
+          return (
+            <li key={pk} className="flex items-center gap-2 text-xs">
+              <Avatar
+                pubkey={pk}
+                picture={profile?.picture}
+                name={profile?.display_name || profile?.name}
+                className="w-6 h-6 rounded-full border border-bone/20 flex-shrink-0 text-[10px]"
+              />
+              <span className="truncate flex-1" title={npub}>{name}</span>
+              <button
+                onClick={() => unmutePubkey(pk)}
+                className="text-[10px] text-muted hover:text-nostr"
+                title="Unmute this account"
+              >
+                unmute
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

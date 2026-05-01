@@ -19,6 +19,7 @@ const KEYS = {
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
   profilePrefix: 'bmb:profile3',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion so stale negative-cache entries don't pin missing profiles for the 1-hour miss TTL.
+  mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
 } as const;
 
 const BOOSTS_CAP = 200;
@@ -215,6 +216,42 @@ export const storage = {
       setTimed(`${KEYS.profilePrefix}:${pubkey}`, v),
     setMiss: (pubkey: string) =>
       setTimed<ProfileMetadata | null>(`${KEYS.profilePrefix}:${pubkey}`, null),
+  },
+
+  /**
+   * NIP-51 kind:10000 mute list cache. `pubkeys` is the public p-tag set we
+   * render against; `otherTags` preserves any non-`p` tags (e.g. `e`, `t`,
+   * `word`) on the user's existing event so a republish from this app doesn't
+   * clobber mutes set in another Nostr client. `updatedAt` is unix seconds
+   * (matches `event.created_at`) so the hydrator can compare against the
+   * relay event without converting units.
+   */
+  muted: {
+    get: (npub: string | null | undefined): {
+      pubkeys: string[];
+      otherTags: string[][];
+      updatedAt: number;
+    } => {
+      const raw = safeGet(identityKey(KEYS.mutedPrefix, npub));
+      if (!raw) return { pubkeys: [], otherTags: [], updatedAt: 0 };
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return { pubkeys: [], otherTags: [], updatedAt: 0 };
+        return {
+          pubkeys: Array.isArray(parsed.pubkeys) ? parsed.pubkeys.filter((p: unknown) => typeof p === 'string') : [],
+          otherTags: Array.isArray(parsed.otherTags) ? parsed.otherTags.filter((t: unknown) => Array.isArray(t)) : [],
+          updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
+        };
+      } catch {
+        return { pubkeys: [], otherTags: [], updatedAt: 0 };
+      }
+    },
+    set: (
+      npub: string | null | undefined,
+      v: { pubkeys: string[]; otherTags: string[][]; updatedAt: number },
+    ) => {
+      safeSet(identityKey(KEYS.mutedPrefix, npub), JSON.stringify(v));
+    },
   },
 
   /** Favorites are namespaced by npub; signed-out users use `:guest`. */

@@ -98,10 +98,13 @@ export function NoteCard({
   repostedIds?: Set<string>;
 }) {
   const identity = useApp((s) => s.identity);
+  const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  const mutePubkey = useApp((s) => s.mutePubkey);
   const name =
     note.author?.display_name?.trim() ||
     note.author?.name?.trim() ||
     shortNpub(note.npub);
+  const visibleReplies = note.replies.filter((r) => !mutedPubkeys.has(r.pubkey));
   const sats =
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)
@@ -181,6 +184,23 @@ export function NoteCard({
       setRepostErr(getErrorMessage(e, 'repost failed'));
       setRepostState('error');
     }
+  }
+
+  // Filter applied AFTER all hooks have run so the hook count stays
+  // consistent across mute toggles. Returning null here is safe because every
+  // hook above is already executed; the parent (feed surface or another
+  // NoteCard's reply list) also filters so we usually don't even reach this.
+  if (mutedPubkeys.has(note.pubkey)) return null;
+
+  function onMute() {
+    if (!identity) return;
+    const ok =
+      typeof window !== 'undefined' &&
+      window.confirm(
+        `Mute ${name}? Their notes won't appear in your feed. You can unmute from the account menu.`,
+      );
+    if (!ok) return;
+    mutePubkey(note.pubkey);
   }
 
   return (
@@ -268,6 +288,14 @@ export function NoteCard({
                 ↗ quote
               </button>
               <button
+                onClick={onMute}
+                className="text-muted hover:text-red-400"
+                aria-label="Hide author"
+                title="Hide this author from your feed"
+              >
+                🚫 hide
+              </button>
+              <button
                 onClick={() => setZapOpen(true)}
                 className="text-muted hover:text-bolt"
                 aria-label="Zap"
@@ -340,9 +368,9 @@ export function NoteCard({
         )}
       </div>
     </article>
-    {note.replies.length > 0 && (
+    {visibleReplies.length > 0 && (
       <div className="mt-3 ml-6 pl-3 border-l-2 border-nostr/30 space-y-3">
-        {note.replies.map((r) => (
+        {visibleReplies.map((r) => (
           <NoteCard key={r.id} note={r} repostedIds={repostedIds} />
         ))}
       </div>
