@@ -41,7 +41,7 @@ export default function Home() {
           <button
             type="button"
             onClick={goHome}
-            className="flex items-baseline gap-2 hover:opacity-80 transition"
+            className="flex items-center gap-2 hover:opacity-80 transition"
             aria-label="Go to home"
           >
             <BoltIcon className="w-6 h-6 text-bolt" />
