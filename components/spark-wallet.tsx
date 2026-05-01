@@ -212,16 +212,18 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
     } finally { setRefreshing(false); }
   }, []);
 
-  // Initial balance fetch when the panel mounts.
-  useEffect(() => { refresh(); }, [refresh]);
-
-  // Real-time SDK events. paymentSucceeded / claimedDeposits / newDeposits
-  // fire when a deposit lands; sync drives a periodic refresh. On a real
-  // deposit landing we also auto-dismiss any outstanding invoice/QR — the
-  // user paid it, the balance jumped, the screen should reflect that.
+  // Real-time SDK events drive most balance updates; the schedule below
+  // fills the gap when the SDK fires its `synced` event before our
+  // listener attaches (which leaves the panel showing a stale 0 balance
+  // after a fresh restore). Attaching the listener BEFORE the first
+  // refresh closes the obvious race; the small retry schedule afterwards
+  // catches the case where the SDK has more to sync after the first
+  // getInfo call.
   useEffect(() => {
     let unsub: (() => void) | null = null;
     let cancelled = false;
+    const retryTimers: ReturnType<typeof setTimeout>[] = [];
+
     subscribeSparkEvents((e) => {
       if (e.type === 'paymentSucceeded'
         || e.type === 'claimedDeposits'
@@ -237,11 +239,28 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
         refresh();
       }
     }).then((fn) => {
-      if (cancelled) fn();
-      else unsub = fn;
+      if (cancelled) {
+        fn();
+        return;
+      }
+      unsub = fn;
+      // Fire the first refresh AFTER the listener is attached so any sync
+      // events that fire from this point on are seen. Then schedule a
+      // couple of retries — Breez Spark's initial sync after `connect()`
+      // can take a few seconds, and the cached balance in `getInfo()` is
+      // often 0 until that completes. Each retry returns the SDK's
+      // current cached state, so once it updates, the panel updates too.
+      refresh();
+      for (const delay of [2000, 5000, 12000]) {
+        retryTimers.push(setTimeout(() => {
+          if (!cancelled) refresh();
+        }, delay));
+      }
     });
+
     return () => {
       cancelled = true;
+      for (const t of retryTimers) clearTimeout(t);
       if (unsub) unsub();
     };
   }, [refresh]);
