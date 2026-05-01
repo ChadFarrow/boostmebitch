@@ -7,7 +7,20 @@
 // rest of the app reads window.nostr without caring which backend it is.
 
 import { nip19, type Event, type EventTemplate } from 'nostr-tools';
-import { activateAmberSigner, deactivateAmberSigner } from './signer';
+import {
+  activateAmberSigner,
+  activateBunkerSigner,
+  deactivateAmberSigner,
+  deactivateBunkerSigner,
+} from './signer';
+import {
+  bunkerUriForRestore,
+  connectBunkerFromUri,
+  restoreBunkerFromStorage,
+  startNostrConnect,
+  type BunkerAdapter,
+} from './bunker';
+import { storage } from '../storage';
 
 declare global {
   interface Window {
@@ -101,6 +114,81 @@ export function restoreAmberSigner(pubkey: string) {
 /** Drop the Amber polyfill, restoring the underlying window.nostr (if any). */
 export function clearAmberSigner() {
   deactivateAmberSigner();
+}
+
+/**
+ * Sign in via a NIP-46 bunker URI (paste flow). The user has copied a
+ * `bunker://…` URI (or a NIP-05 like `name@example.com`) from their
+ * remote signer; we generate a fresh client secret, connect, and install
+ * the adapter as window.nostr.
+ *
+ * `onAuthUrl` fires when the bunker requires the user to open a URL to
+ * approve the connection (e.g. nsec.app's first-time flow). Surface that
+ * URL in the UI so the user can complete it.
+ */
+export async function loginWithBunker(
+  input: string,
+  onAuthUrl?: (url: string) => void,
+): Promise<NostrIdentity> {
+  const adapter = await connectBunkerFromUri(input, onAuthUrl);
+  return finalizeBunkerLogin(adapter);
+}
+
+/**
+ * Sign in via a NIP-46 nostrconnect:// URI (generate flow). Returns the
+ * URI immediately for the caller to display, plus a `ready` promise that
+ * resolves to a `NostrIdentity` once the signer connects back. Caller is
+ * responsible for showing the URI to the user (paste / QR / copy) until
+ * the promise settles.
+ */
+export function loginWithNostrConnect(
+  onAuthUrl?: (url: string) => void,
+): { uri: string; ready: Promise<NostrIdentity> } {
+  const { uri, ready: adapterReady } = startNostrConnect(onAuthUrl);
+  const ready = adapterReady.then((adapter) => finalizeBunkerLogin(adapter));
+  return { uri, ready };
+}
+
+function finalizeBunkerLogin(adapter: BunkerAdapter): NostrIdentity {
+  // The adapter's `uri` is whatever we connected with (bunker:// or
+  // nostrconnect://). For restore-on-reload we need a bunker:// pointer,
+  // so build one from the underlying signer's BunkerPointer if needed.
+  const persistUri = bunkerUriForRestore(adapter);
+  storage.bunker.set({ uri: persistUri, clientSk: adapter.clientSkHex });
+  activateBunkerSigner(adapter);
+  return {
+    pubkey: adapter.pubkey,
+    npub: nip19.npubEncode(adapter.pubkey),
+  };
+}
+
+/**
+ * Restore the bunker signer on page load when `storage.signer` is
+ * `'bunker'`. Async — has to reconnect the NIP-46 transport. The fast-
+ * path useEffect kicks this off in the background; signing operations
+ * that arrive before it resolves will throw, but nothing signs unprompted
+ * right after page load so this is fine in practice.
+ *
+ * Returns true on success, false if no session was persisted or the
+ * reconnect failed (in which case the caller should drop the bunker
+ * signer-kind sentinel so the UI shows the sign-in button again).
+ */
+export async function restoreBunkerSigner(): Promise<boolean> {
+  try {
+    const adapter = await restoreBunkerFromStorage();
+    if (!adapter) return false;
+    activateBunkerSigner(adapter);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Drop the bunker polyfill + persisted session, restoring the underlying
+ *  window.nostr (if any). */
+export function clearBunkerSigner() {
+  deactivateBunkerSigner();
+  storage.bunker.clear();
 }
 
 export function shortNpub(npub: string, len = 8) {

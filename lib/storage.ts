@@ -10,7 +10,7 @@ import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
 
 const KEYS = {
   npub: 'bmb:npub',
-  signer: 'bmb:signer',               // 'amber' when Amber is the active signer; absent = NIP-07 extension or none
+  signer: 'bmb:signer',               // 'amber' | 'bunker' when a polyfill signer is active; absent = NIP-07 extension or none
   nwcUri: 'bmb:nwc_uri',
   relays: 'bmb:relays',
   senderName: 'bmb:sender_name',
@@ -21,9 +21,10 @@ const KEYS = {
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
   profilePrefix: 'bmb:profile3',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion so stale negative-cache entries don't pin missing profiles for the 1-hour miss TTL.
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
+  bunker: 'bmb:bunker',               // NIP-46 bunker session: { uri, clientSk } — single value (one bunker connection at a time)
 } as const;
 
-export type SignerKind = 'amber';
+export type SignerKind = 'amber' | 'bunker';
 
 const BOOSTS_CAP = 200;
 
@@ -134,15 +135,42 @@ export const storage = {
   },
 
   /** Which signer the user picked. Absent = NIP-07 extension or signed out;
-   *  'amber' = use the Android Amber app via NIP-55 deep links. Read on page
-   *  load to decide whether to install the Amber polyfill onto window.nostr. */
+   *  'amber' = Android Amber app via NIP-55 deep links;
+   *  'bunker' = NIP-46 remote signer via the persisted bunker session.
+   *  Read on page load to decide which polyfill to install onto window.nostr. */
   signer: {
     get: (): SignerKind | null => {
       const v = safeGet(KEYS.signer);
-      return v === 'amber' ? 'amber' : null;
+      if (v === 'amber') return 'amber';
+      if (v === 'bunker') return 'bunker';
+      return null;
     },
     set: (v: SignerKind) => safeSet(KEYS.signer, v),
     clear: () => safeRemove(KEYS.signer),
+  },
+
+  /** NIP-46 bunker session. `uri` is the original bunker:// (or the
+   *  nostrconnect:// we generated, in which case parsing back to a
+   *  BunkerPointer is done from the URI on reload); `clientSk` is the
+   *  hex-encoded client secret key used to encrypt the DM transport with
+   *  the bunker. Persisting clientSk lets us reconnect across reloads
+   *  without the bunker treating us as a brand-new client. */
+  bunker: {
+    get: (): { uri: string; clientSk: string } | null => {
+      const raw = safeGet(KEYS.bunker);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (typeof parsed.uri !== 'string' || typeof parsed.clientSk !== 'string') return null;
+        return { uri: parsed.uri, clientSk: parsed.clientSk };
+      } catch {
+        return null;
+      }
+    },
+    set: (v: { uri: string; clientSk: string }) =>
+      safeSet(KEYS.bunker, JSON.stringify(v)),
+    clear: () => safeRemove(KEYS.bunker),
   },
 
   nwcUri: {

@@ -4,8 +4,12 @@ import { nip19 } from 'nostr-tools';
 import {
   loginWithExtension,
   loginWithAmber,
+  loginWithBunker,
+  loginWithNostrConnect,
   restoreAmberSigner,
+  restoreBunkerSigner,
   clearAmberSigner,
+  clearBunkerSigner,
   isLikelyAndroid,
   shortNpub,
   fetchProfile,
@@ -116,8 +120,17 @@ export function NostrAuth() {
     } catch { return; }
     // If the user signed in with Amber, reinstall the AmberSigner polyfill on
     // window.nostr before any signing operation runs. Synchronous; no popup.
-    if (storage.signer.get() === 'amber') {
+    const signerKindStored = storage.signer.get();
+    if (signerKindStored === 'amber') {
       restoreAmberSigner(pubkey);
+    } else if (signerKindStored === 'bunker') {
+      // Bunker reconnect is async (NIP-46 transport handshake). Kick it off
+      // in the background; signing operations that race ahead of it will
+      // throw, but nothing signs unprompted right after page load. If the
+      // reconnect fails, drop the sentinel so the sign-in UI shows again.
+      restoreBunkerSigner().then((ok) => {
+        if (!ok) storage.signer.clear();
+      }).catch(() => storage.signer.clear());
     }
     const bare: NostrIdentity = { pubkey, npub: stored };
     const cachedProfile = storage.profile.get(pubkey);
@@ -139,21 +152,15 @@ export function NostrAuth() {
   async function signin() {
     setBusy(true); setErr(null);
     try {
-      let id: NostrIdentity;
       if (hasExtension) {
-        id = await loginWithExtension();
-        storage.signer.clear();
+        completeSignIn(await loginWithExtension(), 'extension');
       } else if (android) {
-        id = await loginWithAmber();
-        storage.signer.set('amber');
+        completeSignIn(await loginWithAmber(), 'amber');
       } else {
         throw new Error(
-          'No Nostr signer found. Install a NIP-07 extension (Alby, nos2x), or use Amber on Android.',
+          'No Nostr signer found. Install a NIP-07 extension (Alby, nos2x), use Amber on Android, or open the "Other sign-in" panel below for a remote-signer URI.',
         );
       }
-      setIdentity(id);
-      storage.npub.set(id.npub);
-      loadProfile(id);
     } catch (e) {
       setErr(getErrorMessage(e, 'sign-in failed'));
     } finally { setBusy(false); }
@@ -178,6 +185,7 @@ export function NostrAuth() {
     storage.npub.clear();
     storage.signer.clear();
     clearAmberSigner();
+    clearBunkerSigner();
   }
 
   if (identity) {
@@ -205,6 +213,19 @@ export function NostrAuth() {
       ? 'Sign in with Amber'
       : 'Sign in with Nostr';
 
+  // Common sign-in completion path used by both the primary button and
+  // the OtherSignIn (bunker) disclosure. The login function has already
+  // installed whichever polyfill it needs and persisted bmb:bunker /
+  // amber state; we just propagate identity to the store and hydrate.
+  function completeSignIn(id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker') {
+    setIdentity(id);
+    storage.npub.set(id.npub);
+    if (kind === 'amber') storage.signer.set('amber');
+    else if (kind === 'bunker') storage.signer.set('bunker');
+    else storage.signer.clear();
+    loadProfile(id);
+  }
+
   return (
     <div className="flex flex-col items-end gap-1">
       <button onClick={signin} disabled={busy} className="btn-ghost">
@@ -217,6 +238,7 @@ export function NostrAuth() {
       </button>
       {err && <span className="text-[10px] text-nostr/80 max-w-[260px] text-right">{err}</span>}
       {busy && signerKind === 'amber' && <AmberCompletion onSubmit={submitManualPaste} />}
+      <OtherSignIn onSuccess={(id) => completeSignIn(id, 'bunker')} disabled={busy} />
     </div>
   );
 }
@@ -275,6 +297,217 @@ function AmberCompletion({ onSubmit }: { onSubmit: (value: string) => boolean })
       </button>
       {readErr && <span className="text-[10px] text-nostr/80 text-right">{readErr}</span>}
       <AmberManualPaste onSubmit={onSubmit} />
+    </div>
+  );
+}
+
+// NIP-46 remote-signer ("bunker") sign-in. Two flows behind a [Have URI] /
+// [Generate URI] tab pair:
+//
+//   - HAVE URI: user pastes a bunker:// URI (or NIP-05 like `name@domain`)
+//     copied from their remote signer. We connect, then resolve.
+//
+//   - GENERATE URI: we build a nostrconnect:// URI for the user to paste
+//     into their signer. The signer connects back via the relays embedded
+//     in the URI; the promise resolves once it does.
+//
+// In both cases the underlying loginWithBunker / loginWithNostrConnect
+// install the BunkerAdapter as window.nostr and persist the session, so
+// the parent component just receives the resolved NostrIdentity and runs
+// its usual completeSignIn flow.
+function OtherSignIn({
+  onSuccess,
+  disabled,
+}: {
+  onSuccess: (id: NostrIdentity) => void;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<'have' | 'generate'>('have');
+  const [pasteValue, setPasteValue] = useState('');
+  const [pasteBusy, setPasteBusy] = useState(false);
+  const [pasteErr, setPasteErr] = useState<string | null>(null);
+  const [pasteAuthUrl, setPasteAuthUrl] = useState<string | null>(null);
+
+  // Generate-flow state. `genUri` is shown verbatim for the user to copy
+  // and paste into their signer; `genErr` surfaces parsing / connection
+  // failures; `genAuthUrl` mirrors the bunker's onauth callback when
+  // reached during the connect handshake.
+  const [genUri, setGenUri] = useState<string | null>(null);
+  const [genBusy, setGenBusy] = useState(false);
+  const [genErr, setGenErr] = useState<string | null>(null);
+  const [genAuthUrl, setGenAuthUrl] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  if (!open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={disabled}
+        className="text-[10px] text-muted hover:text-nostr underline mt-1 disabled:opacity-30"
+      >
+        Other sign-in (NIP-46 / bunker)
+      </button>
+    );
+  }
+
+  async function onPasteSubmit() {
+    setPasteBusy(true);
+    setPasteErr(null);
+    setPasteAuthUrl(null);
+    try {
+      const id = await loginWithBunker(pasteValue, (url) => setPasteAuthUrl(url));
+      onSuccess(id);
+      setOpen(false);
+      setPasteValue('');
+    } catch (e) {
+      setPasteErr(getErrorMessage(e, 'bunker connect failed'));
+    } finally {
+      setPasteBusy(false);
+    }
+  }
+
+  async function onGenerate() {
+    setGenBusy(true);
+    setGenErr(null);
+    setGenAuthUrl(null);
+    setGenUri(null);
+    setCopied(false);
+    try {
+      const { uri, ready } = loginWithNostrConnect((url) => setGenAuthUrl(url));
+      setGenUri(uri);
+      const id = await ready;
+      onSuccess(id);
+      setOpen(false);
+      setGenUri(null);
+    } catch (e) {
+      setGenErr(getErrorMessage(e, 'nostrconnect failed'));
+    } finally {
+      setGenBusy(false);
+    }
+  }
+
+  async function copyGenUri() {
+    if (!genUri) return;
+    try {
+      await navigator.clipboard.writeText(genUri);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* fall through — user can long-press the code block */
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-2 mt-1 max-w-[320px] card p-3">
+      <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest w-full">
+        <button
+          type="button"
+          onClick={() => setTab('have')}
+          className={tab === 'have' ? 'text-bone' : 'text-muted hover:text-bone'}
+        >
+          Have URI
+        </button>
+        <span className="text-bone/30">·</span>
+        <button
+          type="button"
+          onClick={() => setTab('generate')}
+          className={tab === 'generate' ? 'text-bone' : 'text-muted hover:text-bone'}
+        >
+          Generate URI
+        </button>
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={() => setOpen(false)}
+          className="text-muted hover:text-bone text-base leading-none"
+          aria-label="Close"
+        >
+          ×
+        </button>
+      </div>
+
+      {tab === 'have' && (
+        <>
+          <textarea
+            value={pasteValue}
+            onChange={(e) => setPasteValue(e.target.value)}
+            placeholder="bunker://… or name@example.com"
+            rows={3}
+            className="input w-full text-[11px] break-all"
+          />
+          <div className="flex items-center gap-2 self-end">
+            <button
+              onClick={onPasteSubmit}
+              disabled={pasteBusy || !pasteValue.trim()}
+              className="btn-bolt text-[11px] py-1 px-3 disabled:opacity-40"
+            >
+              {pasteBusy ? 'Connecting…' : 'Connect'}
+            </button>
+          </div>
+          {pasteAuthUrl && (
+            <a
+              href={pasteAuthUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] text-nostr underline break-all self-stretch text-right"
+            >
+              ◆ Open auth URL to approve
+            </a>
+          )}
+          {pasteErr && (
+            <span className="text-[10px] text-nostr/80 text-right">{pasteErr}</span>
+          )}
+        </>
+      )}
+
+      {tab === 'generate' && (
+        <>
+          {!genUri && !genBusy && (
+            <button
+              onClick={onGenerate}
+              className="btn-bolt text-[11px] py-1 px-3 self-end"
+            >
+              Generate connect URI
+            </button>
+          )}
+          {genUri && (
+            <>
+              <span className="text-[10px] text-muted self-stretch text-right">
+                Copy this and paste it into your signer to connect.
+              </span>
+              <code className="block w-full bg-ink/40 p-2 text-[10px] leading-snug break-all select-all">
+                {genUri}
+              </code>
+              <div className="flex items-center gap-2 self-end">
+                <button
+                  onClick={copyGenUri}
+                  className="btn-ghost text-[10px] py-1 px-2"
+                >
+                  {copied ? 'Copied' : 'Copy'}
+                </button>
+                <span className="text-[10px] text-muted">
+                  {genBusy ? 'Waiting for signer…' : ''}
+                </span>
+              </div>
+            </>
+          )}
+          {genAuthUrl && (
+            <a
+              href={genAuthUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[11px] text-nostr underline break-all self-stretch text-right"
+            >
+              ◆ Open auth URL to approve
+            </a>
+          )}
+          {genErr && (
+            <span className="text-[10px] text-nostr/80 text-right">{genErr}</span>
+          )}
+        </>
+      )}
     </div>
   );
 }

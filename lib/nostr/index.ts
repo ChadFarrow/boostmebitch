@@ -5,8 +5,12 @@
 export {
   loginWithExtension,
   loginWithAmber,
+  loginWithBunker,
+  loginWithNostrConnect,
   restoreAmberSigner,
+  restoreBunkerSigner,
   clearAmberSigner,
+  clearBunkerSigner,
   shortNpub,
   type NostrIdentity,
   type ProfileMetadata,
