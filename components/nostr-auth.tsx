@@ -17,6 +17,7 @@ import {
   type NostrIdentity,
   type ProfileMetadata,
 } from '@/lib/nostr';
+import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/amber';
 import { hasSpark, sparkInitFromMnemonic } from '@/lib/v4v/spark';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
@@ -153,6 +154,21 @@ export function NostrAuth() {
     } finally { setBusy(false); }
   }
 
+  /** Manual-paste recovery for the case where Amber's callback URL opens in
+   *  a different browser than the app (Brave vs Chrome) — neither
+   *  BroadcastChannel nor postMessage cross that boundary. The user copies
+   *  the result from Amber and pastes it here. */
+  function submitManualPaste(value: string): boolean {
+    const trimmed = value.trim();
+    if (!trimmed) return false;
+    const pending = getLatestPendingAmber();
+    if (!pending) {
+      setErr('No pending Amber request to attach this to.');
+      return false;
+    }
+    return submitManualAmberResult(pending.id, trimmed);
+  }
+
   function signout() {
     setIdentity(null);
     setFavorites({});
@@ -196,6 +212,58 @@ export function NostrAuth() {
       {androidFirst ? amberButton : extensionButton}
       {androidFirst ? extensionButton : amberButton}
       {err && <span className="text-[10px] text-nostr/80 max-w-[260px] text-right">{err}</span>}
+      {busy && <AmberManualPaste onSubmit={submitManualPaste} />}
+    </div>
+  );
+}
+
+// Manual-paste recovery for when Amber's callback URL doesn't reach back to
+// the original tab — most commonly when Amber opens the callback in a
+// different browser than the one running boostmebitch (e.g. Amber defaults
+// to Brave but the app is in Chrome). Renders only while a sign-in is in
+// flight; user pastes the pubkey/npub from the Amber-callback tab here.
+function AmberManualPaste({ onSubmit }: { onSubmit: (value: string) => boolean }) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState('');
+  const [hint, setHint] = useState<string | null>(null);
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="text-[10px] text-muted hover:text-nostr underline mt-1"
+      >
+        Amber didn&apos;t come back? Paste manually
+      </button>
+    );
+  }
+  return (
+    <div className="flex flex-col items-end gap-1 mt-1 max-w-[280px]">
+      <textarea
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Paste pubkey / npub from Amber"
+        className="input text-[11px] w-full"
+        rows={2}
+      />
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setOpen(false)}
+          className="text-[10px] text-muted hover:text-bone"
+        >
+          cancel
+        </button>
+        <button
+          onClick={() => {
+            const ok = onSubmit(value);
+            if (!ok) setHint('Could not match a pending request.');
+            else { setValue(''); setHint(null); }
+          }}
+          className="btn-ghost text-[10px] py-1 px-2"
+        >
+          submit
+        </button>
+      </div>
+      {hint && <span className="text-[10px] text-nostr/80">{hint}</span>}
     </div>
   );
 }
