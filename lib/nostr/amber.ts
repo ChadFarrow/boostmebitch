@@ -126,7 +126,6 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     let settled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    let wentHidden = false;
 
     const finish = (raw: string | null, error?: string) => {
       if (settled) return;
@@ -146,52 +145,64 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
     const cleanup = () => {
       if (timer) clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisibility);
-      window.removeEventListener('pageshow', onReturned);
-      window.removeEventListener('focus', onReturned);
+      window.removeEventListener('pageshow', onPageshow);
+      window.removeEventListener('focus', onFocus);
       document.removeEventListener('pointerdown', onUserGesture, true);
       document.removeEventListener('touchstart', onUserGesture, true);
       document.removeEventListener('keydown', onUserGesture, true);
       if (pendingResolver?.resolve === acceptManual) pendingResolver = null;
     };
 
-    // Path 1: clipboard read on tab return. In standalone-PWA mode on
-    // Android, `visibilitychange` doesn't always fire when the user returns
-    // from Amber via the OS intent return; `pageshow` and `focus` fill the
-    // gap on those browsers. Whichever event fires first wins; the others
-    // become no-ops once `settled` flips inside `finish`.
+    // We try the clipboard from two kinds of triggers:
     //
-    // The lifecycle events alone aren't enough though — `clipboard.readText`
-    // requires *transient user activation*, which a visibility change does
-    // not grant on Android Chrome (especially in installed-PWA mode).
-    // `onUserGesture` below covers that: we attach capture-phase listeners
-    // for the next pointerdown / touchstart / keydown anywhere on the page
-    // after `wentHidden` flips, and read the clipboard inside that handler
-    // where activation is fresh. Whatever the user taps next — anywhere —
-    // completes the sign-in silently. They never need to find a specific
-    // button.
-    const tryReadClipboard = async () => {
-      if (!wentHidden || settled) return;
+    //  - Lifecycle events (visibilitychange / pageshow / focus / pagehide)
+    //    catch the round-trip when the browser cooperates. They typically
+    //    can't read the clipboard themselves on Android Chrome (no transient
+    //    user activation), but we still try in case the runtime allows it.
+    //
+    //  - Capture-phase pointer / touch / key events catch the user's first
+    //    gesture after returning from Amber. THIS is the path that actually
+    //    works on a standalone PWA — the gesture grants activation and the
+    //    `clipboard.readText` inside the handler succeeds. Whatever the user
+    //    taps anywhere on the page completes sign-in silently.
+    //
+    // No `wentHidden` gate: in standalone-PWA mode on Android,
+    // `visibilitychange` is unreliable on the way out *too* (we never see
+    // the hidden state), so gating on it produced false negatives. The
+    // worst case without the gate is one premature read of the user's
+    // clipboard at sign-in time — `looksLikeAmberResult` filters anything
+    // that isn't a plausible response, so unrelated clipboard content
+    // (URLs, plain text) is ignored.
+    const tryReadClipboard = async (origin: string) => {
+      if (settled) return;
+      let text: string;
       try {
-        const text = await navigator.clipboard.readText();
-        if (text && looksLikeAmberResult(text, opts.type)) {
-          finish(text.trim());
-        }
-      } catch {
-        // Clipboard read denied or unavailable — fall through to manual paste.
-      }
-    };
-    const onVisibility = async () => {
-      if (document.visibilityState === 'hidden') {
-        wentHidden = true;
+        text = await navigator.clipboard.readText();
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[amber] clipboard read denied via', origin, ':', (e as Error)?.message ?? e);
         return;
       }
-      await tryReadClipboard();
+      if (!text) return;
+      if (looksLikeAmberResult(text, opts.type)) {
+        // eslint-disable-next-line no-console
+        console.info('[amber] auto-resolved via', origin);
+        finish(text.trim());
+      } else {
+        // eslint-disable-next-line no-console
+        console.info('[amber] clipboard via', origin, 'didn\'t match expected shape (len=', text.length, ')');
+      }
     };
-    const onReturned = () => { void tryReadClipboard(); };
-    const onUserGesture = () => { void tryReadClipboard(); };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') return;
+      void tryReadClipboard('visibilitychange');
+    };
+    const onPageshow = () => { void tryReadClipboard('pageshow'); };
+    const onFocus = () => { void tryReadClipboard('focus'); };
+    const onUserGesture = (e: globalThis.Event) => { void tryReadClipboard(`gesture:${e.type}`); };
     document.addEventListener('visibilitychange', onVisibility);
-    window.addEventListener('pageshow', onReturned);
-    window.addEventListener('focus', onReturned);
+    window.addEventListener('pageshow', onPageshow);
+    window.addEventListener('focus', onFocus);
     // Capture phase so we run before any element-specific click/keydown
     // handlers consume the activation. Listeners are removed inside
     // `cleanup()` so they only fire while a single Amber request is in
