@@ -440,10 +440,14 @@ function MutedAccountsSection() {
   const unmutePubkey = useApp((s) => s.unmutePubkey);
   const pubkeys = useMemo(() => Array.from(mutedPubkeys), [mutedPubkeys]);
   const [profiles, setProfiles] = useState<Record<string, ProfileMetadata | null>>({});
+  const [expanded, setExpanded] = useState(false);
 
   // Fill from cache synchronously, then resolve any uncached pubkeys in the
-  // background. Keeps the menu instant on open and lazy-fills missing names.
+  // background. Only runs while the section is expanded — collapsed state
+  // doesn't render names so there's no point fetching them. Names cache to
+  // localStorage so re-expanding is instant.
   useEffect(() => {
+    if (!expanded) return;
     if (pubkeys.length === 0) return;
     const next: Record<string, ProfileMetadata | null> = {};
     const unresolved: string[] = [];
@@ -473,15 +477,24 @@ function MutedAccountsSection() {
       });
     })();
     return () => { cancelled = true; };
-  }, [pubkeys]);
+  }, [pubkeys, expanded]);
 
   if (pubkeys.length === 0) return null;
 
   return (
     <div className="mt-4">
-      <div className="text-[11px] uppercase tracking-widest text-bone/60 mb-2">
-        Muted accounts ({pubkeys.length})
-      </div>
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="w-full text-[11px] uppercase tracking-widest text-bone/60 mb-2 flex items-center justify-between gap-2 hover:text-bone"
+      >
+        <span>Muted accounts ({pubkeys.length})</span>
+        <span aria-hidden className="text-bone/60">
+          {expanded ? '▾' : '▸'}
+        </span>
+      </button>
+      {expanded && (
       <ul className="space-y-1.5 max-h-48 overflow-y-auto">
         {pubkeys.map((pk) => {
           const profile = profiles[pk];
@@ -512,6 +525,7 @@ function MutedAccountsSection() {
           );
         })}
       </ul>
+      )}
     </div>
   );
 }
