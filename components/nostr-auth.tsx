@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { nip19 } from 'nostr-tools';
 import {
   loginWithExtension,
@@ -11,6 +12,8 @@ import {
   clearAmberSigner,
   clearBunkerSigner,
   isLikelyAndroid,
+  isLikelyIOS,
+  subscribeBunkerHealth,
   shortNpub,
   fetchProfile,
   fetchRelayList,
@@ -77,6 +80,11 @@ export function NostrAuth() {
     useState<'alby' | 'generic' | null>(detectExtensionBrand);
   const hasExtension = extensionBrand !== null;
   const [android] = useState(() => isLikelyAndroid());
+  const [ios] = useState(() => isLikelyIOS());
+  // OtherSignIn's `open` state is hoisted up so the primary button can
+  // open the disclosure directly when iOS is the active platform — its
+  // primary path IS the bunker flow when no NIP-07 extension is detected.
+  const [bunkerOpen, setBunkerOpen] = useState(false);
 
   async function loadProfile(id: NostrIdentity) {
     // Dedupe across remounts (StrictMode runs effects twice in dev; Fast
@@ -254,9 +262,15 @@ export function NostrAuth() {
         completeSignIn(await loginWithExtension(), 'extension');
       } else if (android) {
         completeSignIn(await loginWithAmber(), 'amber');
+      } else if (ios) {
+        // iOS without a NIP-07 extension — open the bunker disclosure as
+        // the primary affordance. The user picks paste vs generate from
+        // there. No throw, no error message; the disclosure handles the
+        // remaining flow including its own error states.
+        setBunkerOpen(true);
       } else {
         throw new Error(
-          'No Nostr signer found. Install a NIP-07 extension (Alby, nos2x), use Amber on Android, or use a remote signer below.',
+          'No Nostr signer found. Install a NIP-07 extension (Alby, nos2x) or use a remote signer below.',
         );
       }
     } catch (e) {
@@ -300,18 +314,26 @@ export function NostrAuth() {
   // "tap to read clipboard" once they return (a tap is required because
   // clipboard.readText needs transient user activation, which a
   // visibilitychange event does not grant), with manual-paste as a fallback.
-  const signerKind: 'extension' | 'amber' | 'none' = hasExtension
+  // 'bunker' is the iOS path: no extension, not Android. Primary click
+  // opens the OtherSignIn disclosure instead of erroring with "no signer
+  // found." nostash users on iOS Safari land on 'extension' first because
+  // their window.nostr injection is detected.
+  const signerKind: 'extension' | 'amber' | 'bunker' | 'none' = hasExtension
     ? 'extension'
     : android
       ? 'amber'
-      : 'none';
+      : ios
+        ? 'bunker'
+        : 'none';
   const buttonLabel = busy
     ? 'Connecting…'
     : extensionBrand === 'alby'
       ? 'Sign in with Alby'
       : signerKind === 'amber'
         ? 'Sign in with Amber'
-        : 'Sign in with Nostr';
+        : signerKind === 'bunker'
+          ? 'Connect remote signer'
+          : 'Sign in with Nostr';
 
   // Common sign-in completion path used by both the primary button and
   // the OtherSignIn (bunker) disclosure. The login function has already
@@ -338,7 +360,27 @@ export function NostrAuth() {
       </button>
       {err && <span className="text-[10px] text-nostr/80 max-w-[260px] text-right">{err}</span>}
       {busy && signerKind === 'amber' && <AmberCompletion onSubmit={submitManualPaste} />}
-      <OtherSignIn onSuccess={(id) => completeSignIn(id, 'bunker')} disabled={busy} />
+      {signerKind === 'bunker' && !bunkerOpen && (
+        <span className="text-[10px] text-muted text-right max-w-[260px]">
+          Pair with{' '}
+          <a
+            href="https://github.com/DocNR/clave"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-nostr hover:underline"
+          >
+            Clave
+          </a>{' '}
+          (TestFlight) or any NIP-46 signer.
+        </span>
+      )}
+      <OtherSignIn
+        open={bunkerOpen}
+        onOpenChange={setBunkerOpen}
+        onSuccess={(id) => completeSignIn(id, 'bunker')}
+        disabled={busy}
+        showTrigger={signerKind !== 'bunker'}
+      />
     </div>
   );
 }
@@ -416,13 +458,25 @@ function AmberCompletion({ onSubmit }: { onSubmit: (value: string) => boolean })
 // the parent component just receives the resolved NostrIdentity and runs
 // its usual completeSignIn flow.
 function OtherSignIn({
+  open,
+  onOpenChange,
   onSuccess,
   disabled,
+  showTrigger,
 }: {
+  /** Controlled open state. When `showTrigger` is false the trigger
+   *  button isn't rendered, so the parent must drive `open` via the
+   *  primary sign-in click instead. */
+  open: boolean;
+  onOpenChange: (next: boolean) => void;
   onSuccess: (id: NostrIdentity) => void;
   disabled: boolean;
+  /** Whether to render the standalone "◆ Use a remote signer" trigger
+   *  button. False on iOS (the primary sign-in button drives this same
+   *  disclosure, so the trigger would be redundant). */
+  showTrigger: boolean;
 }) {
-  const [open, setOpen] = useState(false);
+  const setOpen = onOpenChange;
   const [tab, setTab] = useState<'have' | 'generate'>('have');
   const [pasteValue, setPasteValue] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -440,6 +494,7 @@ function OtherSignIn({
   const [copied, setCopied] = useState(false);
 
   if (!open) {
+    if (!showTrigger) return null;
     return (
       <button
         type="button"
@@ -576,8 +631,21 @@ function OtherSignIn({
           {genUri && (
             <>
               <span className="text-[10px] text-muted self-stretch text-right">
-                Copy this and paste it into your signer to connect.
+                Scan with your signer, or copy below.
               </span>
+              {/* QR for cross-device handoff (e.g. laptop running the
+                  app + phone running Clave / nsec.app). Same color
+                  tokens as the Spark deposit-invoice QR for visual
+                  consistency. */}
+              <div className="self-stretch flex justify-center bg-bone p-3">
+                <QRCodeSVG
+                  value={genUri}
+                  size={200}
+                  level="M"
+                  fgColor="#0a0a08"
+                  bgColor="#f5f1e8"
+                />
+              </div>
               <code className="block w-full bg-ink/40 p-2 text-[10px] leading-snug break-all select-all">
                 {genUri}
               </code>
@@ -664,6 +732,53 @@ function AmberManualPaste({ onSubmit }: { onSubmit: (value: string) => boolean }
   );
 }
 
+// Surfaced inside AccountMenu when the NIP-46 bunker subscription has
+// gone stale (typically because iOS suspended the PWA's WebSocket while
+// it was backgrounded). Lives here rather than inside SparkWallet /
+// NwcWallet because the failure is signer-side, not wallet-side. The
+// reconnect button calls restoreBunkerSigner which reuses the same
+// persisted client_sk, so the bunker treats us as the same logical
+// client and skips re-auth.
+function BunkerHealthBanner() {
+  const [stale, setStale] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => subscribeBunkerHealth(setStale), []);
+
+  if (!stale) return null;
+
+  async function reconnect() {
+    setBusy(true); setErr(null);
+    try {
+      const ok = await restoreBunkerSigner();
+      if (!ok) setErr('Reconnect failed. Try signing out and back in.');
+    } catch (e) {
+      setErr(getErrorMessage(e, 'reconnect failed'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="border border-nostr/40 bg-nostr/10 p-2 mb-3 flex flex-col gap-1">
+      <span className="text-[11px] text-bone">
+        Signer disconnected — your iPhone may have suspended the relay link.
+      </span>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={reconnect}
+          disabled={busy}
+          className="btn-ghost text-[10px] py-1 px-2 disabled:opacity-30"
+        >
+          {busy ? 'Reconnecting…' : 'Reconnect'}
+        </button>
+        {err && <span className="text-[10px] text-nostr/80">{err}</span>}
+      </div>
+    </div>
+  );
+}
+
 function AccountMenu({
   identity,
   onSignOut,
@@ -732,6 +847,8 @@ function AccountMenu({
             <div className="text-sm">{name || 'Anon'}</div>
             <div className="text-[10px] text-muted truncate">{shortNpub(identity.npub, 8)}</div>
           </div>
+
+          <BunkerHealthBanner />
 
           <div className="text-[11px] uppercase tracking-widest text-muted">
             Connect wallet

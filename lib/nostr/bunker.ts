@@ -48,6 +48,73 @@ const NOSTRCONNECT_RELAYS = [
 
 const NOSTRCONNECT_TIMEOUT_MS = 120_000;
 
+// How long any single bunker call (signEvent / nip04 / nip44) is allowed
+// to wait before we conclude the relay subscription is dead. iOS PWA
+// suspends backgrounded WebSockets, so a sign call after the user
+// returns can hang indefinitely without this bound. 30s is well above
+// the typical 1-3s round-trip but short enough that the user can
+// recover via the "Reconnect" affordance instead of staring at a
+// frozen UI.
+const BUNKER_CALL_TIMEOUT_MS = 30_000;
+
+// Module-level health flag + listener set. Set when any wrapped call
+// times out or throws; cleared by restoreBunkerSigner on a successful
+// reconnect. The account-menu reconnect banner subscribes via
+// subscribeBunkerHealth.
+let bunkerStale = false;
+const healthListeners = new Set<(stale: boolean) => void>();
+
+function setBunkerStale(stale: boolean) {
+  if (bunkerStale === stale) return;
+  bunkerStale = stale;
+  for (const fn of healthListeners) {
+    try { fn(stale); } catch { /* ignore */ }
+  }
+}
+
+export function isBunkerStale(): boolean {
+  return bunkerStale;
+}
+
+export function markBunkerStale(): void {
+  setBunkerStale(true);
+}
+
+export function clearBunkerStale(): void {
+  setBunkerStale(false);
+}
+
+export function subscribeBunkerHealth(fn: (stale: boolean) => void): () => void {
+  healthListeners.add(fn);
+  fn(bunkerStale);
+  return () => { healthListeners.delete(fn); };
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`Bunker ${label} timed out after ${ms}ms`)), ms);
+    p.then(
+      (v) => { clearTimeout(t); resolve(v); },
+      (e) => { clearTimeout(t); reject(e); },
+    );
+  });
+}
+
+// Wrap a bunker call with the timeout + stale-flag side effect. Failures
+// (timeout or rejection) flip bunkerStale so UI can surface a reconnect
+// affordance; successful calls reset the flag (covers the case where the
+// transport actually recovered without a restoreBunkerSigner cycle).
+async function trackBunkerCall<T>(p: Promise<T>, label: string): Promise<T> {
+  try {
+    const v = await withTimeout(p, BUNKER_CALL_TIMEOUT_MS, label);
+    if (bunkerStale) setBunkerStale(false);
+    return v;
+  } catch (e) {
+    setBunkerStale(true);
+    throw e;
+  }
+}
+
 export interface BunkerAdapter {
   /** Underlying nostr-tools BunkerSigner. Exposed for close() in disconnect. */
   inner: BunkerSigner;
@@ -61,19 +128,25 @@ export interface BunkerAdapter {
   clientSkHex: string;
 }
 
-/** Wrap a connected BunkerSigner in the Window['nostr'] shape. */
+/** Wrap a connected BunkerSigner in the Window['nostr'] shape. Each call
+ *  goes through trackBunkerCall so timeouts / errors flip the stale flag
+ *  for the reconnect UI. */
 function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> {
   return {
-    getPublicKey: () => signer.getPublicKey(),
+    getPublicKey: () => trackBunkerCall(signer.getPublicKey(), 'get_public_key'),
     signEvent: (template: EventTemplate): Promise<Event> =>
-      signer.signEvent(template) as Promise<Event>,
+      trackBunkerCall(signer.signEvent(template), 'sign_event') as Promise<Event>,
     nip04: {
-      encrypt: (peerPubkey, plaintext) => signer.nip04Encrypt(peerPubkey, plaintext),
-      decrypt: (peerPubkey, ciphertext) => signer.nip04Decrypt(peerPubkey, ciphertext),
+      encrypt: (peerPubkey, plaintext) =>
+        trackBunkerCall(signer.nip04Encrypt(peerPubkey, plaintext), 'nip04_encrypt'),
+      decrypt: (peerPubkey, ciphertext) =>
+        trackBunkerCall(signer.nip04Decrypt(peerPubkey, ciphertext), 'nip04_decrypt'),
     },
     nip44: {
-      encrypt: (peerPubkey, plaintext) => signer.nip44Encrypt(peerPubkey, plaintext),
-      decrypt: (peerPubkey, ciphertext) => signer.nip44Decrypt(peerPubkey, ciphertext),
+      encrypt: (peerPubkey, plaintext) =>
+        trackBunkerCall(signer.nip44Encrypt(peerPubkey, plaintext), 'nip44_encrypt'),
+      decrypt: (peerPubkey, ciphertext) =>
+        trackBunkerCall(signer.nip44Decrypt(peerPubkey, ciphertext), 'nip44_decrypt'),
     },
   };
 }

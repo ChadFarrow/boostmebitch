@@ -15,6 +15,7 @@ import {
 } from './signer';
 import {
   bunkerUriForRestore,
+  clearBunkerStale,
   connectBunkerFromUri,
   restoreBunkerFromStorage,
   startNostrConnect,
@@ -178,6 +179,7 @@ export async function restoreBunkerSigner(): Promise<boolean> {
     const adapter = await restoreBunkerFromStorage();
     if (!adapter) return false;
     activateBunkerSigner(adapter);
+    clearBunkerStale();
     return true;
   } catch {
     return false;

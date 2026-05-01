@@ -16,8 +16,12 @@ export {
   type ProfileMetadata,
 } from './auth';
 
-export { isAmberActive } from './signer';
-export { isLikelyAndroid } from './amber';
+export { isAmberActive, isBunkerActive } from './signer';
+export { isLikelyAndroid, isLikelyIOS } from './amber';
+export {
+  isBunkerStale,
+  subscribeBunkerHealth,
+} from './bunker';
 
 export { fetchProfile } from './profile';
 

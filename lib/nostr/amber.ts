@@ -366,3 +366,13 @@ export function isLikelyAndroid(): boolean {
   if (typeof navigator === 'undefined') return false;
   return /android/i.test(navigator.userAgent);
 }
+
+/** Loose iOS UA sniff. Catches iPhone / iPad / iPod, plus the iPadOS-as-Mac
+ *  case (recent iPads identify as Macintosh in the UA but expose touch). */
+export function isLikelyIOS(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/i.test(ua)) return true;
+  if (/Macintosh/i.test(ua) && (navigator.maxTouchPoints ?? 0) > 1) return true;
+  return false;
+}
