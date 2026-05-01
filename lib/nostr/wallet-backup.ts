@@ -16,10 +16,34 @@
 // own the schema here; sticking to NIP-78 keeps it explicit that this is
 // boostmebitch app data, not a portable Cashu wallet.
 
-import { withPool, QUERY_MAX_WAIT_MS } from './pool';
+import { withPool, FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish, type PublishedNote } from './publish';
-import { resolvePublishRelays } from './relays';
+import { DEFAULT_RELAYS, resolvePublishRelays } from './relays';
 import type { NostrIdentity } from './auth';
+
+// Read-side relay set for the wallet backup. We always query the union of
+// the user's intended publish relays AND DEFAULT_RELAYS, capped at 20.
+//
+// Why a union (not just resolvePublishRelays): on a fresh sign-in via
+// Amber on Android, NIP-65 (kind:10002) hydrates in parallel with everything
+// else inside `loadProfile`. If the user taps "Restore from Nostr" before
+// that resolves, `identity.writeRelays` is still undefined and
+// resolvePublishRelays falls back to DEFAULT_RELAYS. If the backup was
+// originally published from a session that *had* writeRelays, it might live
+// only on the user's outbox — and we'd miss it. Querying both sides covers
+// either case without weakening the publish path, which still targets only
+// the user's intended write relays.
+function readRelays(identity: NostrIdentity): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of resolvePublishRelays(identity)) {
+    if (!seen.has(r)) { seen.add(r); out.push(r); }
+  }
+  for (const r of DEFAULT_RELAYS) {
+    if (!seen.has(r)) { seen.add(r); out.push(r); }
+  }
+  return out.slice(0, 20);
+}
 
 export const WALLET_BACKUP_KIND = 30078;
 export const WALLET_BACKUP_D_TAG = 'boostmebitch:wallet:spark';
@@ -37,14 +61,14 @@ function ensureNip44() {
 export async function fetchEncryptedMnemonic(
   identity: NostrIdentity,
 ): Promise<string | null> {
-  const relays = resolvePublishRelays(identity);
+  const relays = readRelays(identity);
   const event = await withPool(relays, async (pool) => {
     const events = await pool.querySync(relays, {
       kinds: [WALLET_BACKUP_KIND],
       authors: [identity.pubkey],
       '#d': [WALLET_BACKUP_D_TAG],
       limit: 1,
-    }, { maxWait: QUERY_MAX_WAIT_MS });
+    }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
     if (!events.length) return null;
     return events.sort((a, b) => b.created_at - a.created_at)[0];
   });
