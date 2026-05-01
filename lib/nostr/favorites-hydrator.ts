@@ -22,6 +22,7 @@ function favoriteFromPodcast(p: Podcast): FavoritePodcast | null {
     title: p.title,
     author: p.author,
     image: p.image,
+    artwork: p.artwork,
     url: p.url,
     addedAt: Date.now(),
   };
@@ -87,11 +88,19 @@ export async function hydrateFavorites(identity: NostrIdentity): Promise<void> {
   const targetGuids = nostrNewer ? favEvent.guids : cachedGuids;
 
   // Fill from cache first (cheap), then resolve unknown guids via PI.
+  // Cached entries missing `artwork` are also queued for re-resolution so
+  // older caches written before that field existed get auto-backfilled —
+  // otherwise the favorites row keeps falling back to the placeholder when
+  // `image` 404s.
   const next: Record<string, FavoritePodcast> = {};
   const unresolved: string[] = [];
   for (const guid of targetGuids) {
-    if (cached[guid]) next[guid] = cached[guid];
-    else unresolved.push(guid);
+    if (cached[guid]) {
+      next[guid] = cached[guid];
+      if (!cached[guid].artwork) unresolved.push(guid);
+    } else {
+      unresolved.push(guid);
+    }
   }
   setFavorites(next);
 
@@ -105,7 +114,12 @@ export async function hydrateFavorites(identity: NostrIdentity): Promise<void> {
     const restFavs = await Promise.all(remaining.map(resolveGuidToFavorite));
     const merged = { ...useApp.getState().favorites };
     for (const fav of [firstFav, ...restFavs]) {
-      if (fav) merged[fav.podcastGuid] = fav;
+      if (!fav) continue;
+      // Preserve the original addedAt when we're refreshing an existing
+      // entry; resolveGuidToFavorite stamps Date.now() which would otherwise
+      // bubble the favorite to the top of the list on every backfill.
+      const prev = merged[fav.podcastGuid];
+      merged[fav.podcastGuid] = prev ? { ...fav, addedAt: prev.addedAt } : fav;
     }
     setFavorites(merged);
   }

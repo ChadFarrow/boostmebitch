@@ -120,6 +120,8 @@ export interface FavoritePodcast {
   title: string;
   author?: string;
   image?: string;
+  /** Mirror of Podcast.artwork — second-chance source when `image` 404s. */
+  artwork?: string;
   url?: string;           // RSS feed URL
   addedAt: number;        // unix ms — used for sort + last-write-wins merge
 }

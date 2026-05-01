@@ -38,6 +38,7 @@ function FavHeart({ podcast }: { podcast: Podcast }) {
         title: podcast.title,
         author: podcast.author,
         image: podcast.image,
+        artwork: podcast.artwork,
         url: podcast.url,
         addedAt: Date.now(),
       };
@@ -165,6 +166,7 @@ export function FavoritesList({
           title: p.title,
           author: p.author,
           image: p.image,
+          artwork: p.artwork,
           url: p.url,
         };
         return (
