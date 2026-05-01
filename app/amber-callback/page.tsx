@@ -1,13 +1,21 @@
 'use client';
 
 // Amber returns to this page with the request id (we set it when opening the
-// nostrsigner: URL) plus the result as a query param. We post the result via
-// BroadcastChannel back to the original tab and close ourselves so the user
-// sees the app, not a blank tab.
+// nostrsigner: URL) plus the result as a query param. We post the result back
+// to the originating tab via three parallel channels so at least one survives
+// whatever browser/Android/Amber-version combo the user is on:
+//
+//   1. BroadcastChannel — same-origin pubsub across tabs in the same browser
+//   2. window.opener.postMessage — direct reply to the popup's parent
+//   3. localStorage write — fires a cross-tab `storage` event everyone listens for
+//
+// Then we close the tab (which the browser may ignore if the tab wasn't
+// opened by script — that's fine, we leave a friendly status message).
 
 import { useEffect, useState } from 'react';
 import {
   AMBER_BROADCAST_CHANNEL,
+  AMBER_STORAGE_KEY_PREFIX,
   type AmberResultMessage,
 } from '@/lib/nostr/amber';
 
@@ -24,49 +32,80 @@ function parseFlexibleSearch(search: string): URLSearchParams {
 }
 
 export default function AmberCallback() {
-  const [status, setStatus] = useState<'pending' | 'ok' | 'noop'>('pending');
+  const [status, setStatus] = useState<'pending' | 'ok' | 'noop' | 'error'>('pending');
+  const [debug, setDebug] = useState<string>('');
 
   useEffect(() => {
-    const params = parseFlexibleSearch(window.location.search);
-    const id = params.get('id');
-    const error = params.get('error') ?? params.get('rejected');
+    // Amber may put the result in either ?search or #hash depending on how the
+    // OS dispatched the URL — try both.
+    const fromSearch = parseFlexibleSearch(window.location.search);
+    const fromHash = parseFlexibleSearch(window.location.hash.replace(/^#/, '?'));
+    const get = (k: string) => fromSearch.get(k) ?? fromHash.get(k);
+
+    const id = get('id');
+    const error = get('error') ?? get('rejected');
     // Amber's web flow may return the result under different keys depending
     // on returnType / type — check all the conventional ones.
     const result =
-      params.get('event') ??
-      params.get('signature') ??
-      params.get('result') ??
-      params.get('value') ??
+      get('event') ??
+      get('signature') ??
+      get('result') ??
+      get('value') ??
       undefined;
 
     if (!id) {
+      setDebug(`No id in URL. search=${window.location.search} hash=${window.location.hash}`);
       setStatus('noop');
       return;
     }
 
+    const message: AmberResultMessage = error
+      ? { id, error, source: 'bmb:amber' }
+      : { id, result, source: 'bmb:amber' };
+
+    let posted = 0;
+
+    // 1. BroadcastChannel
     try {
       const channel = new BroadcastChannel(AMBER_BROADCAST_CHANNEL);
-      const message: AmberResultMessage = error
-        ? { id, error }
-        : { id, result };
       channel.postMessage(message);
       channel.close();
-      setStatus('ok');
-    } catch {
-      setStatus('noop');
-      return;
+      posted++;
+    } catch (e) {
+      setDebug((d) => d + `\nBC failed: ${(e as Error).message}`);
     }
 
-    // Brief delay so the BroadcastChannel message has time to flush before
-    // the tab closes. window.close() may be ignored by the browser if this
-    // tab wasn't opened by script — that's fine, we leave a friendly message.
+    // 2. postMessage to opener
+    try {
+      window.opener?.postMessage(message, window.location.origin);
+      posted++;
+    } catch (e) {
+      setDebug((d) => d + `\npostMessage failed: ${(e as Error).message}`);
+    }
+
+    // 3. localStorage event — write then immediately remove so the same id
+    //    can be reused later without leaking. Listeners read e.newValue.
+    try {
+      const key = `${AMBER_STORAGE_KEY_PREFIX}${id}`;
+      localStorage.setItem(key, JSON.stringify(message));
+      // Don't remove immediately — give the listener a beat to read e.newValue.
+      // 1s is enough; if the listener is alive at all it fires synchronously
+      // on setItem.
+      setTimeout(() => {
+        try { localStorage.removeItem(key); } catch { /* ignore */ }
+      }, 1000);
+      posted++;
+    } catch (e) {
+      setDebug((d) => d + `\nlocalStorage failed: ${(e as Error).message}`);
+    }
+
+    setStatus(posted > 0 ? 'ok' : 'error');
+
+    // Brief delay so messages have time to flush before the tab closes.
+    // window.close() may be ignored if this tab wasn't opened by script.
     const t = setTimeout(() => {
-      try {
-        window.close();
-      } catch {
-        /* swallow */
-      }
-    }, 150);
+      try { window.close(); } catch { /* swallow */ }
+    }, 250);
     return () => clearTimeout(t);
   }, []);
 
@@ -81,14 +120,24 @@ export default function AmberCallback() {
           <>
             <p className="text-sm text-bone/80">Done. You can close this tab.</p>
             <p className="text-[11px] text-muted mt-2">
-              If your browser kept this tab open, return to the original tab.
+              If the original tab didn&apos;t pick this up, return to it and paste the result manually.
             </p>
           </>
         )}
-        {status === 'noop' && (
+        {status === 'error' && (
           <p className="text-sm text-bone/80">
-            No pending Amber request found. You can close this tab.
+            Couldn&apos;t deliver the result automatically. Return to the original tab and paste it manually.
           </p>
+        )}
+        {status === 'noop' && (
+          <>
+            <p className="text-sm text-bone/80">
+              No pending Amber request found. You can close this tab.
+            </p>
+            {debug && (
+              <pre className="text-[10px] text-muted mt-3 whitespace-pre-wrap text-left">{debug}</pre>
+            )}
+          </>
         )}
       </div>
     </main>
