@@ -1,0 +1,17 @@
+{
+  "name": "Boost Me Bitch",
+  "short_name": "Boost Me Bitch",
+  "description": "Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0a08",
+  "theme_color": "#0a0a08",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
