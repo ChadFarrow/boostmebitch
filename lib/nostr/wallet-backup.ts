@@ -16,7 +16,7 @@
 // own the schema here; sticking to NIP-78 keeps it explicit that this is
 // boostmebitch app data, not a portable Cashu wallet.
 
-import { withPool } from './pool';
+import { withPool, QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish, type PublishedNote } from './publish';
 import { resolvePublishRelays } from './relays';
 import type { NostrIdentity } from './auth';
@@ -44,7 +44,7 @@ export async function fetchEncryptedMnemonic(
       authors: [identity.pubkey],
       '#d': [WALLET_BACKUP_D_TAG],
       limit: 1,
-    });
+    }, { maxWait: QUERY_MAX_WAIT_MS });
     if (!events.length) return null;
     return events.sort((a, b) => b.created_at - a.created_at)[0];
   });

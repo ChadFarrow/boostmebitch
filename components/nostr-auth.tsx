@@ -9,6 +9,7 @@ import {
   fetchEncryptedMnemonic,
   hydrateFavorites,
   hydrateMutes,
+  unionMutedPubkeys,
   type NostrIdentity,
   type ProfileMetadata,
 } from '@/lib/nostr';
@@ -46,39 +47,48 @@ export function NostrAuth() {
   }
 
   async function doLoadProfile(id: NostrIdentity) {
-    try {
-      const [profile, relayList] = await Promise.all([
-        fetchProfile(id.pubkey),
-        fetchRelayList(id.pubkey),
-      ]);
-      const enriched: NostrIdentity = { ...id };
-      if (profile) enriched.profile = profile;
-      if (relayList?.write?.length) enriched.writeRelays = relayList.write;
-      setIdentity(enriched);
-      await hydrateFavorites(enriched);
-      // Mute list hydration is best-effort and runs in the background — a
-      // missing kind:10000 just leaves the local cache untouched.
-      hydrateMutes(enriched).catch(() => {});
-      // Best-effort Spark wallet restore. Silent on missing NIP-44 / no
-      // backup yet — user can hit "Create wallet" manually in the account
-      // menu (top-right).
-      if (!hasSpark()) {
-        fetchEncryptedMnemonic(enriched)
+    // Fire all four background refreshes in parallel. Each has a 4s
+    // QUERY_MAX_WAIT_MS bound, so total wall time is ~4s, not the 12-16s
+    // serialized chain it used to be. Mute hydration depends on the bare
+    // identity (npub + pubkey), favorites needs the resolved publish-relay
+    // set ideally — but resolvePublishRelays falls back to DEFAULT_RELAYS
+    // when writeRelays haven't landed yet, so the rare debounced republish
+    // tolerates the race.
+    const profilePromise = fetchProfile(id.pubkey).catch(() => null);
+    const relayListPromise = fetchRelayList(id.pubkey).catch(() => null);
+    const favoritesPromise = hydrateFavorites(id).catch(() => {});
+    const mutesPromise = hydrateMutes(id).catch(() => {});
+    const sparkPromise = !hasSpark()
+      ? fetchEncryptedMnemonic(id)
           .then((mnemonic) => {
-            if (mnemonic) return sparkInitFromMnemonic({ mnemonic, ownerPubkey: enriched.pubkey });
+            if (mnemonic) return sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
           })
-          .catch(() => {});
-      }
-    } catch { /* ignore — keep bare identity */ }
+          .catch(() => {})
+      : Promise.resolve();
+
+    // Apply profile + relay list as soon as both land. Both feed the
+    // identity object, so we wait for them together to avoid two re-renders.
+    const [profile, relayList] = await Promise.all([profilePromise, relayListPromise]);
+    const enriched: NostrIdentity = { ...id };
+    if (profile) enriched.profile = profile;
+    if (relayList?.write?.length) enriched.writeRelays = relayList.write;
+    if (profile || relayList?.write?.length) setIdentity(enriched);
+
+    // Wait for the rest so the dedup map's resolved promise doesn't release
+    // before everything settles (in_flight guards re-entrant remounts).
+    await Promise.allSettled([favoritesPromise, mutesPromise, sparkPromise]);
   }
 
   useEffect(() => {
-    // Fast-path: hydrate the header from localStorage so the avatar slot
-    // doesn't read "Sign in with Nostr" while we wait on the signer +
-    // profile/relay-list relays. Decoding npub → hex pubkey is sync and
-    // sufficient for display + read-only relay queries; the actual signer
-    // (window.nostr.signEvent / nip44) is only needed when an action
-    // requires signing, and we lazy-call it then.
+    // Fast-path: hydrate everything we have cached locally before any relay
+    // round-trip so the page paints immediately on reload —
+    //   - identity (pubkey/npub) decoded from `bmb:npub`
+    //   - kind:0 profile (display name, picture) from storage.profile
+    //   - favorites set from storage.favorites
+    //   - mute list from storage.muted
+    // The signer (window.nostr.signEvent / nip44) isn't called here; it's
+    // only needed when an action requires signing and we lazy-call it then.
+    // `loadProfile` then runs in the background to refresh from relays.
     if (identity || typeof window === 'undefined') return;
     const stored = storage.npub.get();
     if (!stored) return;
@@ -89,9 +99,24 @@ export function NostrAuth() {
       pubkey = decoded.data;
     } catch { return; }
     const bare: NostrIdentity = { pubkey, npub: stored };
+    const cachedProfile = storage.profile.get(pubkey);
+    if (cachedProfile) bare.profile = cachedProfile;
     setIdentity(bare);
+    const cachedFavorites = storage.favorites.get(stored);
+    if (Object.keys(cachedFavorites).length > 0) setFavorites(cachedFavorites);
+    const cachedMutes = storage.muted.get(stored);
+    if (cachedMutes.publicPubkeys.length || cachedMutes.privatePubkeys.length) {
+      setMutedPubkeys(unionMutedPubkeys({
+        publicPubkeys: cachedMutes.publicPubkeys,
+        publicOtherTags: cachedMutes.publicOtherTags,
+        privatePubkeys: cachedMutes.privatePubkeys,
+        privateOtherTags: cachedMutes.privateOtherTags,
+        unreadablePrivateContent: cachedMutes.unreadablePrivateContent,
+        updatedAt: cachedMutes.updatedAt,
+      }));
+    }
     loadProfile(bare);
-  }, [identity, setIdentity]);
+  }, [identity, setIdentity, setFavorites, setMutedPubkeys]);
 
   async function signin() {
     setBusy(true); setErr(null);

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import type { Event } from 'nostr-tools';
 import type { NostrIdentity } from './auth';
 import type { DiscoveredNote } from './discover';
-import { withPool } from './pool';
+import { withPool, QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS } from './relays';
 
 /**
@@ -27,7 +27,7 @@ export async function fetchViewerReposts(opts: {
         kinds: [6],
         authors: [opts.viewerPubkey],
         '#e': ids,
-      });
+      }, { maxWait: QUERY_MAX_WAIT_MS });
     } catch {
       return out;
     }

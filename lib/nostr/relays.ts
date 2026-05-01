@@ -1,4 +1,4 @@
-import { withPool } from './pool';
+import { withPool, QUERY_MAX_WAIT_MS } from './pool';
 import { storage } from '../storage';
 import type { NostrIdentity } from './auth';
 
@@ -21,9 +21,10 @@ export const DEFAULT_RELAYS = [
 //  - eden.nostr.land: broadly-mirrored aggregator; catches profiles whose
 //    publisher only chose niche relays.
 //
-// querySync runs all relays in parallel with a per-relay 4.4s eose timeout,
-// so the added relays don't compound latency — wall time is bounded by the
-// slowest single relay.
+// querySync calls in this codebase pass a QUERY_MAX_WAIT_MS bound (4s) so
+// the wall time is capped — added relays don't compound latency since the
+// pool runs them in parallel and we resolve when EOSE arrives or the bound
+// fires, whichever comes first.
 export const PROFILE_RELAYS = [
   'wss://purplepag.es',
   'wss://nostr.bitcoiner.social',
@@ -44,7 +45,7 @@ export async function fetchRelayList(
         kinds: [10002],
         authors: [pubkey],
         limit: 1,
-      });
+      }, { maxWait: QUERY_MAX_WAIT_MS });
       if (!events.length) return null;
       const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
       const write = new Set<string>();

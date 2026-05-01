@@ -1,5 +1,5 @@
 import type { EventTemplate } from 'nostr-tools';
-import { withPool } from './pool';
+import { withPool, QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, type PublishedNote } from './publish';
 
@@ -89,7 +89,7 @@ export async function fetchMutedPubkeys(
         kinds: [MUTES_KIND],
         authors: [pubkey],
         limit: 1,
-      });
+      }, { maxWait: QUERY_MAX_WAIT_MS });
       if (!events.length) return null;
       const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
 
