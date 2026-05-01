@@ -4,7 +4,7 @@
 //   2. GET the LNURL-pay metadata, confirm allowsNostr / nostrPubkey.
 //   3. Build + sign a kind:9734 zap request via the user's NIP-07 signer.
 //   4. GET <callback>?amount=<msat>&nostr=<encoded>&lnurl=<lnurl> → BOLT11.
-//   5. Pay the invoice via NWC or WebLN (same rails as boost).
+//   5. Pay the invoice via NWC, Spark, or WebLN (same rails as boost).
 //
 // We deliberately reuse the boost rails for step 5; the only Lightning bit
 // here that the boost orchestrator doesn't already do is the LNURL ↔ zap
@@ -13,6 +13,7 @@
 import { bech32 } from '@scure/base';
 import type { EventTemplate } from 'nostr-tools';
 import { hasNwc, nwcPayInvoice } from './nwc';
+import { hasSpark, sparkPayInvoice } from './spark';
 import { hasWebln, weblnPayInvoice } from './webln';
 
 interface LnurlPayMetadata {
@@ -64,8 +65,8 @@ export async function sendZap(args: {
   if (typeof window === 'undefined' || !window.nostr) {
     throw new Error('No Nostr signer available');
   }
-  if (!hasNwc() && !hasWebln()) {
-    throw new Error('No payment provider available (connect NWC or WebLN)');
+  if (!hasNwc() && !hasSpark() && !hasWebln()) {
+    throw new Error('No payment provider available (connect NWC, Spark, or WebLN)');
   }
 
   const lnurlSourceUrl = args.recipientLud16
@@ -116,12 +117,24 @@ export async function sendZap(args: {
   }
 
   const cb = await fetch(cbUrl.toString());
-  if (!cb.ok) throw new Error(`LNURL callback failed (${cb.status})`);
-  const cbData = await cb.json();
-  if (!cbData.pr) throw new Error('LNURL callback returned no invoice');
+  const cbData = await cb.json().catch(() => null);
+  if (!cb.ok) {
+    const reason = cbData?.reason ?? cbData?.message;
+    throw new Error(reason ? `LNURL service: ${reason}` : `LNURL callback failed (${cb.status})`);
+  }
+  if (cbData?.status === 'ERROR') {
+    throw new Error(`LNURL service: ${cbData.reason ?? 'unknown error'}`);
+  }
+  if (!cbData?.pr) throw new Error('LNURL callback returned no invoice');
 
+  // Rail priority matches lib/v4v/boost.ts pickRail(): NWC > Spark > WebLN.
+  // Without this, users with only Spark configured would silently fall back to
+  // WebLN (or fail at the no-provider check above), which surprises people who
+  // set up Spark expecting it to handle every Lightning leg the app sends.
   const preimage = hasNwc()
     ? await nwcPayInvoice(cbData.pr)
-    : await weblnPayInvoice(cbData.pr);
+    : hasSpark()
+      ? await sparkPayInvoice(cbData.pr)
+      : await weblnPayInvoice(cbData.pr);
   return { preimage };
 }
