@@ -100,6 +100,7 @@ export function NoteCard({
   const identity = useApp((s) => s.identity);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
   const mutePubkey = useApp((s) => s.mutePubkey);
+  const selectPodcast = useApp((s) => s.selectPodcast);
   const name =
     note.author?.display_name?.trim() ||
     note.author?.name?.trim() ||
@@ -245,7 +246,16 @@ export function NoteCard({
             ) : null}
             <span className="truncate">
               <span className="text-nostr">→</span>{' '}
-              <span className="text-bone">{podcast.title}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  selectPodcast(podcast);
+                  if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
+                }}
+                className="text-bone hover:text-bolt hover:underline underline-offset-2"
+              >
+                {podcast.title}
+              </button>
               {podcast.author ? <span className="text-muted"> · {podcast.author}</span> : null}
             </span>
           </div>
