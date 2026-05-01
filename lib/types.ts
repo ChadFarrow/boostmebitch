@@ -24,7 +24,12 @@ export interface Podcast {
   title: string;
   author?: string;
   description?: string;
+  /** RSS channel <image><url>. Often the publisher's preferred art but may
+   *  404 when self-hosted on a since-broken domain. */
   image?: string;
+  /** RSS <itunes:image>, mirrored by PI under `artwork`. Tried as a
+   *  second-chance source when `image` fails to load. */
+  artwork?: string;
   url?: string;           // RSS feed URL
   value?: ValueBlock | null;
 }

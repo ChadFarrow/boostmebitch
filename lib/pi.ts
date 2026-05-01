@@ -61,6 +61,11 @@ function buildPodcast(f: any): Podcast {
     author: f.author,
     description: f.description,
     image: f.image || f.artwork,
+    // Keep `artwork` separate so the renderer can try it if `image` 404s —
+    // PI maps RSS <image><url> to `image` and <itunes:image> to `artwork`,
+    // and the two often disagree (Homegrown Hits has a dead bowlafterbowl
+    // <image> but a working <itunes:image>).
+    artwork: f.artwork && f.artwork !== f.image ? f.artwork : undefined,
     url: f.url,
     value: normalizeValue(f.value),
   };

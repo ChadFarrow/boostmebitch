@@ -92,6 +92,7 @@ function PodcastRow({
     >
       <PodcastCover
         image={podcast.image}
+        artwork={podcast.artwork}
         title={podcast.title}
         seed={podcast.podcastGuid ?? String(podcast.id)}
         className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
@@ -267,6 +268,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
       <header className="flex flex-wrap items-start gap-4 pb-4 border-b border-bone/15">
         <PodcastCover
           image={data.podcast.image}
+          artwork={data.podcast.artwork}
           title={data.podcast.title}
           seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
           className="w-20 h-20 border border-bone/20 flex-shrink-0 text-3xl"
