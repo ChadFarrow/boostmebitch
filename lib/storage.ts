@@ -219,36 +219,76 @@ export const storage = {
   },
 
   /**
-   * NIP-51 kind:10000 mute list cache. `pubkeys` is the public p-tag set we
-   * render against; `otherTags` preserves any non-`p` tags (e.g. `e`, `t`,
-   * `word`) on the user's existing event so a republish from this app doesn't
-   * clobber mutes set in another Nostr client. `updatedAt` is unix seconds
-   * (matches `event.created_at`) so the hydrator can compare against the
-   * relay event without converting units.
+   * NIP-51 kind:10000 mute-list cache. Stores the full state from
+   * `lib/nostr/mutes.ts` — public + private p-tags, preserved non-`p` tags
+   * on each side, and any opaque private-content blob we couldn't decrypt.
+   * Read also tolerates the legacy `{ pubkeys, otherTags, updatedAt }` shape
+   * written by earlier versions of the app (treated as public-only).
    */
   muted: {
     get: (npub: string | null | undefined): {
-      pubkeys: string[];
-      otherTags: string[][];
+      publicPubkeys: string[];
+      publicOtherTags: string[][];
+      privatePubkeys: string[];
+      privateOtherTags: string[][];
+      unreadablePrivateContent?: string;
       updatedAt: number;
     } => {
+      const empty = {
+        publicPubkeys: [],
+        publicOtherTags: [],
+        privatePubkeys: [],
+        privateOtherTags: [],
+        updatedAt: 0,
+      };
       const raw = safeGet(identityKey(KEYS.mutedPrefix, npub));
-      if (!raw) return { pubkeys: [], otherTags: [], updatedAt: 0 };
+      if (!raw) return empty;
       try {
         const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return { pubkeys: [], otherTags: [], updatedAt: 0 };
+        if (!parsed || typeof parsed !== 'object') return empty;
+        // Legacy shape: { pubkeys, otherTags, updatedAt } — promote to public-only.
+        if (Array.isArray((parsed as any).pubkeys) && !Array.isArray((parsed as any).publicPubkeys)) {
+          return {
+            publicPubkeys: ((parsed as any).pubkeys as unknown[]).filter((p): p is string => typeof p === 'string'),
+            publicOtherTags: Array.isArray((parsed as any).otherTags)
+              ? ((parsed as any).otherTags as unknown[]).filter((t): t is string[] => Array.isArray(t))
+              : [],
+            privatePubkeys: [],
+            privateOtherTags: [],
+            updatedAt: typeof (parsed as any).updatedAt === 'number' ? (parsed as any).updatedAt : 0,
+          };
+        }
         return {
-          pubkeys: Array.isArray(parsed.pubkeys) ? parsed.pubkeys.filter((p: unknown) => typeof p === 'string') : [],
-          otherTags: Array.isArray(parsed.otherTags) ? parsed.otherTags.filter((t: unknown) => Array.isArray(t)) : [],
+          publicPubkeys: Array.isArray(parsed.publicPubkeys)
+            ? parsed.publicPubkeys.filter((p: unknown): p is string => typeof p === 'string')
+            : [],
+          publicOtherTags: Array.isArray(parsed.publicOtherTags)
+            ? parsed.publicOtherTags.filter((t: unknown): t is string[] => Array.isArray(t))
+            : [],
+          privatePubkeys: Array.isArray(parsed.privatePubkeys)
+            ? parsed.privatePubkeys.filter((p: unknown): p is string => typeof p === 'string')
+            : [],
+          privateOtherTags: Array.isArray(parsed.privateOtherTags)
+            ? parsed.privateOtherTags.filter((t: unknown): t is string[] => Array.isArray(t))
+            : [],
+          unreadablePrivateContent:
+            typeof parsed.unreadablePrivateContent === 'string' ? parsed.unreadablePrivateContent : undefined,
           updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
         };
       } catch {
-        return { pubkeys: [], otherTags: [], updatedAt: 0 };
+        return empty;
       }
     },
     set: (
       npub: string | null | undefined,
-      v: { pubkeys: string[]; otherTags: string[][]; updatedAt: number },
+      v: {
+        publicPubkeys: string[];
+        publicOtherTags: string[][];
+        privatePubkeys: string[];
+        privateOtherTags: string[][];
+        unreadablePrivateContent?: string;
+        updatedAt: number;
+      },
     ) => {
       safeSet(identityKey(KEYS.mutedPrefix, npub), JSON.stringify(v));
     },

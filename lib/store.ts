@@ -4,7 +4,7 @@ import type { Episode, Podcast, FavoritePodcast } from './types';
 import type { NostrIdentity } from './nostr';
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
-import { schedulePublishMuteList } from './nostr/mutes';
+import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 
 interface AppState {
   identity: NostrIdentity | null;
@@ -75,21 +75,35 @@ export const useApp = create<AppState>((set, get) => ({
 
   // Hydrate from the guest cache; once the user signs in, hydrateMutes
   // replaces this with their NIP-51 set reconciled against the relay event.
-  mutedPubkeys: new Set(storage.muted.get(null).pubkeys),
+  mutedPubkeys: unionMutedPubkeys(loadStateFromStorage(null)),
   isMuted: (pubkey) => !!pubkey && get().mutedPubkeys.has(pubkey),
   mutePubkey: (pubkey) => set((s) => {
     if (!pubkey || s.mutedPubkeys.has(pubkey)) return s;
-    const next = new Set(s.mutedPubkeys);
-    next.add(pubkey);
-    persistMuted(s.identity, next);
-    return { mutedPubkeys: next };
+    const cur = loadStateFromStorage(s.identity?.npub);
+    // New mutes default to PRIVATE — matches Damus's default. The publish
+    // path falls back to public if the signer can't NIP-04-encrypt.
+    const nextState: MuteListState = {
+      ...cur,
+      privatePubkeys: cur.privatePubkeys.includes(pubkey)
+        ? cur.privatePubkeys
+        : [...cur.privatePubkeys, pubkey],
+      updatedAt: Math.floor(Date.now() / 1000),
+    };
+    persistMuted(s.identity, nextState);
+    return { mutedPubkeys: unionMutedPubkeys(nextState) };
   }),
   unmutePubkey: (pubkey) => set((s) => {
     if (!pubkey || !s.mutedPubkeys.has(pubkey)) return s;
-    const next = new Set(s.mutedPubkeys);
-    next.delete(pubkey);
-    persistMuted(s.identity, next);
-    return { mutedPubkeys: next };
+    const cur = loadStateFromStorage(s.identity?.npub);
+    // Remove from BOTH lists so unmute is the inverse of either mute path.
+    const nextState: MuteListState = {
+      ...cur,
+      publicPubkeys: cur.publicPubkeys.filter((p) => p !== pubkey),
+      privatePubkeys: cur.privatePubkeys.filter((p) => p !== pubkey),
+      updatedAt: Math.floor(Date.now() / 1000),
+    };
+    persistMuted(s.identity, nextState);
+    return { mutedPubkeys: unionMutedPubkeys(nextState) };
   }),
   setMutedPubkeys: (next) => set({ mutedPubkeys: next }),
 
@@ -97,22 +111,35 @@ export const useApp = create<AppState>((set, get) => ({
   bumpBoosts: () => set((s) => ({ boostsTick: s.boostsTick + 1 })),
 }));
 
-// Write the new pubkey set to localStorage and (when signed in) schedule a
-// debounced kind:10000 republish. otherTags from the existing cache ride
-// along untouched so cross-client hashtag/keyword mutes survive.
-function persistMuted(identity: NostrIdentity | null, next: Set<string>) {
+function loadStateFromStorage(npub: string | null | undefined): MuteListState {
+  const raw = storage.muted.get(npub);
+  return {
+    publicPubkeys: raw.publicPubkeys,
+    publicOtherTags: raw.publicOtherTags,
+    privatePubkeys: raw.privatePubkeys,
+    privateOtherTags: raw.privateOtherTags,
+    unreadablePrivateContent: raw.unreadablePrivateContent,
+    updatedAt: raw.updatedAt,
+  };
+}
+
+// Persist the full mute-list state and (when signed in) schedule a debounced
+// kind:10000 republish. The encryption decision happens at publish time so
+// the signer's NIP-04 capability is checked in one place.
+function persistMuted(identity: NostrIdentity | null, state: MuteListState) {
   const npub = identity?.npub ?? null;
-  const prev = storage.muted.get(npub);
-  const pubkeys = Array.from(next);
   storage.muted.set(npub, {
-    pubkeys,
-    otherTags: prev.otherTags,
-    updatedAt: Math.floor(Date.now() / 1000),
+    publicPubkeys: state.publicPubkeys,
+    publicOtherTags: state.publicOtherTags,
+    privatePubkeys: state.privatePubkeys,
+    privateOtherTags: state.privateOtherTags,
+    unreadablePrivateContent: state.unreadablePrivateContent,
+    updatedAt: state.updatedAt,
   });
   if (!identity) return; // guest mutes stay local — can't sign without a key
   schedulePublishMuteList(
-    () => Array.from(useApp.getState().mutedPubkeys),
-    () => storage.muted.get(identity.npub).otherTags,
+    identity.pubkey,
+    () => loadStateFromStorage(identity.npub),
     resolvePublishRelays(identity),
   );
 }

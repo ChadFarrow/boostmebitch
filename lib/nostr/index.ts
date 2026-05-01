@@ -54,10 +54,12 @@ export { hydrateFavorites } from './favorites-hydrator';
 
 export {
   MUTES_KIND,
+  emptyMuteState,
   fetchMutedPubkeys,
   publishMuteList,
   schedulePublishMuteList,
-  type MuteListEvent,
+  unionMutedPubkeys,
+  type MuteListState,
 } from './mutes';
 
 export { hydrateMutes } from './mutes-hydrator';

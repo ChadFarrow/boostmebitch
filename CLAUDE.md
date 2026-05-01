@@ -39,14 +39,15 @@ Components fetch via the local API routes (`fetch('/api/feed?id=…')`) — they
 
 ## Nostr identity enrichment
 
-`loginWithExtension()` only returns `{ pubkey, npub }` from NIP-07. After login (or after the fast-path identity hydration described below), `components/nostr-auth.tsx:loadProfile` runs in the background and merges four more pieces onto/around the identity:
+`loginWithExtension()` only returns `{ pubkey, npub }` from NIP-07. After login (or after the fast-path identity hydration described below), `components/nostr-auth.tsx:loadProfile` runs in the background and merges five more pieces onto/around the identity:
 
 - **Profile metadata (kind:0):** `name`, `display_name`, `picture`, `nip05`, `about` — used to render the avatar + display name in the header. Also auto-fills the boost modal's "From" field.
 - **NIP-65 relay list (kind:10002):** `writeRelays` is the union of unmarked entries and entries marked `write`. Used as the publish target for boost notes and favorites events when present.
 - **NIP-51 favorites (kind:30003 with `d:boostmebitch:favorites`):** the user's saved-podcast set. See "Favorites" below.
+- **NIP-51 mute list (kind:10000):** the user's muted accounts. Both public p-tags and (best-effort) NIP-04-encrypted private p-tags inside `event.content` are read so this app interoperates with Damus/Amethyst. See "Mutes" below.
 - **Spark wallet backup (kind:30078 with `d:boostmebitch:wallet:spark`):** NIP-44 v2 encrypted-to-self mnemonic. Best-effort silent restore: if found, `sparkInitFromMnemonic` runs in the background and the account-menu's Spark section flips to "wallet ready" without user action. Failures (no NIP-44 in signer, no backup yet, decrypt error) are swallowed — user can hit "Create new" or "Restore from Nostr" manually.
 
-All queries run against `DEFAULT_RELAYS`. If a user has none of those events on those relays, we fall back to the npub-only header, default publish set, empty favorites, and empty wallet respectively. NIP-07 permissions ever requested: `getPublicKey` (login), `signEvent` (each boost / favorites / wallet mutation), and `nip44.encrypt`/`nip44.decrypt` (wallet backup only). We do NOT fetch contacts (kind:3), DMs, reactions, or anything else.
+All queries run against `DEFAULT_RELAYS`. If a user has none of those events on those relays, we fall back to the npub-only header, default publish set, empty favorites, empty mute list, and empty wallet respectively. NIP-07 permissions ever requested: `getPublicKey` (login), `signEvent` (each boost / favorites / mute / wallet mutation), `nip04.encrypt`/`nip04.decrypt` (private mute list only), and `nip44.encrypt`/`nip44.decrypt` (wallet backup only). We do NOT fetch contacts (kind:3), DMs, reactions, or anything else.
 
 **Fast-path identity hydration:** on page load, `nostr-auth.tsx` decodes the cached `bmb:npub` synchronously via `nip19.decode` and sets a bare `{ pubkey, npub }` identity *immediately* — the avatar shows up in the header within one frame. The signer (`window.nostr.getPublicKey`) is only called lazily, when the user actually needs to sign something. Profile / relay-list / favorites / wallet enrich asynchronously after that.
 
