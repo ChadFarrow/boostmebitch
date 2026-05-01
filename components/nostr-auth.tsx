@@ -831,7 +831,7 @@ function AccountMenu({
         ) : (
           <span className="text-nostr">◆</span>
         )}
-        <span className="hidden sm:inline truncate max-w-[160px]">
+        <span className="hidden sm:inline truncate max-w-[160px] lg:max-w-[280px]">
           {name || shortNpub(identity.npub, 6)}
         </span>
         <span className="opacity-40 group-hover:opacity-100 transition text-[10px]">
