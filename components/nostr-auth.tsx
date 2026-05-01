@@ -39,6 +39,16 @@ export function NostrAuth() {
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Detected at mount: whether a NIP-07 extension exposed window.nostr, and
+  // whether we look Android. Both gate which sign-in path the click takes
+  // and how the button labels itself, so we read once and don't change
+  // mid-session.
+  const [hasExtension, setHasExtension] = useState(false);
+  const [android, setAndroid] = useState(false);
+  useEffect(() => {
+    setHasExtension(typeof window !== 'undefined' && !!window.nostr);
+    setAndroid(isLikelyAndroid());
+  }, []);
 
   async function loadProfile(id: NostrIdentity) {
     // Dedupe across remounts (StrictMode runs effects twice in dev; Fast
@@ -128,21 +138,18 @@ export function NostrAuth() {
     loadProfile(bare);
   }, [identity, setIdentity, setFavorites, setMutedPubkeys]);
 
-  // Single sign-in entry point. Routing rules:
-  //   - NIP-07 extension present (window.nostr) → use it.
-  //   - Otherwise on Android → Amber via NIP-55 deep links.
-  //   - Otherwise (desktop / iOS without extension) → surface a clear error
-  //     rather than opening a popup that navigates to `nostrsigner:` and
-  //     leaves a blank tab the OS can't dispatch.
+  // Single sign-in entry point. Routes by whatever signer the click
+  // actually targets — the button label declares it up front so dispatching
+  // to Amber on Android is an explicit choice the user makes, not an
+  // invisible default.
   async function signin() {
     setBusy(true); setErr(null);
     try {
-      const hasExtension = typeof window !== 'undefined' && !!window.nostr;
       let id: NostrIdentity;
       if (hasExtension) {
         id = await loginWithExtension();
         storage.signer.clear();
-      } else if (isLikelyAndroid()) {
+      } else if (android) {
         id = await loginWithAmber();
         storage.signer.set('amber');
       } else {
@@ -183,18 +190,97 @@ export function NostrAuth() {
     return <AccountMenu identity={identity} onSignOut={signout} />;
   }
 
-  // The button auto-routes: NIP-07 extension if present, otherwise Amber
-  // via NIP-55 deep links. The manual-paste affordance only appears once
-  // we've actually fallen through to the Amber path, where the cross-browser
-  // / cross-tab callback can fail silently.
+  // The button label declares the signer the click will use: the NIP-07
+  // extension if window.nostr is present, otherwise Amber on Android. This
+  // way Android-without-extension doesn't silently dispatch to Amber — the
+  // user sees "Sign in with Amber" and chooses it explicitly.
+  //
+  // While an Amber sign-in is in flight, AmberCompletion shows the right
+  // affordance for whatever stage the user is in: "approving in Amber" then
+  // "tap to read clipboard" once they return (a tap is required because
+  // clipboard.readText needs transient user activation, which a
+  // visibilitychange event does not grant), with manual-paste as a fallback.
+  const signerKind: 'extension' | 'amber' | 'none' = hasExtension
+    ? 'extension'
+    : android
+      ? 'amber'
+      : 'none';
+  const buttonLabel = busy
+    ? 'Connecting…'
+    : signerKind === 'amber'
+      ? 'Sign in with Amber'
+      : 'Sign in with Nostr';
+
   return (
     <div className="flex flex-col items-end gap-1">
       <button onClick={signin} disabled={busy} className="btn-ghost">
         <span className="text-nostr">◆</span>
-        {busy ? 'Connecting…' : 'Sign in with Nostr'}
+        {buttonLabel}
       </button>
       {err && <span className="text-[10px] text-nostr/80 max-w-[260px] text-right">{err}</span>}
-      {busy && <AmberManualPaste onSubmit={submitManualPaste} />}
+      {busy && signerKind === 'amber' && <AmberCompletion onSubmit={submitManualPaste} />}
+    </div>
+  );
+}
+
+// While an Amber request is in flight, watch for the tab regaining focus
+// after going hidden — that's the user returning from Amber. At that point
+// we surface a "Read from clipboard" button: tapping it grants the user
+// activation that navigator.clipboard.readText needs to succeed. The
+// existing manual-paste form is the secondary fallback if the clipboard
+// read is denied or the value doesn't match the expected shape.
+function AmberCompletion({ onSubmit }: { onSubmit: (value: string) => boolean }) {
+  const [returned, setReturned] = useState(false);
+  const [readErr, setReadErr] = useState<string | null>(null);
+  const wentHiddenRef = useRef(false);
+
+  useEffect(() => {
+    const onChange = () => {
+      if (document.visibilityState === 'hidden') {
+        wentHiddenRef.current = true;
+      } else if (wentHiddenRef.current) {
+        setReturned(true);
+      }
+    };
+    document.addEventListener('visibilitychange', onChange);
+    // Also fire once on mount in case the user is already back when this
+    // component mounts (race between dispatch and React render).
+    if (document.visibilityState === 'visible' && wentHiddenRef.current) {
+      setReturned(true);
+    }
+    return () => document.removeEventListener('visibilitychange', onChange);
+  }, []);
+
+  async function readClipboard() {
+    setReadErr(null);
+    try {
+      const text = await navigator.clipboard.readText();
+      const ok = onSubmit(text);
+      if (!ok) {
+        setReadErr('Clipboard didn’t look like an Amber result. Paste manually below.');
+      }
+    } catch (e) {
+      setReadErr(
+        'Clipboard read denied. Long-press → paste, or use "Paste manually" below.',
+      );
+    }
+  }
+
+  if (!returned) {
+    return (
+      <span className="text-[10px] text-muted mt-1 max-w-[260px] text-right">
+        Approve the request in Amber, then return here.
+      </span>
+    );
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1 mt-1 max-w-[280px]">
+      <button onClick={readClipboard} className="btn-bolt text-[11px] py-1 px-3">
+        ◆ Continue from Amber
+      </button>
+      {readErr && <span className="text-[10px] text-nostr/80 text-right">{readErr}</span>}
+      <AmberManualPaste onSubmit={onSubmit} />
     </div>
   );
 }
