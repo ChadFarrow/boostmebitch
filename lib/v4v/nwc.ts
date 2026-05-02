@@ -4,10 +4,25 @@
 import { nwc } from '@getalby/sdk';
 import { storage } from '../storage';
 
+// Components reading hasNwc() during render need to refresh when an outside
+// actor flips the connect state — most commonly the wallet modal showing the
+// connect form alongside another component reading the same flag. The Spark
+// rail uses the same pattern (lib/v4v/spark.ts:subscribeSpark).
+const listeners = new Set<() => void>();
+
+function notify() {
+  listeners.forEach((fn) => { try { fn(); } catch { /* ignore */ } });
+}
+
+export function subscribeNwc(fn: () => void): () => void {
+  listeners.add(fn);
+  return () => { listeners.delete(fn); };
+}
+
 // Re-export the URI accessors so existing call sites keep their imports.
-export const saveNwcUri = (uri: string) => storage.nwcUri.set(uri);
+export const saveNwcUri = (uri: string) => { storage.nwcUri.set(uri); notify(); };
 export const loadNwcUri = () => storage.nwcUri.get();
-export const clearNwcUri = () => storage.nwcUri.clear();
+export const clearNwcUri = () => { storage.nwcUri.clear(); notify(); };
 export const hasNwc = () => storage.nwcUri.has();
 
 function client() {
