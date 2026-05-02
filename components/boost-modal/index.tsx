@@ -195,22 +195,14 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         </div>
 
         <div className="p-5 space-y-4">
-          {/* Wallets are consolidated to one connection at a time in the
-              account menu, so the modal just reports which rail pickRail()
-              picked rather than offering a multi-button selector. The
-              "no wallet" branch points the user back to the menu. */}
-          <div className="text-[11px] text-muted">
-            {rail ? (
-              <>
-                Paying with{' '}
-                <span className="text-bone uppercase tracking-widest">
-                  {rail === 'nwc' ? 'NWC' : rail === 'spark' ? 'Spark' : 'WebLN'}
-                </span>
-              </>
-            ) : (
-              'No wallet connected — set one up in the account menu (top right).'
-            )}
-          </div>
+          {/* Wallet selection lives in the account menu now (one connection
+              at a time). The modal only surfaces a hint when nothing's
+              connected, so the disabled Send button doesn't look broken. */}
+          {!rail && (
+            <div className="text-[11px] text-nostr/80">
+              No wallet connected — set one up in the account menu (top right).
+            </div>
+          )}
           <AmountInput sats={sats} onChange={setSats} />
           <MessageInput value={msg} onChange={setMsg} />
           <SenderName value={name} onChange={setName} />
