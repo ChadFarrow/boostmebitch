@@ -22,7 +22,10 @@ const KEYS = {
   profilePrefix: 'bmb:profile3',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion so stale negative-cache entries don't pin missing profiles for the 1-hour miss TTL.
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
   bunker: 'bmb:bunker',               // NIP-46 bunker session: { uri, clientSk } — single value (one bunker connection at a time)
+  railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
 } as const;
+
+export type RailPref = 'nwc' | 'spark' | 'webln';
 
 export type SignerKind = 'amber' | 'bunker';
 
@@ -178,6 +181,22 @@ export const storage = {
     set: (v: string) => safeSet(KEYS.nwcUri, v),
     clear: () => safeRemove(KEYS.nwcUri),
     has: () => safeGet(KEYS.nwcUri) !== null,
+  },
+
+  /**
+   * User's preferred boost rail. Set when they pick a rail in the boost
+   * modal's picker so the next boost defaults to the same wallet. Falls
+   * back to `pickRail()` priority (NWC > Spark > WebLN) when unset or
+   * when the preferred rail is no longer available.
+   */
+  railPref: {
+    get: (): RailPref | null => {
+      const v = safeGet(KEYS.railPref);
+      if (v === 'nwc' || v === 'spark' || v === 'webln') return v;
+      return null;
+    },
+    set: (v: RailPref) => safeSet(KEYS.railPref, v),
+    clear: () => safeRemove(KEYS.railPref),
   },
 
   /** User's publish-relay override (manual, rare). null = no override set. */

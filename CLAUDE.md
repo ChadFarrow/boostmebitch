@@ -6,68 +6,61 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **`boostmebitch`** — repo, working directory, npm package name, and `APP_NAME` default for the Podcast Index `User-Agent`.
 - **"Boost Me Bitch"** — display name in the page header and `<title>`.
-- **`BoostMeBitch`** — `app_name` in the boostagram TLV JSON and `client` tag on published Nostr notes (CamelCase, no spaces — matches Helipad-aggregator convention used by Fountain, StableKraft, etc.).
+- **`BoostMeBitch`** — `app_name` in the boostagram TLV JSON and `client` tag on Nostr notes (CamelCase, no spaces — matches the Helipad-aggregator convention used by Fountain, StableKraft, etc.).
 
-The README at the repo root describes the architecture in detail; treat it as the spec.
+The README at the repo root is the architecture spec; treat overlap with this file as the README's job, not CLAUDE.md's.
 
 ## Commands
 
 ```bash
 npm install
-cp .env.example .env.local       # then fill in PI key + secret + Breez key
-npm run dev                       # next dev
-npm run build                     # next build
-npm run start                     # next start (prod)
-npm run lint                      # next lint — only checker in the repo
+cp .env.example .env.local       # PI key + secret + Breez key
+npm run dev / build / start / lint
 ```
 
-There is **no test runner, no typecheck script, and no formatter configured.** `next build` is the de facto typecheck (strict mode is on in `tsconfig.json`).
+**No test runner, no typecheck script, no formatter.** `next build` is the de facto typecheck (strict mode on). Path alias: `@/*` → repo root.
 
-Path alias: `@/*` maps to the repo root (`tsconfig.json` `baseUrl: "."`). Imports look like `@/lib/types`, `@/components/player`.
-
-`.env.local` keys: `PODCAST_INDEX_KEY` / `PODCAST_INDEX_SECRET` (server-only, used by `lib/pi.ts`) and `NEXT_PUBLIC_BREEZ_API_KEY` (browser-readable; the Spark SDK initializes in the client because it's a self-custodial wallet — the key gates SDK usage, not user funds). `APP_NAME` is optional, defaults to `boostmebitch`.
+`.env.local`: `PODCAST_INDEX_KEY`/`SECRET` (server-only), `NEXT_PUBLIC_BREEZ_API_KEY` (browser; the Spark SDK is self-custodial so the key gates SDK usage, not user funds), `APP_NAME` (optional).
 
 ## Server vs client boundary (don't cross it)
 
-The Podcast Index credentials (`PODCAST_INDEX_KEY` / `PODCAST_INDEX_SECRET`) must never reach the browser. Enforced by file conventions, not bundler config:
+Podcast Index credentials must never reach the browser. Enforced by file conventions, not bundler config:
 
-- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`, hits Podcast Index). Imported only by route handlers under `app/api/*`. Never import it from `components/` or from `app/page.tsx`. The BoostBox proxy at `app/api/lightning/boostbox/route.ts` follows the same pattern — it reads `BOOSTBOX_URL` / `BOOSTBOX_API_KEY` and forwards to the upstream service so the API key never reaches the browser.
-- **Browser-only:** `lib/store.ts` (Zustand, `'use client'`), `lib/v4v/nwc.ts` / `webln.ts` / `lnaddr.ts` / `spark.ts` / `boostbox.ts`, `lib/nostr/`, `lib/storage.ts`, `lib/podcast-meta.ts` — they all touch `window.*`, `localStorage`, `sessionStorage`, IndexedDB (Breez SDK), or load WASM. SSR guards exist (`typeof window === 'undefined'`) but assume client context.
-- **Isomorphic:** `lib/types.ts` (pure types), `lib/v4v/boost.ts` (orchestration logic; pulled in by client code).
+- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`). Imported only by `app/api/*`. The BoostBox proxy at `app/api/lightning/boostbox/route.ts` follows the same pattern (reads `BOOSTBOX_URL`/`BOOSTBOX_API_KEY` and forwards).
+- **Browser-only:** `lib/store.ts`, `lib/v4v/nwc.ts`/`webln.ts`/`lnaddr.ts`/`spark.ts`/`boostbox.ts`, `lib/nostr/`, `lib/storage.ts`, `lib/podcast-meta.ts` — they touch `window.*`, storage, IndexedDB, or load WASM. SSR guards exist but assume client context.
+- **Isomorphic:** `lib/types.ts` (pure types), `lib/v4v/boost.ts` (orchestration).
 
-Components fetch via the local API routes (`fetch('/api/feed?id=…')`) — they never call Podcast Index directly.
+Components fetch via local API routes (`fetch('/api/feed?id=…')`) — never call PI directly.
 
 ## Nostr identity enrichment
 
-`loginWithExtension()` only returns `{ pubkey, npub }` from NIP-07. After login (or after the fast-path identity hydration described below), `components/nostr-auth.tsx:loadProfile` runs in the background and merges five more pieces onto/around the identity:
+`loginWithExtension()` returns only `{ pubkey, npub }` from NIP-07. After login, `components/nostr-auth.tsx:loadProfile` runs in the background and merges five things in parallel (`Promise.all`):
 
-- **Profile metadata (kind:0):** `name`, `display_name`, `picture`, `nip05`, `about` — used to render the avatar + display name in the header. Also auto-fills the boost modal's "From" field.
-- **NIP-65 relay list (kind:10002):** `writeRelays` is the union of unmarked entries and entries marked `write`. Used as the publish target for boost notes and favorites events when present.
-- **NIP-51 favorites (kind:30003 with `d:boostmebitch:favorites`):** the user's saved-podcast set. See "Favorites" below.
-- **NIP-51 mute list (kind:10000):** the user's muted accounts. Both public p-tags and (best-effort) NIP-04-encrypted private p-tags inside `event.content` are read so this app interoperates with Damus/Amethyst. See "Mutes" below.
-- **Spark wallet backup (kind:30078 with `d:boostmebitch:wallet:spark`):** NIP-44 v2 encrypted-to-self mnemonic. Best-effort silent restore: if found, `sparkInitFromMnemonic` runs in the background and the account-menu's Spark section flips to "wallet ready" without user action. Failures (no NIP-44 in signer, no backup yet, decrypt error) are swallowed — user can hit "Create new" or "Restore from Nostr" manually.
+- **Profile metadata (kind:0):** `name`, `display_name`, `picture`, `nip05`, `about` — header avatar, boost modal "From" auto-fill.
+- **NIP-65 relay list (kind:10002):** unmarked + `write` entries → publish target.
+- **NIP-51 favorites (kind:30003, `d:boostmebitch:favorites`):** see Favorites.
+- **NIP-51 mute list (kind:10000):** public + NIP-04 private p-tags. See Mutes.
+- **Spark wallet backup (kind:30078, `d:boostmebitch:wallet:spark`):** NIP-44 v2 encrypted-to-self mnemonic. Best-effort silent restore; failures are swallowed.
 
-All queries run against `DEFAULT_RELAYS`. If a user has none of those events on those relays, we fall back to the npub-only header, default publish set, empty favorites, empty mute list, and empty wallet respectively. NIP-07 permissions ever requested: `getPublicKey` (login), `signEvent` (each boost / favorites / mute / wallet mutation), `nip04.encrypt`/`nip04.decrypt` (private mute list only), and `nip44.encrypt`/`nip44.decrypt` (wallet backup only). We do NOT fetch contacts (kind:3), DMs, reactions, or anything else.
+NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (private mutes), `nip44.{en,de}crypt` (wallet backup). No kind:3 contacts, no DMs, no reactions.
 
-**Fast-path identity hydration:** on page load, `nostr-auth.tsx` decodes the cached `bmb:npub` synchronously via `nip19.decode` and sets a bare `{ pubkey, npub }` identity *immediately*. It also reads `storage.profile.get(pubkey)`, `storage.favorites.get(npub)`, and `storage.muted.get(npub)` and applies them to the store within the same frame — so the header avatar+name, favorites panel, and mute filter are all populated from cache before any relay round-trip. The signer (`window.nostr.getPublicKey`) is only called lazily, when the user actually needs to sign something. `loadProfile` then refreshes profile / relay-list / favorites / mutes / Spark backup *in parallel* (one `Promise.all`), bounded by the relay query timeout described below.
+**Fast-path identity hydration.** On page load, `nostr-auth.tsx` decodes cached `bmb:npub` synchronously via `nip19.decode`, sets a bare `{ pubkey, npub }` identity, and reads `storage.profile.get(pubkey)` + `storage.favorites.get(npub)` + `storage.muted.get(npub)` into the store within the same frame. The signer is only called lazily, when something actually needs to sign.
 
-**Relay query timeouts.** Every `pool.querySync` site passes a `maxWait` from `lib/nostr/pool.ts`: `QUERY_MAX_WAIT_MS = 4000` for single-author lookups (kind:0, kind:10000, kind:10002, kind:30003, kind:30078, kind:6) and `FEED_QUERY_MAX_WAIT_MS = 8000` for broad feed scans (kind:1 with `#i`/`#k` filters, the reply-tree BFS, profile/quoted-event bulk fetches). Without these, a relay that never sends EOSE would keep the WebSocket open and pin the browser tab in the loading state. The 4s/8s split is a tradeoff: short enough to bound the favicon spinner, long enough that broad scans return complete results.
+**Relay query timeouts.** Every `pool.querySync` site passes a `maxWait` from `lib/nostr/pool.ts`: `QUERY_MAX_WAIT_MS = 4000` for single-author lookups (kind:0/10000/10002/30003/30078/6) and `FEED_QUERY_MAX_WAIT_MS = 8000` for broad feed scans (kind:1 with `#i`/`#k`, reply-tree BFS, bulk profile fetches). Without these, a stalled relay pins the tab in loading. The 4s/8s split balances spinner duration vs. completeness.
 
-`resolvePublishRelays(identity)` in `lib/nostr/` is the single source of truth for "which relays do we publish to": localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20 to keep publish latency bounded.
+`resolvePublishRelays(identity)` in `lib/nostr/` is the single source of truth for publish targets: localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20.
 
-## Signers (NIP-07 extension + Amber NIP-55 + NIP-46 bunker)
+## Signers (NIP-07 + Amber NIP-55 + NIP-46 bunker)
 
-The whole codebase reads from `window.nostr` (publish.ts, mutes.ts, wallet-backup.ts, zap.ts, boost.ts). Three signer paths feed that surface, swapped in/out by `lib/nostr/signer.ts`:
+The whole codebase reads from `window.nostr`. Three signer paths feed it, swapped in/out by `lib/nostr/signer.ts`:
 
-- **NIP-07 extension** (Alby, nos2x, Flamingo, nostash on iOS Safari, etc.). Already at `window.nostr` when present; we just call it. We don't polyfill — the original injection wins. Sign-out clears `bmb:npub` but leaves `window.nostr` alone.
-- **Amber on Android** (NIP-55, `lib/nostr/amber.ts`). Native app, not an extension. We polyfill `window.nostr` with an `AmberSigner` instance that dispatches each request to Amber via the `nostrsigner:` URL scheme and reads the result back from the system clipboard. Round-trip: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<…>` (no callbackUrl per spec — Amber returns via clipboard) → user approves in Amber → user returns → first user gesture (`pointerdown`/`touchstart`/`keydown` anywhere on the page) reads the clipboard with fresh transient activation. `activateAmberSigner` installs the polyfill, `deactivateAmberSigner` restores the original. `restoreAmberSigner(pubkey)` is the synchronous fast-path on page load (no Amber prompt).
-- **NIP-46 bunker / remote signer** (`lib/nostr/bunker.ts`, wraps nostr-tools' `BunkerSigner`). Works everywhere. Two flows: paste a `bunker://` URI or generate a `nostrconnect://` URI for the user to feed their signer. The `BunkerAdapter` exposes the `Window['nostr']` shape; `activateBunkerSigner(adapter)` installs it. Reconnect on reload is async (`restoreBunkerSigner()` rebuilds the `BunkerSigner` from `bmb:bunker:{uri,clientSk}`); signing calls before it resolves throw, but nothing signs unprompted right after page load. Compatible with **Clave** (iOS-native, APNs-driven), **nsec.app** (web), **Amber-as-bunker** (Android), and Primal's signer.
+- **NIP-07 extension** (Alby, nos2x, Flamingo, nostash on iOS Safari). Already at `window.nostr`; we don't polyfill. Sign-out clears `bmb:npub` but leaves `window.nostr` alone.
+- **Amber on Android** (NIP-55, `lib/nostr/amber.ts`). Polyfills `window.nostr` with an `AmberSigner` that dispatches via `nostrsigner:` URL scheme and reads results back from the system clipboard. Round-trip: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<…>` (no callbackUrl per spec) → user approves in Amber → first user gesture (`pointerdown`/`touchstart`/`keydown`) reads the clipboard with fresh transient activation. `restoreAmberSigner(pubkey)` is the synchronous fast-path on page load.
+- **NIP-46 bunker / remote signer** (`lib/nostr/bunker.ts`, wraps nostr-tools `BunkerSigner`). Two flows: paste a `bunker://` URI or generate a `nostrconnect://` URI. Reconnect on reload is async (`restoreBunkerSigner()` rebuilds from `bmb:bunker:{uri,clientSk}`); signing calls before it resolves throw, but nothing signs unprompted post-load. Compatible with **Clave** (iOS-native, APNs-driven), **nsec.app**, **Amber-as-bunker**, Primal.
 
 ### `lib/nostr/signer.ts` — the swap point
 
-Only one polyfill is active at a time. `captureOriginal()` snapshots the underlying NIP-07 extension on first activation so deactivation can restore it. `activateAmberSigner` and `activateBunkerSigner` each clear the other's instance before installing. `bmb:signer` holds `'amber' | 'bunker' | absent` so the fast-path useEffect knows what to restore.
-
-Capability accessors live here too: `getNip04()` / `getNip44()` (return the API or null) and `requireNip44()` (throws a user-facing error). Use these instead of inlining `typeof window !== 'undefined' && window.nostr?.nipXX` — the wallet backup uses `requireNip44`, mutes use `getNip04` with policies that vary by call site (warn-and-degrade-to-public on encrypt; warn-and-preserve-as-opaque-blob on decrypt).
+Only one polyfill is active at a time. `captureOriginal()` snapshots the underlying NIP-07 extension on first activation so deactivation can restore it. `bmb:signer` holds `'amber' | 'bunker' | absent` so the fast-path useEffect knows what to restore. Capability accessors live here too: `getNip04()`/`getNip44()` (return API or null), `requireNip44()` (throws). Use these instead of inlining `typeof window !== 'undefined' && window.nostr?.nipXX`.
 
 ### Per-platform decision tree (`components/nostr-auth.tsx`)
 
@@ -77,172 +70,131 @@ android        = isLikelyAndroid()
 ios            = isLikelyIOS()           // includes iPad-as-Mac UA fallback
 
 signerKind =
-  extension !== null ? 'extension'  // primary button → loginWithExtension
-  : android          ? 'amber'      // primary button → loginWithAmber
-  : ios              ? 'bunker'     // primary button → opens bunker disclosure
-  :                    'none'       // primary button → throws install hint
+  extension !== null ? 'extension'  // → loginWithExtension
+  : android          ? 'amber'      // → loginWithAmber
+  : ios              ? 'bunker'     // → opens bunker disclosure
+  :                    'none'       // → throws install hint
 ```
 
-The primary button label derives from this:
-- `'Sign in with Alby'` when `extensionBrand === 'alby'` (only Alby exposes `window.alby` for brand detection; nos2x/Flamingo are indistinguishable, label stays generic)
-- `'Sign in with Amber'` when `signerKind === 'amber'`
-- `'Connect remote signer'` when `signerKind === 'bunker'` (iOS-without-extension)
-- `'Sign in with Nostr'` everywhere else
+Primary button label: `'Sign in with Alby'` (only Alby exposes `window.alby`; nos2x/Flamingo are indistinguishable, label stays generic), `'Sign in with Amber'`, `'Connect remote signer'` (iOS), or `'Sign in with Nostr'`.
 
-**iOS surfaces the bunker flow as the primary path** because Safari iOS doesn't run NIP-07 extensions in PWA mode (and nostash is rare in-tab), so erroring on click was the wrong default. A small helper line under the iOS button names Clave (TestFlight) as the recommended pairing target.
-
-The standalone "◆ Use a remote signer" disclosure is always available on Android + desktop as a secondary path (in case someone wants to NIP-46 even though they could use Amber/extension); it's hidden on iOS to avoid duplicating the primary action.
+**iOS surfaces the bunker flow as primary** because Safari iOS doesn't run NIP-07 in PWA mode. A helper line names Clave (TestFlight) as the recommended pairing target. The "◆ Use a remote signer" disclosure is hidden on iOS to avoid duplicating the primary action; it's available on Android/desktop.
 
 ### Re-detection at runtime
 
-Two listeners in `nostr-auth.tsx` keep the UI honest:
+Two listeners in `nostr-auth.tsx`:
 
-1. **Extension re-detection** on `window.focus` and `document.visibilitychange` — covers the user installing Alby (or any NIP-07 extension) while the page is already open. The button label updates without a reload.
-2. **Account-change detector** on `window.focus` while signed in via the extension path. Re-calls `getPublicKey()` (throttled to once per 30s to avoid prompt-spam on extensions without "always allow") and, if the active account in the extension changed, drives `loginWithExtension` + `completeSignIn` to switch identities. Multi-identity Alby / nos2x users are first-class.
-
-`signin()` itself also re-reads `detectExtensionBrand()` at click time so install-then-click works without waiting for the focus listener.
+1. **Extension re-detection** on `window.focus` and `document.visibilitychange` — covers install-while-open. `signin()` itself also re-reads `detectExtensionBrand()` at click time, so install-then-click works without waiting for focus.
+2. **Account-change detector** on `window.focus` while signed in via extension. Re-calls `getPublicKey()` (throttled 30s); if the active account changed, drives `loginWithExtension` + `completeSignIn` to switch identities. Multi-identity Alby/nos2x users are first-class.
 
 ### Lifecycle observables
 
-- **`subscribeAmberStage(fn)`** in `lib/nostr/amber.ts` — emits `'idle' | 'awaiting' | 'returned'` so `<AmberCompletion>` can flip its hint copy from "Approve in Amber, then come back…" to "If sign-in didn't complete, tap below." in lockstep with `invokeAmber`'s actual lifecycle. Replaces the duplicate visibilitychange listener that used to live in the component.
-- **`subscribeBunkerHealth(fn)`** in `lib/nostr/bunker.ts` — emits `boolean` (stale or not). Adapter calls run through `trackBunkerCall` with a 30s timeout; failures flip the flag, successful calls clear it. `<BunkerHealthBanner>` inside `<AccountMenu>` subscribes and shows "Signer disconnected — Reconnect" with a button calling `restoreBunkerSigner()`. Targets the iOS-PWA-suspended-WebSocket case.
-
-### Recovery UI (Amber)
-
-While an Amber sign-in is in flight, `<AmberCompletion>` always renders a "◆ Read clipboard manually" button + "Paste manually" textarea regardless of stage. We can't gate on `visibilitychange` because it's unreliable on standalone-PWA returns; the user always has a tap-able path.
+- **`subscribeAmberStage(fn)`** in `amber.ts` — `'idle' | 'awaiting' | 'returned'`. `<AmberCompletion>` flips its hint copy in lockstep with `invokeAmber`'s real lifecycle. While in flight it always shows a "◆ Read clipboard manually" button + paste textarea — `visibilitychange` is unreliable on standalone-PWA returns, so the user always has a tap-able path.
+- **`subscribeBunkerHealth(fn)`** in `bunker.ts` — `boolean` (stale or not). Adapter calls run through `trackBunkerCall` with a 30s timeout. `<BunkerHealthBanner>` inside `<AccountMenu>` shows "Signer disconnected — Reconnect" calling `restoreBunkerSigner()`. Targets the iOS-PWA-suspended-WebSocket case.
 
 ## PWA install
 
-`public/manifest.json` + `public/sw.js` + `<SwRegister>` (`components/sw-register.tsx`, mounted in `app/layout.tsx`) make the app installable. Display mode is `standalone`; manifest icons live at `public/icons/icon-{192,512}.png` + `public/icon.svg` (mask-friendly). iPhone splash screens are in `public/splash/` and referenced via `<link rel="apple-touch-startup-image">` in the layout. Header padding includes `pt-[env(safe-area-inset-top)]` so the bolt + title clear the iPhone notch / dynamic island in standalone mode.
+`public/manifest.json` + `public/sw.js` + `<SwRegister>` (mounted in `app/layout.tsx`). Display mode `standalone`; icons in `public/icons/` + `public/icon.svg`; iPhone splash screens in `public/splash/`. Header has `pt-[env(safe-area-inset-top)]` so the bolt + title clear the iPhone notch in standalone mode.
 
-The service worker has **no precaching** — Next.js emits hashed bundle URLs that change every build, so any stale cache would silently break the app for installed users. Every request goes straight to the network, exactly as it would without a SW. The empty `fetch` handler exists only so Chrome / Edge surface the install prompt.
+**The SW has no precaching.** Next.js emits hashed bundle URLs that change every build, so any stale cache would silently break installed users. The empty `fetch` handler exists only so Chrome/Edge surface the install prompt.
 
 ## Favorites (NIP-51 kind:30003)
 
-Logged-in users can ♡ a podcast row to favorite it. Storage is split:
+♡ on a podcast row toggles a favorite. Authoritative event: kind:30003 with `d:boostmebitch:favorites`, one `i: podcast:guid:<guid>` + `k: podcast:guid` per favorite. Cache: `bmb:favorites:<npub>` (or `:guest`) holds the full `FavoritePodcast[]` for instant render. Toggles are optimistic; publish is **debounced 1.5s** via `schedulePublishFavorites`. Hydration in `loadProfile` does last-write-wins on `event.created_at` vs newest local `addedAt`, then resolves unknown guids via `/api/by-guid`.
 
-- **Authoritative:** a NIP-51 kind:30003 event, `d`-tag `boostmebitch:favorites`, with one `i: podcast:guid:<guid>` + `k: podcast:guid` per favorite. Published to the user's NIP-65 write relays.
-- **Cache:** localStorage `bmb:favorites:<npub>` (or `bmb:favorites:guest` when not signed in) holds the full `FavoritePodcast[]` so the left "Favorites" panel renders instantly without re-resolving GUIDs.
+**UUID filter at parse:** `lib/nostr/favorites.ts` enforces a UUID shape on every `i: podcast:guid:<value>` tag. Older versions (and other clients reusing the d-tag) wrote feed IDs and arbitrary strings. Bad values are returned as `droppedGuids`; when count > 0, `nostr-auth.tsx` registers `window.bmbCleanFavorites()` so the user can republish a cleaned event from devtools.
 
-Toggle UX: each click is optimistic and updates Zustand + localStorage immediately. Publishing to Nostr is **debounced 1.5 s** via `schedulePublishFavorites` so rapid hearting collapses into a single signing prompt.
-
-Hydration on login (in `loadProfile`):
-1. Fetch the user's kind:30003 event.
-2. Compare `event.created_at` (s) vs the newest `addedAt` (ms) in the local cache.
-3. If Nostr is newer or local is empty, adopt the Nostr guid set; resolve unknown guids via `/api/by-guid` (which proxies Podcast Index `/podcasts/byguid`). Cached entries that lack `artwork` are also re-resolved so older caches written before that field existed get auto-backfilled.
-4. If local is newer, push it back up to Nostr (debounced).
-
-The hydrator preserves each entry's original `addedAt` when refreshing it via `/api/by-guid` — backfilling artwork doesn't reshuffle the favorites list. The favorites panel itself sorts alphabetically by `title` via `localeCompare({ sensitivity: 'base' })`.
-
-`FavoritePodcast` carries both `image` and `artwork`. `<PodcastCover>` (see "Podcast artwork" below) tries them in order and falls back to a colored-initial tile, so a dead `image` URL doesn't leave a phantom border in the favorites row.
-
-Sign-out clears the in-memory favorites; the per-npub localStorage cache is left in place so re-signing in is fast.
-
-**UUID filter at parse:** `lib/nostr/favorites.ts` enforces a UUID shape on every `i: podcast:guid:<value>` tag in the relay event. Older versions of this app (and some other clients reusing the d-tag) wrote feed IDs and arbitrary strings into the i-tag. Those are returned as `droppedGuids` and never sent to PI. When the count is non-zero, `nostr-auth.tsx` registers `window.bmbCleanFavorites()` so the user can republish a cleaned event from devtools.
-
-What this code deliberately doesn't do: episode-level favorites, multiple lists/categories, or any "share this list" UI. The kind:30003 is publicly readable to anyone with the user's pubkey + relay set.
+Sign-out clears in-memory favorites; the per-npub cache is left so re-signing in is fast. No episode-level favorites, no list categories, no share UI.
 
 ## Mutes (NIP-51 kind:10000)
 
-Logged-in users can hide an author's notes from the global / per-podcast feeds via the 🚫 button on each `<NoteCard>`. The mute list lives at NIP-51 kind:10000 so it interoperates with Damus / Amethyst / Coracle.
+🚫 on a `<NoteCard>` mutes that author. Interoperates with Damus/Amethyst/Coracle. `MuteListState` in `lib/nostr/mutes.ts` has parallel **public** p-tags (in event tags) and **private** p-tags (NIP-04-encrypted JSON tag-array in `event.content`). New mutes go to private (Damus default); when the signer doesn't expose `nip04`, the read path parks the raw ciphertext in `unreadablePrivateContent` and the publish path passes that blob through verbatim — we never destroy private mutes set in another client. New mutes degrade to public p-tags in that case. Non-`p` tags (`e`, `t`, `word`) are also preserved verbatim.
 
-The kind:10000 event holds two parallel lists in `lib/nostr/mutes.ts:MuteListState`:
+Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-level + replies before mapping). Storage `bmb:muted:<npub>` is `MuteListState` JSON; `lib/storage.ts` auto-promotes the legacy `{ pubkeys, otherTags }` shape on read. Account menu surfaces a collapsible "Muted accounts (N)" with kind:0 lookups firing only while expanded.
 
-- **Public** `p`-tags in the event's plaintext tag array.
-- **Private** `p`-tags inside an NIP-04-encrypted-to-self JSON tag-array in `event.content`. Damus defaults to private; we follow that lead — `mutePubkey()` writes new mutes to the private list, and `unmutePubkey()` removes from both lists.
+## Wallets — account menu
 
-When the signer doesn't expose `nip04`, the read path parks the raw ciphertext in `unreadablePrivateContent` and the publish path passes that blob through verbatim — so we never destroy private mutes set in another client. New mutes degrade to public p-tags in that case.
+All wallet config now lives in **`components/wallet-modal.tsx`** — a portal'd overlay opened by `<WalletButton>` inside `<AccountMenu>` (`components/nostr-auth.tsx:853`). The modal is portal'd to `document.body` so `position: fixed` resolves against the viewport, not the sticky `<header>` (the header's `backdrop-blur` creates a containing block for fixed descendants per CSS spec — without the portal, mobile renders it clipped to the header).
 
-Non-`p` tags (e.g. `e` muted threads, `t` hashtags, `word` keywords) on the relay event are also preserved verbatim through the round-trip, even though we never render them.
+Display rule: when **any** rail is connected (NWC URI saved or Spark SDK initialized), only the connected NWC/Spark sub-card renders + their connect forms hide. **WebLN is the exception** — it always renders when `weblnAvailable` regardless of other rails, because WebLN is "available" (extension injected) not "connected" (no per-site URI/SDK), and a user with Spark+Alby still needs a path to enable Alby for this site.
 
-Filtering is at render time: `<NoteCard>` early-returns null for muted authors, the feed components filter top-level notes by `mutedPubkeys`, and reply rendering filters before mapping so an all-muted reply tree leaves no empty divider div. Unmute → instant uncovering on next paint, no refetch needed.
+Sub-cards (each its own component): `nwc-wallet.tsx`, `spark-wallet.tsx`, `webln-wallet.tsx`. State changes propagate via `subscribeNwc()` + `subscribeSpark()`; the modal `setTick`s on either to flip between modes without remount.
 
-Storage: `bmb:muted:<npub>` (or `bmb:muted:guest`) holds the full `MuteListState` JSON. `storage.muted.get/set` traffics in `MuteListState` directly — the legacy `{ pubkeys, otherTags, updatedAt }` shape from earlier versions is auto-promoted to public-only on read by a private `coerceToMuteState` helper inside `lib/storage.ts`. Hydration mirrors the favorites pattern (last-write-wins on `event.created_at`).
+**Boost modal rail picker.** When 2+ rails are available, `components/boost-modal/index.tsx` renders a small "Pay via [NWC] [Spark] [WebLN]" pill row above the AmountInput so the user can override `pickRail()`'s default per-boost. Single-rail users never see it. The picker subscribes to `subscribeNwc`/`subscribeSpark` so enabling a rail mid-modal flips the row in place. WebLN doesn't have its own subscribe (the extension is either injected at load or it isn't), so we read `hasWebln()` on each render. The `!rail` "no wallet connected" hint still renders below the picker as a fallback for the zero-rail case.
 
-The account-menu surfaces a "Muted accounts (N)" collapsible disclosure when the set is non-empty (collapsed by default — tap to expand). Per-pubkey kind:0 lookups only fire while the section is expanded so a long mute list doesn't pay the resolve cost on every menu open.
+`<BunkerHealthBanner>` still sits at the top of `<AccountMenu>` (not the wallet modal), since it's signer health, not wallet health.
 
-## Podcast artwork (`components/podcast-cover.tsx`)
+**Wallet balance display.** Two surfaces share one hook:
 
-`<PodcastCover image artwork title seed className />` is the canonical podcast artwork slot. It tries `image` first, falls back to `artwork` on `onError`, and finally renders a deterministic colored-initial tile (hue derived from `seed ?? title`). Used by the show-detail header, the search/favorites row, and each episode-list row.
+- `<WalletBalanceChip>` inside the `<AccountMenu>` trigger button — always-on glance, follows priority order.
+- `<BoostModalBalance rail={rail}>` in the boost-modal sticky footer — accepts the modal's selected rail so the displayed balance always tracks the picker. Turns nostr-magenta when `amountSats > balance`.
 
-The two-URL fallback exists because PI returns RSS `<image><url>` as `image` and `<itunes:image>` as `artwork` — the two often disagree. Homegrown Hits in particular has a dead `bowlafterbowl.com` `<image>` but a working `<itunes:image>`. Always pass both fields when you have them; the renderer handles the rest.
+Both come from `components/wallet-balance.tsx`. `useWalletBalance(railOverride?)` returns `{ balance, rail }`. With no override, priority is **NWC > Spark > WebLN** (matches `pickRail()` in `lib/v4v/boost.ts`). With an override, the hook fetches that specific rail's balance, collapsing to null if the override points at a disconnected/disabled rail.
 
-The `Podcast` and `FavoritePodcast` types carry both `image` and `artwork`; episodes also expose `image` and `feedImage` (the channel artwork PI returns alongside each item) so the per-episode cover can fall back to the show art when the item lacks its own.
+- **Spark branch** mirrors `<ReadyPanel>`: subscribes to `subscribeSparkEvents` (`paymentSucceeded`/`claimedDeposits`/`newDeposits`/`synced`) and runs a 2s/5s/12s retry schedule after attach so a fresh restore doesn't sit on a stale 0.
+- **NWC branch** uses `nwcGetBalance()` (NIP-47 `get_balance`, msat → floor to sats) plus `subscribeNwcNotifications` for `payment_received`/`payment_sent` push when supported. Falls back to `visibilitychange`/`focus` refreshes for wallets that don't support notifications.
+- **WebLN branch** is gated on `isWeblnEnabled()` — module-level state set when the user explicitly clicks "Enable for this site" or completes a WebLN payment. We do **not** call `wl.enable()` speculatively to read balance, since that would prompt the user. After enable, `weblnGetBalance()` calls `wl.getBalance()` (defensively handling `currency: 'msat' | 'btc'` since the spec leaves the unit free). No notifications API in WebLN, so refresh fires on `subscribeWebln` events (post-payment notify) + `visibilitychange`/`focus`.
 
-## Wallets — account menu (top right)
-
-All wallet config lives in the avatar dropdown rendered by `components/nostr-auth.tsx:AccountMenu`. The boost modal's rail picker (`components/boost-modal/rail-picker.tsx`) is a pure tab selector — no setup affordances. The hint line at the bottom of the picker points users back to the menu when no rail is configured.
-
-Three wallet sub-cards, each its own component:
-
-- `components/nwc-wallet.tsx` — paste a `nostr+walletconnect://` URI / disconnect. Persists to `bmb:nwc_uri` via `lib/v4v/nwc.ts`.
-- `components/spark-wallet.tsx` — Create new (BIP-39 → mnemonic display → NIP-44 encrypt-to-self → kind:30078 publish → SDK init), Restore from Nostr (fetch + decrypt + init), Disconnect. Once initialized, `<ReadyPanel>` shows the live balance + a deposit-invoice generator (BOLT11 + QR + copy + auto-dismiss when the payment lands).
-- `components/webln-wallet.tsx` — only renders when `hasWebln()` returns true at menu-open time. WebLN is browser-extension-only (Alby on desktop, Mutiny's in-app browser, Kiwi on Android) so on iOS, vanilla Android, or desktop without Alby, the entire "WebLN" header + sub-card are hidden by the parent `<AccountMenu>` to avoid clutter. The component itself is just the "Enable for this site" pre-authorization affordance.
-
-Wallet state changes (Spark init / disconnect / auto-restore landing) propagate to the UI via the `subscribeSpark()` listener pattern in `lib/v4v/spark.ts`. The menu re-reads `hasSpark()` on every notification — works whether the menu is closed or already open when state flips.
-
-The account menu also surfaces a `<BunkerHealthBanner>` at the top of the dropdown when the NIP-46 transport is stale (signer disconnect detected via `subscribeBunkerHealth`). One-click reconnect via `restoreBunkerSigner()`.
+All three balance helpers swallow errors and return null so a missing capability (NWC connection without `get_balance` permission, WebLN provider without `getBalance`) just hides the chip rather than throwing.
 
 ## Spark rail (Breez SDK)
 
-`lib/v4v/spark.ts` wraps `@breeztech/breez-sdk-spark`. The package ships as a WASM module with multiple entry points; we use the default browser export and the SDK's default export (`initBreezSDK`) as a one-shot WASM loader. Init is two-stage and the WASM only lands in the bundle the first time a user opens a Spark wallet (dynamic import inside `sparkInitFromMnemonic`).
+`lib/v4v/spark.ts` wraps `@breeztech/breez-sdk-spark`. WASM only lands in the bundle on first wallet open (dynamic import inside `sparkInitFromMnemonic`).
 
 Load-bearing rules:
 
-1. **BOLT11 only.** Spark cannot keysend. `lib/v4v/boost.ts` rejects every `node`-type recipient on the Spark rail per-leg with a clear error, never silently. lnaddress recipients work because `payOne` fetches a BOLT11 from the LNURL-pay callback first.
-2. **Network is `mainnet` or `regtest` — there is no public testnet for Spark.** First end-to-end boost moves real sats. Use `network: 'regtest'` against a local node for development; the type union enforces this.
-3. **`storageDir` is keyed on `(ownerPubkey[:8], sha256(mnemonic)[:8])`.** Two wallets for the same npub get different SDK directories — `walletStorageDir()` does the hashing. Keying on pubkey alone collides if a user disconnects + creates fresh; the SDK either rejects re-init or corrupts existing wallet state.
-4. **Two-step send.** `sparkPayInvoice(invoice)` runs `sdk.prepareSendPayment({ paymentRequest })` then `sdk.sendPayment({ prepareResponse })`. Preimage extracted from `payment.preimage` or `payment.details.htlcDetails.preimage` depending on the payment shape.
-5. **Events drive the balance, not polling.** `sparkInitFromMnemonic` exposes `subscribeSparkEvents()` wrapping the SDK's `addEventListener`. `paymentSucceeded`, `claimedDeposits`, `newDeposits`, `synced` trigger an immediate `sparkGetInfo()` refresh in `<ReadyPanel>`. `paymentSucceeded`/`claimedDeposits`/`newDeposits` also auto-dismiss any outstanding deposit invoice.
+1. **BOLT11 only.** Spark cannot keysend. `lib/v4v/boost.ts` rejects every `node`-type recipient on the Spark rail per-leg with a clear error. lnaddress works because `payOne` fetches a BOLT11 from the LNURL-pay callback first.
+2. **Network is `mainnet` or `regtest` — no public testnet exists.** Use `network: 'regtest'` against a local node for development; the type union enforces this.
+3. **`storageDir` is keyed on `(ownerPubkey[:8], sha256(mnemonic)[:8])`.** Two wallets for the same npub get different SDK directories — `walletStorageDir()` does the hashing. Keying on pubkey alone collides on disconnect+recreate; the SDK either rejects re-init or corrupts state.
+4. **Two-step send.** `sparkPayInvoice` runs `sdk.prepareSendPayment({ paymentRequest })` then `sdk.sendPayment({ prepareResponse })`. Preimage from `payment.preimage` or `payment.details.htlcDetails.preimage`.
+5. **Events drive the balance, not polling.** `subscribeSparkEvents()` wraps the SDK's `addEventListener`. `paymentSucceeded`/`claimedDeposits`/`newDeposits`/`synced` trigger `sparkGetInfo()` in `<ReadyPanel>`; the first three also auto-dismiss any outstanding deposit invoice.
 
-The mnemonic is published encrypt-to-self as kind:30078 with `d:boostmebitch:wallet:spark` — see `lib/nostr/wallet-backup.ts`. Anyone with the user's nsec can decrypt; the Nostr backup is convenience, not the only copy. The seed-display step in `<SparkWallet>` is the user's chance to write it down. Re-create flow checks for an existing backup and confirms before overwriting (kind:30078 is a NIP-33 replaceable event — newer wins, prior backup is gone forever from relays).
+Mnemonic is published encrypt-to-self as kind:30078 (`lib/nostr/wallet-backup.ts`) — anyone with the user's nsec can decrypt; backup is convenience, not the only copy. The seed-display step is the user's chance to write it down. Re-create flow checks for an existing backup and confirms before overwrite (kind:30078 is NIP-33 replaceable — newer wins, prior is gone forever).
 
-**Restore-side relay union.** `fetchEncryptedMnemonic` queries the union of `resolvePublishRelays(identity)` + `DEFAULT_RELAYS` (deduped, capped at 20) with the longer 8s `FEED_QUERY_MAX_WAIT_MS`. Otherwise a fresh Android sign-in via Amber, where NIP-65 (kind:10002) hasn't hydrated yet when the user taps Restore, falls back to `DEFAULT_RELAYS` and misses a backup that lives on the user's outbox relays. `publishEncryptedMnemonic` stays on `resolvePublishRelays(identity)` — backups only go to intended write relays.
+**Restore-side relay union.** `fetchEncryptedMnemonic` queries `resolvePublishRelays(identity) ∪ DEFAULT_RELAYS` (deduped, capped at 20) with the longer 8s `FEED_QUERY_MAX_WAIT_MS`. Otherwise a fresh Android Amber sign-in (where NIP-65 hasn't hydrated yet) falls back to defaults and misses backups on the user's outbox relays. `publishEncryptedMnemonic` stays on `resolvePublishRelays(identity)`.
 
-**Post-restore balance race.** `<ReadyPanel>` attaches the SDK event listener BEFORE the first `getInfo()` call so any `synced` event from this point on is caught, then re-polls at 2s/5s/12s after mount. Otherwise Breez Spark's initial sync after `connect()` can complete between our `connect` resolving and the listener attaching, leaving the panel showing a cached 0 balance forever (the user's previous workaround was disconnect+reconnect).
+**Post-restore balance race.** `<ReadyPanel>` attaches the SDK event listener BEFORE the first `getInfo()` call, then re-polls at 2s/5s/12s. Otherwise Breez Spark's initial sync after `connect()` can complete between our `connect` resolving and the listener attaching, leaving the panel stuck at a cached 0.
 
 ## Show-level boost
 
-`BoostModal` now accepts `episode` as optional. When omitted (`isShowBoost = !episode`), the modal:
+`BoostModal` accepts `episode` as optional. When omitted (`isShowBoost = !episode`):
 
-- Headlines the podcast title and skips the playback-timestamp line.
-- Reads the value block from `podcast.value` instead of `episode.value`.
-- Builds a boostagram with `podcast`, `feedID`, `url`, `remote_feed_guid`, but skips `episode`, `itemID`, `episode_guid`, `remote_item_guid`. `ts: 0`.
-- The Nostr boost note's auto-formatted body skips the `📻 <episode>` line and the `podcast:item:guid:` `i`-tag.
+- Headlines podcast title, skips the playback-timestamp line.
+- Reads value from `podcast.value`.
+- Boostagram includes `podcast`/`feedID`/`url`/`remote_feed_guid`, skips `episode`/`itemID`/`episode_guid`/`remote_item_guid`. `ts: 0`.
+- Auto-formatted note body skips the `📻 <episode>` line and the `podcast:item:guid:` `i`-tag.
 
-The "⚡ BOOST" button at the top-right of `EpisodeList`'s header opens the modal in this mode (gated on `podcast.value.recipients.length > 0`). The per-episode boost path in `Player` is unchanged.
+The "⚡ BOOST" button on the `EpisodeList` header opens this mode (gated on `podcast.value.recipients.length > 0`). The per-episode boost path in `Player` is unchanged.
 
 ## Boost flow invariants
 
-`components/boost-modal/index.tsx` orchestrates the user flow (state + `go()`), with render-only slice components in the same folder; `lib/v4v/boost.ts` is the engine. A few rules are load-bearing:
+`components/boost-modal/index.tsx` orchestrates; `lib/v4v/boost.ts` is the engine. Load-bearing:
 
-1. **Lightning first, then Nostr.** `publishBoostNote` only fires after `sendBoost` returns *and* at least one recipient succeeded (`collected.some(r => r.ok)`). This prevents false "I boosted" notes when payments all fail. Don't reorder.
-2. **Rail priority is NWC > Spark > WebLN.** `pickRail()` in `lib/v4v/boost.ts` returns `'nwc'` if a URI is saved, else `'spark'` if a Spark wallet is initialized, else `'webln'` if a browser provider is detected, else `null`. The modal lets the user override but defaults to this. Spark only handles BOLT11 / lnaddress legs — see "Spark rail" above.
-3. **Episode value-block fallback happens server-side.** `app/api/feed/route.ts` does `e.value ?? podcast.value` before returning. Components assume `episode.value` is populated when the channel has one — don't re-implement the fallback in the modal.
-4. **Splits use weights, not percentages.** `splitSats()` floors per-recipient, then dumps the remainder onto the first non-fee recipient. `ValueRecipient.split` is a weight; total weight is the denominator.
-5. **TLV records:** boostagram JSON goes in record `7629169` (Podcasting 2.0 standard) — that's the only TLV we add for boost metadata. The `sender_id` field already lives inside the JSON; we deliberately do **not** also emit a separate `696969` sender record because that key collides with shared-node sub-account routing (e.g. getalby.com uses `customKey=696969 customValue=<sub-account>`). Per-recipient `customKey`/`customValue` from the value block IS attached to the keysend so payments to shared nodes route to the right sub-account. Keep the JSON shape compatible with Helipad / Fountain / Castamatic ingestion.
-6. **WebLN customRecords are plain JSON, not hex.** WebLN providers (Alby, Mutiny) hex-encode `customRecords` values internally before putting them on the wire. Pre-hexing here causes double-encoding and Helipad can't `JSON.parse` the boostagram. NWC's `pay_keysend` is the opposite — NIP-47 spec requires hex-encoded TLV values. See `tlvHexFor` (NWC) vs `recordsForKeysend` (WebLN) in `lib/v4v/boost.ts` — they look symmetric but the wire formats are genuinely different.
-7. **Note amount is intent, not actual.** `formatContent` and the `amount` tag use `boostagram.value_msat_total` (what the user clicked Send on), not the sum of successful legs. A user who boosts 100 sats and has one leg fail still posts "Boosted 100 sats" — the partial breakdown is visible in the modal and Helipad.
-8. **BoostBox is LNURL-only.** `lib/v4v/boostbox.ts` POSTs the metadata via the `/api/lightning/boostbox` proxy *before* `fetchLnInvoice`, then puts the returned `desc` (`rss::payment::boost <url>`) in the LUD-21 `comment` field. Keysend recipients are untouched — TLV `7629169` already carries the boostagram inline. Failure of the BoostBox call is non-fatal; the LNURL leg falls back to `boostagram.message` as the comment so the payment still goes through.
+1. **Lightning first, then Nostr.** `publishBoostNote` only fires after `sendBoost` returns *and* `collected.some(r => r.ok)`. Don't reorder — inverting publishes false "I boosted" notes when all payments fail.
+2. **Rail priority is NWC > Spark > WebLN.** `pickRail()` returns `'nwc'` if URI saved, else `'spark'` if initialized, else `'webln'` if detected, else `null`. User can override.
+3. **Episode value-block fallback happens server-side.** `app/api/feed/route.ts` does `e.value ?? podcast.value`. Don't re-implement in the modal.
+4. **Splits use weights, not percentages.** `splitSats()` floors per-recipient, dumps the remainder onto the first non-fee recipient. `ValueRecipient.split` is a weight; total weight is the denominator.
+5. **TLV record `7629169` only.** Boostagram JSON goes there (Podcasting 2.0 standard). `sender_id` lives inside that JSON. We deliberately do **not** also emit a separate `696969` sender record — that key collides with shared-node sub-account routing (e.g. getalby.com uses `customKey=696969 customValue=<sub-account>`). Per-recipient `customKey`/`customValue` from the value block IS attached to the keysend.
+6. **WebLN `customRecords` are plain JSON, not hex.** WebLN providers hex-encode internally. Pre-hexing causes double-encoding and Helipad can't `JSON.parse`. NWC's `pay_keysend` is the opposite — NIP-47 requires hex-encoded TLV. See `tlvHexFor` (NWC) vs `recordsForKeysend` (WebLN) — symmetric-looking, genuinely different wire formats.
+7. **Note amount is intent, not actual.** `formatContent` and the `amount` tag use `boostagram.value_msat_total`, not the sum of successful legs. A user who boosts 100 sats with one failed leg still posts "Boosted 100 sats"; partial breakdown is in the modal and Helipad.
+8. **BoostBox is LNURL-only.** `lib/v4v/boostbox.ts` POSTs metadata via `/api/lightning/boostbox` *before* `fetchLnInvoice`, then puts the returned `desc` (`rss::payment::boost <url>`) in the LUD-21 `comment` field. Keysend recipients are untouched (TLV `7629169` carries the boostagram inline). BoostBox failure is non-fatal; LNURL falls back to `boostagram.message`.
 
 ## Nostr publish shape
 
 `publishBoostNote()` in `lib/nostr/boost-notes.ts` builds a kind:1 with:
 
-- NIP-73 `i`/`k` tag pairs for `podcast:guid:<feed-guid>` and (when an episode is in scope) `podcast:item:guid:<item-guid>`.
-- `r` tag pointing at the **best public landing page** via `podcastLandingUrl`: prefers `https://pod.link/<itunesId>` (smart deep-link that auto-routes to the user's podcast app), falls back to `https://podcastindex.org/podcast/<feedId>`, then the raw RSS feed URL.
-- `amount` tag in millisats — uses `boostagram.value_msat_total` (intent), not the sum of successful legs.
-- `client` tag — `boostagram.app_name`, defaults to `BoostMeBitch`.
-- `t` tags `boostagram` + `value4value`.
+- NIP-73 `i`/`k` pairs for `podcast:guid:<feed-guid>` and (per-episode) `podcast:item:guid:<item-guid>`.
+- `r` tag via `podcastLandingUrl`: prefers `https://pod.link/<itunesId>` (smart deep-link to the user's podcast app), falls back to `https://podcastindex.org/podcast/<feedId>`, then raw RSS URL.
+- `amount` in millisats from `value_msat_total` (intent).
+- `client` tag from `app_name`, defaults to `BoostMeBitch`.
+- `t`: `boostagram` + `value4value`.
 
-Publish target is `resolvePublishRelays(identity)`: localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Kept to a max of 20 relays.
-
-The auto-formatted note body lives in `formatContent()` in the same file (override per call with `contentOverride`):
+Publish target is `resolvePublishRelays(identity)`. Body lives in `formatContent()` (override per call with `contentOverride`):
 
 ```
 ⚡ Boost ⚡
 
-[boostagram message, if present]
+[message, if present]
 
 Boosted N sats → [podcast title]
 📻 [episode title, omitted on show-level boosts]
@@ -250,84 +202,82 @@ Boosted N sats → [podcast title]
 [pod.link or PI URL]
 ```
 
-Same `signAndPublish` helper handles both kind:1 boost notes and kind:30003 favorites, so a third event kind would be ~10 lines.
+`signAndPublish` handles both kind:1 boost notes and kind:30003 favorites — a third event kind is ~10 lines.
 
 ## v4v-toolkit swap-out boundary
 
-`lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets / signers. Components import only from these entry points: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence), `lib/v4v/spark.ts` (Spark wallet surface), `lib/nostr/` barrel (auth + publish + wallet backup). When swapping in `v4v-toolkit`, replace internals here without touching `components/` or `app/`.
+`lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets/signers. Components import only: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence), `lib/v4v/spark.ts` (wallet surface), `lib/nostr/` barrel (auth + publish + wallet backup). Swap toolkit by replacing internals here without touching `components/` or `app/`.
 
 ## Feed loading (`useNostrFeed`)
 
-`lib/nostr/use-feed.ts` is the stale-while-revalidate hook behind the global and per-podcast feeds. Three rules are load-bearing:
+`lib/nostr/use-feed.ts` is the stale-while-revalidate hook behind global + per-podcast feeds. Three load-bearing rules:
 
-1. **Cache always paints first.** `storage.feedNotes.get(cacheKey)` returns whatever's in localStorage regardless of age (no TTL gate). The hook sets that into state synchronously inside the mount effect so a hard refresh paints the last-seen feed within one frame.
-2. **Refresh is incremental.** `refresh()` reads the newest `created_at` from the current `notes` and asks the relay for events with `since: newest + 1`. Novel events (deduped by id) are prepended onto the existing list; the merged result is written back to cache. The first load (or any load with empty notes) falls back to a full fetch with no `since`. This is much faster than re-downloading the whole feed and tolerates the wider 8s `FEED_QUERY_MAX_WAIT_MS` without making the user wait.
-3. **No auto-refresh.** Refresh fires on mount and when the user clicks the refresh button — never on a timer. Components that need to "wake" the feed after a local mutation (e.g. `boostsTick` after a sent boost) do so by reading directly from their own source of truth and intermixing it client-side, not by re-fetching from relays.
+1. **Cache always paints first.** `storage.feedNotes.get(cacheKey)` returns whatever's there regardless of age (no TTL gate). Set into state synchronously inside the mount effect.
+2. **Refresh is incremental.** `refresh()` reads newest `created_at` from current `notes` and asks for `since: newest + 1`. Novel events (deduped by id) prepend; merged result writes back to cache. First load (or empty notes) falls back to a full fetch.
+3. **No auto-refresh.** Mount + user-clicks-refresh only — never on a timer. Local-mutation surfaces (e.g. `boostsTick` after a sent boost) intermix client-side, not via re-fetch.
 
-Trade-off worth knowing: incremental refresh only catches new top-level boosts. New replies under an existing note, or new zaps stacked onto an existing boost, won't surface until that root event is re-fetched. There's no force-full-reload affordance today; if needed, the hook would need to expose a separate action.
+Caveat: incremental refresh only catches new top-level boosts. New replies under an existing note, or new zaps stacked onto an existing boost, won't surface until that root is re-fetched. No force-full-reload affordance today.
 
 ## /api/by-guid resilience and PI breaker
 
-`/api/by-guid` 5xxs when the Podcast Index keys are missing or PI is down. Without protection, a returning user with a 100-guid favorites set hammers the broken endpoint on every reload — and StrictMode + Fast Refresh can amplify that into thousands of dev requests.
+`/api/by-guid` 5xxs when PI keys are missing or PI is down. A returning user with a 100-guid favorites set would otherwise hammer the broken endpoint on every reload (StrictMode + Fast Refresh amplifies into thousands).
 
-`lib/podcast-meta.ts` is the single resolver everyone uses (favorites hydrator, global Nostr feed, future surfaces). Four guards stacked:
+`lib/podcast-meta.ts` is the single resolver. Four guards stacked:
 
-1. In-memory `Map<guid, Podcast | null>` — fastest path within a page session, also caches misses so the same guid is only attempted once per load.
+1. In-memory `Map<guid, Podcast | null>` — also caches misses so each guid is attempted at most once per page.
 2. `storage.podcastMeta` (localStorage, 7-day TTL) — survives reloads.
-3. **Circuit breaker.** First 5xx response trips `sessionStorage['bmb:pi:dead'] = '1'`. Persists across reloads in the same tab (a hard refresh starts a new session). `piMaybeUp()` lets callers gate parallel batches before firing fetches.
+3. **Circuit breaker.** First 5xx trips `sessionStorage['bmb:pi:dead'] = '1'`. Persists across reloads in the same tab; a hard refresh starts a new session. `piMaybeUp()` lets callers gate parallel batches.
 4. Network.
 
-Callers that fan out (favorites hydrator, global Nostr feed) use a **probe-first-then-batch** pattern: await one `resolvePodcastByGuid` first, check `piMaybeUp()`, only then fire `Promise.all` over the rest. One wasted fetch per page load instead of N.
-
-The global feed's resolver runs in a `useEffect` that depends only on `notes` (not on the local `podcasts` state). Tracking which guids have been attempted lives in a `useRef<Set<string>>` so `setPodcasts` doesn't re-fire the effect — that pattern caused a fetch storm where cancelled-but-already-in-flight requests kept pinning the dev server.
+Fan-out callers use **probe-first-then-batch**: await one resolve, check `piMaybeUp()`, only then `Promise.all` the rest. The global feed resolver runs in a `useEffect` that depends only on `notes` (not `podcasts` state); attempted-guid tracking lives in a `useRef<Set<string>>` so `setPodcasts` doesn't re-fire the effect (that bug caused a fetch storm pinning the dev server).
 
 ## Background art and the canvas-bg gotcha
 
-`app/layout.tsx` renders the hero collage (`public/hero.jpg`) as a fixed full-viewport layer behind everything, with a 75% ink overlay and `<Image fill priority />` so it gets AVIF/WebP optimization. The `<html>` element carries `bg-ink` (NOT `<body>`); this matters because a `body` background propagates to the canvas and would paint over the fixed image layer regardless of z-index. If someone moves `bg-ink` back onto `<body>` the art will silently disappear. Same `hero.jpg` doubles as the OG image via `metadata.openGraph.images`.
+`app/layout.tsx` renders `public/hero.jpg` as a fixed full-viewport layer with a 75% ink overlay and `<Image fill priority />` (AVIF/WebP). Same image doubles as the OG via `metadata.openGraph.images`.
+
+**`bg-ink` lives on `<html>`, NOT `<body>`.** A `body` background propagates to the canvas and paints over the fixed image layer regardless of z-index. Moving `bg-ink` back to `<body>` silently breaks the hero — no errors, just a dark page.
 
 ## State + persistence
 
-Zustand store (`lib/store.ts`) holds: `identity`, `current` (episode + podcast), `isPlaying`, `positionSec`, `selectedPodcast` (lifted out of `app/page.tsx` so a podcast-name link inside a `<NoteCard>` can route into the detail view without prop-drilling), `favorites`, `mutedPubkeys`, and `boostsTick`. No persistence — state is in-memory only.
+Zustand store (`lib/store.ts`) holds: `identity`, `current`, `isPlaying`, `positionSec`, `selectedPodcast` (lifted out of `app/page.tsx` so a podcast-name link inside a `<NoteCard>` can flip the layout without prop-drilling), `favorites`, `mutedPubkeys`, `boostsTick`. **In-memory only.**
 
-Everything else lives in `localStorage` on the device and is never sent server-side. **All `bmb:*` keys are accessed through typed helpers in `lib/storage.ts`** — don't call `localStorage.getItem`/`setItem` directly anywhere else.
+Everything else lives in `localStorage` and is never sent server-side. **All `bmb:*` keys go through typed helpers in `lib/storage.ts`** — don't call `localStorage.getItem`/`setItem` directly anywhere else. If you add a persisted field, add an accessor and use the `bmb:*` prefix.
 
-- `bmb:signer` — `'amber' | 'bunker'` when a polyfill signer is active; absent otherwise (NIP-07 extension or signed out). Read on page load: `'amber'` triggers the synchronous `restoreAmberSigner`, `'bunker'` kicks off async `restoreBunkerSigner` to rebuild the NIP-46 transport. Cleared on sign-out (`storage.signer`).
-- `bmb:bunker` — current NIP-46 session as `{ uri, clientSk }`. `uri` is a `bunker://` pointer (the generate-flow's `nostrconnect://` is converted via `bunkerUriForRestore` after the bunker connects so reload uses a deterministic pointer). `clientSk` is the hex-encoded client secret key — persisting it across reloads keeps the bunker treating us as the same logical client (no re-auth on every page load). One bunker at a time. Cleared by `clearBunkerSigner()` on sign-out (`storage.bunker`).
-- `bmb:nwc_uri` — NWC URI (`storage.nwcUri`); `lib/v4v/nwc.ts` re-exports save/load/clear/has wrappers.
-- `bmb:relays` — JSON array, manual publish-relay override (`storage.relays`); when absent, `resolvePublishRelays` falls back to NIP-65 then `DEFAULT_RELAYS`.
-- `bmb:sender_name` — last "From" name typed into the boost modal (`storage.senderName`).
-- `bmb:share_nostr` — '0' or absent. When '0', the boost modal defaults to **not** publishing a Nostr note for new boosts (`storage.shareNostr`).
-- `bmb:npub` — sentinel for silent re-login on page load (`storage.npub`).
-- `bmb:favorites:<npub>` / `bmb:favorites:guest` — per-identity favorites cache (`storage.favorites.get(npub) / .set(npub, …)`).
-- `bmb:muted:<npub>` / `bmb:muted:guest` — per-identity NIP-51 kind:10000 mute-list cache (`storage.muted`). Stores `{ publicPubkeys, publicOtherTags, privatePubkeys, privateOtherTags, unreadablePrivateContent?, updatedAt }`.
-- `bmb:profile3:<pubkey>` — kind:0 metadata cache (`storage.profile`). 7-day TTL on hits, 15-minute TTL on misses (so PROFILE_RELAYS additions or temporary outages re-resolve naturally). Used both for note authors in the global feed and for the signed-in user's own header. The `3` suffix is a schema version — bump it when the cached shape changes.
-- `bmb:pmeta:<guid>` — `/api/by-guid` resolution cache, 7-day TTL (`storage.podcastMeta`). Used by the favorites hydrator, global Nostr feed, and any future surface that needs a `Podcast` from a guid.
-- `bmb:feed:<key>` — last `DiscoveredNote[]` per feed surface (`storage.feedNotes`). Stored as a bare JSON array, **no TTL** — every `useNostrFeed` mount paints the cache regardless of age, then runs an incremental `since`-bounded refresh that prepends new events. The legacy `{ t, v }` wrapper from earlier versions is still tolerated on read so existing caches survive a deploy. Keys: `'global'` for the global feed, `'podcast:<guid>'` per podcast.
-- `bmb:boosts:<npub>` / `bmb:boosts:guest` — local log of sent boosts (`storage.boosts`), capped at 200 newest-first. Each entry holds the boostagram intent + per-leg results, with the BoostBox URL on each LNURL leg and the published Nostr `noteId` patched in once `publishBoostNote` resolves. The Zustand `boostsTick` (`bumpBoosts()`) wakes up subscribers — `GlobalNostrFeed` mixes these into the relay-discovered notes and dedupes any whose `noteId` matches a returned note.
+Keys (per-identity ones key on `<npub>` or `:guest`):
 
-`sessionStorage` (per-tab, not per-device):
+| Key | Purpose / quirk |
+|---|---|
+| `bmb:signer` | `'amber' \| 'bunker'` when a polyfill signer is active; absent for NIP-07 / signed out. Page-load fast-path branches on this. |
+| `bmb:bunker` | NIP-46 `{ uri, clientSk }`. Persisting `clientSk` keeps the bunker treating us as the same logical client across reloads (no re-auth). |
+| `bmb:nwc_uri` | NWC URI. |
+| `bmb:rail_pref` | `'nwc' \| 'spark' \| 'webln'` — user's preferred boost rail, set when they click a rail in the boost-modal picker. Falls back to `pickRail()` priority when absent or when the preferred rail isn't available. |
+| `bmb:relays` | JSON array, manual publish-relay override. |
+| `bmb:sender_name` | Last "From" name in the boost modal. |
+| `bmb:share_nostr` | `'0'` = default to NOT publishing a Nostr note for new boosts. |
+| `bmb:npub` | Sentinel for silent re-login on page load. |
+| `bmb:favorites:*` | `FavoritePodcast[]` cache. |
+| `bmb:muted:*` | `MuteListState` JSON; `lib/storage.ts` auto-promotes the legacy shape. |
+| `bmb:profile3:<pubkey>` | kind:0 cache. **7-day TTL on hits, 15-min on misses** (so PROFILE_RELAYS additions / temp outages re-resolve). The `3` suffix is a schema version — bump when shape changes. |
+| `bmb:pmeta:<guid>` | `/api/by-guid` cache, 7-day TTL. |
+| `bmb:feed:<key>` | `DiscoveredNote[]` per feed. **No TTL** — every mount paints it, then incremental `since`-refresh prepends. Legacy `{ t, v }` wrapper is tolerated on read. Keys: `'global'`, `'podcast:<guid>'`. |
+| `bmb:boosts:*` | Local sent-boost log, capped 200 newest-first. Each entry holds intent + per-leg results + Nostr `noteId` patched in once `publishBoostNote` resolves. `boostsTick` wakes subscribers; `GlobalNostrFeed` mixes these in and dedupes against returned notes by `noteId`. |
+| `bmb:pi:dead` (sessionStorage) | Circuit-breaker sentinel; cleared on hard-refresh-into-new-tab. |
 
-- `bmb:pi:dead` — circuit-breaker sentinel set when `/api/by-guid` returns 5xx. Persists across reloads in the same tab, cleared on hard refresh into a new tab.
-
-External persistence: the **Spark wallet's mnemonic** lives encrypted on Nostr relays as kind:30078 (publicly readable, private to the user's nsec). The Breez SDK's own wallet state (UTXOs, payment history, etc.) lives in IndexedDB managed by the SDK at `bmb-spark-<pubkey:8>-<sha256(mnemonic):8>`.
-
-If you add another persisted field, add a typed accessor to `lib/storage.ts` and follow the `bmb:*` prefix.
+External: the **Spark mnemonic** lives encrypted on Nostr as kind:30078. Breez SDK's wallet state (UTXOs, payment history) lives in IndexedDB at `bmb-spark-<pubkey:8>-<sha256(mnemonic):8>`.
 
 ## Styling tokens
 
-Tailwind config (`tailwind.config.ts`) defines a small custom palette used everywhere — don't introduce new colors without adding them here:
+Custom palette in `tailwind.config.ts` — don't introduce new colors without adding them here:
 
-- `ink` (`#0a0a08`, background), `bone` (`#fdfaf3`, foreground — bright warm cream for contrast against the dark hero), `bolt` (`#fae500`, Lightning yellow), `nostr` (`#ff2d92`, magenta), `muted` (`#8a857a`, secondary text), `line` (`#1f1d18`, subtle borders).
-- Fonts: `font-display` (Bricolage Grotesque), `font-mono` (JetBrains Mono).
-- Animation: `animate-bolt` is a 1.4s opacity pulse used on the hero.
+`ink` (#0a0a08, bg), `bone` (#fdfaf3, fg), `bolt` (#fae500, Lightning yellow), `nostr` (#ff2d92, magenta), `muted` (#8a857a, secondary), `line` (#1f1d18, borders). Fonts: `font-display` (Bricolage Grotesque), `font-mono` (JetBrains Mono). `animate-bolt` is a 1.4s opacity pulse.
 
-Reusable element classes (`.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.input`, `.stamp`, `.headline`, `.seek`) are defined in `app/globals.css`. Read that file before inventing new ones.
+Reusable element classes: `.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.input`, `.stamp`, `.headline`, `.seek` — defined in `app/globals.css`. Read that before inventing new ones.
 
 ## Conventions worth keeping
 
-- **Podcast artwork goes through `<PodcastCover>`** (`components/podcast-cover.tsx`). It uses `<img>` (not `next/image` — `next.config.mjs` allows all HTTPS hosts, but per-host configuration would still be needed for `next/image`'s optimizer), tries `image` then `artwork` on `onError`, and falls back to a deterministic colored-initial tile so a dead URL never leaves a phantom border. The hero/OG art at `public/hero.jpg` IS served via `next/image` because it's a known local asset and we want AVIF/WebP for LCP.
-- **Auxiliary relay sets in `lib/nostr/discover.ts`** open extras (PROFILE_RELAYS, NIP-65 hints, quote-ref relay hints) on top of the base set. Wrap those in `withExtraRelays(pool, baseRelays, extraRelays, fn)` from `lib/nostr/pool.ts` — it deduplicates the union, runs your query inside the closure, and closes only the newly-opened extras in `finally` (swallowing close errors). Don't write the open / track-opened / try-finally / close pattern inline; four near-identical copies were collapsed into the helper.
-- **Browse-mode layout** in `app/page.tsx` is single-column. Selecting a podcast (search result, favorite, or a podcast-name link inside a Nostr note card) sets `selectedPodcast` in the Zustand store, which flips to the detail view (full-width episode list + per-podcast Nostr feed). Don't re-introduce a right-pane "select a podcast on the left" empty state — it lied about behavior, the click flips the whole layout.
+- **Podcast artwork goes through `<PodcastCover>`** (`components/podcast-cover.tsx`). Tries `image` first, falls back to `artwork` on `onError`, then a deterministic colored-initial tile. The two-URL fallback exists because PI returns RSS `<image><url>` as `image` and `<itunes:image>` as `artwork`, and they often disagree (Homegrown Hits has a dead `bowlafterbowl.com` `image` but a working `artwork`). Always pass both fields; the renderer handles the rest. `<PodcastCover>` uses `<img>`, not `next/image` (per-host config required); the local hero IS served via `next/image`.
+- **Auxiliary relay sets use `withExtraRelays`** (`lib/nostr/pool.ts`). It dedupes the union, runs your query inside the closure, and closes only newly-opened extras in `finally` (swallowing close errors). Don't write the open / track / try-finally / close pattern inline — four near-identical copies were collapsed.
+- **Browse-mode layout is single-column** in `app/page.tsx`. Selecting a podcast (search result, favorite, or a podcast-name link inside a Nostr note) sets `selectedPodcast` in Zustand, flipping to detail view (full-width episode list + per-podcast feed). Don't reintroduce a right-pane "select a podcast on the left" empty state.
 - Native HTML5 `<audio>` plays the enclosure URL directly — no proxy, no transcoding.
-- API routes return `{ error }` JSON with appropriate status codes via `getErrorMessage(e, fallback)` from `lib/util.ts`; clients swallow errors silently. When adding new routes, match the shape so a future error UI can render uniformly.
-- Inline SVG icons (`components/icons.tsx:BoltIcon`) on yellow buttons instead of `⚡` emoji — the colored emoji is invisible on `bg-bolt`. Use the icon component, not the emoji, for any new bolt-yellow button. Other places (yellow text on dark bg, V4V stamps) keep the emoji because the colored glyph reads fine.
+- API routes return `{ error }` JSON via `getErrorMessage(e, fallback)` from `lib/util.ts`; clients swallow errors silently. Match this shape on new routes.
+- **Inline SVG `BoltIcon`** (`components/icons.tsx`) on yellow buttons — the `⚡` emoji is invisible on `bg-bolt`. Other places (yellow text on dark bg, V4V stamps) keep the emoji.

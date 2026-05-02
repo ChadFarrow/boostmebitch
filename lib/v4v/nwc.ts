@@ -37,6 +37,44 @@ export async function nwcPayInvoice(invoice: string): Promise<string> {
   return res.preimage;
 }
 
+/**
+ * Fetch the wallet's current balance in sats. NIP-47 returns msats; we floor
+ * to whole sats. Returns null on any error (network failure, capability not
+ * granted on this connection, wallet down) — callers should hide the chip
+ * rather than show a stale or zero value.
+ */
+export async function nwcGetBalance(): Promise<number | null> {
+  try {
+    const c = client();
+    const res = await c.getBalance();
+    const msat = Number(res?.balance ?? 0);
+    if (!Number.isFinite(msat) || msat < 0) return null;
+    return Math.floor(msat / 1000);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Subscribe to NIP-47 push notifications for `payment_received` /
+ * `payment_sent`. Many wallets support this; some don't. Returns an unsub
+ * fn — a no-op if subscription failed, so callers can rely on it without
+ * branching.
+ */
+export async function subscribeNwcNotifications(
+  onNotification: (e: nwc.Nip47Notification) => void,
+): Promise<() => void> {
+  try {
+    const c = client();
+    return await c.subscribeNotifications(onNotification, [
+      'payment_received',
+      'payment_sent',
+    ]);
+  } catch {
+    return () => {};
+  }
+}
+
 export async function nwcKeysend(args: {
   pubkey: string;
   amount_msat: number;

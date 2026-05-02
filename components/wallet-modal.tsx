@@ -106,13 +106,20 @@ export function WalletModal({ onClose }: Props) {
                 <div className="text-[11px] uppercase tracking-widest text-bone/60">Spark</div>
                 <SparkWallet />
               </section>
-              {weblnAvailable && (
-                <section>
-                  <div className="text-[11px] uppercase tracking-widest text-bone/60">WebLN</div>
-                  <WeblnWallet />
-                </section>
-              )}
             </>
+          )}
+
+          {/* WebLN sits outside the !anyConnected gate because it's "available"
+              not "connected" — the extension is either injected or it isn't,
+              there's no per-site connect step beyond the one-shot Enable. So
+              we always surface it when present, even alongside a connected
+              NWC/Spark, so the user can opt to use Alby per-boost via the
+              boost modal's rail picker. */}
+          {weblnAvailable && (
+            <section>
+              <div className="text-[11px] uppercase tracking-widest text-bone/60">WebLN</div>
+              <WeblnWallet />
+            </section>
           )}
         </div>
       </div>

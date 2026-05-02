@@ -32,6 +32,7 @@ import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { Avatar } from './avatar';
 import { WalletModal } from './wallet-modal';
+import { WalletBalanceChip } from './wallet-balance';
 
 // Module-level promise cache keyed by pubkey, so the same loadProfile call
 // isn't fired twice when React remounts the component (StrictMode in dev,
@@ -830,6 +831,7 @@ function AccountMenu({
         ) : (
           <span className="text-nostr">◆</span>
         )}
+        <WalletBalanceChip />
         <span className="hidden sm:inline truncate max-w-[160px] lg:max-w-[280px]">
           {name || shortNpub(identity.npub, 6)}
         </span>

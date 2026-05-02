@@ -4,10 +4,14 @@ import confetti from 'canvas-confetti';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
+import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
+import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
+import { hasWebln } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { BoltIcon } from '../icons';
+import { BoostModalBalance } from '../wallet-balance';
 import { AmountInput } from './amount-input';
 import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
@@ -47,21 +51,39 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
 
+  // Re-render when any rail's connect state flips (user enables WebLN, etc.)
+  // so the picker reflects current availability. Polled directly via the
+  // has*() helpers — they're cheap and there's no risk of staleness.
+  const [, setRailTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setRailTick((t) => t + 1);
+    const unsubNwc = subscribeNwc(bump);
+    const unsubSpark = subscribeSpark(bump);
+    return () => { unsubNwc(); unsubSpark(); };
+  }, []);
+  const availableRails: Rail[] = [];
+  if (hasNwc()) availableRails.push('nwc');
+  if (hasSpark()) availableRails.push('spark');
+  if (hasWebln()) availableRails.push('webln');
+
   function handleShareNostrChange(v: boolean) {
     setShareNostr(v);
     storage.shareNostr.set(v);
   }
 
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
-  const relaySource: 'override' | 'nip65' | 'default' =
-    storage.relays.isOverridden()
-      ? 'override'
-      : identity?.writeRelays?.length
-        ? 'nip65'
-        : 'default';
 
   useEffect(() => {
-    setRail(pickRail());
+    // Prefer the user's stored rail pref when it's still available; otherwise
+    // fall back to pickRail()'s priority order. We only honor the pref if the
+    // rail is actually connected/enabled — a stale pref pointing at a
+    // disconnected wallet would leave the user with a non-functional Send.
+    const pref = storage.railPref.get();
+    const prefAvailable =
+      (pref === 'nwc' && hasNwc())
+      || (pref === 'spark' && hasSpark())
+      || (pref === 'webln' && hasWebln());
+    setRail(prefAvailable ? pref : pickRail());
     setName((current) => {
       if (current) return current;                              // preserve typing
       const stored = storage.senderName.get();
@@ -195,9 +217,33 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         </div>
 
         <div className="p-5 space-y-4">
-          {/* Wallet selection lives in the account menu now (one connection
-              at a time). The modal only surfaces a hint when nothing's
-              connected, so the disabled Send button doesn't look broken. */}
+          {/* Rail picker: only shown when 2+ rails are available. Single-rail
+              users never see it. WebLN sits last in pickRail() priority but
+              with Alby installed users often want to opt into it per-boost,
+              so the picker is the override path. */}
+          {availableRails.length > 1 && (
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+              <span className="text-muted uppercase tracking-widest">Pay via</span>
+              {availableRails.map((r) => {
+                const label = r === 'nwc' ? 'NWC' : r === 'spark' ? 'Spark' : 'WebLN';
+                const active = rail === r;
+                return (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => { setRail(r); storage.railPref.set(r); }}
+                    className={`px-2 py-1 rounded border transition ${
+                      active
+                        ? 'border-bolt bg-bolt/10 text-bolt'
+                        : 'border-bone/20 text-muted hover:border-bone/40 hover:text-bone'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           {!rail && (
             <div className="text-[11px] text-nostr/80">
               No wallet connected — set one up in the account menu (top right).
@@ -223,25 +269,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
                 <span className={shareNostr && identity ? 'text-nostr' : 'text-muted'}>◆</span>
                 {identity && !shareNostr ? 'Private boost — Lightning only' : 'Share boost on Nostr'}
               </div>
-              <div className="text-muted mt-0.5 leading-relaxed">
-                {identity ? (
-                  shareNostr ? (
-                    <>
-                      Publishes a kind:1 note tagged with NIP-73 podcast refs to {relays.length} relays.
-                      {relaySource === 'nip65' && (
-                        <span className="text-nostr/80"> · using your NIP-65 list</span>
-                      )}
-                      {relaySource === 'default' && (
-                        <span className="text-muted/70"> · using defaults (no NIP-65 found)</span>
-                      )}
-                    </>
-                  ) : (
-                    'No Nostr note will be published. Only the Lightning payment goes out.'
-                  )
-                ) : (
-                  'Sign in with Nostr to enable.'
-                )}
-              </div>
+              {!identity && (
+                <div className="text-muted mt-0.5 leading-relaxed">
+                  Sign in with Nostr to enable.
+                </div>
+              )}
             </div>
           </label>
           <SplitsPreview recipients={value.recipients} splits={splits} results={results} />
@@ -249,14 +281,17 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           <PublishStatus state={pubState} />
         </div>
 
-        <div className="flex justify-between items-center p-5 border-t border-bone/15 sticky bottom-0 bg-ink">
+        <div className="flex justify-between items-center gap-3 p-5 border-t border-bone/15 sticky bottom-0 bg-ink">
           <button onClick={onClose} className="btn-ghost">{paymentDone ? 'Close' : 'Cancel'}</button>
-          {!paymentDone && (
-            <button onClick={go} disabled={!rail || running} className="btn-bolt disabled:opacity-40">
-              <BoltIcon />
-              {running ? 'sending…' : `Send ${sats} sat`}
-            </button>
-          )}
+          <div className="flex items-center gap-3">
+            {!paymentDone && <BoostModalBalance amountSats={sats} rail={rail} />}
+            {!paymentDone && (
+              <button onClick={go} disabled={!rail || running} className="btn-bolt disabled:opacity-40">
+                <BoltIcon />
+                {running ? 'sending…' : `Send ${sats} sat`}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>

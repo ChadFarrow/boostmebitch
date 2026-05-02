@@ -9,18 +9,23 @@
 // vanilla desktop without Alby never see this component, so the empty
 // "Not detected" branch this used to carry is gone.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { getErrorMessage } from '@/lib/util';
+import { isWeblnEnabled, subscribeWebln, weblnEnable } from '@/lib/v4v/webln';
 
 export function WeblnWallet() {
   const [enabling, setEnabling] = useState(false);
-  const [enabled, setEnabled] = useState(false);
+  const [enabled, setEnabled] = useState(isWeblnEnabled());
   const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => subscribeWebln(() => setEnabled(isWeblnEnabled())), []);
 
   async function enable() {
     setErr(null); setEnabling(true);
     try {
-      await window.webln?.enable();
+      await weblnEnable();
+      // subscribeWebln will flip `enabled`; setEnabled here is redundant but
+      // harmless and makes the state change feel synchronous on the click.
       setEnabled(true);
     } catch (e) {
       setErr(getErrorMessage(e, 'enable failed'));
