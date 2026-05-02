@@ -12,6 +12,7 @@
 // injected or it isn't) so it surfaces alongside the connect options.
 
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
@@ -27,7 +28,11 @@ export function WalletModal({ onClose }: Props) {
   // Bump on either rail's state change so the modal flips between
   // "connected wallets only" and "all options" without remounting.
   const [, setTick] = useState(0);
+  // Portal target only resolves on the client; tracking it in state lets the
+  // first render no-op during SSR and re-render once the body is available.
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   useEffect(() => {
+    setPortalTarget(document.body);
     const bump = () => setTick((t) => t + 1);
     const unsubSpark = subscribeSpark(bump);
     const unsubNwc = subscribeNwc(bump);
@@ -47,7 +52,13 @@ export function WalletModal({ onClose }: Props) {
   const weblnAvailable = hasWebln();
   const anyConnected = nwcReady || sparkReady;
 
-  return (
+  // Portal to body so `position: fixed` resolves against the viewport, not the
+  // sticky <header>. The header uses `backdrop-blur` which creates a
+  // containing block for fixed descendants per CSS spec — without the portal,
+  // the modal renders clipped to the header's bounding box on mobile (looking
+  // like the menu "opens upward").
+  if (!portalTarget) return null;
+  return createPortal(
     <div className="fixed inset-0 z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="card w-full max-w-md bg-ink relative max-h-[92vh] overflow-y-auto">
         <button
@@ -105,6 +116,7 @@ export function WalletModal({ onClose }: Props) {
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    portalTarget,
   );
 }
