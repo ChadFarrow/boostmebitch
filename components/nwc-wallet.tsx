@@ -7,11 +7,14 @@
 
 import { useState } from 'react';
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
+import { useApp } from '@/lib/store';
+import { storage } from '@/lib/storage';
 
 export function NwcWallet() {
   const [, setTick] = useState(0);
   const [draft, setDraft] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const identity = useApp((s) => s.identity);
 
   function bump() { setTick((t) => t + 1); }
 
@@ -29,6 +32,9 @@ export function NwcWallet() {
 
   function disconnect() {
     clearNwcUri();
+    // Drop the cached header-chip balance so it doesn't keep showing the
+    // last-known number after the URI is gone.
+    storage.walletBalance.clear(identity?.npub);
     bump();
   }
 

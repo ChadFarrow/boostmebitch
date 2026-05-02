@@ -17,7 +17,7 @@
 // notifications, plus visibilitychange/focus refresh as a fallback for
 // wallets that don't. NIP-47 returns msat; helper floors to whole sats.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Rail } from '@/lib/v4v/boost';
 import {
   hasSpark,
@@ -36,6 +36,8 @@ import {
   subscribeWebln,
   weblnGetBalance,
 } from '@/lib/v4v/webln';
+import { useApp } from '@/lib/store';
+import { storage } from '@/lib/storage';
 
 /**
  * Returns the active rail's balance + the rail it came from. Pass a
@@ -48,6 +50,7 @@ import {
 export function useWalletBalance(
   railOverride?: Rail | null,
 ): { balance: number | null; rail: Rail | null } {
+  const npub = useApp((s) => s.identity?.npub) ?? null;
   const [sparkReady, setSparkReady] = useState(hasSpark());
   const [nwcReady, setNwcReady] = useState(hasNwc());
   const [weblnReady, setWeblnReady] = useState(isWeblnEnabled());
@@ -158,7 +161,45 @@ export function useWalletBalance(
     };
   }, [rail]);
 
-  return { balance, rail };
+  // Cache successful fetches per-npub so the next page load can paint the
+  // chip instantly while the SDK / NWC client reconnects in the background.
+  // The Breez Spark restore alone (relay query for kind:30078 → NIP-44
+  // decrypt → WASM load → SDK connect → initial sync) routinely takes 5-10 s
+  // on cold load, which leaves the chip blank for far too long otherwise.
+  useEffect(() => {
+    if (balance !== null && rail !== null) {
+      storage.walletBalance.set(npub, rail, balance);
+    }
+  }, [balance, rail, npub]);
+
+  // Fall back to the cached value while the live balance hasn't landed yet.
+  // Two cases we honor the cache:
+  //   1. Cold load (rail === null) — we don't yet know which rail will come
+  //      online; trust the cache's rail + balance to paint the chip.
+  //   2. Live rail is set but its first fetch hasn't returned yet AND the
+  //      cached rail matches — show the last-known balance for that rail.
+  // We never pair the cached balance with a *different* live rail (e.g.
+  // showing a stale Spark balance after the user just disconnected Spark
+  // and only NWC remains) — that would be actively misleading.
+  const cached = useMemo(() => {
+    const c = storage.walletBalance.get(npub);
+    if (!c) return null;
+    if (railOverride && c.rail !== railOverride) return null;
+    return c;
+  }, [npub, railOverride]);
+
+  let displayBalance: number | null = null;
+  let displayRail: Rail | null = null;
+  if (rail !== null) {
+    displayRail = rail;
+    if (balance !== null) displayBalance = balance;
+    else if (cached && cached.rail === rail) displayBalance = cached.balance;
+  } else if (cached) {
+    displayRail = cached.rail;
+    displayBalance = cached.balance;
+  }
+
+  return { balance: displayBalance, rail: displayRail };
 }
 
 /** Compact balance pill for the header. Hidden when no rail is connected. */

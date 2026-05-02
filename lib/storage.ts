@@ -23,9 +23,11 @@ const KEYS = {
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
   bunker: 'bmb:bunker',               // NIP-46 bunker session: { uri, clientSk } — single value (one bunker connection at a time)
   railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
+  walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
 } as const;
 
 export type RailPref = 'nwc' | 'spark' | 'webln';
+export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
 
 export type SignerKind = 'amber' | 'bunker';
 
@@ -197,6 +199,39 @@ export const storage = {
     },
     set: (v: RailPref) => safeSet(KEYS.railPref, v),
     clear: () => safeRemove(KEYS.railPref),
+  },
+
+  /**
+   * Last-known wallet balance + the rail it came from, per npub. Used by
+   * the header chip + boost-modal balance to paint a number instantly on
+   * page load while the underlying SDK reconnects (Breez Spark's WASM load
+   * + connect + sync can take 5-10 s; NWC's first RPC has its own latency).
+   * The cached value is replaced as soon as a fresh fetch lands.
+   */
+  walletBalance: {
+    get: (npub: string | null | undefined): CachedWalletBalance | null => {
+      const raw = safeGet(identityKey(KEYS.walletBalancePrefix, npub));
+      if (!raw) return null;
+      try {
+        const p = JSON.parse(raw);
+        if (
+          (p?.rail === 'nwc' || p?.rail === 'spark' || p?.rail === 'webln')
+          && typeof p?.balance === 'number' && Number.isFinite(p.balance)
+          && typeof p?.ts === 'number'
+        ) {
+          return p as CachedWalletBalance;
+        }
+        return null;
+      } catch { return null; }
+    },
+    set: (npub: string | null | undefined, rail: RailPref, balance: number) => {
+      safeSet(
+        identityKey(KEYS.walletBalancePrefix, npub),
+        JSON.stringify({ rail, balance, ts: Date.now() }),
+      );
+    },
+    clear: (npub: string | null | undefined) =>
+      safeRemove(identityKey(KEYS.walletBalancePrefix, npub)),
   },
 
   /** User's publish-relay override (manual, rare). null = no override set. */

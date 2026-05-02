@@ -137,6 +137,8 @@ Both come from `components/wallet-balance.tsx`. `useWalletBalance(railOverride?)
 
 All three balance helpers swallow errors and return null so a missing capability (NWC connection without `get_balance` permission, WebLN provider without `getBalance`) just hides the chip rather than throwing.
 
+**Last-known balance cache.** `useWalletBalance` writes the live `{ rail, balance }` to `storage.walletBalance` (per-npub) on every successful fetch, and reads it back on mount as a fallback. Without it, a returning user sees a blank chip for 5-10 s while Breez Spark cold-restores (relay query for the kind:30078 backup → NIP-44 decrypt → WASM load → `connect()` → initial sync). With it, the chip paints the cached number instantly and only swaps to the live value once the SDK is ready. Cleared on explicit Spark/NWC disconnect (`<SparkWallet>` and `<NwcWallet>` call `storage.walletBalance.clear(npub)`). The cached balance is only paired with a matching live rail — we never show a stale Spark balance under an NWC label.
+
 ## Spark rail (Breez SDK)
 
 `lib/v4v/spark.ts` wraps `@breeztech/breez-sdk-spark`. WASM only lands in the bundle on first wallet open (dynamic import inside `sparkInitFromMnemonic`).
@@ -251,6 +253,7 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 | `bmb:bunker` | NIP-46 `{ uri, clientSk }`. Persisting `clientSk` keeps the bunker treating us as the same logical client across reloads (no re-auth). |
 | `bmb:nwc_uri` | NWC URI. |
 | `bmb:rail_pref` | `'nwc' \| 'spark' \| 'webln'` — user's preferred boost rail, set when they click a rail in the boost-modal picker. Falls back to `pickRail()` priority when absent or when the preferred rail isn't available. |
+| `bmb:wallet_balance:*` | `{ rail, balance, ts }` per npub — last-known wallet balance + rail. Read on mount so the header chip paints instantly while the SDK reconnects; written after every successful balance fetch; cleared on explicit Spark/NWC disconnect. |
 | `bmb:relays` | JSON array, manual publish-relay override. |
 | `bmb:sender_name` | Last "From" name in the boost modal. |
 | `bmb:share_nostr` | `'0'` = default to NOT publishing a Nostr note for new boosts. |

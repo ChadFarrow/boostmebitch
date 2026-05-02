@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useApp } from '@/lib/store';
+import { storage } from '@/lib/storage';
 import {
   hasSpark,
   sparkOwner,
@@ -122,6 +123,9 @@ export function SparkWallet({ onReady }: Props) {
 
   async function disconnect() {
     await sparkDisconnect();
+    // Drop the cached header-chip balance so it doesn't keep flashing the
+    // last-known number after the wallet's gone.
+    storage.walletBalance.clear(identity?.npub);
     bump();
   }
 
