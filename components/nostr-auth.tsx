@@ -25,15 +25,13 @@ import {
   type ProfileMetadata,
 } from '@/lib/nostr';
 import { getLatestPendingAmber, submitManualAmberResult, subscribeAmberStage } from '@/lib/nostr/amber';
-import { hasSpark, sparkInitFromMnemonic } from '@/lib/v4v/spark';
-import { hasWebln } from '@/lib/v4v/webln';
+import { hasSpark, sparkInitFromMnemonic, subscribeSpark } from '@/lib/v4v/spark';
+import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { Avatar } from './avatar';
-import { SparkWallet } from './spark-wallet';
-import { NwcWallet } from './nwc-wallet';
-import { WeblnWallet } from './webln-wallet';
+import { WalletModal } from './wallet-modal';
 
 // Module-level promise cache keyed by pubkey, so the same loadProfile call
 // isn't fired twice when React remounts the component (StrictMode in dev,
@@ -788,6 +786,7 @@ function AccountMenu({
   onSignOut: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [walletOpen, setWalletOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Dismiss on click-outside / Escape so the menu doesn't trap focus.
@@ -851,30 +850,7 @@ function AccountMenu({
 
           <BunkerHealthBanner />
 
-          <div className="text-[11px] uppercase tracking-widest text-muted">
-            Connect wallet
-          </div>
-
-          <div className="mt-2 text-[11px] uppercase tracking-widest text-bone/60">NWC</div>
-          <NwcWallet />
-
-          <div className="mt-4 text-[11px] uppercase tracking-widest text-bone/60">Spark</div>
-          <SparkWallet />
-
-          {/* WebLN is browser-extension only (Alby on desktop, Mutiny's
-              in-app browser, Kiwi on Android). Hide the whole sub-card
-              on platforms where window.webln isn't injected — most
-              users on iOS / Android / vanilla desktop without Alby
-              will never see it light up, so the empty "Not detected"
-              hint was just clutter. Re-check on every menu open so an
-              extension install in the same session shows up next time
-              the avatar is clicked. */}
-          {hasWebln() && (
-            <>
-              <div className="mt-4 text-[11px] uppercase tracking-widest text-bone/60">WebLN</div>
-              <WeblnWallet />
-            </>
-          )}
+          <WalletButton onClick={() => setWalletOpen(true)} />
 
           <MutedAccountsSection />
 
@@ -888,7 +864,51 @@ function AccountMenu({
           </div>
         </div>
       )}
+      {walletOpen && <WalletModal onClose={() => setWalletOpen(false)} />}
     </div>
+  );
+}
+
+// Single-row summary that replaces the inline NWC / Spark / WebLN cards in
+// the account menu. Reads each rail's connect state on every render and
+// re-renders on rail-state changes so disconnecting from inside the modal
+// flips the summary back to "Not connected" without remounting the menu.
+function WalletButton({ onClick }: { onClick: () => void }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const bump = () => setTick((t) => t + 1);
+    const unsubSpark = subscribeSpark(bump);
+    const unsubNwc = subscribeNwc(bump);
+    return () => { unsubSpark(); unsubNwc(); };
+  }, []);
+
+  const sparkReady = hasSpark();
+  const nwcReady = hasNwc();
+  // Spark is preferred in the summary because it's the richer surface
+  // (balance + receive). NWC takes priority over Spark in pickRail() for
+  // sending, but here we're describing the user's setup, not routing.
+  const summary = sparkReady
+    ? 'Spark wallet'
+    : nwcReady
+      ? 'NWC connected'
+      : 'Not connected';
+  const connected = sparkReady || nwcReady;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="card mt-2 mb-1 p-3 w-full flex items-center justify-between hover:border-bolt/40 transition text-left"
+    >
+      <span className="flex items-center gap-2">
+        <span className={connected ? 'text-bolt text-base' : 'text-muted text-base'}>⚡</span>
+        <span className="flex flex-col">
+          <span className="text-[11px] uppercase tracking-widest text-muted">Lightning wallet</span>
+          <span className="text-sm">{summary}</span>
+        </span>
+      </span>
+      <span className="text-[11px] text-muted">{connected ? 'Manage' : 'Connect'} →</span>
+    </button>
   );
 }
 
