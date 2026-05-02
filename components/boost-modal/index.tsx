@@ -8,7 +8,6 @@ import { publishBoostNote, resolvePublishRelays } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { BoltIcon } from '../icons';
-import { RailPicker } from './rail-picker';
 import { AmountInput } from './amount-input';
 import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
@@ -196,10 +195,25 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         </div>
 
         <div className="p-5 space-y-4">
-          <RailPicker rail={rail} onRailChange={setRail} />
+          {/* Wallets are consolidated to one connection at a time in the
+              account menu, so the modal just reports which rail pickRail()
+              picked rather than offering a multi-button selector. The
+              "no wallet" branch points the user back to the menu. */}
+          <div className="text-[11px] text-muted">
+            {rail ? (
+              <>
+                Paying with{' '}
+                <span className="text-bone uppercase tracking-widest">
+                  {rail === 'nwc' ? 'NWC' : rail === 'spark' ? 'Spark' : 'WebLN'}
+                </span>
+              </>
+            ) : (
+              'No wallet connected — set one up in the account menu (top right).'
+            )}
+          </div>
           <AmountInput sats={sats} onChange={setSats} />
           <MessageInput value={msg} onChange={setMsg} />
-          <SenderName value={name} onChange={setName} identity={identity} />
+          <SenderName value={name} onChange={setName} />
           <label
             className={`card flex items-start gap-3 p-3 cursor-pointer transition ${
               !identity ? 'opacity-40 cursor-not-allowed' : ''
