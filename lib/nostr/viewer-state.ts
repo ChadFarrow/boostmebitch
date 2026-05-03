@@ -50,7 +50,7 @@ function flattenIds(notes: DiscoveredNote[]): string[] {
   const out: string[] = [];
   function walk(n: DiscoveredNote) {
     out.push(n.id);
-    for (const r of n.replies) walk(r);
+    for (const r of n.replies ?? []) walk(r);
   }
   for (const n of notes) walk(n);
   return out;
