@@ -2,7 +2,7 @@ import { nip19, type Event } from 'nostr-tools';
 import { withPool, withExtraRelays, FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS, PROFILE_RELAYS } from './relays';
 import { storage } from '../storage';
-import type { ProfileMetadata } from './auth';
+import { parseProfileContent, type ProfileMetadata } from './auth';
 
 export interface DiscoveredNote {
   id: string;
@@ -449,11 +449,8 @@ function newestProfilesByAuthor(
   }
   const out = new Map<string, ProfileMetadata>();
   for (const [pubkey, e] of newest) {
-    try {
-      out.set(pubkey, JSON.parse(e.content) as ProfileMetadata);
-    } catch {
-      // ignore unparseable content
-    }
+    const profile = parseProfileContent(e.content);
+    if (profile) out.set(pubkey, profile);
   }
   return out;
 }
