@@ -7,6 +7,7 @@
 
 import type { FavoritePodcast, Podcast, StoredBoost } from './types';
 import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
+import { coerceProfileMetadata } from './nostr/auth';
 
 const KEYS = {
   npub: 'bmb:npub',
@@ -362,7 +363,11 @@ export const storage = {
         if (!cell || typeof cell.t !== 'number') return undefined;
         const ttl = cell.v === null ? PROFILE_MISS_TTL_MS : PROFILE_TTL_MS;
         if (Date.now() - cell.t > ttl) return undefined;
-        return cell.v;
+        // Re-coerce on read so caches written by older versions of the app
+        // (which trusted the kind:0 JSON shape) can't ship a non-string
+        // `name` / `display_name` to the UI and crash a `.trim()` call.
+        if (cell.v === null) return null;
+        return coerceProfileMetadata(cell.v);
       } catch {
         return undefined;
       }
