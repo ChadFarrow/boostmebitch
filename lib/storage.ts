@@ -295,9 +295,19 @@ export const storage = {
       if (!raw) return null;
       try {
         const parsed = JSON.parse(raw);
-        if (Array.isArray(parsed)) return parsed as DiscoveredNote[];
-        if (parsed && Array.isArray(parsed.v)) return parsed.v as DiscoveredNote[];
-        return null;
+        const arr: unknown = Array.isArray(parsed)
+          ? parsed
+          : parsed && Array.isArray(parsed.v)
+            ? parsed.v
+            : null;
+        if (!arr) return null;
+        // Notes cached before `replies` was added on the type would crash any
+        // consumer that iterates `note.replies`. Normalize recursively here.
+        const normalize = (n: DiscoveredNote): DiscoveredNote => ({
+          ...n,
+          replies: Array.isArray(n.replies) ? n.replies.map(normalize) : [],
+        });
+        return (arr as DiscoveredNote[]).map(normalize);
       } catch {
         return null;
       }

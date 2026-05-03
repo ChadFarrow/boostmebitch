@@ -105,7 +105,7 @@ export function NoteCard({
     note.author?.display_name?.trim() ||
     note.author?.name?.trim() ||
     shortNpub(note.npub);
-  const visibleReplies = note.replies.filter((r) => !mutedPubkeys.has(r.pubkey));
+  const visibleReplies = (note.replies ?? []).filter((r) => !mutedPubkeys.has(r.pubkey));
   const sats =
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)
