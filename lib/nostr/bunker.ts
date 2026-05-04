@@ -40,8 +40,15 @@ import { storage } from '../storage';
 
 // Default relays for the GENERATE flow's nostrconnect:// URI. These need
 // to be reachable by both this app and whatever remote signer the user
-// uses. Damus.io / nsec.app are widely supported NIP-46 relays.
+// uses. relay.nsec.app + relay.damus.io are the historical NIP-46
+// defaults; relay.primal.net is added because Primal's iOS/Android
+// remote-signer pairing only fires reliably when its own relay is in
+// the URI's relay list (Primal subscribes to that one eagerly; the
+// others are checked less aggressively, and a connect event sent during
+// iOS-Safari WebSocket suspension on the client side gets lost
+// otherwise).
 const NOSTRCONNECT_RELAYS = [
+  'wss://relay.primal.net',
   'wss://relay.nsec.app',
   'wss://relay.damus.io',
 ];
@@ -256,36 +263,64 @@ export async function connectBunkerFromUri(
   };
 }
 
-/** Drop any in-flight clientSk memo. Called when the user clears the
- *  textarea or successfully completes a different login flow, so a
- *  stale clientSk doesn't outlive the paste session. */
+/** Drop any in-flight clientSk memos (paste flow + nostrconnect generate
+ *  flow). Called when the user closes the OtherSignIn disclosure so a
+ *  stale client identity doesn't outlive the session. */
 export function clearPendingBunkerAttempts(): void {
   pendingClientSks.clear();
+  nostrconnectMemo = null;
 }
+
+// Session-scoped memo for the GENERATE flow. iOS Safari kills the
+// fromURI subscription the moment the user backgrounds Safari to scan
+// the QR with Primal — so the connect event Primal sends back can land
+// while we have no listener, raising "subscription closed before
+// connection was established." On retry we want the SAME clientSk +
+// URI so:
+//   1. The QR the user already scanned in Primal is still valid (no
+//      need to re-scan).
+//   2. Primal sees the second subscription as a re-listen for the same
+//      pairing and (with relays that buffer recent events) can replay
+//      the connect event we missed.
+let nostrconnectMemo:
+  | { uri: string; clientSk: Uint8Array; secret: string }
+  | null = null;
 
 /**
  * GENERATE flow. Creates a nostrconnect:// URI for the user to paste into
  * their remote signer; the returned promise resolves once the signer
  * connects back. No `perms` field — bunker prompts per call.
+ *
+ * On a retry within the same session (memo present), reuses the
+ * previously generated clientSk + URI so the QR the user already
+ * scanned remains valid.
  */
 export function startNostrConnect(
   onAuthUrl?: (url: string) => void,
 ): { uri: string; ready: Promise<BunkerAdapter> } {
-  const clientSk = generateSecretKey();
-  const clientPubkey = getPublicKey(clientSk);
-  // Random secret echoes back from the bunker's "connect" reply so we know
-  // the connection paired correctly (NIP-46 requires this).
-  const secret = bytesToHex(generateSecretKey()).slice(0, 16);
-  const uri = createNostrConnectURI({
-    clientPubkey,
-    relays: NOSTRCONNECT_RELAYS,
-    secret,
-    name: 'Boost Me Bitch',
-  });
+  let clientSk: Uint8Array;
+  let uri: string;
+  if (nostrconnectMemo) {
+    ({ clientSk, uri } = nostrconnectMemo);
+  } else {
+    clientSk = generateSecretKey();
+    const clientPubkey = getPublicKey(clientSk);
+    // Random secret echoes back from the bunker's "connect" reply so we know
+    // the connection paired correctly (NIP-46 requires this).
+    const secret = bytesToHex(generateSecretKey()).slice(0, 16);
+    uri = createNostrConnectURI({
+      clientPubkey,
+      relays: NOSTRCONNECT_RELAYS,
+      secret,
+      name: 'Boost Me Bitch',
+    });
+    nostrconnectMemo = { uri, clientSk, secret };
+  }
+  const memoUri = uri;
   const ready = (async () => {
     const signer = await BunkerSigner.fromURI(
       clientSk,
-      uri,
+      memoUri,
       { onauth: onAuthUrl },
       NOSTRCONNECT_TIMEOUT_MS,
     );
@@ -294,6 +329,7 @@ export function startNostrConnect(
       BUNKER_CALL_TIMEOUT_MS,
       'get_public_key',
     );
+    nostrconnectMemo = null;
     return {
       inner: signer,
       pubkey,

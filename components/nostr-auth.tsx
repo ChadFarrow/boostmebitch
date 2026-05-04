@@ -680,6 +680,19 @@ function OtherSignIn({
                 >
                   {copied ? 'Copied' : 'Copy'}
                 </button>
+                {!genBusy && genErr && (
+                  // The same memoized clientSk + URI is reused inside
+                  // startNostrConnect, so the QR the user already scanned
+                  // in Primal stays valid and the relay's recent-event
+                  // buffer can replay the connect we missed when iOS
+                  // suspended Safari.
+                  <button
+                    onClick={onGenerate}
+                    className="btn-bolt text-[10px] py-1 px-2"
+                  >
+                    Try again
+                  </button>
+                )}
                 <span className="text-[10px] text-muted">
                   {genBusy ? 'Waiting for signer…' : ''}
                 </span>
