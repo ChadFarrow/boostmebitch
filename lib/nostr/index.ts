@@ -21,6 +21,7 @@ export { isLikelyAndroid, isLikelyIOS } from './amber';
 export {
   isBunkerStale,
   subscribeBunkerHealth,
+  clearPendingBunkerAttempts,
 } from './bunker';
 
 export { fetchProfile } from './profile';

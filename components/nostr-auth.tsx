@@ -11,6 +11,7 @@ import {
   restoreBunkerSigner,
   clearAmberSigner,
   clearBunkerSigner,
+  clearPendingBunkerAttempts,
   isLikelyAndroid,
   isLikelyIOS,
   subscribeBunkerHealth,
@@ -576,7 +577,13 @@ function OtherSignIn({
         <span className="flex-1" />
         <button
           type="button"
-          onClick={() => setOpen(false)}
+          onClick={() => {
+            // Drop any half-finished paste attempt so a future session
+            // starts clean — the memo is keyed on URI but the user may
+            // change which signer they're pairing with next time.
+            clearPendingBunkerAttempts();
+            setOpen(false);
+          }}
           className="text-muted hover:text-bone text-base leading-none"
           aria-label="Close"
         >
@@ -588,8 +595,10 @@ function OtherSignIn({
         <>
           <span className="text-[10px] text-muted self-stretch text-right">
             Primal: Settings → Keys → Remote Signer → copy the connection
-            string. Keep Primal in the foreground (or with audio playing on
-            iOS) so it can answer signing requests.
+            string. On iOS, enable background audio in Primal first so it
+            stays alive for signing requests. After approving in Primal,
+            return here and tap <span className="text-bone">Connect</span>{' '}
+            again if it didn&apos;t finish — your approval is remembered.
           </span>
           <textarea
             value={pasteValue}

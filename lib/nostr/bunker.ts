@@ -66,6 +66,21 @@ const BUNKER_CALL_TIMEOUT_MS = 30_000;
 // for the round-trip + manual approval.
 const BUNKER_CONNECT_TIMEOUT_MS = 90_000;
 
+// Module-level memo: the last clientSk we generated for a given pasted
+// URI. The iOS Safari + Primal failure mode is that the user approves
+// in Primal, but iOS suspended the WebSocket while they were in the
+// other app, so the bunker's connect-ack is delivered to a dead
+// subscription and lost. nostr-tools' setupSubscription uses limit:0
+// with no `since`, so reconnecting can't replay the missed event.
+//
+// On retry within the same paste session we want to reuse the SAME
+// clientSk so the bunker recognizes us as the already-approved client
+// and acks immediately on the next connect request, rather than
+// re-prompting the user to approve a brand-new client. Keyed on the
+// sanitized URI so different pastes don't collide; cleared on
+// successful connect or when the user signs out/clears the textarea.
+const pendingClientSks = new Map<string, Uint8Array>();
+
 // Module-level health flag + listener set. Set when any wrapped call
 // times out or throws; cleared by restoreBunkerSigner on a successful
 // reconnect. The account-menu reconnect banner subscribes via
@@ -205,24 +220,33 @@ export async function connectBunkerFromUri(
         'On Primal: Settings → Keys → Remote Signer → copy the connection string.',
     );
   }
-  const clientSk = generateSecretKey();
+  // Reuse a previous attempt's clientSk on retry so an already-approved
+  // bunker doesn't re-prompt. See pendingClientSks comment above.
+  let clientSk = pendingClientSks.get(cleaned);
+  if (!clientSk) {
+    clientSk = generateSecretKey();
+    pendingClientSks.set(cleaned, clientSk);
+  }
   const signer = BunkerSigner.fromBunker(clientSk, pointer, {
     onauth: onAuthUrl,
   });
   // nostr-tools' connect() has no built-in timeout. Without this bound
   // a stalled relay or a never-approved auth_url leaves the UI on
   // "Connecting…" forever. Same for getPublicKey on the just-connected
-  // signer — it's another round-trip over the same transport.
+  // signer — it's another round-trip over the same transport. On
+  // failure, leave the clientSk in pendingClientSks so the user's next
+  // tap of Connect reuses the already-approved client identity.
   await withTimeout(
     signer.connect(),
     BUNKER_CONNECT_TIMEOUT_MS,
-    'connect (did you approve in your signer? on iOS, leave this tab in the foreground)',
+    'connect (approve in your signer, then tap Connect again — iOS may have suspended the relay link)',
   );
   const pubkey = await withTimeout(
     signer.getPublicKey(),
     BUNKER_CALL_TIMEOUT_MS,
     'get_public_key',
   );
+  pendingClientSks.delete(cleaned);
   return {
     inner: signer,
     pubkey,
@@ -230,6 +254,13 @@ export async function connectBunkerFromUri(
     uri: cleaned,
     clientSkHex: bytesToHex(clientSk),
   };
+}
+
+/** Drop any in-flight clientSk memo. Called when the user clears the
+ *  textarea or successfully completes a different login flow, so a
+ *  stale clientSk doesn't outlive the paste session. */
+export function clearPendingBunkerAttempts(): void {
+  pendingClientSks.clear();
 }
 
 /**
