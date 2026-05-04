@@ -57,6 +57,15 @@ const NOSTRCONNECT_TIMEOUT_MS = 120_000;
 // frozen UI.
 const BUNKER_CALL_TIMEOUT_MS = 30_000;
 
+// First-time `connect()` is the slow path — Primal/Clave/nsec.app may
+// surface an auth_url that the user has to tap, switch apps, approve,
+// then come back. nostr-tools' connect() has no timeout, so without
+// this bound the UI is stuck on "Connecting…" forever if the user
+// never approves, the relay drops, or iOS suspended Safari's WebSocket
+// while the user was in the signer app. 90s gives a comfortable margin
+// for the round-trip + manual approval.
+const BUNKER_CONNECT_TIMEOUT_MS = 90_000;
+
 // Module-level health flag + listener set. Set when any wrapped call
 // times out or throws; cleared by restoreBunkerSigner on a successful
 // reconnect. The account-menu reconnect banner subscribes via
@@ -152,34 +161,73 @@ function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> 
 }
 
 /**
+ * Normalize a pasted bunker URI so we tolerate the cruft mobile clipboards
+ * (and copy buttons in signers like Primal) tend to introduce:
+ *   - leading/trailing whitespace, newlines from copy-paste UI
+ *   - zero-width / BOM / NBSP characters that some "share sheet" flows
+ *     prepend on iOS
+ *   - uppercase hex in the bunker pubkey (NIP-46's reference regex is
+ *     strict-lowercase; signers don't always agree)
+ * Anything else is left intact so URL-encoded relay/secret values pass
+ * through untouched.
+ */
+function sanitizeBunkerUri(input: string): string {
+  // Strip whitespace + common invisible code points anywhere in the string.
+  // \s covers ASCII + unicode whitespace; the explicit characters cover
+  // ZWSP (200B), ZWNJ (200C), ZWJ (200D), BOM (FEFF), NBSP (00A0).
+  let cleaned = input.replace(/[\s​-‍﻿ ]/g, '');
+  const m = cleaned.match(/^bunker:\/\/([0-9a-fA-F]{64})(.*)$/);
+  if (m) {
+    cleaned = `bunker://${m[1].toLowerCase()}${m[2]}`;
+  }
+  return cleaned;
+}
+
+/**
  * PASTE flow. Parses a bunker:// URI (or NIP-05 like name@example.com),
  * generates a fresh client secret, connects, and returns the adapter.
  *
  * `onAuthUrl` fires if the bunker requires the user to open an approval
- * URL during connect (e.g. nsec.app's first-time flow).
+ * URL during connect (Primal, nsec.app, Clave first-time flows).
  */
 export async function connectBunkerFromUri(
   uri: string,
   onAuthUrl?: (url: string) => void,
 ): Promise<BunkerAdapter> {
-  const trimmed = uri.trim();
-  const pointer = await parseBunkerInput(trimmed);
+  const cleaned = sanitizeBunkerUri(uri);
+  if (!cleaned) {
+    throw new Error('Empty bunker URI. Paste a `bunker://…` URI from your remote signer.');
+  }
+  const pointer = await parseBunkerInput(cleaned);
   if (!pointer) {
     throw new Error(
-      'Could not parse bunker URI. Expected `bunker://…` or a NIP-05 like `name@domain`.',
+      'Could not parse bunker URI. Expected `bunker://<64-hex-pubkey>?relay=…` or a NIP-05 like `name@domain`. ' +
+        'On Primal: Settings → Keys → Remote Signer → copy the connection string.',
     );
   }
   const clientSk = generateSecretKey();
   const signer = BunkerSigner.fromBunker(clientSk, pointer, {
     onauth: onAuthUrl,
   });
-  await signer.connect();
-  const pubkey = await signer.getPublicKey();
+  // nostr-tools' connect() has no built-in timeout. Without this bound
+  // a stalled relay or a never-approved auth_url leaves the UI on
+  // "Connecting…" forever. Same for getPublicKey on the just-connected
+  // signer — it's another round-trip over the same transport.
+  await withTimeout(
+    signer.connect(),
+    BUNKER_CONNECT_TIMEOUT_MS,
+    'connect (did you approve in your signer? on iOS, leave this tab in the foreground)',
+  );
+  const pubkey = await withTimeout(
+    signer.getPublicKey(),
+    BUNKER_CALL_TIMEOUT_MS,
+    'get_public_key',
+  );
   return {
     inner: signer,
     pubkey,
     nostrApi: adaptToWindowNostr(signer),
-    uri: trimmed,
+    uri: cleaned,
     clientSkHex: bytesToHex(clientSk),
   };
 }
@@ -210,7 +258,11 @@ export function startNostrConnect(
       { onauth: onAuthUrl },
       NOSTRCONNECT_TIMEOUT_MS,
     );
-    const pubkey = await signer.getPublicKey();
+    const pubkey = await withTimeout(
+      signer.getPublicKey(),
+      BUNKER_CALL_TIMEOUT_MS,
+      'get_public_key',
+    );
     return {
       inner: signer,
       pubkey,
@@ -251,8 +303,12 @@ export async function restoreBunkerFromStorage(): Promise<BunkerAdapter | null> 
   }
   const clientSk = hexToBytes(cached.clientSk);
   const signer = BunkerSigner.fromBunker(clientSk, pointer);
-  await signer.connect();
-  const pubkey = await signer.getPublicKey();
+  await withTimeout(signer.connect(), BUNKER_CONNECT_TIMEOUT_MS, 'reconnect');
+  const pubkey = await withTimeout(
+    signer.getPublicKey(),
+    BUNKER_CALL_TIMEOUT_MS,
+    'get_public_key',
+  );
   return {
     inner: signer,
     pubkey,
