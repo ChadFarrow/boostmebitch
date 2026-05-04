@@ -529,7 +529,10 @@ function OtherSignIn({
     setGenBusy(true);
     setGenErr(null);
     setGenAuthUrl(null);
-    setGenUri(null);
+    // Don't clear genUri — startNostrConnect's session memo returns the
+    // same URI on retry, so the QR the user already scanned in Primal
+    // remains valid. Clearing it would also flash the "Generate connect
+    // URI" button in between attempts.
     setCopied(false);
     try {
       const { uri, ready } = loginWithNostrConnect((url) => setGenAuthUrl(url));
@@ -544,6 +547,31 @@ function OtherSignIn({
       setGenBusy(false);
     }
   }
+
+  // iOS Safari suspends WebSocket subscriptions the moment the user
+  // backgrounds the tab to scan the URI in Primal. nostr-tools' fromURI
+  // raises "subscription closed before connection was established" as
+  // soon as that suspension closes the relays. When Safari regains
+  // visibility, auto-retry: the memoized URI + clientSk inside
+  // startNostrConnect mean Primal sees the same pairing, so an ACK
+  // queued on relay.primal.net (Primal's backend publishes it there)
+  // can be delivered into the new subscription.
+  useEffect(() => {
+    if (!open) return;
+    if (tab !== 'generate') return;
+    if (!genErr) return;
+    if (genBusy) return;
+    if (typeof document === 'undefined') return;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      onGenerate();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+    // onGenerate is recreated on every render but only depends on stable
+    // setters; capturing the closure at effect-mount is fine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, tab, genErr, genBusy]);
 
   async function copyGenUri() {
     if (!genUri) return;
