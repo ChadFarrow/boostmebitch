@@ -11,6 +11,7 @@ import {
   restoreBunkerSigner,
   clearAmberSigner,
   clearBunkerSigner,
+  clearPendingBunkerAttempts,
   isLikelyAndroid,
   isLikelyIOS,
   subscribeBunkerHealth,
@@ -576,7 +577,13 @@ function OtherSignIn({
         <span className="flex-1" />
         <button
           type="button"
-          onClick={() => setOpen(false)}
+          onClick={() => {
+            // Drop any half-finished paste attempt so a future session
+            // starts clean — the memo is keyed on URI but the user may
+            // change which signer they're pairing with next time.
+            clearPendingBunkerAttempts();
+            setOpen(false);
+          }}
           className="text-muted hover:text-bone text-base leading-none"
           aria-label="Close"
         >
@@ -586,6 +593,13 @@ function OtherSignIn({
 
       {tab === 'have' && (
         <>
+          <span className="text-[10px] text-muted self-stretch text-right">
+            Primal: Settings → Keys → Remote Signer → copy the connection
+            string. On iOS, enable background audio in Primal first so it
+            stays alive for signing requests. After approving in Primal,
+            return here and tap <span className="text-bone">Connect</span>{' '}
+            again if it didn&apos;t finish — your approval is remembered.
+          </span>
           <textarea
             value={pasteValue}
             onChange={(e) => setPasteValue(e.target.value)}
@@ -603,14 +617,24 @@ function OtherSignIn({
             </button>
           </div>
           {pasteAuthUrl && (
-            <a
-              href={pasteAuthUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[11px] text-nostr underline break-all self-stretch text-right"
-            >
-              ◆ Open auth URL to approve
-            </a>
+            <div className="self-stretch flex flex-col items-end gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
+              <span className="text-[10px] text-bone text-right">
+                Your signer wants you to approve this connection.
+              </span>
+              <a
+                href={pasteAuthUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-bolt text-[11px] py-1 px-3 no-underline"
+              >
+                ◆ Approve in signer
+              </a>
+              <span className="text-[10px] text-muted text-right">
+                Approve in your signer (Primal, Clave, …) then come back here.
+                Keep this tab open while you approve — closing it cancels the
+                connection.
+              </span>
+            </div>
           )}
           {pasteErr && (
             <span className="text-[10px] text-nostr/80 text-right">{pasteErr}</span>
@@ -663,14 +687,22 @@ function OtherSignIn({
             </>
           )}
           {genAuthUrl && (
-            <a
-              href={genAuthUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-[11px] text-nostr underline break-all self-stretch text-right"
-            >
-              ◆ Open auth URL to approve
-            </a>
+            <div className="self-stretch flex flex-col items-end gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
+              <span className="text-[10px] text-bone text-right">
+                Your signer wants you to approve this connection.
+              </span>
+              <a
+                href={genAuthUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="btn-bolt text-[11px] py-1 px-3 no-underline"
+              >
+                ◆ Approve in signer
+              </a>
+              <span className="text-[10px] text-muted text-right">
+                Keep this tab open while you approve.
+              </span>
+            </div>
           )}
           {genErr && (
             <span className="text-[10px] text-nostr/80 text-right">{genErr}</span>
