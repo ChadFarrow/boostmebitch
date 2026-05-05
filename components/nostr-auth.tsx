@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, startTransition } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { nip19 } from 'nostr-tools';
 import {
@@ -341,7 +341,7 @@ export function NostrAuth() {
   // installed whichever polyfill it needs and persisted bmb:bunker /
   // amber state; we just propagate identity to the store and hydrate.
   function completeSignIn(id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker') {
-    setIdentity(id);
+    startTransition(() => setIdentity(id));
     storage.npub.set(id.npub);
     if (kind === 'amber') storage.signer.set('amber');
     else if (kind === 'bunker') storage.signer.set('bunker');
@@ -494,37 +494,6 @@ function OtherSignIn({
   const [genAuthUrl, setGenAuthUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  if (!open) {
-    if (!showTrigger) return null;
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        disabled={disabled}
-        className="text-[11px] text-bone/70 hover:text-nostr mt-1 disabled:opacity-30 flex items-center gap-1"
-      >
-        <span className="text-nostr">◆</span>
-        Use a remote signer
-      </button>
-    );
-  }
-
-  async function onPasteSubmit() {
-    setPasteBusy(true);
-    setPasteErr(null);
-    setPasteAuthUrl(null);
-    try {
-      const id = await loginWithBunker(pasteValue, (url) => setPasteAuthUrl(url));
-      onSuccess(id);
-      setOpen(false);
-      setPasteValue('');
-    } catch (e) {
-      setPasteErr(getErrorMessage(e, 'bunker connect failed'));
-    } finally {
-      setPasteBusy(false);
-    }
-  }
-
   async function onGenerate() {
     setGenBusy(true);
     setGenErr(null);
@@ -556,6 +525,8 @@ function OtherSignIn({
   // startNostrConnect mean Primal sees the same pairing, so an ACK
   // queued on relay.primal.net (Primal's backend publishes it there)
   // can be delivered into the new subscription.
+  // Must be declared before the early return below to satisfy React's
+  // rules of hooks (hook count must be the same on every render).
   useEffect(() => {
     if (!open) return;
     if (tab !== 'generate') return;
@@ -572,6 +543,37 @@ function OtherSignIn({
     // setters; capturing the closure at effect-mount is fine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, tab, genErr, genBusy]);
+
+  if (!open) {
+    if (!showTrigger) return null;
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={disabled}
+        className="text-[11px] text-bone/70 hover:text-nostr mt-1 disabled:opacity-30 flex items-center gap-1"
+      >
+        <span className="text-nostr">◆</span>
+        Use a remote signer
+      </button>
+    );
+  }
+
+  async function onPasteSubmit() {
+    setPasteBusy(true);
+    setPasteErr(null);
+    setPasteAuthUrl(null);
+    try {
+      const id = await loginWithBunker(pasteValue, (url) => setPasteAuthUrl(url));
+      onSuccess(id);
+      setOpen(false);
+      setPasteValue('');
+    } catch (e) {
+      setPasteErr(getErrorMessage(e, 'bunker connect failed'));
+    } finally {
+      setPasteBusy(false);
+    }
+  }
 
   async function copyGenUri() {
     if (!genUri) return;
