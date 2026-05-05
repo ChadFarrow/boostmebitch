@@ -99,7 +99,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const splits = useMemo(() => splitSats(sats, value.recipients), [sats, value.recipients]);
 
   async function go() {
-    if (!rail) return;
+    const canPublishNostr = shareNostr && !!identity;
+    if (!rail && !canPublishNostr) return;
     if (name) storage.senderName.set(name);
 
     const boostagram: Boostagram = {
@@ -127,29 +128,36 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     setRunning(true);
     setResults([]);
     let collected: BoostResult[] = [];
-    try {
-      collected = await sendBoost({
-        value,
-        totalSats: sats,
-        boostagram,
-        rail,
-        onProgress: (res) => setResults((prev) => [...prev, res]),
-      });
-      setResults(collected);
-      setPaymentDone(true);
-      if (collected.some((r) => r.ok)) fireConfetti();
-    } catch (e) {
-      alert(getErrorMessage(e, 'boost failed'));
-      setRunning(false);
-      return;
-    } finally {
-      setRunning(false);
+    if (rail) {
+      try {
+        collected = await sendBoost({
+          value,
+          totalSats: sats,
+          boostagram,
+          rail,
+          onProgress: (res) => setResults((prev) => [...prev, res]),
+        });
+        setResults(collected);
+        if (collected.some((r) => r.ok)) fireConfetti();
+      } catch (e) {
+        alert(getErrorMessage(e, 'boost failed'));
+        setRunning(false);
+        return;
+      }
+    } else {
+      // Nostr-only boost: no wallet connected, but the user still wants to
+      // share the boost note. Skip Lightning entirely; treat as zero legs.
+      fireConfetti();
     }
+    setPaymentDone(true);
+    setRunning(false);
+
+    const anyPaid = collected.some((r) => r.ok);
 
     // Persist the boost locally so the user's "view" surface (the global feed)
     // can render it. Logged regardless of rail; the Nostr publish step below
     // patches in `noteId` for dedupe against the relay-discovered version.
-    if (collected.some((r) => r.ok)) {
+    if (anyPaid) {
       const stored: StoredBoost = {
         uuid: boostagram.uuid!,
         ts: Date.now(),
@@ -175,8 +183,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       bumpBoosts();
     }
 
-    // Publish to nostr if signed in & opted in & at least one payment landed
-    if (shareNostr && identity && collected.some((r) => r.ok)) {
+    // Publish to Nostr if signed in & opted in. When a wallet was used, gate
+    // on at least one successful leg — failed-only boosts shouldn't pollute
+    // the network with a "Boosted N sats" note that didn't actually pay. When
+    // no wallet is connected, this is a deliberate Nostr-only boost.
+    if (shareNostr && identity && (rail ? anyPaid : true)) {
       setPubState({ kind: 'publishing' });
       try {
         const note = await publishBoostNote({
@@ -246,7 +257,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           )}
           {!rail && (
             <div className="text-[11px] text-nostr/80">
-              No wallet connected — set one up in the account menu (top right).
+              {shareNostr && identity
+                ? 'No wallet connected — this will be a Nostr-only boost (no Lightning payment).'
+                : 'No wallet connected — set one up in the account menu (top right).'}
             </div>
           )}
           <AmountInput sats={sats} onChange={setSats} />
@@ -284,11 +297,19 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         <div className="flex justify-between items-center gap-3 p-5 border-t border-bone/15 sticky bottom-0 bg-ink">
           <button onClick={onClose} className="btn-ghost">{paymentDone ? 'Close' : 'Cancel'}</button>
           <div className="flex items-center gap-3">
-            {!paymentDone && <BoostModalBalance amountSats={sats} rail={rail} />}
+            {!paymentDone && rail && <BoostModalBalance amountSats={sats} rail={rail} />}
             {!paymentDone && (
-              <button onClick={go} disabled={!rail || running} className="btn-bolt disabled:opacity-40">
+              <button
+                onClick={go}
+                disabled={running || (!rail && !(shareNostr && identity))}
+                className="btn-bolt disabled:opacity-40"
+              >
                 <BoltIcon />
-                {running ? 'sending…' : `Send ${sats} sat`}
+                {running
+                  ? 'sending…'
+                  : rail
+                  ? `Send ${sats} sat`
+                  : 'Post boost note'}
               </button>
             )}
           </div>
