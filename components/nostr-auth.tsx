@@ -530,8 +530,12 @@ function OtherSignIn({
   useEffect(() => {
     if (!open) return;
     if (tab !== 'generate') return;
-    if (!genErr) return;
-    if (genBusy) return;
+    // Attach whenever the flow is in-flight (genBusy) OR has already failed
+    // (genErr). The in-flight case covers iOS Safari suspending the WebSocket
+    // while the user switches to Primal to paste the URI — the relay buffers
+    // Primal's connect ACK, and a fresh fromURI subscription picks it up on
+    // return. The error case covers the existing retry path.
+    if (!genBusy && !genErr) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return;
