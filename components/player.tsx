@@ -34,6 +34,7 @@ export function Player() {
   if (!current) return null;
   const { episode, podcast } = current;
   const hasValue = !!episode.value && episode.value.recipients?.length > 0;
+  const isLive = episode.liveStatus === 'live';
 
   return (
     <>
@@ -52,22 +53,29 @@ export function Player() {
           <div className="min-w-0 flex-1">
             <div className="text-sm font-display leading-tight truncate">{episode.title}</div>
             <div className="text-[11px] text-muted truncate">{podcast.title}</div>
-            <div className="flex items-center gap-2 mt-1">
-              <span className="text-[10px] text-muted tabular-nums">{fmt(positionSec)}</span>
-              <input
-                type="range"
-                className="seek flex-1"
-                min={0}
-                max={duration || 0}
-                value={positionSec}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
-                  if (audio.current) audio.current.currentTime = v;
-                  setPosition(v);
-                }}
-              />
-              <span className="text-[10px] text-muted tabular-nums">{fmt(duration)}</span>
-            </div>
+            {isLive ? (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+                <span className="text-[10px] text-muted">streaming now</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 mt-1">
+                <span className="text-[10px] text-muted tabular-nums">{fmt(positionSec)}</span>
+                <input
+                  type="range"
+                  className="seek flex-1"
+                  min={0}
+                  max={duration || 0}
+                  value={positionSec}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    if (audio.current) audio.current.currentTime = v;
+                    setPosition(v);
+                  }}
+                />
+                <span className="text-[10px] text-muted tabular-nums">{fmt(duration)}</span>
+              </div>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setPlaying(!isPlaying)} className="btn">
@@ -89,7 +97,7 @@ export function Player() {
         <BoostModal
           episode={episode}
           podcast={podcast}
-          positionSec={positionSec}
+          positionSec={isLive ? 0 : positionSec}
           onClose={() => setBoostOpen(false)}
         />
       )}

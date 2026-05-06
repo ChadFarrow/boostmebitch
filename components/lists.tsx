@@ -257,6 +257,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   });
   const [loading, setLoading] = useState(false);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
+  const [liveBoostFor, setLiveBoostFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
@@ -349,10 +350,13 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                 </li>
               )}
             <li
-              className={`flex gap-3 py-3 cursor-pointer group transition ${
-                playing ? 'bg-bolt/10' : 'hover:bg-bone/5'
-              }`}
-              onClick={() => data.podcast && play(e, data.podcast)}
+              className={`flex gap-3 py-3 group transition ${
+                playing ? 'bg-bolt/10' : e.liveStatus !== 'pending' ? 'hover:bg-bone/5' : ''
+              } ${e.liveStatus !== 'pending' ? 'cursor-pointer' : ''}`}
+              onClick={() => {
+                if (e.liveStatus === 'pending') return;
+                if (data.podcast) play(e, data.podcast);
+              }}
             >
               <div className="relative w-12 h-12 flex-shrink-0">
                 <PodcastCover
@@ -362,15 +366,17 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   seed={e.guid ?? String(e.id)}
                   className="w-full h-full border border-bone/40 group-hover:border-bolt text-base"
                 />
-                <div
-                  className={`absolute inset-0 grid place-items-center bg-ink/55 transition pointer-events-none ${
-                    playing
-                      ? 'opacity-100 text-bolt'
-                      : 'opacity-0 group-hover:opacity-100 text-bone group-hover:text-bolt'
-                  }`}
-                >
-                  {playing ? '❚❚' : '▶'}
-                </div>
+                {e.liveStatus !== 'pending' && (
+                  <div
+                    className={`absolute inset-0 grid place-items-center bg-ink/55 transition pointer-events-none ${
+                      playing
+                        ? 'opacity-100 text-bolt'
+                        : 'opacity-0 group-hover:opacity-100 text-bone group-hover:text-bolt'
+                    }`}
+                  >
+                    {playing ? '❚❚' : '▶'}
+                  </div>
+                )}
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
@@ -390,6 +396,19 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
                 </div>
               </div>
+              {e.liveStatus && (e.value ?? data.podcast?.value)?.recipients?.length ? (
+                <button
+                  type="button"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    setLiveBoostFor(e);
+                  }}
+                  className="btn-bolt self-center flex-shrink-0"
+                  title="Boost this live item"
+                >
+                  <BoltIcon />
+                </button>
+              ) : null}
             </li>
             </Fragment>
           );
@@ -400,6 +419,15 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
         <PodcastNostrFeed
           podcastGuid={data.podcast.podcastGuid}
           podcastTitle={data.podcast.title}
+        />
+      )}
+
+      {liveBoostFor && data.podcast && (
+        <BoostModal
+          episode={liveBoostFor}
+          podcast={data.podcast}
+          positionSec={0}
+          onClose={() => setLiveBoostFor(null)}
         />
       )}
 
