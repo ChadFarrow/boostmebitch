@@ -25,6 +25,7 @@ export function AmountInput({
           <button key={n} onClick={() => onChange(n)} className="btn-ghost !px-3">{n}</button>
         ))}
       </div>
+      <p className="text-[11px] text-muted mt-1.5">minimum {MIN_BOOST_SATS} sats</p>
     </div>
   );
 }
