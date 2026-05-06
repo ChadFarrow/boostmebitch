@@ -13,12 +13,9 @@ import type { DiscoveredNote } from './discover';
  *     "searching nostr relays…" state for the full network round-trip.
  *   - Re-seed + re-fetch whenever any of `deps` change (the per-podcast feed
  *     passes `[podcastGuid]`; the global feed passes `[]`).
- *   - Mount auto-refresh is incremental: asks for events since the newest
- *     cached one (`since: maxCreatedAt + 1`) and prepends new ones. Faster
- *     and uses less relay bandwidth than re-downloading the whole feed.
- *   - `refresh()` (user-triggered) always does a full fetch with no `since`
- *     filter so stale cached state never prevents seeing recent relay activity.
- *   - Cache the merged result on every successful load.
+ *   - Both mount and user-triggered `refresh()` do a full fetch (no `since`
+ *     filter) so stale cached state never prevents seeing recent relay activity.
+ *   - Cache the result on every successful load.
  */
 export function useNostrFeed({
   cacheKey,
@@ -37,39 +34,21 @@ export function useNostrFeed({
   const [notes, setNotes] = useState<DiscoveredNote[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  // Mirror of `notes` in a ref so fetchAndMerge() can read the current list
-  // without depending on the closure that captured the empty initial state.
   const notesRef = useRef<DiscoveredNote[] | null>(null);
   notesRef.current = notes;
 
-  async function fetchAndMerge(since?: number) {
+  async function refresh() {
     setLoading(true);
     setErr(null);
     try {
-      const current = notesRef.current;
-      const result = await fetcher(since !== undefined ? { since } : undefined);
-
-      let merged: DiscoveredNote[];
-      if (since !== undefined && current) {
-        const seen = new Set(current.map((n) => n.id));
-        const novel = result.filter((n) => !seen.has(n.id));
-        merged = [...novel, ...current];
-      } else {
-        merged = result;
-      }
-      setNotes(merged);
-      storage.feedNotes.set(cacheKey, merged);
+      const result = await fetcher();
+      setNotes(result);
+      storage.feedNotes.set(cacheKey, result);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'failed to load nostr feed');
     } finally {
       setLoading(false);
     }
-  }
-
-  // User-triggered refresh always does a full fetch (no `since`) so the stale
-  // cached newest-event timestamp never blocks seeing recent relay activity.
-  async function refresh() {
-    await fetchAndMerge();
   }
 
   useEffect(() => {
@@ -78,13 +57,7 @@ export function useNostrFeed({
       setNotes(cached);
       notesRef.current = cached;
     }
-    // Mount: incremental — only pull events newer than what's already cached.
-    const current = notesRef.current;
-    const newest = current && current.length > 0
-      ? current.reduce((max, n) => (n.createdAt > max ? n.createdAt : max), 0)
-      : 0;
-    const since = newest > 0 ? newest + 1 : undefined;
-    fetchAndMerge(since);
+    refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
