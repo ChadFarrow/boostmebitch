@@ -45,10 +45,16 @@ export async function GET(req: Request) {
       value: e.value ?? podcast.value,
     }));
     // Live first (live > pending), then regular by datePublished desc.
+    // Within `pending`, sort ascending — the next-to-air show should be at
+    // the top of the list. Within `live`, sort descending (most recent
+    // broadcast first) on the off chance more than one stream is live.
     merged.sort((a, b) => {
       const ra = a.liveStatus ? LIVE_RANK[a.liveStatus] ?? 3 : 3;
       const rb = b.liveStatus ? LIVE_RANK[b.liveStatus] ?? 3 : 3;
       if (ra !== rb) return ra - rb;
+      if (a.liveStatus === 'pending' && b.liveStatus === 'pending') {
+        return (a.liveStartTime ?? 0) - (b.liveStartTime ?? 0);
+      }
       if (a.liveStatus && b.liveStatus) {
         return (b.liveStartTime ?? 0) - (a.liveStartTime ?? 0);
       }
