@@ -49,6 +49,13 @@ export interface Episode {
   feedImage?: string;
   podcastGuid?: string;
   value?: ValueBlock | null;
+  /** Podcast 2.0 <podcast:liveItem> status. Set on items returned by PI's
+   *  /episodes/live endpoint. Absent on regular episodes. */
+  liveStatus?: 'pending' | 'live' | 'ended';
+  /** Scheduled start, unix seconds. */
+  liveStartTime?: number;
+  /** Scheduled end, unix seconds. */
+  liveEndTime?: number;
 }
 
 export interface Boostagram {

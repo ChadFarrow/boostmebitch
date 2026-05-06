@@ -17,6 +17,27 @@ function fmtDuration(t: number) {
   return `${m}:${s}`;
 }
 
+function fmtLiveTime(unixSec: number) {
+  const d = new Date(unixSec * 1000);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return time;
+  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
+}
+
+function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
+  if (status === 'live') {
+    return (
+      <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+    );
+  }
+  if (status === 'pending') {
+    return <span className="stamp text-bolt border-bolt/60">PENDING</span>;
+  }
+  return <span className="stamp text-muted border-bone/20">ENDED</span>;
+}
+
 function FavHeart({ podcast }: { podcast: Podcast }) {
   const guid = podcast.podcastGuid;
   const isFav = useApp((s) => s.isFavorite(guid));
@@ -339,9 +360,19 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                 </div>
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-display leading-tight truncate">{e.title}</div>
+                <div className="flex items-center gap-2">
+                  {e.liveStatus && <LiveBadge status={e.liveStatus} />}
+                  <div className="text-sm font-display leading-tight truncate">{e.title}</div>
+                </div>
                 <div className="text-[11px] text-muted flex gap-2 mt-0.5">
-                  {e.datePublished && <span>{new Date(e.datePublished * 1000).toLocaleDateString()}</span>}
+                  {e.liveStatus && e.liveStartTime ? (
+                    <span>
+                      {e.liveStatus === 'pending' ? 'starts ' : e.liveStatus === 'live' ? 'started ' : 'ended '}
+                      {fmtLiveTime(e.liveEndTime && e.liveStatus === 'ended' ? e.liveEndTime : e.liveStartTime)}
+                    </span>
+                  ) : (
+                    e.datePublished && <span>{new Date(e.datePublished * 1000).toLocaleDateString()}</span>
+                  )}
                   {e.duration && <span>· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
                 </div>
