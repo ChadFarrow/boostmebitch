@@ -173,6 +173,7 @@ export async function getLiveItemsFromRss(
     podcastGuid,
     liveStatus: r.status,
     liveStartTime: r.startTime,
+    value: r.value,
   }));
 }
 
@@ -185,6 +186,7 @@ interface RawLiveItem {
   enclosureUrl?: string;
   enclosureType?: string;
   image?: string;
+  value?: ValueBlock | null;
 }
 
 function parseRssLiveItems(xml: string): RawLiveItem[] {
@@ -210,6 +212,7 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
       enclosureUrl: enc ? readAttr(enc[1], 'url') : undefined,
       enclosureType: enc ? readAttr(enc[1], 'type') : undefined,
       image: itunesImg ? readAttr(itunesImg[1], 'href') : undefined,
+      value: parseValueBlock(inner),
     });
   }
   return out;
@@ -219,6 +222,37 @@ function readAttr(attrs: string, name: string): string | undefined {
   const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
   const m = attrs.match(re);
   return m ? (m[1] ?? m[2]) : undefined;
+}
+
+function parseValueBlock(xml: string): ValueBlock | null {
+  const vMatch = xml.match(/<podcast:value\b([^>]*)>([\s\S]*?)<\/podcast:value>/i);
+  if (!vMatch) return null;
+  const vAttrs = vMatch[1];
+  const vInner = vMatch[2];
+  const recipients: ValueRecipient[] = [];
+  const recipRe = /<podcast:valueRecipient\b([^>]*?)\/?>/gi;
+  let rm: RegExpExecArray | null;
+  while ((rm = recipRe.exec(vInner))) {
+    const ra = rm[1];
+    const address = readAttr(ra, 'address');
+    if (!address) continue;
+    recipients.push({
+      name: readAttr(ra, 'name'),
+      type: readAttr(ra, 'type') ?? 'node',
+      address,
+      customKey: readAttr(ra, 'customKey'),
+      customValue: readAttr(ra, 'customValue'),
+      split: Number(readAttr(ra, 'split') ?? 0) || 0,
+      fee: readAttr(ra, 'fee')?.toLowerCase() === 'true',
+    });
+  }
+  if (!recipients.length) return null;
+  return {
+    type: readAttr(vAttrs, 'type') ?? 'lightning',
+    method: readAttr(vAttrs, 'method') ?? 'keysend',
+    suggested: readAttr(vAttrs, 'suggested'),
+    recipients,
+  };
 }
 
 function extractText(xml: string, tag: string): string | undefined {
