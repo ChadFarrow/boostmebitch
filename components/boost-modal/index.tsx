@@ -99,8 +99,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const splits = useMemo(() => splitSats(sats, value.recipients), [sats, value.recipients]);
 
   async function go() {
-    const canPublishNostr = shareNostr && !!identity;
-    if (!rail && !canPublishNostr) return;
+    if (!rail) return;
     if (name) storage.senderName.set(name);
 
     const boostagram: Boostagram = {
@@ -128,26 +127,20 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     setRunning(true);
     setResults([]);
     let collected: BoostResult[] = [];
-    if (rail) {
-      try {
-        collected = await sendBoost({
-          value,
-          totalSats: sats,
-          boostagram,
-          rail,
-          onProgress: (res) => setResults((prev) => [...prev, res]),
-        });
-        setResults(collected);
-        if (collected.some((r) => r.ok)) fireConfetti();
-      } catch (e) {
-        alert(getErrorMessage(e, 'boost failed'));
-        setRunning(false);
-        return;
-      }
-    } else {
-      // Nostr-only boost: no wallet connected, but the user still wants to
-      // share the boost note. Skip Lightning entirely; treat as zero legs.
-      fireConfetti();
+    try {
+      collected = await sendBoost({
+        value,
+        totalSats: sats,
+        boostagram,
+        rail,
+        onProgress: (res) => setResults((prev) => [...prev, res]),
+      });
+      setResults(collected);
+      if (collected.some((r) => r.ok)) fireConfetti();
+    } catch (e) {
+      alert(getErrorMessage(e, 'boost failed'));
+      setRunning(false);
+      return;
     }
     setPaymentDone(true);
     setRunning(false);
@@ -183,11 +176,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       bumpBoosts();
     }
 
-    // Publish to Nostr if signed in & opted in. When a wallet was used, gate
-    // on at least one successful leg — failed-only boosts shouldn't pollute
-    // the network with a "Boosted N sats" note that didn't actually pay. When
-    // no wallet is connected, this is a deliberate Nostr-only boost.
-    if (shareNostr && identity && (rail ? anyPaid : true)) {
+    // Publish to Nostr if signed in & opted in. Gate on at least one successful
+    // leg — failed-only boosts shouldn't pollute the network.
+    if (shareNostr && identity && anyPaid) {
       setPubState({ kind: 'publishing' });
       try {
         const note = await publishBoostNote({
@@ -257,9 +248,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           )}
           {!rail && (
             <div className="text-[11px] text-nostr/80">
-              {shareNostr && identity
-                ? 'No wallet connected — this will be a Nostr-only boost (no Lightning payment).'
-                : 'No wallet connected — set one up in the account menu (top right).'}
+              No wallet connected — set one up in the account menu (top right).
             </div>
           )}
           <AmountInput sats={sats} onChange={setSats} />
@@ -301,15 +290,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             {!paymentDone && (
               <button
                 onClick={go}
-                disabled={running || (!rail && !(shareNostr && identity))}
+                disabled={running || !rail}
                 className="btn-bolt disabled:opacity-40"
               >
                 <BoltIcon />
-                {running
-                  ? 'sending…'
-                  : rail
-                  ? `Send ${sats} sat`
-                  : 'Post boost note'}
+                {running ? 'sending…' : `Send ${sats} sat`}
               </button>
             )}
           </div>
