@@ -35,7 +35,7 @@ function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   if (status === 'pending') {
     return <span className="stamp text-bolt border-bolt/60">PENDING</span>;
   }
-  return <span className="stamp text-muted border-bone/20">ENDED</span>;
+  return null;
 }
 
 function FavHeart({ podcast }: { podcast: Podcast }) {
@@ -380,8 +380,8 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                 <div className="text-[11px] text-muted flex gap-2 mt-0.5">
                   {e.liveStatus && e.liveStartTime ? (
                     <span>
-                      {e.liveStatus === 'pending' ? 'starts ' : e.liveStatus === 'live' ? 'started ' : 'ended '}
-                      {fmtLiveTime(e.liveEndTime && e.liveStatus === 'ended' ? e.liveEndTime : e.liveStartTime)}
+                      {e.liveStatus === 'pending' ? 'starts ' : 'started '}
+                      {fmtLiveTime(e.liveStartTime)}
                     </span>
                   ) : (
                     e.datePublished && <span>{new Date(e.datePublished * 1000).toLocaleDateString()}</span>

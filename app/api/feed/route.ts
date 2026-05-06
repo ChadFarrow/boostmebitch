@@ -3,10 +3,9 @@ import { getEpisodes, getLiveItemsForFeed, getPodcast } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { getErrorMessage } from '@/lib/util';
 
-const LIVE_RANK: Record<NonNullable<Episode['liveStatus']>, number> = {
+const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
   pending: 1,
-  ended: 2,
 };
 
 export async function GET(req: Request) {
@@ -34,8 +33,8 @@ export async function GET(req: Request) {
     }));
     // Live first (live > pending > ended), then regular by datePublished desc.
     merged.sort((a, b) => {
-      const ra = a.liveStatus ? LIVE_RANK[a.liveStatus] : 3;
-      const rb = b.liveStatus ? LIVE_RANK[b.liveStatus] : 3;
+      const ra = a.liveStatus ? LIVE_RANK[a.liveStatus] ?? 3 : 3;
+      const rb = b.liveStatus ? LIVE_RANK[b.liveStatus] ?? 3 : 3;
       if (ra !== rb) return ra - rb;
       if (a.liveStatus && b.liveStatus) {
         return (b.liveStartTime ?? 0) - (a.liveStartTime ?? 0);
