@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, FavoritePodcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
@@ -331,11 +331,24 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
         <ValueBlockDetails value={data.podcast.value} />
       )}
       <ul className="divide-y divide-bone/10 max-h-[60vh] overflow-y-auto">
-        {data.episodes.map((e) => {
+        {data.episodes.map((e, idx) => {
           const playing = current?.episode.id === e.id;
+          const prev = idx > 0 ? data.episodes[idx - 1] : null;
+          const isFirstLive = !!e.liveStatus && (!prev || !prev.liveStatus);
+          const isFirstRegular = !e.liveStatus && !!prev?.liveStatus;
           return (
+            <Fragment key={e.id}>
+              {isFirstLive && (
+                <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-3 pb-1 border-b-0">
+                  Live &amp; upcoming
+                </li>
+              )}
+              {isFirstRegular && (
+                <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-4 pb-1 border-b-0">
+                  Episodes
+                </li>
+              )}
             <li
-              key={e.id}
               className={`flex gap-3 py-3 cursor-pointer group transition ${
                 playing ? 'bg-bolt/10' : 'hover:bg-bone/5'
               }`}
@@ -378,6 +391,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                 </div>
               </div>
             </li>
+            </Fragment>
           );
         })}
       </ul>
