@@ -136,3 +136,110 @@ export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
   }
   return out;
 }
+
+// PI's /episodes/live only indexes currently-broadcasting items; pending
+// liveItems live exclusively in the publisher's RSS. Fetch the feed XML
+// and pull <podcast:liveItem status="pending|live"> directly.
+//
+// Hand-rolled regex parser instead of pulling in fast-xml-parser etc — the
+// shape we care about (top-level <podcast:liveItem> blocks plus a few
+// well-known children) is narrow and stable.
+export async function getLiveItemsFromRss(
+  rssUrl: string,
+  feedId: number,
+  podcastGuid?: string,
+): Promise<Episode[]> {
+  let res: Response;
+  try {
+    res = await fetch(rssUrl, {
+      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
+      next: { revalidate: 60 },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch {
+    return [];
+  }
+  if (!res.ok) return [];
+  const xml = await res.text();
+  return parseRssLiveItems(xml).map((r): Episode => ({
+    id: -fnvHash(r.guid ?? r.title ?? `${rssUrl}#${r.startTime ?? ''}`),
+    guid: r.guid,
+    title: r.title ?? 'Untitled live item',
+    description: r.description,
+    enclosureUrl: r.enclosureUrl ?? '',
+    enclosureType: r.enclosureType,
+    image: r.image,
+    feedId,
+    podcastGuid,
+    liveStatus: r.status,
+    liveStartTime: r.startTime,
+  }));
+}
+
+interface RawLiveItem {
+  status: 'pending' | 'live';
+  startTime?: number;
+  title?: string;
+  description?: string;
+  guid?: string;
+  enclosureUrl?: string;
+  enclosureType?: string;
+  image?: string;
+}
+
+function parseRssLiveItems(xml: string): RawLiveItem[] {
+  const out: RawLiveItem[] = [];
+  const blockRe = /<podcast:liveItem\b([^>]*)>([\s\S]*?)<\/podcast:liveItem>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(xml))) {
+    const attrs = m[1];
+    const inner = m[2];
+    const rawStatus = readAttr(attrs, 'status')?.toLowerCase();
+    if (rawStatus !== 'pending' && rawStatus !== 'live') continue;
+    const startStr = readAttr(attrs, 'start');
+    const startMs = startStr ? Date.parse(startStr) : NaN;
+    const startTime = Number.isFinite(startMs) ? Math.floor(startMs / 1000) : undefined;
+    const enc = inner.match(/<enclosure\b([^>]*?)\/?>/i);
+    const itunesImg = inner.match(/<itunes:image\b([^>]*?)\/?>/i);
+    out.push({
+      status: rawStatus,
+      startTime,
+      title: extractText(inner, 'title'),
+      description: extractText(inner, 'description'),
+      guid: extractText(inner, 'guid'),
+      enclosureUrl: enc ? readAttr(enc[1], 'url') : undefined,
+      enclosureType: enc ? readAttr(enc[1], 'type') : undefined,
+      image: itunesImg ? readAttr(itunesImg[1], 'href') : undefined,
+    });
+  }
+  return out;
+}
+
+function readAttr(attrs: string, name: string): string | undefined {
+  const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
+  const m = attrs.match(re);
+  return m ? (m[1] ?? m[2]) : undefined;
+}
+
+function extractText(xml: string, tag: string): string | undefined {
+  const re = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
+  const m = xml.match(re);
+  if (!m) return undefined;
+  const stripped = m[1].replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1').trim();
+  return stripped
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
+// 32-bit FNV-1a; just need a stable non-colliding key for React + the store.
+function fnvHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h & 0x7fffffff;
+}
