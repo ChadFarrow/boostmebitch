@@ -32,13 +32,15 @@ function client() {
 }
 
 /**
- * Validate an NWC URI by opening a client against it and asking the wallet
- * for its info. Round-trips the connect relay so a malformed URI / dead
- * relay / wrong secret all surface here instead of silently sitting in
- * localStorage and failing on the first boost.
+ * Validate an NWC URI by opening a client against it and round-tripping
+ * a read-only request to the wallet's relay. Catches malformed URIs, dead
+ * relays, and wrong secrets at connect time instead of silently failing
+ * on the first boost.
  *
- * Returns null on success, an error message on failure. Does not save the
- * URI — call `saveNwcUri` separately once this resolves successfully.
+ * Tries `get_info` first, then `get_balance` — some per-app NWC connections
+ * only grant one or the other. Either is enough to confirm the relay +
+ * secret combo works. Returns null on success, an error message on
+ * failure. Does not save the URI.
  */
 export async function nwcValidate(uri: string): Promise<string | null> {
   let c: nwc.NWCClient;
@@ -47,18 +49,34 @@ export async function nwcValidate(uri: string): Promise<string | null> {
   } catch (e) {
     return e instanceof Error ? e.message : 'invalid URI';
   }
-  try {
-    // 12s timeout: NIP-47 relays sometimes take a couple seconds for the
-    // first round-trip; shorter and we false-negative slow wallets.
-    await Promise.race([
-      c.getInfo(),
+  // 12s cap per attempt — NIP-47 relays sometimes need a couple seconds for
+  // the first round-trip; shorter would false-negative slow wallets.
+  const withTimeout = <T>(p: Promise<T>) =>
+    Promise.race([
+      p,
       new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('timeout — wallet did not respond in 12s')), 12000),
       ),
     ]);
-    return null;
-  } catch (e) {
-    return e instanceof Error ? e.message : 'wallet did not respond';
+  try {
+    try {
+      await withTimeout(c.getInfo());
+      return null;
+    } catch (infoErr) {
+      // get_info may not be granted on this connection. Try get_balance —
+      // permission models differ wallet to wallet. If that also fails, we
+      // surface the get_balance error since it's the broader-scope check.
+      try {
+        await withTimeout(c.getBalance());
+        return null;
+      } catch (balErr) {
+        return balErr instanceof Error
+          ? balErr.message
+          : infoErr instanceof Error
+            ? infoErr.message
+            : 'wallet did not respond';
+      }
+    }
   } finally {
     try { c.close(); } catch { /* ignore */ }
   }

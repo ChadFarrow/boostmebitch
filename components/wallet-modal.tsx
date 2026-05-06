@@ -4,12 +4,11 @@
 // wallet rails (NWC / Spark / WebLN) so the account menu doesn't have to
 // stack three sub-cards. Triggered by the WalletButton in AccountMenu.
 //
-// Display rule: when ANY rail is connected (NWC URI saved or Spark SDK
-// initialized), only the connected rail(s) are shown. The unconnected
-// connect forms only appear when nothing is connected — keeping the
-// account menu uncluttered after the user picks their wallet. WebLN is
-// tracked as "available" rather than "connected" (the extension is either
-// injected or it isn't) so it surfaces alongside the connect options.
+// All three sections render unconditionally — each sub-component flips
+// between its connected card and its connect form on its own. This lets
+// the user wire up a second rail (or switch wallets) without first having
+// to disconnect the active one. The boost modal's rail picker already
+// understands multi-rail setups; the wallet modal mirrors that.
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -47,10 +46,8 @@ export function WalletModal({ onClose }: Props) {
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const nwcReady = hasNwc();
-  const sparkReady = hasSpark();
   const weblnAvailable = hasWebln();
-  const anyConnected = nwcReady || sparkReady;
+  const anyConnected = hasNwc() || hasSpark();
 
   // Portal to body so `position: fixed` resolves against the viewport, not the
   // sticky <header>. The header uses `backdrop-blur` which creates a
@@ -72,49 +69,26 @@ export function WalletModal({ onClose }: Props) {
         <div className="p-5 border-b border-bone/15">
           <div className="stamp text-bolt border-bolt/60 mb-2">⚡ LIGHTNING WALLET</div>
           <h3 className="font-display text-2xl leading-tight">
-            {anyConnected ? 'Connected' : 'Connect a wallet'}
+            {anyConnected ? 'Wallets' : 'Connect a wallet'}
           </h3>
           <p className="text-xs text-muted mt-1">
             {anyConnected
-              ? 'Disconnect below to switch to a different wallet.'
+              ? 'Connect another rail or disconnect the current one.'
               : 'Pick one option to send Lightning payments.'}
           </p>
         </div>
 
         <div className="p-5 space-y-5">
-          {nwcReady && (
-            <section>
-              <div className="text-[11px] uppercase tracking-widest text-bone/60">NWC</div>
-              <NwcWallet />
-            </section>
-          )}
+          <section>
+            <div className="text-[11px] uppercase tracking-widest text-bone/60">NWC</div>
+            <NwcWallet />
+          </section>
 
-          {sparkReady && (
-            <section>
-              <div className="text-[11px] uppercase tracking-widest text-bone/60">Spark</div>
-              <SparkWallet />
-            </section>
-          )}
+          <section>
+            <div className="text-[11px] uppercase tracking-widest text-bone/60">Spark</div>
+            <SparkWallet />
+          </section>
 
-          {!anyConnected && (
-            <>
-              <section>
-                <div className="text-[11px] uppercase tracking-widest text-bone/60">NWC</div>
-                <NwcWallet />
-              </section>
-              <section>
-                <div className="text-[11px] uppercase tracking-widest text-bone/60">Spark</div>
-                <SparkWallet />
-              </section>
-            </>
-          )}
-
-          {/* WebLN sits outside the !anyConnected gate because it's "available"
-              not "connected" — the extension is either injected or it isn't,
-              there's no per-site connect step beyond the one-shot Enable. So
-              we always surface it when present, even alongside a connected
-              NWC/Spark, so the user can opt to use Alby per-boost via the
-              boost modal's rail picker. */}
           {weblnAvailable && (
             <section>
               <div className="text-[11px] uppercase tracking-widest text-bone/60">WebLN</div>
