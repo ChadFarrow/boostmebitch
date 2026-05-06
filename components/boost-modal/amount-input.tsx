@@ -1,6 +1,7 @@
 'use client';
 
 const PRESETS = [100, 500, 1000, 5000];
+export const MIN_BOOST_SATS = 100;
 
 export function AmountInput({
   sats,
@@ -15,7 +16,7 @@ export function AmountInput({
       <div className="flex gap-2 mt-1.5">
         <input
           type="number"
-          min={1}
+          min={MIN_BOOST_SATS}
           className="input flex-1"
           value={sats}
           onChange={(e) => onChange(Math.max(1, Number(e.target.value) || 0))}
@@ -24,6 +25,7 @@ export function AmountInput({
           <button key={n} onClick={() => onChange(n)} className="btn-ghost !px-3">{n}</button>
         ))}
       </div>
+      <p className="text-[11px] text-muted mt-1.5">minimum {MIN_BOOST_SATS} sats</p>
     </div>
   );
 }
