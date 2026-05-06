@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { storage } from '../storage';
 import type { DiscoveredNote } from './discover';
 
@@ -34,8 +34,6 @@ export function useNostrFeed({
   const [notes, setNotes] = useState<DiscoveredNote[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const notesRef = useRef<DiscoveredNote[] | null>(null);
-  notesRef.current = notes;
 
   async function refresh() {
     setLoading(true);
@@ -53,10 +51,7 @@ export function useNostrFeed({
 
   useEffect(() => {
     const cached = storage.feedNotes.get(cacheKey);
-    if (cached) {
-      setNotes(cached);
-      notesRef.current = cached;
-    }
+    if (cached) setNotes(cached);
     refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);

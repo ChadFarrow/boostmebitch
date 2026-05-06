@@ -19,7 +19,7 @@ export function AmountInput({
           min={MIN_BOOST_SATS}
           className="input flex-1"
           value={sats}
-          onChange={(e) => onChange(Math.max(1, Number(e.target.value) || 0))}
+          onChange={(e) => onChange(Math.max(0, Number(e.target.value) || 0))}
         />
         {PRESETS.map((n) => (
           <button key={n} onClick={() => onChange(n)} className="btn-ghost !px-3">{n}</button>

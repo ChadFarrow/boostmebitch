@@ -116,7 +116,7 @@ Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-l
 
 All wallet config now lives in **`components/wallet-modal.tsx`** — a portal'd overlay opened by `<WalletButton>` inside `<AccountMenu>` (`components/nostr-auth.tsx:853`). The modal is portal'd to `document.body` so `position: fixed` resolves against the viewport, not the sticky `<header>` (the header's `backdrop-blur` creates a containing block for fixed descendants per CSS spec — without the portal, mobile renders it clipped to the header).
 
-Display rule: when **any** rail is connected (NWC URI saved or Spark SDK initialized), only the connected NWC/Spark sub-card renders + their connect forms hide. **WebLN is the exception** — it always renders when `weblnAvailable` regardless of other rails, because WebLN is "available" (extension injected) not "connected" (no per-site URI/SDK), and a user with Spark+Alby still needs a path to enable Alby for this site.
+All three sub-cards (NWC, Spark, WebLN) render unconditionally — each flips internally between its connected card and its connect form. This lets the user wire up a second rail (or switch wallets) without first disconnecting the active one. WebLN only appears when `weblnAvailable` (extension injected).
 
 Sub-cards (each its own component): `nwc-wallet.tsx`, `spark-wallet.tsx`, `webln-wallet.tsx`. State changes propagate via `subscribeNwc()` + `subscribeSpark()`; the modal `setTick`s on either to flip between modes without remount.
 
@@ -215,10 +215,8 @@ Boosted N sats → [podcast title]
 `lib/nostr/use-feed.ts` is the stale-while-revalidate hook behind global + per-podcast feeds. Three load-bearing rules:
 
 1. **Cache always paints first.** `storage.feedNotes.get(cacheKey)` returns whatever's there regardless of age (no TTL gate). Set into state synchronously inside the mount effect.
-2. **Refresh is incremental.** `refresh()` reads newest `created_at` from current `notes` and asks for `since: newest + 1`. Novel events (deduped by id) prepend; merged result writes back to cache. First load (or empty notes) falls back to a full fetch.
+2. **Full fetch on every load.** Both mount and user-triggered `refresh()` do a full relay fetch (no `since` filter). Stale cached state is replaced, not merged. Simpler and prevents stale notes from blocking new relay activity.
 3. **No auto-refresh.** Mount + user-clicks-refresh only — never on a timer. Local-mutation surfaces (e.g. `boostsTick` after a sent boost) intermix client-side, not via re-fetch.
-
-Caveat: incremental refresh only catches new top-level boosts. New replies under an existing note, or new zaps stacked onto an existing boost, won't surface until that root is re-fetched. No force-full-reload affordance today.
 
 ## /api/by-guid resilience and PI breaker
 
@@ -262,7 +260,7 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 | `bmb:muted:*` | `MuteListState` JSON; `lib/storage.ts` auto-promotes the legacy shape. |
 | `bmb:profile3:<pubkey>` | kind:0 cache. **7-day TTL on hits, 15-min on misses** (so PROFILE_RELAYS additions / temp outages re-resolve). The `3` suffix is a schema version — bump when shape changes. |
 | `bmb:pmeta:<guid>` | `/api/by-guid` cache, 7-day TTL. |
-| `bmb:feed:<key>` | `DiscoveredNote[]` per feed. **No TTL** — every mount paints it, then incremental `since`-refresh prepends. Legacy `{ t, v }` wrapper is tolerated on read. Keys: `'global'`, `'podcast:<guid>'`. |
+| `bmb:feed:<key>` | `DiscoveredNote[]` per feed. **No TTL** — every mount paints it, then a full relay fetch replaces it. Legacy `{ t, v }` wrapper is tolerated on read. Keys: `'global'`, `'podcast:<guid>'`. |
 | `bmb:boosts:*` | Local sent-boost log, capped 200 newest-first. Each entry holds intent + per-leg results + Nostr `noteId` patched in once `publishBoostNote` resolves. `boostsTick` wakes subscribers; `GlobalNostrFeed` mixes these in and dedupes against returned notes by `noteId`. |
 | `bmb:pi:dead` (sessionStorage) | Circuit-breaker sentinel; cleared on hard-refresh-into-new-tab. |
 

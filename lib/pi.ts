@@ -265,7 +265,9 @@ function extractText(xml: string, tag: string): string | undefined {
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'");
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
 }
 
 // 32-bit FNV-1a; just need a stable non-colliding key for React + the store.

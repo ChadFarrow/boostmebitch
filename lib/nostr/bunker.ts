@@ -195,9 +195,9 @@ function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> 
  */
 function sanitizeBunkerUri(input: string): string {
   // Strip whitespace + common invisible code points anywhere in the string.
-  // \s covers ASCII + unicode whitespace; the explicit characters cover
-  // ZWSP (200B), ZWNJ (200C), ZWJ (200D), BOM (FEFF), NBSP (00A0).
-  let cleaned = input.replace(/[\s​-‍﻿ ]/g, '');
+  // \s covers ASCII + unicode whitespace; explicit escapes cover
+  // ZWSP (U+200B), ZWNJ (U+200C), ZWJ (U+200D), BOM (U+FEFF), NBSP (U+00A0).
+  let cleaned = input.replace(/[\s\u200B-\u200D\uFEFF\u00A0]/g, '');
   const m = cleaned.match(/^bunker:\/\/([0-9a-fA-F]{64})(.*)$/);
   if (m) {
     cleaned = `bunker://${m[1].toLowerCase()}${m[2]}`;
