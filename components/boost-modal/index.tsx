@@ -12,7 +12,7 @@ import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
-import { AmountInput } from './amount-input';
+import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
 import { SplitsPreview, LightningStatus } from './splits-preview';
@@ -287,10 +287,13 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           <button onClick={onClose} className="btn-ghost">{paymentDone ? 'Close' : 'Cancel'}</button>
           <div className="flex items-center gap-3">
             {!paymentDone && rail && <BoostModalBalance amountSats={sats} rail={rail} />}
+            {!paymentDone && sats < MIN_BOOST_SATS && (
+              <span className="text-[11px] text-muted">min {MIN_BOOST_SATS} sats</span>
+            )}
             {!paymentDone && (
               <button
                 onClick={go}
-                disabled={running || !rail}
+                disabled={running || !rail || sats < MIN_BOOST_SATS}
                 className="btn-bolt disabled:opacity-40"
               >
                 <BoltIcon />
