@@ -31,12 +31,35 @@ export function NwcWallet() {
     }
     setBusy(true);
     try {
-      const probeError = await nwcValidate(uri);
+      let probeError: string | null;
+      try {
+        probeError = await nwcValidate(uri);
+      } catch (e) {
+        // nwcValidate is supposed to swallow its own errors and return a
+        // string. If something asynchronous still escapes, surface it instead
+        // of silently bouncing back to the form.
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error('[nwc] probe threw unexpectedly:', e);
+        setErr(`Probe failed: ${msg}`);
+        return;
+      }
       if (probeError) {
+        console.warn('[nwc] probe rejected:', probeError);
         setErr(`Couldn’t reach the wallet: ${probeError}`);
         return;
       }
       saveNwcUri(uri);
+      // Verify the write actually persisted. iOS Safari (and a few other
+      // browsers) silently drop localStorage writes under Private Browsing
+      // or aggressive tracking prevention; safeSet swallows the throw, so
+      // without this check the modal would just bounce back to the connect
+      // form with no feedback.
+      if (!hasNwc()) {
+        setErr(
+          'Connected, but the URI didn’t save. Your browser may be blocking storage — disable Private Browsing or tracking prevention and try again.',
+        );
+        return;
+      }
       setDraft('');
       bump();
     } finally {

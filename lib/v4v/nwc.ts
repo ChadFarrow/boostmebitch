@@ -49,13 +49,15 @@ export async function nwcValidate(uri: string): Promise<string | null> {
   } catch (e) {
     return e instanceof Error ? e.message : 'invalid URI';
   }
-  // 12s cap per attempt — NIP-47 relays sometimes need a couple seconds for
-  // the first round-trip; shorter would false-negative slow wallets.
+  // 20s cap per attempt — NIP-47 relays can take a few seconds for the
+  // first round-trip, especially over flaky LTE; shorter would false-
+  // negative slow wallets. Two attempts (get_info → get_balance) so the
+  // worst-case wait is 40s.
   const withTimeout = <T>(p: Promise<T>) =>
     Promise.race([
       p,
       new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error('timeout — wallet did not respond in 12s')), 12000),
+        setTimeout(() => reject(new Error('timeout — wallet did not respond in 20s')), 20000),
       ),
     ]);
   try {
