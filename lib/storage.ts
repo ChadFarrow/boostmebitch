@@ -51,6 +51,14 @@ function safeRemove(key: string) {
   try { localStorage.removeItem(key); } catch { /* ignore */ }
 }
 
+// Per-key memory fallback for the few critical writes that need to survive
+// a hostile localStorage (iOS Safari Private Browsing, "Block All Cookies",
+// content blockers — all silently no-op `setItem`). Living next to the
+// safe* helpers so each storage accessor can opt in by mirroring its writes
+// here. Lost on page reload — the storage block is the user's to fix —
+// but at least the wallet works for the current session.
+const memoryFallback: { nwcUri: string | null } = { nwcUri: null };
+
 // Per-identity storage keys: signed-out users share a single `:guest` bucket;
 // signed-in users get one bucket per npub. Centralized so the convention
 // lives in exactly one place.
@@ -180,10 +188,25 @@ export const storage = {
   },
 
   nwcUri: {
-    get: () => safeGet(KEYS.nwcUri),
-    set: (v: string) => safeSet(KEYS.nwcUri, v),
-    clear: () => safeRemove(KEYS.nwcUri),
-    has: () => safeGet(KEYS.nwcUri) !== null,
+    get: () => safeGet(KEYS.nwcUri) ?? memoryFallback.nwcUri,
+    set: (v: string) => {
+      // Memory fallback first so the value is queryable even if the
+      // localStorage write silently fails (iOS Safari Private Browsing /
+      // "Block All Cookies" / aggressive content blockers all silently no-op
+      // setItem). Without this, the URI is "saved" to nowhere and the wallet
+      // modal bounces back to the connect form with no recovery path.
+      memoryFallback.nwcUri = v;
+      safeSet(KEYS.nwcUri, v);
+    },
+    clear: () => {
+      memoryFallback.nwcUri = null;
+      safeRemove(KEYS.nwcUri);
+    },
+    has: () => (safeGet(KEYS.nwcUri) ?? memoryFallback.nwcUri) !== null,
+    /** True if the URI is only held in memory — i.e. the localStorage write
+     *  failed and the user will lose it on reload. Used to show a soft
+     *  "won't persist across reloads" hint. */
+    isEphemeral: () => memoryFallback.nwcUri !== null && safeGet(KEYS.nwcUri) === null,
   },
 
   /**

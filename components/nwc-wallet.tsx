@@ -49,15 +49,12 @@ export function NwcWallet() {
         return;
       }
       saveNwcUri(uri);
-      // Verify the write actually persisted. iOS Safari (and a few other
-      // browsers) silently drop localStorage writes under Private Browsing
-      // or aggressive tracking prevention; safeSet swallows the throw, so
-      // without this check the modal would just bounce back to the connect
-      // form with no feedback.
+      // Sanity check the write took. If localStorage rejected it AND the
+      // memory fallback failed for some reason, surface an error rather
+      // than bouncing the form silently. Normally the memory fallback in
+      // storage.nwcUri keeps the wallet working for this session.
       if (!hasNwc()) {
-        setErr(
-          'Connected, but the URI didn’t save. Your browser may be blocking storage — disable Private Browsing or tracking prevention and try again.',
-        );
+        setErr('Couldn’t persist the URI. Try reloading the page and pasting again.');
         return;
       }
       setDraft('');
@@ -80,9 +77,15 @@ export function NwcWallet() {
     // Show only the wallet domain so the secret isn't visible at a glance.
     let host = '';
     try { host = new URL(uri.replace('nostr+walletconnect://', 'https://')).host; } catch {}
+    const ephemeral = storage.nwcUri.isEphemeral();
     return (
       <div className="mt-3 text-[11px] text-muted">
         <div>NWC connected{host ? ` · ${host}` : ''}</div>
+        {ephemeral && (
+          <div className="text-bolt/80 mt-1">
+            Storage is restricted by your browser — you’ll need to paste this URI again after a reload.
+          </div>
+        )}
         <button onClick={disconnect} className="text-muted hover:text-nostr mt-1">
           disconnect NWC
         </button>
