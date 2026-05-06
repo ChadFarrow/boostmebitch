@@ -31,6 +31,39 @@ function client() {
   return new nwc.NWCClient({ nostrWalletConnectUrl: uri });
 }
 
+/**
+ * Validate an NWC URI by opening a client against it and asking the wallet
+ * for its info. Round-trips the connect relay so a malformed URI / dead
+ * relay / wrong secret all surface here instead of silently sitting in
+ * localStorage and failing on the first boost.
+ *
+ * Returns null on success, an error message on failure. Does not save the
+ * URI — call `saveNwcUri` separately once this resolves successfully.
+ */
+export async function nwcValidate(uri: string): Promise<string | null> {
+  let c: nwc.NWCClient;
+  try {
+    c = new nwc.NWCClient({ nostrWalletConnectUrl: uri });
+  } catch (e) {
+    return e instanceof Error ? e.message : 'invalid URI';
+  }
+  try {
+    // 12s timeout: NIP-47 relays sometimes take a couple seconds for the
+    // first round-trip; shorter and we false-negative slow wallets.
+    await Promise.race([
+      c.getInfo(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('timeout — wallet did not respond in 12s')), 12000),
+      ),
+    ]);
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : 'wallet did not respond';
+  } finally {
+    try { c.close(); } catch { /* ignore */ }
+  }
+}
+
 export async function nwcPayInvoice(invoice: string): Promise<string> {
   const c = client();
   const res = await c.payInvoice({ invoice });
