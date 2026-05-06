@@ -91,11 +91,8 @@ export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
   return buildPodcast(Array.isArray(f) ? f[0] : f);
 }
 
-export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> {
-  const data = await pi<any>(
-    `/episodes/byfeedid?id=${feedId}&max=${max}&fulltext`,
-  );
-  return (data.items ?? []).map((e: any) => ({
+function buildEpisode(e: any): Episode {
+  return {
     id: e.id,
     guid: e.guid,
     title: e.title,
@@ -110,5 +107,32 @@ export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> 
     feedImage: e.feedImage,
     podcastGuid: e.podcastGuid,
     value: normalizeValue(e.value),
-  }));
+  };
+}
+
+export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> {
+  const data = await pi<any>(
+    `/episodes/byfeedid?id=${feedId}&max=${max}&fulltext`,
+  );
+  return (data.items ?? []).map(buildEpisode);
+}
+
+// PI exposes liveItem records globally at /episodes/live. There is no per-feed
+// endpoint, so we pull a wide page and filter. PI's status field can be
+// 'live' | 'pending' | 'ended'; we drop ended — old broadcasts shouldn't
+// crowd the top of the episode list.
+export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
+  const data = await pi<any>(`/episodes/live?max=1000`);
+  const out: Episode[] = [];
+  for (const e of data.items ?? []) {
+    if (Number(e.feedId) !== feedId) continue;
+    const status = typeof e.status === 'string' ? e.status.toLowerCase() : undefined;
+    if (status !== 'live' && status !== 'pending') continue;
+    out.push({
+      ...buildEpisode(e),
+      liveStatus: status,
+      liveStartTime: typeof e.startTime === 'number' ? e.startTime : undefined,
+    });
+  }
+  return out;
 }

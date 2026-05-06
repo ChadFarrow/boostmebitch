@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, FavoritePodcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
@@ -15,6 +15,27 @@ function fmtDuration(t: number) {
   const s = Math.floor(t % 60).toString().padStart(2, '0');
   if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s}`;
   return `${m}:${s}`;
+}
+
+function fmtLiveTime(unixSec: number) {
+  const d = new Date(unixSec * 1000);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (sameDay) return time;
+  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
+}
+
+function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
+  if (status === 'live') {
+    return (
+      <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+    );
+  }
+  if (status === 'pending') {
+    return <span className="stamp text-bolt border-bolt/60">PENDING</span>;
+  }
+  return null;
 }
 
 function FavHeart({ podcast }: { podcast: Podcast }) {
@@ -236,6 +257,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   });
   const [loading, setLoading] = useState(false);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
+  const [liveBoostFor, setLiveBoostFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
@@ -310,15 +332,31 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
         <ValueBlockDetails value={data.podcast.value} />
       )}
       <ul className="divide-y divide-bone/10 max-h-[60vh] overflow-y-auto">
-        {data.episodes.map((e) => {
+        {data.episodes.map((e, idx) => {
           const playing = current?.episode.id === e.id;
+          const prev = idx > 0 ? data.episodes[idx - 1] : null;
+          const isFirstLive = !!e.liveStatus && (!prev || !prev.liveStatus);
+          const isFirstRegular = !e.liveStatus && !!prev?.liveStatus;
           return (
+            <Fragment key={e.id}>
+              {isFirstLive && (
+                <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-3 pb-1 border-b-0">
+                  Live &amp; upcoming
+                </li>
+              )}
+              {isFirstRegular && (
+                <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-4 pb-1 border-b-0">
+                  Episodes
+                </li>
+              )}
             <li
-              key={e.id}
-              className={`flex gap-3 py-3 cursor-pointer group transition ${
-                playing ? 'bg-bolt/10' : 'hover:bg-bone/5'
-              }`}
-              onClick={() => data.podcast && play(e, data.podcast)}
+              className={`flex gap-3 py-3 group transition ${
+                playing ? 'bg-bolt/10' : e.liveStatus !== 'pending' ? 'hover:bg-bone/5' : ''
+              } ${e.liveStatus !== 'pending' ? 'cursor-pointer' : ''}`}
+              onClick={() => {
+                if (e.liveStatus === 'pending') return;
+                if (data.podcast) play(e, data.podcast);
+              }}
             >
               <div className="relative w-12 h-12 flex-shrink-0">
                 <PodcastCover
@@ -328,25 +366,51 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   seed={e.guid ?? String(e.id)}
                   className="w-full h-full border border-bone/40 group-hover:border-bolt text-base"
                 />
-                <div
-                  className={`absolute inset-0 grid place-items-center bg-ink/55 transition pointer-events-none ${
-                    playing
-                      ? 'opacity-100 text-bolt'
-                      : 'opacity-0 group-hover:opacity-100 text-bone group-hover:text-bolt'
-                  }`}
-                >
-                  {playing ? '❚❚' : '▶'}
-                </div>
+                {e.liveStatus !== 'pending' && (
+                  <div
+                    className={`absolute inset-0 grid place-items-center bg-ink/55 transition pointer-events-none ${
+                      playing
+                        ? 'opacity-100 text-bolt'
+                        : 'opacity-0 group-hover:opacity-100 text-bone group-hover:text-bolt'
+                    }`}
+                  >
+                    {playing ? '❚❚' : '▶'}
+                  </div>
+                )}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-display leading-tight truncate">{e.title}</div>
+                <div className="flex items-center gap-2">
+                  {e.liveStatus && <LiveBadge status={e.liveStatus} />}
+                  <div className="text-sm font-display leading-tight truncate">{e.title}</div>
+                </div>
                 <div className="text-[11px] text-muted flex gap-2 mt-0.5">
-                  {e.datePublished && <span>{new Date(e.datePublished * 1000).toLocaleDateString()}</span>}
+                  {e.liveStatus && e.liveStartTime ? (
+                    <span>
+                      {e.liveStatus === 'pending' ? 'starts ' : 'started '}
+                      {fmtLiveTime(e.liveStartTime)}
+                    </span>
+                  ) : (
+                    e.datePublished && <span>{new Date(e.datePublished * 1000).toLocaleDateString()}</span>
+                  )}
                   {e.duration && <span>· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
                 </div>
               </div>
+              {e.liveStatus && (e.value ?? data.podcast?.value)?.recipients?.length ? (
+                <button
+                  type="button"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    setLiveBoostFor(e);
+                  }}
+                  className="btn-bolt self-center flex-shrink-0"
+                  title="Boost this live item"
+                >
+                  <BoltIcon />
+                </button>
+              ) : null}
             </li>
+            </Fragment>
           );
         })}
       </ul>
@@ -355,6 +419,15 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
         <PodcastNostrFeed
           podcastGuid={data.podcast.podcastGuid}
           podcastTitle={data.podcast.title}
+        />
+      )}
+
+      {liveBoostFor && data.podcast && (
+        <BoostModal
+          episode={liveBoostFor}
+          podcast={data.podcast}
+          positionSec={0}
+          onClose={() => setLiveBoostFor(null)}
         />
       )}
 
