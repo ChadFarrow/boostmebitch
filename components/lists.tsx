@@ -300,8 +300,8 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           className="w-20 h-20 border border-bone/20 flex-shrink-0 text-3xl"
         />
         <div className="min-w-0 flex-1 basis-40">
-          <h2 className="font-display text-2xl leading-tight break-words">{data.podcast.title}</h2>
-          <p className="text-xs text-muted mt-1">{data.podcast.author}</p>
+          <h2 className="font-display text-3xl leading-tight font-semibold break-words">{data.podcast.title}</h2>
+          <p className="text-sm text-muted mt-1">{data.podcast.author}</p>
           {data.podcast.value && (
             <button
               type="button"
@@ -381,9 +381,9 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   {e.liveStatus && <LiveBadge status={e.liveStatus} />}
-                  <div className="text-sm font-display leading-tight truncate">{e.title}</div>
+                  <div className="text-base font-display font-medium leading-tight truncate">{e.title}</div>
                 </div>
-                <div className="text-[11px] text-muted flex gap-2 mt-0.5">
+                <div className="text-xs text-muted flex gap-2 mt-0.5">
                   {e.liveStatus && e.liveStartTime ? (
                     <span>
                       {e.liveStatus === 'pending' ? 'starts ' : 'started '}
