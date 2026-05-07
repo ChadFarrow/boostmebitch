@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
-import { hasWebln, isWeblnEnabled, subscribeWebln } from '@/lib/v4v/webln';
+import { hasWebln, isWeblnEnabled, subscribeWebln, weblnEnable } from '@/lib/v4v/webln';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
 import { useApp } from '@/lib/store';
 import { NwcWallet } from './nwc-wallet';
@@ -63,6 +63,18 @@ export function WalletModal({ onClose }: Props) {
   async function handleConnected(rail: 'nwc' | 'spark' | 'webln') {
     await clearOtherWallets(rail, identity?.npub);
     setView({ kind: 'connected' });
+  }
+
+  async function handleWeblnPickerClick(switching: boolean) {
+    // WebLN has only one action — skip the form, enable inline, close on success.
+    try {
+      await weblnEnable();
+      await clearOtherWallets('webln', identity?.npub);
+      onClose();
+    } catch {
+      // Enable failed (user denied) — fall back to the form so they see the error.
+      setView({ kind: 'connecting', rail: 'webln', switching });
+    }
   }
 
   function handleDisconnected() {
@@ -179,7 +191,10 @@ export function WalletModal({ onClose }: Props) {
           {rows.map(({ rail, icon, title, desc }) => (
             <button
               key={rail}
-              onClick={() => setView({ kind: 'connecting', rail, switching })}
+              onClick={() => rail === 'webln'
+                ? handleWeblnPickerClick(switching)
+                : setView({ kind: 'connecting', rail, switching })
+              }
               className="w-full text-left card p-3 hover:border-bone/40 transition"
             >
               <div className="text-sm font-medium">
