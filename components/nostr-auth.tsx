@@ -110,7 +110,7 @@ export function NostrAuth() {
     const relayListPromise = fetchRelayList(id.pubkey).catch(() => null);
     const favoritesPromise = hydrateFavorites(id).catch(() => {});
     const mutesPromise = hydrateMutes(id).catch(() => {});
-    const sparkPromise = !hasSpark()
+    const sparkPromise = !hasSpark() && !storage.sparkOptOut.get()
       ? fetchEncryptedMnemonic(id)
           .then((mnemonic) => {
             if (mnemonic) return sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });

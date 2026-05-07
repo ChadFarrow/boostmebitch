@@ -7,6 +7,7 @@
 
 import { useState } from 'react';
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate } from '@/lib/v4v/nwc';
+import { hasSpark, sparkDisconnect } from '@/lib/v4v/spark';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 
@@ -57,6 +58,10 @@ export function NwcWallet() {
         setErr('Couldn’t persist the URI. Try reloading the page and pasting again.');
         return;
       }
+      // User explicitly chose NWC — disconnect Spark if it was auto-restored
+      // this session, and suppress future auto-restores on reload.
+      if (hasSpark()) await sparkDisconnect();
+      storage.sparkOptOut.set();
       setDraft('');
       bump();
     } finally {

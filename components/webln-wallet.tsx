@@ -12,6 +12,8 @@
 import { useEffect, useState } from 'react';
 import { getErrorMessage } from '@/lib/util';
 import { isWeblnEnabled, subscribeWebln, weblnEnable } from '@/lib/v4v/webln';
+import { hasSpark, sparkDisconnect } from '@/lib/v4v/spark';
+import { storage } from '@/lib/storage';
 
 export function WeblnWallet() {
   const [enabling, setEnabling] = useState(false);
@@ -24,6 +26,10 @@ export function WeblnWallet() {
     setErr(null); setEnabling(true);
     try {
       await weblnEnable();
+      // User explicitly chose WebLN — disconnect Spark if it was auto-restored
+      // this session, and suppress future auto-restores on reload.
+      if (hasSpark()) await sparkDisconnect();
+      storage.sparkOptOut.set();
       // subscribeWebln will flip `enabled`; setEnabled here is redundant but
       // harmless and makes the state change feel synchronous on the click.
       setEnabled(true);

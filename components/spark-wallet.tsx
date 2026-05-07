@@ -80,6 +80,7 @@ export function SparkWallet({ onReady }: Props) {
     if (!identity || !draftMnemonic) return;
     setMode('busy'); setErr(null);
     try {
+      storage.sparkOptOut.clear();
       await publishEncryptedMnemonic(identity, draftMnemonic);
       await sparkInitFromMnemonic({ mnemonic: draftMnemonic, ownerPubkey: identity.pubkey });
       setDraftMnemonic(null);
@@ -105,6 +106,7 @@ export function SparkWallet({ onReady }: Props) {
     if (!identity) { setErr('Sign in with Nostr first — restore reads from your relays.'); return; }
     setMode('restoring');
     try {
+      storage.sparkOptOut.clear();
       const m = await fetchEncryptedMnemonic(identity);
       if (!m) {
         setErr('No backup found on your write relays.');
@@ -123,6 +125,7 @@ export function SparkWallet({ onReady }: Props) {
 
   async function disconnect() {
     await sparkDisconnect();
+    storage.sparkOptOut.set();
     // Drop the cached header-chip balance so it doesn't keep flashing the
     // last-known number after the wallet's gone.
     storage.walletBalance.clear(identity?.npub);

@@ -25,6 +25,7 @@ const KEYS = {
   bunker: 'bmb:bunker',               // NIP-46 bunker session: { uri, clientSk } — single value (one bunker connection at a time)
   railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
+  sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or connects another rail; suppresses auto-restore on next login
 } as const;
 
 export type RailPref = 'nwc' | 'spark' | 'webln';
@@ -223,6 +224,12 @@ export const storage = {
     },
     set: (v: RailPref) => safeSet(KEYS.railPref, v),
     clear: () => safeRemove(KEYS.railPref),
+  },
+
+  sparkOptOut: {
+    get: () => safeGet(KEYS.sparkOptOut) === '1',
+    set: () => safeSet(KEYS.sparkOptOut, '1'),
+    clear: () => safeRemove(KEYS.sparkOptOut),
   },
 
   /**
