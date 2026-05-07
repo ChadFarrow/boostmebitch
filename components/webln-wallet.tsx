@@ -1,21 +1,16 @@
 'use client';
 
-// WebLN status surface for the account menu. The "Enable" button calls
-// wl.enable() proactively so the first boost doesn't have to wait on a
-// permission prompt.
-//
-// Only rendered when the parent (AccountMenu) confirms `window.webln`
-// is present — see the `hasWebln()` gate there. Mobile platforms and
-// vanilla desktop without Alby never see this component, so the empty
-// "Not detected" branch this used to carry is gone.
-
 import { useEffect, useState } from 'react';
 import { getErrorMessage } from '@/lib/util';
-import { isWeblnEnabled, subscribeWebln, weblnEnable } from '@/lib/v4v/webln';
-import { hasSpark, sparkDisconnect } from '@/lib/v4v/spark';
-import { storage } from '@/lib/storage';
+import { isWeblnEnabled, subscribeWebln, weblnDisable, weblnEnable } from '@/lib/v4v/webln';
 
-export function WeblnWallet() {
+interface Props {
+  mode: 'form' | 'card';
+  onConnected?: () => void;
+  onDisconnected?: () => void;
+}
+
+export function WeblnWallet({ mode, onConnected, onDisconnected }: Props) {
   const [enabling, setEnabling] = useState(false);
   const [enabled, setEnabled] = useState(isWeblnEnabled());
   const [err, setErr] = useState<string | null>(null);
@@ -26,27 +21,38 @@ export function WeblnWallet() {
     setErr(null); setEnabling(true);
     try {
       await weblnEnable();
-      // User explicitly chose WebLN — disconnect Spark if it was auto-restored
-      // this session, and suppress future auto-restores on reload.
-      if (hasSpark()) await sparkDisconnect();
-      storage.sparkOptOut.set();
-      // subscribeWebln will flip `enabled`; setEnabled here is redundant but
-      // harmless and makes the state change feel synchronous on the click.
       setEnabled(true);
+      onConnected?.();
     } catch (e) {
       setErr(getErrorMessage(e, 'enable failed'));
     } finally { setEnabling(false); }
   }
 
-  return (
-    <div className="mt-3 space-y-2">
-      <div className="text-[11px] text-muted">WebLN extension detected.</div>
-      {!enabled && (
-        <button onClick={enable} disabled={enabling} className="btn-ghost disabled:opacity-30">
-          {enabling ? 'Enabling…' : 'Enable for this site'}
+  function disconnect() {
+    weblnDisable();
+    onDisconnected?.();
+  }
+
+  if (mode === 'card') {
+    if (!enabled) return null;
+    return (
+      <div className="space-y-2">
+        <div className="text-[11px] text-muted">WebLN enabled for this site.</div>
+        <button onClick={disconnect} className="text-[11px] text-muted hover:text-nostr">
+          Disconnect
         </button>
-      )}
-      {enabled && <div className="text-[11px] text-muted">Enabled for this site.</div>}
+      </div>
+    );
+  }
+
+  // mode === 'form'
+  if (enabled) return null;
+  return (
+    <div className="space-y-2">
+      <div className="text-[11px] text-muted">WebLN extension detected.</div>
+      <button onClick={enable} disabled={enabling} className="btn-ghost disabled:opacity-30">
+        {enabling ? 'Enabling…' : 'Enable for this site'}
+      </button>
       {err && <div className="text-[11px] text-nostr/80">{err}</div>}
     </div>
   );

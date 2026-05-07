@@ -46,6 +46,14 @@ export async function weblnEnable(): Promise<void> {
   await ensureWebln();
 }
 
+/** Clear the per-session enabled flag and notify subscribers. Called when switching away from WebLN. */
+export function weblnDisable(): void {
+  if (weblnEnabled) {
+    weblnEnabled = false;
+    notify();
+  }
+}
+
 /**
  * Fetch balance in sats. Returns null when:
  *   - the user hasn't enabled WebLN this session (so we don't prompt them

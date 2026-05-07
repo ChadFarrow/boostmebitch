@@ -51,20 +51,13 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
 
-  // Re-render when any rail's connect state flips (user enables WebLN, etc.)
-  // so the picker reflects current availability. Polled directly via the
-  // has*() helpers — they're cheap and there's no risk of staleness.
-  const [, setRailTick] = useState(0);
+  // Keep rail in sync if wallet connects/disconnects while the modal is open.
   useEffect(() => {
-    const bump = () => setRailTick((t) => t + 1);
+    const bump = () => setRail(pickRail());
     const unsubNwc = subscribeNwc(bump);
     const unsubSpark = subscribeSpark(bump);
     return () => { unsubNwc(); unsubSpark(); };
   }, []);
-  const availableRails: Rail[] = [];
-  if (hasNwc()) availableRails.push('nwc');
-  if (hasSpark()) availableRails.push('spark');
-  if (hasWebln()) availableRails.push('webln');
 
   function handleShareNostrChange(v: boolean) {
     setShareNostr(v);
@@ -219,33 +212,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         </div>
 
         <div className="p-5 space-y-4">
-          {/* Rail picker: only shown when 2+ rails are available. Single-rail
-              users never see it. WebLN sits last in pickRail() priority but
-              with Alby installed users often want to opt into it per-boost,
-              so the picker is the override path. */}
-          {availableRails.length > 1 && (
-            <div className="flex flex-wrap items-center gap-2 text-[11px]">
-              <span className="text-muted uppercase tracking-widest">Pay via</span>
-              {availableRails.map((r) => {
-                const label = r === 'nwc' ? 'NWC' : r === 'spark' ? 'Spark' : 'WebLN';
-                const active = rail === r;
-                return (
-                  <button
-                    key={r}
-                    type="button"
-                    onClick={() => { setRail(r); storage.railPref.set(r); }}
-                    className={`px-2 py-1 rounded border transition ${
-                      active
-                        ? 'border-bolt bg-bolt/10 text-bolt'
-                        : 'border-bone/20 text-muted hover:border-bone/40 hover:text-bone'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+
           {!rail && (
             <div className="text-[11px] text-nostr/80">
               No wallet connected — set one up in the account menu (top right).

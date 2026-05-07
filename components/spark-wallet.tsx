@@ -1,9 +1,5 @@
 'use client';
 
-// Spark wallet UI. Drives create-and-back-up + restore-from-Nostr flows
-// (BIP-39 / NIP-44 / kind:30078) and, once the wallet is initialized,
-// surfaces the balance + a deposit-invoice generator for funding.
-
 import { useCallback, useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
 import { useApp } from '@/lib/store';
@@ -16,7 +12,6 @@ import {
   sparkDisconnect,
   sparkGetInfo,
   sparkReceiveInvoice,
-  subscribeSpark,
   subscribeSparkEvents,
 } from '@/lib/v4v/spark';
 import {
@@ -25,37 +20,30 @@ import {
 } from '@/lib/nostr';
 import { getErrorMessage } from '@/lib/util';
 
-type Mode = 'idle' | 'creating' | 'restoring' | 'busy';
+type InternalMode = 'idle' | 'creating' | 'restoring' | 'busy';
 
 interface Props {
-  onReady?: () => void;
+  mode: 'form' | 'card';
+  onConnected?: () => void;
+  onDisconnected?: () => void;
 }
 
-export function SparkWallet({ onReady }: Props) {
+export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
   const identity = useApp((s) => s.identity);
-  const [, setTick] = useState(0);
-  const [mode, setMode] = useState<Mode>('idle');
+  const [internalMode, setInternalMode] = useState<InternalMode>('idle');
   const [draftMnemonic, setDraftMnemonic] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  const ready = hasSpark();
   const owner = sparkOwner();
-
-  function bump() { setTick((t) => t + 1); }
-
-  // Re-render when an outside actor (e.g. auto-restore in loadProfile) flips
-  // the wallet state after this component has already mounted.
-  useEffect(() => subscribeSpark(bump), []);
 
   async function startCreate() {
     setErr(null);
     if (!identity) { setErr('Sign in with Nostr first — backups need your pubkey.'); return; }
-    setMode('busy');
+    setInternalMode('busy');
     try {
-      // Replaceable kind:30078 with d-tag boostmebitch:wallet:spark — creating
-      // a new wallet would overwrite any existing backup on relays. If there
-      // is one, force the user to acknowledge before destroying it.
+      // Replaceable kind:30078 — creating a new wallet overwrites any existing backup.
+      // Force the user to acknowledge before destroying the old one.
       const existing = await fetchEncryptedMnemonic(identity).catch(() => null);
       if (existing) {
         const ok = window.confirm(
@@ -64,83 +52,83 @@ export function SparkWallet({ onReady }: Props) {
           'will be unrecoverable unless you wrote its seed phrase down.\n\n' +
           'Continue and overwrite?'
         );
-        if (!ok) { setMode('idle'); return; }
+        if (!ok) { setInternalMode('idle'); return; }
       }
       const m = await sparkGenerateMnemonic();
       setDraftMnemonic(m);
       setConfirmed(false);
-      setMode('creating');
+      setInternalMode('creating');
     } catch (e) {
       setErr(getErrorMessage(e, 'failed to generate mnemonic'));
-      setMode('idle');
+      setInternalMode('idle');
     }
   }
 
   async function confirmCreate() {
     if (!identity || !draftMnemonic) return;
-    setMode('busy'); setErr(null);
+    setInternalMode('busy'); setErr(null);
     try {
       storage.sparkOptOut.clear();
       await publishEncryptedMnemonic(identity, draftMnemonic);
       await sparkInitFromMnemonic({ mnemonic: draftMnemonic, ownerPubkey: identity.pubkey });
       setDraftMnemonic(null);
       setConfirmed(false);
-      setMode('idle');
-      bump();
-      onReady?.();
+      setInternalMode('idle');
+      onConnected?.();
     } catch (e) {
       setErr(getErrorMessage(e, 'failed to back up mnemonic'));
-      setMode('creating');
+      setInternalMode('creating');
     }
   }
 
   function cancelCreate() {
     setDraftMnemonic(null);
     setConfirmed(false);
-    setMode('idle');
+    setInternalMode('idle');
     setErr(null);
   }
 
   async function restore() {
     setErr(null);
     if (!identity) { setErr('Sign in with Nostr first — restore reads from your relays.'); return; }
-    setMode('restoring');
+    setInternalMode('restoring');
     try {
       storage.sparkOptOut.clear();
       const m = await fetchEncryptedMnemonic(identity);
       if (!m) {
         setErr('No backup found on your write relays.');
-        setMode('idle');
+        setInternalMode('idle');
         return;
       }
       await sparkInitFromMnemonic({ mnemonic: m, ownerPubkey: identity.pubkey });
-      setMode('idle');
-      bump();
-      onReady?.();
+      setInternalMode('idle');
+      onConnected?.();
     } catch (e) {
       setErr(getErrorMessage(e, 'failed to restore wallet'));
-      setMode('idle');
+      setInternalMode('idle');
     }
   }
 
   async function disconnect() {
     await sparkDisconnect();
     storage.sparkOptOut.set();
-    // Drop the cached header-chip balance so it doesn't keep flashing the
-    // last-known number after the wallet's gone.
     storage.walletBalance.clear(identity?.npub);
-    bump();
+    onDisconnected?.();
   }
 
-  if (ready) {
+  if (mode === 'card') {
+    if (!hasSpark()) return null;
     return <ReadyPanel owner={owner} onDisconnect={disconnect} />;
   }
 
-  if (mode === 'creating' && draftMnemonic) {
+  // mode === 'form'
+  if (hasSpark()) return null;
+
+  if (internalMode === 'creating' && draftMnemonic) {
     return (
-      <div className="mt-3 space-y-2">
+      <div className="space-y-2">
         <div className="text-[11px] uppercase tracking-widest text-bolt">
-          Write this down — it's the only way to recover this wallet outside Nostr.
+          Write this down — it&apos;s the only way to recover this wallet outside Nostr.
         </div>
         <code className="block card p-3 text-xs leading-relaxed break-words select-all">
           {draftMnemonic}
@@ -169,25 +157,24 @@ export function SparkWallet({ onReady }: Props) {
   }
 
   return (
-    <div className="mt-3 space-y-2">
+    <div className="space-y-2">
       <div className="text-[11px] text-muted">
         Self-custodial wallet. Mnemonic is NIP-44 encrypted to your pubkey and stored on your write relays.
       </div>
-      {/* Idle-state form below; the ready-state panel is rendered above this block. */}
       <div className="flex gap-2 flex-wrap">
         <button
           onClick={startCreate}
-          disabled={mode === 'busy' || !identity}
+          disabled={internalMode === 'busy' || !identity}
           className="btn-ghost disabled:opacity-30"
         >
           Create new
         </button>
         <button
           onClick={restore}
-          disabled={mode === 'restoring' || mode === 'busy' || !identity}
+          disabled={internalMode === 'restoring' || internalMode === 'busy' || !identity}
           className="btn-ghost disabled:opacity-30"
         >
-          {mode === 'restoring' ? 'Restoring…' : 'Restore from Nostr'}
+          {internalMode === 'restoring' ? 'Restoring…' : 'Restore from Nostr'}
         </button>
       </div>
       {!identity && (
@@ -219,13 +206,8 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
     } finally { setRefreshing(false); }
   }, []);
 
-  // Real-time SDK events drive most balance updates; the schedule below
-  // fills the gap when the SDK fires its `synced` event before our
-  // listener attaches (which leaves the panel showing a stale 0 balance
-  // after a fresh restore). Attaching the listener BEFORE the first
-  // refresh closes the obvious race; the small retry schedule afterwards
-  // catches the case where the SDK has more to sync after the first
-  // getInfo call.
+  // Real-time SDK events drive most balance updates; the schedule below fills
+  // the gap when the SDK fires `synced` before our listener attaches.
   useEffect(() => {
     let unsub: (() => void) | null = null;
     let cancelled = false;
@@ -236,8 +218,6 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
         || e.type === 'claimedDeposits'
         || e.type === 'newDeposits') {
         refresh();
-        // setState fns are stable; safe to call from this captured closure
-        // without adding them to the effect's deps.
         setInvoice(null);
         setFeeSats(null);
         setShowReceive(false);
@@ -246,22 +226,11 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
         refresh();
       }
     }).then((fn) => {
-      if (cancelled) {
-        fn();
-        return;
-      }
+      if (cancelled) { fn(); return; }
       unsub = fn;
-      // Fire the first refresh AFTER the listener is attached so any sync
-      // events that fire from this point on are seen. Then schedule a
-      // couple of retries — Breez Spark's initial sync after `connect()`
-      // can take a few seconds, and the cached balance in `getInfo()` is
-      // often 0 until that completes. Each retry returns the SDK's
-      // current cached state, so once it updates, the panel updates too.
       refresh();
       for (const delay of [2000, 5000, 12000]) {
-        retryTimers.push(setTimeout(() => {
-          if (!cancelled) refresh();
-        }, delay));
+        retryTimers.push(setTimeout(() => { if (!cancelled) refresh(); }, delay));
       }
     });
 
@@ -298,9 +267,9 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
   }
 
   return (
-    <div className="mt-3 space-y-2 text-[11px]">
+    <div className="space-y-2 text-[11px]">
       <div className="flex items-baseline gap-3">
-        <span className="text-muted">Spark wallet ready{owner ? ` · ${owner.slice(0, 8)}…` : ''}</span>
+        <span className="text-muted">Spark{owner ? ` · ${owner.slice(0, 8)}…` : ''}</span>
       </div>
       <div className="flex items-baseline gap-2">
         <span className="text-bone text-base font-mono">
@@ -320,7 +289,7 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
       {!showReceive && !invoice && (
         <div className="flex gap-2">
           <button onClick={() => setShowReceive(true)} className="btn-ghost">Receive</button>
-          <button onClick={onDisconnect} className="text-muted hover:text-nostr">disconnect</button>
+          <button onClick={onDisconnect} className="text-muted hover:text-nostr">Disconnect</button>
         </div>
       )}
 
@@ -359,9 +328,6 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
             {feeSats != null && feeSats > 0 ? ` Spark settle fee: ${feeSats.toLocaleString()} sats.` : ''}
           </div>
           <div className="flex justify-center bg-bone p-3">
-            {/* `bone` background ensures full QR contrast regardless of dark
-                mode; `imageSettings` left unset so no logo overlays the data
-                modules (some wallets choke on heavy logos). */}
             <QRCodeSVG
               value={`lightning:${invoice}`}
               size={200}

@@ -1,60 +1,201 @@
 'use client';
 
-// Lightning wallet modal — a single overlay that consolidates the three
-// wallet rails (NWC / Spark / WebLN) so the account menu doesn't have to
-// stack three sub-cards. Triggered by the WalletButton in AccountMenu.
-//
-// All three sections render unconditionally — each sub-component flips
-// between its connected card and its connect form on its own. This lets
-// the user wire up a second rail (or switch wallets) without first having
-// to disconnect the active one. The boost modal's rail picker already
-// understands multi-rail setups; the wallet modal mirrors that.
-
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
-import { hasWebln } from '@/lib/v4v/webln';
+import { hasWebln, isWeblnEnabled, subscribeWebln } from '@/lib/v4v/webln';
+import { clearOtherWallets } from '@/lib/v4v/wallets';
+import { useApp } from '@/lib/store';
 import { NwcWallet } from './nwc-wallet';
 import { SparkWallet } from './spark-wallet';
 import { WeblnWallet } from './webln-wallet';
+
+type WalletView =
+  | { kind: 'picker'; switching: boolean }
+  | { kind: 'connecting'; rail: 'nwc' | 'spark' | 'webln'; switching: boolean }
+  | { kind: 'connected' };
+
+function getActiveRail(): 'nwc' | 'spark' | 'webln' | null {
+  if (hasNwc()) return 'nwc';
+  if (hasSpark()) return 'spark';
+  if (isWeblnEnabled()) return 'webln';
+  return null;
+}
 
 interface Props {
   onClose: () => void;
 }
 
 export function WalletModal({ onClose }: Props) {
-  // Bump on either rail's state change so the modal flips between
-  // "connected wallets only" and "all options" without remounting.
-  const [, setTick] = useState(0);
+  const identity = useApp((s) => s.identity);
+  const [view, setView] = useState<WalletView>(() =>
+    getActiveRail() !== null ? { kind: 'connected' } : { kind: 'picker', switching: false }
+  );
   // Portal target only resolves on the client; tracking it in state lets the
   // first render no-op during SSR and re-render once the body is available.
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+
   useEffect(() => {
     setPortalTarget(document.body);
-    const bump = () => setTick((t) => t + 1);
-    const unsubSpark = subscribeSpark(bump);
+    // Sync view when wallet state changes externally (e.g. auto-restore completes
+    // after the modal is already open, or a disconnect fires from outside).
+    const bump = () => {
+      setView((v) => {
+        const active = getActiveRail();
+        if (v.kind === 'connected' && !active) return { kind: 'picker', switching: false };
+        if (v.kind === 'picker' && !v.switching && active) return { kind: 'connected' };
+        return v;
+      });
+    };
     const unsubNwc = subscribeNwc(bump);
-    return () => { unsubSpark(); unsubNwc(); };
+    const unsubSpark = subscribeSpark(bump);
+    const unsubWebln = subscribeWebln(bump);
+    return () => { unsubNwc(); unsubSpark(); unsubWebln(); };
   }, []);
 
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const weblnAvailable = hasWebln();
-  const anyConnected = hasNwc() || hasSpark();
+  async function handleConnected(rail: 'nwc' | 'spark' | 'webln') {
+    await clearOtherWallets(rail, identity?.npub);
+    setView({ kind: 'connected' });
+  }
+
+  function handleDisconnected() {
+    setView({ kind: 'picker', switching: false });
+  }
 
   // Portal to body so `position: fixed` resolves against the viewport, not the
-  // sticky <header>. The header uses `backdrop-blur` which creates a
-  // containing block for fixed descendants per CSS spec — without the portal,
-  // the modal renders clipped to the header's bounding box on mobile (looking
-  // like the menu "opens upward").
+  // sticky <header>. The header uses `backdrop-blur` which creates a containing
+  // block for fixed descendants per CSS spec.
   if (!portalTarget) return null;
+
+  const activeRail = getActiveRail();
+  const weblnDetected = hasWebln();
+
+  let headerTitle = 'Connect a wallet';
+  let headerSub: string | null = 'Pick one to send Lightning payments.';
+  if (view.kind === 'connected') {
+    headerTitle = activeRail === 'nwc' ? 'NWC'
+      : activeRail === 'spark' ? 'Spark'
+      : activeRail === 'webln' ? 'WebLN'
+      : 'Lightning Wallet';
+    headerSub = null;
+  } else if (view.kind === 'connecting') {
+    headerTitle = view.rail === 'nwc' ? 'NWC' : view.rail === 'spark' ? 'Spark' : 'WebLN';
+    headerSub = null;
+  } else if (view.kind === 'picker' && view.switching) {
+    headerTitle = 'Switch wallet';
+    headerSub = null;
+  }
+
+  function renderBody() {
+    if (view.kind === 'connected') {
+      return (
+        <div className="p-5 space-y-4">
+          {activeRail === 'nwc' && (
+            <NwcWallet mode="card" onDisconnected={handleDisconnected} />
+          )}
+          {activeRail === 'spark' && (
+            <SparkWallet mode="card" onDisconnected={handleDisconnected} />
+          )}
+          {activeRail === 'webln' && (
+            <WeblnWallet mode="card" onDisconnected={handleDisconnected} />
+          )}
+          {!activeRail && (
+            <div className="text-[11px] text-muted">No wallet active.</div>
+          )}
+          <div className="border-t border-bone/15 pt-3 text-center">
+            <button
+              onClick={() => setView({ kind: 'picker', switching: true })}
+              className="text-[11px] text-muted hover:text-bone"
+            >
+              Switch wallet →
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    if (view.kind === 'connecting') {
+      const { rail, switching } = view;
+      const back: WalletView = switching
+        ? { kind: 'connected' }
+        : { kind: 'picker', switching: false };
+      return (
+        <div className="p-5 space-y-4">
+          <button
+            onClick={() => setView(back)}
+            className="text-[11px] text-muted hover:text-bone"
+          >
+            ← Back
+          </button>
+          {rail === 'nwc' && (
+            <NwcWallet mode="form" onConnected={() => handleConnected('nwc')} />
+          )}
+          {rail === 'spark' && (
+            <SparkWallet mode="form" onConnected={() => handleConnected('spark')} />
+          )}
+          {rail === 'webln' && (
+            <WeblnWallet mode="form" onConnected={() => handleConnected('webln')} />
+          )}
+        </div>
+      );
+    }
+
+    // State 1 (nothing connected) or State 4 (switching)
+    const { switching } = view;
+    type PickerRow = { rail: 'nwc' | 'spark' | 'webln'; icon: string; title: string; desc: string };
+    const rows: PickerRow[] = [
+      { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Paste a nostr+walletconnect:// URI' },
+      { rail: 'spark', icon: '✶', title: 'Spark', desc: 'Self-custodial, create or restore' },
+      ...(weblnDetected
+        ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Alby extension · tap to enable' }]
+        : []),
+    ];
+
+    return (
+      <div className="p-5 space-y-3">
+        {switching && (
+          <>
+            <button
+              onClick={() => setView({ kind: 'connected' })}
+              className="text-[11px] text-muted hover:text-bone"
+            >
+              ← Back
+            </button>
+            {activeRail && (
+              <div className="text-[11px] text-muted border border-bone/15 rounded p-3">
+                Connecting a new wallet will disconnect {activeRail.toUpperCase()}.
+              </div>
+            )}
+          </>
+        )}
+        <div className="space-y-2">
+          {rows.map(({ rail, icon, title, desc }) => (
+            <button
+              key={rail}
+              onClick={() => setView({ kind: 'connecting', rail, switching })}
+              className="w-full text-left card p-3 hover:border-bone/40 transition"
+            >
+              <div className="text-sm font-medium">
+                {icon} {title}
+                {switching && activeRail === rail && (
+                  <span className="ml-2 text-[11px] text-bolt">(active)</span>
+                )}
+              </div>
+              <div className="text-[11px] text-muted mt-0.5">{desc}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   return createPortal(
     <div className="fixed inset-0 z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="card w-full max-w-md bg-ink relative max-h-[92vh] overflow-y-auto">
@@ -65,37 +206,12 @@ export function WalletModal({ onClose }: Props) {
         >
           ×
         </button>
-
         <div className="p-5 border-b border-bone/15">
           <div className="stamp text-bolt border-bolt/60 mb-2">⚡ LIGHTNING WALLET</div>
-          <h3 className="font-display text-2xl leading-tight">
-            {anyConnected ? 'Wallets' : 'Connect a wallet'}
-          </h3>
-          <p className="text-xs text-muted mt-1">
-            {anyConnected
-              ? 'Connect another rail or disconnect the current one.'
-              : 'Pick one option to send Lightning payments.'}
-          </p>
+          <h3 className="font-display text-2xl leading-tight">{headerTitle}</h3>
+          {headerSub && <p className="text-xs text-muted mt-1">{headerSub}</p>}
         </div>
-
-        <div className="p-5 space-y-5">
-          <section>
-            <div className="text-[11px] uppercase tracking-widest text-bone/60">NWC</div>
-            <NwcWallet />
-          </section>
-
-          <section>
-            <div className="text-[11px] uppercase tracking-widest text-bone/60">Spark</div>
-            <SparkWallet />
-          </section>
-
-          {weblnAvailable && (
-            <section>
-              <div className="text-[11px] uppercase tracking-widest text-bone/60">WebLN</div>
-              <WeblnWallet />
-            </section>
-          )}
-        </div>
+        {renderBody()}
       </div>
     </div>,
     portalTarget,
