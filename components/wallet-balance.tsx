@@ -195,8 +195,12 @@ export function useWalletBalance(
     if (balance !== null) displayBalance = balance;
     else if (cached && cached.rail === rail) displayBalance = cached.balance;
   } else if (cached) {
-    displayRail = cached.rail;
-    displayBalance = cached.balance;
+    // WebLN session state resets on page reload, so a cached webln balance
+    // is only valid if WebLN is currently enabled.
+    if (cached.rail !== 'webln' || weblnReady) {
+      displayRail = cached.rail;
+      displayBalance = cached.balance;
+    }
   }
 
   return { balance: displayBalance, rail: displayRail };

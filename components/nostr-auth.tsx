@@ -28,6 +28,7 @@ import {
 import { getLatestPendingAmber, submitManualAmberResult, subscribeAmberStage } from '@/lib/nostr/amber';
 import { hasSpark, sparkInitFromMnemonic, subscribeSpark } from '@/lib/v4v/spark';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
+import { isWeblnEnabled, subscribeWebln } from '@/lib/v4v/webln';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -960,20 +961,21 @@ function WalletButton({ onClick }: { onClick: () => void }) {
     const bump = () => setTick((t) => t + 1);
     const unsubSpark = subscribeSpark(bump);
     const unsubNwc = subscribeNwc(bump);
-    return () => { unsubSpark(); unsubNwc(); };
+    const unsubWebln = subscribeWebln(bump);
+    return () => { unsubSpark(); unsubNwc(); unsubWebln(); };
   }, []);
 
   const sparkReady = hasSpark();
   const nwcReady = hasNwc();
-  // Spark is preferred in the summary because it's the richer surface
-  // (balance + receive). NWC takes priority over Spark in pickRail() for
-  // sending, but here we're describing the user's setup, not routing.
+  const weblnReady = isWeblnEnabled();
   const summary = sparkReady
     ? 'Spark wallet'
     : nwcReady
       ? 'NWC connected'
-      : 'Not connected';
-  const connected = sparkReady || nwcReady;
+      : weblnReady
+        ? 'WebLN connected'
+        : 'Not connected';
+  const connected = sparkReady || nwcReady || weblnReady;
 
   return (
     <button
