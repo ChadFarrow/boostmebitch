@@ -233,9 +233,9 @@ Fan-out callers use **probe-first-then-batch**: await one resolve, check `piMayb
 
 ## Background art and the canvas-bg gotcha
 
-`app/layout.tsx` renders `public/hero.jpg` as a fixed full-viewport layer with a 75% ink overlay and `<Image fill priority />` (AVIF/WebP). Same image doubles as the OG via `metadata.openGraph.images`.
+`app/layout.tsx` renders `public/hero.jpg` as a fixed full-viewport layer with a `bg-ink/75` overlay and `<Image fill priority />` (AVIF/WebP). The overlay's opacity is what mutes the image; in light mode `--ink` flips to cream so the same `bg-ink/75` becomes a 75% bone wash automatically. Same image doubles as the OG via `metadata.openGraph.images`.
 
-**`bg-ink` lives on `<html>`, NOT `<body>`.** A `body` background propagates to the canvas and paints over the fixed image layer regardless of z-index. Moving `bg-ink` back to `<body>` silently breaks the hero — no errors, just a dark page.
+**The page background lives on `<html>`, NOT `<body>`.** It's set via CSS in `app/globals.css` (`html, body { background: rgb(var(--ink)) }` + the explicit rule on `html`), not via a Tailwind class. A `body` background propagates to the canvas and paints over the fixed image layer regardless of z-index. Moving the background to `<body>` (or putting `bg-ink` back on `<body>`) silently breaks the hero — no errors, just a flat-color page.
 
 ## State + persistence
 
@@ -252,6 +252,7 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 | `bmb:nwc_uri` | NWC URI. |
 | `bmb:rail_pref` | `'nwc' \| 'spark' \| 'webln'` — user's preferred boost rail, set when they click a rail in the boost-modal picker. Falls back to `pickRail()` priority when absent or when the preferred rail isn't available. |
 | `bmb:wallet_balance:*` | `{ rail, balance, ts }` per npub — last-known wallet balance + rail. Read on mount so the header chip paints instantly while the SDK reconnects; written after every successful balance fetch; cleared on explicit Spark/NWC disconnect. |
+| `bmb:theme` | `'light'` when user chose light mode; absent = dark (default). The FOUC-blocker `<script>` in `app/layout.tsx` reads this synchronously and sets `data-theme="light"` on `<html>` before first paint — without it light-mode users see a dark flash on every navigation. |
 | `bmb:relays` | JSON array, manual publish-relay override. |
 | `bmb:sender_name` | Last "From" name in the boost modal. |
 | `bmb:share_nostr` | `'0'` = default to NOT publishing a Nostr note for new boosts. |
@@ -270,9 +271,26 @@ External: the **Spark mnemonic** lives encrypted on Nostr as kind:30078. Breez S
 
 Custom palette in `tailwind.config.ts` — don't introduce new colors without adding them here:
 
-`ink` (#0a0a08, bg), `bone` (#fdfaf3, fg), `bolt` (#fae500, Lightning yellow), `nostr` (#ff2d92, magenta), `muted` (#8a857a, secondary), `line` (#1f1d18, borders). Fonts: `font-display` (Bricolage Grotesque), `font-mono` (JetBrains Mono). `animate-bolt` is a 1.4s opacity pulse.
+`ink` (page bg), `bone` (primary fg), `bolt` (Lightning yellow), `nostr` (magenta), `muted` (secondary), `line` (borders). Fonts: `font-display` (Bricolage Grotesque), `font-mono` (JetBrains Mono). `animate-bolt` is a 1.4s opacity pulse.
 
 Reusable element classes: `.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.input`, `.stamp`, `.headline`, `.seek` — defined in `app/globals.css`. Read that before inventing new ones.
+
+## Theme system (light + dark)
+
+**Tokens are role-based, not literal.** `ink` means "page bg", `bone` means "primary fg" — their *values* swap between modes, not their names. Tailwind reads each color as `rgb(var(--token) / <alpha-value>)` (see `tailwind.config.ts`); the actual values are CSS variables defined twice in `app/globals.css`:
+
+- `:root` — dark mode default. `--ink: 10 10 8`, `--bone: 253 250 243`, `--bolt: 250 229 0`, `--nostr: 255 45 146`, `--muted: 138 133 122`, `--line: 31 29 24`, `color-scheme: dark`.
+- `:root[data-theme='light']` — light mode. Values flip: `--ink: 253 250 243`, `--bone: 10 10 8`. Brand colors deepen because the brand yellow/magenta on bone is invisible: `--bolt: 224 168 0` (vibrant amber-gold — the earlier `191 138 0` read as muddy mustard), `--nostr: 197 20 117`. `--muted: 110 105 95`, `--line: 225 220 207`, `color-scheme: light`.
+
+Result: `bg-ink`, `text-bone`, `border-bone/40`, `bg-ink/75` (hero overlay), `bg-ink/90` (sticky header) all work in both modes without per-component class changes. The hero overlay automatically becomes a 75% bone wash in light mode.
+
+**Single-token tradeoff for `bolt`.** `text-bolt` has ~30 callsites (headlines, stamps, hover states, status indicators); `bg-bolt` is only `.btn-bolt` + a couple `bg-bolt/10` tints. So one token serves both fg and bg roles — light-mode `--bolt` is a vivid mid-amber that's recognizable as Lightning-yellow on the button background AND visible enough as text on bone. Don't split into two tokens unless you're prepared to refactor every callsite.
+
+**FOUC blocker** lives inline in `<head>` in `app/layout.tsx` — reads `bmb:theme` synchronously and sets `data-theme="light"` on `<html>` before paint. `<html suppressHydrationWarning>` so React doesn't complain about the attribute the script added pre-hydration. Don't move this script to a `useEffect` — it has to run before first paint or light-mode users get a dark flash on every navigation.
+
+**Toggle component** is `components/theme-toggle.tsx` — sun/moon button slotted in the header (`app/page.tsx`) between the spacer and `<NostrAuth />`. Persistence: `bmb:theme` localStorage key (only `'light'` is ever written; absent = dark). On toggle the component also updates `<meta name="theme-color">` so iOS Safari's status-bar tint follows. Subscribe to changes via `subscribeTheme()` (parallel to `subscribeNwc`/`subscribeSpark`) — currently unused but exposed for future per-component reactions.
+
+Don't introduce a token whose name implies a fixed color (e.g. avoid `dark-gray`); follow the role pattern.
 
 ## Conventions worth keeping
 

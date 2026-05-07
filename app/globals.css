@@ -4,13 +4,33 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Theme tokens — `ink` = page bg, `bone` = primary fg; values swap between
+   modes so Tailwind classes (bg-ink, text-bone, bg-ink/75) keep working in
+   both themes. The FOUC-blocker script in app/layout.tsx sets
+   data-theme="light" on <html> synchronously before paint. */
 :root {
+  --ink:   10 10 8;
+  --bone:  253 250 243;
+  --bolt:  250 229 0;
+  --nostr: 255 45 146;
+  --muted: 138 133 122;
+  --line:  31 29 24;
   color-scheme: dark;
 }
 
+:root[data-theme='light'] {
+  --ink:   253 250 243;       /* page bg flips to bone-cream */
+  --bone:  10 10 8;           /* primary fg flips to near-black */
+  --bolt:  224 168 0;         /* vibrant amber-gold — readable on bone, still recognizably "Lightning yellow". The earlier #bf8a00 read as muddy mustard. text-bolt callsites (~30) and bg-bolt (.btn-bolt) share this single token; a vivid mid-amber is the best compromise without splitting into separate fg/bg tokens. */
+  --nostr: 197 20 117;        /* deeper magenta — same readability fix */
+  --muted: 110 105 95;        /* darker neutral — fg-side reads on light */
+  --line:  225 220 207;       /* light hairline */
+  color-scheme: light;
+}
+
 html, body {
-  background: #0a0a08;
-  color: #f5f1e8;
+  background: rgb(var(--ink));
+  color: rgb(var(--bone));
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   overflow-x: hidden;
 }
@@ -79,17 +99,17 @@ input[type='range'].seek {
 }
 input[type='range'].seek::-webkit-slider-runnable-track {
   height: 2px;
-  background: rgba(245, 241, 232, 0.25);
+  background: rgb(var(--bone) / 0.25);
 }
 input[type='range'].seek::-moz-range-track {
   height: 2px;
-  background: rgba(245, 241, 232, 0.25);
+  background: rgb(var(--bone) / 0.25);
 }
 input[type='range'].seek::-webkit-slider-thumb {
   -webkit-appearance: none;
   height: 12px;
   width: 12px;
-  background: #fae500;
+  background: rgb(var(--bolt));
   margin-top: -5px;
   border-radius: 0;
   cursor: pointer;
@@ -97,17 +117,17 @@ input[type='range'].seek::-webkit-slider-thumb {
 input[type='range'].seek::-moz-range-thumb {
   height: 12px;
   width: 12px;
-  background: #fae500;
+  background: rgb(var(--bolt));
   border: 0;
   border-radius: 0;
   cursor: pointer;
 }
 
-/* Scrollbar */
+/* Scrollbar — uses theme tokens so it follows the active mode */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: #0a0a08; }
-::-webkit-scrollbar-thumb { background: #1f1d18; }
-::-webkit-scrollbar-thumb:hover { background: #2a271f; }
+::-webkit-scrollbar-track { background: rgb(var(--ink)); }
+::-webkit-scrollbar-thumb { background: rgb(var(--line)); }
+::-webkit-scrollbar-thumb:hover { background: rgb(var(--muted) / 0.5); }
 
 /* iOS Safari auto-zooms any focused input/textarea/select with font-size <
    16px and doesn't zoom back out on blur, leaving the whole page stuck at

@@ -26,9 +26,11 @@ const KEYS = {
   railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
   sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or connects another rail; suppresses auto-restore on next login
+  theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
 } as const;
 
 export type RailPref = 'nwc' | 'spark' | 'webln';
+export type ThemeMode = 'light' | 'dark';
 export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
 
 export type SignerKind = 'amber' | 'bunker';
@@ -230,6 +232,17 @@ export const storage = {
     get: () => safeGet(KEYS.sparkOptOut) === '1',
     set: () => safeSet(KEYS.sparkOptOut, '1'),
     clear: () => safeRemove(KEYS.sparkOptOut),
+  },
+
+  /** Per-device theme preference. Absent = dark (the app default). Only
+   *  'light' is ever written; flipping back to dark removes the key so
+   *  there's a single sentinel state for "default". */
+  theme: {
+    get: (): ThemeMode => (safeGet(KEYS.theme) === 'light' ? 'light' : 'dark'),
+    set: (v: ThemeMode) => {
+      if (v === 'light') safeSet(KEYS.theme, 'light');
+      else safeRemove(KEYS.theme);
+    },
   },
 
   /**

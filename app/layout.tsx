@@ -92,13 +92,34 @@ export const viewport: Viewport = {
   themeColor: '#0a0a08',
 };
 
+// FOUC-blocker for light mode. Reads bmb:theme synchronously and sets
+// data-theme on <html> before first paint — without it, light-mode users see
+// a dark flash on every navigation while React hydrates. Stays inline so it
+// runs before any CSS or JS bundle. The default (dark) needs no setup since
+// :root in globals.css holds the dark values.
+const FOUC_BLOCKER = `
+try {
+  if (localStorage.getItem('bmb:theme') === 'light') {
+    document.documentElement.dataset.theme = 'light';
+  }
+} catch (e) {}
+`;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    // bg-ink on <html> makes the canvas dark so there's no white flash before
-    // the hero image loads. We deliberately keep <body> background-free so the
-    // fixed image layer below is visible through it (setting bg on <body>
-    // propagates to the canvas and would cover the image).
-    <html lang="en" className="bg-ink">
+    // The page background lives on <html> in globals.css (background:
+    // rgb(var(--ink))), so there's no white flash before the hero image
+    // loads. We deliberately keep <body> background-free so the fixed image
+    // layer below is visible through it — setting bg on <body> propagates
+    // to the canvas and would cover the image.
+    // suppressHydrationWarning: the FOUC-blocker script mutates
+    // documentElement.dataset.theme before React hydrates. Without this flag
+    // React logs a noisy "extra attribute on the server: data-theme" warning.
+    // Scoped to <html> so component-level mismatches still surface normally.
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: FOUC_BLOCKER }} />
+      </head>
       <body className="min-h-screen antialiased">
         <div aria-hidden className="fixed inset-0 pointer-events-none">
           <Image

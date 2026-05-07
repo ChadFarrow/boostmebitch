@@ -5,12 +5,17 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        ink: '#0a0a08',
-        bone: '#fdfaf3',
-        bolt: '#fae500',
-        nostr: '#ff2d92',
-        muted: '#8a857a',
-        line: '#1f1d18',
+        // Role tokens — values come from CSS variables defined in
+        // app/globals.css (:root for dark, :root[data-theme="light"] for light).
+        // `ink` = page bg, `bone` = primary fg; their values swap between
+        // themes, so existing classes (bg-ink, text-bone, bg-ink/75 etc.)
+        // keep working unchanged.
+        ink: 'rgb(var(--ink) / <alpha-value>)',
+        bone: 'rgb(var(--bone) / <alpha-value>)',
+        bolt: 'rgb(var(--bolt) / <alpha-value>)',
+        nostr: 'rgb(var(--nostr) / <alpha-value>)',
+        muted: 'rgb(var(--muted) / <alpha-value>)',
+        line: 'rgb(var(--line) / <alpha-value>)',
       },
       fontFamily: {
         display: ['"Bricolage Grotesque"', 'system-ui', 'sans-serif'],

@@ -6,6 +6,7 @@ import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { BoltIcon } from '@/components/icons';
+import { ThemeToggle } from '@/components/theme-toggle';
 import { useApp } from '@/lib/store';
 
 import type { Podcast } from '@/lib/types';
@@ -55,6 +56,7 @@ export default function Home() {
             </span>
           </button>
           <div className="flex-1" />
+          <ThemeToggle />
           <NostrAuth />
         </div>
       </header>
