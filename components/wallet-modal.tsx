@@ -62,7 +62,7 @@ export function WalletModal({ onClose }: Props) {
 
   async function handleConnected(rail: 'nwc' | 'spark' | 'webln') {
     await clearOtherWallets(rail, identity?.npub);
-    setView({ kind: 'connected' });
+    onClose();
   }
 
   async function handleWeblnPickerClick(switching: boolean) {
