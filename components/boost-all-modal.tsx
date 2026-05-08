@@ -1,17 +1,19 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, type Rail } from '@/lib/v4v/boost';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
+import { publishBoostNote, resolvePublishRelays } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './boost-modal/message-input';
 import { SenderName } from './boost-modal/sender-name';
+import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { PodcastCover } from './podcast-cover';
 
 interface Props {
@@ -40,6 +42,15 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const [running, setRunning] = useState(false);
   const [done, setDone] = useState(false);
   const [progress, setProgress] = useState<TrackProgress[]>([]);
+
+  const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
+  const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
+  const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
+
+  function handleShareNostrChange(v: boolean) {
+    setShareNostr(v);
+    storage.shareNostr.set(v);
+  }
 
   // Set on unmount so the in-flight loop bails before firing more sends or
   // calling setState on an unmounted component. The current track's send
@@ -103,6 +114,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     setRunning(true);
     setProgress([]);
 
+    // Local success tracker — `progress` state has stale-closure issues
+    // across awaits, and we need the final list immediately for the
+    // post-loop Nostr publish.
+    const successfulIdx: number[] = [];
+
     for (let i = 0; i < splits.length; i++) {
       if (cancelled.current) return;
       const split = splits[i];
@@ -161,6 +177,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           };
           storage.boosts.add(identity?.npub, stored);
           bumpBoosts();
+          successfulIdx.push(i);
         }
         if (cancelled.current) return;
         setProgress((prev) => [...prev, { index: i, ok }]);
@@ -175,6 +192,66 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
     setRunning(false);
     setDone(true);
+
+    // Single summary note covering all successful tracks. Gated on the
+    // share-on-Nostr toggle and at least one paid leg — matches BoostModal's
+    // "don't pollute the network with failed-only boosts" rule.
+    if (cancelled.current) return;
+    if (!shareNostr || !identity || successfulIdx.length === 0) return;
+
+    const totalSats = successfulIdx.length * sats;
+    const trackList = successfulIdx
+      .map((i) => splits[i].title)
+      .filter((t): t is string => !!t)
+      .slice(0, 8);
+    const moreCount = successfulIdx.length - trackList.length;
+
+    const summaryBoostagram: Boostagram = {
+      app_name: 'BoostMeBitch',
+      app_version: '0.1.0',
+      podcast: podcast.title,
+      feedID: podcast.id,
+      url: podcast.url,
+      episode: episode.title,
+      itemID: episode.id,
+      episode_guid: episode.guid,
+      ts: 0,
+      value_msat_total: totalSats * 1000,
+      message: msg || undefined,
+      sender_name: name || undefined,
+      sender_id: identity.pubkey,
+      action: 'boost',
+      uuid: crypto.randomUUID(),
+    };
+
+    const lines: string[] = ['⚡ Boost ⚡', ''];
+    if (msg.trim()) lines.push(msg.trim(), '');
+    lines.push(
+      `Boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats`,
+    );
+    if (trackList.length) {
+      lines.push('');
+      for (const t of trackList) lines.push(`• ${t}`);
+      if (moreCount > 0) lines.push(`…and ${moreCount} more`);
+    }
+    const contentOverride = lines.join('\n');
+
+    setPubState({ kind: 'publishing' });
+    try {
+      const note = await publishBoostNote({
+        podcast,
+        episode,
+        boostagram: summaryBoostagram,
+        results: [],
+        relays,
+        contentOverride,
+      });
+      if (cancelled.current) return;
+      setPubState({ kind: 'done', note });
+    } catch (e) {
+      if (cancelled.current) return;
+      setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
+    }
   }
 
   const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' };
@@ -275,6 +352,32 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             <>
               <MessageInput value={msg} onChange={setMsg} />
               <SenderName value={name} onChange={setName} />
+              <label
+                className={`card flex items-start gap-3 p-3 cursor-pointer transition ${
+                  !identity ? 'opacity-40 cursor-not-allowed' : ''
+                } ${shareNostr && identity ? '!border-nostr/60' : ''}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={shareNostr && !!identity}
+                  disabled={!identity}
+                  onChange={(e) => handleShareNostrChange(e.target.checked)}
+                  className="accent-nostr mt-0.5"
+                />
+                <div className="flex-1 text-xs">
+                  <div className="text-bone flex items-center gap-2">
+                    <span className={shareNostr && identity ? 'text-nostr' : 'text-muted'}>◆</span>
+                    {identity && !shareNostr
+                      ? 'Private boost — Lightning only'
+                      : 'Share boost on Nostr (one summary note)'}
+                  </div>
+                  {!identity && (
+                    <div className="text-muted mt-0.5 leading-relaxed">
+                      Sign in with Nostr to enable.
+                    </div>
+                  )}
+                </div>
+              </label>
             </>
           )}
 
@@ -283,6 +386,8 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               {progress.filter((p) => p.ok).length} of {splits.length} tracks boosted successfully.
             </div>
           )}
+
+          <PublishStatus state={pubState} />
 
         </div>
 
