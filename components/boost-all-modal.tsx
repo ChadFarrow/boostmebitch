@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, type Rail } from '@/lib/v4v/boost';
@@ -41,6 +41,13 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const [done, setDone] = useState(false);
   const [progress, setProgress] = useState<TrackProgress[]>([]);
 
+  // Set on unmount so the in-flight loop bails before firing more sends or
+  // calling setState on an unmounted component. The current track's send
+  // can't be aborted (Lightning is fire-and-forget), but its storage.boosts
+  // log still records — money moved, the user should see it later.
+  const cancelled = useRef(false);
+  useEffect(() => () => { cancelled.current = true; }, []);
+
   // Sync rail if wallet connects/disconnects while modal is open.
   useEffect(() => {
     const bump = () => setRail(pickRail());
@@ -79,13 +86,13 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       .catch(() => setLoadState('error'));
   }, [episode.feedId, episode.id]);
 
-  const availableRails = useMemo(() => {
-    const rails: Rail[] = [];
-    if (hasNwc()) rails.push('nwc');
-    if (hasSpark()) rails.push('spark');
-    if (hasWebln()) rails.push('webln');
-    return rails;
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Recomputed every render so newly-connected wallets show up in the picker
+  // without a remount. The subscribeNwc/subscribeSpark useEffect above already
+  // triggers a re-render via setRail(pickRail()) when state changes.
+  const availableRails: Rail[] = [];
+  if (hasNwc()) availableRails.push('nwc');
+  if (hasSpark()) availableRails.push('spark');
+  if (hasWebln()) availableRails.push('webln');
 
   const total = sats * splits.length;
 
@@ -97,6 +104,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     setProgress([]);
 
     for (let i = 0; i < splits.length; i++) {
+      if (cancelled.current) return;
       const split = splits[i];
       // Boostagram shape for valueTimeSplits: HOST episode in primary fields
       // (the album/playlist the listener is playing), TRACK in remote_*. The
@@ -154,8 +162,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           storage.boosts.add(identity?.npub, stored);
           bumpBoosts();
         }
+        if (cancelled.current) return;
         setProgress((prev) => [...prev, { index: i, ok }]);
       } catch (e) {
+        if (cancelled.current) return;
         setProgress((prev) => [
           ...prev,
           { index: i, ok: false, error: getErrorMessage(e, 'boost failed') },
