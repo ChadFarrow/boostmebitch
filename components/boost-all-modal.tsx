@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import confetti from 'canvas-confetti';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, type Rail } from '@/lib/v4v/boost';
@@ -15,6 +16,16 @@ import { MessageInput } from './boost-modal/message-input';
 import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { PodcastCover } from './podcast-cover';
+
+// Brand-coloured celebration: bolt yellow, nostr magenta, bone. Mirrors
+// boost-modal/index.tsx so the single-boost and boost-all flows feel the same.
+function fireConfetti() {
+  const colors = ['#fae500', '#ff2d92', '#f5f1e8'];
+  confetti({ particleCount: 80, spread: 70, startVelocity: 55, origin: { y: 0.7 }, colors });
+  setTimeout(() => {
+    confetti({ particleCount: 50, spread: 100, startVelocity: 45, origin: { y: 0.7 }, colors });
+  }, 200);
+}
 
 interface Props {
   podcast: Podcast;
@@ -199,6 +210,8 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     setRunning(false);
     setDone(true);
 
+    if (successfulIdx.length > 0) fireConfetti();
+
     // Single summary note covering all successful tracks. Gated on the
     // share-on-Nostr toggle and at least one paid leg — matches BoostModal's
     // "don't pollute the network with failed-only boosts" rule.
@@ -208,9 +221,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     const totalSats = successfulIdx.length * sats;
     const trackList = successfulIdx
       .map((i) => splits[i].title)
-      .filter((t): t is string => !!t)
-      .slice(0, 8);
-    const moreCount = successfulIdx.length - trackList.length;
+      .filter((t): t is string => !!t);
 
     const summaryBoostagram: Boostagram = {
       app_name: 'BoostMeBitch',
@@ -238,7 +249,6 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     if (trackList.length) {
       lines.push('');
       for (const t of trackList) lines.push(`• ${t}`);
-      if (moreCount > 0) lines.push(`…and ${moreCount} more`);
     }
     const contentOverride = lines.join('\n');
 
