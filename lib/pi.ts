@@ -91,19 +91,25 @@ export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
   return buildPodcast(Array.isArray(f) ? f[0] : f);
 }
 
+// PI exposes valueTimeSplits as a flat top-level `timesplits` array on each
+// episode (each entry has feedGuid/itemGuid/medium directly, NOT under a
+// nested remoteItem). We keep the consumer-facing ValueTimeSplit shape with
+// remoteItem nested because that mirrors the Podcasting 2.0 RSS structure
+// and matches how downstream code (boost-all-modal, /api/value-splits) reads
+// the data.
 function parseRawValueTimeSplits(raw: any): ValueTimeSplit[] {
   if (!Array.isArray(raw) || !raw.length) return [];
   return raw
-    .filter((s: any) => s?.remoteItem?.feedGuid)
+    .filter((s: any) => s?.feedGuid)
     .map((s: any) => ({
       startTime: Number(s.startTime) || 0,
       duration: Number(s.duration) || 0,
       remoteStartTime: s.remoteStartTime != null ? Number(s.remoteStartTime) : undefined,
       remotePercentage: s.remotePercentage != null ? Number(s.remotePercentage) : undefined,
       remoteItem: {
-        feedGuid: s.remoteItem.feedGuid,
-        itemGuid: s.remoteItem.itemGuid,
-        medium: s.remoteItem.medium,
+        feedGuid: s.feedGuid,
+        itemGuid: s.itemGuid,
+        medium: s.medium || undefined,
       },
     }));
 }
@@ -124,7 +130,7 @@ function buildEpisode(e: any): Episode {
     feedImage: e.feedImage,
     podcastGuid: e.podcastGuid,
     value: normalizeValue(e.value),
-    valueTimeSplits: parseRawValueTimeSplits(e.value?.valueTimeSplits),
+    valueTimeSplits: parseRawValueTimeSplits(e.timesplits),
   };
 }
 
