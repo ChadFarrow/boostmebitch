@@ -418,10 +418,10 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                     ev.stopPropagation();
                     setBoostAllFor(e);
                   }}
-                  className="btn-ghost self-center flex-shrink-0 text-bolt text-xs px-2 py-1"
-                  title="Boost all tracks in this episode"
+                  className="btn-ghost self-center flex-shrink-0 text-bolt text-[11px] px-2 py-1 whitespace-nowrap uppercase tracking-wider"
+                  title={`Boost all ${e.valueTimeSplits.length} tracks in this episode`}
                 >
-                  ⚡ {e.valueTimeSplits.length}
+                  ⚡ Boost {e.valueTimeSplits.length} tracks
                 </button>
               ) : null}
             </li>
