@@ -56,8 +56,14 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // calling setState on an unmounted component. The current track's send
   // can't be aborted (Lightning is fire-and-forget), but its storage.boosts
   // log still records — money moved, the user should see it later.
+  //
+  // Reset on mount so React 18 StrictMode's mount→unmount→mount cycle in dev
+  // doesn't leave cancelled=true permanently from the intermediate cleanup.
   const cancelled = useRef(false);
-  useEffect(() => () => { cancelled.current = true; }, []);
+  useEffect(() => {
+    cancelled.current = false;
+    return () => { cancelled.current = true; };
+  }, []);
 
   // Sync rail if wallet connects/disconnects while modal is open.
   useEffect(() => {
