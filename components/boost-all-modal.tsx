@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import type { Episode, Podcast, Boostagram, ValueTimeSplit } from '@/lib/types';
+import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, type Rail } from '@/lib/v4v/boost';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
@@ -28,6 +28,7 @@ interface TrackProgress {
 
 export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const identity = useApp((s) => s.identity);
+  const bumpBoosts = useApp((s) => s.bumpBoosts);
   const [sats, setSats] = useState(100);
   const [msg, setMsg] = useState('');
   const [name, setName] = useState('');
@@ -97,15 +98,21 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
     for (let i = 0; i < splits.length; i++) {
       const split = splits[i];
+      // Boostagram shape for valueTimeSplits: HOST episode in primary fields
+      // (the album/playlist the listener is playing), TRACK in remote_*. The
+      // recipient artist sees `podcast`/`episode` describing the listener's
+      // context and `remote_*` identifying which track triggered the boost.
       const boostagram: Boostagram = {
         app_name: 'BoostMeBitch',
         app_version: '0.1.0',
-        podcast: split.title ?? episode.title,
-        feedID: split.feedId ?? episode.feedId,
-        episode: split.title,
-        episode_guid: split.episodeGuid,
+        podcast: podcast.title,
+        feedID: podcast.id,
+        url: podcast.url,
+        episode: episode.title,
+        itemID: episode.id,
+        episode_guid: episode.guid,
         remote_feed_guid: split.remoteItem?.feedGuid,
-        remote_item_guid: split.episodeGuid,
+        remote_item_guid: split.remoteItem?.itemGuid,
         ts: 0,
         value_msat_total: sats * 1000,
         message: msg || undefined,
@@ -122,6 +129,31 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           rail,
         });
         const ok = results.some((r) => r.ok);
+        if (ok) {
+          const stored: StoredBoost = {
+            uuid: boostagram.uuid!,
+            ts: Date.now(),
+            podcastTitle: podcast.title,
+            podcastId: podcast.id,
+            podcastGuid: podcast.podcastGuid,
+            podcastImage: split.image ?? episode.image ?? podcast.image,
+            episodeTitle: episode.title,
+            episodeGuid: episode.guid,
+            sats,
+            message: msg || undefined,
+            senderName: name || undefined,
+            legs: results.map((r) => ({
+              recipient: r.recipient.address,
+              recipientName: r.recipient.name,
+              sats: r.sats,
+              ok: r.ok,
+              error: r.error,
+              boostboxUrl: r.boostboxUrl,
+            })),
+          };
+          storage.boosts.add(identity?.npub, stored);
+          bumpBoosts();
+        }
         setProgress((prev) => [...prev, { index: i, ok }]);
       } catch (e) {
         setProgress((prev) => [
