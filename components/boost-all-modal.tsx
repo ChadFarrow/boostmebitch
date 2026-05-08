@@ -48,6 +48,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const [rail, setRail] = useState<Rail | null>(null);
 
   const [splits, setSplits] = useState<ValueTimeSplit[]>([]);
+  const [totalSplits, setTotalSplits] = useState(0);
   const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading');
 
   const [running, setRunning] = useState(false);
@@ -105,10 +106,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     fetch(`/api/value-splits?feedId=${episode.feedId}&episodeId=${episode.id}`)
       .then((r) => r.json())
       .then((data) => {
-        const resolved = (data.splits as ValueTimeSplit[]).filter(
-          (s) => s.value?.recipients?.length,
-        );
+        const all = (data.splits as ValueTimeSplit[]) ?? [];
+        const resolved = all.filter((s) => s.value?.recipients?.length);
         setSplits(resolved);
+        setTotalSplits(all.length);
         setLoadState('ready');
       })
       .catch(() => setLoadState('error'));
@@ -321,12 +322,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             <p className="text-nostr/80 text-sm">Could not load track data. Try again later.</p>
           )}
           {loadState === 'ready' && splits.length === 0 && (
-            <p className="text-muted text-sm">No resolvable value blocks found for this episode.</p>
+            <p className="text-muted text-sm">
+              {totalSplits > 0
+                ? `${totalSplits} track${totalSplits === 1 ? '' : 's'} listed in the RSS feed, but Podcast Index couldn't resolve any of their value blocks.`
+                : 'No resolvable value blocks found for this episode.'}
+            </p>
           )}
           {loadState === 'ready' && splits.length > 0 && (
             <div>
               <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
-                Tracks ({splits.length})
+                Tracks ({splits.length}
+                {totalSplits > splits.length && ` of ${totalSplits} — ${totalSplits - splits.length} unresolved`})
               </p>
               <ul className="space-y-2">
                 {splits.map((split, i) => {
