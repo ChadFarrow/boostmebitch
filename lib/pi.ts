@@ -298,8 +298,11 @@ export async function getEpisodeByGuid(
   feedGuid: string,
   itemGuid: string,
 ): Promise<Episode | null> {
+  // PI's /episodes/byguid wants `podcastguid` (lowercase, no camelCase) for
+  // the feed identifier. The variable here is named feedGuid because that's
+  // what the RSS spec calls it on <podcast:remoteItem feedGuid="...">.
   const data = await pi<any>(
-    `/episodes/byguid?guid=${encodeURIComponent(itemGuid)}&feedGuid=${encodeURIComponent(feedGuid)}`,
+    `/episodes/byguid?guid=${encodeURIComponent(itemGuid)}&podcastguid=${encodeURIComponent(feedGuid)}`,
   );
   return data.episode ? buildEpisode(data.episode) : null;
 }
