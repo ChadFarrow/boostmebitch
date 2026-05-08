@@ -136,11 +136,8 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // across awaits, and we need the final list immediately for the
     // post-loop Nostr publish.
     const successfulIdx: number[] = [];
-    // Accumulate the host's share of each successful track per the spec's
-    // remotePercentage. Sent as a single show-level boost at the end so the
-    // user only ever sees one extra leg in their boost log instead of N
-    // tiny crumbs.
-    let hostShareSats = 0;
+    // The host show's value block (preferred per-episode, falls back to feed-level).
+    const hostValue = episode.value ?? podcast.value;
 
     for (let i = 0; i < splits.length; i++) {
       if (cancelled.current) return;
@@ -155,7 +152,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       // (the album/playlist the listener is playing), TRACK in remote_*. The
       // recipient artist sees `podcast`/`episode` describing the listener's
       // context and `remote_*` identifying which track triggered the boost.
-      const boostagram: Boostagram = {
+      const trackBoostagram: Boostagram = {
         app_name: 'BoostMeBitch',
         app_version: '0.1.0',
         podcast: podcast.title,
@@ -174,112 +171,115 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         action: 'boost',
         uuid: crypto.randomUUID(),
       };
+      let trackOk = false;
       try {
-        // trackSats can floor to 0 with very small per-track sats; in that
-        // case we treat the entire amount as host share (covered after loop).
-        const results = trackSats > 0
-          ? await sendBoost({ value: split.value!, totalSats: trackSats, boostagram, rail })
-          : [];
-        const ok = trackSats > 0 && results.some((r) => r.ok);
-        if (ok) {
-          const stored: StoredBoost = {
-            uuid: boostagram.uuid!,
-            ts: Date.now(),
-            podcastTitle: podcast.title,
-            podcastId: podcast.id,
-            podcastGuid: podcast.podcastGuid,
-            podcastImage: split.image ?? episode.image ?? podcast.image,
-            episodeTitle: episode.title,
-            episodeGuid: episode.guid,
-            sats: trackSats,
-            message: msg || undefined,
-            senderName: name || undefined,
-            legs: results.map((r) => ({
-              recipient: r.recipient.address,
-              recipientName: r.recipient.name,
-              sats: r.sats,
-              ok: r.ok,
-              error: r.error,
-              boostboxUrl: r.boostboxUrl,
-            })),
-          };
-          storage.boosts.add(identity?.npub, stored);
-          bumpBoosts();
-          successfulIdx.push(i);
-          hostShareSats += showLegSats;
-        } else if (trackSats === 0) {
-          // No track payment to skip — full amount lands on host
-          hostShareSats += sats;
+        if (trackSats > 0) {
+          const results = await sendBoost({
+            value: split.value!,
+            totalSats: trackSats,
+            boostagram: trackBoostagram,
+            rail,
+          });
+          trackOk = results.some((r) => r.ok);
+          if (trackOk) {
+            const stored: StoredBoost = {
+              uuid: trackBoostagram.uuid!,
+              ts: Date.now(),
+              podcastTitle: podcast.title,
+              podcastId: podcast.id,
+              podcastGuid: podcast.podcastGuid,
+              podcastImage: split.image ?? episode.image ?? podcast.image,
+              episodeTitle: episode.title,
+              episodeGuid: episode.guid,
+              sats: trackSats,
+              message: msg || undefined,
+              senderName: name || undefined,
+              legs: results.map((r) => ({
+                recipient: r.recipient.address,
+                recipientName: r.recipient.name,
+                sats: r.sats,
+                ok: r.ok,
+                error: r.error,
+                boostboxUrl: r.boostboxUrl,
+              })),
+            };
+            storage.boosts.add(identity?.npub, stored);
+            bumpBoosts();
+            successfulIdx.push(i);
+          }
         }
-        if (cancelled.current) return;
-        setProgress((prev) => [...prev, { index: i, ok }]);
       } catch (e) {
         if (cancelled.current) return;
         setProgress((prev) => [
           ...prev,
           { index: i, ok: false, error: getErrorMessage(e, 'boost failed') },
         ]);
+        continue;
       }
-    }
 
-    // Spec: the host show gets (100 − remotePercentage)% of each track. We
-    // accumulated the floored remainder across all tracks; send it now as
-    // one show-level leg so the host's recipients aren't shorted entirely.
-    // Falls back to podcast.value when the episode itself has no value block.
-    const hostValue = episode.value ?? podcast.value;
-    if (hostShareSats > 0 && hostValue?.recipients?.length && !cancelled.current) {
-      const hostBoostagram: Boostagram = {
-        app_name: 'BoostMeBitch',
-        app_version: '0.1.0',
-        podcast: podcast.title,
-        feedID: podcast.id,
-        url: podcast.url,
-        episode: episode.title,
-        itemID: episode.id,
-        episode_guid: episode.guid,
-        ts: 0,
-        value_msat_total: hostShareSats * 1000,
-        message: msg || undefined,
-        sender_name: name || undefined,
-        sender_id: identity?.pubkey,
-        action: 'boost',
-        uuid: crypto.randomUUID(),
-      };
-      try {
-        const hostResults = await sendBoost({
-          value: hostValue,
-          totalSats: hostShareSats,
-          boostagram: hostBoostagram,
-          rail,
-        });
-        if (hostResults.some((r) => r.ok)) {
-          const stored: StoredBoost = {
-            uuid: hostBoostagram.uuid!,
-            ts: Date.now(),
-            podcastTitle: podcast.title,
-            podcastId: podcast.id,
-            podcastGuid: podcast.podcastGuid,
-            podcastImage: episode.image ?? podcast.image,
-            episodeTitle: episode.title,
-            episodeGuid: episode.guid,
-            sats: hostShareSats,
-            message: msg || undefined,
-            senderName: name || undefined,
-            legs: hostResults.map((r) => ({
-              recipient: r.recipient.address,
-              recipientName: r.recipient.name,
-              sats: r.sats,
-              ok: r.ok,
-              error: r.error,
-              boostboxUrl: r.boostboxUrl,
-            })),
-          };
-          storage.boosts.add(identity?.npub, stored);
-          bumpBoosts();
+      // Per-track host leg. Each one carries the same remote_* tags as its
+      // sibling track leg so the host can see which track triggered it in
+      // their boostagram log. Skip if remotePct === 100 (no host share),
+      // hostValue is missing, or showLegSats rounded to 0.
+      if (showLegSats > 0 && hostValue?.recipients?.length && !cancelled.current) {
+        const hostBoostagram: Boostagram = {
+          app_name: 'BoostMeBitch',
+          app_version: '0.1.0',
+          podcast: podcast.title,
+          feedID: podcast.id,
+          url: podcast.url,
+          episode: episode.title,
+          itemID: episode.id,
+          episode_guid: episode.guid,
+          remote_feed_guid: split.remoteItem?.feedGuid,
+          remote_item_guid: split.remoteItem?.itemGuid,
+          ts: 0,
+          value_msat_total: showLegSats * 1000,
+          message: msg || undefined,
+          sender_name: name || undefined,
+          sender_id: identity?.pubkey,
+          action: 'boost',
+          uuid: crypto.randomUUID(),
+        };
+        try {
+          const hostResults = await sendBoost({
+            value: hostValue,
+            totalSats: showLegSats,
+            boostagram: hostBoostagram,
+            rail,
+          });
+          if (hostResults.some((r) => r.ok)) {
+            const stored: StoredBoost = {
+              uuid: hostBoostagram.uuid!,
+              ts: Date.now(),
+              podcastTitle: podcast.title,
+              podcastId: podcast.id,
+              podcastGuid: podcast.podcastGuid,
+              podcastImage: episode.image ?? podcast.image,
+              episodeTitle: episode.title,
+              episodeGuid: episode.guid,
+              sats: showLegSats,
+              message: msg || undefined,
+              senderName: name || undefined,
+              legs: hostResults.map((r) => ({
+                recipient: r.recipient.address,
+                recipientName: r.recipient.name,
+                sats: r.sats,
+                ok: r.ok,
+                error: r.error,
+                boostboxUrl: r.boostboxUrl,
+              })),
+            };
+            storage.boosts.add(identity?.npub, stored);
+            bumpBoosts();
+          }
+        } catch {
+          // Host leg failure is non-fatal — the track leg may have already paid.
         }
-      } catch {
-        // Host leg failure is non-fatal — track legs already paid out.
       }
+
+      if (cancelled.current) return;
+      setProgress((prev) => [...prev, { index: i, ok: trackOk }]);
     }
 
     setRunning(false);
