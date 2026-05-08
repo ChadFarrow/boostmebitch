@@ -1,6 +1,6 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
-import type { Podcast, Episode, ValueBlock, ValueRecipient } from './types';
+import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit } from './types';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -91,6 +91,23 @@ export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
   return buildPodcast(Array.isArray(f) ? f[0] : f);
 }
 
+function parseRawValueTimeSplits(raw: any): ValueTimeSplit[] {
+  if (!Array.isArray(raw) || !raw.length) return [];
+  return raw
+    .filter((s: any) => s?.remoteItem?.feedGuid)
+    .map((s: any) => ({
+      startTime: Number(s.startTime) || 0,
+      duration: Number(s.duration) || 0,
+      remoteStartTime: s.remoteStartTime != null ? Number(s.remoteStartTime) : undefined,
+      remotePercentage: s.remotePercentage != null ? Number(s.remotePercentage) : undefined,
+      remoteItem: {
+        feedGuid: s.remoteItem.feedGuid,
+        itemGuid: s.remoteItem.itemGuid,
+        medium: s.remoteItem.medium,
+      },
+    }));
+}
+
 function buildEpisode(e: any): Episode {
   return {
     id: e.id,
@@ -107,6 +124,7 @@ function buildEpisode(e: any): Episode {
     feedImage: e.feedImage,
     podcastGuid: e.podcastGuid,
     value: normalizeValue(e.value),
+    valueTimeSplits: parseRawValueTimeSplits(e.value?.valueTimeSplits),
   };
 }
 
@@ -268,6 +286,42 @@ function extractText(xml: string, tag: string): string | undefined {
     .replace(/&apos;/g, "'")
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
     .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
+}
+
+export async function getEpisodeByGuid(
+  feedGuid: string,
+  itemGuid: string,
+): Promise<Episode | null> {
+  const data = await pi<any>(
+    `/episodes/byguid?guid=${encodeURIComponent(itemGuid)}&feedGuid=${encodeURIComponent(feedGuid)}`,
+  );
+  return data.episode ? buildEpisode(data.episode) : null;
+}
+
+export async function resolveValueTimeSplits(
+  splits: ValueTimeSplit[],
+): Promise<ValueTimeSplit[]> {
+  return Promise.all(
+    splits.map(async (split): Promise<ValueTimeSplit> => {
+      if (!split.remoteItem?.feedGuid || !split.remoteItem.itemGuid) return split;
+      try {
+        const ep = await getEpisodeByGuid(
+          split.remoteItem.feedGuid,
+          split.remoteItem.itemGuid,
+        );
+        return {
+          ...split,
+          value: ep?.value ?? null,
+          title: ep?.title,
+          image: ep?.image,
+          feedId: ep?.feedId,
+          episodeGuid: ep?.guid,
+        };
+      } catch {
+        return split;
+      }
+    }),
+  );
 }
 
 // 32-bit FNV-1a; just need a stable non-colliding key for React + the store.

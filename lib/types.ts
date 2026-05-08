@@ -17,6 +17,26 @@ export interface ValueBlock {
   recipients: ValueRecipient[];
 }
 
+export interface ValueTimeSplitRemoteItem {
+  feedGuid: string;
+  itemGuid?: string;
+  medium?: string;
+}
+
+export interface ValueTimeSplit {
+  startTime: number;
+  duration: number;
+  remoteStartTime?: number;
+  remotePercentage?: number;   // % of sats going to remoteItem (rest goes to episode value block)
+  remoteItem?: ValueTimeSplitRemoteItem;
+  // Populated by /api/value-splits after resolution:
+  value?: ValueBlock | null;
+  title?: string;
+  image?: string;
+  feedId?: number;
+  episodeGuid?: string;
+}
+
 export interface Podcast {
   id: number;
   podcastGuid?: string;   // namespace UUID for NIP-73 podcast:guid:
@@ -49,6 +69,7 @@ export interface Episode {
   feedImage?: string;
   podcastGuid?: string;
   value?: ValueBlock | null;
+  valueTimeSplits?: ValueTimeSplit[];
   /** Podcast 2.0 <podcast:liveItem> status. Set on items returned by PI's
    *  /episodes/live endpoint. We filter out 'ended' upstream, so only
    *  'live' and 'pending' should ever reach the client. */

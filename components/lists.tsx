@@ -4,6 +4,7 @@ import type { Episode, Podcast, FavoritePodcast, ValueBlock } from '@/lib/types'
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 import { BoostModal } from './boost-modal';
+import { BoostAllModal } from './boost-all-modal';
 import { BoltIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
@@ -258,6 +259,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const [loading, setLoading] = useState(false);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
   const [liveBoostFor, setLiveBoostFor] = useState<Episode | null>(null);
+  const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
@@ -409,6 +411,19 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   <BoltIcon />
                 </button>
               ) : null}
+              {e.valueTimeSplits?.length ? (
+                <button
+                  type="button"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    setBoostAllFor(e);
+                  }}
+                  className="btn-ghost self-center flex-shrink-0 text-bolt text-xs px-2 py-1"
+                  title="Boost all tracks in this episode"
+                >
+                  ⚡ {e.valueTimeSplits.length}
+                </button>
+              ) : null}
             </li>
             </Fragment>
           );
@@ -435,6 +450,14 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
         <BoostModal
           podcast={data.podcast}
           onClose={() => setShowBoostOpen(false)}
+        />
+      )}
+
+      {boostAllFor && data.podcast && (
+        <BoostAllModal
+          episode={boostAllFor}
+          podcast={data.podcast}
+          onClose={() => setBoostAllFor(null)}
         />
       )}
     </div>
