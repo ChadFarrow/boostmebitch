@@ -1,6 +1,7 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit } from './types';
+import { resolveRemoteItemFromRss } from './musicl-resolver';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -310,14 +311,39 @@ export async function getEpisodeByGuid(
 async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
   if (!split.remoteItem?.feedGuid || !split.remoteItem.itemGuid) return split;
   const ep = await getEpisodeByGuid(split.remoteItem.feedGuid, split.remoteItem.itemGuid);
-  return {
-    ...split,
-    value: ep?.value ?? null,
-    title: ep?.title,
-    image: ep?.image,
-    feedId: ep?.feedId,
-    episodeGuid: ep?.guid,
-  };
+  if (ep?.value) {
+    return {
+      ...split,
+      value: ep.value,
+      title: ep.title,
+      image: ep.image,
+      feedId: ep.feedId,
+      episodeGuid: ep.guid,
+    };
+  }
+  // PI didn't have the item — try the RSS chain. Two cases this rescues:
+  //   1. PI knows the feed but hasn't crawled the specific item
+  //   2. The host's valueTimeSplit feedGuid points at a publisher feed
+  //      (medium=publisher) whose <podcast:remoteItem> entries name the
+  //      actual album feed URLs we need to fetch.
+  // Both need the feed URL, which we get cheaply via /podcasts/byguid.
+  try {
+    const feedRes = await pi<any>(
+      `/podcasts/byguid?guid=${encodeURIComponent(split.remoteItem.feedGuid)}`,
+    );
+    const feedUrl: string | undefined = feedRes.feed?.url;
+    if (!feedUrl) return split;
+    const rss = await resolveRemoteItemFromRss(feedUrl, split.remoteItem.itemGuid);
+    if (!rss) return split;
+    return {
+      ...split,
+      value: rss.value,
+      title: rss.title,
+      image: rss.image,
+    };
+  } catch {
+    return split;
+  }
 }
 
 export async function resolveValueTimeSplits(
