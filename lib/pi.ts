@@ -298,28 +298,42 @@ export async function getEpisodeByGuid(
   return data.episode ? buildEpisode(data.episode) : null;
 }
 
+async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
+  if (!split.remoteItem?.feedGuid || !split.remoteItem.itemGuid) return split;
+  const ep = await getEpisodeByGuid(split.remoteItem.feedGuid, split.remoteItem.itemGuid);
+  return {
+    ...split,
+    value: ep?.value ?? null,
+    title: ep?.title,
+    image: ep?.image,
+    feedId: ep?.feedId,
+    episodeGuid: ep?.guid,
+  };
+}
+
 export async function resolveValueTimeSplits(
   splits: ValueTimeSplit[],
 ): Promise<ValueTimeSplit[]> {
+  if (splits.length === 0) return [];
+
+  // Probe with the first resolvable split. If it throws, PI is likely down —
+  // return everything unresolved rather than firing N more failing calls.
+  // Per-call failures inside the fan-out are still caught individually.
+  const probeIdx = splits.findIndex(
+    (s) => s.remoteItem?.feedGuid && s.remoteItem.itemGuid,
+  );
+  if (probeIdx === -1) return splits;
+  let probeResolved: ValueTimeSplit;
+  try {
+    probeResolved = await resolveOneSplit(splits[probeIdx]);
+  } catch {
+    return splits;
+  }
+
   return Promise.all(
-    splits.map(async (split): Promise<ValueTimeSplit> => {
-      if (!split.remoteItem?.feedGuid || !split.remoteItem.itemGuid) return split;
-      try {
-        const ep = await getEpisodeByGuid(
-          split.remoteItem.feedGuid,
-          split.remoteItem.itemGuid,
-        );
-        return {
-          ...split,
-          value: ep?.value ?? null,
-          title: ep?.title,
-          image: ep?.image,
-          feedId: ep?.feedId,
-          episodeGuid: ep?.guid,
-        };
-      } catch {
-        return split;
-      }
+    splits.map(async (s, i): Promise<ValueTimeSplit> => {
+      if (i === probeIdx) return probeResolved;
+      try { return await resolveOneSplit(s); } catch { return s; }
     }),
   );
 }
