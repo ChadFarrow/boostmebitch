@@ -68,6 +68,9 @@ export interface Episode {
   feedTitle?: string;
   feedImage?: string;
   podcastGuid?: string;
+  episode?: number | null;     // <itunes:episode> if present
+  season?: number | null;      // <itunes:season> if present
+  chaptersUrl?: string;        // PI exposes Podcasting 2.0 chapters JSON URL
   value?: ValueBlock | null;
   valueTimeSplits?: ValueTimeSplit[];
   /** Podcast 2.0 <podcast:liveItem> status. Set on items returned by PI's
