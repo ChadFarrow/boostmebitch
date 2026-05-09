@@ -120,7 +120,7 @@ All three sub-cards (NWC, Spark, WebLN) render unconditionally — each flips in
 
 Sub-cards (each its own component): `nwc-wallet.tsx`, `spark-wallet.tsx`, `webln-wallet.tsx`. State changes propagate via `subscribeNwc()` + `subscribeSpark()`; the modal `setTick`s on either to flip between modes without remount.
 
-**Boost modal rail picker.** When 2+ rails are available, `components/boost-modal/index.tsx` renders a small "Pay via [NWC] [Spark] [WebLN]" pill row above the AmountInput so the user can override `pickRail()`'s default per-boost. Single-rail users never see it. The picker subscribes to `subscribeNwc`/`subscribeSpark` so enabling a rail mid-modal flips the row in place. WebLN doesn't have its own subscribe (the extension is either injected at load or it isn't), so we read `hasWebln()` on each render. The `!rail` "no wallet connected" hint still renders below the picker as a fallback for the zero-rail case.
+**Boost modal rail picker.** Single-boost `BoostModal` picks a rail silently via `pickRail()` (NWC > Spark > WebLN priority); the only mid-modal feedback is the "no wallet connected" hint when `!rail`. The visible "Pay via [NWC] [Spark] [WebLN]" pill row lives in `BoostAllModal` (`components/boost-all-modal.tsx`) — see the boost-all section below. Both modals subscribe to `subscribeNwc`/`subscribeSpark` so a wallet connected mid-modal updates `rail` without remount. WebLN doesn't have its own subscribe (the extension is either injected at load or it isn't), so `hasWebln()` is read on each render.
 
 `<BunkerHealthBanner>` still sits at the top of `<AccountMenu>` (not the wallet modal), since it's signer health, not wallet health.
 
@@ -167,6 +167,34 @@ Mnemonic is published encrypt-to-self as kind:30078 (`lib/nostr/wallet-backup.ts
 - Auto-formatted note body skips the `📻 <episode>` line and the `podcast:item:guid:` `i`-tag.
 
 The "⚡ BOOST" button on the `EpisodeList` header opens this mode (gated on `podcast.value.recipients.length > 0`). The per-episode boost path in `Player` is unchanged.
+
+## Boost-all tracks (valueTimeSplits)
+
+Music podcasts (Homegrown Hits, Lightning Thrashes, etc.) tag each track in their RSS with a `<podcast:valueTimeSplit>` block — a startTime/duration window plus a `<podcast:remoteItem feedGuid="…" itemGuid="…" />` pointing at the track's own album feed. PI surfaces these as **`e.timesplits[]`** (flat top-level array on the episode object, NOT nested under `e.value.valueTimeSplits` despite what the field name suggests). Each entry has `feedGuid`/`itemGuid`/`medium` directly — `parseRawValueTimeSplits` in `lib/pi.ts` maps the flat shape to the consumer-facing nested `ValueTimeSplit.remoteItem`.
+
+The `⚡ BOOST N TRACKS` button on each episode row in `components/lists.tsx` opens `<BoostAllModal>` (`components/boost-all-modal.tsx`). Sequential per-track sends, not parallel.
+
+**Resolution pipeline** (`/api/value-splits` → `lib/pi.ts:resolveValueTimeSplits`):
+
+1. **Probe-first-then-batch.** Try the first resolvable split synchronously. If it throws, return the whole batch unresolved instead of hammering PI when it's degraded. The remaining splits fan out in parallel with per-call try/catch.
+2. **PI's `/episodes/byguid` requires `podcastguid`** (lowercase param name — `feedGuid`/`feedid` are silently rejected with "This call requires either a valid feedid, feedurl or podcastguid argument").
+3. **Fallback to RSS chain** (`lib/musicl-resolver.ts:resolveRemoteItemFromRss`) when PI returns "Episode not found". Server-side, two cases:
+   - feedGuid is an album feed → find `<item>` with matching `<guid>`, extract `<podcast:value>` (or fall back to channel-level value).
+   - feedGuid is a publisher feed (`<podcast:medium>publisher</podcast:medium>`) → walk `<podcast:remoteItem feedUrl="…">` entries, fetch each album feed in parallel, return the first match.
+   5-min in-memory cache keyed on feed URL. 5s `AbortSignal.timeout` per fetch. Without this fallback, ~50% of music-podcast tracks fail to resolve because PI doesn't index every album feed.
+
+**Modal-side filtering.** The modal drops splits whose remote items couldn't be resolved to a value block. Header reads `Tracks (N of M — K unresolved)` when there's a gap. Remaining gaps are usually host-RSS authoring problems (stale feedGuid, no feedUrl hint, feed not in PI) and are unrecoverable from the client.
+
+**Per-track payment loop** (`BoostAllModal.go()`):
+
+1. **Two legs per track.** Each track sends `floor(sats × remotePercentage / 100)` to its own value block recipients (track artists). The (100 − remotePercentage) remainder fires as a SEPARATE host-share leg to `episode.value` (or `podcast.value`) immediately after, **per-track, not aggregated**. Both legs carry the same `remote_feed_guid`/`remote_item_guid` so the show host's Helipad can correlate which track triggered each share. Default `remotePercentage` = 100 (no host leg).
+2. **Boostagram shape.** Primary fields (`podcast`, `feedID`, `episode`, `episode_guid`) = HOST episode. `remote_feed_guid`/`remote_item_guid` = the TRACK. Mirrors `BoostModal`'s convention so recipient artists see the listener's host context, not mangled track-as-podcast metadata.
+3. **Each successful leg logs its own `StoredBoost`** to `bmb:boosts:<npub>` so the user's local sent-boost feed reflects every payment.
+4. **StrictMode guard.** `cancelled.current` ref is **reset to `false` on mount AND set to `true` on unmount**. Without the mount-side reset, dev StrictMode's mount → unmount → mount cycle leaves the ref stuck at `true` and the loop bails on the first iteration with no Lightning traffic at all (silent failure mode that took an HAR dump to diagnose).
+5. **Confetti on success** (mirrors `BoostModal`'s celebration) when at least one track pays.
+6. **Single Nostr summary note.** When `shareNostr` is on and at least one track paid, fires ONE kind:1 note via `publishBoostNote` with `contentOverride` listing every successful track title (no truncation). NOT one note per track.
+
+**Rail picker** (mid-modal wallet connect support). Unlike `BoostModal` which picks rail silently via `pickRail()`, `BoostAllModal` renders a "Pay via [NWC] [Spark] [WebLN]" pill row when 2+ rails are available. Computed inline (no `useMemo`) so the existing `subscribeNwc`/`subscribeSpark` re-render path lets newly-connected wallets appear without remount.
 
 ## Boost flow invariants
 
