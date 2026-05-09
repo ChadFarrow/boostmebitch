@@ -130,6 +130,9 @@ function buildEpisode(e: any): Episode {
     feedTitle: e.feedTitle,
     feedImage: e.feedImage,
     podcastGuid: e.podcastGuid,
+    episode: typeof e.episode === 'number' ? e.episode : null,
+    season: typeof e.season === 'number' && e.season > 0 ? e.season : null,
+    chaptersUrl: typeof e.chaptersUrl === 'string' && e.chaptersUrl.length > 0 ? e.chaptersUrl : undefined,
     value: normalizeValue(e.value),
     valueTimeSplits: parseRawValueTimeSplits(e.timesplits),
   };
