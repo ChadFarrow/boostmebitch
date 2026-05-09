@@ -572,6 +572,19 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   {e.duration && <span>· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
                 </div>
+                {e.valueTimeSplits?.length ? (
+                  <button
+                    type="button"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      setBoostAllFor(e);
+                    }}
+                    className="btn-ghost mt-1.5 text-bolt text-[11px] px-2 py-1 whitespace-nowrap uppercase tracking-wider"
+                    title={`Boost all ${e.valueTimeSplits.length} tracks in this episode`}
+                  >
+                    ⚡ Boost {e.valueTimeSplits.length} tracks
+                  </button>
+                ) : null}
               </div>
               {e.liveStatus && (e.value ?? data.podcast?.value)?.recipients?.length ? (
                 <button
@@ -584,19 +597,6 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   title="Boost this live item"
                 >
                   <BoltIcon />
-                </button>
-              ) : null}
-              {e.valueTimeSplits?.length ? (
-                <button
-                  type="button"
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    setBoostAllFor(e);
-                  }}
-                  className="btn-ghost self-center flex-shrink-0 text-bolt text-[11px] px-2 py-1 whitespace-nowrap uppercase tracking-wider"
-                  title={`Boost all ${e.valueTimeSplits.length} tracks in this episode`}
-                >
-                  ⚡ Boost {e.valueTimeSplits.length} tracks
                 </button>
               ) : null}
               {!e.liveStatus && (e.value ?? data.podcast?.value)?.recipients?.length ? (
