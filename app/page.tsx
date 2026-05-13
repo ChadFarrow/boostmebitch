@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
 import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
@@ -8,6 +8,7 @@ import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { BoltIcon } from '@/components/icons';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useApp } from '@/lib/store';
+import { resolvePodcastByGuid } from '@/lib/podcast-meta';
 
 import type { Podcast } from '@/lib/types';
 
@@ -22,6 +23,31 @@ export default function Home() {
   // view without prop-drilling through the feed components.
   const selected = useApp((s) => s.selectedPodcast);
   const setSelected = useApp((s) => s.selectPodcast);
+
+  // Mount-time hydration: if the URL carries ?podcast=<guid>, resolve it once
+  // and flip into the detail view. resolvePodcastByGuid has its own caches +
+  // PI circuit-breaker, so a bad/unresolvable guid just falls back to the
+  // browse view silently.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const guid = new URLSearchParams(window.location.search).get('podcast');
+    if (!guid) return;
+    if (useApp.getState().selectedPodcast) return;
+    resolvePodcastByGuid(guid).then((p) => {
+      if (p && !useApp.getState().selectedPodcast) setSelected(p);
+    });
+  }, [setSelected]);
+
+  // Selection → URL: replaceState so podcast navigation doesn't pile entries
+  // into browser history (the explicit "back to results" button remains the
+  // only in-app way back). Lets the SHARE button copy a real deep link.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (selected?.podcastGuid) url.searchParams.set('podcast', selected.podcastGuid);
+    else url.searchParams.delete('podcast');
+    window.history.replaceState({}, '', url.toString());
+  }, [selected?.podcastGuid]);
 
   function goHome() {
     setFeeds([]);

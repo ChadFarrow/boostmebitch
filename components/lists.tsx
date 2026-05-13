@@ -5,7 +5,7 @@ import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 import { BoostModal } from './boost-modal';
 import { BoostAllModal } from './boost-all-modal';
-import { BoltIcon } from './icons';
+import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 
@@ -64,7 +64,7 @@ function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   return null;
 }
 
-function FavHeart({ podcast }: { podcast: Podcast }) {
+function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: 'sm' | 'md' }) {
   const guid = podcast.podcastGuid;
   const isFav = useApp((s) => s.isFavorite(guid));
   const addFavorite = useApp((s) => s.addFavorite);
@@ -108,11 +108,50 @@ function FavHeart({ podcast }: { podcast: Podcast }) {
           ? (isFav ? 'Unfavorite (synced to Nostr)' : 'Favorite (syncs to Nostr)')
           : (isFav ? 'Unfavorite' : 'Favorite (sign in with Nostr to sync)')
       }
-      className={`flex-shrink-0 transition text-lg leading-none ${
-        isFav ? 'text-nostr' : 'text-bone/40 hover:text-nostr'
+      className={`inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 ${
+        size === 'md'
+          ? 'gap-2 px-4 py-2 text-sm'
+          : 'gap-1.5 px-3 text-xs leading-none'
+      } ${
+        isFav
+          ? 'border-nostr text-nostr hover:bg-nostr/10'
+          : 'border-bone/40 text-bone/70 hover:border-nostr/70 hover:text-nostr'
       }`}
     >
-      {isFav ? '♥' : '♡'}
+      <span className={size === 'md' ? 'text-lg leading-none' : 'text-base leading-none'}>
+        {isFav ? '♥' : '♡'}
+      </span>
+      {isFav ? 'FAVORITED' : 'FAVORITE'}
+    </button>
+  );
+}
+
+function ShareButton({ podcast }: { podcast: Podcast }) {
+  const [copied, setCopied] = useState(false);
+  const guid = podcast.podcastGuid;
+  if (!guid) return null;
+
+  async function onClick() {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.origin + window.location.pathname);
+    url.searchParams.set('podcast', guid!);
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch {
+      /* clipboard blocked — silent no-op */
+    }
+  }
+
+  return (
+    <button
+      onClick={onClick}
+      className="btn-ghost"
+      title="Copy link to this show"
+      aria-label="Copy link to this show"
+    >
+      <ShareIcon /> {copied ? 'COPIED' : 'SHARE'}
     </button>
   );
 }
@@ -484,7 +523,8 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-          <FavHeart podcast={data.podcast} />
+          <FavHeart podcast={data.podcast} size="md" />
+          <ShareButton podcast={data.podcast} />
           {showHasValue && (
             <button
               onClick={() => setShowBoostOpen(true)}
