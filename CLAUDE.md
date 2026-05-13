@@ -168,6 +168,16 @@ Mnemonic is published encrypt-to-self as kind:30078 (`lib/nostr/wallet-backup.ts
 
 The "⚡ BOOST" button on the `EpisodeList` header opens this mode (gated on `podcast.value.recipients.length > 0`). The per-episode boost path in `Player` is unchanged.
 
+## Show-page URL contract (`?podcast=<guid>`)
+
+`selectedPodcast` is mirrored to the URL via two `useEffect`s in `app/page.tsx` — no Next.js routing involved. One reads `?podcast=<guid>` on mount and calls `resolvePodcastByGuid` (`lib/podcast-meta.ts`) to hydrate the detail view; the other watches `selected?.podcastGuid` and writes/clears the param. Hydration uses `useApp.getState()` re-checks before `setSelected` to avoid the StrictMode double-mount race overwriting a user click that landed during resolution.
+
+**`history.replaceState`, not `pushState`.** Deliberate: the explicit "← back to results" button stays the only in-app way out of detail view. `pushState` would make browser-back a second exit and require a `popstate` listener to keep Zustand and the URL in sync. Bad/unresolvable guids fall back to the browse view silently via the PI breaker (`bmb:pi:dead` sessionStorage sentinel).
+
+The **SHARE button** in `EpisodeList`'s header (`components/lists.tsx:ShareButton`) copies `origin + ?podcast=<guid>` to the clipboard with a 1.8 s "COPIED" label flip. Clipboard-only by design — no Web Share API, no pod.link option (that's already what the Nostr boost note links to via `podcastLandingUrl`).
+
+Header action cluster order: `[♡ FAVORITE] [↗ SHARE] [⚡ BOOST]`. BOOST is still gated on `showHasValue`; SHARE and FAVORITE are always visible.
+
 ## Boost-all tracks (valueTimeSplits)
 
 Music podcasts (Homegrown Hits, Lightning Thrashes, etc.) tag each track in their RSS with a `<podcast:valueTimeSplit>` block — a startTime/duration window plus a `<podcast:remoteItem feedGuid="…" itemGuid="…" />` pointing at the track's own album feed. PI surfaces these as **`e.timesplits[]`** (flat top-level array on the episode object, NOT nested under `e.value.valueTimeSplits` despite what the field name suggests). Each entry has `feedGuid`/`itemGuid`/`medium` directly — `parseRawValueTimeSplits` in `lib/pi.ts` maps the flat shape to the consumer-facing nested `ValueTimeSplit.remoteItem`.
@@ -327,4 +337,5 @@ Don't introduce a token whose name implies a fixed color (e.g. avoid `dark-gray`
 - **Browse-mode layout is single-column** in `app/page.tsx`. Selecting a podcast (search result, favorite, or a podcast-name link inside a Nostr note) sets `selectedPodcast` in Zustand, flipping to detail view (full-width episode list + per-podcast feed). Don't reintroduce a right-pane "select a podcast on the left" empty state.
 - Native HTML5 `<audio>` plays the enclosure URL directly — no proxy, no transcoding.
 - API routes return `{ error }` JSON via `getErrorMessage(e, fallback)` from `lib/util.ts`; clients swallow errors silently. Match this shape on new routes.
-- **Inline SVG `BoltIcon`** (`components/icons.tsx`) on yellow buttons — the `⚡` emoji is invisible on `bg-bolt`. Other places (yellow text on dark bg, V4V stamps) keep the emoji.
+- **Inline SVG `BoltIcon`** (`components/icons.tsx`) on yellow buttons — the `⚡` emoji is invisible on `bg-bolt`. Other places (yellow text on dark bg, V4V stamps) keep the emoji. `ShareIcon` and `Sun`/`MoonIcon` follow the same inherits-`currentColor` SVG pattern.
+- **`FavHeart` has `size` variants** (`components/lists.tsx`). `'sm'` (default, used in `PodcastRow` list items) renders a slim border-chip; `'md'` (used in the show header) matches `.btn-ghost` dimensions so it's a visual peer to SHARE and BOOST. Both render `[♡ FAVORITE]` / `[♥ FAVORITED]` (magenta when on). The earlier bare-glyph `♡` rendering is gone — don't reintroduce it without also rethinking the header button cluster.
