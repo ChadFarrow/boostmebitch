@@ -5,6 +5,7 @@ import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
+import { DeferredOnScroll } from '@/components/deferred-on-scroll';
 import { BoltIcon } from '@/components/icons';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useApp } from '@/lib/store';
@@ -165,7 +166,15 @@ export default function Home() {
 
       {!inDetailView && (
         <section className="max-w-7xl mx-auto px-4 pt-12">
-          <GlobalNostrFeed />
+          <DeferredOnScroll
+            placeholder={
+              <h2 className="font-display text-2xl text-muted">
+                <span className="text-nostr">#</span> Global boost feed
+              </h2>
+            }
+          >
+            <GlobalNostrFeed />
+          </DeferredOnScroll>
         </section>
       )}
 

@@ -8,6 +8,7 @@ import { BoostAllModal } from './boost-all-modal';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
+import { DeferredOnScroll } from './deferred-on-scroll';
 
 function fmtDuration(t: number) {
   if (!isFinite(t) || t <= 0) return '';
@@ -672,10 +673,21 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
       </ul>
 
       {data.podcast.podcastGuid && (
-        <PodcastNostrFeed
-          podcastGuid={data.podcast.podcastGuid}
-          podcastTitle={data.podcast.title}
-        />
+        <DeferredOnScroll
+          placeholder={
+            <h3 className="font-display text-lg mt-8 text-muted">
+              <span className="text-nostr">#</span> Boosts &amp; chatter on Nostr
+              {data.podcast.title ? (
+                <span className="text-muted text-sm"> · {data.podcast.title}</span>
+              ) : null}
+            </h3>
+          }
+        >
+          <PodcastNostrFeed
+            podcastGuid={data.podcast.podcastGuid}
+            podcastTitle={data.podcast.title}
+          />
+        </DeferredOnScroll>
       )}
 
       {boostFor && data.podcast && (
