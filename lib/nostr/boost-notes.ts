@@ -14,7 +14,7 @@ interface PublishArgs {
 }
 
 /**
- * Best public landing page for a podcast, in preference order:
+ * Best public listen-link for a podcast, in preference order:
  *  1. pod.link smart-link by Apple iTunes ID — auto-routes the visitor to
  *     their preferred podcast app on click
  *  2. Podcast Index page — human-readable feed metadata
@@ -24,6 +24,17 @@ function podcastLandingUrl(podcast: Podcast): string | null {
   if (podcast.itunesId) return `https://pod.link/${podcast.itunesId}`;
   if (podcast.id) return `https://podcastindex.org/podcast/${podcast.id}`;
   return podcast.url ?? null;
+}
+
+/**
+ * BoostMeBitch in-app deep link for this podcast. Lands the Nostr reader on
+ * the show page where they can boost back. Emitted alongside the listen-link
+ * (not as a replacement) so readers get both affordances: listen elsewhere
+ * via pod.link, boost back here via BMB.
+ */
+function bmbLandingUrl(podcast: Podcast): string | null {
+  if (!podcast.podcastGuid) return null;
+  return `https://boostmebitch.com/?podcast=${podcast.podcastGuid}`;
 }
 
 function formatContent(args: PublishArgs): string {
@@ -38,6 +49,8 @@ function formatContent(args: PublishArgs): string {
   if (episode?.title) lines.push(`📻 ${episode.title}`);
   const link = podcastLandingUrl(podcast);
   if (link) lines.push('', link);
+  const bmbLink = bmbLandingUrl(podcast);
+  if (bmbLink && bmbLink !== link) lines.push(bmbLink);
   return lines.join('\n');
 }
 
@@ -62,6 +75,8 @@ export async function publishBoostNote(
   }
   const linkUrl = podcastLandingUrl(podcast);
   if (linkUrl) tags.push(['r', linkUrl]);
+  const bmbUrl = bmbLandingUrl(podcast);
+  if (bmbUrl && bmbUrl !== linkUrl) tags.push(['r', bmbUrl]);
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
   tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);
   tags.push(['t', 'boostagram']);

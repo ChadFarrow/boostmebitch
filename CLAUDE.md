@@ -224,7 +224,7 @@ The `⚡ BOOST N TRACKS` button on each episode row in `components/lists.tsx` op
 `publishBoostNote()` in `lib/nostr/boost-notes.ts` builds a kind:1 with:
 
 - NIP-73 `i`/`k` pairs for `podcast:guid:<feed-guid>` and (per-episode) `podcast:item:guid:<item-guid>`.
-- `r` tag via `podcastLandingUrl`: prefers `https://pod.link/<itunesId>` (smart deep-link to the user's podcast app), falls back to `https://podcastindex.org/podcast/<feedId>`, then raw RSS URL.
+- **Two `r` tags** when both URLs differ. (1) Listen-link via `podcastLandingUrl`: prefers `https://pod.link/<itunesId>`, falls back to `https://podcastindex.org/podcast/<feedId>`, then raw RSS URL. (2) BMB deep-link via `bmbLandingUrl`: `https://boostmebitch.com/?podcast=<podcastGuid>` (only emitted when the podcast has a guid). Both URLs are also appended to the rendered body so Nostr readers see "listen elsewhere" + "boost back on BMB" as separate affordances.
 - `amount` in millisats from `value_msat_total` (intent).
 - `client` tag from `app_name`, defaults to `BoostMeBitch`.
 - `t`: `boostagram` + `value4value`.
