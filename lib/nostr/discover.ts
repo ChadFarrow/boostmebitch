@@ -59,6 +59,11 @@ interface FetchOpts {
    *  pull only new boosts on a manual refresh instead of re-downloading the
    *  entire feed. */
   since?: number;
+  /** Fired once the root event resolves, before the (slower) reply-tree /
+   *  profile / quote assembly runs — lets a caller paint the thread anchor
+   *  immediately and stream replies in afterward. The root note is built from
+   *  the per-pubkey profile cache only (no extra network). */
+  onRoot?: (root: DiscoveredNote) => void;
 }
 
 // Pull every event id this note quote-references, plus relay hints. Sources:
@@ -136,6 +141,21 @@ function bolt11AmountMsat(invoice: string): number | null {
   if (factor === undefined) return null;
   const msat = Math.round(digits * factor);
   return msat > 0 ? msat : null;
+}
+
+/**
+ * Build a DiscoveredNote from a single freshly-known event for optimistic UI
+ * insertion (a just-published reply) or a root-only progressive paint. A new
+ * reply has no quote-refs and no children, so we pass empty inputs; the shape
+ * is byte-identical to a note produced by the full feed pipeline so a later
+ * revalidation replaces it cleanly.
+ */
+export function noteFromEvent(
+  event: Event,
+  relays: string[],
+  profile: ProfileMetadata | null,
+): DiscoveredNote {
+  return buildNote(event, relays, profile, new Map(), []);
 }
 
 function buildNote(
@@ -243,8 +263,10 @@ export async function fetchPodcastNotes(
  * (using any relay hints embedded in the nevent), then assembles the full
  * reply tree exactly like the per-podcast feed does.
  *
- * Returns `[]` on any decode/fetch failure so callers can render a graceful
- * empty state instead of throwing.
+ * Returns `[]` for a URI we can't decode or a root event no relay carries, so
+ * callers can render a graceful empty state. THROWS when the relay query
+ * itself fails, so callers can distinguish a transient outage (offer retry)
+ * from a genuine "nothing there".
  */
 export async function fetchSocialInteractThread(
   nostrUri: string,
@@ -278,10 +300,16 @@ export async function fetchSocialInteractThread(
         { ids: [eventId] },
         { maxWait: QUERY_MAX_WAIT_MS },
       );
-    } catch {
-      return [];
+    } catch (e) {
+      throw new Error('socialInteract thread fetch failed', { cause: e });
     }
     if (!rootEvents.length) return [];
+    // Paint the thread anchor immediately; the reply tree + profile/quote
+    // resolution below is the slow part and streams in afterward.
+    if (opts.onRoot) {
+      const r = rootEvents[0];
+      opts.onRoot(noteFromEvent(r, allRelays, storage.profile.get(r.pubkey) ?? null));
+    }
     return assembleNotes(pool, allRelays, rootEvents);
   });
 }

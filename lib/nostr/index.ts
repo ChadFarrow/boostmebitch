@@ -36,6 +36,7 @@ export {
   fetchAllPodcastNotes,
   fetchPodcastNotes,
   fetchSocialInteractThread,
+  noteFromEvent,
   type DiscoveredNote,
 } from './discover';
 

@@ -19,6 +19,7 @@ const KEYS = {
   favoritesPrefix: 'bmb:favorites',
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
+  socialThreadPrefix: 'bmb:social',   // last DiscoveredNote[] per podcast:socialInteract URI
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
   profilePrefix: 'bmb:profile3',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion so stale negative-cache entries don't pin missing profiles for the 1-hour miss TTL.
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
@@ -357,6 +358,39 @@ export const storage = {
     },
     set: (key: string, v: DiscoveredNote[]) =>
       safeSet(`${KEYS.feedNotesPrefix}:${key}`, JSON.stringify(v)),
+  },
+
+  /**
+   * Last DiscoveredNote[] per `podcast:socialInteract` URI. Same
+   * stale-while-revalidate paint as `feedNotes` (returned regardless of age;
+   * every mount of `EpisodeSocialThread` revalidates). Keyed by the raw
+   * `nostr:` URI, which is stable per episode. Reuses the recursive `replies`
+   * normalizer + legacy `{ t, v }` tolerance so a note cached before any field
+   * existed won't crash a consumer iterating `note.replies`.
+   */
+  socialThread: {
+    get: (uri: string): DiscoveredNote[] | null => {
+      const raw = safeGet(`${KEYS.socialThreadPrefix}:${uri}`);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        const arr: unknown = Array.isArray(parsed)
+          ? parsed
+          : parsed && Array.isArray(parsed.v)
+            ? parsed.v
+            : null;
+        if (!arr) return null;
+        const normalize = (n: DiscoveredNote): DiscoveredNote => ({
+          ...n,
+          replies: Array.isArray(n.replies) ? n.replies.map(normalize) : [],
+        });
+        return (arr as DiscoveredNote[]).map(normalize);
+      } catch {
+        return null;
+      }
+    },
+    set: (uri: string, v: DiscoveredNote[]) =>
+      safeSet(`${KEYS.socialThreadPrefix}:${uri}`, JSON.stringify(v)),
   },
 
   /**

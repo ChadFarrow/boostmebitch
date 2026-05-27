@@ -1,4 +1,4 @@
-import { nip19, type EventTemplate } from 'nostr-tools';
+import { nip19, type Event, type EventTemplate } from 'nostr-tools';
 import { withPool } from './pool';
 
 export interface PublishedNote {
@@ -6,6 +6,7 @@ export interface PublishedNote {
   nevent: string;        // bech32 nevent for shareable link
   acceptedRelays: string[];
   failedRelays: string[];
+  event: Event;          // the signed source event — lets callers build an optimistic note without a refetch
 }
 
 // Sign + publish a single event template across the given relays. Used by
@@ -35,6 +36,7 @@ export async function signAndPublish(
       nevent: nip19.neventEncode({ id: signed.id, relays: accepted.slice(0, 3) }),
       acceptedRelays: accepted,
       failedRelays: failed,
+      event: signed,
     };
   });
 }
