@@ -67,6 +67,27 @@ function linkify(text: string): ReactNode[] {
   return parts;
 }
 
+// Image URLs are pulled out of the body and rendered as inline media instead
+// of raw links (matches how Nostr clients surface attached images). Detection
+// is extension-based — covers the common nostr.build / blossom style links.
+const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|avif|bmp)(\?[^\s]*)?$/i;
+
+function extractImages(text: string): { body: string; images: string[] } {
+  const images: string[] = [];
+  const body = text.replace(LINK_RE, (m) => {
+    const { token, trailing } = splitTrailingPunct(m);
+    if (IMAGE_EXT_RE.test(token)) {
+      if (!images.includes(token)) images.push(token);
+      return trailing; // drop the bare URL, keep any trailing punctuation
+    }
+    return m;
+  });
+  return {
+    body: body.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(),
+    images,
+  };
+}
+
 function timeAgo(unixSec: number): string {
   const diff = Date.now() / 1000 - unixSec;
   if (diff < 60) return 'just now';
@@ -110,6 +131,9 @@ export function NoteCard({
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)
       : null;
+  const { body: contentBody, images: contentImages } = extractImages(
+    stripNostrUris(note.content),
+  );
 
   const [composerMode, setComposerMode] = useState<'reply' | 'quote' | null>(null);
   const [composerDraft, setComposerDraft] = useState('');
@@ -261,9 +285,33 @@ export function NoteCard({
           </div>
         )}
 
-        <p className="text-sm text-bone whitespace-pre-wrap break-words mt-1.5">
-          {linkify(stripNostrUris(note.content))}
-        </p>
+        {contentBody && (
+          <p className="text-sm text-bone whitespace-pre-wrap break-words mt-1.5">
+            {linkify(contentBody)}
+          </p>
+        )}
+
+        {contentImages.length > 0 && (
+          <div className="mt-2 flex flex-col gap-2">
+            {contentImages.map((src) => (
+              <a
+                key={src}
+                href={src}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="block"
+              >
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={src}
+                  alt=""
+                  loading="lazy"
+                  className="rounded-lg border border-bone/15 max-h-80 max-w-full w-auto object-contain"
+                />
+              </a>
+            ))}
+          </div>
+        )}
 
         <div className="flex items-center gap-3 mt-2 text-[11px] flex-wrap">
           {identity ? (
