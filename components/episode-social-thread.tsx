@@ -9,7 +9,13 @@ function countNotes(notes: DiscoveredNote[]): number {
   return notes.reduce((sum, n) => sum + 1 + countNotes(n.replies), 0);
 }
 
-export function EpisodeSocialThread({ entries }: { entries: SocialInteract[] }) {
+export function EpisodeSocialThread({
+  entries,
+  label = 'Nostr comments',
+}: {
+  entries: SocialInteract[];
+  label?: string;
+}) {
   const [notes, setNotes] = useState<DiscoveredNote[] | null>(null);
   const [loading, setLoading] = useState(false);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
@@ -40,7 +46,7 @@ export function EpisodeSocialThread({ entries }: { entries: SocialInteract[] }) 
     <div>
       <div className="flex items-center gap-3 mb-2">
         <p className="text-[11px] uppercase tracking-widest text-muted flex-1">
-          Nostr comments
+          {label}
           {!loading && total > 0 && (
             <span className="ml-1 text-nostr">({total})</span>
           )}

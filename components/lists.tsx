@@ -9,7 +9,6 @@ import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
-import { EpisodeSocialThread } from './episode-social-thread';
 
 function fmtDuration(t: number) {
   if (!isFinite(t) || t <= 0) return '';
@@ -440,10 +439,6 @@ function ExpandedEpisodePanel({
         />
       )}
 
-      {episode.socialInteract?.length ? (
-        <EpisodeSocialThread entries={episode.socialInteract} />
-      ) : null}
-
       {hasValue && (
         <button
           type="button"
@@ -692,6 +687,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           <PodcastNostrFeed
             podcastGuid={data.podcast.podcastGuid}
             podcastTitle={data.podcast.title}
+            pinnedSocialInteract={data.episodes.find((e) => e.socialInteract?.length)?.socialInteract}
           />
         </DeferredOnScroll>
       )}
