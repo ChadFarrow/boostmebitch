@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getEpisodes, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast } from '@/lib/pi';
+import { getEpisodes, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getSocialInteractsFromRss } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { getErrorMessage } from '@/lib/util';
 
@@ -20,6 +20,12 @@ export async function GET(req: Request) {
       getEpisodes(id, 50),
       getLiveItemsForFeed(id).catch(() => [] as Episode[]),
     ]);
+    // PI's episode API doesn't expose <podcast:socialInteract>, so we fetch
+    // the RSS and parse it ourselves. Best-effort: failure leaves episodes
+    // without socialInteract rather than breaking the whole feed.
+    const socialMap: Map<string, import('@/lib/types').SocialInteract[]> = podcast?.url
+      ? await getSocialInteractsFromRss(podcast.url).catch(() => new Map())
+      : new Map();
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
     // PI's /episodes/live only returns currently-broadcasting items; pending
     // liveItems live in the RSS itself, so we additionally parse the feed XML.
@@ -43,6 +49,8 @@ export async function GET(req: Request) {
       ...e,
       // Episodes inherit the channel value block when they don't have their own.
       value: e.value ?? podcast.value,
+      // socialInteract comes from RSS since PI doesn't index this field.
+      socialInteract: e.socialInteract ?? (e.guid ? socialMap.get(e.guid) : undefined),
     }));
     // Live first (live > pending), then regular by datePublished desc.
     // Within `pending`, sort ascending — the next-to-air show should be at
