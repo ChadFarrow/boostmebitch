@@ -1,6 +1,6 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
-import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit } from './types';
+import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract } from './types';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -115,6 +115,56 @@ function parseRawValueTimeSplits(raw: any): ValueTimeSplit[] {
     }));
 }
 
+// Normalise a raw URI field from <podcast:socialInteract> to a `nostr:` URI.
+// Some publishers use https://njump.me/<bech32> instead of the spec-compliant
+// `nostr:<bech32>` form — extract the bech32 from either.
+function extractNostrUri(raw: string): string | null {
+  if (raw.startsWith('nostr:')) return raw;
+  const m = raw.match(/\/(n(?:event|ote|addr|profile|pub)1[023456789acdefghjklmnpqrstuvwxyz]+)/);
+  return m ? `nostr:${m[1]}` : null;
+}
+
+function parseNostrSocialInteracts(raw: any): SocialInteract[] | undefined {
+  if (!Array.isArray(raw) || !raw.length) return undefined;
+  const results: SocialInteract[] = [];
+  for (const s of raw) {
+    if (typeof s?.uri !== 'string') continue;
+    if (s.protocol !== 'nostr') continue;
+    const uri = extractNostrUri(s.uri);
+    if (!uri) continue;
+    results.push({
+      uri,
+      accountId: typeof s.accountId === 'string' && s.accountId ? s.accountId : undefined,
+      priority: typeof s.priority === 'number' ? s.priority : undefined,
+    });
+  }
+  if (!results.length) return undefined;
+  return results.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+}
+
+function parseSocialInteractsFromRss(xml: string): SocialInteract[] | undefined {
+  const results: SocialInteract[] = [];
+  const re = /<podcast:socialInteract\b([^>]*?)\/?>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml))) {
+    const attrs = m[1];
+    if (readAttr(attrs, 'protocol') !== 'nostr') continue;
+    const rawUri = readAttr(attrs, 'uri');
+    if (!rawUri) continue;
+    const uri = extractNostrUri(rawUri);
+    if (!uri) continue;
+    const accountId = readAttr(attrs, 'accountId');
+    const priorityStr = readAttr(attrs, 'priority');
+    results.push({
+      uri,
+      accountId: accountId || undefined,
+      priority: priorityStr !== undefined ? Number(priorityStr) : undefined,
+    });
+  }
+  if (!results.length) return undefined;
+  return results.sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+}
+
 function buildEpisode(e: any): Episode {
   return {
     id: e.id,
@@ -135,6 +185,7 @@ function buildEpisode(e: any): Episode {
     chaptersUrl: typeof e.chaptersUrl === 'string' && e.chaptersUrl.length > 0 ? e.chaptersUrl : undefined,
     value: normalizeValue(e.value),
     valueTimeSplits: parseRawValueTimeSplits(e.timesplits),
+    socialInteract: parseNostrSocialInteracts(e.socialInteract),
   };
 }
 
@@ -202,6 +253,7 @@ export async function getLiveItemsFromRss(
     liveStatus: r.status,
     liveStartTime: r.startTime,
     value: r.value,
+    socialInteract: r.socialInteract,
   }));
 }
 
@@ -215,6 +267,7 @@ interface RawLiveItem {
   enclosureType?: string;
   image?: string;
   value?: ValueBlock | null;
+  socialInteract?: SocialInteract[];
 }
 
 function parseRssLiveItems(xml: string): RawLiveItem[] {
@@ -241,6 +294,7 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
       enclosureType: enc ? readAttr(enc[1], 'type') : undefined,
       image: itunesImg ? readAttr(itunesImg[1], 'href') : undefined,
       value: parseValueBlock(inner),
+      socialInteract: parseSocialInteractsFromRss(inner),
     });
   }
   return out;

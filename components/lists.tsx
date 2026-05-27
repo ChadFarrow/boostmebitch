@@ -9,6 +9,7 @@ import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
+import { EpisodeSocialThread } from './episode-social-thread';
 
 function fmtDuration(t: number) {
   if (!isFinite(t) || t <= 0) return '';
@@ -439,6 +440,10 @@ function ExpandedEpisodePanel({
         />
       )}
 
+      {episode.socialInteract?.length ? (
+        <EpisodeSocialThread entries={episode.socialInteract} />
+      ) : null}
+
       {hasValue && (
         <button
           type="button"
@@ -612,6 +617,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   )}
                   {e.duration && <span>· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
+                  {e.socialInteract?.length ? <span className="text-nostr">· 💬</span> : null}
                 </div>
                 {e.valueTimeSplits?.length ? (
                   <button

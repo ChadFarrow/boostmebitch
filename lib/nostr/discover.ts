@@ -1,5 +1,5 @@
 import { nip19, type Event } from 'nostr-tools';
-import { withPool, withExtraRelays, FEED_QUERY_MAX_WAIT_MS } from './pool';
+import { withPool, withExtraRelays, FEED_QUERY_MAX_WAIT_MS, QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS, PROFILE_RELAYS } from './relays';
 import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
@@ -234,6 +234,55 @@ export async function fetchPodcastNotes(
       return [];
     }
     return await assembleNotes(pool, relays, events);
+  });
+}
+
+/**
+ * Fetch the Nostr thread referenced by a `<podcast:socialInteract>` URI.
+ * Decodes a `nostr:note1…` or `nostr:nevent1…` URI, fetches the root event
+ * (using any relay hints embedded in the nevent), then assembles the full
+ * reply tree exactly like the per-podcast feed does.
+ *
+ * Returns `[]` on any decode/fetch failure so callers can render a graceful
+ * empty state instead of throwing.
+ */
+export async function fetchSocialInteractThread(
+  nostrUri: string,
+  opts: FetchOpts = {},
+): Promise<DiscoveredNote[]> {
+  const bech32 = nostrUri.startsWith('nostr:') ? nostrUri.slice(6) : nostrUri;
+  let eventId: string;
+  let hintRelays: string[] = [];
+  try {
+    const decoded = nip19.decode(bech32);
+    if (decoded.type === 'note') {
+      eventId = decoded.data;
+    } else if (decoded.type === 'nevent') {
+      eventId = decoded.data.id;
+      hintRelays = decoded.data.relays ?? [];
+    } else {
+      return [];
+    }
+  } catch {
+    return [];
+  }
+
+  const baseRelays = opts.relays ?? DEFAULT_RELAYS;
+  const allRelays = Array.from(new Set([...baseRelays, ...hintRelays.slice(0, 4)]));
+
+  return withPool(allRelays, async (pool) => {
+    let rootEvents: Event[] = [];
+    try {
+      rootEvents = await pool.querySync(
+        allRelays,
+        { ids: [eventId] },
+        { maxWait: QUERY_MAX_WAIT_MS },
+      );
+    } catch {
+      return [];
+    }
+    if (!rootEvents.length) return [];
+    return assembleNotes(pool, allRelays, rootEvents);
   });
 }
 
