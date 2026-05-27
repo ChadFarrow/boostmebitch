@@ -470,6 +470,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
   const current = useApp((s) => s.current);
+  const openDiscussion = useApp((s) => s.openDiscussion);
 
   useEffect(() => {
     setValueOpen(false);
@@ -612,7 +613,20 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   )}
                   {e.duration && <span>· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
-                  {e.socialInteract?.length ? <span className="text-nostr">· 💬</span> : null}
+                  {e.socialInteract?.length ? (
+                    <button
+                      type="button"
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        openDiscussion(e);
+                      }}
+                      className="text-nostr hover:text-nostr/70 hover:underline underline-offset-2"
+                      title="Open the discussion for this episode"
+                      aria-label="Open episode discussion"
+                    >
+                      · 💬 discussion
+                    </button>
+                  ) : null}
                 </div>
                 {e.valueTimeSplits?.length ? (
                   <button
@@ -687,7 +701,6 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           <PodcastNostrFeed
             podcastGuid={data.podcast.podcastGuid}
             podcastTitle={data.podcast.title}
-            pinnedSocialInteract={data.episodes.find((e) => e.socialInteract?.length)?.socialInteract}
           />
         </DeferredOnScroll>
       )}

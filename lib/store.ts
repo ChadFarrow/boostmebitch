@@ -25,6 +25,13 @@ interface AppState {
   selectedPodcast: Podcast | null;
   selectPodcast: (p: Podcast | null) => void;
 
+  // When set, the page swaps to a full-screen discussion view for this
+  // episode's podcast:socialInteract thread (opened from the "💬 discussion"
+  // button). Takes precedence over the detail/browse views in app/page.tsx.
+  discussionEpisode: Episode | null;
+  openDiscussion: (e: Episode) => void;
+  closeDiscussion: () => void;
+
   favorites: Record<string, FavoritePodcast>;
   isFavorite: (guid: string | undefined) => boolean;
   addFavorite: (p: FavoritePodcast) => void;
@@ -59,7 +66,13 @@ export const useApp = create<AppState>((set, get) => ({
   setPosition: (s) => set({ positionSec: s }),
 
   selectedPodcast: null,
-  selectPodcast: (p) => set({ selectedPodcast: p }),
+  // Leaving the detail view (or switching shows) also drops any open
+  // discussion so a stale thread can't outlive its podcast.
+  selectPodcast: (p) => set({ selectedPodcast: p, discussionEpisode: null }),
+
+  discussionEpisode: null,
+  openDiscussion: (e) => set({ discussionEpisode: e }),
+  closeDiscussion: () => set({ discussionEpisode: null }),
 
   // Hydrate from the guest cache on store creation; once a user signs in,
   // nostr-auth.tsx replaces this with the per-npub set.

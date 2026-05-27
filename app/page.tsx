@@ -5,6 +5,7 @@ import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
+import { DiscussionView } from '@/components/discussion-view';
 import { DeferredOnScroll } from '@/components/deferred-on-scroll';
 import { BoltIcon } from '@/components/icons';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -64,6 +65,7 @@ export default function Home() {
   const showFavoritesPanel = !query && hasFavorites;
   const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel;
   const inDetailView = !!selected;
+  const inDiscussion = useApp((s) => !!s.discussionEpisode);
 
   return (
     <main className="min-h-screen pb-32">
@@ -106,7 +108,9 @@ export default function Home() {
 
       {/* Results grid */}
       <section className="max-w-7xl mx-auto px-4 pt-2">
-        {inDetailView ? (
+        {inDiscussion ? (
+          <DiscussionView />
+        ) : inDetailView ? (
           // Detail "page" — once a podcast is picked, the search/favorites
           // aside hides so the episode list + per-podcast Nostr feed get the
           // full viewport. The back button returns the user to whatever
