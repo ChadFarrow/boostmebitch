@@ -612,6 +612,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   )}
                   {e.duration && <span>· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
+                  {e.socialInteract?.length ? <span className="text-nostr">· 💬</span> : null}
                 </div>
                 {e.valueTimeSplits?.length ? (
                   <button
@@ -686,6 +687,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           <PodcastNostrFeed
             podcastGuid={data.podcast.podcastGuid}
             podcastTitle={data.podcast.title}
+            pinnedSocialInteract={data.episodes.find((e) => e.socialInteract?.length)?.socialInteract}
           />
         </DeferredOnScroll>
       )}

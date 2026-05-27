@@ -7,8 +7,10 @@ import {
   type DiscoveredNote,
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
+import type { SocialInteract } from '@/lib/types';
 import { FeedSection } from './feed-section';
 import { NoteCard } from './nostr-note-card';
+import { EpisodeSocialThread } from './episode-social-thread';
 
 /**
  * Per-podcast Nostr stream — same card UI as <GlobalNostrFeed>, but the relay
@@ -19,9 +21,11 @@ import { NoteCard } from './nostr-note-card';
 export function PodcastNostrFeed({
   podcastGuid,
   podcastTitle,
+  pinnedSocialInteract,
 }: {
   podcastGuid: string;
   podcastTitle?: string;
+  pinnedSocialInteract?: SocialInteract[];
 }) {
   const { notes, loading, err, refresh } = useNostrFeed({
     cacheKey: `podcast:${podcastGuid}`,
@@ -44,6 +48,13 @@ export function PodcastNostrFeed({
           <span className="text-nostr">#</span> Boosts &amp; chatter on Nostr
           {podcastTitle ? <span className="text-muted text-sm"> · {podcastTitle}</span> : null}
         </h3>
+      }
+      description={
+        pinnedSocialInteract?.length ? (
+          <div className="mb-4 pb-4 border-b border-bone/10">
+            <EpisodeSocialThread entries={pinnedSocialInteract} label="📌 Episode thread" />
+          </div>
+        ) : undefined
       }
       notes={visibleNotes}
       loading={loading}

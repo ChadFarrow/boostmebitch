@@ -2,6 +2,7 @@
 import { RefObject, useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { BoltIcon } from './icons';
+import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
 
 function fmt(t: number) {
@@ -264,6 +265,12 @@ export function FullscreenPlayer({
                 />
               </div>
             )}
+
+            {episode.socialInteract?.length ? (
+              <div className="border-t border-bone/10 pt-5">
+                <EpisodeSocialThread entries={episode.socialInteract} />
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
