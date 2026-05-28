@@ -113,10 +113,12 @@ export function NoteCard({
   note,
   podcast,
   repostedIds,
+  depth = 0,
 }: {
   note: DiscoveredNote;
   podcast?: Podcast | null;
   repostedIds?: Set<string>;
+  depth?: number;
 }) {
   const identity = useApp((s) => s.identity);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
@@ -427,9 +429,9 @@ export function NoteCard({
       </div>
     </article>
     {visibleReplies.length > 0 && (
-      <div className="mt-3 ml-6 pl-3 border-l-2 border-nostr/30 space-y-3">
+      <div className={`mt-3 border-l-2 border-nostr/30 space-y-3 ${depth < 2 ? 'ml-4 pl-2 sm:ml-6 sm:pl-3' : 'ml-2 pl-2'}`}>
         {visibleReplies.map((r) => (
-          <NoteCard key={r.id} note={r} repostedIds={repostedIds} />
+          <NoteCard key={r.id} note={r} repostedIds={repostedIds} depth={depth + 1} />
         ))}
       </div>
     )}
