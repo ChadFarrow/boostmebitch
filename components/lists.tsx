@@ -613,21 +613,21 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   )}
                   {e.duration && <span>· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
-                  {e.socialInteract?.length ? (
-                    <button
-                      type="button"
-                      onClick={(ev) => {
-                        ev.stopPropagation();
-                        openDiscussion(e);
-                      }}
-                      className="text-nostr hover:text-nostr/70 hover:underline underline-offset-2"
-                      title="Open the discussion for this episode"
-                      aria-label="Open episode discussion"
-                    >
-                      · 💬 discussion
-                    </button>
-                  ) : null}
                 </div>
+                {e.socialInteract?.length ? (
+                  <button
+                    type="button"
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      openDiscussion(e);
+                    }}
+                    className="btn-ghost mt-1 text-nostr text-[11px] px-2 py-0.5 whitespace-nowrap"
+                    title="Open the discussion for this episode"
+                    aria-label="Open episode discussion"
+                  >
+                    💬 discussion
+                  </button>
+                ) : null}
                 {e.valueTimeSplits?.length ? (
                   <button
                     type="button"
