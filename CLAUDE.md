@@ -14,13 +14,13 @@ The README at the repo root is the architecture spec; treat overlap with this fi
 
 ```bash
 npm install
-cp .env.example .env.local       # PI key + secret + Breez key
+cp .env.example .env.local       # PI key + secret (Spark rail needs no key)
 npm run dev / build / start / lint
 ```
 
 **No test runner, no typecheck script, no formatter.** `next build` is the de facto typecheck (strict mode on). Path alias: `@/*` → repo root.
 
-`.env.local`: `PODCAST_INDEX_KEY`/`SECRET` (server-only), `NEXT_PUBLIC_BREEZ_API_KEY` (browser; the Spark SDK is self-custodial so the key gates SDK usage, not user funds), `APP_NAME` (optional).
+`.env.local`: `PODCAST_INDEX_KEY`/`SECRET` (server-only), `APP_NAME` (optional). The Spark rail (`@buildonspark/spark-sdk`) needs **no** API key — it talks straight to Spark's signing operators.
 
 ## Server vs client boundary (don't cross it)
 
@@ -137,25 +137,28 @@ Both come from `components/wallet-balance.tsx`. `useWalletBalance(railOverride?)
 
 All three balance helpers swallow errors and return null so a missing capability (NWC connection without `get_balance` permission, WebLN provider without `getBalance`) just hides the chip rather than throwing.
 
-**Last-known balance cache.** `useWalletBalance` writes the live `{ rail, balance }` to `storage.walletBalance` (per-npub) on every successful fetch, and reads it back on mount as a fallback. Without it, a returning user sees a blank chip for 5-10 s while Breez Spark cold-restores (relay query for the kind:30078 backup → NIP-44 decrypt → WASM load → `connect()` → initial sync). With it, the chip paints the cached number instantly and only swaps to the live value once the SDK is ready. Cleared on explicit Spark/NWC disconnect (`<SparkWallet>` and `<NwcWallet>` call `storage.walletBalance.clear(npub)`). The cached balance is only paired with a matching live rail — we never show a stale Spark balance under an NWC label.
+**Last-known balance cache.** `useWalletBalance` writes the live `{ rail, balance }` to `storage.walletBalance` (per-npub) on every successful fetch, and reads it back on mount as a fallback. Without it, a returning user sees a blank chip for 5-10 s while the Spark wallet cold-restores (relay query for the kind:30078 backup → NIP-44 decrypt → SDK load → `SparkWallet.initialize()` → initial sync). With it, the chip paints the cached number instantly and only swaps to the live value once the SDK is ready. Cleared on explicit Spark/NWC disconnect (`<SparkWallet>` and `<NwcWallet>` call `storage.walletBalance.clear(npub)`). The cached balance is only paired with a matching live rail — we never show a stale Spark balance under an NWC label.
 
-## Spark rail (Breez SDK)
+## Spark rail (Spark Labs SDK)
 
-`lib/v4v/spark.ts` wraps `@breeztech/breez-sdk-spark`. WASM only lands in the bundle on first wallet open (dynamic import inside `sparkInitFromMnemonic`).
+`lib/v4v/spark.ts` wraps `@buildonspark/spark-sdk` (the SDK ships an `eventemitter3`-based `SparkWallet`). The heavy SDK only lands in the bundle on first wallet open (dynamic import inside `sparkInitFromMnemonic`). No API key — the SDK talks directly to Spark's signing operators.
 
 Load-bearing rules:
 
 1. **BOLT11 only.** Spark cannot keysend. `lib/v4v/boost.ts` rejects every `node`-type recipient on the Spark rail per-leg with a clear error. lnaddress works because `payOne` fetches a BOLT11 from the LNURL-pay callback first.
-2. **Network is `mainnet` or `regtest` — no public testnet exists.** Use `network: 'regtest'` against a local node for development; the type union enforces this.
-3. **`storageDir` is keyed on `(ownerPubkey[:8], sha256(mnemonic)[:8])`.** Two wallets for the same npub get different SDK directories — `walletStorageDir()` does the hashing. Keying on pubkey alone collides on disconnect+recreate; the SDK either rejects re-init or corrupts state.
-4. **Two-step send.** `sparkPayInvoice` runs `sdk.prepareSendPayment({ paymentRequest })` then `sdk.sendPayment({ prepareResponse })`. Preimage from `payment.preimage` or `payment.details.htlcDetails.preimage`.
-5. **Events drive the balance, not polling.** `subscribeSparkEvents()` wraps the SDK's `addEventListener`. `paymentSucceeded`/`claimedDeposits`/`newDeposits`/`synced` trigger `sparkGetInfo()` in `<ReadyPanel>`; the first three also auto-dismiss any outstanding deposit invoice.
+2. **Account number = the SDK's per-network default (1 on mainnet, 0 on regtest).** `sparkInitFromMnemonic` sets `accountNumber: network === 'regtest' ? 0 : 1`. Spark's mainnet default is **1**, and Primal + BlitzWallet both use the default — so mirroring it makes the same seed derive the **same account and balance** as those wallets. ⚠️ Hardcoding `0` on mainnet derives a *different, empty* account (this was the first-cut bug — symptom was a connected wallet stuck at 0 sats). There is **no auto-migration** from the old Breez wallets (Breez derived its own keys); users must paste/restore a seed.
+3. **Network is `MAINNET` or `REGTEST` — no public testnet exists.** Our `network?: 'mainnet' | 'regtest'` arg maps to the SDK's `options.network` (`'REGTEST'` for dev against a local node, else `'MAINNET'`).
+4. **Init returns `{ wallet }`.** `const { wallet } = await SparkWallet.initialize({ mnemonicOrSeed, accountNumber: 0, options: { network } })`. No `storageDir`/`walletStorageDir` concept — that was Breez-only (the SDK keeps no local WASM storage dir we manage).
+5. **Send is one-shot.** `sparkPayInvoice` calls `sdk.payLightningInvoice({ invoice, maxFeeSats: 100 })`. The preimage is **not** returned synchronously, so we return `''` (`BoostResult.preimage` is optional and unread by the UI).
+6. **Receive.** `sparkReceiveInvoice` calls `sdk.createLightningInvoice({ amountSats, memo })` → BOLT11 at `result.invoice.encodedInvoice`. The SDK exposes no settle fee here, so `feeSats` is always 0 (ReadyPanel hides the fee line when 0).
+7. **Balance.** `sparkGetInfo` reads `sdk.getBalance()` → `satsBalance.available` (bigint, `Number()`-cast), falling back to the deprecated `balance` field.
+8. **Events drive the balance, not polling.** `subscribeSparkEvents()` registers `eventemitter3` `.on`/`.off` handlers and maps SDK events into the existing `SparkSdkEvent` union: `'transfer:claimed'` → `paymentSucceeded`, `'deposit:confirmed'` → `claimedDeposits` (both clear the open deposit invoice in `<ReadyPanel>`), `'balance:update'`/`'stream:connected'` → `synced` (plain refresh). The `newDeposits`/`optimization`/`lightningAddressChanged` union arms are no longer emitted but kept so consumers don't change.
 
-Mnemonic is published encrypt-to-self as kind:30078 (`lib/nostr/wallet-backup.ts`) — anyone with the user's nsec can decrypt; backup is convenience, not the only copy. The seed-display step is the user's chance to write it down. Re-create flow checks for an existing backup and confirms before overwrite (kind:30078 is NIP-33 replaceable — newer wins, prior is gone forever).
+**Onboarding (3 paths in `components/spark-wallet.tsx`).** Paste an existing seed (the Primal-balance-sharing path), **Create new** (mints via `sparkGenerateMnemonic`, SDK-independent `@scure/bip39`), or **Restore from Nostr**. All publish the seed encrypt-to-self as kind:30078 (`lib/nostr/wallet-backup.ts`) so silent auto-restore works next load; paste/create confirm before overwriting a *different* existing backup (kind:30078 is NIP-33 replaceable — newer wins, prior is gone forever).
 
 **Restore-side relay union.** `fetchEncryptedMnemonic` queries `resolvePublishRelays(identity) ∪ DEFAULT_RELAYS` (deduped, capped at 20) with the longer 8s `FEED_QUERY_MAX_WAIT_MS`. Otherwise a fresh Android Amber sign-in (where NIP-65 hasn't hydrated yet) falls back to defaults and misses backups on the user's outbox relays. `publishEncryptedMnemonic` stays on `resolvePublishRelays(identity)`.
 
-**Post-restore balance race.** `<ReadyPanel>` attaches the SDK event listener BEFORE the first `getInfo()` call, then re-polls at 2s/5s/12s. Otherwise Breez Spark's initial sync after `connect()` can complete between our `connect` resolving and the listener attaching, leaving the panel stuck at a cached 0.
+**Post-restore balance race.** `<ReadyPanel>` attaches the SDK event listener BEFORE the first balance call, then re-polls at 2s/5s/12s. Otherwise the SDK's initial sync after `initialize()` can complete between init resolving and the listener attaching, leaving the panel stuck at a cached 0.
 
 ## Show-level boost
 
@@ -318,7 +321,7 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 | `bmb:boosts:*` | Local sent-boost log, capped 200 newest-first. Each entry holds intent + per-leg results + Nostr `noteId` patched in once `publishBoostNote` resolves. `boostsTick` wakes subscribers; `GlobalNostrFeed` mixes these in and dedupes against returned notes by `noteId`. |
 | `bmb:pi:dead` (sessionStorage) | Circuit-breaker sentinel; cleared on hard-refresh-into-new-tab. |
 
-External: the **Spark mnemonic** lives encrypted on Nostr as kind:30078. Breez SDK's wallet state (UTXOs, payment history) lives in IndexedDB at `bmb-spark-<pubkey:8>-<sha256(mnemonic):8>`.
+External: the **Spark mnemonic** lives encrypted on Nostr as kind:30078. The `@buildonspark/spark-sdk` `SparkWallet` keeps its own wallet state (leaves, transfer history) keyed off the seed + `accountNumber: 0`; we don't manage a storage dir for it.
 
 ## Styling tokens
 

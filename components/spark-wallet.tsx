@@ -33,6 +33,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
   const [internalMode, setInternalMode] = useState<InternalMode>('idle');
   const [draftMnemonic, setDraftMnemonic] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
+  const [pasteSeed, setPasteSeed] = useState('');
   const [err, setErr] = useState<string | null>(null);
 
   const owner = sparkOwner();
@@ -109,6 +110,43 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
     }
   }
 
+  // Paste an existing seed (e.g. the user's Primal wallet) to share its balance.
+  async function connectPasted() {
+    setErr(null);
+    if (!identity) { setErr('Sign in with Nostr first — backups need your pubkey.'); return; }
+    const trimmed = pasteSeed.trim().replace(/\s+/g, ' ');
+    const words = trimmed ? trimmed.split(' ') : [];
+    if (words.length !== 12 && words.length !== 24) {
+      setErr('Seed must be 12 or 24 words.');
+      return;
+    }
+    setInternalMode('busy');
+    try {
+      // kind:30078 is replaceable — only confirm an overwrite when a DIFFERENT
+      // wallet is already backed up. Re-pasting the same seed is harmless.
+      const existing = await fetchEncryptedMnemonic(identity).catch(() => null);
+      if (existing && existing.trim().replace(/\s+/g, ' ') !== trimmed) {
+        const ok = window.confirm(
+          'A different Spark wallet backup already exists on your relays.\n\n' +
+          'Connecting this seed will OVERWRITE that backup. The old wallet ' +
+          'will be unrecoverable unless you wrote its seed phrase down.\n\n' +
+          'Continue and overwrite?'
+        );
+        if (!ok) { setInternalMode('idle'); return; }
+      }
+      storage.sparkOptOut.clear();
+      await sparkInitFromMnemonic({ mnemonic: trimmed, ownerPubkey: identity.pubkey });
+      // Back up so silent auto-restore works on the next load. Non-fatal.
+      await publishEncryptedMnemonic(identity, trimmed).catch(() => {});
+      setPasteSeed('');
+      setInternalMode('idle');
+      onConnected?.();
+    } catch (e) {
+      setErr(getErrorMessage(e, 'failed to connect wallet'));
+      setInternalMode('idle');
+    }
+  }
+
   async function disconnect() {
     await sparkDisconnect();
     storage.sparkOptOut.set();
@@ -161,7 +199,28 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
       <div className="text-[11px] text-muted">
         Self-custodial wallet. Mnemonic is NIP-44 encrypted to your pubkey and stored on your write relays.
       </div>
-      <div className="flex gap-2 flex-wrap">
+      <div className="space-y-2">
+        <div className="text-[11px] text-muted">
+          Paste an existing 12- or 24-word seed (e.g. your Primal wallet) to share its balance.
+        </div>
+        <textarea
+          className="input w-full h-16 resize-none"
+          placeholder="word1 word2 word3 …"
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          value={pasteSeed}
+          onChange={(e) => setPasteSeed(e.target.value)}
+        />
+        <button
+          onClick={connectPasted}
+          disabled={internalMode === 'busy' || !identity || !pasteSeed.trim()}
+          className="btn-bolt disabled:opacity-30"
+        >
+          {internalMode === 'busy' ? 'Connecting…' : 'Connect'}
+        </button>
+      </div>
+      <div className="flex gap-2 flex-wrap pt-1 border-t border-line">
         <button
           onClick={startCreate}
           disabled={internalMode === 'busy' || !identity}
@@ -178,7 +237,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
         </button>
       </div>
       {!identity && (
-        <div className="text-[11px] text-muted">Sign in with Nostr to create or restore.</div>
+        <div className="text-[11px] text-muted">Sign in with Nostr to connect, create, or restore.</div>
       )}
       {err && <div className="text-[11px] text-nostr/80">{err}</div>}
     </div>
