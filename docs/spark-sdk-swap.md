@@ -298,6 +298,15 @@ webpack: (config, { isServer }) => {
 },
 ```
 
+**Keysend splits will fail — this is expected.** Spark (both Breez and the Labs SDK)
+is BOLT11-only; it cannot keysend. `lib/v4v/boost.ts` already handles this: any
+value-block recipient with `type: 'node'` is rejected per-leg with a clear error, and
+the boost continues to the remaining LNURL/lnaddress recipients. This is unchanged by
+the swap, but worth surfacing to users — a boost to a show where one or more recipients
+are node-pubkey-only will show partial failures. Consider adding a note in the boost
+modal (or the wallet description) along the lines of "Keysend recipients are skipped
+— use NWC if your podcasts require it."
+
 **`maxFeeSats` on zero-amount invoices.** `payLightningInvoice` requires `maxFeeSats`.
 If someone pays a zero-amount BOLT11 (the `amountSatsToSend` param handles that), the
 `maxFeeSats` cap still applies. 100 sats is fine.
