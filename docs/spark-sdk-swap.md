@@ -237,7 +237,10 @@ async function connect() {
 // render:
 <div className="space-y-2">
   <div className="text-[11px] text-muted">
-    Paste your BlitzWallet (or any Spark) seed phrase to connect.
+    Works with BlitzWallet, Primal, and any Spark wallet.
+  </div>
+  <div className="text-[11px] text-muted">
+    Paste your seed phrase to connect. Saved once to your Nostr relays — auto-restores on future logins.
   </div>
   <textarea
     className="input w-full text-xs font-mono"
