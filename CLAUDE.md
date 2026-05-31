@@ -48,7 +48,9 @@ NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (
 
 **Relay query timeouts.** Every `pool.querySync` site passes a `maxWait` from `lib/nostr/pool.ts`: `QUERY_MAX_WAIT_MS = 4000` for single-author lookups (kind:0/10000/10002/30003/30078/6) and `FEED_QUERY_MAX_WAIT_MS = 8000` for broad feed scans (kind:1 with `#i`/`#k`, reply-tree BFS, bulk profile fetches). Without these, a stalled relay pins the tab in loading. The 4s/8s split balances spinner duration vs. completeness.
 
-`resolvePublishRelays(identity)` in `lib/nostr/` is the single source of truth for publish targets: localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20.
+`resolvePublishRelays(identity)` in `lib/nostr/relays.ts` is the single source of truth for publish targets: localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20.
+
+**`sanitizeRelays(urls)`** (also `lib/nostr/relays.ts`) drops any entry that isn't a parseable `ws://`/`wss://` URL, then dedupes and strips trailing slashes. Applied at the two points untrusted relay lists enter: the NIP-65 parse in `fetchRelayList` and the output of `resolvePublishRelays` (covers the `bmb:relays` override too; falls back to `DEFAULT_RELAYS` if sanitizing empties the list). A corrupt entry — e.g. a NIP-65 `r`-tag value of `"avatar wss://purplerelay.com"` — otherwise reaches nostr-tools' `normalizeURL`, which **throws `Invalid URL` synchronously inside `pool.querySync`**; that rejection escapes per-call try/catch and aborts the whole flow (it killed the Spark "Create new" backup check). A survivor of `sanitizeRelays` is guaranteed to parse, so `normalizeURL` can't throw on it.
 
 ## Signers (NIP-07 + Amber NIP-55 + NIP-46 bunker)
 
