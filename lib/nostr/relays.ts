@@ -31,6 +31,31 @@ export const PROFILE_RELAYS = [
   'wss://eden.nostr.land',
 ];
 
+// Drop relay entries that aren't valid `ws://` / `wss://` URLs. Corrupt NIP-65
+// tags, stray text, or user typos (e.g. an `r` tag value of
+// `"avatar wss://purplerelay.com"`) otherwise reach nostr-tools' `normalizeURL`,
+// which throws `Invalid URL` synchronously inside `pool.querySync` — that
+// rejection escapes our per-call try/catch and aborts the whole flow (e.g. the
+// Spark "Create new" backup check). A survivor here is guaranteed to parse, so
+// `normalizeURL` can't throw on it. Also dedupes and strips trailing slashes.
+export function sanitizeRelays(urls: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of urls) {
+    if (typeof raw !== 'string') continue;
+    const url = raw.trim().replace(/\/$/, '');
+    if (!url) continue;
+    try {
+      const u = new URL(url);
+      if (u.protocol !== 'wss:' && u.protocol !== 'ws:') continue;
+    } catch {
+      continue;
+    }
+    if (!seen.has(url)) { seen.add(url); out.push(url); }
+  }
+  return out;
+}
+
 // NIP-65 relay list (kind:10002). We only consume the write side — we never
 // read events from arbitrary relays based on someone's read list, so the
 // parser drops it.
@@ -56,7 +81,7 @@ export async function fetchRelayList(
         const marker = tag[2];
         if (!marker || marker === 'write') write.add(url);
       }
-      return { write: Array.from(write) };
+      return { write: sanitizeRelays(Array.from(write)) };
     } catch {
       return null;
     }
@@ -70,7 +95,11 @@ export async function fetchRelayList(
  */
 export function resolvePublishRelays(identity: NostrIdentity | null): string[] {
   const override = storage.relays.get();
-  if (override) return override.slice(0, 20);
-  if (identity?.writeRelays?.length) return identity.writeRelays.slice(0, 20);
-  return DEFAULT_RELAYS;
+  const chosen = override ?? (identity?.writeRelays?.length ? identity.writeRelays : DEFAULT_RELAYS);
+  // Sanitize regardless of source: a localStorage override or a peer's NIP-65
+  // list can carry a malformed entry. If sanitizing empties the list (every
+  // entry was garbage), fall back to the known-good defaults rather than
+  // returning zero relays.
+  const clean = sanitizeRelays(chosen);
+  return (clean.length ? clean : DEFAULT_RELAYS).slice(0, 20);
 }
