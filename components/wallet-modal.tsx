@@ -203,7 +203,7 @@ export function WalletModal({ onClose }: Props) {
                   <span className="ml-2 text-[11px] text-bolt">(active)</span>
                 )}
               </div>
-              <div className="text-[11px] text-muted mt-0.5">{desc}</div>
+              <div className="text-xs text-bone/70 mt-0.5">{desc}</div>
             </button>
           ))}
         </div>
