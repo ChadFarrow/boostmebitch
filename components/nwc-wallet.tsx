@@ -90,7 +90,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   if (hasNwc()) return null;
   return (
     <div className="space-y-2">
-      <div className="text-[11px] text-muted">
+      <div className="text-xs text-bone/70 leading-relaxed">
         Paste a nostr+walletconnect:// URI from Alby Hub, getalby.com, or your own node.
       </div>
       <input

@@ -196,12 +196,12 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
 
   return (
     <div className="space-y-2">
-      <div className="text-[11px] text-muted">
+      <div className="text-xs text-bone/70 leading-relaxed">
         Self-custodial wallet. Mnemonic is NIP-44 encrypted to your pubkey and stored on your write relays.
       </div>
       <div className="space-y-2">
-        <div className="text-[11px] text-muted">
-          Paste an existing 12- or 24-word seed (e.g. your Primal wallet) to share its balance.
+        <div className="text-xs text-bone/70 leading-relaxed">
+          Paste an existing 12- or 24-word seed (e.g. Primal, Blitz, or any Spark wallet) to share its balance.
         </div>
         <textarea
           className="input w-full h-16 resize-none"

@@ -49,7 +49,7 @@ export function WeblnWallet({ mode, onConnected, onDisconnected }: Props) {
   if (enabled) return null;
   return (
     <div className="space-y-2">
-      <div className="text-[11px] text-muted">WebLN extension detected.</div>
+      <div className="text-xs text-bone/70 leading-relaxed">WebLN extension detected.</div>
       <button onClick={enable} disabled={enabling} className="btn-ghost disabled:opacity-30">
         {enabling ? 'Enabling…' : 'Enable for this site'}
       </button>
