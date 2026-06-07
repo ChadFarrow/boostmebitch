@@ -127,6 +127,22 @@ input[type='range'].seek::-moz-range-thumb {
   cursor: pointer;
 }
 
+/* Sanitized HTML show notes from RSS <content:encoded> */
+.show-notes p { @apply mb-3 last:mb-0; }
+.show-notes ul { @apply list-disc pl-5 mb-3; }
+.show-notes ol { @apply list-decimal pl-5 mb-3; }
+.show-notes li { @apply mb-1; }
+.show-notes h1, .show-notes h2, .show-notes h3,
+.show-notes h4, .show-notes h5, .show-notes h6 {
+  @apply font-bold mb-1.5 mt-3 first:mt-0;
+}
+.show-notes a { @apply underline underline-offset-2; color: rgb(var(--bolt)); }
+.show-notes a:hover { opacity: 0.8; }
+.show-notes img { @apply max-w-full rounded my-2; }
+.show-notes pre { @apply rounded p-3 overflow-x-auto text-xs mb-3; background: rgb(var(--bone) / 0.05); }
+.show-notes code { @apply font-mono text-xs px-1 py-0.5 rounded; background: rgb(var(--bone) / 0.1); }
+.show-notes blockquote { @apply border-l-2 pl-3 italic mb-3; border-color: rgb(var(--bone) / 0.3); }
+
 /* Scrollbar — uses theme tokens so it follows the active mode */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: rgb(var(--ink)); }

@@ -65,6 +65,7 @@ export interface Episode {
   guid?: string;          // episode GUID for NIP-73 podcast:item:guid:
   title: string;
   description?: string;
+  contentEncoded?: string; // Sanitized HTML from RSS <content:encoded> — full show notes
   enclosureUrl: string;
   enclosureType?: string;
   duration?: number;

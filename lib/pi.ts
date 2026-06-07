@@ -352,6 +352,104 @@ function extractText(xml: string, tag: string): string | undefined {
     .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
 }
 
+// Extract the raw HTML content of a namespaced RSS tag like content:encoded,
+// without entity-decoding or tag-stripping. Handles CDATA wrapping.
+function extractRawContent(xml: string, tag: string): string | undefined {
+  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
+  const m = xml.match(re);
+  if (!m) return undefined;
+  const inner = m[1].trim();
+  const cdata = inner.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/i);
+  return ((cdata ? cdata[1] : inner).trim()) || undefined;
+}
+
+// Allowed tags in sanitized show notes. Everything else is stripped (content kept).
+const SHOW_NOTES_ALLOWED = new Set([
+  'p', 'br', 'hr', 'strong', 'b', 'em', 'i', 'u', 's', 'del',
+  'code', 'pre', 'blockquote', 'ul', 'ol', 'li',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'span', 'div', 'a', 'img',
+]);
+
+// Allowlist-based HTML sanitizer for RSS <content:encoded> show notes.
+// Safe for dangerouslySetInnerHTML: strips dangerous tags + attributes,
+// forces links to open in a new tab, blocks javascript: and data: URIs.
+function sanitizeShowNotes(html: string): string {
+  let out = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(
+      /<(script|style|iframe|object|embed|form|input|textarea|select|button|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
+      '',
+    )
+    .replace(
+      /<(script|style|iframe|object|embed|form|input|textarea|select|button|noscript)\b[^>]*\/?>/gi,
+      '',
+    );
+
+  out = out.replace(/<(\/?)([a-zA-Z][a-zA-Z0-9:.-]*)([^>]*)>/g, (_, slash, rawTag, attrs) => {
+    const tag = rawTag.toLowerCase();
+    if (!SHOW_NOTES_ALLOWED.has(tag)) return '';
+    if (slash) return `</${tag}>`;
+    if (tag === 'br' || tag === 'hr') return `<${tag}>`;
+    if (tag === 'a') {
+      const href = readAttr(attrs, 'href');
+      if (!href || /^\s*javascript:/i.test(href)) return '<a>';
+      return `<a href="${href.replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer">`;
+    }
+    if (tag === 'img') {
+      const src = readAttr(attrs, 'src');
+      if (!src || /^\s*(javascript|data):/i.test(src)) return '';
+      const alt = readAttr(attrs, 'alt') ?? '';
+      return `<img src="${src.replace(/"/g, '&quot;')}" alt="${alt.replace(/"/g, '&quot;')}" loading="lazy">`;
+    }
+    return `<${tag}>`;
+  });
+
+  return out.trim();
+}
+
+interface RssEpisodeEnrichment {
+  socialInteract?: SocialInteract[];
+  contentEncoded?: string;
+}
+
+/**
+ * Single RSS fetch that extracts both <podcast:socialInteract> tags and
+ * <content:encoded> show notes for every <item>. Replaces the older
+ * getSocialInteractsFromRss in the feed route so we only fetch the RSS once.
+ */
+export async function getRssEpisodeEnrichment(
+  rssUrl: string,
+): Promise<Map<string, RssEpisodeEnrichment>> {
+  const out = new Map<string, RssEpisodeEnrichment>();
+  let res: Response;
+  try {
+    res = await fetch(rssUrl, {
+      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
+      next: { revalidate: 60 },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch {
+    return out;
+  }
+  if (!res.ok) return out;
+  const xml = await res.text();
+  const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = itemRe.exec(xml))) {
+    const inner = m[1];
+    const guid = extractText(inner, 'guid');
+    if (!guid) continue;
+    const socialInteract = parseSocialInteractsFromRss(inner) ?? undefined;
+    const raw = extractRawContent(inner, 'content:encoded');
+    const contentEncoded = raw ? sanitizeShowNotes(raw) || undefined : undefined;
+    if (socialInteract || contentEncoded) {
+      out.set(guid, { socialInteract, contentEncoded });
+    }
+  }
+  return out;
+}
+
 /**
  * Fetch the RSS feed and return a GUID → SocialInteract[] map for every
  * <item> that contains a `<podcast:socialInteract protocol="nostr">` tag.
