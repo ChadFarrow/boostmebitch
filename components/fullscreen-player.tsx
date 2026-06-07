@@ -1,15 +1,12 @@
 'use client';
-import { RefObject, useEffect, useState } from 'react';
+import { RefObject, useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmt, stripHtml } from '@/lib/format';
+import { useChapters } from '@/lib/chapters';
+import type { ChapterEntry } from '@/lib/chapters';
 import { BoltIcon } from './icons';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
-
-interface ChapterEntry {
-  startTime: number;
-  title?: string;
-}
 
 function ChaptersList({
   url,
@@ -20,28 +17,7 @@ function ChaptersList({
   onSeek: (s: number) => void;
   currentSec: number;
 }) {
-  const [chapters, setChapters] = useState<ChapterEntry[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetch(url)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (cancelled) return;
-        const list: ChapterEntry[] = Array.isArray(data?.chapters)
-          ? data.chapters.map((c: { startTime: unknown; title?: unknown }) => ({
-              startTime: Number(c.startTime) || 0,
-              title: typeof c.title === 'string' ? c.title : undefined,
-            }))
-          : [];
-        setChapters(list);
-      })
-      .catch(() => !cancelled && setChapters([]))
-      .finally(() => !cancelled && setLoading(false));
-    return () => { cancelled = true; };
-  }, [url]);
+  const { chapters, loading } = useChapters(url);
 
   if (loading && !chapters) {
     return <p className="text-xs text-muted">Loading chapters…</p>;
