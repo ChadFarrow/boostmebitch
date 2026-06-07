@@ -140,6 +140,7 @@ export function EpisodeDetailView() {
 
   const [boostFor, setBoostFor] = useState<Episode | null>(null);
   const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
+  const [valueOpen, setValueOpen] = useState(false);
 
   if (!episode || !podcast) return null;
 
@@ -235,7 +236,20 @@ export function EpisodeDetailView() {
         </div>
 
         {/* Value split */}
-        {value && <ValueSplitSection value={value} />}
+        {value && (
+          <div>
+            <button
+              type="button"
+              onClick={() => setValueOpen((v) => !v)}
+              className="stamp text-bolt border-bolt/60 hover:bg-bolt/10 transition cursor-pointer"
+              aria-expanded={valueOpen}
+            >
+              ⚡ {value.recipients?.length ?? 0} recipients · {value.method}
+              <span className="ml-1">{valueOpen ? '▾' : '▸'}</span>
+            </button>
+            {valueOpen && <div className="mt-3"><ValueSplitSection value={value} /></div>}
+          </div>
+        )}
 
         {/* Chapters */}
         {episode.chaptersUrl && (
