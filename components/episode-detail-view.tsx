@@ -1,36 +1,13 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
+import { fmtDuration, stripHtml } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { BoostModal } from './boost-modal';
 import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
 import type { Episode, ValueBlock } from '@/lib/types';
-
-function fmtDuration(t: number) {
-  if (!isFinite(t) || t <= 0) return '';
-  const h = Math.floor(t / 3600);
-  const m = Math.floor((t % 3600) / 60);
-  const s = Math.floor(t % 60).toString().padStart(2, '0');
-  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s}`;
-  return `${m}:${s}`;
-}
-
-function stripHtml(s: string): string {
-  return s
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|li)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 
 interface ChapterEntry {
   startTime: number;

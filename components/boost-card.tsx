@@ -1,55 +1,9 @@
 'use client';
-import { Fragment, type ReactNode } from 'react';
 import type { StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { shortNpub } from '@/lib/nostr';
+import { linkify, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
-
-const LINK_RE = /(https?:\/\/[^\s]+)/gi;
-
-function splitTrailingPunct(token: string): { token: string; trailing: string } {
-  let trailing = '';
-  while (token.length > 0 && /[.,;:!?)\]]$/.test(token)) {
-    trailing = token.slice(-1) + trailing;
-    token = token.slice(0, -1);
-  }
-  return { token, trailing };
-}
-
-function linkify(text: string): ReactNode[] {
-  const parts: ReactNode[] = [];
-  let cursor = 0;
-  let m: RegExpExecArray | null;
-  LINK_RE.lastIndex = 0;
-  while ((m = LINK_RE.exec(text)) !== null) {
-    if (m.index > cursor) parts.push(text.slice(cursor, m.index));
-    const { token, trailing } = splitTrailingPunct(m[0]);
-    parts.push(
-      <a
-        key={`l-${m.index}`}
-        href={token}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-bolt break-all hover:underline underline-offset-2"
-      >
-        {token}
-      </a>,
-    );
-    if (trailing) parts.push(<Fragment key={`t-${m.index}`}>{trailing}</Fragment>);
-    cursor = m.index + m[0].length;
-  }
-  if (cursor < text.length) parts.push(text.slice(cursor));
-  return parts;
-}
-
-function timeAgo(unixMs: number): string {
-  const diff = (Date.now() - unixMs) / 1000;
-  if (diff < 60) return 'just now';
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`;
-  return new Date(unixMs).toLocaleDateString();
-}
 
 function shortAddr(addr: string): string {
   if (addr.includes('@')) return addr;
@@ -92,7 +46,7 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap text-xs">
           <span className="font-display text-sm text-bone truncate">{name}</span>
-          <span className="text-muted">· {timeAgo(boost.ts)}</span>
+          <span className="text-muted">· {timeAgo(boost.ts / 1000)}</span>
           <span className="stamp text-bolt border-bolt/60">⚡ {sats} sats</span>
           <span className="stamp text-muted border-bone/20">sent</span>
           {boost.noteId && (
@@ -120,7 +74,7 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
 
         {boost.message && (
           <p className="text-sm text-bone whitespace-pre-wrap break-words mt-1.5">
-            {linkify(boost.message)}
+            {linkify(boost.message, 'text-bolt')}
           </p>
         )}
 

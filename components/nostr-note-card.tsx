@@ -1,5 +1,5 @@
 'use client';
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState } from 'react';
 import {
   resolvePublishRelays,
   shortNpub,
@@ -10,92 +10,8 @@ import { sendZap } from '@/lib/v4v/zap';
 import { useApp } from '@/lib/store';
 import type { Podcast } from '@/lib/types';
 import { getErrorMessage } from '@/lib/util';
+import { linkify, extractImages, stripNostrUris, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
-
-// http(s) URLs only — bech32 nostr: URIs are stripped from the content via
-// stripNostrUris before this runs since they're noise to a non-Nostr-savvy
-// reader and the "view on nostr →" footer link already exposes the source
-// event.
-const LINK_RE = /(https?:\/\/[^\s]+)/gi;
-const NOSTR_URI_RE =
-  /nostr:n(?:event|ote|pub|profile|addr)1[023456789acdefghjklmnpqrstuvwxyz]+/gi;
-
-// Trailing punctuation that's almost always sentence/grammar, not part of the
-// URL — peel it off and render outside the anchor.
-function splitTrailingPunct(token: string): { token: string; trailing: string } {
-  let trailing = '';
-  while (token.length > 0 && /[.,;:!?)\]]$/.test(token)) {
-    trailing = token.slice(-1) + trailing;
-    token = token.slice(0, -1);
-  }
-  return { token, trailing };
-}
-
-// Drop bech32 nostr: URIs from the displayed content, then collapse any blank
-// lines or stranded whitespace they leave behind.
-function stripNostrUris(text: string): string {
-  return text
-    .replace(NOSTR_URI_RE, '')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-function linkify(text: string): ReactNode[] {
-  const parts: ReactNode[] = [];
-  let cursor = 0;
-  let m: RegExpExecArray | null;
-  LINK_RE.lastIndex = 0;
-  while ((m = LINK_RE.exec(text)) !== null) {
-    if (m.index > cursor) parts.push(text.slice(cursor, m.index));
-    const { token, trailing } = splitTrailingPunct(m[0]);
-    parts.push(
-      <a
-        key={`l-${m.index}`}
-        href={token}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-nostr break-all hover:underline underline-offset-2"
-      >
-        {token}
-      </a>,
-    );
-    if (trailing) parts.push(<Fragment key={`t-${m.index}`}>{trailing}</Fragment>);
-    cursor = m.index + m[0].length;
-  }
-  if (cursor < text.length) parts.push(text.slice(cursor));
-  return parts;
-}
-
-// Image URLs are pulled out of the body and rendered as inline media instead
-// of raw links (matches how Nostr clients surface attached images). Detection
-// is extension-based — covers the common nostr.build / blossom style links.
-const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|avif|bmp)(\?[^\s]*)?$/i;
-
-function extractImages(text: string): { body: string; images: string[] } {
-  const images: string[] = [];
-  const body = text.replace(LINK_RE, (m) => {
-    const { token, trailing } = splitTrailingPunct(m);
-    if (IMAGE_EXT_RE.test(token)) {
-      if (!images.includes(token)) images.push(token);
-      return trailing; // drop the bare URL, keep any trailing punctuation
-    }
-    return m;
-  });
-  return {
-    body: body.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(),
-    images,
-  };
-}
-
-function timeAgo(unixSec: number): string {
-  const diff = Date.now() / 1000 - unixSec;
-  if (diff < 60) return 'just now';
-  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-  if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`;
-  return new Date(unixSec * 1000).toLocaleDateString();
-}
 
 type ActionState = 'idle' | 'busy' | 'done' | 'error';
 

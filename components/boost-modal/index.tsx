@@ -1,6 +1,5 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import confetti from 'canvas-confetti';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
@@ -10,6 +9,7 @@ import { hasWebln } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
+import { fireConfetti } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
@@ -17,17 +17,6 @@ import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
 import { SplitsPreview, LightningStatus } from './splits-preview';
 import { PublishStatus, type PublishState } from './publish-status';
-
-// Brand-coloured celebration: bolt yellow, nostr magenta, bone.
-function fireConfetti() {
-  const colors = ['#fae500', '#ff2d92', '#f5f1e8'];
-  // Burst from slightly below the modal so particles rain UP across the
-  // sticky header and rail picker rather than piling at the top.
-  confetti({ particleCount: 80, spread: 70, startVelocity: 55, origin: { y: 0.7 }, colors });
-  setTimeout(() => {
-    confetti({ particleCount: 50, spread: 100, startVelocity: 45, origin: { y: 0.7 }, colors });
-  }, 200);
-}
 
 interface Props {
   podcast: Podcast;

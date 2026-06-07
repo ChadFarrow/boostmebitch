@@ -1,33 +1,10 @@
 'use client';
 import { RefObject, useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
+import { fmt, stripHtml } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
-
-function fmt(t: number) {
-  if (!isFinite(t)) return '0:00';
-  const h = Math.floor(t / 3600);
-  const m = Math.floor((t % 3600) / 60);
-  const s = Math.floor(t % 60).toString().padStart(2, '0');
-  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s}`;
-  return `${m}:${s}`;
-}
-
-function stripHtml(s: string): string {
-  return s
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|li)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
 
 interface ChapterEntry {
   startTime: number;

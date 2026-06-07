@@ -1,7 +1,7 @@
-import { withPool, QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS, PROFILE_RELAYS } from './relays';
 import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
+import { fetchLatestEvent } from './event-queries';
 
 // Fetch the user's kind:0 metadata event from the given relays (defaults to
 // our standard set unioned with the profile-outbox relays). Returns null if
@@ -14,27 +14,20 @@ export async function fetchProfile(
 ): Promise<ProfileMetadata | null> {
   const base = relays ?? DEFAULT_RELAYS;
   const useRelays = Array.from(new Set([...base, ...PROFILE_RELAYS]));
-  return withPool(useRelays, async (pool) => {
-    try {
-      const events = await pool.querySync(useRelays, {
-        kinds: [0],
-        authors: [pubkey],
-        limit: 1,
-      }, { maxWait: QUERY_MAX_WAIT_MS });
-      if (!events.length) {
-        storage.profile.setMiss(pubkey);
-        return null;
-      }
-      const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
-      const profile = parseProfileContent(newest.content);
-      if (!profile) {
-        storage.profile.setMiss(pubkey);
-        return null;
-      }
-      storage.profile.set(pubkey, profile);
-      return profile;
-    } catch {
-      return null;
-    }
+  const newest = await fetchLatestEvent(useRelays, {
+    kinds: [0],
+    authors: [pubkey],
+    limit: 1,
   });
+  if (!newest) {
+    storage.profile.setMiss(pubkey);
+    return null;
+  }
+  const profile = parseProfileContent(newest.content);
+  if (!profile) {
+    storage.profile.setMiss(pubkey);
+    return null;
+  }
+  storage.profile.set(pubkey, profile);
+  return profile;
 }

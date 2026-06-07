@@ -1,8 +1,8 @@
 import type { EventTemplate } from 'nostr-tools';
-import { withPool, QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, type PublishedNote } from './publish';
 import { getNip04 } from './signer';
+import { fetchLatestEvent } from './event-queries';
 
 // NIP-51 mute list (kind:10000).
 //
@@ -84,63 +84,60 @@ export async function fetchMutedPubkeys(
   queryRelays?: string[],
 ): Promise<MuteListState | null> {
   const useRelays = queryRelays ?? DEFAULT_RELAYS;
-  return withPool(useRelays, async (pool) => {
-    try {
-      const events = await pool.querySync(useRelays, {
-        kinds: [MUTES_KIND],
-        authors: [pubkey],
-        limit: 1,
-      }, { maxWait: QUERY_MAX_WAIT_MS });
-      if (!events.length) return null;
-      const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
+  try {
+    const newest = await fetchLatestEvent(useRelays, {
+      kinds: [MUTES_KIND],
+      authors: [pubkey],
+      limit: 1,
+    });
+    if (!newest) return null;
 
-      const { pubkeys: publicPubkeys, other: publicOtherTags } = partitionTags(newest.tags);
+    const { pubkeys: publicPubkeys, other: publicOtherTags } = partitionTags(newest.tags);
 
-      let privatePubkeys: string[] = [];
-      let privateOtherTags: string[][] = [];
-      let unreadablePrivateContent: string | undefined;
+    let privatePubkeys: string[] = [];
+    let privateOtherTags: string[][] = [];
+    let unreadablePrivateContent: string | undefined;
 
-      if (newest.content) {
-        const nip04 = getNip04();
-        if (!nip04) {
+    if (newest.content) {
+      const nip04 = getNip04();
+      if (!nip04) {
+        unreadablePrivateContent = newest.content;
+        // eslint-disable-next-line no-console
+        console.warn(
+          '[mutes] kind:10000 has encrypted content but signer has no NIP-04 — private mutes will round-trip opaquely',
+        );
+      } else {
+        try {
+          const plaintext = await nip04.decrypt(pubkey, newest.content);
+          const parsed = JSON.parse(plaintext);
+          if (Array.isArray(parsed)) {
+            const tagArrays = parsed.filter((t): t is string[] => Array.isArray(t));
+            const split = partitionTags(tagArrays);
+            privatePubkeys = split.pubkeys;
+            privateOtherTags = split.other;
+          }
+        } catch (e) {
           unreadablePrivateContent = newest.content;
           // eslint-disable-next-line no-console
           console.warn(
-            '[mutes] kind:10000 has encrypted content but signer has no NIP-04 — private mutes will round-trip opaquely',
+            '[mutes] private mute list decrypt failed — preserving as opaque blob:',
+            (e as Error)?.message ?? e,
           );
-        } else {
-          try {
-            const plaintext = await nip04.decrypt(pubkey, newest.content);
-            const parsed = JSON.parse(plaintext);
-            if (Array.isArray(parsed)) {
-              const tagArrays = parsed.filter((t): t is string[] => Array.isArray(t));
-              const split = partitionTags(tagArrays);
-              privatePubkeys = split.pubkeys;
-              privateOtherTags = split.other;
-            }
-          } catch (e) {
-            unreadablePrivateContent = newest.content;
-            // eslint-disable-next-line no-console
-            console.warn(
-              '[mutes] private mute list decrypt failed — preserving as opaque blob:',
-              (e as Error)?.message ?? e,
-            );
-          }
         }
       }
-
-      return {
-        publicPubkeys,
-        publicOtherTags,
-        privatePubkeys,
-        privateOtherTags,
-        unreadablePrivateContent,
-        updatedAt: newest.created_at,
-      };
-    } catch {
-      return null;
     }
-  });
+
+    return {
+      publicPubkeys,
+      publicOtherTags,
+      privatePubkeys,
+      privateOtherTags,
+      unreadablePrivateContent,
+      updatedAt: newest.created_at,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**

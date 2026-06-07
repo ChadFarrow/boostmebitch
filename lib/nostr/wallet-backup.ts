@@ -16,8 +16,9 @@
 // own the schema here; sticking to NIP-78 keeps it explicit that this is
 // boostmebitch app data, not a portable Cashu wallet.
 
-import { withPool, FEED_QUERY_MAX_WAIT_MS } from './pool';
+import { FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish, type PublishedNote } from './publish';
+import { fetchLatestEvent } from './event-queries';
 import { DEFAULT_RELAYS, resolvePublishRelays } from './relays';
 import { requireNip44 } from './signer';
 import type { NostrIdentity } from './auth';
@@ -54,16 +55,11 @@ export async function fetchEncryptedMnemonic(
   identity: NostrIdentity,
 ): Promise<string | null> {
   const relays = readRelays(identity);
-  const event = await withPool(relays, async (pool) => {
-    const events = await pool.querySync(relays, {
-      kinds: [WALLET_BACKUP_KIND],
-      authors: [identity.pubkey],
-      '#d': [WALLET_BACKUP_D_TAG],
-      limit: 1,
-    }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
-    if (!events.length) return null;
-    return events.sort((a, b) => b.created_at - a.created_at)[0];
-  });
+  const event = await fetchLatestEvent(
+    relays,
+    { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_BACKUP_D_TAG], limit: 1 },
+    FEED_QUERY_MAX_WAIT_MS,
+  );
   if (!event || !event.content) return null;
 
   return requireNip44().decrypt(identity.pubkey, event.content);

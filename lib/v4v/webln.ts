@@ -1,5 +1,7 @@
 // WebLN payments — uses window.webln from Alby/Mutiny browser extensions.
 
+import { createObservable } from '../pubsub';
+
 type Webln = NonNullable<Window['webln']>;
 
 export function hasWebln(): boolean {
@@ -13,16 +15,8 @@ export function hasWebln(): boolean {
 // within a session. localStorage isn't useful here: the actual permission
 // lives in the extension and can be revoked there independently.
 let weblnEnabled = false;
-const listeners = new Set<() => void>();
-
-function notify() {
-  listeners.forEach((fn) => { try { fn(); } catch { /* ignore */ } });
-}
-
-export function subscribeWebln(fn: () => void): () => void {
-  listeners.add(fn);
-  return () => { listeners.delete(fn); };
-}
+const { subscribe: subscribeWebln, notify } = createObservable();
+export { subscribeWebln };
 
 export function isWeblnEnabled(): boolean {
   return weblnEnabled;

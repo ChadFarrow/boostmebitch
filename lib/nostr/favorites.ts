@@ -1,7 +1,7 @@
 import type { EventTemplate } from 'nostr-tools';
-import { withPool, QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, type PublishedNote } from './publish';
+import { fetchLatestEvent } from './event-queries';
 
 // NIP-51 favorites — kind:30003 bookmark set, identified by our `d` tag.
 
@@ -26,30 +26,23 @@ export async function fetchFavoriteGuids(
   queryRelays?: string[],
 ): Promise<FavoritesEvent | null> {
   const useRelays = queryRelays ?? DEFAULT_RELAYS;
-  return withPool(useRelays, async (pool) => {
-    try {
-      const events = await pool.querySync(useRelays, {
-        kinds: [30003],
-        authors: [pubkey],
-        '#d': [FAVORITES_D_TAG],
-        limit: 1,
-      }, { maxWait: QUERY_MAX_WAIT_MS });
-      if (!events.length) return null;
-      const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
-      const guids: string[] = [];
-      const droppedGuids: string[] = [];
-      for (const tag of newest.tags) {
-        if (tag[0] !== 'i' || !tag[1]) continue;
-        const m = /^podcast:guid:(.+)$/.exec(tag[1]);
-        if (!m) continue;
-        if (UUID_RE.test(m[1])) guids.push(m[1]);
-        else droppedGuids.push(m[1]);
-      }
-      return { guids, updatedAt: newest.created_at, droppedGuids };
-    } catch {
-      return null;
-    }
+  const newest = await fetchLatestEvent(useRelays, {
+    kinds: [30003],
+    authors: [pubkey],
+    '#d': [FAVORITES_D_TAG],
+    limit: 1,
   });
+  if (!newest) return null;
+  const guids: string[] = [];
+  const droppedGuids: string[] = [];
+  for (const tag of newest.tags) {
+    if (tag[0] !== 'i' || !tag[1]) continue;
+    const m = /^podcast:guid:(.+)$/.exec(tag[1]);
+    if (!m) continue;
+    if (UUID_RE.test(m[1])) guids.push(m[1]);
+    else droppedGuids.push(m[1]);
+  }
+  return { guids, updatedAt: newest.created_at, droppedGuids };
 }
 
 export async function publishFavorites(

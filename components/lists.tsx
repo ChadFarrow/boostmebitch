@@ -3,20 +3,12 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, FavoritePodcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
+import { fmtDuration } from '@/lib/format';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
-
-function fmtDuration(t: number) {
-  if (!isFinite(t) || t <= 0) return '';
-  const h = Math.floor(t / 3600);
-  const m = Math.floor((t % 3600) / 60);
-  const s = Math.floor(t % 60).toString().padStart(2, '0');
-  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s}`;
-  return `${m}:${s}`;
-}
 
 
 function fmtLiveTime(unixSec: number) {
