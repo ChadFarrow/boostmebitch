@@ -5,6 +5,7 @@ import { BoltIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { BoostModal } from './boost-modal';
 import { BoostAllModal } from './boost-all-modal';
+import { EpisodeNostrFeed } from './episode-nostr-feed';
 import type { Episode, ValueBlock } from '@/lib/types';
 
 function fmtDuration(t: number) {
@@ -279,6 +280,10 @@ export function EpisodeDetailView() {
           </div>
         ) : null}
       </section>
+
+      {episode.guid && (
+        <EpisodeNostrFeed episodeGuid={episode.guid} episodeTitle={episode.title} />
+      )}
 
       {hasValue && (
         <button
