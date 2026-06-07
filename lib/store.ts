@@ -32,6 +32,13 @@ interface AppState {
   openDiscussion: (e: Episode) => void;
   closeDiscussion: () => void;
 
+  // When set, the page shows a full-screen episode detail view for this
+  // episode (opened from the episode list). Sits between the podcast detail
+  // view and the discussion view in the navigation stack.
+  selectedEpisode: Episode | null;
+  openEpisode: (e: Episode) => void;
+  closeEpisode: () => void;
+
   favorites: Record<string, FavoritePodcast>;
   isFavorite: (guid: string | undefined) => boolean;
   addFavorite: (p: FavoritePodcast) => void;
@@ -67,12 +74,16 @@ export const useApp = create<AppState>((set, get) => ({
 
   selectedPodcast: null,
   // Leaving the detail view (or switching shows) also drops any open
-  // discussion so a stale thread can't outlive its podcast.
-  selectPodcast: (p) => set({ selectedPodcast: p, discussionEpisode: null }),
+  // discussion and episode detail so stale views can't outlive their podcast.
+  selectPodcast: (p) => set({ selectedPodcast: p, discussionEpisode: null, selectedEpisode: null }),
 
   discussionEpisode: null,
   openDiscussion: (e) => set({ discussionEpisode: e }),
   closeDiscussion: () => set({ discussionEpisode: null }),
+
+  selectedEpisode: null,
+  openEpisode: (e) => set({ selectedEpisode: e, discussionEpisode: null }),
+  closeEpisode: () => set({ selectedEpisode: null }),
 
   // Hydrate from the guest cache on store creation; once a user signs in,
   // nostr-auth.tsx replaces this with the per-npub set.

@@ -12,11 +12,12 @@ import { EpisodeSocialThread } from './episode-social-thread';
 export function DiscussionView() {
   const episode = useApp((s) => s.discussionEpisode);
   const closeDiscussion = useApp((s) => s.closeDiscussion);
+  const hasEpisodeDetail = useApp((s) => !!s.selectedEpisode);
   if (!episode?.socialInteract?.length) return null;
   return (
     <div>
       <button onClick={closeDiscussion} className="btn-ghost text-xs mb-3">
-        ← back to episodes
+        {hasEpisodeDetail ? '← back to episode' : '← back to episodes'}
       </button>
       <section className="card p-4">
         <h2 className="font-display text-lg mb-3 truncate">
