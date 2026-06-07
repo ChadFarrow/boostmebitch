@@ -298,7 +298,6 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   });
   const [loading, setLoading] = useState(false);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
-  const [boostFor, setBoostFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
@@ -454,33 +453,6 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   <span className="text-bolt text-[11px] mt-0.5">⚡ {e.valueTimeSplits.length} tracks</span>
                 ) : null}
               </div>
-              {e.liveStatus && (e.value ?? data.podcast?.value)?.recipients?.length ? (
-                <button
-                  type="button"
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    setBoostFor(e);
-                  }}
-                  className="btn-bolt self-center flex-shrink-0"
-                  title="Boost this live item"
-                >
-                  <BoltIcon />
-                </button>
-              ) : null}
-              {!e.liveStatus && (e.value ?? data.podcast?.value)?.recipients?.length ? (
-                <button
-                  type="button"
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    setBoostFor(e);
-                  }}
-                  className="btn-bolt self-center flex-shrink-0"
-                  title="Boost this episode"
-                  aria-label="Boost this episode"
-                >
-                  <BoltIcon />
-                </button>
-              ) : null}
               </div>
             </li>
             </Fragment>
@@ -504,15 +476,6 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
             podcastTitle={data.podcast.title}
           />
         </DeferredOnScroll>
-      )}
-
-      {boostFor && data.podcast && (
-        <BoostModal
-          episode={boostFor}
-          podcast={data.podcast}
-          positionSec={0}
-          onClose={() => setBoostFor(null)}
-        />
       )}
 
       {showBoostOpen && data.podcast && showHasValue && (
