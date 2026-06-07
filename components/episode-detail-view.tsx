@@ -4,7 +4,7 @@ import { useApp } from '@/lib/store';
 import { fmtDuration, stripHtml } from '@/lib/format';
 import { useChapters } from '@/lib/chapters';
 import type { ChapterEntry } from '@/lib/chapters';
-import { BoltIcon } from './icons';
+import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { BoostModal } from './boost-modal';
 import { BoostAllModal } from './boost-all-modal';
@@ -79,6 +79,34 @@ function ValueSplitSection({ value }: { value: ValueBlock }) {
         })}
       </ul>
     </div>
+  );
+}
+
+function EpisodeShareButton({ episode, podcast }: { episode: Episode; podcast: NonNullable<ReturnType<typeof useApp.getState>['selectedPodcast']> }) {
+  const [copied, setCopied] = useState(false);
+  if (!episode.guid || !podcast.podcastGuid) return null;
+
+  async function onShare() {
+    const url = new URL(window.location.origin + window.location.pathname);
+    url.searchParams.set('podcast', podcast.podcastGuid!);
+    url.searchParams.set('episode', episode.guid!);
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch { /* clipboard blocked — silent */ }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onShare}
+      className="btn-ghost text-xs"
+      title="Copy link to this episode"
+      aria-label="Copy link to this episode"
+    >
+      <ShareIcon /> {copied ? 'COPIED' : 'SHARE'}
+    </button>
   );
 }
 
@@ -163,6 +191,7 @@ export function EpisodeDetailView() {
           >
             {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : '▶ PLAY'}
           </button>
+          <EpisodeShareButton episode={episode} podcast={podcast} />
           {hasValue && (
             <button
               type="button"

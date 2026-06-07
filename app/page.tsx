@@ -12,7 +12,7 @@ import { ThemeToggle } from '@/components/theme-toggle';
 import { useApp } from '@/lib/store';
 import { resolvePodcastByGuid } from '@/lib/podcast-meta';
 
-import type { Podcast } from '@/lib/types';
+import type { Episode, Podcast } from '@/lib/types';
 
 export default function Home() {
   const [feeds, setFeeds] = useState<Podcast[]>([]);
@@ -25,31 +25,44 @@ export default function Home() {
   // view without prop-drilling through the feed components.
   const selected = useApp((s) => s.selectedPodcast);
   const setSelected = useApp((s) => s.selectPodcast);
+  const selectedEpisode = useApp((s) => s.selectedEpisode);
+  const openEpisode = useApp((s) => s.openEpisode);
 
-  // Mount-time hydration: if the URL carries ?podcast=<guid>, resolve it once
-  // and flip into the detail view. resolvePodcastByGuid has its own caches +
-  // PI circuit-breaker, so a bad/unresolvable guid just falls back to the
-  // browse view silently.
+  // Mount-time hydration: if the URL carries ?podcast=<guid> (+ optional
+  // ?episode=<guid>), resolve and open both. resolvePodcastByGuid has its own
+  // caches + PI circuit-breaker, so bad/unresolvable guids fall back silently.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const guid = new URLSearchParams(window.location.search).get('podcast');
+    const params = new URLSearchParams(window.location.search);
+    const guid = params.get('podcast');
+    const episodeGuid = params.get('episode');
     if (!guid) return;
     if (useApp.getState().selectedPodcast) return;
-    resolvePodcastByGuid(guid).then((p) => {
-      if (p && !useApp.getState().selectedPodcast) setSelected(p);
+    resolvePodcastByGuid(guid).then(async (p) => {
+      if (!p || useApp.getState().selectedPodcast) return;
+      setSelected(p);
+      if (!episodeGuid) return;
+      try {
+        const res = await fetch(`/api/feed?id=${p.id}`);
+        const data = await res.json();
+        const ep = (data.episodes as Episode[] | undefined)?.find((e) => e.guid === episodeGuid);
+        if (ep && !useApp.getState().selectedEpisode) openEpisode(ep);
+      } catch { /* ignore — episode just won't auto-open */ }
     });
-  }, [setSelected]);
+  }, [setSelected, openEpisode]);
 
-  // Selection → URL: replaceState so podcast navigation doesn't pile entries
-  // into browser history (the explicit "back to results" button remains the
-  // only in-app way back). Lets the SHARE button copy a real deep link.
+  // Selection → URL: replaceState so navigation doesn't pile browser history
+  // entries (the explicit back buttons are the only in-app exit paths). Lets
+  // the SHARE buttons copy real deep links.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
     if (selected?.podcastGuid) url.searchParams.set('podcast', selected.podcastGuid);
     else url.searchParams.delete('podcast');
+    if (selectedEpisode?.guid) url.searchParams.set('episode', selectedEpisode.guid);
+    else url.searchParams.delete('episode');
     window.history.replaceState({}, '', url.toString());
-  }, [selected?.podcastGuid]);
+  }, [selected?.podcastGuid, selectedEpisode?.guid]);
 
   function goHome() {
     setFeeds([]);
