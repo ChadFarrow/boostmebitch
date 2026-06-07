@@ -39,7 +39,7 @@ interface Props {
 export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props) {
   const identity = useApp((s) => s.identity);
   const bumpBoosts = useApp((s) => s.bumpBoosts);
-  const [sats, setSats] = useState(500);
+  const [sats, setSats] = useState(0);
   const [msg, setMsg] = useState('');
   const [name, setName] = useState('');
   const [rail, setRail] = useState<Rail | null>(null);
