@@ -3,6 +3,7 @@ import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, type PublishedNote } from './publish';
 import { getNip04 } from './signer';
 import { fetchLatestEvent } from './event-queries';
+import { createScheduledPublish } from './debounced-publish';
 
 // NIP-51 mute list (kind:10000).
 //
@@ -195,19 +196,12 @@ export async function publishMuteList(
 // Debounced wrapper — collapses rapid mute/unmute toggles into a single
 // signing prompt. The getter form lets the caller read the latest store
 // state at fire-time so chained toggles only publish the final shape.
-let publishMutesTimer: ReturnType<typeof setTimeout> | null = null;
+const _schedulePublish = createScheduledPublish('mutes');
 export function schedulePublishMuteList(
   ownerPubkey: string,
   getState: () => MuteListState,
   relays: string[],
   delayMs = 1500,
 ) {
-  if (publishMutesTimer) clearTimeout(publishMutesTimer);
-  publishMutesTimer = setTimeout(() => {
-    publishMutesTimer = null;
-    publishMuteList(ownerPubkey, getState(), relays).catch((e) => {
-      // eslint-disable-next-line no-console
-      console.warn('[mutes] publish failed:', e?.message ?? e);
-    });
-  }, delayMs);
+  _schedulePublish(() => publishMuteList(ownerPubkey, getState(), relays), delayMs);
 }

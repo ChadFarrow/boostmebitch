@@ -2,6 +2,7 @@ import type { EventTemplate } from 'nostr-tools';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, type PublishedNote } from './publish';
 import { fetchLatestEvent } from './event-queries';
+import { createScheduledPublish } from './debounced-publish';
 
 // NIP-51 favorites — kind:30003 bookmark set, identified by our `d` tag.
 
@@ -67,18 +68,11 @@ export async function publishFavorites(
 }
 
 // Debounced wrapper — collapses rapid heart-toggles into a single signing prompt.
-let publishFavoritesTimer: ReturnType<typeof setTimeout> | null = null;
+const _schedulePublish = createScheduledPublish('favorites');
 export function schedulePublishFavorites(
   getGuids: () => string[],
   relays: string[],
   delayMs = 1500,
 ) {
-  if (publishFavoritesTimer) clearTimeout(publishFavoritesTimer);
-  publishFavoritesTimer = setTimeout(() => {
-    publishFavoritesTimer = null;
-    publishFavorites(getGuids(), relays).catch((e) => {
-      // eslint-disable-next-line no-console
-      console.warn('[favorites] publish failed:', e?.message ?? e);
-    });
-  }, delayMs);
+  _schedulePublish(() => publishFavorites(getGuids(), relays), delayMs);
 }
