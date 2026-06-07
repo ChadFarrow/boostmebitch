@@ -244,7 +244,7 @@ export function EpisodeDetailView() {
               className="stamp text-bolt border-bolt/60 hover:bg-bolt/10 transition cursor-pointer"
               aria-expanded={valueOpen}
             >
-              ⚡ {value.recipients?.length ?? 0} recipients · {value.method}
+              ⚡ {value.recipients?.length ?? 0} recipients
               <span className="ml-1">{valueOpen ? '▾' : '▸'}</span>
             </button>
             {valueOpen && <div className="mt-3"><ValueSplitSection value={value} /></div>}
