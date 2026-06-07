@@ -45,7 +45,19 @@ export async function GET(req: Request) {
     // Live items take precedence over a same-guid regular episode (they carry
     // the liveStatus tag we want to surface).
     const liveIds = new Set(liveItems.map((e) => e.id));
-    const regular = episodes.filter((e) => !(e.guid && seenGuid.has(e.guid)) && !liveIds.has(e.id));
+    // Deduplicate regular episodes by guid then id — PI occasionally returns
+    // duplicate records when a feed has non-unique or missing guids.
+    const seenRegularGuid = new Set<string>();
+    const seenRegularId = new Set<number>();
+    const regular = episodes.filter((e) => {
+      if (e.guid && seenGuid.has(e.guid)) return false;   // collides with a live item
+      if (liveIds.has(e.id)) return false;
+      if (e.guid && seenRegularGuid.has(e.guid)) return false;
+      if (seenRegularId.has(e.id)) return false;
+      if (e.guid) seenRegularGuid.add(e.guid);
+      seenRegularId.add(e.id);
+      return true;
+    });
     const merged = [...liveItems, ...regular].map((e) => ({
       ...e,
       // Episodes inherit the channel value block when they don't have their own.
