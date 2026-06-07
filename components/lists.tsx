@@ -500,7 +500,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
 
   return (
     <div ref={containerRef}>
-      <header className="flex flex-wrap items-start gap-4 pb-4 border-b border-bone/15">
+      <header className="sticky top-[var(--app-header-h)] z-10 bg-ink/90 backdrop-blur -mx-4 px-4 flex flex-wrap items-start gap-4 pb-4 border-b border-bone/15">
         <PodcastCover
           image={data.podcast.image}
           artwork={data.podcast.artwork}
@@ -524,7 +524,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
+        <div className="flex flex-wrap items-center gap-2 flex-shrink-0 ml-auto">
           <FavHeart podcast={data.podcast} size="md" />
           <ShareButton podcast={data.podcast} />
           {showHasValue && (
@@ -541,7 +541,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
       {valueOpen && data.podcast.value && (
         <ValueBlockDetails value={data.podcast.value} />
       )}
-      <ul className="divide-y divide-bone/10 max-h-[60vh] overflow-y-auto">
+      <ul className="divide-y divide-bone/10">
         {data.episodes.map((e, idx) => {
           const playing = current?.episode.id === e.id;
           const prev = idx > 0 ? data.episodes[idx - 1] : null;

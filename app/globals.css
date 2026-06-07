@@ -16,6 +16,10 @@
   --muted: 138 133 122;
   --line:  31 29 24;
   color-scheme: dark;
+  /* App header height used for sticky podcast header offset.
+     py-4 (32px) + flex content (~36px) + border (1px) = 69px base.
+     env() adds the iOS notch / safe-area inset on top. */
+  --app-header-h: calc(69px + env(safe-area-inset-top, 0px));
 }
 
 :root[data-theme='light'] {
