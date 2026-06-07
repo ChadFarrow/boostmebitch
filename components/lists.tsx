@@ -507,7 +507,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
 
   return (
     <div ref={containerRef}>
-      <header className="sticky top-[var(--app-header-h)] z-10 bg-ink/90 backdrop-blur -mx-4 px-4 flex flex-wrap items-start gap-4 pb-4 border-b border-bone/15">
+      <header className="sticky top-[var(--app-header-h)] z-10 bg-ink/90 backdrop-blur -mx-4 px-4 flex items-start gap-4 pb-4 border-b border-bone/15">
         <PodcastCover
           image={data.podcast.image}
           artwork={data.podcast.artwork}
@@ -515,7 +515,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
           className="w-20 h-20 border border-bone/20 flex-shrink-0 text-3xl"
         />
-        <div className="min-w-0 flex-1 basis-40">
+        <div className="min-w-0 flex-1">
           <h2 className="font-display text-3xl leading-tight font-semibold break-words">{data.podcast.title}</h2>
           <p className="text-sm text-muted mt-1">{data.podcast.author}</p>
           {data.podcast.value && (
@@ -530,19 +530,19 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
               <span className="ml-1">{valueOpen ? '▾' : '▸'}</span>
             </button>
           )}
-        </div>
-        <div className="flex flex-wrap items-center gap-2 flex-shrink-0 ml-auto">
-          <FavHeart podcast={data.podcast} size="md" />
-          <ShareButton podcast={data.podcast} />
-          {showHasValue && (
-            <button
-              onClick={() => setShowBoostOpen(true)}
-              className="btn-bolt"
-              title="Boost the show"
-            >
-              <BoltIcon /> BOOST
-            </button>
-          )}
+          <div className="flex flex-wrap items-center gap-2 mt-3">
+            <FavHeart podcast={data.podcast} size="md" />
+            <ShareButton podcast={data.podcast} />
+            {showHasValue && (
+              <button
+                onClick={() => setShowBoostOpen(true)}
+                className="btn-bolt"
+                title="Boost the show"
+              >
+                <BoltIcon /> BOOST
+              </button>
+            )}
+          </div>
         </div>
       </header>
       {valueOpen && data.podcast.value && (
