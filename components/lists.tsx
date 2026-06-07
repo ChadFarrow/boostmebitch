@@ -352,7 +352,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
               aria-expanded={valueOpen}
               title={valueOpen ? 'Hide split details' : 'Show split details'}
             >
-              ⚡ {data.podcast.value.recipients?.length ?? 0} recipients · {data.podcast.value.method}
+              ⚡ {data.podcast.value.recipients?.length ?? 0} recipients
               <span className="ml-1">{valueOpen ? '▾' : '▸'}</span>
             </button>
           )}
