@@ -1,7 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
 
-const PRESETS = [100, 500, 1000, 5000];
 export const MIN_BOOST_SATS = 100;
 
 export function AmountInput({
@@ -34,12 +33,6 @@ export function AmountInput({
           if (digits) onChange(Number(digits));
         }}
       />
-      <div className="flex items-center gap-2 mt-2">
-        <span className="text-[10px] uppercase tracking-widest text-muted shrink-0">Quick:</span>
-        {PRESETS.map((n) => (
-          <button key={n} onClick={() => onChange(n)} className="btn-ghost !px-3 flex-1">{n}</button>
-        ))}
-      </div>
       <p className="text-[11px] text-muted mt-1.5">minimum {MIN_BOOST_SATS} sats</p>
     </div>
   );
