@@ -142,6 +142,10 @@ export function EpisodeDetailView() {
   const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
 
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }, [episode?.id]);
+
   if (!episode || !podcast) return null;
 
   const value = episode.value ?? podcast.value;
