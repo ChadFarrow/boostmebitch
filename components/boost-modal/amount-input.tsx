@@ -25,7 +25,7 @@ export function AmountInput({
         pattern="[0-9]*"
         className="input w-full mt-1.5 text-2xl text-center font-display tracking-wide"
         value={raw}
-        placeholder="enter sats"
+        placeholder="enter amount"
         onFocus={(e) => e.target.select()}
         onChange={(e) => {
           const digits = e.target.value.replace(/\D/g, '');
