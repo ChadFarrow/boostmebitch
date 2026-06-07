@@ -399,7 +399,9 @@ function ExpandedEpisodePanel({
 }) {
   const value = episode.value ?? podcast.value;
   const hasValue = !!value?.recipients?.length;
-  const description = episode.description ? stripHtml(episode.description) : '';
+  const description = !episode.contentEncoded && episode.description
+    ? stripHtml(episode.description)
+    : '';
 
   return (
     <div
@@ -415,11 +417,16 @@ function ExpandedEpisodePanel({
         {episode.season ? <span>· Season {episode.season}</span> : null}
       </div>
 
-      {description && (
-        <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap max-h-72 overflow-y-auto pr-2">
+      {episode.contentEncoded ? (
+        <div
+          className="show-notes text-sm text-bone/80 leading-relaxed max-h-96 overflow-y-auto overflow-x-hidden pr-2"
+          dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
+        />
+      ) : description ? (
+        <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap overflow-x-hidden max-h-72 overflow-y-auto pr-2">
           {description}
         </div>
-      )}
+      ) : null}
 
       {value && (
         <div>

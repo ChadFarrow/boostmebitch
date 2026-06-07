@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getEpisodes, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getSocialInteractsFromRss } from '@/lib/pi';
+import { getEpisodes, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { getErrorMessage } from '@/lib/util';
 
@@ -20,11 +20,12 @@ export async function GET(req: Request) {
       getEpisodes(id, 50),
       getLiveItemsForFeed(id).catch(() => [] as Episode[]),
     ]);
-    // PI's episode API doesn't expose <podcast:socialInteract>, so we fetch
-    // the RSS and parse it ourselves. Best-effort: failure leaves episodes
-    // without socialInteract rather than breaking the whole feed.
-    const socialMap: Map<string, import('@/lib/types').SocialInteract[]> = podcast?.url
-      ? await getSocialInteractsFromRss(podcast.url).catch(() => new Map())
+    // PI's episode API doesn't expose <podcast:socialInteract> or full show
+    // notes, so we fetch the RSS and parse both in one pass. Best-effort:
+    // failure leaves episodes without socialInteract/contentEncoded rather
+    // than breaking the whole feed.
+    const enrichMap = podcast?.url
+      ? await getRssEpisodeEnrichment(podcast.url).catch(() => new Map())
       : new Map();
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
     // PI's /episodes/live only returns currently-broadcasting items; pending
@@ -44,13 +45,31 @@ export async function GET(req: Request) {
     // Live items take precedence over a same-guid regular episode (they carry
     // the liveStatus tag we want to surface).
     const liveIds = new Set(liveItems.map((e) => e.id));
-    const regular = episodes.filter((e) => !(e.guid && seenGuid.has(e.guid)) && !liveIds.has(e.id));
+    // Deduplicate regular episodes by guid then id — PI occasionally returns
+    // duplicate records when a feed has non-unique or missing guids.
+    const seenRegularGuid = new Set<string>();
+    const seenRegularId = new Set<number>();
+    const seenTitleDate = new Set<string>();
+    const regular = episodes.filter((e) => {
+      if (e.guid && seenGuid.has(e.guid)) return false;   // collides with a live item
+      if (liveIds.has(e.id)) return false;
+      if (e.guid && seenRegularGuid.has(e.guid)) return false;
+      if (seenRegularId.has(e.id)) return false;
+      // Last-resort: same title + publish date = same episode regardless of GUID/ID
+      const titleDateKey = `${e.title}|${e.datePublished ?? ''}`;
+      if (seenTitleDate.has(titleDateKey)) return false;
+      if (e.guid) seenRegularGuid.add(e.guid);
+      seenRegularId.add(e.id);
+      seenTitleDate.add(titleDateKey);
+      return true;
+    });
     const merged = [...liveItems, ...regular].map((e) => ({
       ...e,
       // Episodes inherit the channel value block when they don't have their own.
       value: e.value ?? podcast.value,
-      // socialInteract comes from RSS since PI doesn't index this field.
-      socialInteract: e.socialInteract ?? (e.guid ? socialMap.get(e.guid) : undefined),
+      // socialInteract and contentEncoded come from RSS — PI doesn't index them.
+      socialInteract: e.socialInteract ?? (e.guid ? enrichMap.get(e.guid)?.socialInteract : undefined),
+      contentEncoded: e.guid ? enrichMap.get(e.guid)?.contentEncoded : undefined,
     }));
     // Live first (live > pending), then regular by datePublished desc.
     // Within `pending`, sort ascending — the next-to-air show should be at
