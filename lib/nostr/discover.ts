@@ -258,6 +258,33 @@ export async function fetchPodcastNotes(
 }
 
 /**
+ * Fetch every kind:1 note tagged with NIP-73 `podcast:item:guid:<episodeGuid>` from
+ * the given relays. Mirrors fetchPodcastNotes but scoped to a single episode.
+ */
+export async function fetchEpisodeNotes(
+  episodeGuid: string,
+  opts: FetchOpts = {},
+): Promise<DiscoveredNote[]> {
+  const relays = opts.relays ?? DEFAULT_RELAYS;
+  const limit = opts.limit ?? 100;
+
+  return withPool(relays, async (pool) => {
+    let events: Event[] = [];
+    try {
+      events = await pool.querySync(relays, {
+        kinds: [1],
+        '#i': [`podcast:item:guid:${episodeGuid}`],
+        limit,
+        ...(opts.since !== undefined ? { since: opts.since } : {}),
+      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
+    } catch {
+      return [];
+    }
+    return await assembleNotes(pool, relays, events);
+  });
+}
+
+/**
  * Fetch the Nostr thread referenced by a `<podcast:socialInteract>` URI.
  * Decodes a `nostr:note1…` or `nostr:nevent1…` URI, fetches the root event
  * (using any relay hints embedded in the nevent), then assembles the full

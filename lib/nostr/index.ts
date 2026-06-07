@@ -35,6 +35,7 @@ export {
 export {
   fetchAllPodcastNotes,
   fetchPodcastNotes,
+  fetchEpisodeNotes,
   fetchSocialInteractThread,
   noteFromEvent,
   type DiscoveredNote,
