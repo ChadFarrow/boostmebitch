@@ -151,6 +151,7 @@ export function EpisodeDetailView() {
   const value = episode.value ?? podcast.value;
   const hasValue = !!value?.recipients?.length;
   const isThisPlaying = current?.episode.id === episode.id;
+  const playerVisible = !!current;
   const description = !episode.contentEncoded && episode.description
     ? stripHtml(episode.description)
     : '';
@@ -278,6 +279,18 @@ export function EpisodeDetailView() {
           </div>
         ) : null}
       </section>
+
+      {hasValue && (
+        <button
+          type="button"
+          onClick={() => setBoostFor(episode)}
+          className="btn-bolt fixed right-4 z-40 shadow-xl rounded-full"
+          style={{ bottom: `calc(${playerVisible ? '5rem' : '1.5rem'} + env(safe-area-inset-bottom))` }}
+          aria-label="Boost this episode"
+        >
+          <BoltIcon /> BOOST
+        </button>
+      )}
 
       {boostFor && (
         <BoostModal
