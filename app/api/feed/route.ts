@@ -49,13 +49,18 @@ export async function GET(req: Request) {
     // duplicate records when a feed has non-unique or missing guids.
     const seenRegularGuid = new Set<string>();
     const seenRegularId = new Set<number>();
+    const seenTitleDate = new Set<string>();
     const regular = episodes.filter((e) => {
       if (e.guid && seenGuid.has(e.guid)) return false;   // collides with a live item
       if (liveIds.has(e.id)) return false;
       if (e.guid && seenRegularGuid.has(e.guid)) return false;
       if (seenRegularId.has(e.id)) return false;
+      // Last-resort: same title + publish date = same episode regardless of GUID/ID
+      const titleDateKey = `${e.title}|${e.datePublished ?? ''}`;
+      if (seenTitleDate.has(titleDateKey)) return false;
       if (e.guid) seenRegularGuid.add(e.guid);
       seenRegularId.add(e.id);
+      seenTitleDate.add(titleDateKey);
       return true;
     });
     const merged = [...liveItems, ...regular].map((e) => ({
