@@ -6,6 +6,7 @@ import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { DiscussionView } from '@/components/discussion-view';
+import { EpisodeDetailView } from '@/components/episode-detail-view';
 import { DeferredOnScroll } from '@/components/deferred-on-scroll';
 import { BoltIcon } from '@/components/icons';
 import { ThemeToggle } from '@/components/theme-toggle';
@@ -66,6 +67,7 @@ export default function Home() {
   const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel;
   const inDetailView = !!selected;
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
+  const inEpisodeDetail = useApp((s) => !!s.selectedEpisode);
 
   return (
     <main className="min-h-screen pb-32">
@@ -110,6 +112,8 @@ export default function Home() {
       <section className="max-w-7xl mx-auto px-4 pt-2">
         {inDiscussion ? (
           <DiscussionView />
+        ) : inEpisodeDetail ? (
+          <EpisodeDetailView />
         ) : inDetailView ? (
           // Detail "page" — once a podcast is picked, the search/favorites
           // aside hides so the episode list + per-podcast Nostr feed get the

@@ -4,7 +4,6 @@ import type { Episode, Podcast, FavoritePodcast, ValueBlock } from '@/lib/types'
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 import { BoostModal } from './boost-modal';
-import { BoostAllModal } from './boost-all-modal';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
@@ -19,30 +18,6 @@ function fmtDuration(t: number) {
   return `${m}:${s}`;
 }
 
-// Render-as-text only — strips tags + decodes a few common entities. Episode
-// descriptions are typically plain text or lightly-tagged HTML; full sanitization
-// isn't needed because we never feed this into dangerouslySetInnerHTML.
-function stripHtml(s: string): string {
-  return s
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|li)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-interface ChapterEntry {
-  startTime: number;
-  title?: string;
-  image?: string;
-  url?: string;
-}
 
 function fmtLiveTime(unixSec: number) {
   const d = new Date(unixSec * 1000);
@@ -317,151 +292,6 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
   );
 }
 
-function ChaptersList({
-  episodeId,
-  url,
-  cache,
-  setCache,
-  loadingFor,
-  setLoadingFor,
-}: {
-  episodeId: number;
-  url: string;
-  cache: Map<number, ChapterEntry[]>;
-  setCache: React.Dispatch<React.SetStateAction<Map<number, ChapterEntry[]>>>;
-  loadingFor: number | null;
-  setLoadingFor: React.Dispatch<React.SetStateAction<number | null>>;
-}) {
-  const cached = cache.get(episodeId);
-
-  useEffect(() => {
-    if (cache.has(episodeId)) return;
-    if (loadingFor === episodeId) return;
-    setLoadingFor(episodeId);
-    fetch(url)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        const list: ChapterEntry[] = Array.isArray(data?.chapters)
-          ? data.chapters.map((c: any) => ({
-              startTime: Number(c.startTime) || 0,
-              title: typeof c.title === 'string' ? c.title : undefined,
-              image: c.img || c.image,
-              url: c.url,
-            }))
-          : [];
-        setCache((prev) => new Map(prev).set(episodeId, list));
-      })
-      .catch(() => setCache((prev) => new Map(prev).set(episodeId, [])))
-      .finally(() => setLoadingFor((cur) => (cur === episodeId ? null : cur)));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [episodeId, url]);
-
-  if (loadingFor === episodeId && !cached) {
-    return <p className="text-xs text-muted">Loading chapters…</p>;
-  }
-  if (!cached?.length) return null;
-
-  return (
-    <div>
-      <p className="text-[11px] uppercase tracking-widest text-muted mb-1.5">
-        Chapters ({cached.length})
-      </p>
-      <ul className="space-y-1 text-xs max-h-60 overflow-y-auto pr-2">
-        {cached.map((c, i) => (
-          <li key={i} className="flex gap-3 text-bone/80">
-            <span className="text-muted tabular-nums w-12 flex-shrink-0">
-              {fmtDuration(c.startTime)}
-            </span>
-            <span className="truncate">{c.title ?? `Chapter ${i + 1}`}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-function ExpandedEpisodePanel({
-  episode,
-  podcast,
-  onBoost,
-  chaptersCache,
-  setChaptersCache,
-  chaptersLoading,
-  setChaptersLoading,
-}: {
-  episode: Episode;
-  podcast: Podcast;
-  onBoost: () => void;
-  chaptersCache: Map<number, ChapterEntry[]>;
-  setChaptersCache: React.Dispatch<React.SetStateAction<Map<number, ChapterEntry[]>>>;
-  chaptersLoading: number | null;
-  setChaptersLoading: React.Dispatch<React.SetStateAction<number | null>>;
-}) {
-  const value = episode.value ?? podcast.value;
-  const hasValue = !!value?.recipients?.length;
-  const description = !episode.contentEncoded && episode.description
-    ? stripHtml(episode.description)
-    : '';
-
-  return (
-    <div
-      className="border-t border-bone/10 px-4 py-4 space-y-4 bg-bone/[0.02]"
-      onClick={(ev) => ev.stopPropagation()}
-    >
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-        {episode.datePublished && (
-          <span>{new Date(episode.datePublished * 1000).toLocaleDateString()}</span>
-        )}
-        {episode.duration ? <span>· {fmtDuration(episode.duration)}</span> : null}
-        {episode.episode ? <span>· Episode {episode.episode}</span> : null}
-        {episode.season ? <span>· Season {episode.season}</span> : null}
-      </div>
-
-      {episode.contentEncoded ? (
-        <div
-          className="show-notes text-sm text-bone/80 leading-relaxed max-h-96 overflow-y-auto overflow-x-hidden pr-2"
-          dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
-        />
-      ) : description ? (
-        <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap overflow-x-hidden max-h-72 overflow-y-auto pr-2">
-          {description}
-        </div>
-      ) : null}
-
-      {value && (
-        <div>
-          <p className="text-[11px] uppercase tracking-widest text-muted mb-1.5">Value split</p>
-          <ValueBlockDetails value={value} />
-        </div>
-      )}
-
-      {episode.chaptersUrl && (
-        <ChaptersList
-          episodeId={episode.id}
-          url={episode.chaptersUrl}
-          cache={chaptersCache}
-          setCache={setChaptersCache}
-          loadingFor={chaptersLoading}
-          setLoadingFor={setChaptersLoading}
-        />
-      )}
-
-      {hasValue && (
-        <button
-          type="button"
-          onClick={(ev) => {
-            ev.stopPropagation();
-            onBoost();
-          }}
-          className="btn-bolt"
-        >
-          <BoltIcon /> BOOST EPISODE
-        </button>
-      )}
-    </div>
-  );
-}
-
 export function EpisodeList({ feedId }: { feedId: number | null }) {
   const [data, setData] = useState<{ podcast: Podcast | null; episodes: Episode[] }>({
     podcast: null, episodes: [],
@@ -469,15 +299,11 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const [loading, setLoading] = useState(false);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
   const [boostFor, setBoostFor] = useState<Episode | null>(null);
-  const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
-  const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [chaptersByEpisode, setChaptersByEpisode] = useState<Map<number, ChapterEntry[]>>(new Map());
-  const [chaptersLoading, setChaptersLoading] = useState<number | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
   const current = useApp((s) => s.current);
-  const openDiscussion = useApp((s) => s.openDiscussion);
+  const openEpisode = useApp((s) => s.openEpisode);
 
   useEffect(() => {
     setValueOpen(false);
@@ -568,9 +394,9 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
               )}
             <li
               className={`group transition ${
-                playing ? 'bg-bolt/10' : expandedId === e.id ? 'bg-bone/[0.03]' : 'hover:bg-bone/5'
+                playing ? 'bg-bolt/10' : 'hover:bg-bone/5'
               } cursor-pointer`}
-              onClick={() => setExpandedId((cur) => (cur === e.id ? null : e.id))}
+              onClick={() => openEpisode(e)}
             >
               <div className="flex gap-3 py-3 pr-3">
               <button
@@ -622,31 +448,10 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   {e.value && <span className="text-bolt">· ⚡ V4V</span>}
                 </div>
                 {e.socialInteract?.length ? (
-                  <button
-                    type="button"
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      openDiscussion(e);
-                    }}
-                    className="btn-ghost mt-1 text-nostr text-[11px] px-2 py-0.5 whitespace-nowrap"
-                    title="Open the discussion for this episode"
-                    aria-label="Open episode discussion"
-                  >
-                    💬 discussion
-                  </button>
+                  <span className="text-nostr text-[11px] mt-0.5">💬 discussion</span>
                 ) : null}
                 {e.valueTimeSplits?.length ? (
-                  <button
-                    type="button"
-                    onClick={(ev) => {
-                      ev.stopPropagation();
-                      setBoostAllFor(e);
-                    }}
-                    className="btn-ghost mt-1.5 text-bolt text-[11px] px-2 py-1 whitespace-nowrap uppercase tracking-wider"
-                    title={`Boost all ${e.valueTimeSplits.length} tracks in this episode`}
-                  >
-                    ⚡ Boost {e.valueTimeSplits.length} tracks
-                  </button>
+                  <span className="text-bolt text-[11px] mt-0.5">⚡ {e.valueTimeSplits.length} tracks</span>
                 ) : null}
               </div>
               {e.liveStatus && (e.value ?? data.podcast?.value)?.recipients?.length ? (
@@ -677,17 +482,6 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                 </button>
               ) : null}
               </div>
-              {expandedId === e.id && data.podcast && (
-                <ExpandedEpisodePanel
-                  episode={e}
-                  podcast={data.podcast}
-                  onBoost={() => setBoostFor(e)}
-                  chaptersCache={chaptersByEpisode}
-                  setChaptersCache={setChaptersByEpisode}
-                  chaptersLoading={chaptersLoading}
-                  setChaptersLoading={setChaptersLoading}
-                />
-              )}
             </li>
             </Fragment>
           );
@@ -728,13 +522,6 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
         />
       )}
 
-      {boostAllFor && data.podcast && (
-        <BoostAllModal
-          episode={boostAllFor}
-          podcast={data.podcast}
-          onClose={() => setBoostAllFor(null)}
-        />
-      )}
     </div>
   );
 }
