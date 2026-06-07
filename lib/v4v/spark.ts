@@ -1,5 +1,7 @@
 'use client';
 
+import { createObservable } from '../pubsub';
+
 // Spark rail — Spark Labs SDK adapter (@buildonspark/spark-sdk). Self-custodial
 // wallet whose mnemonic is bootstrapped from a NIP-44-encrypted backup on Nostr
 // relays (lib/nostr/wallet-backup.ts).
@@ -54,17 +56,10 @@ let activePubkey: string | null = null;
 // module-level state flips outside their own tree (e.g. the auto-restore in
 // nostr-auth.tsx fires while the account menu is already open). Listeners
 // are notified on every init/disconnect so the UI re-reads.
-const listeners = new Set<() => void>();
-
-function notify() {
-  listeners.forEach((fn) => { try { fn(); } catch { /* ignore */ } });
-}
+const { subscribe: subscribeSpark, notify } = createObservable();
 
 /** Subscribe to wallet state changes. Returns an unsubscribe fn. */
-export function subscribeSpark(fn: () => void): () => void {
-  listeners.add(fn);
-  return () => { listeners.delete(fn); };
-}
+export { subscribeSpark };
 
 /** True once a wallet has been initialized for the current session. */
 export function hasSpark(): boolean {

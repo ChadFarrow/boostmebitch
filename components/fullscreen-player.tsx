@@ -1,38 +1,12 @@
 'use client';
-import { RefObject, useEffect, useState } from 'react';
+import { RefObject, useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
+import { fmt, stripHtml } from '@/lib/format';
+import { useChapters } from '@/lib/chapters';
+import type { ChapterEntry } from '@/lib/chapters';
 import { BoltIcon } from './icons';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
-
-function fmt(t: number) {
-  if (!isFinite(t)) return '0:00';
-  const h = Math.floor(t / 3600);
-  const m = Math.floor((t % 3600) / 60);
-  const s = Math.floor(t % 60).toString().padStart(2, '0');
-  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s}`;
-  return `${m}:${s}`;
-}
-
-function stripHtml(s: string): string {
-  return s
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|li)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-interface ChapterEntry {
-  startTime: number;
-  title?: string;
-}
 
 function ChaptersList({
   url,
@@ -43,28 +17,7 @@ function ChaptersList({
   onSeek: (s: number) => void;
   currentSec: number;
 }) {
-  const [chapters, setChapters] = useState<ChapterEntry[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    fetch(url)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (cancelled) return;
-        const list: ChapterEntry[] = Array.isArray(data?.chapters)
-          ? data.chapters.map((c: { startTime: unknown; title?: unknown }) => ({
-              startTime: Number(c.startTime) || 0,
-              title: typeof c.title === 'string' ? c.title : undefined,
-            }))
-          : [];
-        setChapters(list);
-      })
-      .catch(() => !cancelled && setChapters([]))
-      .finally(() => !cancelled && setLoading(false));
-    return () => { cancelled = true; };
-  }, [url]);
+  const { chapters, loading } = useChapters(url);
 
   if (loading && !chapters) {
     return <p className="text-xs text-muted">Loading chapters…</p>;

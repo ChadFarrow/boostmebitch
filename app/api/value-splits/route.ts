@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getEpisodes, resolveValueTimeSplits } from '@/lib/pi';
-import { getErrorMessage } from '@/lib/util';
+import { withErrorHandling } from '@/lib/api-handler';
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
@@ -9,7 +9,7 @@ export async function GET(req: Request) {
   if (!feedId || !episodeId) {
     return NextResponse.json({ error: 'missing feedId / episodeId' }, { status: 400 });
   }
-  try {
+  return withErrorHandling(async () => {
     const episodes = await getEpisodes(feedId, 50);
     const episode = episodes.find((e) => e.id === episodeId);
     if (!episode) return NextResponse.json({ error: 'episode not found' }, { status: 404 });
@@ -20,10 +20,5 @@ export async function GET(req: Request) {
       { splits },
       { headers: { 'Cache-Control': 'public, max-age=3600' } },
     );
-  } catch (e) {
-    return NextResponse.json(
-      { error: getErrorMessage(e, 'value-splits fetch failed') },
-      { status: 500 },
-    );
-  }
+  }, 'value-splits fetch failed');
 }

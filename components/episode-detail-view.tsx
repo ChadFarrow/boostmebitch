@@ -1,6 +1,9 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
+import { fmtDuration, stripHtml } from '@/lib/format';
+import { useChapters } from '@/lib/chapters';
+import type { ChapterEntry } from '@/lib/chapters';
 import { BoltIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { BoostModal } from './boost-modal';
@@ -8,57 +11,8 @@ import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
 import type { Episode, ValueBlock } from '@/lib/types';
 
-function fmtDuration(t: number) {
-  if (!isFinite(t) || t <= 0) return '';
-  const h = Math.floor(t / 3600);
-  const m = Math.floor((t % 3600) / 60);
-  const s = Math.floor(t % 60).toString().padStart(2, '0');
-  if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s}`;
-  return `${m}:${s}`;
-}
-
-function stripHtml(s: string): string {
-  return s
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|li)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-interface ChapterEntry {
-  startTime: number;
-  title?: string;
-}
-
-function ChaptersList({ episodeId, url }: { episodeId: number; url: string }) {
-  const [chapters, setChapters] = useState<ChapterEntry[] | null>(null);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (chapters !== null || loading) return;
-    setLoading(true);
-    fetch(url)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        const list: ChapterEntry[] = Array.isArray(data?.chapters)
-          ? data.chapters.map((c: { startTime?: unknown; title?: unknown }) => ({
-              startTime: Number(c.startTime) || 0,
-              title: typeof c.title === 'string' ? c.title : undefined,
-            }))
-          : [];
-        setChapters(list);
-      })
-      .catch(() => setChapters([]))
-      .finally(() => setLoading(false));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [episodeId, url]);
+function ChaptersList({ url }: { url: string }) {
+  const { chapters, loading } = useChapters(url);
 
   if (loading && chapters === null) {
     return <p className="text-xs text-muted">Loading chapters…</p>;
@@ -259,7 +213,7 @@ export function EpisodeDetailView() {
 
         {/* Chapters */}
         {episode.chaptersUrl && (
-          <ChaptersList episodeId={episode.id} url={episode.chaptersUrl} />
+          <ChaptersList url={episode.chaptersUrl} />
         )}
 
         {/* Show notes */}

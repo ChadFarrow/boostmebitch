@@ -15,6 +15,7 @@ import type { EventTemplate } from 'nostr-tools';
 import { hasNwc, nwcPayInvoice } from './nwc';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { hasWebln, weblnPayInvoice } from './webln';
+import { pickRail } from './boost';
 
 interface LnurlPayMetadata {
   callback: string;
@@ -65,7 +66,8 @@ export async function sendZap(args: {
   if (typeof window === 'undefined' || !window.nostr) {
     throw new Error('No Nostr signer available');
   }
-  if (!hasNwc() && !hasSpark() && !hasWebln()) {
+  const rail = pickRail();
+  if (!rail) {
     throw new Error('No payment provider available (connect NWC, Spark, or WebLN)');
   }
 
@@ -139,15 +141,10 @@ export async function sendZap(args: {
     throw new Error('LNURL callback returned no invoice');
   }
 
-  // Rail priority matches lib/v4v/boost.ts pickRail(): NWC > Spark > WebLN.
-  // Without this, users with only Spark configured would silently fall back to
-  // WebLN (or fail at the no-provider check above), which surprises people who
-  // set up Spark expecting it to handle every Lightning leg the app sends.
-  const rail: 'NWC' | 'Spark' | 'WebLN' = hasNwc() ? 'NWC' : hasSpark() ? 'Spark' : 'WebLN';
   let preimage: string;
   try {
-    if (rail === 'NWC') preimage = await nwcPayInvoice(invoice);
-    else if (rail === 'Spark') preimage = await sparkPayInvoice(invoice);
+    if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);
+    else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
     else preimage = await weblnPayInvoice(invoice);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

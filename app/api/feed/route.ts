@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getEpisodes, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
-import { getErrorMessage } from '@/lib/util';
+import { withErrorHandling } from '@/lib/api-handler';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -12,7 +12,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const id = Number(searchParams.get('id'));
   if (!id) return NextResponse.json({ error: 'missing id' }, { status: 400 });
-  try {
+  return withErrorHandling(async () => {
     // Live-items lookup is best-effort — a PI hiccup on /episodes/live should
     // not blank out the whole feed page.
     const [podcast, episodes, piLive] = await Promise.all([
@@ -88,7 +88,5 @@ export async function GET(req: Request) {
       return (b.datePublished ?? 0) - (a.datePublished ?? 0);
     });
     return NextResponse.json({ podcast, episodes: merged });
-  } catch (e) {
-    return NextResponse.json({ error: getErrorMessage(e, 'feed fetch failed') }, { status: 500 });
-  }
+  }, 'feed fetch failed');
 }
