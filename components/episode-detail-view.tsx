@@ -234,6 +234,14 @@ export function EpisodeDetailView() {
           ) : null}
         </div>
 
+        {/* Value split */}
+        {value && <ValueSplitSection value={value} />}
+
+        {/* Chapters */}
+        {episode.chaptersUrl && (
+          <ChaptersList episodeId={episode.id} url={episode.chaptersUrl} />
+        )}
+
         {/* Show notes */}
         {episode.contentEncoded ? (
           <div>
@@ -251,14 +259,6 @@ export function EpisodeDetailView() {
             </div>
           </div>
         ) : null}
-
-        {/* Value split */}
-        {value && <ValueSplitSection value={value} />}
-
-        {/* Chapters */}
-        {episode.chaptersUrl && (
-          <ChaptersList episodeId={episode.id} url={episode.chaptersUrl} />
-        )}
       </section>
 
       {boostFor && (
