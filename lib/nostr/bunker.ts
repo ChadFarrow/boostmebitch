@@ -38,20 +38,14 @@ import {
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { storage } from '../storage';
 
-// Default relays for the GENERATE flow's nostrconnect:// URI. These need
-// to be reachable by both this app and whatever remote signer the user
-// uses. relay.nsec.app + relay.damus.io are the historical NIP-46
-// defaults; relay.primal.net is added because Primal's iOS/Android
-// remote-signer pairing only fires reliably when its own relay is in
-// the URI's relay list (Primal subscribes to that one eagerly; the
-// others are checked less aggressively, and a connect event sent during
-// iOS-Safari WebSocket suspension on the client side gets lost
-// otherwise).
-const NOSTRCONNECT_RELAYS = [
-  'wss://relay.primal.net',
-  'wss://relay.nsec.app',
-  'wss://relay.damus.io',
-];
+// Default relays for the GENERATE flow's nostrconnect:// URI. Using a
+// single relay avoids the failure mode where relay.nsec.app or
+// relay.damus.io send a CLOSED notice on an ephemeral kind:24133
+// subscription — nostr-tools' fromURI treats any CLOSED as a fatal
+// error even if other relays are still healthy. relay.primal.net is
+// reachable by all major NIP-46 signers (Primal, Clave, nsec.app,
+// Amber), so a single-relay URI is simpler and more reliable.
+const NOSTRCONNECT_RELAYS = ['wss://relay.primal.net'];
 
 const NOSTRCONNECT_TIMEOUT_MS = 120_000;
 

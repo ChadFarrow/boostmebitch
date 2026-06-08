@@ -312,12 +312,12 @@ export function OtherSignIn({
       {tab === 'have' && (
         <>
           <span className="text-[10px] text-muted self-stretch text-right">
-            For <span className="text-bone">Primal</span>: Settings → Keys →
-            Remote Signer → copy the connection string. Tap{' '}
-            <span className="text-bone">Connect</span>, then approve in
-            Primal. If the connection drops, tap{' '}
-            <span className="text-bone">Try again</span> — each retry sends
-            a fresh request that Primal will prompt you to approve again.
+            Paste a <code className="text-[9px]">bunker://</code> URI from a
+            signer that generates one — e.g.{' '}
+            <span className="text-bone">nsec.app</span> or{' '}
+            <span className="text-bone">Amber</span> in server mode. Tap{' '}
+            <span className="text-bone">Connect</span>, then approve in your
+            signer.
           </span>
           <textarea
             value={pasteValue}
@@ -337,7 +337,7 @@ export function OtherSignIn({
           </div>
           {pasteBusy && (
             <span className="text-[10px] text-muted text-right self-end">
-              Switch to Primal and approve if prompted, then come back here.
+              Approve in your signer if prompted, then come back here.
             </span>
           )}
           {pasteAuthUrl && (
@@ -354,9 +354,8 @@ export function OtherSignIn({
                 ◆ Approve in signer
               </a>
               <span className="text-[10px] text-muted text-right">
-                Approve in your signer (Primal, Clave, …) then come back here.
-                Keep this tab open while you approve — closing it cancels the
-                connection.
+                Approve in your signer, then come back here. Keep this tab
+                open — closing it cancels the connection.
               </span>
             </div>
           )}
@@ -364,7 +363,7 @@ export function OtherSignIn({
             <div className="flex flex-col items-end gap-1 self-end">
               <span className="text-[10px] text-nostr/80 text-right">
                 {pasteErr.includes('timed out') || pasteErr.includes('subscription closed')
-                  ? 'Tap Try again — then approve in Primal once more.'
+                  ? 'Connection dropped — tap Try again, then approve in your signer once more.'
                   : pasteErr}
               </span>
               {(pasteErr.includes('timed out') || pasteErr.includes('subscription closed')) && (
@@ -383,27 +382,14 @@ export function OtherSignIn({
 
       {tab === 'generate' && (
         <>
-          <div className="self-stretch text-[10px] p-2 border border-line flex flex-col gap-1">
-            <span className="text-muted">
-              Works with{' '}
-              <span className="text-bone">Clave</span>,{' '}
-              <span className="text-bone">nsec.app</span>, and{' '}
-              <span className="text-bone">Amber</span> — signers that can
-              scan a QR and initiate the connection.
-            </span>
-            <span className="text-muted">
-              <span className="text-bone">Primal</span> doesn&apos;t support
-              this flow — it only accepts incoming{' '}
-              <code className="text-[9px]">bunker://</code> requests.{' '}
-              <button
-                type="button"
-                onClick={() => setTab('have')}
-                className="text-nostr underline"
-              >
-                Use Have URI instead.
-              </button>
-            </span>
-          </div>
+          <span className="text-[10px] text-muted self-stretch text-right">
+            Works with{' '}
+            <span className="text-bone">Primal</span>,{' '}
+            <span className="text-bone">Clave</span>,{' '}
+            <span className="text-bone">nsec.app</span>, and{' '}
+            <span className="text-bone">Amber</span> — paste or scan the
+            URI in your signer.
+          </span>
           {!genUri && !genBusy && (
             <button
               onClick={onGenerate}
@@ -415,7 +401,7 @@ export function OtherSignIn({
           {genUri && (
             <>
               <span className="text-[10px] text-muted self-stretch text-right">
-                Scan with Clave, nsec.app, or Amber, or copy below.
+                Paste into Primal, or scan with Clave, nsec.app, or Amber.
               </span>
               {/* QR for cross-device handoff (e.g. laptop running the
                   app + phone running Clave / nsec.app). Same color
