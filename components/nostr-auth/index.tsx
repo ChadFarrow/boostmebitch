@@ -341,7 +341,7 @@ export function NostrAuth() {
   }
 
   return (
-    <div className="flex flex-col items-end gap-1">
+    <div className="relative flex flex-col items-end gap-1">
       <button onClick={signin} disabled={busy} className="btn-ghost">
         <span className="text-nostr">◆</span>
         {/* suppressHydrationWarning: SSR can't read navigator.userAgent, so

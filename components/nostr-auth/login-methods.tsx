@@ -213,6 +213,24 @@ export function OtherSignIn({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, tab, genErr, genBusy]);
 
+  // Paste flow: auto-retry on return from Primal. Same pattern as the generate
+  // flow above. On iOS, switching to Primal to approve suspends Safari's
+  // WebSocket; on return, re-attempt with the same clientSk (pendingClientSks
+  // ensures reuse) so Primal recognizes the already-approved client and acks
+  // immediately on the fresh subscription.
+  useEffect(() => {
+    if (!open || tab !== 'have') return;
+    if (!pasteBusy && !pasteErr) return;
+    if (typeof document === 'undefined') return;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      onPasteSubmit();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, tab, pasteErr, pasteBusy]);
+
   if (!open) {
     if (!showTrigger) return null;
     return (
@@ -256,7 +274,7 @@ export function OtherSignIn({
   }
 
   return (
-    <div className="flex flex-col items-end gap-2 mt-1 max-w-[320px] card p-3">
+    <div className="absolute right-0 top-full mt-1 z-50 flex flex-col items-end gap-2 w-[calc(100vw-1rem)] max-w-[320px] card p-3">
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest w-full">
         <button
           type="button"
@@ -336,7 +354,22 @@ export function OtherSignIn({
             </div>
           )}
           {pasteErr && (
-            <span className="text-[10px] text-nostr/80 text-right">{pasteErr}</span>
+            <div className="flex flex-col items-end gap-1 self-end">
+              <span className="text-[10px] text-nostr/80 text-right">
+                {pasteErr.includes('timed out')
+                  ? 'Timed out — if you approved in Primal, tap Try again.'
+                  : pasteErr}
+              </span>
+              {pasteErr.includes('timed out') && (
+                <button
+                  onClick={onPasteSubmit}
+                  disabled={pasteBusy || !pasteValue.trim()}
+                  className="btn-bolt text-[11px] py-1 px-3 disabled:opacity-40"
+                >
+                  {pasteBusy ? 'Connecting…' : 'Try again'}
+                </button>
+              )}
+            </div>
           )}
         </>
       )}
