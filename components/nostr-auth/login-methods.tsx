@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { QRCodeSVG } from 'qrcode.react';
-import { loginWithBunker, loginWithNostrConnect, clearPendingBunkerAttempts, type NostrIdentity } from '@/lib/nostr';
+import { loginWithBunker, loginWithNostrConnect, clearPendingBunkerAttempts, isLikelyIOS, type NostrIdentity } from '@/lib/nostr';
 import { subscribeAmberStage } from '@/lib/nostr/amber';
 import { getErrorMessage } from '@/lib/util';
 
@@ -143,6 +143,7 @@ export function OtherSignIn({
   showTrigger: boolean;
 }) {
   const setOpen = onOpenChange;
+  const [ios] = useState(() => isLikelyIOS());
   const [tab, setTab] = useState<'have' | 'generate'>('have');
   const [pasteValue, setPasteValue] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -382,6 +383,24 @@ export function OtherSignIn({
 
       {tab === 'generate' && (
         <>
+          {ios && (
+            <div className="self-stretch text-[10px] p-2 border border-nostr/40 bg-nostr/5 flex flex-col gap-1">
+              <span className="text-bone font-medium">Same-device iOS?</span>
+              <span className="text-muted">
+                This flow needs two devices — boostmebitch on one, Primal on
+                another. On a single iPhone, switching to Primal suspends
+                Safari&apos;s connection so the response is lost.
+              </span>
+              <button
+                type="button"
+                onClick={() => setTab('have')}
+                className="text-nostr underline text-left"
+              >
+                Use Have URI instead → copy your bunker:// from Primal →
+                Settings → Keys → Remote Signer
+              </button>
+            </div>
+          )}
           {!genUri && !genBusy && (
             <button
               onClick={onGenerate}
