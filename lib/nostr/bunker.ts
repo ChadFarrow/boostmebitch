@@ -38,14 +38,20 @@ import {
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { storage } from '../storage';
 
-// Default relays for the GENERATE flow's nostrconnect:// URI. Using a
-// single relay avoids the failure mode where relay.nsec.app or
-// relay.damus.io send a CLOSED notice on an ephemeral kind:24133
-// subscription — nostr-tools' fromURI treats any CLOSED as a fatal
-// error even if other relays are still healthy. relay.primal.net is
-// reachable by all major NIP-46 signers (Primal, Clave, nsec.app,
-// Amber), so a single-relay URI is simpler and more reliable.
-const NOSTRCONNECT_RELAYS = ['wss://relay.primal.net'];
+// Default relays for the GENERATE flow's nostrconnect:// URI. Multiple
+// relays give the connect-ack redundancy: on same-device iOS, Safari
+// suspends a backgrounded WebSocket while the user switches to Primal to
+// approve, so a single-relay URI can lose the ack to a dead subscription
+// and time out. (The older nostr-tools bug where one relay's CLOSED was
+// fatal is fixed as of 2.23.x — subscribeMany.onclose now fires only when
+// ALL relays close — so multi-relay is safe again.) This set mirrors the
+// working MSP-2.0 config and is reachable by Primal, Clave, nsec.app, Amber.
+const NOSTRCONNECT_RELAYS = [
+  'wss://relay.nsec.app',
+  'wss://relay.damus.io',
+  'wss://relay.primal.net',
+  'wss://nos.lol',
+];
 
 const NOSTRCONNECT_TIMEOUT_MS = 120_000;
 
