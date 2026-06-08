@@ -74,11 +74,12 @@ const BUNKER_CALL_TIMEOUT_MS = 30_000;
 const BUNKER_CONNECT_TIMEOUT_MS = 90_000;
 
 // Short timeout for the automatic one-shot retry after a "subscription
-// closed" failure. If relay.primal.net buffered the ACK while iOS had
-// the WebSocket suspended, the new subscription picks it up in < 3s.
-// Keeping this short ensures users get feedback quickly if the relay
-// doesn't have the ACK (rather than waiting another 90s).
-const BUNKER_RECONNECT_TIMEOUT_MS = 15_000;
+// closed" failure. NIP-46 uses kind:24133 (ephemeral) events that relays
+// are not supposed to store, so this retry only helps for transient
+// network blips where the relay is still reachable. Keep it very short
+// (3s) so we fail fast to the "go approve in Primal again" error state
+// rather than leaving the user staring at "Connecting…" for 15+ seconds.
+const BUNKER_RECONNECT_TIMEOUT_MS = 3_000;
 
 // Module-level memo: the last clientSk we generated for a given pasted
 // URI. The iOS Safari + Primal failure mode is that the user approves

@@ -312,10 +312,11 @@ export function OtherSignIn({
         <>
           <span className="text-[10px] text-muted self-stretch text-right">
             Primal: Settings → Keys → Remote Signer → copy the connection
-            string. On iOS, enable background audio in Primal first so it
-            stays alive for signing requests. After approving in Primal,
-            return here and tap <span className="text-bone">Connect</span>{' '}
-            again if it didn&apos;t finish — your approval is remembered.
+            string. Paste it here and tap{' '}
+            <span className="text-bone">Connect</span>, then switch to
+            Primal to approve. If it drops, tap{' '}
+            <span className="text-bone">Try again</span> and approve in
+            Primal once more — each retry sends a new request.
           </span>
           <textarea
             value={pasteValue}
@@ -333,6 +334,11 @@ export function OtherSignIn({
               {pasteBusy ? 'Connecting…' : 'Connect'}
             </button>
           </div>
+          {pasteBusy && (
+            <span className="text-[10px] text-muted text-right self-end">
+              Switch to Primal and approve if prompted, then come back here.
+            </span>
+          )}
           {pasteAuthUrl && (
             <div className="self-stretch flex flex-col items-end gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
               <span className="text-[10px] text-bone text-right">
@@ -357,7 +363,7 @@ export function OtherSignIn({
             <div className="flex flex-col items-end gap-1 self-end">
               <span className="text-[10px] text-nostr/80 text-right">
                 {pasteErr.includes('timed out') || pasteErr.includes('subscription closed')
-                  ? 'Connection dropped — approve in Primal then tap Try again.'
+                  ? 'Tap Try again — then approve in Primal once more.'
                   : pasteErr}
               </span>
               {(pasteErr.includes('timed out') || pasteErr.includes('subscription closed')) && (
