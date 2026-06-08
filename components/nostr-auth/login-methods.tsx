@@ -274,7 +274,7 @@ export function OtherSignIn({
   }
 
   return (
-    <div className="absolute right-0 top-full mt-1 z-50 flex flex-col items-end gap-2 w-[calc(100vw-1rem)] max-w-[320px] card p-3">
+    <div className="absolute right-0 top-full mt-1 z-50 flex flex-col items-end gap-2 w-[calc(100vw-1rem)] max-w-[320px] border border-bone/40 bg-ink p-3">
       <div className="flex items-center gap-2 text-[10px] uppercase tracking-widest w-full">
         <button
           type="button"
