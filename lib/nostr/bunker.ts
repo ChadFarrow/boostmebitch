@@ -73,6 +73,13 @@ const BUNKER_CALL_TIMEOUT_MS = 30_000;
 // for the round-trip + manual approval.
 const BUNKER_CONNECT_TIMEOUT_MS = 90_000;
 
+// Short timeout for the automatic one-shot retry after a "subscription
+// closed" failure. If relay.primal.net buffered the ACK while iOS had
+// the WebSocket suspended, the new subscription picks it up in < 3s.
+// Keeping this short ensures users get feedback quickly if the relay
+// doesn't have the ACK (rather than waiting another 90s).
+const BUNKER_RECONNECT_TIMEOUT_MS = 15_000;
+
 // Module-level memo: the last clientSk we generated for a given pasted
 // URI. The iOS Safari + Primal failure mode is that the user approves
 // in Primal, but iOS suspended the WebSocket while they were in the
@@ -234,32 +241,37 @@ export async function connectBunkerFromUri(
     clientSk = generateSecretKey();
     pendingClientSks.set(cleaned, clientSk);
   }
-  const signer = BunkerSigner.fromBunker(clientSk, pointer, {
-    onauth: onAuthUrl,
-  });
-  // nostr-tools' connect() has no built-in timeout. Without this bound
-  // a stalled relay or a never-approved auth_url leaves the UI on
-  // "Connecting…" forever. Same for getPublicKey on the just-connected
-  // signer — it's another round-trip over the same transport. On
-  // failure, leave the clientSk in pendingClientSks so the user's next
-  // tap of Connect reuses the already-approved client identity.
-  await withTimeout(
-    signer.connect(),
-    BUNKER_CONNECT_TIMEOUT_MS,
-    'connect (approve in your signer, then tap Connect again — iOS may have suspended the relay link)',
-  );
-  const pubkey = await withTimeout(
-    signer.getPublicKey(),
-    BUNKER_CALL_TIMEOUT_MS,
-    'get_public_key',
-  );
+  // Stable reference after the if(!clientSk) block above.
+  const sk = clientSk;
+
+  // Try to connect. If the relay subscription closes immediately (iOS
+  // suspended the WebSocket while the user switched to Primal), wait 1s
+  // and retry once with a shorter window. relay.primal.net buffers recent
+  // ACKs, so the fresh subscription usually picks it up within a few
+  // seconds. On any other error (timeout, parse failure) throw immediately.
+  async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string }> {
+    const s = BunkerSigner.fromBunker(sk, pointer, { onauth: onAuthUrl });
+    await withTimeout(s.connect(), timeoutMs, 'connect');
+    const pk = await withTimeout(s.getPublicKey(), BUNKER_CALL_TIMEOUT_MS, 'get_public_key');
+    return { inner: s, pubkey: pk };
+  }
+
+  let conn: { inner: BunkerSigner; pubkey: string };
+  try {
+    conn = await attempt(BUNKER_CONNECT_TIMEOUT_MS);
+  } catch (e) {
+    if (!String(e).includes('subscription closed')) throw e;
+    await new Promise<void>(r => setTimeout(r, 1_000));
+    conn = await attempt(BUNKER_RECONNECT_TIMEOUT_MS);
+  }
+
   pendingClientSks.delete(cleaned);
   return {
-    inner: signer,
-    pubkey,
-    nostrApi: adaptToWindowNostr(signer),
+    inner: conn.inner,
+    pubkey: conn.pubkey,
+    nostrApi: adaptToWindowNostr(conn.inner),
     uri: cleaned,
-    clientSkHex: bytesToHex(clientSk),
+    clientSkHex: bytesToHex(sk),
   };
 }
 
@@ -369,17 +381,25 @@ export async function restoreBunkerFromStorage(): Promise<BunkerAdapter | null> 
     return null;
   }
   const clientSk = hexToBytes(cached.clientSk);
-  const signer = BunkerSigner.fromBunker(clientSk, pointer);
-  await withTimeout(signer.connect(), BUNKER_CONNECT_TIMEOUT_MS, 'reconnect');
-  const pubkey = await withTimeout(
-    signer.getPublicKey(),
-    BUNKER_CALL_TIMEOUT_MS,
-    'get_public_key',
-  );
+  const bp = pointer;
+  async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string }> {
+    const s = BunkerSigner.fromBunker(clientSk, bp);
+    await withTimeout(s.connect(), timeoutMs, 'reconnect');
+    const pk = await withTimeout(s.getPublicKey(), BUNKER_CALL_TIMEOUT_MS, 'get_public_key');
+    return { inner: s, pubkey: pk };
+  }
+  let conn: { inner: BunkerSigner; pubkey: string };
+  try {
+    conn = await attempt(BUNKER_CONNECT_TIMEOUT_MS);
+  } catch (e) {
+    if (!String(e).includes('subscription closed')) throw e;
+    await new Promise<void>(r => setTimeout(r, 1_000));
+    conn = await attempt(BUNKER_RECONNECT_TIMEOUT_MS);
+  }
   return {
-    inner: signer,
-    pubkey,
-    nostrApi: adaptToWindowNostr(signer),
+    inner: conn.inner,
+    pubkey: conn.pubkey,
+    nostrApi: adaptToWindowNostr(conn.inner),
     uri: cached.uri,
     clientSkHex: cached.clientSk,
   };
