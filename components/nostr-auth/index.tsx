@@ -19,7 +19,7 @@ import {
   type NostrIdentity,
 } from '@/lib/nostr';
 import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/amber';
-import { hasSpark, sparkInitFromMnemonic } from '@/lib/v4v/spark';
+import { hasSpark, sparkDisconnect, sparkInitFromMnemonic } from '@/lib/v4v/spark';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -283,6 +283,8 @@ export function NostrAuth() {
   }
 
   function signout() {
+    if (identity) storage.walletBalance.clear(identity.npub);
+    sparkDisconnect();
     setIdentity(null);
     setFavorites({});
     setMutedPubkeys(new Set());
@@ -332,6 +334,12 @@ export function NostrAuth() {
   // installed whichever polyfill it needs and persisted bmb:bunker /
   // amber state; we just propagate identity to the store and hydrate.
   function completeSignIn(id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker') {
+    // Switching to a different npub — disconnect the previous Spark wallet
+    // so it doesn't leak across identities.
+    if (identity && identity.pubkey !== id.pubkey) {
+      storage.walletBalance.clear(identity.npub);
+      sparkDisconnect();
+    }
     startTransition(() => setIdentity(id));
     storage.npub.set(id.npub);
     if (kind === 'amber') storage.signer.set('amber');
