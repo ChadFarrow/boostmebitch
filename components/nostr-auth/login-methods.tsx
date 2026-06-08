@@ -312,12 +312,12 @@ export function OtherSignIn({
       {tab === 'have' && (
         <>
           <span className="text-[10px] text-muted self-stretch text-right">
-            Primal: Settings → Keys → Remote Signer → copy the connection
-            string. Paste it here and tap{' '}
-            <span className="text-bone">Connect</span>, then switch to
-            Primal to approve. If it drops, tap{' '}
-            <span className="text-bone">Try again</span> and approve in
-            Primal once more — each retry sends a new request.
+            For <span className="text-bone">Primal</span>: Settings → Keys →
+            Remote Signer → copy the connection string. Tap{' '}
+            <span className="text-bone">Connect</span>, then approve in
+            Primal. If the connection drops, tap{' '}
+            <span className="text-bone">Try again</span> — each retry sends
+            a fresh request that Primal will prompt you to approve again.
           </span>
           <textarea
             value={pasteValue}
@@ -383,24 +383,27 @@ export function OtherSignIn({
 
       {tab === 'generate' && (
         <>
-          {ios && (
-            <div className="self-stretch text-[10px] p-2 border border-nostr/40 bg-nostr/5 flex flex-col gap-1">
-              <span className="text-bone font-medium">Same-device iOS?</span>
-              <span className="text-muted">
-                This flow needs two devices — boostmebitch on one, Primal on
-                another. On a single iPhone, switching to Primal suspends
-                Safari&apos;s connection so the response is lost.
-              </span>
+          <div className="self-stretch text-[10px] p-2 border border-line flex flex-col gap-1">
+            <span className="text-muted">
+              Works with{' '}
+              <span className="text-bone">Clave</span>,{' '}
+              <span className="text-bone">nsec.app</span>, and{' '}
+              <span className="text-bone">Amber</span> — signers that can
+              scan a QR and initiate the connection.
+            </span>
+            <span className="text-muted">
+              <span className="text-bone">Primal</span> doesn&apos;t support
+              this flow — it only accepts incoming{' '}
+              <code className="text-[9px]">bunker://</code> requests.{' '}
               <button
                 type="button"
                 onClick={() => setTab('have')}
-                className="text-nostr underline text-left"
+                className="text-nostr underline"
               >
-                Use Have URI instead → copy your bunker:// from Primal →
-                Settings → Keys → Remote Signer
+                Use Have URI instead.
               </button>
-            </div>
-          )}
+            </span>
+          </div>
           {!genUri && !genBusy && (
             <button
               onClick={onGenerate}
@@ -412,7 +415,7 @@ export function OtherSignIn({
           {genUri && (
             <>
               <span className="text-[10px] text-muted self-stretch text-right">
-                Scan with your signer, or copy below.
+                Scan with Clave, nsec.app, or Amber, or copy below.
               </span>
               {/* QR for cross-device handoff (e.g. laptop running the
                   app + phone running Clave / nsec.app). Same color
