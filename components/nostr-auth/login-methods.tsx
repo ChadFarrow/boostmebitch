@@ -356,11 +356,11 @@ export function OtherSignIn({
           {pasteErr && (
             <div className="flex flex-col items-end gap-1 self-end">
               <span className="text-[10px] text-nostr/80 text-right">
-                {pasteErr.includes('timed out')
-                  ? 'Timed out — if you approved in Primal, tap Try again.'
+                {pasteErr.includes('timed out') || pasteErr.includes('subscription closed')
+                  ? 'Connection dropped — approve in Primal then tap Try again.'
                   : pasteErr}
               </span>
-              {pasteErr.includes('timed out') && (
+              {(pasteErr.includes('timed out') || pasteErr.includes('subscription closed')) && (
                 <button
                   onClick={onPasteSubmit}
                   disabled={pasteBusy || !pasteValue.trim()}
@@ -450,7 +450,11 @@ export function OtherSignIn({
             </div>
           )}
           {genErr && (
-            <span className="text-[10px] text-nostr/80 text-right">{genErr}</span>
+            <span className="text-[10px] text-nostr/80 text-right">
+              {genErr.includes('subscription closed') || genErr.includes('timed out')
+                ? 'Connection dropped — approve in your signer then tap Try again.'
+                : genErr}
+            </span>
           )}
         </>
       )}
