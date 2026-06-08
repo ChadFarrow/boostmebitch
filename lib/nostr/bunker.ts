@@ -241,8 +241,11 @@ export async function connectBunkerFromUri(
     clientSk = generateSecretKey();
     pendingClientSks.set(cleaned, clientSk);
   }
-  // Stable reference after the if(!clientSk) block above.
+  // Stable narrowed references after the null/undefined checks above.
+  // TypeScript doesn't carry control-flow narrowing into closures, so we
+  // capture explicit consts here that the `attempt` function can safely use.
   const sk = clientSk;
+  const bp = pointer;
 
   // Try to connect. If the relay subscription closes immediately (iOS
   // suspended the WebSocket while the user switched to Primal), wait 1s
@@ -250,7 +253,7 @@ export async function connectBunkerFromUri(
   // ACKs, so the fresh subscription usually picks it up within a few
   // seconds. On any other error (timeout, parse failure) throw immediately.
   async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string }> {
-    const s = BunkerSigner.fromBunker(sk, pointer, { onauth: onAuthUrl });
+    const s = BunkerSigner.fromBunker(sk, bp, { onauth: onAuthUrl });
     await withTimeout(s.connect(), timeoutMs, 'connect');
     const pk = await withTimeout(s.getPublicKey(), BUNKER_CALL_TIMEOUT_MS, 'get_public_key');
     return { inner: s, pubkey: pk };
