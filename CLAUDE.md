@@ -46,7 +46,7 @@ Components fetch via local API routes (`fetch('/api/feed?id=…')`) — never ca
 
 NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (private mutes), `nip44.{en,de}crypt` (wallet backup). No kind:3 contacts, no DMs, no reactions.
 
-**Fast-path identity hydration.** On page load, `nostr-auth.tsx` decodes cached `bmb:npub` synchronously via `nip19.decode`, sets a bare `{ pubkey, npub }` identity, and reads `storage.profile.get(pubkey)` + `storage.favorites.get(npub)` + `storage.muted.get(npub)` into the store within the same frame. The signer is only called lazily, when something actually needs to sign.
+**Fast-path identity hydration.** On page load, `nostr-auth/index.tsx` decodes cached `bmb:npub` synchronously via `nip19.decode`, sets a bare `{ pubkey, npub }` identity, and reads `storage.profile.get(pubkey)` + `storage.favorites.get(npub)` + `storage.muted.get(npub)` into the store within the same frame. The signer is only called lazily, when something actually needs to sign.
 
 **Relay query timeouts.** Every `pool.querySync` site passes a `maxWait` from `lib/nostr/pool.ts`: `QUERY_MAX_WAIT_MS = 4000` for single-author lookups (kind:0/10000/10002/30003/30078/6) and `FEED_QUERY_MAX_WAIT_MS = 8000` for broad feed scans (kind:1 with `#i`/`#k`, reply-tree BFS, bulk profile fetches). Without these, a stalled relay pins the tab in loading. The 4s/8s split balances spinner duration vs. completeness.
 
@@ -68,30 +68,18 @@ The whole codebase reads from `window.nostr`. Three signer paths feed it, swappe
 
 Only one polyfill is active at a time. `captureOriginal()` snapshots the underlying NIP-07 extension on first activation so deactivation can restore it. `bmb:signer` holds `'amber' | 'bunker' | absent` so the fast-path useEffect knows what to restore. Capability accessors live here too: `getNip04()`/`getNip44()` (return API or null), `requireNip44()` (throws). Use these instead of inlining `typeof window !== 'undefined' && window.nostr?.nipXX`.
 
-### Per-platform decision tree (`components/nostr-auth.tsx`)
+### Sign-in UI — one button → `<SignInModal>` (`components/nostr-auth/sign-in-modal.tsx`)
 
-```
-extensionBrand = detectExtensionBrand()  // window.alby | window.nostr | null
-android        = isLikelyAndroid()
-ios            = isLikelyIOS()           // includes iPad-as-Mac UA fallback
+The header shows a single **"Sign in with Nostr"** button (`components/nostr-auth/index.tsx`); clicking it opens a portal'd two-tab modal (same overlay pattern as `wallet-modal.tsx`):
 
-signerKind =
-  extension !== null ? 'extension'  // → loginWithExtension
-  : android          ? 'amber'      // → loginWithAmber
-  : ios              ? 'bunker'     // → opens bunker disclosure
-  :                    'none'       // → throws install hint
-```
+- **Browser Extension** — `loginWithExtension` (NIP-07). The "Connect with Extension" button is disabled with a hint when `window.nostr` is absent.
+- **Remote Signer** — both options stacked: *Option 1 — Generate QR* (`nostrconnect://` via `loginWithNostrConnect`, with QR + copy) and *Option 2 — Paste Bunker URI* (`loginWithBunker`), plus a **"Sign in with Amber"** button (`loginWithAmber`) on Android. Default tab when no extension is detected.
 
-Primary button label: `'Sign in with Alby'` (only Alby exposes `window.alby`; nos2x/Flamingo are indistinguishable, label stays generic), `'Sign in with Amber'`, `'Connect remote signer'` (iOS), or `'Sign in with Nostr'`.
+Both tabs are always available so a desktop extension user can still pick a remote signer. The modal owns its own per-method busy/error state and the **iOS visibility-retry** that re-attempts the nostrconnect handshake when Safari suspends the relay WebSocket on app-switch. On success it calls back to `index.tsx:completeSignIn(id, kind)`. `login-methods.tsx` now holds only the shared `<AmberCompletion>` clipboard-recovery helper (the old per-platform `signin()` branching, `OtherSignIn` disclosure, and extension re-detection effect were removed).
 
-**iOS surfaces the bunker flow as primary** because Safari iOS doesn't run NIP-07 in PWA mode. A helper line names Clave (TestFlight) as the recommended pairing target. The "◆ Use a remote signer" disclosure is hidden on iOS to avoid duplicating the primary action; it's available on Android/desktop.
+### Account-change detector
 
-### Re-detection at runtime
-
-Two listeners in `nostr-auth.tsx`:
-
-1. **Extension re-detection** on `window.focus` and `document.visibilitychange` — covers install-while-open. `signin()` itself also re-reads `detectExtensionBrand()` at click time, so install-then-click works without waiting for focus.
-2. **Account-change detector** on `window.focus` while signed in via extension. Re-calls `getPublicKey()` (throttled 30s); if the active account changed, drives `loginWithExtension` + `completeSignIn` to switch identities. Multi-identity Alby/nos2x users are first-class.
+One `window.focus` listener in `components/nostr-auth/index.tsx`, active only while signed in via a NIP-07 extension (`bmb:signer` absent). Re-calls `getPublicKey()` (throttled 30s); if the active account changed, drives `loginWithExtension` + `completeSignIn` to switch identities. Multi-identity Alby/nos2x users are first-class. Extension presence is otherwise read at modal-open time (the modal does its own `window.nostr` check), so there's no separate install-while-open re-detection effect anymore.
 
 ### Lifecycle observables
 
@@ -108,7 +96,7 @@ Two listeners in `nostr-auth.tsx`:
 
 ♡ on a podcast row toggles a favorite. Authoritative event: kind:30003 with `d:boostmebitch:favorites`, one `i: podcast:guid:<guid>` + `k: podcast:guid` per favorite. Cache: `bmb:favorites:<npub>` (or `:guest`) holds the full `FavoritePodcast[]` for instant render. Toggles are optimistic; publish is **debounced 1.5s** via `schedulePublishFavorites`. Hydration in `loadProfile` does last-write-wins on `event.created_at` vs newest local `addedAt`, then resolves unknown guids via `/api/by-guid`.
 
-**UUID filter at parse:** `lib/nostr/favorites.ts` enforces a UUID shape on every `i: podcast:guid:<value>` tag. Older versions (and other clients reusing the d-tag) wrote feed IDs and arbitrary strings. Bad values are returned as `droppedGuids`; when count > 0, `nostr-auth.tsx` registers `window.bmbCleanFavorites()` so the user can republish a cleaned event from devtools.
+**UUID filter at parse:** `lib/nostr/favorites.ts` enforces a UUID shape on every `i: podcast:guid:<value>` tag. Older versions (and other clients reusing the d-tag) wrote feed IDs and arbitrary strings. Bad values are returned as `droppedGuids`; when count > 0, `nostr-auth/index.tsx` registers `window.bmbCleanFavorites()` so the user can republish a cleaned event from devtools.
 
 Sign-out clears in-memory favorites; the per-npub cache is left so re-signing in is fast. No episode-level favorites, no list categories, no share UI.
 
@@ -120,13 +108,18 @@ Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-l
 
 ## Wallets — account menu
 
-All wallet config now lives in **`components/wallet-modal.tsx`** — a portal'd overlay opened by `<WalletButton>` inside `<AccountMenu>` (`components/nostr-auth.tsx:853`). The modal is portal'd to `document.body` so `position: fixed` resolves against the viewport, not the sticky `<header>` (the header's `backdrop-blur` creates a containing block for fixed descendants per CSS spec — without the portal, mobile renders it clipped to the header).
+All wallet config now lives in **`components/wallet-modal.tsx`** — a portal'd overlay opened by `<WalletButton>` inside `<AccountMenu>` (`components/nostr-auth/account-menu.tsx`). The modal is portal'd to `document.body` so `position: fixed` resolves against the viewport, not the sticky `<header>` (the header's `backdrop-blur` creates a containing block for fixed descendants per CSS spec — without the portal, mobile renders it clipped to the header).
 
 All three sub-cards (NWC, Spark, WebLN) render unconditionally — each flips internally between its connected card and its connect form. This lets the user wire up a second rail (or switch wallets) without first disconnecting the active one. WebLN only appears when `weblnAvailable` (extension injected).
 
 Sub-cards (each its own component): `nwc-wallet.tsx`, `spark-wallet.tsx`, `webln-wallet.tsx`. State changes propagate via `subscribeNwc()` + `subscribeSpark()`; the modal `setTick`s on either to flip between modes without remount.
 
-**NWC Nostr backup (opt-in).** `nwc-wallet.tsx` has an **"Encrypt & back up this connection to Nostr"** checkbox on both the connect form and the connected card (default **off** — an NWC URI is a budgeted spending credential). On → `publishEncryptedNwc` (kind:30078, `d:boostmebitch:wallet:nwc`, NIP-44 encrypted-to-self `{ uri }`) + `storage.nwcBackup.set(npub)`. Off / disconnect → `deleteEncryptedNwc` tombstones it (empty-content replaceable event) + clears the flag. Gated on a NIP-44-capable signer (`getNip44()`). Auto-restored in `loadProfile` when the device has no local NWC URI. Unlike the Spark seed (always backed up), this is explicit-opt-in + deletable.
+**NWC Nostr backup (opt-in).** `nwc-wallet.tsx` has an **"Encrypt & back up this connection to Nostr"** checkbox on both the connect form and the connected card (default **off** — an NWC URI is a budgeted spending credential). On → `publishEncryptedNwc` (kind:30078, `d:boostmebitch:wallet:nwc`, NIP-44 encrypted-to-self `{ uri }`) + `storage.nwcBackup.set(npub)`. Off → `deleteEncryptedNwc` tombstones it (empty-content replaceable event; `fetchEncryptedNwc` treats empty content as "no backup") + clears the flag. Gated on a NIP-44-capable signer (`getNip44()`). Auto-restored in `loadProfile` when the device has no local NWC URI. Unlike the Spark seed (always backed up), this is explicit-opt-in + deletable.
+
+Load-bearing details:
+- **The card checkbox reads `storage.nwcBackup.get(npub)` live** (not init-once state), so an auto-restore or an async-arriving identity is reflected. The form keeps a local opt-in boolean (applied on Connect).
+- **`disconnect()` awaits the tombstone** before clearing the local URI/flag. A failed delete keeps the connection (so the user can retry) rather than fire-and-forgetting — otherwise the still-present encrypted event would silently auto-restore on the next login.
+- **Sign-out and npub-switch clear the global `bmb:nwc_uri` + the per-npub flag** (`signout()` / `completeSignIn` in `nostr-auth/index.tsx`). `bmb:nwc_uri` is a single global key; without this, the next account on a shared device would inherit the previous one's wallet (and its own restore, gated on `!hasNwc()`, would be blocked).
 
 **Boost modal rail picker.** Single-boost `BoostModal` picks a rail silently via `pickRail()` (NWC > Spark > WebLN priority); the only mid-modal feedback is the "no wallet connected" hint when `!rail`. The visible "Pay via [NWC] [Spark] [WebLN]" pill row lives in `BoostAllModal` (`components/boost-all-modal.tsx`) — see the boost-all section below. Both modals subscribe to `subscribeNwc`/`subscribeSpark` so a wallet connected mid-modal updates `rail` without remount. WebLN doesn't have its own subscribe (the extension is either injected at load or it isn't), so `hasWebln()` is read on each render.
 
@@ -312,7 +305,7 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 |---|---|
 | `bmb:signer` | `'amber' \| 'bunker'` when a polyfill signer is active; absent for NIP-07 / signed out. Page-load fast-path branches on this. |
 | `bmb:bunker` | NIP-46 `{ uri, clientSk }`. Persisting `clientSk` keeps the bunker treating us as the same logical client across reloads (no re-auth). |
-| `bmb:nwc_uri` | NWC URI. Global. Can be restored from the opt-in Nostr backup (`d:boostmebitch:wallet:nwc`) on login when absent. |
+| `bmb:nwc_uri` | NWC URI. Global (one key, not per-npub). Restored from the opt-in Nostr backup (`d:boostmebitch:wallet:nwc`) on login when absent; **cleared on sign-out and npub-switch** so it can't leak across accounts on a shared device. |
 | `bmb:rail_pref` | `'nwc' \| 'spark' \| 'webln'` — last-used boost rail, written by `recordLastRail` after a successful boost and **synced to Nostr** (`d:boostmebitch:settings`). Falls back to `pickRail()` priority when absent or when the preferred rail isn't available. |
 | `bmb:nwc_backup:*` | Per-npub `'1'` when the user opted in (the NWC card checkbox) to backing up their NWC connection string to Nostr. Set on backup publish + on auto-restore; cleared (and the Nostr event tombstoned) on toggle-off/disconnect. |
 | `bmb:wallet_balance:*` | `{ rail, balance, ts }` per npub — last-known wallet balance + rail. Read on mount so the header chip paints instantly while the SDK reconnects; written after every successful balance fetch; cleared on explicit Spark/NWC disconnect. |
