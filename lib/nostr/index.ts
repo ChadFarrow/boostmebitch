@@ -16,7 +16,7 @@ export {
   type ProfileMetadata,
 } from './auth';
 
-export { isAmberActive, isBunkerActive } from './signer';
+export { isAmberActive, isBunkerActive, getNip44 } from './signer';
 export { isLikelyAndroid, isLikelyIOS } from './amber';
 export {
   isBunkerStale,
@@ -64,9 +64,21 @@ export {
 export {
   WALLET_BACKUP_KIND,
   WALLET_BACKUP_D_TAG,
+  WALLET_NWC_D_TAG,
   fetchEncryptedMnemonic,
   publishEncryptedMnemonic,
+  fetchEncryptedNwc,
+  publishEncryptedNwc,
+  deleteEncryptedNwc,
 } from './wallet-backup';
+
+export {
+  SETTINGS_D_TAG,
+  fetchSettings,
+  publishSettings,
+  recordLastRail,
+  type SyncedSettings,
+} from './settings-backup';
 
 export { hydrateFavorites } from './favorites-hydrator';
 

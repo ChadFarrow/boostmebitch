@@ -82,3 +82,65 @@ export async function publishEncryptedMnemonic(
     resolvePublishRelays(identity),
   );
 }
+
+// ── NWC connection backup ──────────────────────────────────────────────
+// Same kind:30078 + NIP-44 encrypted-to-self mechanism, different d-tag.
+// Opt-in only (an NWC URI is a budgeted spending credential), and deletable
+// via `deleteEncryptedNwc` when the user turns the backup off / disconnects.
+
+export const WALLET_NWC_D_TAG = 'boostmebitch:wallet:nwc';
+
+/** Decrypt the user's stored NWC URI, or null if no backup exists. */
+export async function fetchEncryptedNwc(
+  identity: NostrIdentity,
+): Promise<string | null> {
+  const event = await fetchLatestEvent(
+    readRelays(identity),
+    { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_NWC_D_TAG], limit: 1 },
+    FEED_QUERY_MAX_WAIT_MS,
+  );
+  if (!event || !event.content) return null;
+  try {
+    const parsed = JSON.parse(await requireNip44().decrypt(identity.pubkey, event.content));
+    return typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Encrypt-to-self and publish the NWC connection backup. */
+export async function publishEncryptedNwc(
+  identity: NostrIdentity,
+  uri: string,
+): Promise<PublishedNote> {
+  const ciphertext = await requireNip44().encrypt(identity.pubkey, JSON.stringify({ uri }));
+  return signAndPublish(
+    {
+      kind: WALLET_BACKUP_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [['d', WALLET_NWC_D_TAG]],
+      content: ciphertext,
+    },
+    resolvePublishRelays(identity),
+  );
+}
+
+/**
+ * Tombstone the NWC backup: publish the same replaceable (kind+pubkey+d)
+ * coordinate with empty content + a newer timestamp, so the latest version
+ * carries no secret. (Relays SHOULD drop the superseded event; some may
+ * retain it — the ciphertext stays decryptable only by the user's key.)
+ */
+export async function deleteEncryptedNwc(
+  identity: NostrIdentity,
+): Promise<PublishedNote> {
+  return signAndPublish(
+    {
+      kind: WALLET_BACKUP_KIND,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [['d', WALLET_NWC_D_TAG]],
+      content: '',
+    },
+    resolvePublishRelays(identity),
+  );
+}

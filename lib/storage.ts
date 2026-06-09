@@ -26,6 +26,7 @@ const KEYS = {
   bunker: 'bmb:bunker',               // NIP-46 bunker session: { uri, clientSk } — single value (one bunker connection at a time)
   railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
+  nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
   sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or connects another rail; suppresses auto-restore on next login
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
 } as const;
@@ -233,6 +234,18 @@ export const storage = {
     get: () => safeGet(KEYS.sparkOptOut) === '1',
     set: () => safeSet(KEYS.sparkOptOut, '1'),
     clear: () => safeRemove(KEYS.sparkOptOut),
+  },
+
+  /** Per-npub opt-in flag: '1' when the user wants their NWC connection
+   *  string encrypted and backed up to Nostr (kind:30078). Absent = off
+   *  (the default — an NWC URI is a spending credential). */
+  nwcBackup: {
+    get: (npub: string | null | undefined) =>
+      safeGet(identityKey(KEYS.nwcBackupPrefix, npub)) === '1',
+    set: (npub: string | null | undefined) =>
+      safeSet(identityKey(KEYS.nwcBackupPrefix, npub), '1'),
+    clear: (npub: string | null | undefined) =>
+      safeRemove(identityKey(KEYS.nwcBackupPrefix, npub)),
   },
 
   /** Per-device theme preference. Absent = dark (the app default). Only

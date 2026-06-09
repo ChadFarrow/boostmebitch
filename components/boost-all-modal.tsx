@@ -6,7 +6,7 @@ import { sendBoost, pickRail, type Rail } from '@/lib/v4v/boost';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
-import { publishBoostNote, resolvePublishRelays } from '@/lib/nostr';
+import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { fireConfetti } from '@/lib/format';
@@ -276,6 +276,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     setDone(true);
 
     if (successfulIdx.length > 0) fireConfetti();
+    if (successfulIdx.length > 0 && rail) recordLastRail(rail, identity);
 
     // Single summary note covering all successful tracks. Gated on the
     // share-on-Nostr toggle and at least one paid leg — matches BoostModal's

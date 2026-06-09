@@ -10,12 +10,15 @@ import {
   fetchProfile,
   fetchRelayList,
   fetchEncryptedMnemonic,
+  fetchEncryptedNwc,
+  fetchSettings,
   hydrateFavorites,
   hydrateMutes,
   unionMutedPubkeys,
   type NostrIdentity,
 } from '@/lib/nostr';
 import { hasSpark, sparkDisconnect, sparkInitFromMnemonic } from '@/lib/v4v/spark';
+import { hasNwc, saveNwcUri, clearNwcUri } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -79,6 +82,20 @@ export function NostrAuth() {
           })
           .catch(() => {})
       : Promise.resolve();
+    // Synced settings: apply the last-used boost rail (relay is the source of
+    // truth on a fresh device; local edits this session re-publish and win).
+    const settingsPromise = fetchSettings(id)
+      .then((s) => { if (s?.railPref) storage.railPref.set(s.railPref); })
+      .catch(() => {});
+    // NWC backup: restore the encrypted connection string if the user opted
+    // in on another device and this device has no NWC URI yet. Mirrors Spark.
+    const nwcPromise = !hasNwc()
+      ? fetchEncryptedNwc(id)
+          .then((uri) => {
+            if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); }
+          })
+          .catch(() => {})
+      : Promise.resolve();
 
     // Apply profile + relay list as soon as both land. Both feed the
     // identity object, so we wait for them together to avoid two re-renders.
@@ -90,7 +107,7 @@ export function NostrAuth() {
 
     // Wait for the rest so the dedup map's resolved promise doesn't release
     // before everything settles (in_flight guards re-entrant remounts).
-    await Promise.allSettled([favoritesPromise, mutesPromise, sparkPromise]);
+    await Promise.allSettled([favoritesPromise, mutesPromise, sparkPromise, settingsPromise, nwcPromise]);
   }
 
   useEffect(() => {
@@ -192,7 +209,15 @@ export function NostrAuth() {
   }, [identity]);
 
   function signout() {
-    if (identity) storage.walletBalance.clear(identity.npub);
+    if (identity) {
+      storage.walletBalance.clear(identity.npub);
+      // Clear the NWC connection too: bmb:nwc_uri is a single GLOBAL key, so
+      // a credential left behind would be inherited by the next account that
+      // signs in on this device (and would block that account's own restore,
+      // gated on !hasNwc()). The per-npub backup flag goes with it.
+      clearNwcUri();
+      storage.nwcBackup.clear(identity.npub);
+    }
     sparkDisconnect();
     setIdentity(null);
     setFavorites({});
@@ -212,11 +237,14 @@ export function NostrAuth() {
   // installed whichever polyfill it needs and persisted bmb:bunker /
   // amber state; we just propagate identity to the store and hydrate.
   function completeSignIn(id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker') {
-    // Switching to a different npub — disconnect the previous Spark wallet
-    // so it doesn't leak across identities.
+    // Switching to a different npub — disconnect the previous wallets so they
+    // don't leak across identities. NWC's global URI is cleared here so the
+    // new identity's own backup restores cleanly in loadProfile (!hasNwc()).
     if (identity && identity.pubkey !== id.pubkey) {
       storage.walletBalance.clear(identity.npub);
       sparkDisconnect();
+      clearNwcUri();
+      storage.nwcBackup.clear(identity.npub);
     }
     startTransition(() => setIdentity(id));
     storage.npub.set(id.npub);

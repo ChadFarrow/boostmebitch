@@ -6,7 +6,7 @@ import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/l
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
-import { publishBoostNote, resolvePublishRelays } from '@/lib/nostr';
+import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { fireConfetti } from '@/lib/format';
@@ -128,6 +128,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     setRunning(false);
 
     const anyPaid = collected.some((r) => r.ok);
+
+    // Remember the rail that actually paid as the user's preference (local +
+    // synced to Nostr) so it's preselected here and on their other devices.
+    if (anyPaid && rail) recordLastRail(rail, identity);
 
     // Persist the boost locally so the user's "view" surface (the global feed)
     // can render it. Logged regardless of rail; the Nostr publish step below

@@ -34,13 +34,15 @@ Components fetch via local API routes (`fetch('/api/feed?id=…')`) — never ca
 
 ## Nostr identity enrichment
 
-`loginWithExtension()` returns only `{ pubkey, npub }` from NIP-07. After login, `components/nostr-auth.tsx:loadProfile` runs in the background and merges five things in parallel (`Promise.all`):
+`loginWithExtension()` returns only `{ pubkey, npub }` from NIP-07. After login, `components/nostr-auth/index.tsx:loadProfile` runs in the background and merges these in parallel:
 
 - **Profile metadata (kind:0):** `name`, `display_name`, `picture`, `nip05`, `about` — header avatar, boost modal "From" auto-fill.
 - **NIP-65 relay list (kind:10002):** unmarked + `write` entries → publish target.
 - **NIP-51 favorites (kind:30003, `d:boostmebitch:favorites`):** see Favorites.
 - **NIP-51 mute list (kind:10000):** public + NIP-04 private p-tags. See Mutes.
 - **Spark wallet backup (kind:30078, `d:boostmebitch:wallet:spark`):** NIP-44 v2 encrypted-to-self mnemonic. Best-effort silent restore; failures are swallowed.
+- **Synced settings (kind:30078, `d:boostmebitch:settings`):** NIP-44 encrypted-to-self JSON; currently just `railPref` (last-used boost rail) → applied to `storage.railPref`. `lib/nostr/settings-backup.ts`.
+- **NWC connection backup (kind:30078, `d:boostmebitch:wallet:nwc`):** NIP-44 encrypted-to-self `{ uri }`, **opt-in only**. Restored to `bmb:nwc_uri` when this device has no NWC URI yet. See Wallets. `lib/nostr/wallet-backup.ts`.
 
 NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (private mutes), `nip44.{en,de}crypt` (wallet backup). No kind:3 contacts, no DMs, no reactions.
 
@@ -123,6 +125,8 @@ All wallet config now lives in **`components/wallet-modal.tsx`** — a portal'd 
 All three sub-cards (NWC, Spark, WebLN) render unconditionally — each flips internally between its connected card and its connect form. This lets the user wire up a second rail (or switch wallets) without first disconnecting the active one. WebLN only appears when `weblnAvailable` (extension injected).
 
 Sub-cards (each its own component): `nwc-wallet.tsx`, `spark-wallet.tsx`, `webln-wallet.tsx`. State changes propagate via `subscribeNwc()` + `subscribeSpark()`; the modal `setTick`s on either to flip between modes without remount.
+
+**NWC Nostr backup (opt-in).** `nwc-wallet.tsx` has an **"Encrypt & back up this connection to Nostr"** checkbox on both the connect form and the connected card (default **off** — an NWC URI is a budgeted spending credential). On → `publishEncryptedNwc` (kind:30078, `d:boostmebitch:wallet:nwc`, NIP-44 encrypted-to-self `{ uri }`) + `storage.nwcBackup.set(npub)`. Off / disconnect → `deleteEncryptedNwc` tombstones it (empty-content replaceable event) + clears the flag. Gated on a NIP-44-capable signer (`getNip44()`). Auto-restored in `loadProfile` when the device has no local NWC URI. Unlike the Spark seed (always backed up), this is explicit-opt-in + deletable.
 
 **Boost modal rail picker.** Single-boost `BoostModal` picks a rail silently via `pickRail()` (NWC > Spark > WebLN priority); the only mid-modal feedback is the "no wallet connected" hint when `!rail`. The visible "Pay via [NWC] [Spark] [WebLN]" pill row lives in `BoostAllModal` (`components/boost-all-modal.tsx`) — see the boost-all section below. Both modals subscribe to `subscribeNwc`/`subscribeSpark` so a wallet connected mid-modal updates `rail` without remount. WebLN doesn't have its own subscribe (the extension is either injected at load or it isn't), so `hasWebln()` is read on each render.
 
@@ -308,8 +312,9 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 |---|---|
 | `bmb:signer` | `'amber' \| 'bunker'` when a polyfill signer is active; absent for NIP-07 / signed out. Page-load fast-path branches on this. |
 | `bmb:bunker` | NIP-46 `{ uri, clientSk }`. Persisting `clientSk` keeps the bunker treating us as the same logical client across reloads (no re-auth). |
-| `bmb:nwc_uri` | NWC URI. |
-| `bmb:rail_pref` | `'nwc' \| 'spark' \| 'webln'` — user's preferred boost rail, set when they click a rail in the boost-modal picker. Falls back to `pickRail()` priority when absent or when the preferred rail isn't available. |
+| `bmb:nwc_uri` | NWC URI. Global. Can be restored from the opt-in Nostr backup (`d:boostmebitch:wallet:nwc`) on login when absent. |
+| `bmb:rail_pref` | `'nwc' \| 'spark' \| 'webln'` — last-used boost rail, written by `recordLastRail` after a successful boost and **synced to Nostr** (`d:boostmebitch:settings`). Falls back to `pickRail()` priority when absent or when the preferred rail isn't available. |
+| `bmb:nwc_backup:*` | Per-npub `'1'` when the user opted in (the NWC card checkbox) to backing up their NWC connection string to Nostr. Set on backup publish + on auto-restore; cleared (and the Nostr event tombstoned) on toggle-off/disconnect. |
 | `bmb:wallet_balance:*` | `{ rail, balance, ts }` per npub — last-known wallet balance + rail. Read on mount so the header chip paints instantly while the SDK reconnects; written after every successful balance fetch; cleared on explicit Spark/NWC disconnect. |
 | `bmb:theme` | `'light'` when user chose light mode; absent = dark (default). The FOUC-blocker `<script>` in `app/layout.tsx` reads this synchronously and sets `data-theme="light"` on `<html>` before first paint — without it light-mode users see a dark flash on every navigation. |
 | `bmb:relays` | JSON array, manual publish-relay override. |
