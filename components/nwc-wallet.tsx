@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate } from '@/lib/v4v/nwc';
-import { publishEncryptedNwc, deleteEncryptedNwc, getNip44 } from '@/lib/nostr';
+import { publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, getNip44 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 
@@ -63,6 +63,27 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   const canBackup = !!identity && getNip44() !== null;
 
   function bump() { setTick((t) => t + 1); }
+
+  async function restoreFromNostr() {
+    if (!identity || !canBackup) return;
+    setBusy(true);
+    setErr(null);
+    try {
+      const uri = await fetchEncryptedNwc(identity);
+      if (!uri) {
+        setErr('No backup found on Nostr for this account.');
+        return;
+      }
+      saveNwcUri(uri);
+      storage.nwcBackup.set(identity.npub);
+      bump();
+      onConnected?.();
+    } catch (e) {
+      setErr(`Restore failed: ${e instanceof Error ? e.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function connect() {
     setErr(null);
@@ -225,6 +246,17 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
           {busy ? 'Connecting…' : 'Connect'}
         </button>
       </div>
+      {canBackup && (
+        <div className="border-t border-bone/15 pt-2">
+          <button
+            onClick={restoreFromNostr}
+            disabled={busy}
+            className="text-[11px] text-muted hover:text-bone disabled:opacity-40"
+          >
+            {busy ? 'Restoring…' : '↩ Restore from Nostr backup'}
+          </button>
+        </div>
+      )}
       {err && <div className="text-[11px] text-nostr/80 break-words">{err}</div>}
     </div>
   );
