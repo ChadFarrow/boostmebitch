@@ -21,6 +21,16 @@ import { createScheduledPublish } from './debounced-publish';
 import { storage, type RailPref } from '../storage';
 import type { NostrIdentity } from './auth';
 
+const NIP44_DECRYPT_TIMEOUT_MS = 10_000;
+function decryptWithTimeout(pubkey: string, ciphertext: string): Promise<string> {
+  return Promise.race([
+    requireNip44().decrypt(pubkey, ciphertext),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('nip44 decrypt timed out')), NIP44_DECRYPT_TIMEOUT_MS),
+    ),
+  ]);
+}
+
 export const SETTINGS_KIND = 30078;
 export const SETTINGS_D_TAG = 'boostmebitch:settings';
 
@@ -58,7 +68,7 @@ export async function fetchSettings(
   );
   if (!event || !event.content) return null;
   try {
-    const parsed = JSON.parse(await requireNip44().decrypt(identity.pubkey, event.content));
+    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content));
     return { railPref: isRail(parsed?.railPref) ? parsed.railPref : undefined };
   } catch {
     return null;

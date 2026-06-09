@@ -56,7 +56,14 @@ export function NostrAuth() {
     // with the SAME pubkey (e.g. Alby then Primal on one account) short-
     // circuited here and never re-applied the profile to the fresh bare
     // identity — the header stuck on "Anon" despite the profile being cached.
-    const p = doLoadProfile(id).finally(() => {
+    //
+    // Hard cap: if doLoadProfile hangs (e.g. a NIP-44 decrypt call to a
+    // suspended iOS extension never resolves), the dedup entry stays in the
+    // Map forever and every subsequent sign-in returns the stale promise
+    // instead of starting a fresh restore. The race below guarantees the
+    // entry is cleaned up within 25s regardless of what hangs inside.
+    const timeout = new Promise<void>((resolve) => setTimeout(resolve, 25_000));
+    const p = Promise.race([doLoadProfile(id), timeout]).finally(() => {
       pendingProfileLoad.delete(id.pubkey);
     });
     pendingProfileLoad.set(id.pubkey, p);
