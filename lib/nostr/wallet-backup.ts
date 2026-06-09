@@ -23,6 +23,20 @@ import { DEFAULT_RELAYS, resolvePublishRelays } from './relays';
 import { requireNip44 } from './signer';
 import type { NostrIdentity } from './auth';
 
+// NIP-44 decrypt calls go through the user's signer (extension, Amber,
+// bunker). On iOS, the extension background service worker can be killed
+// between the relay query and the decrypt call, leaving the promise pending
+// forever. Cap every background decrypt so it rejects instead of hanging.
+const NIP44_DECRYPT_TIMEOUT_MS = 10_000;
+function decryptWithTimeout(pubkey: string, ciphertext: string): Promise<string> {
+  return Promise.race([
+    requireNip44().decrypt(pubkey, ciphertext),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('nip44 decrypt timed out')), NIP44_DECRYPT_TIMEOUT_MS),
+    ),
+  ]);
+}
+
 // Read-side relay set for the wallet backup. We always query the union of
 // the user's intended publish relays AND DEFAULT_RELAYS, capped at 20.
 //
@@ -62,7 +76,7 @@ export async function fetchEncryptedMnemonic(
   );
   if (!event || !event.content) return null;
 
-  return requireNip44().decrypt(identity.pubkey, event.content);
+  return decryptWithTimeout(identity.pubkey, event.content);
 }
 
 /** Encrypt-to-self and publish a new wallet backup event. */
@@ -101,7 +115,7 @@ export async function fetchEncryptedNwc(
   );
   if (!event || !event.content) return null;
   try {
-    const parsed = JSON.parse(await requireNip44().decrypt(identity.pubkey, event.content));
+    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content));
     return typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
   } catch {
     return null;
