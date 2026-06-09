@@ -18,7 +18,7 @@ import {
   type NostrIdentity,
 } from '@/lib/nostr';
 import { hasSpark, sparkDisconnect, sparkInitFromMnemonic } from '@/lib/v4v/spark';
-import { hasNwc, saveNwcUri, clearNwcUri } from '@/lib/v4v/nwc';
+import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -71,6 +71,20 @@ export function NostrAuth() {
   }
 
   async function doLoadProfile(id: NostrIdentity) {
+    // Fast-path NWC restore: if the user just signed out + back in on the same
+    // tab, the URI was stashed in sessionStorage at sign-out. Read it back now,
+    // before any relay queries, while the signer extension is freshly active.
+    // This avoids the iOS issue where nostash's background service worker is
+    // killed during the 8+ second relay wait, causing NIP-44 decrypt to hang.
+    if (!hasNwc() && typeof sessionStorage !== 'undefined') {
+      const sessionUri = sessionStorage.getItem(`bmb:nwc_uri_sess:${id.npub}`);
+      if (sessionUri) {
+        saveNwcUri(sessionUri);
+        storage.nwcBackup.set(id.npub);
+        sessionStorage.removeItem(`bmb:nwc_uri_sess:${id.npub}`);
+      }
+    }
+
     // Fire profile, relay list, favorites, and mutes in parallel. Each has
     // a 4s QUERY_MAX_WAIT_MS bound, so total wall time for this phase is ~4s.
     // Mute/favorites tolerate the bare identity (no writeRelays yet) because
@@ -221,10 +235,17 @@ export function NostrAuth() {
   function signout() {
     if (identity) {
       storage.walletBalance.clear(identity.npub);
-      // Clear the NWC connection too: bmb:nwc_uri is a single GLOBAL key, so
-      // a credential left behind would be inherited by the next account that
-      // signs in on this device (and would block that account's own restore,
-      // gated on !hasNwc()). The per-npub backup flag goes with it.
+      // Stash the NWC URI in sessionStorage before clearing it. On same-account
+      // sign-in within the same tab, doLoadProfile reads it back instantly —
+      // no relay query or NIP-44 decrypt needed. This avoids the iOS issue where
+      // the nostash extension background is killed during the long relay wait,
+      // causing the NIP-44 decrypt to hang and the restore to silently fail.
+      // sessionStorage is cleared automatically on tab close, and the key is
+      // per-npub so it can't leak to a different account signing in.
+      const nwcUri = loadNwcUri();
+      if (nwcUri && typeof sessionStorage !== 'undefined') {
+        try { sessionStorage.setItem(`bmb:nwc_uri_sess:${identity.npub}`, nwcUri); } catch {}
+      }
       clearNwcUri();
       storage.nwcBackup.clear(identity.npub);
     }

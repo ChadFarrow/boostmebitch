@@ -154,6 +154,11 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     }
     clearNwcUri();
     storage.walletBalance.clear(identity?.npub);
+    // Clear the session stash so this wallet can't be resurrected by a
+    // sign-out + sign-in on the same tab after an explicit disconnect.
+    if (identity && typeof sessionStorage !== 'undefined') {
+      try { sessionStorage.removeItem(`bmb:nwc_uri_sess:${identity.npub}`); } catch {}
+    }
     bump();
     onDisconnected?.();
   }
