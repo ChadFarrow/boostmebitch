@@ -45,6 +45,9 @@ export function WalletModal({ onClose }: Props) {
         const active = getActiveRail();
         if (v.kind === 'connected' && !active) return { kind: 'picker', switching: false };
         if (v.kind === 'picker' && !v.switching && active) return { kind: 'connected' };
+        // Auto-restore completing while the form for that rail is showing:
+        // flip straight to connected without requiring the user to re-paste.
+        if (v.kind === 'connecting' && active === v.rail) return { kind: 'connected' };
         return v;
       });
     };

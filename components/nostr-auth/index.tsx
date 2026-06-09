@@ -64,38 +64,15 @@ export function NostrAuth() {
   }
 
   async function doLoadProfile(id: NostrIdentity) {
-    // Fire all four background refreshes in parallel. Each has a 4s
-    // QUERY_MAX_WAIT_MS bound, so total wall time is ~4s, not the 12-16s
-    // serialized chain it used to be. Mute hydration depends on the bare
-    // identity (npub + pubkey), favorites needs the resolved publish-relay
-    // set ideally — but resolvePublishRelays falls back to DEFAULT_RELAYS
-    // when writeRelays haven't landed yet, so the rare debounced republish
-    // tolerates the race.
+    // Fire profile, relay list, favorites, and mutes in parallel. Each has
+    // a 4s QUERY_MAX_WAIT_MS bound, so total wall time for this phase is ~4s.
+    // Mute/favorites tolerate the bare identity (no writeRelays yet) because
+    // resolvePublishRelays falls back to DEFAULT_RELAYS, which is fine for
+    // the rare debounced republish path.
     const profilePromise = fetchProfile(id.pubkey).catch(() => null);
     const relayListPromise = fetchRelayList(id.pubkey).catch(() => null);
     const favoritesPromise = hydrateFavorites(id).catch(() => {});
     const mutesPromise = hydrateMutes(id).catch(() => {});
-    const sparkPromise = !hasSpark() && !storage.sparkOptOut.get()
-      ? fetchEncryptedMnemonic(id)
-          .then((mnemonic) => {
-            if (mnemonic) return sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
-          })
-          .catch(() => {})
-      : Promise.resolve();
-    // Synced settings: apply the last-used boost rail (relay is the source of
-    // truth on a fresh device; local edits this session re-publish and win).
-    const settingsPromise = fetchSettings(id)
-      .then((s) => { if (s?.railPref) storage.railPref.set(s.railPref); })
-      .catch(() => {});
-    // NWC backup: restore the encrypted connection string if the user opted
-    // in on another device and this device has no NWC URI yet. Mirrors Spark.
-    const nwcPromise = !hasNwc()
-      ? fetchEncryptedNwc(id)
-          .then((uri) => {
-            if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); }
-          })
-          .catch(() => {})
-      : Promise.resolve();
 
     // Apply profile + relay list as soon as both land. Both feed the
     // identity object, so we wait for them together to avoid two re-renders.
@@ -104,6 +81,32 @@ export function NostrAuth() {
     if (profile) enriched.profile = profile;
     if (relayList?.write?.length) enriched.writeRelays = relayList.write;
     if (profile || relayList?.write?.length) setIdentity(enriched);
+
+    // Wallet restores and settings run with the enriched identity so the
+    // relay query includes the user's actual NIP-65 write relays. Running
+    // them with the bare `id` queries only DEFAULT_RELAYS, silently missing
+    // backups published from a session that had custom write relays — the
+    // primary reason NWC and Spark failed to auto-restore on mobile.
+    const sparkPromise = !hasSpark() && !storage.sparkOptOut.get()
+      ? fetchEncryptedMnemonic(enriched)
+          .then((mnemonic) => {
+            if (mnemonic) return sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
+          })
+          .catch(() => {})
+      : Promise.resolve();
+    // Synced settings: apply the last-used boost rail.
+    const settingsPromise = fetchSettings(enriched)
+      .then((s) => { if (s?.railPref) storage.railPref.set(s.railPref); })
+      .catch(() => {});
+    // NWC backup: restore the encrypted connection string if this device has
+    // no NWC URI yet.
+    const nwcPromise = !hasNwc()
+      ? fetchEncryptedNwc(enriched)
+          .then((uri) => {
+            if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); }
+          })
+          .catch(() => {})
+      : Promise.resolve();
 
     // Wait for the rest so the dedup map's resolved promise doesn't release
     // before everything settles (in_flight guards re-entrant remounts).
