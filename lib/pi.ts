@@ -414,6 +414,13 @@ function sanitizeShowNotes(html: string): string {
 interface RssEpisodeEnrichment {
   socialInteract?: SocialInteract[];
   contentEncoded?: string;
+  season?: number | null;
+  episode?: number | null;
+}
+
+export interface RssFeedEnrichment {
+  episodes: Map<string, RssEpisodeEnrichment>;
+  feedMedium?: string;
 }
 
 /**
@@ -423,8 +430,8 @@ interface RssEpisodeEnrichment {
  */
 export async function getRssEpisodeEnrichment(
   rssUrl: string,
-): Promise<Map<string, RssEpisodeEnrichment>> {
-  const out = new Map<string, RssEpisodeEnrichment>();
+): Promise<RssFeedEnrichment> {
+  const episodes = new Map<string, RssEpisodeEnrichment>();
   let res: Response;
   try {
     assertSafeFetchUrl(rssUrl);
@@ -434,10 +441,16 @@ export async function getRssEpisodeEnrichment(
       signal: AbortSignal.timeout(8000),
     });
   } catch {
-    return out;
+    return { episodes };
   }
-  if (!res.ok) return out;
+  if (!res.ok) return { episodes };
   const xml = await res.text();
+
+  // Channel-level podcast:medium (before first <item>)
+  const firstItem = xml.search(/<item\b/i);
+  const channelXml = firstItem === -1 ? xml : xml.slice(0, firstItem);
+  const feedMedium = extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined;
+
   const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
   let m: RegExpExecArray | null;
   while ((m = itemRe.exec(xml))) {
@@ -447,11 +460,19 @@ export async function getRssEpisodeEnrichment(
     const socialInteract = parseSocialInteractsFromRss(inner) ?? undefined;
     const raw = extractRawContent(inner, 'content:encoded');
     const contentEncoded = raw ? sanitizeShowNotes(raw) || undefined : undefined;
-    if (socialInteract || contentEncoded) {
-      out.set(guid, { socialInteract, contentEncoded });
+    // podcast:season number attr takes precedence over text content
+    const seasonTagMatch = /<podcast:season\b([^>]*)>/i.exec(inner);
+    const seasonStr = (seasonTagMatch ? readAttr(seasonTagMatch[1], 'number') : undefined)
+      ?? extractText(inner, 'podcast:season');
+    const season = seasonStr != null && seasonStr !== '' ? (Number(seasonStr) || null) : null;
+    // podcast:episode is plain text content per spec
+    const episodeStr = extractText(inner, 'podcast:episode');
+    const episode = episodeStr != null && episodeStr !== '' ? (Number(episodeStr) || null) : null;
+    if (socialInteract || contentEncoded || season != null || episode != null) {
+      episodes.set(guid, { socialInteract, contentEncoded, season, episode });
     }
   }
-  return out;
+  return { episodes, feedMedium };
 }
 
 /**

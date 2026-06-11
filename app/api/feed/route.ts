@@ -29,9 +29,9 @@ export async function GET(req: Request) {
     // notes, so we fetch the RSS and parse both in one pass. Best-effort:
     // failure leaves episodes without socialInteract/contentEncoded rather
     // than breaking the whole feed.
-    const enrichMap = podcast?.url
-      ? await getRssEpisodeEnrichment(podcast.url).catch(() => new Map())
-      : new Map();
+    const { episodes: enrichMap, feedMedium } = podcast?.url
+      ? await getRssEpisodeEnrichment(podcast.url).catch(() => ({ episodes: new Map(), feedMedium: undefined }))
+      : { episodes: new Map(), feedMedium: undefined };
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
     // PI's /episodes/live only returns currently-broadcasting items; pending
     // liveItems live in the RSS itself, so we additionally parse the feed XML.
@@ -68,21 +68,27 @@ export async function GET(req: Request) {
       seenTitleDate.add(titleDateKey);
       return true;
     });
-    const merged = [...liveItems, ...regular].map((e) => ({
-      ...e,
-      // Episodes inherit the channel value block when they don't have their own.
-      value: e.value ?? podcast.value,
-      // socialInteract and contentEncoded come from RSS — PI doesn't index them.
-      socialInteract: e.socialInteract ?? (e.guid ? enrichMap.get(e.guid)?.socialInteract : undefined),
-      contentEncoded: e.guid ? enrichMap.get(e.guid)?.contentEncoded : undefined,
-    }));
+    const merged = [...liveItems, ...regular].map((e) => {
+      const rss = e.guid ? enrichMap.get(e.guid) : undefined;
+      return {
+        ...e,
+        // Episodes inherit the channel value block when they don't have their own.
+        value: e.value ?? podcast.value,
+        // socialInteract and contentEncoded come from RSS — PI doesn't index them.
+        socialInteract: e.socialInteract ?? rss?.socialInteract,
+        contentEncoded: rss?.contentEncoded,
+        // RSS-parsed season/episode fill in when PI doesn't return them.
+        season: e.season ?? rss?.season ?? null,
+        episode: e.episode ?? rss?.episode ?? null,
+      };
+    });
     // Live first (live > pending), then regular by datePublished desc.
     // Within `pending`, sort ascending — the next-to-air show should be at
     // the top of the list. Within `live`, sort descending (most recent
     // broadcast first) on the off chance more than one stream is live.
     // Music album feeds (medium=music) sort by disc (podcast:season) then
     // track (podcast:episode) ascending instead of by date.
-    const isMusic = podcast.medium === 'music';
+    const isMusic = podcast.medium?.toLowerCase() === 'music' || feedMedium === 'music';
     merged.sort((a, b) => {
       const ra = a.liveStatus ? LIVE_RANK[a.liveStatus] ?? 3 : 3;
       const rb = b.liveStatus ? LIVE_RANK[b.liveStatus] ?? 3 : 3;
