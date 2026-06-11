@@ -75,8 +75,8 @@ export interface Episode {
   feedTitle?: string;
   feedImage?: string;
   podcastGuid?: string;
-  episode?: number | null;     // <itunes:episode> if present
-  season?: number | null;      // <itunes:season> if present
+  episode?: number | null;     // <podcast:episode> / <itunes:episode> if present
+  season?: number | null;      // <podcast:season> if present (disc number for music)
   chaptersUrl?: string;        // PI exposes Podcasting 2.0 chapters JSON URL
   value?: ValueBlock | null;
   valueTimeSplits?: ValueTimeSplit[];
