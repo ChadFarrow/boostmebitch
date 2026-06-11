@@ -18,7 +18,7 @@ cp .env.example .env.local       # PI key + secret (Spark rail needs no key)
 npm run dev / build / start / lint
 ```
 
-**No test runner, no typecheck script, no formatter.** `next build` is the de facto typecheck (strict mode on). Path alias: `@/*` → repo root.
+**No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9 flat config in `eslint.config.mjs` — `next/core-web-vitals` + `next/typescript`, `no-explicit-any` off for PI's untyped JSON), and `next build`. Path alias: `@/*` → repo root.
 
 `.env.local`: `PODCAST_INDEX_KEY`/`SECRET` (server-only), `APP_NAME` (optional). The Spark rail (`@buildonspark/spark-sdk`) needs **no** API key — it talks straight to Spark's signing operators.
 
@@ -26,7 +26,7 @@ npm run dev / build / start / lint
 
 Podcast Index credentials must never reach the browser. Enforced by file conventions, not bundler config:
 
-- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`). Imported only by `app/api/*`. The BoostBox proxy at `app/api/lightning/boostbox/route.ts` follows the same pattern (reads `BOOSTBOX_URL`/`BOOSTBOX_API_KEY` and forwards).
+- **Server-only:** `lib/pi.ts` (uses `node:crypto`, reads `process.env`). Imported only by `app/api/*`. The BoostBox proxy at `app/api/lightning/boostbox/route.ts` follows the same pattern (reads `BOOSTBOX_URL`/`BOOSTBOX_API_KEY` and forwards). `lib/safe-fetch.ts` (`assertSafeFetchUrl` — SSRF guard called inside the try of every server-side RSS fetch in `lib/pi.ts` + `lib/musicl-resolver.ts`; hostname-level only, no DNS-rebinding protection) and `lib/rate-limit.ts` (per-IP sliding-window limiter, first line of every API route) are server-only too.
 - **Browser-only:** `lib/store.ts`, `lib/v4v/nwc.ts`/`webln.ts`/`lnaddr.ts`/`spark.ts`/`boostbox.ts`, `lib/nostr/`, `lib/storage.ts`, `lib/podcast-meta.ts` — they touch `window.*`, storage, IndexedDB, or load WASM. SSR guards exist but assume client context.
 - **Isomorphic:** `lib/types.ts` (pure types), `lib/v4v/boost.ts` (orchestration).
 
@@ -48,7 +48,7 @@ NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (
 
 **Fast-path identity hydration.** On page load, `nostr-auth/index.tsx` decodes cached `bmb:npub` synchronously via `nip19.decode`, sets a bare `{ pubkey, npub }` identity, and reads `storage.profile.get(pubkey)` + `storage.favorites.get(npub)` + `storage.muted.get(npub)` into the store within the same frame. The signer is only called lazily, when something actually needs to sign.
 
-**Relay query timeouts.** Every `pool.querySync` site passes a `maxWait` from `lib/nostr/pool.ts`: `QUERY_MAX_WAIT_MS = 4000` for single-author lookups (kind:0/10000/10002/30003/30078/6) and `FEED_QUERY_MAX_WAIT_MS = 8000` for broad feed scans (kind:1 with `#i`/`#k`, reply-tree BFS, bulk profile fetches). Without these, a stalled relay pins the tab in loading. The 4s/8s split balances spinner duration vs. completeness.
+**Relay query timeouts.** Every `pool.querySync` site passes a `maxWait` from `lib/nostr/pool.ts`: `QUERY_MAX_WAIT_MS = 4000` for single-author lookups (kind:0/10000/10002/30003/30078/6) and `FEED_QUERY_MAX_WAIT_MS = 8000` for broad feed scans (kind:1 with `#i`/`#k`, reply-tree BFS, bulk profile fetches). Without these, a stalled relay pins the tab in loading. The 4s/8s split balances spinner duration vs. completeness. **Single-latest-event lookups don't querySync:** `fetchLatestEvent` (`lib/nostr/event-queries.ts`, behind profile/favorites/mutes/settings/wallet-backup reads) uses `subscribeMany` and resolves at the earliest of all-relays-EOSE, **1.5s after the first matching event** (grace window for a newer replaceable version), or `maxWait` — querySync waits for every relay, so one dead relay in a 20-relay union pinned every restore at the full timeout.
 
 `resolvePublishRelays(identity)` in `lib/nostr/relays.ts` is the single source of truth for publish targets: localStorage `bmb:relays` override → identity NIP-65 write relays → `DEFAULT_RELAYS`. Capped at 20.
 
@@ -237,6 +237,7 @@ The `⚡ BOOST N TRACKS` button on each episode row in `components/lists.tsx` op
 6. **WebLN `customRecords` are plain JSON, not hex.** WebLN providers hex-encode internally. Pre-hexing causes double-encoding and Helipad can't `JSON.parse`. NWC's `pay_keysend` is the opposite — NIP-47 requires hex-encoded TLV. See `tlvHexFor` (NWC) vs `recordsForKeysend` (WebLN) — symmetric-looking, genuinely different wire formats.
 7. **Note amount is intent, not actual.** `formatContent` and the `amount` tag use `boostagram.value_msat_total`, not the sum of successful legs. A user who boosts 100 sats with one failed leg still posts "Boosted 100 sats"; partial breakdown is in the modal and Helipad.
 8. **BoostBox is LNURL-only.** `lib/v4v/boostbox.ts` POSTs metadata via `/api/lightning/boostbox` *before* `fetchLnInvoice`, then puts the returned `desc` (`rss::payment::boost <url>`) in the LUD-21 `comment` field. Keysend recipients are untouched (TLV `7629169` carries the boostagram inline). BoostBox failure is non-fatal; LNURL falls back to `boostagram.message`.
+9. **LNURL invoices are amount-verified before paying.** `fetchLnInvoice` (boost legs) and `sendZap` both decode the returned BOLT11 via `bolt11AmountMsat` (`lib/v4v/bolt11.ts`, pure HRP parser shared with the zap-receipt reader in `discover.ts`) and throw on an amountless invoice or any mismatch with the requested msat — a malicious LNURL server can't substitute a larger invoice. Strict equality is safe because we only ever request whole-sat msat values; the throw surfaces as a normal per-leg `{ ok: false, error }`.
 
 ## Nostr publish shape
 
@@ -323,6 +324,7 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 | `bmb:social:<uri>` | `DiscoveredNote[]` per `podcast:socialInteract` URI. Same no-TTL stale-while-revalidate paint as `bmb:feed` (reuses its `replies` normalizer + legacy-wrapper tolerance). Written on every successful thread fetch and after an optimistic comment; never on fetch error. |
 | `bmb:boosts:*` | Local sent-boost log, capped 200 newest-first. Each entry holds intent + per-leg results + Nostr `noteId` patched in once `publishBoostNote` resolves. `boostsTick` wakes subscribers; `GlobalNostrFeed` mixes these in and dedupes against returned notes by `noteId`. |
 | `bmb:pi:dead` (sessionStorage) | Circuit-breaker sentinel; cleared on hard-refresh-into-new-tab. |
+| `bmb:nwc_uri_sess:<npub>` (sessionStorage) | NWC URI stashed at sign-out so a same-tab sign-back-in restores instantly without a relay query + NIP-44 decrypt (which hangs when iOS kills the extension's service worker mid-wait). Consumed (and removed) by the fast-path at the top of `doLoadProfile`; cleared on explicit NWC disconnect so a disconnected wallet can't resurrect. |
 
 External: the **Spark mnemonic** lives encrypted on Nostr as kind:30078. The `@buildonspark/spark-sdk` `SparkWallet` keeps its own wallet state (leaves, transfer history) keyed off the seed + `accountNumber: 0`; we don't manage a storage dir for it.
 
@@ -353,10 +355,11 @@ Don't introduce a token whose name implies a fixed color (e.g. avoid `dark-gray`
 
 ## Conventions worth keeping
 
+- **`NoteCard` is memoized** (`export const NoteCard = memo(NoteCardImpl)`). Feed surfaces re-render wholesale (podcast metadata resolving, `boostsTick`); note object refs are stable so memo skips untouched cards. Two rules keep it correct: `repostedIds` must be **replaced, not mutated in place**, and store-driven values (identity, mutes) stay read via `useApp` selectors *inside* the component so they bypass memo.
 - **Podcast artwork goes through `<PodcastCover>`** (`components/podcast-cover.tsx`). Tries `image` first, falls back to `artwork` on `onError`, then a deterministic colored-initial tile. The two-URL fallback exists because PI returns RSS `<image><url>` as `image` and `<itunes:image>` as `artwork`, and they often disagree (Homegrown Hits has a dead `bowlafterbowl.com` `image` but a working `artwork`). Always pass both fields; the renderer handles the rest. `<PodcastCover>` uses `<img>`, not `next/image` (per-host config required); the local hero IS served via `next/image`.
 - **Auxiliary relay sets use `withExtraRelays`** (`lib/nostr/pool.ts`). It dedupes the union, runs your query inside the closure, and closes only newly-opened extras in `finally` (swallowing close errors). Don't write the open / track / try-finally / close pattern inline — four near-identical copies were collapsed.
 - **Browse-mode layout is single-column** in `app/page.tsx`. Selecting a podcast (search result, favorite, or a podcast-name link inside a Nostr note) sets `selectedPodcast` in Zustand, flipping to detail view (full-width episode list + per-podcast feed). `discussionEpisode` adds a third full-page view on top of that (browse → detail → discussion; see Episode discussion). Both views are state-driven swaps in `app/page.tsx`, not routes. Don't reintroduce a right-pane "select a podcast on the left" empty state.
 - Native HTML5 `<audio>` plays the enclosure URL directly — no proxy, no transcoding.
-- API routes return `{ error }` JSON via `getErrorMessage(e, fallback)` from `lib/util.ts`; clients swallow errors silently. Match this shape on new routes.
+- API routes return `{ error }` JSON via `getErrorMessage(e, fallback)` from `lib/util.ts`; clients swallow errors silently. Match this shape on new routes. New routes also start with `rateLimit(req, '<route>', N)` from `lib/rate-limit.ts` (per-IP, 60s window; by-guid runs at 300/min to absorb the favorites-hydration burst) and set `Cache-Control` on **200 responses only** — never on errors.
 - **Inline SVG `BoltIcon`** (`components/icons.tsx`) on yellow buttons — the `⚡` emoji is invisible on `bg-bolt`. Other places (yellow text on dark bg, V4V stamps) keep the emoji. `ShareIcon` and `Sun`/`MoonIcon` follow the same inherits-`currentColor` SVG pattern.
 - **`FavHeart` has `size` variants** (`components/lists.tsx`). `'sm'` (default, used in `PodcastRow` list items) renders a slim border-chip; `'md'` (used in the show header) matches `.btn-ghost` dimensions so it's a visual peer to SHARE and BOOST. Both render `[♡ FAVORITE]` / `[♥ FAVORITED]` (magenta when on). The earlier bare-glyph `♡` rendering is gone — don't reintroduce it without also rethinking the header button cluster.
