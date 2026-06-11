@@ -37,15 +37,16 @@ import {
   weblnGetBalance,
 } from '@/lib/v4v/webln';
 import { useApp } from '@/lib/store';
-import { storage } from '@/lib/storage';
+import { storage, subscribeRailPref } from '@/lib/storage';
 
 /**
  * Returns the active rail's balance + the rail it came from. Pass a
  * `railOverride` to force a specific rail (e.g. the boost modal passes its
  * picker selection so the displayed balance matches the rail that will pay).
- * When omitted, falls back to NWC > Spark > WebLN (only counted as "ready"
- * once the user has explicitly enabled it via the wallet sub-card, since
- * fetching balance otherwise would prompt them).
+ * When omitted, follows the user's rail pref when that rail is connected,
+ * else NWC > Spark > WebLN (WebLN only counted as "ready" once the user has
+ * explicitly enabled it via the wallet sub-card, since fetching balance
+ * otherwise would prompt them). Mirrors pickRail() in lib/v4v/boost.ts.
  */
 export function useWalletBalance(
   railOverride?: Rail | null,
@@ -56,11 +57,16 @@ export function useWalletBalance(
   const [weblnReady, setWeblnReady] = useState(isWeblnEnabled());
   const [balance, setBalance] = useState<number | null>(null);
 
+  const [, setPrefTick] = useState(0);
+
   useEffect(() => {
     const unsubSpark = subscribeSpark(() => setSparkReady(hasSpark()));
     const unsubNwc = subscribeNwc(() => setNwcReady(hasNwc()));
     const unsubWebln = subscribeWebln(() => setWeblnReady(isWeblnEnabled()));
-    return () => { unsubSpark(); unsubNwc(); unsubWebln(); };
+    // Rail-pref switches change the effective rail without any readiness
+    // flag moving — bump so the chip re-resolves and refetches.
+    const unsubPref = subscribeRailPref(() => setPrefTick((t) => t + 1));
+    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubPref(); };
   }, []);
 
   // Resolve effective rail. If the caller forced one, we still gate on it
@@ -68,7 +74,11 @@ export function useWalletBalance(
   // rail collapses to null so the chip hides instead of showing a stale 0.
   let rail: Rail | null;
   if (railOverride === undefined) {
-    rail = nwcReady ? 'nwc' : sparkReady ? 'spark' : weblnReady ? 'webln' : null;
+    const pref = storage.railPref.get();
+    rail =
+      (pref === 'nwc' && nwcReady) || (pref === 'spark' && sparkReady) || (pref === 'webln' && weblnReady)
+        ? pref
+        : nwcReady ? 'nwc' : sparkReady ? 'spark' : weblnReady ? 'webln' : null;
   } else if (railOverride === 'nwc') {
     rail = nwcReady ? 'nwc' : null;
   } else if (railOverride === 'spark') {

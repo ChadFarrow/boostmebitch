@@ -3,9 +3,8 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
-import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
-import { hasWebln } from '@/lib/v4v/webln';
+import { subscribeNwc } from '@/lib/v4v/nwc';
+import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -56,16 +55,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
 
   useEffect(() => {
-    // Prefer the user's stored rail pref when it's still available; otherwise
-    // fall back to pickRail()'s priority order. We only honor the pref if the
-    // rail is actually connected/enabled — a stale pref pointing at a
-    // disconnected wallet would leave the user with a non-functional Send.
-    const pref = storage.railPref.get();
-    const prefAvailable =
-      (pref === 'nwc' && hasNwc())
-      || (pref === 'spark' && hasSpark())
-      || (pref === 'webln' && hasWebln());
-    setRail(prefAvailable ? pref : pickRail());
+    // pickRail() honors the stored rail pref when that rail is still
+    // connected/enabled, else falls back to NWC > Spark > WebLN priority.
+    setRail(pickRail());
     setName((current) => {
       if (current) return current;                              // preserve typing
       const stored = storage.senderName.get();

@@ -76,12 +76,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   }, []);
 
   useEffect(() => {
-    const pref = storage.railPref.get();
-    const prefAvailable =
-      (pref === 'nwc' && hasNwc())
-      || (pref === 'spark' && hasSpark())
-      || (pref === 'webln' && hasWebln());
-    setRail(prefAvailable ? pref : pickRail());
+    // pickRail() honors the stored rail pref when that rail is still
+    // connected/enabled, else falls back to NWC > Spark > WebLN priority.
+    setRail(pickRail());
     setName((cur) => {
       if (cur) return cur;
       const stored = storage.senderName.get();

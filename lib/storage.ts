@@ -8,6 +8,15 @@
 import type { FavoritePodcast, Podcast, StoredBoost } from './types';
 import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
 import { coerceProfileMetadata } from './nostr/auth';
+import { createObservable } from './pubsub';
+
+// Rail-pref changes need to reach live UI (account-menu summary, balance
+// chip, open wallet modal) no matter who wrote them — recordLastRail after
+// a boost, the Nostr settings restore in loadProfile, or the wallet modal's
+// switch picker. Notifying from the setter is the one choke point that
+// covers every writer.
+const railPrefObservable = createObservable();
+export const subscribeRailPref = railPrefObservable.subscribe;
 
 const KEYS = {
   npub: 'bmb:npub',
@@ -226,8 +235,8 @@ export const storage = {
       if (v === 'nwc' || v === 'spark' || v === 'webln') return v;
       return null;
     },
-    set: (v: RailPref) => safeSet(KEYS.railPref, v),
-    clear: () => safeRemove(KEYS.railPref),
+    set: (v: RailPref) => { safeSet(KEYS.railPref, v); railPrefObservable.notify(); },
+    clear: () => { safeRemove(KEYS.railPref); railPrefObservable.notify(); },
   },
 
   sparkOptOut: {

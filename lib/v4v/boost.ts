@@ -10,6 +10,7 @@ import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
 import { storeBoostMetadata } from './boostbox';
+import { storage } from '@/lib/storage';
 
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
@@ -23,10 +24,16 @@ export type Rail = 'nwc' | 'webln' | 'spark';
 // Re-export so callers can import from one place
 export type { BoostResult };
 
-// Priority: NWC (explicit user setup) > Spark (auto-provisioned self-custodial)
-// > WebLN (browser extension fallback). Users can override per-boost in the
+// The user's rail pref (last-used boost rail / wallet-modal switch choice)
+// wins when that rail is still available; otherwise fall back to priority:
+// NWC (explicit user setup) > Spark (auto-provisioned self-custodial) >
+// WebLN (browser extension fallback). Users can override per-boost in the
 // modal; this is just the default.
 export function pickRail(): Rail | null {
+  const pref = storage.railPref.get();
+  if (pref === 'nwc' && hasNwc()) return 'nwc';
+  if (pref === 'spark' && hasSpark()) return 'spark';
+  if (pref === 'webln' && hasWebln()) return 'webln';
   if (hasNwc()) return 'nwc';
   if (hasSpark()) return 'spark';
   if (hasWebln()) return 'webln';

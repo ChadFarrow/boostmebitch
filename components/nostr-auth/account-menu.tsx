@@ -4,6 +4,7 @@ import { subscribeBunkerHealth, restoreBunkerSigner, shortNpub, type NostrIdenti
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { isWeblnEnabled, subscribeWebln } from '@/lib/v4v/webln';
+import { storage, subscribeRailPref } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { WalletModal } from '../wallet-modal';
 import { WalletBalanceChip } from '../wallet-balance';
@@ -67,20 +68,33 @@ function WalletButton({ onClick }: { onClick: () => void }) {
     const unsubSpark = subscribeSpark(bump);
     const unsubNwc = subscribeNwc(bump);
     const unsubWebln = subscribeWebln(bump);
-    return () => { unsubSpark(); unsubNwc(); unsubWebln(); };
+    const unsubPref = subscribeRailPref(bump);
+    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubPref(); };
   }, []);
 
   const sparkReady = hasSpark();
   const nwcReady = hasNwc();
   const weblnReady = isWeblnEnabled();
-  const summary = sparkReady
-    ? 'Spark wallet'
-    : nwcReady
-      ? 'NWC connected'
-      : weblnReady
-        ? 'WebLN connected'
-        : 'Not connected';
-  const connected = sparkReady || nwcReady || weblnReady;
+  // Mirrors pickRail(): the rail pref wins when connected, else NWC > Spark
+  // > WebLN — so the first label names the rail that actually pays and whose
+  // balance the chip shows. Extra connected rails are listed after a "+" so
+  // a multi-wallet user can see everything that's wired up.
+  const labelFor = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' } as const;
+  const readyLabels: string[] = [
+    nwcReady ? labelFor.nwc : null,
+    sparkReady ? labelFor.spark : null,
+    weblnReady ? labelFor.webln : null,
+  ].filter((l) => l !== null);
+  const pref = storage.railPref.get();
+  const prefLabel = pref ? labelFor[pref] : null;
+  if (prefLabel && readyLabels.includes(prefLabel)) {
+    readyLabels.splice(readyLabels.indexOf(prefLabel), 1);
+    readyLabels.unshift(prefLabel);
+  }
+  const summary = readyLabels.length
+    ? `${readyLabels[0]} connected${readyLabels.length > 1 ? ` + ${readyLabels.slice(1).join(' + ')}` : ''}`
+    : 'Not connected';
+  const connected = readyLabels.length > 0;
 
   return (
     <button
