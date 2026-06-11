@@ -51,6 +51,7 @@ export interface Podcast {
    *  second-chance source when `image` fails to load. */
   artwork?: string;
   url?: string;           // RSS feed URL
+  medium?: string;        // podcast:medium (e.g. 'music', 'publisher')
   value?: ValueBlock | null;
 }
 
