@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate } from '@/lib/v4v/nwc';
 import { publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, getNip44 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
@@ -48,11 +48,29 @@ function BackupToggle({ checked, disabled, canBackup, signedIn, onToggle }: {
   );
 }
 
+// One quiet backup auto-check per account per page load. The login-time
+// restore in loadProfile is best-effort (relay query + NIP-44 decrypt, both
+// can lose a race or time out, failures swallowed) — this is the safety net
+// so the user opening the wallet UI never has to click "Restore" themselves.
+// Module-scope Set so reopening the modal doesn't re-run the relay query.
+const autoCheckedNpubs = new Set<string>();
+
+// Set whenever a connection is restored from the Nostr backup (login-time,
+// form auto-check, or the manual button). The connected card shows a one-time
+// "✓ Restored" confirmation and clears the flag when it unmounts, so the
+// notice appears on the first wallet-modal view after a restore and not on
+// every open thereafter.
+let restoredFromBackupNpub: string | null = null;
+export function markNwcRestored(npub: string) {
+  restoredFromBackupNpub = npub;
+}
+
 export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   const [, setTick] = useState(0);
   const [draft, setDraft] = useState('');
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [autoChecking, setAutoChecking] = useState(false);
   const identity = useApp((s) => s.identity);
   // Form-only opt-in choice (applied when the user clicks Connect). The
   // connected card reads the authoritative stored flag live instead, so an
@@ -63,6 +81,41 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   const canBackup = !!identity && getNip44() !== null;
 
   function bump() { setTick((t) => t + 1); }
+
+  // Auto-restore on form mount: if this device has no NWC URI but the account
+  // has an encrypted backup on Nostr, restore it without a manual click. Runs
+  // at most once per npub per page load; "no backup found" stays silent (the
+  // manual restore button remains for retries).
+  useEffect(() => {
+    if (mode !== 'form' || hasNwc()) return;
+    if (!identity || getNip44() === null) return;
+    if (autoCheckedNpubs.has(identity.npub)) return;
+    autoCheckedNpubs.add(identity.npub);
+    let cancelled = false;
+    setAutoChecking(true);
+    fetchEncryptedNwc(identity)
+      .then((uri) => {
+        if (!uri) return;
+        // Save even if the modal closed mid-fetch — the restore is global.
+        saveNwcUri(uri);
+        storage.nwcBackup.set(identity.npub);
+        markNwcRestored(identity.npub);
+        if (!cancelled) { bump(); onConnected?.(); }
+      })
+      .catch(() => { /* decrypt unavailable / relay miss — manual button remains */ })
+      .finally(() => { if (!cancelled) setAutoChecking(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, identity]);
+
+  // One-time restore confirmation: visible while this card mount lives,
+  // cleared on unmount so the next modal open shows the plain card.
+  const showRestoredNotice =
+    mode === 'card' && !!identity && restoredFromBackupNpub === identity.npub;
+  useEffect(() => {
+    if (!showRestoredNotice) return;
+    return () => { restoredFromBackupNpub = null; };
+  }, [showRestoredNotice]);
 
   async function restoreFromNostr() {
     if (!identity || !canBackup) return;
@@ -76,6 +129,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
       }
       saveNwcUri(uri);
       storage.nwcBackup.set(identity.npub);
+      markNwcRestored(identity.npub);
       bump();
       onConnected?.();
     } catch (e) {
@@ -196,6 +250,11 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     const cardBackup = !!identity && storage.nwcBackup.get(identity.npub);
     return (
       <div className="space-y-2">
+        {showRestoredNotice && (
+          <div className="text-[11px] text-bolt border border-bolt/40 bg-bolt/10 px-2 py-1.5">
+            ✓ Connection restored from your Nostr backup
+          </div>
+        )}
         {host && <div className="text-[11px] text-muted">{host}</div>}
         {ephemeral && (
           <div className="text-[11px] text-bolt/80">
@@ -253,13 +312,19 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
       </div>
       {canBackup && (
         <div className="border-t border-bone/15 pt-2">
-          <button
-            onClick={restoreFromNostr}
-            disabled={busy}
-            className="text-[11px] text-muted hover:text-bone disabled:opacity-40"
-          >
-            {busy ? 'Restoring…' : '↩ Restore from Nostr backup'}
-          </button>
+          {autoChecking ? (
+            <div className="text-[11px] text-muted animate-bolt">
+              Checking Nostr for a saved connection…
+            </div>
+          ) : (
+            <button
+              onClick={restoreFromNostr}
+              disabled={busy}
+              className="text-[11px] text-muted hover:text-bone disabled:opacity-40"
+            >
+              {busy ? 'Restoring…' : '↩ Restore from Nostr backup'}
+            </button>
+          )}
         </div>
       )}
       {err && <div className="text-[11px] text-nostr/80 break-words">{err}</div>}

@@ -21,9 +21,9 @@ import { hasSpark, sparkDisconnect, sparkInitFromMnemonic } from '@/lib/v4v/spar
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
-import { getErrorMessage } from '@/lib/util';
 import { AccountMenu } from './account-menu';
 import { SignInModal } from './sign-in-modal';
+import { markNwcRestored } from '../nwc-wallet';
 
 // Module-level promise cache keyed by pubkey, so the same loadProfile call
 // isn't fired twice when React remounts the component (StrictMode in dev,
@@ -81,6 +81,7 @@ export function NostrAuth() {
       if (sessionUri) {
         saveNwcUri(sessionUri);
         storage.nwcBackup.set(id.npub);
+        markNwcRestored(id.npub);
         sessionStorage.removeItem(`bmb:nwc_uri_sess:${id.npub}`);
       }
     }
@@ -124,7 +125,7 @@ export function NostrAuth() {
     const nwcPromise = !hasNwc()
       ? fetchEncryptedNwc(enriched)
           .then((uri) => {
-            if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); }
+            if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); markNwcRestored(id.npub); }
           })
           .catch(() => {})
       : Promise.resolve();
@@ -178,7 +179,9 @@ export function NostrAuth() {
       setMutedPubkeys(unionMutedPubkeys(cachedMutes));
     }
     loadProfile(bare);
-  }, [identity, setIdentity, setFavorites, setMutedPubkeys]);
+    // loadProfile is re-created each render; the effect self-guards on
+    // `identity` so listing it would only add no-op re-runs.
+  }, [identity, setIdentity, setFavorites, setMutedPubkeys]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Account-change detector for multi-identity NIP-07 extensions
   // (Alby and nos2x both let the user switch active accounts in their
