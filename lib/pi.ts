@@ -69,6 +69,7 @@ function buildPodcast(f: any): Podcast {
     // <image> but a working <itunes:image>).
     artwork: f.artwork && f.artwork !== f.image ? f.artwork : undefined,
     url: f.url,
+    medium: typeof f.medium === 'string' && f.medium.length > 0 ? f.medium : undefined,
     value: normalizeValue(f.value),
   };
 }

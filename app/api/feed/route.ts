@@ -80,6 +80,9 @@ export async function GET(req: Request) {
     // Within `pending`, sort ascending — the next-to-air show should be at
     // the top of the list. Within `live`, sort descending (most recent
     // broadcast first) on the off chance more than one stream is live.
+    // Music album feeds (medium=music) sort by disc (podcast:season) then
+    // track (podcast:episode) ascending instead of by date.
+    const isMusic = podcast.medium === 'music';
     merged.sort((a, b) => {
       const ra = a.liveStatus ? LIVE_RANK[a.liveStatus] ?? 3 : 3;
       const rb = b.liveStatus ? LIVE_RANK[b.liveStatus] ?? 3 : 3;
@@ -89,6 +92,11 @@ export async function GET(req: Request) {
       }
       if (a.liveStatus && b.liveStatus) {
         return (b.liveStartTime ?? 0) - (a.liveStartTime ?? 0);
+      }
+      if (isMusic) {
+        const seasonDiff = (a.season ?? 1) - (b.season ?? 1);
+        if (seasonDiff !== 0) return seasonDiff;
+        return (a.episode ?? 0) - (b.episode ?? 0);
       }
       return (b.datePublished ?? 0) - (a.datePublished ?? 0);
     });

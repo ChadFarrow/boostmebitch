@@ -51,6 +51,7 @@ export interface Podcast {
    *  second-chance source when `image` fails to load. */
   artwork?: string;
   url?: string;           // RSS feed URL
+  medium?: string;        // podcast:medium (e.g. 'music', 'publisher')
   value?: ValueBlock | null;
 }
 
@@ -75,8 +76,8 @@ export interface Episode {
   feedTitle?: string;
   feedImage?: string;
   podcastGuid?: string;
-  episode?: number | null;     // <itunes:episode> if present
-  season?: number | null;      // <itunes:season> if present
+  episode?: number | null;     // <podcast:episode> / <itunes:episode> if present
+  season?: number | null;      // <podcast:season> if present (disc number for music)
   chaptersUrl?: string;        // PI exposes Podcasting 2.0 chapters JSON URL
   value?: ValueBlock | null;
   valueTimeSplits?: ValueTimeSplit[];
