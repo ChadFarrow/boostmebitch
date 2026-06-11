@@ -12,10 +12,11 @@
 
 import { bech32 } from '@scure/base';
 import type { EventTemplate } from 'nostr-tools';
-import { hasNwc, nwcPayInvoice } from './nwc';
-import { hasSpark, sparkPayInvoice } from './spark';
-import { hasWebln, weblnPayInvoice } from './webln';
+import { nwcPayInvoice } from './nwc';
+import { sparkPayInvoice } from './spark';
+import { weblnPayInvoice } from './webln';
 import { pickRail } from './boost';
+import { bolt11AmountMsat } from './bolt11';
 
 interface LnurlPayMetadata {
   callback: string;
@@ -139,6 +140,14 @@ export async function sendZap(args: {
   const invoice = cbData?.pr;
   if (typeof invoice !== 'string' || !invoice) {
     throw new Error('LNURL callback returned no invoice');
+  }
+  // We always request a concrete amount; an amountless invoice (null) would
+  // let the server pick — reject it along with any mismatch.
+  const invoiceMsat = bolt11AmountMsat(invoice);
+  if (invoiceMsat === null || invoiceMsat !== amountMsat) {
+    throw new Error(
+      `Zap invoice amount mismatch: requested ${amountMsat} msat, invoice is for ${invoiceMsat ?? 'no amount'}`,
+    );
   }
 
   let preimage: string;

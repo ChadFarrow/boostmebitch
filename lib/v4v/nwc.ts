@@ -128,14 +128,10 @@ export async function nwcKeysend(args: {
 }): Promise<string> {
   const c = client();
   // NIP-47 pay_keysend takes amount in msat and TLVs as { type, value(hex) }
-  const tlv = (args.tlv_records ?? []).map((r) => ({
-    type: r.type,
-    value: r.value,
-  }));
   const res = await c.payKeysend({
     pubkey: args.pubkey,
     amount: args.amount_msat,
-    tlv_records: tlv,
-  } as any);
+    tlv_records: args.tlv_records ?? [],
+  });
   return res.preimage;
 }

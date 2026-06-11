@@ -2,6 +2,7 @@
 import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract } from './types';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
+import { assertSafeFetchUrl } from './safe-fetch';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -230,6 +231,7 @@ export async function getLiveItemsFromRss(
 ): Promise<Episode[]> {
   let res: Response;
   try {
+    assertSafeFetchUrl(rssUrl);
     res = await fetch(rssUrl, {
       headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
       next: { revalidate: 60 },
@@ -424,6 +426,7 @@ export async function getRssEpisodeEnrichment(
   const out = new Map<string, RssEpisodeEnrichment>();
   let res: Response;
   try {
+    assertSafeFetchUrl(rssUrl);
     res = await fetch(rssUrl, {
       headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
       next: { revalidate: 60 },
@@ -462,6 +465,7 @@ export async function getSocialInteractsFromRss(
   const out = new Map<string, SocialInteract[]>();
   let res: Response;
   try {
+    assertSafeFetchUrl(rssUrl);
     res = await fetch(rssUrl, {
       headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
       next: { revalidate: 60 },

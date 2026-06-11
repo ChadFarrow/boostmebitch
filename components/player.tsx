@@ -12,10 +12,17 @@ export function Player() {
   const [duration, setDuration] = useState(0);
   const [boostOpen, setBoostOpen] = useState(false);
   const [fullscreenOpen, setFullscreenOpen] = useState(false);
+  const [audioErr, setAudioErr] = useState<string | null>(null);
+  // Last whole second pushed to the store. timeupdate fires ~4×/sec, but
+  // every consumer renders whole seconds (fmt(), step=1 seek bars, chapter
+  // highlighting) — gating on the floor cuts store-driven re-renders to 1 Hz.
+  const lastTick = useRef(-1);
 
   useEffect(() => {
     if (!audio.current || !current) return;
     audio.current.src = current.episode.enclosureUrl;
+    lastTick.current = -1;
+    setAudioErr(null);
     if (isPlaying) audio.current.play().catch(() => setPlaying(false));
   }, [current?.episode.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -40,9 +47,26 @@ export function Player() {
       >
         <audio
           ref={audio}
-          onTimeUpdate={(e) => setPosition(e.currentTarget.currentTime)}
-          onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+          onTimeUpdate={(e) => {
+            const t = e.currentTarget.currentTime;
+            const tick = Math.floor(t);
+            if (tick !== lastTick.current) {
+              lastTick.current = tick;
+              setPosition(t);
+            }
+          }}
+          onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); setAudioErr(null); }}
           onEnded={() => setPlaying(false)}
+          onError={(e) => {
+            const code = e.currentTarget.error?.code;
+            setAudioErr(
+              code === 2 ? 'network error while loading audio'
+              : code === 3 ? 'audio failed to decode'
+              : code === 4 ? 'audio format not supported or URL unreachable'
+              : 'audio playback failed',
+            );
+            setPlaying(false);
+          }}
         />
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4">
           {episode.image && (
@@ -52,6 +76,9 @@ export function Player() {
           <div className="min-w-0 flex-1">
             <div className="text-sm font-display leading-tight truncate">{episode.title}</div>
             <div className="text-[11px] text-muted truncate">{podcast.title}</div>
+            {audioErr && (
+              <div className="text-[10px] text-nostr mt-1 truncate">⚠ {audioErr}</div>
+            )}
             {isLive ? (
               <div className="flex items-center gap-2 mt-1">
                 <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
@@ -69,6 +96,7 @@ export function Player() {
                   onChange={(e) => {
                     const v = Number(e.target.value);
                     if (audio.current) audio.current.currentTime = v;
+                    lastTick.current = Math.floor(v);
                     setPosition(v);
                   }}
                 />

@@ -26,7 +26,7 @@
 // (private mode, browser policy, no user gesture) the user can still paste
 // the result by hand.
 
-import { nip19, type Event, type EventTemplate } from 'nostr-tools';
+import { nip19, verifyEvent, type Event, type EventTemplate } from 'nostr-tools';
 
 export type AmberRequestType =
   | 'get_public_key'
@@ -338,11 +338,22 @@ export class AmberSigner implements AmberSignerInterface {
       payload: eventJson,
       returnType: 'event',
     });
+    let event: Event;
     try {
-      return JSON.parse(signed) as Event;
+      event = JSON.parse(signed) as Event;
     } catch {
       throw new Error('Amber returned a malformed signed event');
     }
+    // The result travels via the system clipboard (auto-read or manual
+    // paste), so verify it really is a validly-signed copy of our request
+    // before letting it anywhere near a relay.
+    if (!verifyEvent(event)) {
+      throw new Error('Amber returned an event with an invalid signature');
+    }
+    if (this.cachedPubkey && event.pubkey !== this.cachedPubkey) {
+      throw new Error('Amber returned an event signed by a different key than the signed-in account');
+    }
+    return event;
   }
 
   nip04 = {

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getEpisodes, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
+import { rateLimit } from '@/lib/rate-limit';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -9,9 +10,13 @@ const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
 };
 
 export async function GET(req: Request) {
+  const limited = rateLimit(req, 'feed', 60);
+  if (limited) return limited;
   const { searchParams } = new URL(req.url);
   const id = Number(searchParams.get('id'));
-  if (!id) return NextResponse.json({ error: 'missing id' }, { status: 400 });
+  if (!Number.isInteger(id) || id <= 0) {
+    return NextResponse.json({ error: 'missing or invalid id' }, { status: 400 });
+  }
   return withErrorHandling(async () => {
     // Live-items lookup is best-effort — a PI hiccup on /episodes/live should
     // not blank out the whole feed page.
@@ -87,6 +92,9 @@ export async function GET(req: Request) {
       }
       return (b.datePublished ?? 0) - (a.datePublished ?? 0);
     });
-    return NextResponse.json({ podcast, episodes: merged });
+    return NextResponse.json(
+      { podcast, episodes: merged },
+      { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },
+    );
   }, 'feed fetch failed');
 }

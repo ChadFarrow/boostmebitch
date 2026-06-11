@@ -1,6 +1,8 @@
 // Lightning Address resolution. Returns a BOLT11 invoice for amount_msat.
 // Boostagrams are sent in the LUD-21 `comment` field when supported.
 
+import { bolt11AmountMsat } from './bolt11';
+
 interface LnurlPayParams {
   callback: string;
   minSendable: number;
@@ -45,5 +47,16 @@ export async function fetchLnInvoice(args: {
   if (!cb.ok) throw new Error(`LNURL callback failed: ${cb.status}`);
   const data = await cb.json();
   if (!data.pr) throw new Error('No invoice returned from LNURL callback');
+  // We always request a concrete amount; an amountless invoice (null) would
+  // let the server pick — reject it along with any mismatch.
+  const invoiceMsat = bolt11AmountMsat(data.pr);
+  if (invoiceMsat === null) {
+    throw new Error(`LNURL server for ${args.address} returned an amountless invoice`);
+  }
+  if (invoiceMsat !== args.amount_msat) {
+    throw new Error(
+      `LNURL invoice amount mismatch for ${args.address}: requested ${args.amount_msat} msat, invoice is for ${invoiceMsat} msat`,
+    );
+  }
   return data.pr;
 }

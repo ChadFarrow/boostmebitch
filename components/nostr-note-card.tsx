@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import {
   resolvePublishRelays,
   shortNpub,
@@ -25,7 +25,7 @@ type ActionState = 'idle' | 'busy' | 'done' | 'error';
  * reposted (kind:6 events) — used to seed the repost button into its "done"
  * state across reloads. The same set is threaded down through nested replies.
  */
-export function NoteCard({
+function NoteCardImpl({
   note,
   podcast,
   repostedIds,
@@ -354,6 +354,16 @@ export function NoteCard({
     </div>
   );
 }
+
+/**
+ * Memoized: feed surfaces re-render wholesale when podcast metadata resolves
+ * or `boostsTick` bumps, but note object identities are stable across those
+ * renders, so memo skips repainting untouched cards. Store-driven values
+ * (identity, mutes) are read via `useApp` selectors inside the component and
+ * bypass memo correctly. Caveat: `repostedIds` must keep being REPLACED, not
+ * mutated in place (see useViewerReposts), or memoized cards won't update.
+ */
+export const NoteCard = memo(NoteCardImpl);
 
 function ZapDialog({
   note,

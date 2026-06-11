@@ -1,9 +1,8 @@
 'use client';
-import { RefObject, useEffect, useRef, useState } from 'react';
+import { RefObject, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmt, stripHtml } from '@/lib/format';
 import { useChapters } from '@/lib/chapters';
-import type { ChapterEntry } from '@/lib/chapters';
 import { BoltIcon } from './icons';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
@@ -34,7 +33,7 @@ function ChaptersList({
           const next = chapters[i + 1];
           const active = currentSec >= c.startTime && (!next || currentSec < next.startTime);
           return (
-            <li key={i}>
+            <li key={`${c.startTime}-${c.title ?? ''}`}>
               <button
                 type="button"
                 onClick={() => onSeek(c.startTime)}

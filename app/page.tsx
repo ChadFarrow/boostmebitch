@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
 import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
@@ -64,6 +64,16 @@ export default function Home() {
     window.history.replaceState({}, '', url.toString());
   }, [selected?.podcastGuid, selectedEpisode?.guid]);
 
+  // Referentially stable — it's an effect dependency inside <SearchBar>.
+  // An inline arrow here loops: empty query → onResults([], '') → setState →
+  // new arrow → effect refires. (setFeeds/setQuery are stable state setters;
+  // setSelected is a stable Zustand action.)
+  const handleResults = useCallback((f: Podcast[], q: string) => {
+    setFeeds(f);
+    setQuery(q);
+    if (!f.length) setSelected(null);
+  }, [setSelected]);
+
   function goHome() {
     setFeeds([]);
     setSelected(null);
@@ -114,7 +124,7 @@ export default function Home() {
         <div className="mt-8 max-w-xl">
           <SearchBar
             key={searchKey}
-            onResults={(f, q) => { setFeeds(f); setQuery(q); if (!f.length) setSelected(null); }}
+            onResults={handleResults}
             onLoading={setLoading}
           />
         </div>

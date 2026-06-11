@@ -3,7 +3,6 @@ import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDuration, stripHtml } from '@/lib/format';
 import { useChapters } from '@/lib/chapters';
-import type { ChapterEntry } from '@/lib/chapters';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { BoostModal } from './boost-modal';

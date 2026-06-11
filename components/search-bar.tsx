@@ -3,6 +3,9 @@ import { useEffect, useState } from 'react';
 import type { Podcast } from '@/lib/types';
 
 interface Props {
+  /** Both callbacks are effect dependencies — pass referentially stable
+   *  functions (useCallback / state setters) or the debounce restarts on
+   *  every parent render and the empty-query reset loops. */
   onResults: (feeds: Podcast[], q: string) => void;
   onLoading: (b: boolean) => void;
 }
@@ -21,7 +24,7 @@ export function SearchBar({ onResults, onLoading }: Props) {
       } finally { onLoading(false); }
     }, 280);
     return () => clearTimeout(t);
-  }, [q]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [q, onResults, onLoading]);
 
   return (
     <div className="relative">
