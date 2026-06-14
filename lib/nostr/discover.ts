@@ -3,6 +3,7 @@ import { withPool, withExtraRelays, FEED_QUERY_MAX_WAIT_MS, QUERY_MAX_WAIT_MS } 
 import { DEFAULT_RELAYS, PROFILE_RELAYS } from './relays';
 import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
+import { collectEventsByAuthors } from './event-queries';
 import { bolt11AmountMsat } from '../v4v/bolt11';
 
 export interface DiscoveredNote {
@@ -544,18 +545,15 @@ async function fetchAuthorWriteRelays(
   relays: string[],
   authors: string[],
 ): Promise<string[]> {
-  const events = await withExtraRelays(pool, relays, PROFILE_RELAYS, async (queryRelays) => {
-    try {
-      return await pool.querySync(queryRelays, {
-        kinds: [10002],
-        authors,
-      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
-    } catch {
-      return [] as Event[];
-    }
-  });
+  // Stream-collect (early-exit once every author's kind:10002 is in hand) so a
+  // dead relay in the union can't pin this fallback at the full maxWait. Health
+  // signal is unused here — absent write relays aren't cached, so we just need
+  // the events.
+  const res = await withExtraRelays(pool, relays, PROFILE_RELAYS, (queryRelays) =>
+    collectEventsByAuthors(pool, queryRelays, { kinds: [10002], authors }, authors),
+  );
   const newest = new Map<string, Event>();
-  for (const e of events) {
+  for (const e of res.events) {
     const prev = newest.get(e.pubkey);
     if (!prev || e.created_at > prev.created_at) newest.set(e.pubkey, e);
   }
@@ -591,25 +589,17 @@ async function fetchProfiles(
   }
   if (!toFetch.length) return out;
 
-  // 2. First pass: batch-query the standard relay set unioned with the
+  // 2. First pass: stream kind:0 from the standard relay set unioned with the
   //    profile-outbox relays (purplepag.es etc.). The outbox relays exist
-  //    specifically to host kind:0 for arbitrary authors, so this catches
-  //    the common case where an author's profile isn't on DEFAULT_RELAYS.
-  let firstPassOk = false;
-  const events = await withExtraRelays(pool, relays, PROFILE_RELAYS, async (queryRelays) => {
-    try {
-      const r = await pool.querySync(queryRelays, {
-        kinds: [0],
-        authors: toFetch,
-      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
-      firstPassOk = true;
-      return r;
-    } catch {
-      // swallow — fall through to NIP-65 pass below
-      return [] as Event[];
-    }
-  });
-  for (const [pubkey, profile] of newestProfilesByAuthor(events)) {
+  //    specifically to host kind:0 for arbitrary authors, so this catches the
+  //    common case where an author's profile isn't on DEFAULT_RELAYS.
+  //    `collectEventsByAuthors` early-exits the moment all `toFetch` authors are
+  //    seen, otherwise resolves at aggregate EOSE or maxWait — so one stalled
+  //    relay can no longer pin or empty the whole batch (the old querySync did).
+  const firstRes = await withExtraRelays(pool, relays, PROFILE_RELAYS, (queryRelays) =>
+    collectEventsByAuthors(pool, queryRelays, { kinds: [0], authors: toFetch }, toFetch),
+  );
+  for (const [pubkey, profile] of newestProfilesByAuthor(firstRes.events)) {
     out.set(pubkey, profile);
     storage.profile.set(pubkey, profile);
   }
@@ -619,24 +609,17 @@ async function fetchProfiles(
   //    extra relay set so latency stays bounded.
   const missing = toFetch.filter((p) => !out.has(p));
   let fallbackRan = false;
+  let fallbackHealthy = false;
   if (missing.length) {
     const extras = await fetchAuthorWriteRelays(pool, relays, missing);
     const cappedExtras = extras.slice(0, Math.max(0, 12 - relays.length));
     if (cappedExtras.length) {
-      const fbEvents = await withExtraRelays(pool, relays, cappedExtras, async (queryRelays) => {
-        try {
-          const r = await pool.querySync(queryRelays, {
-            kinds: [0],
-            authors: missing,
-          }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
-          fallbackRan = true;
-          return r;
-        } catch {
-          // ignore — leave still-missing authors for negative caching below
-          return [] as Event[];
-        }
-      });
-      for (const [pubkey, profile] of newestProfilesByAuthor(fbEvents)) {
+      fallbackRan = true;
+      const fbRes = await withExtraRelays(pool, relays, cappedExtras, (queryRelays) =>
+        collectEventsByAuthors(pool, queryRelays, { kinds: [0], authors: missing }, missing),
+      );
+      fallbackHealthy = fbRes.allEosed && fbRes.gotAnyEvent;
+      for (const [pubkey, profile] of newestProfilesByAuthor(fbRes.events)) {
         out.set(pubkey, profile);
         storage.profile.set(pubkey, profile);
       }
@@ -644,13 +627,20 @@ async function fetchProfiles(
   }
 
   // 4. Negative-cache anything still missing so a returning visitor doesn't
-  //    re-issue the same lookups within the miss-TTL. Only do this when at
-  //    least one pass actually completed — if both threw we genuinely don't
-  //    know whether the profile exists.
-  if (firstPassOk || fallbackRan) {
-    for (const p of toFetch) {
-      if (!out.has(p)) storage.profile.setMiss(p);
-    }
+  //    re-issue the same lookups within the miss-TTL — but ONLY when the query
+  //    responsible for that author was demonstrably healthy. "Healthy" =
+  //    aggregate EOSE fired (not a maxWait timeout, so the absence is real) AND
+  //    at least one event came back (so a relay blackout isn't mistaken for
+  //    "nobody has a profile"). Without this gate a transient outage poisons
+  //    every author with a 15-min miss and the feed shows raw npubs long after
+  //    relays recover. An author carried into the NIP-65 fallback is gated on
+  //    the fallback's health (its own write relays are authoritative); one that
+  //    wasn't is gated on the first pass.
+  const firstHealthy = firstRes.allEosed && firstRes.gotAnyEvent;
+  for (const p of toFetch) {
+    if (out.has(p)) continue;
+    const wentToFallback = fallbackRan && missing.includes(p);
+    if (wentToFallback ? fallbackHealthy : firstHealthy) storage.profile.setMiss(p);
   }
 
   return out;

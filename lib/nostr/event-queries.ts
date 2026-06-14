@@ -1,5 +1,5 @@
-import type { Event, Filter } from 'nostr-tools';
-import { withPool, QUERY_MAX_WAIT_MS } from './pool';
+import type { Event, Filter, SimplePool } from 'nostr-tools';
+import { withPool, QUERY_MAX_WAIT_MS, FEED_QUERY_MAX_WAIT_MS } from './pool';
 
 // After the first matching event arrives, wait this long for a newer
 // version from the remaining relays, then resolve. Replaceable events
@@ -55,4 +55,82 @@ export async function fetchLatestEvent(
       return null;
     }
   });
+}
+
+export interface CollectResult {
+  /** Every matching event collected across the relay union, deduped by id. */
+  events: Event[];
+  /** Aggregate EOSE fired — every queried relay reached end-of-stored-events
+   *  within the window (vs. resolving on the maxWait hard timeout). When true
+   *  an author's absence is trustworthy; when false the query was degraded. */
+  allEosed: boolean;
+  /** At least one event arrived. A false here on a multi-author batch means a
+   *  network blackout, not "none of these authors has a profile". */
+  gotAnyEvent: boolean;
+}
+
+/**
+ * Stream-collect every event matching `filter` across `relays`, deduping by id.
+ * Resolves at the earliest of:
+ *   - every pubkey in `expectedAuthors` seen at least once (all-found early exit),
+ *   - aggregate EOSE (every relay reached end-of-stored-events),
+ *   - `maxWait`.
+ *
+ * Unlike `pool.querySync` (which waits for the slowest relay or the full maxWait
+ * and can return empty when one relay stalls), this returns as soon as the data
+ * we need is in hand — so one dead relay in the union can't pin or empty the
+ * batch. `allEosed`/`gotAnyEvent` let callers gate negative-caching: an empty
+ * result with `allEosed=false` means "degraded, don't trust the absence",
+ * whereas `allEosed=true` means "genuinely not on these relays".
+ *
+ * The CALLER owns the pool (unlike `fetchLatestEvent`, which uses `withPool`):
+ * `fetchProfiles` runs inside `withExtraRelays(pool, …)` and the helper must
+ * reuse that pool so the extra profile-outbox sockets are torn down by the
+ * surrounding scope. Pass an empty `expectedAuthors` to disable the early exit
+ * (collect until EOSE/maxWait).
+ */
+export async function collectEventsByAuthors(
+  pool: SimplePool,
+  relays: string[],
+  filter: Filter,
+  expectedAuthors: string[],
+  maxWait = FEED_QUERY_MAX_WAIT_MS,
+): Promise<CollectResult> {
+  const byId = new Map<string, Event>();
+  const seenAuthors = new Set<string>();
+  const want = new Set(expectedAuthors);
+  let allEosed = false;
+
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      try { sub.close(); } catch { /* already closed */ }
+      resolve();
+    };
+
+    const hardTimer = setTimeout(finish, maxWait);
+    const sub = pool.subscribeMany(relays, filter, {
+      onevent(e: Event) {
+        if (!byId.has(e.id)) byId.set(e.id, e);
+        seenAuthors.add(e.pubkey);
+        // All-found early exit: stop the moment every requested author has a
+        // matching event in hand — no reason to wait on slow relays.
+        if (want.size > 0 && seenAuthors.size >= want.size) {
+          let all = true;
+          for (const a of want) if (!seenAuthors.has(a)) { all = false; break; }
+          if (all) finish();
+        }
+      },
+      oneose() {
+        // Fires once all relays have EOSE'd — nothing more is coming.
+        allEosed = true;
+        finish();
+      },
+    });
+  });
+
+  return { events: Array.from(byId.values()), allEosed, gotAnyEvent: byId.size > 0 };
 }

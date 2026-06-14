@@ -30,7 +30,7 @@ const KEYS = {
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   socialThreadPrefix: 'bmb:social',   // last DiscoveredNote[] per podcast:socialInteract URI
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
-  profilePrefix: 'bmb:profile3',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion so stale negative-cache entries don't pin missing profiles for the 1-hour miss TTL.
+  profilePrefix: 'bmb:profile4',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion — and here, to flush negative-cache entries poisoned by a relay-stall bug — so stale misses don't pin missing profiles for the miss TTL.
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
   bunker: 'bmb:bunker',               // NIP-46 bunker session: { uri, clientSk } — single value (one bunker connection at a time)
   railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
