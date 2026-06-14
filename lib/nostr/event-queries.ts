@@ -107,29 +107,39 @@ export async function collectEventsByAuthors(
       if (settled) return;
       settled = true;
       clearTimeout(hardTimer);
-      try { sub.close(); } catch { /* already closed */ }
+      try { sub?.close(); } catch { /* already closed */ }
       resolve();
     };
 
     const hardTimer = setTimeout(finish, maxWait);
-    const sub = pool.subscribeMany(relays, filter, {
-      onevent(e: Event) {
-        if (!byId.has(e.id)) byId.set(e.id, e);
-        seenAuthors.add(e.pubkey);
-        // All-found early exit: stop the moment every requested author has a
-        // matching event in hand — no reason to wait on slow relays.
-        if (want.size > 0 && seenAuthors.size >= want.size) {
-          let all = true;
-          for (const a of want) if (!seenAuthors.has(a)) { all = false; break; }
-          if (all) finish();
-        }
-      },
-      oneose() {
-        // Fires once all relays have EOSE'd — nothing more is coming.
-        allEosed = true;
-        finish();
-      },
-    });
+    // Defense in depth: a malformed relay URL in `relays` makes nostr-tools'
+    // normalizeURL throw synchronously inside subscribeMany. Callers should
+    // sanitizeRelays their hint sets, but if one slips through we resolve with
+    // whatever we have rather than let the throw abort the whole feed/profile
+    // load. `finish` tolerates an undefined `sub`.
+    let sub: { close: () => void } | undefined;
+    try {
+      sub = pool.subscribeMany(relays, filter, {
+        onevent(e: Event) {
+          if (!byId.has(e.id)) byId.set(e.id, e);
+          seenAuthors.add(e.pubkey);
+          // All-found early exit: stop the moment every requested author has a
+          // matching event in hand — no reason to wait on slow relays.
+          if (want.size > 0 && seenAuthors.size >= want.size) {
+            let all = true;
+            for (const a of want) if (!seenAuthors.has(a)) { all = false; break; }
+            if (all) finish();
+          }
+        },
+        oneose() {
+          // Fires once all relays have EOSE'd — nothing more is coming.
+          allEosed = true;
+          finish();
+        },
+      });
+    } catch {
+      finish();
+    }
   });
 
   return { events: Array.from(byId.values()), allEosed, gotAnyEvent: byId.size > 0 };

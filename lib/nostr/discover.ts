@@ -1,6 +1,6 @@
 import { nip19, type Event } from 'nostr-tools';
 import { withPool, withExtraRelays, FEED_QUERY_MAX_WAIT_MS, QUERY_MAX_WAIT_MS } from './pool';
-import { DEFAULT_RELAYS, PROFILE_RELAYS } from './relays';
+import { DEFAULT_RELAYS, PROFILE_RELAYS, sanitizeRelays } from './relays';
 import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
 import { collectEventsByAuthors } from './event-queries';
@@ -313,7 +313,11 @@ export async function fetchSocialInteractThread(
   }
 
   const baseRelays = opts.relays ?? DEFAULT_RELAYS;
-  const allRelays = Array.from(new Set([...baseRelays, ...hintRelays.slice(0, 4)]));
+  // sanitizeRelays the nevent hints — a malformed relay hint embedded in the
+  // URI would otherwise crash normalizeURL when we query allRelays.
+  const allRelays = Array.from(
+    new Set([...baseRelays, ...sanitizeRelays(hintRelays).slice(0, 4)]),
+  );
 
   return withPool(allRelays, async (pool) => {
     let rootEvents: Event[] = [];
@@ -522,8 +526,9 @@ async function fetchQuotedEvents(
   }
   if (ids.size === 0) return out;
   // Cap the hint extras so a noisy quote-ref payload doesn't fan out to
-  // dozens of niche relays. The base relays are always preferred.
-  const cappedHints = Array.from(hintRelays).slice(0, Math.max(0, 12 - relays.length));
+  // dozens of niche relays. The base relays are always preferred. sanitizeRelays
+  // first so a malformed `q`/`e`/nevent relay hint can't crash normalizeURL.
+  const cappedHints = sanitizeRelays(Array.from(hintRelays)).slice(0, Math.max(0, 12 - relays.length));
   const events = await withExtraRelays(pool, relays, cappedHints, async (queryRelays) => {
     try {
       return await pool.querySync(queryRelays, {
@@ -578,17 +583,21 @@ async function fetchAuthorWriteRelays(
     const prev = newest.get(e.pubkey);
     if (!prev || e.created_at > prev.created_at) newest.set(e.pubkey, e);
   }
-  const urls = new Set<string>();
+  const urls: string[] = [];
   for (const e of newest.values()) {
     for (const tag of e.tags) {
       if (tag[0] !== 'r' || !tag[1]) continue;
-      const url = tag[1].trim().replace(/\/$/, '');
-      if (!url || !url.startsWith('wss://')) continue;
       const marker = tag[2];
-      if (!marker || marker === 'write') urls.add(url);
+      if (!marker || marker === 'write') urls.push(tag[1]);
     }
   }
-  return Array.from(urls);
+  // sanitizeRelays (not a bare startsWith('wss://') check) drops garbage r-tag
+  // values — e.g. a spammer's `wss://SOLUTION TO ALL PHONE HACKING…, …` ad —
+  // that merely *start* with wss:// but fail `new URL()`. Without this they
+  // reach nostr-tools' normalizeURL when this set is queried, which throws
+  // `Invalid URL` synchronously and aborts the whole feed load. Dedupes +
+  // strips trailing slashes too.
+  return sanitizeRelays(urls);
 }
 
 async function fetchProfiles(
