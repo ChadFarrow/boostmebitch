@@ -2,6 +2,7 @@
 import { useMemo } from 'react';
 import {
   fetchPodcastNotes,
+  noteHasSubstance,
   useNostrFeed,
   useViewerReposts,
   type DiscoveredNote,
@@ -32,7 +33,7 @@ export function PodcastNostrFeed({
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
   const repostedIds = useViewerReposts(notes, identity);
   const visibleNotes = useMemo(
-    () => (notes ? notes.filter((n) => !mutedPubkeys.has(n.pubkey)) : notes),
+    () => (notes ? notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)) : notes),
     [notes, mutedPubkeys],
   );
 

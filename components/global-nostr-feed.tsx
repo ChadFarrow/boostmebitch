@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchAllPodcastNotes,
+  noteHasSubstance,
   useNostrFeed,
   useViewerReposts,
   type DiscoveredNote,
@@ -100,6 +101,7 @@ export function GlobalNostrFeed() {
     }
     const items: FeedItem[] = notes
       .filter((note) => !mutedPubkeys.has(note.pubkey))
+      .filter(noteHasSubstance)
       .map((note) => ({
         kind: 'note' as const,
         ts: note.createdAt * 1000,

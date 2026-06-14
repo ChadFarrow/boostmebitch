@@ -5,6 +5,7 @@ import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
 import { collectEventsByAuthors } from './event-queries';
 import { bolt11AmountMsat } from '../v4v/bolt11';
+import { stripNostrUris, extractImages } from '../format';
 
 export interface DiscoveredNote {
   id: string;
@@ -201,6 +202,26 @@ function buildNote(
     rawEvent: e,
     replies,
   };
+}
+
+/**
+ * Whether a note shows the reader something a human actually wrote. Boosts
+ * always qualify — the ⚡ amount is the point. Otherwise we strip nostr: refs
+ * and image URLs the way <NoteCard> does and require either non-empty body
+ * text or at least one image.
+ *
+ * This drops the empty auto-cards some clients (notably Amplify) publish once
+ * per listen: they carry the NIP-73 podcast `i`/`k` tags but `content: ""`, so
+ * they render as a bare podcast chip and — at ~1/3 of all podcast-tagged
+ * kind:1 traffic — drown out the real posts people send. Filtering on content
+ * (not the `client` tag) keeps genuine human comments made via those same
+ * clients, and matches what Fountain surfaces. Applied at render time in the
+ * feed components, alongside the mute filter.
+ */
+export function noteHasSubstance(note: DiscoveredNote): boolean {
+  if (note.isBoost) return true;
+  const { body, images } = extractImages(stripNostrUris(note.content));
+  return body.length > 0 || images.length > 0;
 }
 
 /**

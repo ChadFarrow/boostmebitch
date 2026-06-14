@@ -38,6 +38,7 @@ export {
   fetchEpisodeNotes,
   fetchSocialInteractThread,
   noteFromEvent,
+  noteHasSubstance,
   type DiscoveredNote,
 } from './discover';
 
