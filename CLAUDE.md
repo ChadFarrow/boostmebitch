@@ -183,9 +183,20 @@ The **SHARE button** in `EpisodeList`'s header (`components/lists.tsx:ShareButto
 
 Header action cluster order: `[♡ FAVORITE] [↗ SHARE] [⚡ BOOST]`. BOOST is still gated on `showHasValue`; SHARE and FAVORITE are always visible.
 
+## Feed ordering + RSS enrichment (`/api/feed`)
+
+`app/api/feed/route.ts` builds the episode list from PI's `/episodes/byfeedid`, then enriches and re-sorts it. `getRssEpisodeEnrichment(podcast.url)` (`lib/pi.ts`) fetches the raw RSS **once** and returns `{ episodes, feedMedium }` (`RssFeedEnrichment`): a per-guid map of fields PI doesn't index, plus the channel-level `<podcast:medium>`. The route merges those onto each episode by guid.
+
+**Why RSS, not just PI:** PI's episode API only surfaces the iTunes namespace (`itunes:season`/`itunes:episode`), not the Podcasting 2.0 `<podcast:season>`/`<podcast:episode>` tags many music album feeds use (e.g. Henrik Flyman's album feeds). So `buildEpisode` leaves `season`/`episode` null for those, and without the RSS pass the music sort would treat every track as `season=1, episode=0` → tracks render in PI's date order, not track order. The enrichment fills them in:
+
+- **Per item:** `<podcast:season>` (prefer the `number=` attr, fall back to text) and `<podcast:episode>` (text) → merged as fallbacks only when PI's value is null: `season: e.season ?? rss?.season ?? null`. Same pass also carries `socialInteract` + `content:encoded` (see below).
+- **Channel:** `<podcast:medium>` parsed from the XML slice before the first `<item>` → `feedMedium`. The music check is case-insensitive **and** falls back to RSS: `isMusic = podcast.medium?.toLowerCase() === 'music' || feedMedium === 'music'` — because PI doesn't reliably index `medium` either.
+
+**Sort order:** live (live > pending, `LIVE_RANK`) first; then **music feeds** sort by `season` (disc) then `episode` (track) ascending; **everything else** by `datePublished` desc. Enrichment is best-effort — a failed RSS fetch falls back to `{ episodes: new Map(), feedMedium: undefined }`, leaving episodes unenriched rather than breaking the feed. `getRssEpisodeEnrichment` has a single caller (this route); changing its return shape means updating the `.catch()` fallback there too.
+
 ## Episode discussion (`podcast:socialInteract`, Nostr)
 
-Episodes (and RSS live items) can carry `<podcast:socialInteract protocol="nostr" uri="nostr:nevent1…|note1…">` pointing at a publisher-designated Nostr root note that anchors that episode's discussion. `lib/pi.ts` parses them into `Episode.socialInteract: SocialInteract[]` (sorted by `priority`), normalizing both spec `nostr:<bech32>` and non-standard `https://njump.me/<bech32>` URIs via `extractNostrUri`. PI's `/episodes/byfeedid` doesn't expose the tag, so `getSocialInteractsFromRss` fetches the feed and the `/api/feed` route merges by guid. Only `protocol="nostr"` is kept.
+Episodes (and RSS live items) can carry `<podcast:socialInteract protocol="nostr" uri="nostr:nevent1…|note1…">` pointing at a publisher-designated Nostr root note that anchors that episode's discussion. `lib/pi.ts` parses them into `Episode.socialInteract: SocialInteract[]` (sorted by `priority`), normalizing both spec `nostr:<bech32>` and non-standard `https://njump.me/<bech32>` URIs via `extractNostrUri`. PI's `/episodes/byfeedid` doesn't expose the tag, so the `/api/feed` route picks it up from the shared RSS pass (`getRssEpisodeEnrichment`, see above) and merges by guid. Only `protocol="nostr"` is kept.
 
 **Fetch + render.** `fetchSocialInteractThread(uri, opts)` (`lib/nostr/discover.ts`) decodes the note1/nevent1, unions `DEFAULT_RELAYS` with up to 4 nevent relay hints, fetches the root, and BFS-assembles the reply tree via the same `assembleNotes` as the feed. Contract: returns `[]` for an undecodable URI or a root no relay carries; **throws** when the relay query itself fails — so the UI can tell a transient outage (offer retry) from genuine emptiness. `components/episode-social-thread.tsx` is the self-contained surface (shared by the discussion view AND the fullscreen player): status union `loading | ready | error`, loading skeleton, retry button, a reply count that excludes the root anchor, and a sign-in-gated comment composer.
 

@@ -424,9 +424,11 @@ export interface RssFeedEnrichment {
 }
 
 /**
- * Single RSS fetch that extracts both <podcast:socialInteract> tags and
- * <content:encoded> show notes for every <item>. Replaces the older
- * getSocialInteractsFromRss in the feed route so we only fetch the RSS once.
+ * Single RSS fetch that extracts <podcast:socialInteract> tags,
+ * <content:encoded> show notes, and <podcast:season>/<podcast:episode>
+ * track ordering for every <item>, plus the channel-level <podcast:medium>.
+ * PI's /episodes/byfeedid exposes none of these, so the feed route merges
+ * the result onto the PI-fetched episodes by GUID — one fetch covers all.
  */
 export async function getRssEpisodeEnrichment(
   rssUrl: string,
@@ -473,41 +475,6 @@ export async function getRssEpisodeEnrichment(
     }
   }
   return { episodes, feedMedium };
-}
-
-/**
- * Fetch the RSS feed and return a GUID → SocialInteract[] map for every
- * <item> that contains a `<podcast:socialInteract protocol="nostr">` tag.
- * PI's /episodes/byfeedid doesn't expose this field, so the feed API route
- * calls this and merges the result onto the PI-fetched episodes by GUID.
- */
-export async function getSocialInteractsFromRss(
-  rssUrl: string,
-): Promise<Map<string, SocialInteract[]>> {
-  const out = new Map<string, SocialInteract[]>();
-  let res: Response;
-  try {
-    assertSafeFetchUrl(rssUrl);
-    res = await fetch(rssUrl, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
-      next: { revalidate: 60 },
-      signal: AbortSignal.timeout(8000),
-    });
-  } catch {
-    return out;
-  }
-  if (!res.ok) return out;
-  const xml = await res.text();
-  const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = itemRe.exec(xml))) {
-    const inner = m[1];
-    const guid = extractText(inner, 'guid');
-    if (!guid) continue;
-    const social = parseSocialInteractsFromRss(inner);
-    if (social?.length) out.set(guid, social);
-  }
-  return out;
 }
 
 export async function getEpisodeByGuid(
