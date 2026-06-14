@@ -291,6 +291,10 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const [loading, setLoading] = useState(false);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
   const [valueOpen, setValueOpen] = useState(false);
+  // Episodes are revealed 10 at a time behind a "Load more" button. The Nostr
+  // comments feed sits below this list, so a button (not infinite scroll) keeps
+  // it at a stable, reachable position on mobile.
+  const [visibleCount, setVisibleCount] = useState(10);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
   const current = useApp((s) => s.current);
@@ -298,6 +302,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
 
   useEffect(() => {
     setValueOpen(false);
+    setVisibleCount(10);
     if (!feedId) { setData({ podcast: null, episodes: [] }); return; }
     setLoading(true);
     fetch(`/api/feed?id=${feedId}`)
@@ -321,6 +326,8 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   if (!data.podcast) return <div ref={containerRef} className="text-muted text-sm py-8">not found</div>;
 
   const showHasValue = !!data.podcast.value && data.podcast.value.recipients?.length > 0;
+  const visibleEpisodes = data.episodes.slice(0, visibleCount);
+  const remaining = data.episodes.length - visibleEpisodes.length;
 
   return (
     <div ref={containerRef}>
@@ -366,9 +373,9 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
         <ValueBlockDetails value={data.podcast.value} />
       )}
       <ul className="divide-y divide-bone/10">
-        {data.episodes.map((e, idx) => {
+        {visibleEpisodes.map((e, idx) => {
           const playing = current?.episode.id === e.id;
-          const prev = idx > 0 ? data.episodes[idx - 1] : null;
+          const prev = idx > 0 ? visibleEpisodes[idx - 1] : null;
           const isFirstLive = !!e.liveStatus && (!prev || !prev.liveStatus);
           const isFirstRegular = !e.liveStatus && !!prev?.liveStatus;
           return (
@@ -451,6 +458,15 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           );
         })}
       </ul>
+      {remaining > 0 && (
+        <button
+          type="button"
+          onClick={() => setVisibleCount((c) => Math.min(c + 10, data.episodes.length))}
+          className="btn-ghost w-full mt-3"
+        >
+          Load more episodes ({remaining})
+        </button>
+      )}
 
       {data.podcast.podcastGuid && (
         <DeferredOnScroll

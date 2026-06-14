@@ -173,6 +173,12 @@ Load-bearing rules:
 
 The "⚡ BOOST" button on the `EpisodeList` header opens this mode (gated on `podcast.value.recipients.length > 0`). The per-episode boost path in `Player` is unchanged.
 
+## Episode list pagination (`EpisodeList`, `components/lists.tsx`)
+
+`/api/feed` returns up to ~50 episodes and they all arrive client-side at once, so pagination is pure client-side slicing — no extra fetch. `EpisodeList` holds `visibleCount` (starts at 10, reset to 10 in the `[feedId]` effect on podcast switch) and renders `data.episodes.slice(0, visibleCount)`. A **"Load more episodes (N)"** `.btn-ghost` (N = remaining) sits right after the `<ul>` and reveals +10 per tap; it's gone once all are shown.
+
+Two load-bearing choices: (1) **A button, not infinite scroll** — the per-podcast Nostr comments feed renders *below* the episode list, and auto-loading on scroll would make the list grow as the user scrolls toward the comments ("footer runs away"), burying them on mobile. The button keeps the comments at a stable, reachable position. (2) **No fixed-height inner scroll box** — that would be a second scroll container fighting mobile momentum scroll, the sticky `top-[var(--app-header-h)]` header, and the mobile `scrollIntoView` fix (the panel is brought into frame on `window.innerWidth < 1024` when a podcast is tapped). Slicing keeps the page a single scroll container. The section-divider labels ("Live & upcoming" / "Episodes") derive `prev` from the **sliced** array so they stay correct.
+
 ## Show-page URL contract (`?podcast=<guid>`)
 
 `selectedPodcast` is mirrored to the URL via two `useEffect`s in `app/page.tsx` — no Next.js routing involved. One reads `?podcast=<guid>` on mount and calls `resolvePodcastByGuid` (`lib/podcast-meta.ts`) to hydrate the detail view; the other watches `selected?.podcastGuid` and writes/clears the param. Hydration uses `useApp.getState()` re-checks before `setSelected` to avoid the StrictMode double-mount race overwriting a user click that landed during resolution.
