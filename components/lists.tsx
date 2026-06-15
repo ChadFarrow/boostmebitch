@@ -299,6 +299,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const play = useApp((s) => s.play);
   const current = useApp((s) => s.current);
   const openEpisode = useApp((s) => s.openEpisode);
+  const setEpisodeQueue = useApp((s) => s.setEpisodeQueue);
 
   useEffect(() => {
     setValueOpen(false);
@@ -307,7 +308,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
     setLoading(true);
     fetch(`/api/feed?id=${feedId}`)
       .then((r) => r.json())
-      .then((d) => setData({ podcast: d.podcast, episodes: d.episodes }))
+      .then((d) => { setData({ podcast: d.podcast, episodes: d.episodes }); setEpisodeQueue(d.episodes); })
       .finally(() => setLoading(false));
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });

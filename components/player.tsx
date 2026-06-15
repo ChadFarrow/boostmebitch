@@ -7,7 +7,7 @@ import { BoltIcon } from './icons';
 import { FullscreenPlayer } from './fullscreen-player';
 
 export function Player() {
-  const { current, isPlaying, setPlaying, setPosition, positionSec } = useApp();
+  const { current, isPlaying, setPlaying, setPosition, positionSec, playNext } = useApp();
   const audio = useRef<HTMLAudioElement | null>(null);
   const [duration, setDuration] = useState(0);
   const [boostOpen, setBoostOpen] = useState(false);
@@ -56,7 +56,10 @@ export function Player() {
             }
           }}
           onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); setAudioErr(null); }}
-          onEnded={() => setPlaying(false)}
+          onEnded={() => {
+            if (current?.podcast.medium?.toLowerCase() === 'music') playNext();
+            else setPlaying(false);
+          }}
           onError={(e) => {
             const code = e.currentTarget.error?.code;
             setAudioErr(
