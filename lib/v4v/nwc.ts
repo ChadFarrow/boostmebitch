@@ -79,8 +79,15 @@ export async function nwcValidate(uri: string): Promise<string | null> {
 
 export async function nwcPayInvoice(invoice: string): Promise<string> {
   const c = client();
-  const res = await c.payInvoice({ invoice });
-  return res.preimage;
+  try {
+    const res = await c.payInvoice({ invoice });
+    return res.preimage;
+  } catch (e) {
+    if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
+      throw new Error('NWC connection does not have spending permissions — reconnect your wallet with sending enabled');
+    }
+    throw e;
+  }
 }
 
 /**
@@ -149,6 +156,9 @@ export async function nwcKeysend(args: {
     // IS the valid proof of payment. Re-throw anything else (routing failures,
     // method-not-supported, timeout) so the caller sees the real error.
     if (e instanceof nwc.Nip47ResponseValidationError) return preimage;
+    if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
+      throw new Error('NWC connection does not have spending permissions — reconnect your wallet with sending enabled');
+    }
     throw e;
   }
 }
