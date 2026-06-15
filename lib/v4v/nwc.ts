@@ -127,11 +127,16 @@ export async function nwcKeysend(args: {
   tlv_records?: { type: number; value: string }[];
 }): Promise<string> {
   const c = client();
-  // NIP-47 pay_keysend takes amount in msat and TLVs as { type, value(hex) }
+  // Generate a random preimage and pass it explicitly. Some NWC wallets
+  // (Zeus embedded node) require the client to supply the preimage rather
+  // than auto-generating it; wallets that auto-generate their own will
+  // ignore this and return their preimage in res.preimage.
+  const preimage = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
   const res = await c.payKeysend({
     pubkey: args.pubkey,
     amount: args.amount_msat,
+    preimage,
     tlv_records: args.tlv_records ?? [],
   });
-  return res.preimage;
+  return res.preimage ?? preimage;
 }
