@@ -14,7 +14,7 @@ export async function GET(req: Request) {
   // Cap rather than reject — friendlier for a type-ahead box.
   const query = q.slice(0, 200);
   return withErrorHandling(async () => {
-    const feeds = await searchPodcasts(query, 20);
+    const feeds = await searchPodcasts(query, 50);
     return NextResponse.json({ feeds }, { headers: SEARCH_CACHE });
   }, 'search failed');
 }
