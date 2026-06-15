@@ -316,7 +316,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [feedId]);
+  }, [feedId, setEpisodeQueue]);
 
   if (!feedId) {
     return (

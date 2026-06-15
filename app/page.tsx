@@ -90,6 +90,7 @@ export default function Home() {
       setPublisherAlbums(null);
       setPublisherLoading(true);
       try {
+        if (!p.url) { setPublisherAlbums([]); return; }
         const res = await fetch(`/api/publisher?feedUrl=${encodeURIComponent(p.url)}`);
         const data = await res.json();
         setPublisherAlbums(data.feeds ?? []);
