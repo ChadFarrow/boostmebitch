@@ -107,7 +107,7 @@ export async function nwcPayInvoice(invoice: string): Promise<string> {
     return res.preimage;
   } catch (e) {
     if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
-      throw new Error('NWC connection does not have spending permissions — reconnect your wallet with sending enabled');
+      throw new Error('Wallet returned NOT_IMPLEMENTED — your NWC wallet may not support this payment type. Try Alby or Mutiny instead of an embedded node.');
     }
     throw e;
   }
@@ -180,7 +180,7 @@ export async function nwcKeysend(args: {
     // method-not-supported, timeout) so the caller sees the real error.
     if (e instanceof nwc.Nip47ResponseValidationError) return preimage;
     if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
-      throw new Error('NWC connection does not have spending permissions — reconnect your wallet with sending enabled');
+      throw new Error('Wallet returned NOT_IMPLEMENTED — your NWC wallet may not support this payment type. Try Alby or Mutiny instead of an embedded node.');
     }
     throw e;
   }

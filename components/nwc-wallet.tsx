@@ -274,12 +274,12 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
         {host && <div className="text-[11px] text-muted">{host}</div>}
         {methods !== null && !canPayInvoice && (
           <div className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5">
-            ⚠ This connection cannot send payments. In Zeus: revoke this connection and create a new one with spending enabled.
+            ⚠ This wallet does not support sending payments via NWC. Boosts will fail. Try Alby or Mutiny.
           </div>
         )}
         {methods !== null && canPayInvoice && !canKeysend && (
           <div className="text-[11px] text-bolt/80">
-            ⚠ Keysend not supported — node-pubkey recipients (most podcast splits) will fail.
+            ⚠ Keysend not supported — node-pubkey recipients (most podcast splits) will fail. Try Alby or Mutiny.
           </div>
         )}
         {ephemeral && (
