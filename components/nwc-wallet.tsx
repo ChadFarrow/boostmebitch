@@ -1,7 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate } from '@/lib/v4v/nwc';
+import {
+  hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate,
+  nwcFetchCapabilities, nwcGetMethods,
+} from '@/lib/v4v/nwc';
 import { publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, getNip44 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
@@ -248,6 +251,19 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     const ephemeral = storage.nwcUri.isEphemeral();
     // Authoritative, live backup state for the connected account.
     const cardBackup = !!identity && storage.nwcBackup.get(identity.npub);
+
+    // Lazily fetch capabilities on first card mount so we can warn the user if
+    // their wallet doesn't advertise payment methods via get_info.
+    // eslint-disable-next-line react-hooks/rules-of-hooks
+    useEffect(() => {
+      if (nwcGetMethods() !== null) return; // already fetched this session
+      nwcFetchCapabilities().catch(() => {});
+    }, []);
+
+    const methods = nwcGetMethods();
+    const canPayInvoice = methods === null || methods.includes('pay_invoice');
+    const canKeysend = methods === null || methods.includes('pay_keysend');
+
     return (
       <div className="space-y-2">
         {showRestoredNotice && (
@@ -256,6 +272,16 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
           </div>
         )}
         {host && <div className="text-[11px] text-muted">{host}</div>}
+        {methods !== null && !canPayInvoice && (
+          <div className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5">
+            ⚠ This connection cannot send payments. In Zeus: revoke this connection and create a new one with spending enabled.
+          </div>
+        )}
+        {methods !== null && canPayInvoice && !canKeysend && (
+          <div className="text-[11px] text-bolt/80">
+            ⚠ Keysend not supported — node-pubkey recipients (most podcast splits) will fail.
+          </div>
+        )}
         {ephemeral && (
           <div className="text-[11px] text-bolt/80">
             Storage is restricted — you&apos;ll need to paste this URI again after a reload.

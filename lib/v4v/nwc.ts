@@ -12,10 +12,32 @@ import { createObservable } from '../pubsub';
 const { subscribe: subscribeNwc, notify } = createObservable();
 export { subscribeNwc };
 
+// Cached methods list from the last successful get_info call. Populated by
+// nwcValidate (at connect time) and nwcFetchCapabilities (lazy on card mount).
+// Null means "not yet fetched" — distinct from [] which means "fetched, empty".
+let cachedNwcMethods: string[] | null = null;
+
+export const nwcGetMethods = () => cachedNwcMethods;
+export const nwcSupportsKeysend = () => cachedNwcMethods?.includes('pay_keysend') ?? null;
+export const nwcSupportsPayInvoice = () => cachedNwcMethods?.includes('pay_invoice') ?? null;
+
+/** Fetch and cache the wallet's supported methods. No-op if not connected. */
+export async function nwcFetchCapabilities(): Promise<string[]> {
+  if (!hasNwc()) return [];
+  try {
+    const c = client();
+    const info = await c.getInfo();
+    cachedNwcMethods = info.methods ?? [];
+    return cachedNwcMethods;
+  } catch {
+    return cachedNwcMethods ?? [];
+  }
+}
+
 // Re-export the URI accessors so existing call sites keep their imports.
-export const saveNwcUri = (uri: string) => { storage.nwcUri.set(uri); notify(); };
+export const saveNwcUri = (uri: string) => { storage.nwcUri.set(uri); cachedNwcMethods = null; notify(); };
 export const loadNwcUri = () => storage.nwcUri.get();
-export const clearNwcUri = () => { storage.nwcUri.clear(); notify(); };
+export const clearNwcUri = () => { storage.nwcUri.clear(); cachedNwcMethods = null; notify(); };
 export const hasNwc = () => storage.nwcUri.has();
 
 function client() {
@@ -55,7 +77,8 @@ export async function nwcValidate(uri: string): Promise<string | null> {
     ]);
   try {
     try {
-      await withTimeout(c.getInfo());
+      const info = await withTimeout(c.getInfo());
+      cachedNwcMethods = info.methods ?? [];
       return null;
     } catch (infoErr) {
       // get_info may not be granted on this connection. Try get_balance —
