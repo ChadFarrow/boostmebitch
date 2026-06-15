@@ -12,10 +12,32 @@ import { createObservable } from '../pubsub';
 const { subscribe: subscribeNwc, notify } = createObservable();
 export { subscribeNwc };
 
+// Cached methods list from the last successful get_info call. Populated by
+// nwcValidate (at connect time) and nwcFetchCapabilities (lazy on card mount).
+// Null means "not yet fetched" — distinct from [] which means "fetched, empty".
+let cachedNwcMethods: string[] | null = null;
+
+export const nwcGetMethods = () => cachedNwcMethods;
+export const nwcSupportsKeysend = () => cachedNwcMethods?.includes('pay_keysend') ?? null;
+export const nwcSupportsPayInvoice = () => cachedNwcMethods?.includes('pay_invoice') ?? null;
+
+/** Fetch and cache the wallet's supported methods. No-op if not connected. */
+export async function nwcFetchCapabilities(): Promise<string[]> {
+  if (!hasNwc()) return [];
+  try {
+    const c = client();
+    const info = await c.getInfo();
+    cachedNwcMethods = info.methods ?? [];
+    return cachedNwcMethods;
+  } catch {
+    return cachedNwcMethods ?? [];
+  }
+}
+
 // Re-export the URI accessors so existing call sites keep their imports.
-export const saveNwcUri = (uri: string) => { storage.nwcUri.set(uri); notify(); };
+export const saveNwcUri = (uri: string) => { storage.nwcUri.set(uri); cachedNwcMethods = null; notify(); };
 export const loadNwcUri = () => storage.nwcUri.get();
-export const clearNwcUri = () => { storage.nwcUri.clear(); notify(); };
+export const clearNwcUri = () => { storage.nwcUri.clear(); cachedNwcMethods = null; notify(); };
 export const hasNwc = () => storage.nwcUri.has();
 
 function client() {
@@ -55,7 +77,8 @@ export async function nwcValidate(uri: string): Promise<string | null> {
     ]);
   try {
     try {
-      await withTimeout(c.getInfo());
+      const info = await withTimeout(c.getInfo());
+      cachedNwcMethods = info.methods ?? [];
       return null;
     } catch (infoErr) {
       // get_info may not be granted on this connection. Try get_balance —
@@ -79,8 +102,15 @@ export async function nwcValidate(uri: string): Promise<string | null> {
 
 export async function nwcPayInvoice(invoice: string): Promise<string> {
   const c = client();
-  const res = await c.payInvoice({ invoice });
-  return res.preimage;
+  try {
+    const res = await c.payInvoice({ invoice });
+    return res.preimage;
+  } catch (e) {
+    if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
+      throw new Error('Wallet returned NOT_IMPLEMENTED — your NWC wallet may not support this payment type. Try Alby or Mutiny instead of an embedded node.');
+    }
+    throw e;
+  }
 }
 
 /**
@@ -132,11 +162,26 @@ export async function nwcKeysend(args: {
   // than auto-generating it; wallets that auto-generate their own will
   // ignore this and return their preimage in res.preimage.
   const preimage = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
-  const res = await c.payKeysend({
-    pubkey: args.pubkey,
-    amount: args.amount_msat,
-    preimage,
-    tlv_records: args.tlv_records ?? [],
-  });
-  return res.preimage ?? preimage;
+  try {
+    const res = await c.payKeysend({
+      pubkey: args.pubkey,
+      amount: args.amount_msat,
+      preimage,
+      tlv_records: args.tlv_records ?? [],
+    });
+    return res.preimage ?? preimage;
+  } catch (e) {
+    // Zeus embedded node sometimes succeeds in sending the keysend but returns
+    // the NIP-47 result without a preimage field. The SDK's payKeysend validates
+    // e => !!e.preimage and throws Nip47ResponseValidationError when the field
+    // is absent — even though the payment went through. Since we generated the
+    // preimage and passed it, Zeus used it for TLV 5482373484, so our preimage
+    // IS the valid proof of payment. Re-throw anything else (routing failures,
+    // method-not-supported, timeout) so the caller sees the real error.
+    if (e instanceof nwc.Nip47ResponseValidationError) return preimage;
+    if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
+      throw new Error('Wallet returned NOT_IMPLEMENTED — your NWC wallet may not support this payment type. Try Alby or Mutiny instead of an embedded node.');
+    }
+    throw e;
+  }
 }
