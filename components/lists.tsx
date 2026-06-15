@@ -155,6 +155,9 @@ function PodcastRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
+          {podcast.medium === 'publisher' && (
+            <span className="stamp text-muted border-muted/40">▸ ALBUMS</span>
+          )}
           {showV4VStamp && podcast.value && (
             <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
           )}
@@ -299,6 +302,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const play = useApp((s) => s.play);
   const current = useApp((s) => s.current);
   const openEpisode = useApp((s) => s.openEpisode);
+  const setEpisodeQueue = useApp((s) => s.setEpisodeQueue);
 
   useEffect(() => {
     setValueOpen(false);
@@ -307,12 +311,12 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
     setLoading(true);
     fetch(`/api/feed?id=${feedId}`)
       .then((r) => r.json())
-      .then((d) => setData({ podcast: d.podcast, episodes: d.episodes }))
+      .then((d) => { setData({ podcast: d.podcast, episodes: d.episodes }); setEpisodeQueue(d.episodes); })
       .finally(() => setLoading(false));
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [feedId]);
+  }, [feedId, setEpisodeQueue]);
 
   if (!feedId) {
     return (

@@ -86,6 +86,11 @@ export async function getPodcast(feedId: number): Promise<Podcast | null> {
   return data.feed ? buildPodcast(data.feed) : null;
 }
 
+export async function getPodcastByFeedUrl(feedUrl: string): Promise<Podcast | null> {
+  const data = await pi<any>(`/podcasts/byfeedurl?url=${encodeURIComponent(feedUrl)}`);
+  return data.feed ? buildPodcast(data.feed) : null;
+}
+
 export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
   const data = await pi<any>(`/podcasts/byguid?guid=${encodeURIComponent(guid)}`);
   const f = data.feed;

@@ -127,6 +127,13 @@ function publisherRemoteItemUrls(xml: string): string[] {
   return urls;
 }
 
+/** Fetch a publisher feed and return the feedUrls of all its remoteItem album feeds. */
+export async function getPublisherAlbumUrls(feedUrl: string): Promise<string[]> {
+  const xml = await fetchFeedXml(feedUrl);
+  if (!xml || !isPublisherFeed(xml)) return [];
+  return publisherRemoteItemUrls(xml);
+}
+
 export interface ResolvedRemoteItem {
   value: ValueBlock;
   title?: string;

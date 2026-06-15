@@ -20,6 +20,9 @@ export default function Home() {
   const [query, setQuery] = useState('');
   const [favoritesCollapsed, setFavoritesCollapsed] = useState(false);
   const [searchKey, setSearchKey] = useState(0);
+  const [publisherSource, setPublisherSource] = useState<Podcast | null>(null);
+  const [publisherAlbums, setPublisherAlbums] = useState<Podcast[] | null>(null);
+  const [publisherLoading, setPublisherLoading] = useState(false);
   // `selected` lives in the Zustand store so cross-component surfaces (e.g.
   // the podcast-name link in a Nostr note card) can route into the detail
   // view without prop-drilling through the feed components.
@@ -64,6 +67,12 @@ export default function Home() {
     window.history.replaceState({}, '', url.toString());
   }, [selected?.podcastGuid, selectedEpisode?.guid]);
 
+  function clearPublisher() {
+    setPublisherSource(null);
+    setPublisherAlbums(null);
+    setPublisherLoading(false);
+  }
+
   // Referentially stable — it's an effect dependency inside <SearchBar>.
   // An inline arrow here loops: empty query → onResults([], '') → setState →
   // new arrow → effect refires. (setFeeds/setQuery are stable state setters;
@@ -71,8 +80,29 @@ export default function Home() {
   const handleResults = useCallback((f: Podcast[], q: string) => {
     setFeeds(f);
     setQuery(q);
+    clearPublisher();
     if (!f.length) setSelected(null);
-  }, [setSelected]);
+  }, [setSelected]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleSelect = useCallback(async (p: Podcast) => {
+    if (p.medium === 'publisher') {
+      setPublisherSource(p);
+      setPublisherAlbums(null);
+      setPublisherLoading(true);
+      try {
+        if (!p.url) { setPublisherAlbums([]); return; }
+        const res = await fetch(`/api/publisher?feedUrl=${encodeURIComponent(p.url)}`);
+        const data = await res.json();
+        setPublisherAlbums(data.feeds ?? []);
+      } catch {
+        setPublisherAlbums([]);
+      } finally {
+        setPublisherLoading(false);
+      }
+    } else {
+      setSelected(p);
+    }
+  }, [setSelected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function goHome() {
     setFeeds([]);
@@ -80,13 +110,14 @@ export default function Home() {
     setQuery('');
     setLoading(false);
     setSearchKey((n) => n + 1);
+    clearPublisher();
     if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
   }
   const favorites = useApp((s) => s.favorites);
   const hasFavorites = Object.keys(favorites).length > 0;
 
   const showFavoritesPanel = !query && hasFavorites;
-  const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel;
+  const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel || !!publisherSource;
   const inDetailView = !!selected;
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
   const inEpisodeDetail = useApp((s) => !!s.selectedEpisode);
@@ -159,7 +190,25 @@ export default function Home() {
           // (`inDetailView` branch above) so this layer never needs to host
           // an episode pane.
           <aside className="card p-3 max-h-[70vh] overflow-y-auto">
-            {showFavoritesPanel && !query && !loading ? (
+            {publisherSource ? (
+              <>
+                <button
+                  type="button"
+                  onClick={clearPublisher}
+                  className="btn-ghost text-xs mb-2 px-1"
+                >
+                  ← {publisherSource.title}
+                </button>
+                <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
+                  {publisherLoading ? 'loading albums…' : `${publisherAlbums?.length ?? 0} albums`}
+                </div>
+                {publisherLoading ? null : !publisherAlbums?.length ? (
+                  <p className="text-muted text-sm py-4 px-1">no indexed albums found</p>
+                ) : (
+                  <PodcastResults feeds={publisherAlbums} selected={null} onSelect={setSelected} />
+                )}
+              </>
+            ) : showFavoritesPanel && !query && !loading ? (
               <button
                 type="button"
                 onClick={() => setFavoritesCollapsed((v) => !v)}
@@ -176,18 +225,18 @@ export default function Home() {
                 {loading ? 'searching…' : query ? `${feeds.length} feeds` : 'feeds'}
               </div>
             )}
-            {query || feeds.length > 0 || loading ? (
+            {!publisherSource && (query || feeds.length > 0 || loading) ? (
               <PodcastResults
                 feeds={feeds}
                 selected={null}
-                onSelect={setSelected}
+                onSelect={handleSelect}
               />
-            ) : favoritesCollapsed ? null : (
+            ) : !publisherSource && !query && !loading && !favoritesCollapsed ? (
               <FavoritesList
                 selected={null}
                 onSelect={setSelected}
               />
-            )}
+            ) : null}
           </aside>
         ) : (
           <EmptyState />
