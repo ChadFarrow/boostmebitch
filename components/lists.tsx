@@ -155,6 +155,9 @@ function PodcastRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
+          {podcast.medium === 'publisher' && (
+            <span className="stamp text-muted border-muted/40">▸ ALBUMS</span>
+          )}
           {showV4VStamp && podcast.value && (
             <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
           )}
