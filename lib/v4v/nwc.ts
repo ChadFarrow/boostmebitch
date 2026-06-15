@@ -132,11 +132,23 @@ export async function nwcKeysend(args: {
   // than auto-generating it; wallets that auto-generate their own will
   // ignore this and return their preimage in res.preimage.
   const preimage = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
-  const res = await c.payKeysend({
-    pubkey: args.pubkey,
-    amount: args.amount_msat,
-    preimage,
-    tlv_records: args.tlv_records ?? [],
-  });
-  return res.preimage ?? preimage;
+  try {
+    const res = await c.payKeysend({
+      pubkey: args.pubkey,
+      amount: args.amount_msat,
+      preimage,
+      tlv_records: args.tlv_records ?? [],
+    });
+    return res.preimage ?? preimage;
+  } catch (e) {
+    // Zeus embedded node sometimes succeeds in sending the keysend but returns
+    // the NIP-47 result without a preimage field. The SDK's payKeysend validates
+    // e => !!e.preimage and throws Nip47ResponseValidationError when the field
+    // is absent — even though the payment went through. Since we generated the
+    // preimage and passed it, Zeus used it for TLV 5482373484, so our preimage
+    // IS the valid proof of payment. Re-throw anything else (routing failures,
+    // method-not-supported, timeout) so the caller sees the real error.
+    if (e instanceof nwc.Nip47ResponseValidationError) return preimage;
+    throw e;
+  }
 }
