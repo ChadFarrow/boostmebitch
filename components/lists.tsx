@@ -4,6 +4,7 @@ import type { Episode, Podcast, FavoritePodcast, ValueBlock } from '@/lib/types'
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 import { fmtDuration } from '@/lib/format';
+import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
@@ -32,7 +33,7 @@ function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   return null;
 }
 
-function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: 'sm' | 'md' }) {
+export function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: 'sm' | 'md' }) {
   const guid = podcast.podcastGuid;
   const isFav = useApp((s) => s.isFavorite(guid));
   const addFavorite = useApp((s) => s.addFavorite);
@@ -293,6 +294,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   });
   const [loading, setLoading] = useState(false);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
+  const [boostTrack, setBoostTrack] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
   // Episodes are revealed 10 at a time behind a "Load more" button. The Nostr
   // comments feed sits below this list, so a button (not infinite scroll) keeps
@@ -300,6 +302,8 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const [visibleCount, setVisibleCount] = useState(10);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const play = useApp((s) => s.play);
+  const togglePlay = useApp((s) => s.togglePlay);
+  const isPlaying = useApp((s) => s.isPlaying);
   const current = useApp((s) => s.current);
   const openEpisode = useApp((s) => s.openEpisode);
   const setEpisodeQueue = useApp((s) => s.setEpisodeQueue);
@@ -329,20 +333,57 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   if (loading) return <div ref={containerRef} className="text-muted text-sm py-8">loading episodes…</div>;
   if (!data.podcast) return <div ref={containerRef} className="text-muted text-sm py-8">not found</div>;
 
-  const showHasValue = !!data.podcast.value && data.podcast.value.recipients?.length > 0;
-  const visibleEpisodes = data.episodes.slice(0, visibleCount);
+  const showHasValue = hasValueRecipients(data.podcast.value);
+  const isMusic = isMusicMedium(data.podcast);
+  // First non-pending track — for music feeds episodes are sorted track-order ascending.
+  const firstPlayable = data.episodes.find((e) => e.liveStatus !== 'pending') ?? data.episodes[0];
+  // Is the currently-playing track part of this show?
+  const showIsCurrent = !!current && (
+    (!!data.podcast.podcastGuid && current.podcast.podcastGuid === data.podcast.podcastGuid) ||
+    current.podcast.id === data.podcast.id
+  );
+  // Music feeds show the whole album (track order); other shows paginate 10 at a time.
+  const visibleEpisodes = isMusic ? data.episodes : data.episodes.slice(0, visibleCount);
   const remaining = data.episodes.length - visibleEpisodes.length;
 
   return (
     <div ref={containerRef}>
       <header className="sticky top-[var(--app-header-h)] z-10 bg-ink/90 backdrop-blur -mx-4 px-4 flex items-start gap-4 pb-4 border-b border-bone/15">
-        <PodcastCover
-          image={data.podcast.image}
-          artwork={data.podcast.artwork}
-          title={data.podcast.title}
-          seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
-          className="w-20 h-20 border border-bone/20 flex-shrink-0 text-3xl"
-        />
+        {isMusic && firstPlayable ? (
+          <button
+            type="button"
+            onClick={() => {
+              if (showIsCurrent) togglePlay();
+              else if (data.podcast) play(firstPlayable, data.podcast);
+            }}
+            className="group relative w-20 h-20 flex-shrink-0"
+            title={showIsCurrent && isPlaying ? 'Pause' : 'Play album'}
+            aria-label={showIsCurrent && isPlaying ? 'Pause' : 'Play album'}
+          >
+            <PodcastCover
+              image={data.podcast.image}
+              artwork={data.podcast.artwork}
+              title={data.podcast.title}
+              seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
+              className="w-full h-full border border-bone/20 group-hover:border-bolt text-3xl"
+            />
+            <div
+              className={`absolute inset-0 grid place-items-center bg-ink/45 transition pointer-events-none text-2xl ${
+                showIsCurrent && isPlaying ? 'text-bolt' : 'text-bone group-hover:text-bolt group-hover:bg-ink/55'
+              }`}
+            >
+              {showIsCurrent && isPlaying ? '❚❚' : '▶'}
+            </div>
+          </button>
+        ) : (
+          <PodcastCover
+            image={data.podcast.image}
+            artwork={data.podcast.artwork}
+            title={data.podcast.title}
+            seed={data.podcast.podcastGuid ?? String(data.podcast.id)}
+            className="w-20 h-20 border border-bone/20 flex-shrink-0 text-3xl"
+          />
+        )}
         <div className="min-w-0 flex-1">
           <h2 className="font-display text-3xl leading-tight font-semibold break-words">{data.podcast.title}</h2>
           <p className="text-sm text-muted mt-1">{data.podcast.author}</p>
@@ -398,7 +439,15 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
               className={`group transition ${
                 playing ? 'bg-bolt/10' : 'hover:bg-bone/5'
               } cursor-pointer`}
-              onClick={() => openEpisode(e)}
+              onClick={() => {
+                // Tracks carry little extra metadata, so a row tap just plays
+                // the track rather than opening the episode detail view.
+                if (isMusic) {
+                  if (e.liveStatus !== 'pending' && data.podcast) play(e, data.podcast);
+                } else {
+                  openEpisode(e);
+                }
+              }}
             >
               <div className="flex gap-3 py-3 pr-3">
               <button
@@ -456,6 +505,16 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   <span className="text-bolt text-[11px] mt-0.5">⚡ {e.valueTimeSplits.length} tracks</span>
                 ) : null}
               </div>
+              {hasValueRecipients(e.value) && (
+                <button
+                  type="button"
+                  onClick={(ev) => { ev.stopPropagation(); setBoostTrack(e); }}
+                  className="btn-bolt self-center flex-shrink-0"
+                  title="Boost this track"
+                >
+                  <BoltIcon /> BOOST
+                </button>
+              )}
               </div>
             </li>
             </Fragment>
@@ -486,6 +545,11 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           <PodcastNostrFeed
             podcastGuid={data.podcast.podcastGuid}
             podcastTitle={data.podcast.title}
+            episodeGuids={
+              isMusic
+                ? data.episodes.map((e) => e.guid).filter((g): g is string => !!g)
+                : undefined
+            }
           />
         </DeferredOnScroll>
       )}
@@ -494,6 +558,14 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
         <BoostModal
           podcast={data.podcast}
           onClose={() => setShowBoostOpen(false)}
+        />
+      )}
+
+      {boostTrack && data.podcast && (
+        <BoostModal
+          episode={boostTrack}
+          podcast={data.podcast}
+          onClose={() => setBoostTrack(null)}
         />
       )}
 

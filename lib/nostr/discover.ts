@@ -229,20 +229,30 @@ export function noteHasSubstance(note: DiscoveredNote): boolean {
  * the given relays. Resolves each unique author's kind:0 metadata in a single
  * follow-up query so the UI can render avatar + display_name without N+1
  * round-trips. Returns notes sorted newest-first, deduped by event id.
+ *
+ * `episodeGuids` widens the `#i` filter to also match those tracks'
+ * `podcast:item:guid:<guid>` tags (OR semantics in one filter). Music album
+ * pages pass every track guid so the show feed surfaces per-track boosts even
+ * when a client tagged only the item guid — there are no per-track pages.
  */
 export async function fetchPodcastNotes(
   podcastGuid: string,
   opts: FetchOpts = {},
+  episodeGuids: string[] = [],
 ): Promise<DiscoveredNote[]> {
   const relays = opts.relays ?? DEFAULT_RELAYS;
   const limit = opts.limit ?? 100;
+  const iTags = [
+    `podcast:guid:${podcastGuid}`,
+    ...episodeGuids.map((g) => `podcast:item:guid:${g}`),
+  ];
 
   return withPool(relays, async (pool) => {
     let events: Event[] = [];
     try {
       events = await pool.querySync(relays, {
         kinds: [1],
-        '#i': [`podcast:guid:${podcastGuid}`],
+        '#i': iTags,
         limit,
         ...(opts.since !== undefined ? { since: opts.since } : {}),
       }, { maxWait: FEED_QUERY_MAX_WAIT_MS });

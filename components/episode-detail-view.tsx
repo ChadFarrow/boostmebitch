@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDuration, stripHtml } from '@/lib/format';
+import { hasValueRecipients } from '@/lib/util';
 import { useChapters } from '@/lib/chapters';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
@@ -131,7 +132,7 @@ export function EpisodeDetailView() {
   if (!episode || !podcast) return null;
 
   const value = episode.value ?? podcast.value;
-  const hasValue = !!value?.recipients?.length;
+  const hasValue = hasValueRecipients(value);
   const isThisPlaying = current?.episode.id === episode.id;
   const playerVisible = !!current;
   const description = !episode.contentEncoded && episode.description

@@ -2,9 +2,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
+import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { BoostModal } from './boost-modal';
 import { BoltIcon } from './icons';
 import { FullscreenPlayer } from './fullscreen-player';
+import { TransportControls } from './transport-controls';
 
 export function Player() {
   const { current, isPlaying, setPlaying, setPosition, positionSec, playNext } = useApp();
@@ -34,7 +36,7 @@ export function Player() {
 
   if (!current) return null;
   const { episode, podcast } = current;
-  const hasValue = !!episode.value && episode.value.recipients?.length > 0;
+  const hasValue = hasValueRecipients(episode.value);
   const isLive = episode.liveStatus === 'live';
 
   return (
@@ -57,7 +59,7 @@ export function Player() {
           }}
           onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); setAudioErr(null); }}
           onEnded={() => {
-            if (current?.podcast.medium?.toLowerCase() === 'music') playNext();
+            if (current && isMusicMedium(current.podcast)) playNext();
             else setPlaying(false);
           }}
           onError={(e) => {
@@ -108,9 +110,7 @@ export function Player() {
             )}
           </div>
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => setPlaying(!isPlaying)} className="btn">
-              {isPlaying ? '❚❚' : '▶'}
-            </button>
+            <TransportControls />
             <button
               onClick={() => setBoostOpen(true)}
               disabled={!hasValue}

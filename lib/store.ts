@@ -21,6 +21,7 @@ interface AppState {
   setPosition: (s: number) => void;
   setEpisodeQueue: (episodes: Episode[]) => void;
   playNext: () => void;
+  playPrev: () => void;
 
   // The podcast currently shown in the detail view. Lifted into the store so
   // surfaces outside `app/page.tsx` (e.g. a podcast-name link in a Nostr note
@@ -82,6 +83,13 @@ export const useApp = create<AppState>((set, get) => ({
     const next = idx >= 0 ? s.episodeQueue[idx + 1] : undefined;
     if (!next) return s;
     return { current: { episode: next, podcast: s.current.podcast }, isPlaying: true, positionSec: 0 };
+  }),
+  playPrev: () => set((s) => {
+    if (!s.current) return s;
+    const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
+    const prev = idx > 0 ? s.episodeQueue[idx - 1] : undefined;
+    if (!prev) return s;
+    return { current: { episode: prev, podcast: s.current.podcast }, isPlaying: true, positionSec: 0 };
   }),
 
   selectedPodcast: null,

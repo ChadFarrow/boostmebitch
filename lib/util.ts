@@ -1,3 +1,17 @@
+import type { Podcast, ValueBlock } from './types';
+
+// True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
+// Case-insensitive — PI doesn't normalize the tag. Drives album-specific UI
+// (play overlay, track list, row-tap-to-play, track-order sort).
+export function isMusicMedium(podcast: Pick<Podcast, 'medium'>): boolean {
+  return podcast.medium?.toLowerCase() === 'music';
+}
+
+// True when a value block actually has payees — the gate for showing BOOST.
+export function hasValueRecipients(value?: ValueBlock | null): boolean {
+  return !!value?.recipients?.length;
+}
+
 // Coerce an unknown thrown value into a user-readable string. Use for the
 // fallback in `catch (e) { return { error: getErrorMessage(e, '<x> failed') } }`
 // patterns in API routes and UI handlers.

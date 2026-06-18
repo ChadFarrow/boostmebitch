@@ -20,14 +20,18 @@ import { NoteCard } from './nostr-note-card';
 export function PodcastNostrFeed({
   podcastGuid,
   podcastTitle,
+  episodeGuids,
 }: {
   podcastGuid: string;
   podcastTitle?: string;
+  // Track guids to fold into the `#i` filter (music albums — no per-track pages).
+  episodeGuids?: string[];
 }) {
+  const guidsKey = episodeGuids?.join(',') ?? '';
   const { notes, loading, err, refresh } = useNostrFeed({
     cacheKey: `podcast:${podcastGuid}`,
-    fetcher: (opts) => fetchPodcastNotes(podcastGuid, opts),
-    deps: [podcastGuid],
+    fetcher: (opts) => fetchPodcastNotes(podcastGuid, opts, episodeGuids),
+    deps: [podcastGuid, guidsKey],
   });
   const identity = useApp((s) => s.identity);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);

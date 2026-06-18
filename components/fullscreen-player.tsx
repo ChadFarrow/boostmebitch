@@ -1,11 +1,14 @@
 'use client';
-import { RefObject, useState } from 'react';
+import { RefObject, useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmt, stripHtml } from '@/lib/format';
 import { useChapters } from '@/lib/chapters';
 import { BoltIcon } from './icons';
+import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
+import { FavHeart } from './lists';
+import { TransportControls } from './transport-controls';
 
 function ChaptersList({
   url,
@@ -67,15 +70,32 @@ export function FullscreenPlayer({
   onClose: () => void;
   onBoost: () => void;
 }) {
-  const { current, isPlaying, setPlaying, positionSec, setPosition } = useApp();
+  const { current, isPlaying, positionSec, setPosition, episodeQueue, play } = useApp();
   const [valueOpen, setValueOpen] = useState(false);
+
+  // Lock the page behind the overlay so its scrollbar doesn't show through.
+  // The document scrolls at the <html> element (background lives there), so
+  // lock both html and body to be safe.
+  useEffect(() => {
+    if (!open) return;
+    const html = document.documentElement;
+    const prevHtml = html.style.overflow;
+    const prevBody = document.body.style.overflow;
+    html.style.overflow = 'hidden';
+    document.body.style.overflow = 'hidden';
+    return () => {
+      html.style.overflow = prevHtml;
+      document.body.style.overflow = prevBody;
+    };
+  }, [open]);
 
   if (!current) return null;
 
   const { episode, podcast } = current;
+  const isMusic = isMusicMedium(podcast);
   const isLive = episode.liveStatus === 'live';
   const value = episode.value ?? podcast.value;
-  const hasValue = !!value?.recipients?.length;
+  const hasValue = hasValueRecipients(value);
   const description = episode.description ? stripHtml(episode.description) : '';
 
   function seekTo(s: number) {
@@ -95,22 +115,22 @@ export function FullscreenPlayer({
         </button>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-5 py-6 lg:py-10 grid lg:grid-cols-2 gap-8 lg:gap-12 items-start">
-          {/* Artwork — first on mobile, sticky on desktop so it stays visible while right pane scrolls */}
-          <div className="lg:sticky lg:top-6">
-            <div className="w-full max-w-md mx-auto aspect-square">
-              <PodcastCover
-                image={episode.image ?? podcast.image}
-                artwork={podcast.artwork}
-                title={podcast.title}
-                seed={podcast.id?.toString()}
-                className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
-              />
-            </div>
+      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col sm:flex-row">
+        {/* Artwork — centered in the left half; sticky so it stays put as the page scrolls */}
+        <div className="flex items-center justify-center p-6 lg:p-10 sm:w-1/2 sm:flex-shrink-0 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
+          <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
+            <PodcastCover
+              image={episode.image ?? podcast.image}
+              artwork={podcast.artwork}
+              title={podcast.title}
+              seed={podcast.id?.toString()}
+              className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
+            />
           </div>
+        </div>
 
-          {/* Info + controls */}
+        {/* Info + controls — right half; scrolls with the page (no separate scroll region) */}
+        <div className="sm:w-1/2 p-6 lg:p-10">
           <div className="flex flex-col gap-5 min-w-0">
             <div>
               <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
@@ -142,35 +162,21 @@ export function FullscreenPlayer({
               </div>
             )}
 
-            <div className="flex items-center gap-3 flex-wrap">
-              <button
-                onClick={() => setPlaying(!isPlaying)}
-                className="btn text-2xl w-14 h-14 flex items-center justify-center flex-shrink-0"
-                aria-label={isPlaying ? 'Pause' : 'Play'}
-              >
-                {isPlaying ? '❚❚' : '▶'}
-              </button>
+            <div className="flex items-center justify-center gap-3 flex-wrap">
+              <TransportControls size="lg" />
               <button
                 onClick={onBoost}
                 disabled={!hasValue}
-                className="btn-bolt disabled:opacity-40 disabled:cursor-not-allowed"
+                className="btn-bolt disabled:opacity-40 disabled:cursor-not-allowed ml-28"
                 title={hasValue ? 'Send a boost' : 'Episode has no value block'}
               >
                 <BoltIcon /> BOOST
               </button>
+              <FavHeart podcast={podcast} size="md" />
             </div>
 
-            {description && (
-              <div className="border-t border-bone/10 pt-5">
-                <p className="text-[11px] uppercase tracking-widest text-muted mb-2">About this episode</p>
-                <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap max-h-72 overflow-y-auto pr-2">
-                  {description}
-                </div>
-              </div>
-            )}
-
             {hasValue && value && (
-              <div className="border-t border-bone/10 pt-5">
+              <div className="-mt-1">
                 <button
                   type="button"
                   onClick={() => setValueOpen((v) => !v)}
@@ -205,6 +211,47 @@ export function FullscreenPlayer({
                     })}
                   </ul>
                 )}
+              </div>
+            )}
+
+            {isMusic && episodeQueue.length > 1 && (
+              <div className="border-t border-bone/10 pt-5">
+                <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
+                  Album · {episodeQueue.length} tracks
+                </p>
+                <ul className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
+                  {episodeQueue.map((t, i) => {
+                    const active = t.id === episode.id;
+                    return (
+                      <li key={t.id}>
+                        <button
+                          type="button"
+                          onClick={() => play(t, podcast)}
+                          className={`w-full flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
+                            active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                          }`}
+                        >
+                          <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
+                            {active && isPlaying ? '❚❚' : i + 1}
+                          </span>
+                          <span className="truncate flex-1">{t.title}</span>
+                          {t.duration ? (
+                            <span className="text-muted tabular-nums text-xs flex-shrink-0">{fmt(t.duration)}</span>
+                          ) : null}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+
+            {description && (
+              <div className="border-t border-bone/10 pt-5">
+                <p className="text-[11px] uppercase tracking-widest text-muted mb-2">About this episode</p>
+                <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap max-h-72 overflow-y-auto pr-2">
+                  {description}
+                </div>
               </div>
             )}
 

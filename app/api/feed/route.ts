@@ -3,6 +3,7 @@ import { getEpisodes, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getR
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
+import { isMusicMedium } from '@/lib/util';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -88,7 +89,7 @@ export async function GET(req: Request) {
     // broadcast first) on the off chance more than one stream is live.
     // Music album feeds (medium=music) sort by disc (podcast:season) then
     // track (podcast:episode) ascending instead of by date.
-    const isMusic = podcast.medium?.toLowerCase() === 'music' || feedMedium === 'music';
+    const isMusic = isMusicMedium(podcast) || feedMedium === 'music';
     merged.sort((a, b) => {
       const ra = a.liveStatus ? LIVE_RANK[a.liveStatus] ?? 3 : 3;
       const rb = b.liveStatus ? LIVE_RANK[b.liveStatus] ?? 3 : 3;
@@ -106,6 +107,9 @@ export async function GET(req: Request) {
       }
       return (b.datePublished ?? 0) - (a.datePublished ?? 0);
     });
+    // Backfill the channel-level medium so the client gets the same music
+    // signal the sort used (PI doesn't reliably index `medium`).
+    if (!podcast.medium && feedMedium) podcast.medium = feedMedium;
     return NextResponse.json(
       { podcast, episodes: merged },
       { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },

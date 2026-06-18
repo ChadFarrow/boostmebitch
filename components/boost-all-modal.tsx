@@ -8,7 +8,7 @@ import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
-import { getErrorMessage } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients } from '@/lib/util';
 import { fireConfetti } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
@@ -94,7 +94,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       .then((r) => r.json())
       .then((data) => {
         const all = (data.splits as ValueTimeSplit[]) ?? [];
-        const resolved = all.filter((s) => s.value?.recipients?.length);
+        const resolved = all.filter((s) => hasValueRecipients(s.value));
         setSplits(resolved);
         setTotalSplits(all.length);
         setLoadState('ready');
@@ -208,7 +208,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       // sibling track leg so the host can see which track triggered it in
       // their boostagram log. Skip if remotePct === 100 (no host share),
       // hostValue is missing, or showLegSats rounded to 0.
-      if (showLegSats > 0 && hostValue?.recipients?.length && !cancelled.current) {
+      if (showLegSats > 0 && hasValueRecipients(hostValue) && !cancelled.current) {
         const hostBoostagram: Boostagram = {
           app_name: 'BoostMeBitch',
           app_version: '0.1.0',
@@ -230,7 +230,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         };
         try {
           const hostResults = await sendBoost({
-            value: hostValue,
+            value: hostValue!, // guaranteed by hasValueRecipients(hostValue) above
             totalSats: showLegSats,
             boostagram: hostBoostagram,
             rail,
