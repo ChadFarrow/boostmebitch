@@ -10,6 +10,7 @@ import {
   fetchProfile,
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
+import { NostrAuth } from '@/components/nostr-auth';
 
 // Dedicated standalone page for a single Nostr live stream. Renders ONLY a
 // loading / not-found state — the app-global <Player> (mounted in the root
@@ -65,10 +66,21 @@ export default function StreamPage() {
   }, [playerExpanded, router]);
 
   return (
-    <div
-      className="fixed inset-0 z-40 bg-ink flex flex-col items-center justify-center gap-3 text-muted"
-      style={{ paddingTop: 'env(safe-area-inset-top)' }}
-    >
+    <>
+      {/* Mounts the Nostr session logic (identity hydration from the cached
+          login + the sign-in modal) on this standalone route, where the home
+          page and its <NostrAuth> aren't present — otherwise you can't be
+          recognized as signed in, nor sign in, without backing out to home.
+          The visible button is hidden; the fullscreen player's own "Sign in"
+          button opens the (portal'd) modal, and the modal renders to <body>
+          regardless of this wrapper's display:none. */}
+      <div className="hidden">
+        <NostrAuth />
+      </div>
+      <div
+        className="fixed inset-0 z-40 bg-ink flex flex-col items-center justify-center gap-3 text-muted"
+        style={{ paddingTop: 'env(safe-area-inset-top)' }}
+      >
       {status === 'notfound' ? (
         <>
           <span className="text-sm">Stream not found or ended.</span>
@@ -80,6 +92,7 @@ export default function StreamPage() {
           <span className="text-sm font-mono uppercase tracking-widest">Loading live stream…</span>
         </>
       )}
-    </div>
+      </div>
+    </>
   );
 }
