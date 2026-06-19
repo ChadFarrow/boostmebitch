@@ -5,7 +5,7 @@ import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
-import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
+import { publishBoostNote, resolvePublishRelays, recordLastRail, publishLiveChat } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { fireConfetti } from '@/lib/format';
@@ -120,6 +120,23 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     setRunning(false);
 
     const anyPaid = collected.some((r) => r.ok);
+
+    // Auto-close after a successful send (brief delay so the confetti + "sent"
+    // state register). The Nostr note + chat publishes below continue in the
+    // background; their post-close setState is a no-op in React 18. A fully
+    // failed boost leaves the modal open so the user sees the error.
+    if (anyPaid) setTimeout(() => onClose(), 1500);
+
+    // A live-stream boost posts into the stream's chat (kind:1311) so other
+    // viewers see it — independent of the Share-on-Nostr toggle. Nostr streams
+    // set episode.guid = `<64-hex pubkey>:<dTag>`. Signed-in only (the message
+    // must be signed); non-fatal so a relay hiccup can't fail the boost.
+    const liveStreamId =
+      episode?.guid && /^[0-9a-f]{64}:/.test(episode.guid) ? episode.guid : null;
+    if (anyPaid && identity && liveStreamId) {
+      const chatMsg = `⚡ Boosted ${sats.toLocaleString()} sats${msg ? `: ${msg}` : ''}`;
+      publishLiveChat(liveStreamId, chatMsg).catch(() => { /* non-fatal */ });
+    }
 
     // Remember the rail that actually paid as the user's preference (local +
     // synced to Nostr) so it's preselected here and on their other devices.
