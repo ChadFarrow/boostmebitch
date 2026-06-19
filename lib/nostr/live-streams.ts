@@ -170,6 +170,45 @@ export async function fetchNostrLiveStreams(opts?: {
 }
 
 /**
+ * Encode a stream's NIP-33 address as a shareable `naddr` (kind:30311 +
+ * pubkey + d-tag + a couple of relay hints) for deep-link URLs.
+ */
+export function streamNaddr(pubkey: string, dTag: string): string {
+  return nip19.naddrEncode({
+    kind: 30311,
+    pubkey,
+    identifier: dTag,
+    relays: LIVE_STREAM_RELAYS.slice(0, 3),
+  });
+}
+
+/**
+ * Fetch a single kind:30311 stream by its NIP-33 address (used by the
+ * `?stream=<naddr>` deep-link). No status/freshness filter — opens exactly what
+ * was shared. Returns the newest matching event, or null if none is found.
+ */
+export async function fetchLiveStreamByAddr(
+  pubkey: string,
+  dTag: string,
+  relayHints: string[] = [],
+): Promise<NostrLiveStream | null> {
+  const relays = sanitizeRelays([...relayHints, ...LIVE_STREAM_RELAYS]).slice(0, 20);
+  return withPool(relays, async (pool) => {
+    try {
+      const events = await pool.querySync(
+        relays,
+        { kinds: [30311], authors: [pubkey], '#d': [dTag], limit: 4 },
+        { maxWait: FEED_QUERY_MAX_WAIT_MS },
+      );
+      const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
+      return newest ? parseNostrLiveStream(newest) : null;
+    } catch {
+      return null;
+    }
+  });
+}
+
+/**
  * Resolve a ValueBlock for V4V boosts against a Nostr live stream.
  *
  * Two paths:

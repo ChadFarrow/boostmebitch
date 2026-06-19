@@ -4,7 +4,9 @@ import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt, stripHtml } from '@/lib/format';
 import { useChapters } from '@/lib/chapters';
-import { BoltIcon } from './icons';
+import type { Podcast } from '@/lib/types';
+import { streamNaddr } from '@/lib/nostr';
+import { BoltIcon, ShareIcon } from './icons';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
@@ -56,6 +58,42 @@ function ChaptersList({
         })}
       </ul>
     </div>
+  );
+}
+
+// Copy a BMB deep link to the current item: ?stream=<naddr> for a Nostr live
+// stream (liveStreamId = `<pubkey>:<dTag>`), else ?podcast=<guid>. Clipboard-only
+// with a COPIED flip, mirroring the episode-list ShareButton.
+function ShareButton({ liveStreamId, podcast }: { liveStreamId: string | null; podcast: Podcast }) {
+  const [copied, setCopied] = useState(false);
+
+  function buildUrl(): string | null {
+    if (typeof window === 'undefined') return null;
+    const base = window.location.origin + '/';
+    if (liveStreamId) {
+      const i = liveStreamId.indexOf(':');
+      if (i <= 0) return null;
+      return `${base}?stream=${streamNaddr(liveStreamId.slice(0, i), liveStreamId.slice(i + 1))}`;
+    }
+    if (podcast.podcastGuid) return `${base}?podcast=${podcast.podcastGuid}`;
+    return null;
+  }
+
+  const url = buildUrl();
+  if (!url) return null;
+
+  async function onClick() {
+    try {
+      await navigator.clipboard.writeText(url!);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    } catch { /* clipboard blocked — silent no-op */ }
+  }
+
+  return (
+    <button onClick={onClick} className="btn-ghost" title="Copy link to this page" aria-label="Copy link to this page">
+      <ShareIcon /> {copied ? 'COPIED' : 'SHARE'}
+    </button>
   );
 }
 
@@ -193,6 +231,7 @@ export function FullscreenPlayer({
                   <BoltIcon /> BOOST
                 </button>
                 <FavHeart podcast={podcast} size="md" />
+                <ShareButton liveStreamId={liveStreamId} podcast={podcast} />
               </div>
             </div>
             <div className="flex-1 min-h-0">
@@ -243,6 +282,7 @@ export function FullscreenPlayer({
                 <BoltIcon /> BOOST
               </button>
               <FavHeart podcast={podcast} size="md" />
+              <ShareButton liveStreamId={null} podcast={podcast} />
             </div>
 
             {hasValue && value && (

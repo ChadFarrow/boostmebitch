@@ -12,6 +12,14 @@ import { BoltIcon } from '@/components/icons';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useApp } from '@/lib/store';
 import { resolvePodcastByGuid } from '@/lib/podcast-meta';
+import { nip19 } from 'nostr-tools';
+import {
+  fetchLiveStreamByAddr,
+  resolveStreamV4V,
+  streamToEpisode,
+  streamToPodcast,
+  fetchProfile,
+} from '@/lib/nostr';
 
 import type { Episode, Podcast } from '@/lib/types';
 
@@ -31,6 +39,8 @@ export default function Home() {
   const setSelected = useApp((s) => s.selectPodcast);
   const selectedEpisode = useApp((s) => s.selectedEpisode);
   const openEpisode = useApp((s) => s.openEpisode);
+  const play = useApp((s) => s.play);
+  const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
 
   // Mount-time hydration: if the URL carries ?podcast=<guid> (+ optional
   // ?episode=<guid>), resolve and open both. resolvePodcastByGuid has its own
@@ -54,6 +64,35 @@ export default function Home() {
       } catch { /* ignore — episode just won't auto-open */ }
     });
   }, [setSelected, openEpisode]);
+
+  // Mount-time hydration: if the URL carries ?stream=<naddr>, fetch that
+  // kind:30311 event and open its fullscreen player. One-shot — the param is
+  // consumed and cleared so it can't collide with the ?podcast= mirroring below.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const naddr = params.get('stream');
+    if (!naddr) return;
+
+    let decoded: ReturnType<typeof nip19.decode> | null = null;
+    try { decoded = nip19.decode(naddr); } catch { /* malformed */ }
+    if (!decoded || decoded.type !== 'naddr' || decoded.data.kind !== 30311) return;
+    const { pubkey, identifier, relays } = decoded.data;
+
+    (async () => {
+      const stream = await fetchLiveStreamByAddr(pubkey, identifier, relays ?? []);
+      if (!stream || useApp.getState().current) return;
+      const profile = await fetchProfile(stream.pubkey).catch(() => null);
+      const value = await resolveStreamV4V(stream).catch(() => null);
+      play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
+      setPlayerExpanded(true);
+    })().finally(() => {
+      // Clear just the `stream` param, preserving the rest.
+      const url = new URL(window.location.href);
+      url.searchParams.delete('stream');
+      window.history.replaceState({}, '', url.toString());
+    });
+  }, [play, setPlayerExpanded]);
 
   // Selection → URL: replaceState so navigation doesn't pile browser history
   // entries (the explicit back buttons are the only in-app exit paths). Lets
