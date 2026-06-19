@@ -1,10 +1,12 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   fetchNostrLiveStreams,
   resolveStreamV4V,
   streamToEpisode,
   streamToPodcast,
+  streamNaddr,
   type NostrLiveStream,
 } from '@/lib/nostr/live-streams';
 import { fetchProfile } from '@/lib/nostr';
@@ -27,7 +29,7 @@ export function NostrLiveStreams() {
   const [loading, setLoading] = useState(true);
   const [boostTarget, setBoostTarget] = useState<{ episode: Episode; podcast: Podcast } | null>(null);
   const play = useApp((s) => s.play);
-  const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
+  const router = useRouter();
   const mountedRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
@@ -128,11 +130,13 @@ export function NostrLiveStreams() {
 
       <div ref={scrollRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
         {resolved.map(({ stream, profile, value }) => {
-          // Play the stream in the mini-bar; optionally also expand the
-          // fullscreen player (card click vs the PLAY button).
+          // Play instantly (the card already has the resolved data); a card
+          // click (expand) also navigates to the dedicated /stream/<naddr> page
+          // so the URL reflects it and a refresh restores the stream. The PLAY
+          // button stays in the mini-bar (no navigation).
           const start = (expand: boolean) => {
             play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
-            if (expand) setPlayerExpanded(true);
+            if (expand) router.push(`/stream/${streamNaddr(stream.pubkey, stream.dTag)}`);
           };
           return (
             <StreamCard

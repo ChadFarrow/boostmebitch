@@ -38,6 +38,14 @@ export default function StreamPage() {
       return;
     }
     const { pubkey, identifier, relays } = decoded.data;
+    // Fast-path: a card click already played this stream (current matches), so
+    // just open the player — no re-fetch. On a cold refresh `current` is null,
+    // so this is skipped and the full fetch below restores the stream.
+    if (useApp.getState().current?.episode.guid === `${pubkey}:${identifier}`) {
+      setPlayerExpanded(true);
+      setStatus('open');
+      return;
+    }
     let cancelled = false;
     (async () => {
       const stream = await fetchLiveStreamByAddr(pubkey, identifier, relays ?? []);
