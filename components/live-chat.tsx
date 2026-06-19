@@ -24,6 +24,7 @@ function fmtChatTime(unixSec: number) {
 export function LiveChat({ streamId }: { streamId: string }) {
   const identity = useApp((s) => s.identity);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  const setSignInOpen = useApp((s) => s.setSignInOpen);
 
   const [messages, setMessages] = useState<Event[]>([]);
   const [profiles, setProfiles] = useState<Record<string, ProfileMetadata | null>>({});
@@ -180,7 +181,13 @@ export function LiveChat({ streamId }: { streamId: string }) {
             {err && <p className="text-[11px] text-nostr">⚠ {err}</p>}
           </div>
         ) : (
-          <p className="text-xs text-muted">Sign in with Nostr to join the chat.</p>
+          <button
+            type="button"
+            onClick={() => setSignInOpen(true)}
+            className="text-xs text-muted hover:text-bone text-left"
+          >
+            <span className="text-nostr">◆</span> Sign in with Nostr to join the chat.
+          </button>
         )}
       </div>
     </div>

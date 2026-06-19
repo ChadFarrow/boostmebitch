@@ -77,6 +77,8 @@ export function FullscreenPlayer({
   onBoost: () => void;
 }) {
   const { current, isPlaying, positionSec, setPosition, episodeQueue, play } = useApp();
+  const identity = useApp((s) => s.identity);
+  const setSignInOpen = useApp((s) => s.setSignInOpen);
   const [valueOpen, setValueOpen] = useState(false);
 
   // Lock the page behind the overlay so its scrollbar doesn't show through.
@@ -126,9 +128,20 @@ export function FullscreenPlayer({
           </button>
           <span className="text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
         </div>
-        <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
-          ✕
-        </button>
+        <div className="flex items-center gap-2">
+          {!identity && (
+            <button
+              onClick={() => setSignInOpen(true)}
+              className="btn-ghost text-xs"
+              aria-label="Sign in with Nostr"
+            >
+              <span className="text-nostr">◆</span> Sign in
+            </button>
+          )}
+          <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
+            ✕
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col sm:flex-row">
