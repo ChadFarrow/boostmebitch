@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract } from './types';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { assertSafeFetchUrl } from './safe-fetch';
+import { fnvHash } from './util';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -560,12 +561,3 @@ export async function resolveValueTimeSplits(
   );
 }
 
-// 32-bit FNV-1a; just need a stable non-colliding key for React + the store.
-function fnvHash(s: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h & 0x7fffffff;
-}

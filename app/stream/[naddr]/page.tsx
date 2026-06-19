@@ -8,6 +8,7 @@ import {
   streamToEpisode,
   streamToPodcast,
   fetchProfile,
+  streamIdOf,
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { NostrAuth } from '@/components/nostr-auth';
@@ -41,7 +42,7 @@ export default function StreamPage() {
     // Fast-path: a card click already played this stream (current matches), so
     // just open the player — no re-fetch. On a cold refresh `current` is null,
     // so this is skipped and the full fetch below restores the stream.
-    if (useApp.getState().current?.episode.guid === `${pubkey}:${identifier}`) {
+    if (useApp.getState().current?.episode.guid === streamIdOf(pubkey, identifier)) {
       setPlayerExpanded(true);
       setStatus('open');
       return;

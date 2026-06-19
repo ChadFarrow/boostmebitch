@@ -3,17 +3,22 @@ import { withPool, FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS, sanitizeRelays } from './relays';
 import { fetchProfile } from './profile';
 import { storage } from '../storage';
+import { fnvHash } from '../util';
 import type { Episode, Podcast, ValueBlock, ValueRecipient } from '../types';
 import type { ProfileMetadata } from './auth';
 
-// FNV-1a hash for stable numeric IDs (mirrors the one in lib/pi.ts)
-function fnvHash(s: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h & 0x7fffffff;
+// A live stream's id is its NIP-33 replaceable address tail: `<pubkey>:<dTag>`.
+// These helpers centralize building/parsing it (also carried as Episode.guid).
+export function streamIdOf(pubkey: string, dTag: string): string {
+  return `${pubkey}:${dTag}`;
+}
+export function parseStreamId(id: string): { pubkey: string; dTag: string } | null {
+  const i = id.indexOf(':');
+  if (i !== 64) return null; // pubkey is exactly 64 hex chars
+  return { pubkey: id.slice(0, i), dTag: id.slice(i + 1) };
+}
+export function isLiveStreamId(s: string | undefined | null): boolean {
+  return !!s && /^[0-9a-f]{64}:/.test(s);
 }
 
 export interface NostrLiveStream {
@@ -83,7 +88,7 @@ function parseNostrLiveStream(event: Event): NostrLiveStream {
     });
 
   return {
-    id: `${event.pubkey}:${dTag}`,
+    id: streamIdOf(event.pubkey, dTag),
     eventId: event.id,
     dTag,
     pubkey: event.pubkey,

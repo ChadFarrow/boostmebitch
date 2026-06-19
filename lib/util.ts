@@ -12,6 +12,17 @@ export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;
 }
 
+// FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
+// IDs (e.g. synthesizing an Episode.id from a guid) that survive reloads.
+export function fnvHash(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h & 0x7fffffff;
+}
+
 // True when an enclosure URL is an HLS playlist (`.m3u8`). HLS needs hls.js
 // (or native Safari support) and a <video> surface — not the native <audio>
 // element the rest of the app uses. Nostr live streams (kind:30311) carry HLS

@@ -5,7 +5,7 @@ import { useApp } from '@/lib/store';
 import { fmt, stripHtml } from '@/lib/format';
 import { useChapters } from '@/lib/chapters';
 import type { Podcast } from '@/lib/types';
-import { streamNaddr } from '@/lib/nostr';
+import { streamNaddr, parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { BoltIcon, ShareIcon } from './icons';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
@@ -71,9 +71,9 @@ function ShareButton({ liveStreamId, podcast }: { liveStreamId: string | null; p
     if (typeof window === 'undefined') return null;
     const origin = window.location.origin;
     if (liveStreamId) {
-      const i = liveStreamId.indexOf(':');
-      if (i <= 0) return null;
-      return `${origin}/stream/${streamNaddr(liveStreamId.slice(0, i), liveStreamId.slice(i + 1))}`;
+      const parsed = parseStreamId(liveStreamId);
+      if (!parsed) return null;
+      return `${origin}/stream/${streamNaddr(parsed.pubkey, parsed.dTag)}`;
     }
     if (podcast.podcastGuid) return `${origin}/?podcast=${podcast.podcastGuid}`;
     return null;
@@ -144,7 +144,7 @@ export function FullscreenPlayer({
   // episode guid. When present (and it's an HLS video stream) the right pane
   // becomes the kind:1311 live chat instead of the usual episode info.
   const liveStreamId =
-    isVideo && episode.guid && /^[0-9a-f]{64}:/.test(episode.guid) ? episode.guid : null;
+    isVideo && isLiveStreamId(episode.guid) ? episode.guid! : null;
   const value = episode.value ?? podcast.value;
   const hasValue = hasValueRecipients(value);
   const description = episode.description ? stripHtml(episode.description) : '';
