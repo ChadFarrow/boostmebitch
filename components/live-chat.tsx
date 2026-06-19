@@ -240,8 +240,20 @@ export function LiveChat({ streamId }: { streamId: string }) {
 
   const visible = messages.filter((m) => !mutedPubkeys.has(itemAuthor(m)));
 
+  // Total sats zapped to this stream — sum of every kind:9735 receipt (not the
+  // mute-filtered list; muting an author doesn't un-raise the stream's sats).
+  const totalSats = messages.reduce(
+    (n, m) => (m.kind === 9735 ? n + (zapInfo(m)?.sats ?? 0) : n),
+    0,
+  );
+
   return (
     <div className="flex flex-col h-full min-h-0">
+      {totalSats > 0 && (
+        <div className="font-display text-bolt text-sm flex-shrink-0 mb-1">
+          ⚡ {totalSats.toLocaleString()} sats
+        </div>
+      )}
       <p className="text-[11px] uppercase tracking-widest text-muted mb-2 flex-shrink-0">
         Live chat {visible.length > 0 && <span className="text-bone/60">· {visible.length}</span>}
       </p>
