@@ -69,13 +69,13 @@ function ShareButton({ liveStreamId, podcast }: { liveStreamId: string | null; p
 
   function buildUrl(): string | null {
     if (typeof window === 'undefined') return null;
-    const base = window.location.origin + '/';
+    const origin = window.location.origin;
     if (liveStreamId) {
       const i = liveStreamId.indexOf(':');
       if (i <= 0) return null;
-      return `${base}?stream=${streamNaddr(liveStreamId.slice(0, i), liveStreamId.slice(i + 1))}`;
+      return `${origin}/stream/${streamNaddr(liveStreamId.slice(0, i), liveStreamId.slice(i + 1))}`;
     }
-    if (podcast.podcastGuid) return `${base}?podcast=${podcast.podcastGuid}`;
+    if (podcast.podcastGuid) return `${origin}/?podcast=${podcast.podcastGuid}`;
     return null;
   }
 

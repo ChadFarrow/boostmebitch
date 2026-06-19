@@ -2,7 +2,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
 import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
-import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { NostrLiveStreams } from '@/components/nostr-live-streams';
@@ -12,14 +11,7 @@ import { BoltIcon } from '@/components/icons';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useApp } from '@/lib/store';
 import { resolvePodcastByGuid } from '@/lib/podcast-meta';
-import { nip19 } from 'nostr-tools';
-import {
-  fetchLiveStreamByAddr,
-  resolveStreamV4V,
-  streamToEpisode,
-  streamToPodcast,
-  fetchProfile,
-} from '@/lib/nostr';
+import { useRouter } from 'next/navigation';
 
 import type { Episode, Podcast } from '@/lib/types';
 
@@ -32,9 +24,7 @@ export default function Home() {
   const [publisherSource, setPublisherSource] = useState<Podcast | null>(null);
   const [publisherAlbums, setPublisherAlbums] = useState<Podcast[] | null>(null);
   const [publisherLoading, setPublisherLoading] = useState(false);
-  // True while a ?stream=<naddr> deep link is resolving — shows a loading
-  // overlay so the user doesn't see the browse page flash before the player.
-  const [resolvingStream, setResolvingStream] = useState(false);
+  const router = useRouter();
   // `selected` lives in the Zustand store so cross-component surfaces (e.g.
   // the podcast-name link in a Nostr note card) can route into the detail
   // view without prop-drilling through the feed components.
@@ -42,8 +32,6 @@ export default function Home() {
   const setSelected = useApp((s) => s.selectPodcast);
   const selectedEpisode = useApp((s) => s.selectedEpisode);
   const openEpisode = useApp((s) => s.openEpisode);
-  const play = useApp((s) => s.play);
-  const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
 
   // Mount-time hydration: if the URL carries ?podcast=<guid> (+ optional
   // ?episode=<guid>), resolve and open both. resolvePodcastByGuid has its own
@@ -68,48 +56,13 @@ export default function Home() {
     });
   }, [setSelected, openEpisode]);
 
-  // Mount-time hydration: if the URL carries ?stream=<naddr>, fetch that
-  // kind:30311 event and open its fullscreen player. One-shot — the param is
-  // consumed and cleared so it can't collide with the ?podcast= mirroring below.
+  // Back-compat: old shared links used ?stream=<naddr> on the home route.
+  // Redirect them to the dedicated /stream/<naddr> page.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
-    const naddr = params.get('stream');
-    if (!naddr) return;
-
-    let decoded: ReturnType<typeof nip19.decode> | null = null;
-    try { decoded = nip19.decode(naddr); } catch { /* malformed */ }
-    if (!decoded || decoded.type !== 'naddr' || decoded.data.kind !== 30311) return;
-    const { pubkey, identifier, relays } = decoded.data;
-
-    setResolvingStream(true); // show a loading overlay instead of the browse page
-    (async () => {
-      try {
-        const stream = await fetchLiveStreamByAddr(pubkey, identifier, relays ?? []);
-        if (!stream || useApp.getState().current) return;
-        // Open the player the moment we have the event — video + chat don't need
-        // the profile or value block. Then enrich in the background; episode.id
-        // is stable (fnvHash of the stream id) so the second play() doesn't
-        // restart the video/hls, it just fills in the host name + boost value.
-        play(streamToEpisode(stream, null), streamToPodcast(stream, null));
-        setPlayerExpanded(true);
-        setResolvingStream(false);
-        const [profile, value] = await Promise.all([
-          fetchProfile(stream.pubkey).catch(() => null),
-          resolveStreamV4V(stream).catch(() => null),
-        ]);
-        if (useApp.getState().current?.episode.guid === stream.id) {
-          play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
-        }
-      } finally {
-        setResolvingStream(false);
-        // Clear just the `stream` param, preserving the rest.
-        const url = new URL(window.location.href);
-        url.searchParams.delete('stream');
-        window.history.replaceState({}, '', url.toString());
-      }
-    })();
-  }, [play, setPlayerExpanded]);
+    const naddr = new URLSearchParams(window.location.search).get('stream');
+    if (naddr) router.replace(`/stream/${naddr}`);
+  }, [router]);
 
   // Selection → URL: replaceState so navigation doesn't pile browser history
   // entries (the explicit back buttons are the only in-app exit paths). Lets
@@ -181,15 +134,6 @@ export default function Home() {
 
   return (
     <main className="min-h-screen pb-32">
-      {resolvingStream && (
-        <div
-          className="fixed inset-0 z-40 bg-ink flex flex-col items-center justify-center gap-3 text-muted"
-          style={{ paddingTop: 'env(safe-area-inset-top)' }}
-        >
-          <span className="text-nostr animate-bolt text-3xl">●</span>
-          <span className="text-sm font-mono uppercase tracking-widest">Loading live stream…</span>
-        </div>
-      )}
       {/* Header */}
       <header className="border-b border-bone/15 sticky top-0 z-20 bg-ink/90 backdrop-blur pt-[env(safe-area-inset-top)]">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-4">
@@ -319,8 +263,6 @@ export default function Home() {
           </section>
         </>
       )}
-
-      <Player />
     </main>
   );
 }

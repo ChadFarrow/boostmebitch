@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import Image from 'next/image';
 import './globals.css';
 import { ServiceWorkerRegister } from '@/components/sw-register';
+import { Player } from '@/components/player';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://boostmebitch.vercel.app'),
@@ -135,6 +136,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div className="relative z-0">
           {children}
         </div>
+        {/* App-global player — mounted in the layout so playback (and the
+            fullscreen player overlay) survives route changes, e.g. navigating
+            between the browse page and the /stream/<naddr> page. */}
+        <Player />
         <ServiceWorkerRegister />
       </body>
     </html>
