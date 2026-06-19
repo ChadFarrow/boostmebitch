@@ -102,3 +102,5 @@ export {
   streamToPodcast,
   type NostrLiveStream,
 } from './live-streams';
+
+export { subscribeLiveChat, publishLiveChat, streamChatAddr } from './live-chat';

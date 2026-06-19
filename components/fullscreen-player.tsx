@@ -10,6 +10,7 @@ import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
 import { FavHeart } from './lists';
 import { TransportControls } from './transport-controls';
+import { LiveChat } from './live-chat';
 
 function ChaptersList({
   url,
@@ -99,6 +100,11 @@ export function FullscreenPlayer({
   const { episode, podcast } = current;
   const isMusic = isMusicMedium(podcast);
   const isLive = episode.liveStatus === 'live';
+  // A Nostr live stream's NIP-33 id is `<64-hex pubkey>:<dTag>`, carried as the
+  // episode guid. When present (and it's an HLS video stream) the right pane
+  // becomes the kind:1311 live chat instead of the usual episode info.
+  const liveStreamId =
+    isVideo && episode.guid && /^[0-9a-f]{64}:/.test(episode.guid) ? episode.guid : null;
   const value = episode.value ?? podcast.value;
   const hasValue = hasValueRecipients(value);
   const description = episode.description ? stripHtml(episode.description) : '';
@@ -148,7 +154,39 @@ export function FullscreenPlayer({
           )}
         </div>
 
-        {/* Info + controls — right half; scrolls with the page (no separate scroll region) */}
+        {/* Right pane: kind:1311 live chat for Nostr streams, else episode info */}
+        {liveStreamId ? (
+          <div className="sm:w-1/2 p-6 lg:p-10 flex flex-col gap-4 h-[70vh] sm:h-[calc(100vh-3.5rem)]">
+            <div className="flex-shrink-0 flex flex-col gap-3 min-w-0">
+              <div>
+                <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
+                <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
+                {podcast.author && (
+                  <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+                <span className="text-xs text-muted">streaming now</span>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <TransportControls size="lg" />
+                <button
+                  onClick={onBoost}
+                  disabled={!hasValue}
+                  className="btn-bolt disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={hasValue ? 'Send a boost' : 'Stream has no value block'}
+                >
+                  <BoltIcon /> BOOST
+                </button>
+                <FavHeart podcast={podcast} size="md" />
+              </div>
+            </div>
+            <div className="flex-1 min-h-0">
+              <LiveChat streamId={liveStreamId} />
+            </div>
+          </div>
+        ) : (
         <div className="sm:w-1/2 p-6 lg:p-10">
           <div className="flex flex-col gap-5 min-w-0">
             <div>
@@ -291,6 +329,7 @@ export function FullscreenPlayer({
             ) : null}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

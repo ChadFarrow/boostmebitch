@@ -43,7 +43,7 @@ export interface NostrLiveStream {
 
 // Union of DEFAULT_RELAYS and a few extras known to carry kind:30311 events
 // (e.g. zap.stream publishes to these).
-const LIVE_STREAM_RELAYS = sanitizeRelays([
+export const LIVE_STREAM_RELAYS = sanitizeRelays([
   ...DEFAULT_RELAYS,
   'wss://relay.zap.stream',
   'wss://nostr.wine',
