@@ -10,7 +10,7 @@ import { EpisodeDetailView } from '@/components/episode-detail-view';
 import { BoltIcon } from '@/components/icons';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { useApp } from '@/lib/store';
-import { resolvePodcastByGuid } from '@/lib/podcast-meta';
+import { resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
 
 import type { Episode, Podcast } from '@/lib/types';
@@ -32,29 +32,53 @@ export default function Home() {
   const setSelected = useApp((s) => s.selectPodcast);
   const selectedEpisode = useApp((s) => s.selectedEpisode);
   const openEpisode = useApp((s) => s.openEpisode);
+  const discussionEpisode = useApp((s) => s.discussionEpisode);
+  const openDiscussion = useApp((s) => s.openDiscussion);
 
-  // Mount-time hydration: if the URL carries ?podcast=<guid> (+ optional
-  // ?episode=<guid>), resolve and open both. resolvePodcastByGuid has its own
-  // caches + PI circuit-breaker, so bad/unresolvable guids fall back silently.
+  // Mount-time hydration: restore the detail / episode / discussion view from
+  // the URL. Podcast resolves by ?podcast=<guid> (resolvePodcastByGuid, with its
+  // own caches + PI breaker) or falls back to ?feed=<id> for shows that have no
+  // podcastGuid. ?episode=<guid> opens that episode; +?discussion=1 opens its
+  // Nostr thread. Bad/unresolvable params fall back to browse silently.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
     const guid = params.get('podcast');
+    const feedId = params.get('feed');
     const episodeGuid = params.get('episode');
-    if (!guid) return;
+    const wantDiscussion = params.get('discussion') === '1';
+    if (!guid && !feedId) return;
     if (useApp.getState().selectedPodcast) return;
-    resolvePodcastByGuid(guid).then(async (p) => {
-      if (!p || useApp.getState().selectedPodcast) return;
-      setSelected(p);
+    (async () => {
+      let podcast: Podcast | null = null;
+      if (guid) {
+        podcast = await resolvePodcastByGuid(guid);
+      } else if (feedId) {
+        const id = Number(feedId);
+        if (Number.isInteger(id) && id > 0 && piMaybeUp()) {
+          try {
+            const res = await fetch(`/api/feed?id=${id}`);
+            if (res.ok) podcast = (await res.json()).podcast ?? null;
+            else if (res.status >= 500) tripPiBreaker();
+          } catch { /* ignore */ }
+        }
+      }
+      if (!podcast || useApp.getState().selectedPodcast) return;
+      setSelected(podcast);
       if (!episodeGuid) return;
       try {
-        const res = await fetch(`/api/feed?id=${p.id}`);
+        const res = await fetch(`/api/feed?id=${podcast.id}`);
         const data = await res.json();
         const ep = (data.episodes as Episode[] | undefined)?.find((e) => e.guid === episodeGuid);
-        if (ep && !useApp.getState().selectedEpisode) openEpisode(ep);
+        if (!ep) return;
+        if (wantDiscussion && ep.socialInteract?.length) {
+          if (!useApp.getState().discussionEpisode) openDiscussion(ep);
+        } else if (!useApp.getState().selectedEpisode) {
+          openEpisode(ep);
+        }
       } catch { /* ignore — episode just won't auto-open */ }
-    });
-  }, [setSelected, openEpisode]);
+    })();
+  }, [setSelected, openEpisode, openDiscussion]);
 
   // Back-compat: old shared links used ?stream=<naddr> on the home route.
   // Redirect them to the dedicated /stream/<naddr> page.
@@ -66,16 +90,63 @@ export default function Home() {
 
   // Selection → URL: replaceState so navigation doesn't pile browser history
   // entries (the explicit back buttons are the only in-app exit paths). Lets
-  // the SHARE buttons copy real deep links.
+  // the SHARE buttons copy real deep links and refresh restore the view.
+  // ?podcast=<guid> when the show has one, else ?feed=<id>; +?episode / +?discussion.
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
-    if (selected?.podcastGuid) url.searchParams.set('podcast', selected.podcastGuid);
-    else url.searchParams.delete('podcast');
-    if (selectedEpisode?.guid) url.searchParams.set('episode', selectedEpisode.guid);
+    if (selected?.podcastGuid) {
+      url.searchParams.set('podcast', selected.podcastGuid);
+      url.searchParams.delete('feed');
+    } else if (selected) {
+      url.searchParams.set('feed', String(selected.id));
+      url.searchParams.delete('podcast');
+    } else {
+      url.searchParams.delete('podcast');
+      url.searchParams.delete('feed');
+    }
+    // Discussion is opened from episode detail, so selectedEpisode is usually
+    // set; fall back to discussionEpisode for the restored case.
+    const episodeForUrl = selectedEpisode ?? discussionEpisode;
+    if (episodeForUrl?.guid) url.searchParams.set('episode', episodeForUrl.guid);
     else url.searchParams.delete('episode');
+    if (discussionEpisode) url.searchParams.set('discussion', '1');
+    else url.searchParams.delete('discussion');
     window.history.replaceState({}, '', url.toString());
-  }, [selected?.podcastGuid, selectedEpisode?.guid]);
+  }, [selected?.podcastGuid, selected?.id, selected, selectedEpisode?.guid, selectedEpisode, discussionEpisode]);
+
+  // Publisher view → ?publisher=<feedUrl>. Separate effect because the publisher
+  // aside only renders in browse mode (no podcast/episode selected).
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const url = new URL(window.location.href);
+    if (publisherSource?.url) url.searchParams.set('publisher', publisherSource.url);
+    else url.searchParams.delete('publisher');
+    window.history.replaceState({}, '', url.toString());
+  }, [publisherSource?.url]);
+
+  // Mount-time hydration of the publisher view from ?publisher=<feedUrl>. Detail
+  // wins, so skip if a podcast/feed param is present. The publisher record isn't
+  // fetched anywhere today, so reconstruct a minimal stub (back-button label
+  // shows "Publisher" on a cold restore) and refetch the album list.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const feedUrl = params.get('publisher');
+    if (!feedUrl || params.get('podcast') || params.get('feed')) return;
+    if (publisherSource || !piMaybeUp()) return;
+    setPublisherSource({ id: 0, title: 'Publisher', medium: 'publisher', url: feedUrl } as Podcast);
+    setPublisherAlbums(null);
+    setPublisherLoading(true);
+    (async () => {
+      try {
+        const res = await fetch(`/api/publisher?feedUrl=${encodeURIComponent(feedUrl)}`);
+        if (res.status >= 500) { tripPiBreaker(); setPublisherAlbums([]); return; }
+        setPublisherAlbums((await res.json()).feeds ?? []);
+      } catch { setPublisherAlbums([]); }
+      finally { setPublisherLoading(false); }
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function clearPublisher() {
     setPublisherSource(null);
@@ -215,7 +286,7 @@ export default function Home() {
                 {publisherLoading ? null : !publisherAlbums?.length ? (
                   <p className="text-muted text-sm py-4 px-1">no indexed albums found</p>
                 ) : (
-                  <PodcastResults feeds={publisherAlbums} selected={null} onSelect={setSelected} />
+                  <PodcastResults feeds={publisherAlbums} selected={null} onSelect={(p) => { clearPublisher(); setSelected(p); }} />
                 )}
               </>
             ) : showFavoritesPanel && !query && !loading ? (
