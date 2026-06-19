@@ -1,19 +1,82 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
-import type { Event } from 'nostr-tools';
-import { subscribeLiveChat, publishLiveChat } from '@/lib/nostr';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { nip19, type Event } from 'nostr-tools';
+import { subscribeLiveChat, publishLiveChat, LIVE_STREAM_RELAYS } from '@/lib/nostr';
 import { fetchProfile } from '@/lib/nostr';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
-import { fmtClock } from '@/lib/format';
+import { fmtClock, splitTrailingPunct } from '@/lib/format';
 import { Avatar } from './avatar';
 
 const MAX_MESSAGES = 200;
 
+type Profiles = Record<string, ProfileMetadata | null>;
+
+// nostr: mentions worth resolving to a name (NIP-27 npub/nprofile).
+const MENTION_RE = /nostr:n(?:pub|profile)1[023456789acdefghjklmnpqrstuvwxyz]+/gi;
+// Any nostr: URI or http(s) link — for inline rendering.
+const TOKEN_RE = /nostr:n(?:pub|profile|event|ote|addr)1[023456789acdefghjklmnpqrstuvwxyz]+|https?:\/\/[^\s]+/gi;
+
 function authorName(p: ProfileMetadata | null | undefined, pubkey: string) {
   return p?.display_name?.trim() || p?.name?.trim() || `${pubkey.slice(0, 8)}…`;
+}
+
+function shortNpub(bech: string) {
+  return bech.length > 16 ? `${bech.slice(0, 10)}…${bech.slice(-4)}` : bech;
+}
+
+// Pubkeys mentioned in a message body (so we can resolve their names too).
+function mentionedPubkeys(content: string): string[] {
+  const out: string[] = [];
+  for (const tok of content.match(MENTION_RE) ?? []) {
+    try {
+      const d = nip19.decode(tok.slice(6));
+      if (d.type === 'npub') out.push(d.data);
+      else if (d.type === 'nprofile') out.push(d.data.pubkey);
+    } catch { /* ignore malformed */ }
+  }
+  return out;
+}
+
+// Render chat content: npub/nprofile mentions → @name (resolved from `profiles`,
+// falling back to a short npub), http links → anchors, other nostr: refs dropped.
+function renderContent(content: string, profiles: Profiles): ReactNode[] {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let i = 0;
+  TOKEN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = TOKEN_RE.exec(content)) !== null) {
+    if (m.index > cursor) parts.push(content.slice(cursor, m.index));
+    const tok = m[0];
+    if (tok.startsWith('nostr:')) {
+      const bech = tok.slice(6);
+      let pubkey: string | null = null;
+      try {
+        const d = nip19.decode(bech);
+        if (d.type === 'npub') pubkey = d.data;
+        else if (d.type === 'nprofile') pubkey = d.data.pubkey;
+      } catch { /* leave as text below */ }
+      if (pubkey) {
+        const p = profiles[pubkey];
+        const name = p?.display_name?.trim() || p?.name?.trim() || shortNpub(bech);
+        parts.push(<span key={`m-${i}`} className="text-bolt">@{name}</span>);
+      }
+      // non-profile nostr refs (nevent/note/naddr) are dropped
+    } else {
+      const { token, trailing } = splitTrailingPunct(tok);
+      parts.push(
+        <a key={`l-${i}`} href={token} target="_blank" rel="noopener noreferrer" className="text-nostr break-all hover:underline underline-offset-2">{token}</a>,
+      );
+      if (trailing) parts.push(<Fragment key={`t-${i}`}>{trailing}</Fragment>);
+    }
+    cursor = m.index + tok.length;
+    i++;
+  }
+  if (cursor < content.length) parts.push(content.slice(cursor));
+  return parts;
 }
 
 // Append a chat message to the list, de-duped by id, sorted oldest-first, capped.
@@ -29,7 +92,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
   const setSignInOpen = useApp((s) => s.setSignInOpen);
 
   const [messages, setMessages] = useState<Event[]>([]);
-  const [profiles, setProfiles] = useState<Record<string, ProfileMetadata | null>>({});
+  const [profiles, setProfiles] = useState<Profiles>({});
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -49,21 +112,29 @@ export function LiveChat({ streamId }: { streamId: string }) {
     return unsub;
   }, [streamId]);
 
-  // Resolve author profiles (name + avatar). Seed from cache synchronously,
-  // fetch the rest once each. fetchProfile writes through storage.profile.
+  // Resolve profiles for message authors AND @-mentioned npubs (name + avatar).
+  // Seed from cache synchronously, fetch the rest once each. fetchProfile writes
+  // through storage.profile.
   useEffect(() => {
-    const seed: Record<string, ProfileMetadata | null> = {};
+    const seed: Profiles = {};
     const toFetch: string[] = [];
+    const consider = (pk: string) => {
+      if (!pk || pk in profiles || pk in seed || attempted.current.has(pk)) return;
+      const cached = storage.profile.get(pk);
+      if (cached !== undefined) seed[pk] = cached;
+      else toFetch.push(pk);
+    };
     for (const m of messages) {
-      if (m.pubkey in profiles || attempted.current.has(m.pubkey)) continue;
-      const cached = storage.profile.get(m.pubkey);
-      if (cached !== undefined) seed[m.pubkey] = cached;
-      else toFetch.push(m.pubkey);
+      consider(m.pubkey);
+      for (const pk of mentionedPubkeys(m.content)) consider(pk);
     }
     if (Object.keys(seed).length) setProfiles((p) => ({ ...p, ...seed }));
     toFetch.forEach((pk) => {
       attempted.current.add(pk);
-      fetchProfile(pk).then((p) => setProfiles((prev) => ({ ...prev, [pk]: p })));
+      // Query the broad live-stream relay set: chat participants' profiles
+      // (and their lud16) often live on zap.stream/nostr.wine, not a viewer's
+      // default relays — same reason BOOST/names fail to resolve otherwise.
+      fetchProfile(pk, LIVE_STREAM_RELAYS).then((p) => setProfiles((prev) => ({ ...prev, [pk]: p })));
     });
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -133,7 +204,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
                   <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(m.created_at * 1000).toLocaleString()}>
                     {fmtClock(m.created_at)}
                   </span>
-                  <span className="text-bone/90 break-words whitespace-pre-wrap">{m.content}</span>
+                  <span className="text-bone/90 break-words whitespace-pre-wrap">{renderContent(m.content, profiles)}</span>
                 </div>
               </div>
             );

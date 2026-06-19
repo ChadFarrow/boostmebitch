@@ -102,6 +102,7 @@ export {
   resolveStreamV4V,
   streamToEpisode,
   streamToPodcast,
+  LIVE_STREAM_RELAYS,
   type NostrLiveStream,
 } from './live-streams';
 

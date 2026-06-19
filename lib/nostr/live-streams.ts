@@ -232,8 +232,12 @@ export async function resolveStreamV4V(
       const cached = storage.profile.get(pubkey);
       let profile: ProfileMetadata | null | undefined = cached;
       if (profile === undefined) {
-        // Not cached — fetch. Skip known misses (cached === null).
-        const relays = relay ? sanitizeRelays([relay, ...DEFAULT_RELAYS]) : DEFAULT_RELAYS;
+        // Not cached — fetch. Query the broad live-stream relay set (incl. the
+        // split's relay hint), not just DEFAULT_RELAYS: a streamer's
+        // lud16-bearing kind:0 often lives on the stream's relays
+        // (zap.stream/nostr.wine), so a narrow query misses it and hides BOOST
+        // for viewers whose default relays don't carry that profile.
+        const relays = sanitizeRelays([...(relay ? [relay] : []), ...LIVE_STREAM_RELAYS]);
         profile = await fetchProfile(pubkey, relays);
       }
       const address = profile?.lud16 ?? profile?.lud06;
