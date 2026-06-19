@@ -49,7 +49,15 @@ export default function StreamPage() {
     }
     let cancelled = false;
     (async () => {
-      const stream = await fetchLiveStreamByAddr(pubkey, identifier, relays ?? []);
+      // Retry before giving up: on a COLD load (fresh Firefox private window,
+      // no warm DNS/TLS/WebSocket to the host relay like fountain.fm) the first
+      // query can time out before the slow relay responds. A second/third
+      // attempt reuses the now-warm connection and finds it.
+      let stream = null as Awaited<ReturnType<typeof fetchLiveStreamByAddr>>;
+      for (let attempt = 0; attempt < 3 && !stream && !cancelled; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 800));
+        stream = await fetchLiveStreamByAddr(pubkey, identifier, relays ?? []);
+      }
       if (cancelled) return;
       if (!stream) { setStatus('notfound'); return; }
       play(streamToEpisode(stream, null), streamToPodcast(stream, null));
