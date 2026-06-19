@@ -90,16 +90,22 @@ export async function fetchRelayList(
 
 /**
  * Effective relay set for publishing the user's events.
- * Priority: explicit localStorage override → identity NIP-65 write relays → DEFAULT_RELAYS.
+ * - explicit localStorage override → used as-is (advanced users opt out of the
+ *   default union deliberately).
+ * - otherwise → the identity's NIP-65 write relays UNIONED with DEFAULT_RELAYS.
  * Capped at 20 to keep publish latency bounded.
+ *
+ * Why union the defaults: a user's NIP-65 write relays can be dead, unreachable,
+ * or AUTH-gated, which produced "published to 0/N relays" even though the boost
+ * itself paid. Always including the known-good, write-accepting defaults
+ * (damus/primal/nos.lol/fountain) guarantees the note has somewhere to land.
  */
 export function resolvePublishRelays(identity: NostrIdentity | null): string[] {
   const override = storage.relays.get();
-  const chosen = override ?? (identity?.writeRelays?.length ? identity.writeRelays : DEFAULT_RELAYS);
-  // Sanitize regardless of source: a localStorage override or a peer's NIP-65
-  // list can carry a malformed entry. If sanitizing empties the list (every
-  // entry was garbage), fall back to the known-good defaults rather than
-  // returning zero relays.
-  const clean = sanitizeRelays(chosen);
-  return (clean.length ? clean : DEFAULT_RELAYS).slice(0, 20);
+  // Sanitize regardless of source: an override or a peer's NIP-65 list can carry
+  // a malformed entry. If sanitizing empties the list, fall back to defaults.
+  const chosen = override
+    ? sanitizeRelays(override)
+    : sanitizeRelays([...(identity?.writeRelays ?? []), ...DEFAULT_RELAYS]);
+  return (chosen.length ? chosen : DEFAULT_RELAYS).slice(0, 20);
 }
