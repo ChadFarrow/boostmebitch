@@ -1,18 +1,18 @@
 # Boost Me Bitch — Podcast Boost Station
 
-Search, listen, and boost Podcasting 2.0 shows over Lightning.
-Sign in with Nostr (NIP-07). Pay via NWC (NIP-47), WebLN, or Lightning Address.
-**Boosts publish a kind:1 note to Nostr** with NIP-73 podcast refs so they land in the social graph.
-Favorite shows sync across any Nostr-aware client via NIP-51.
+Search, listen, and **boost** Podcasting 2.0 shows — and **watch + boost Nostr live streams** — over Lightning.
+Sign in with Nostr (NIP-07, Amber, or a NIP-46 bunker). Pay via **NWC, Spark, WebLN, or Lightning Address**.
+**Boosts publish a kind:1 note** to Nostr with NIP-73 podcast refs; **live-stream boosts go out as real NIP-57 zaps** so they show up as boosts in Fountain / tunestr / zap.stream.
+Favorite shows and mute accounts sync across any Nostr-aware client via NIP-51. Installable PWA, light + dark.
 
 Live at <https://boostmebitch.vercel.app>.
 
 ```
 Stack:    Next.js 15 · React 19 · Tailwind · Zustand
-Wallets:  @getalby/sdk (NWC) · window.webln · LNURL-pay
-Identity: nostr-tools + window.nostr (NIP-07 / NIP-65 / NIP-51)
-Publish:  nostr-tools SimplePool → user's NIP-65 write relays
-Data:     Podcast Index API (server-side proxy)
+Wallets:  @getalby/sdk (NWC) · @buildonspark/spark-sdk (Spark) · window.webln · LNURL-pay / NIP-57 zaps
+Identity: nostr-tools + window.nostr (NIP-07 / Amber NIP-55 / NIP-46 bunker / NIP-65 / NIP-51)
+Video:    hls.js + react-reverse-portal (HLS live streams)
+Data:     Podcast Index API (server-side proxy) + Nostr relays
 Deploy:   Vercel zero-config
 ```
 
@@ -23,23 +23,39 @@ Deploy:   Vercel zero-config
 ```bash
 npm install
 cp .env.example .env.local
-# add your Podcast Index key + secret
+# add your Podcast Index key + secret  (the Spark rail needs NO API key)
 npm run dev
 ```
 
-Get keys at <https://api.podcastindex.org/>.
+Get Podcast Index keys at <https://api.podcastindex.org/>.
+
+Checks (no test runner): `npm run typecheck` (`tsc --noEmit`, strict) · `npm run lint` (ESLint 9 flat config) · `npm run build`.
 
 ## Deploy to Vercel
 
 ```bash
 vercel
-# add env vars in dashboard:
+# env vars in the dashboard:
 #   PODCAST_INDEX_KEY
 #   PODCAST_INDEX_SECRET
 #   APP_NAME=boostmebitch        (optional — User-Agent default)
+#   BOOSTBOX_URL / BOOSTBOX_API_KEY   (optional — BoostBox LNURL metadata proxy)
 ```
 
-The Podcast Index credentials live in API routes (`app/api/search/route.ts`, `app/api/feed/route.ts`, `app/api/by-guid/route.ts`) so they never reach the browser.
+Podcast Index credentials live only in API routes (`app/api/*`) so they never reach the browser. The Spark SDK talks straight to Spark's signing operators, so it needs no key.
+
+---
+
+## Features
+
+- **Search** Podcast Index and play any episode (native HTML5 `<audio>`, no proxy).
+- **V4V boosts** over three rails — **NWC** (NIP-47), **Spark**, or **WebLN** — to keysend nodes *or* Lightning addresses, with per-recipient value splits and a Podcasting 2.0 boostagram.
+- **Nostr live streams** — a "Live on Nostr" row of kind:30311 streams; watch HLS video in-app; **live chat** (kind:1311) and **boosts/zaps** (kind:9735) rendered together; a shareable `/stream/<naddr>` page.
+- **Boost-all tracks** — split a boost across every `valueTimeSplit` remote item on a music episode.
+- **Favorites** (NIP-51 kind:30003) and **mutes** (NIP-51 kind:10000) that sync across Nostr clients.
+- **Discussion threads** (`podcast:socialInteract`) and global / per-podcast / per-episode **Nostr feeds**.
+- **Music albums** render as albums (play overlay, tracklist, track order).
+- **Installable PWA**, **light/dark** themes.
 
 ---
 
@@ -47,112 +63,103 @@ The Podcast Index credentials live in API routes (`app/api/search/route.ts`, `ap
 
 ```
 app/
-  api/search/    → /search/byterm                (PI proxy)
-  api/feed/      → /podcasts/byfeedid + /episodes/byfeedid
-  api/by-guid/   → /podcasts/byguid              (favorites hydration)
-  layout.tsx     → site-wide bg art layer + OG metadata
-  page.tsx       → search + favorites panel + episode list + sticky player
+  api/search/            → /search/byterm                      (PI proxy)
+  api/feed/              → /podcasts/byfeedid + /episodes/byfeedid + RSS enrichment
+  api/by-guid/           → /podcasts/byguid                     (favorites hydration)
+  api/value-splits/      → resolve valueTimeSplit remote items  (PI + RSS fallback)
+  api/publisher/         → publisher feed → album children
+  api/lightning/boostbox → BoostBox LNURL metadata proxy
+  layout.tsx             → bg art layer + OG metadata + FOUC theme blocker + <Player>
+  page.tsx               → search, favorites, live-streams row, global feed; URL-restored views
+  stream/[naddr]/        → standalone live-stream page (opens the layout player)
 components/
-  nostr-auth         → NIP-07 sign-in, kind:0 / kind:10002 / kind:30003 hydration
-  search-bar         → debounced query
-  lists              → search results, favorites panel, episode list,
-                       PodcastRow (shared row), FavHeart toggle
-  player             → bottom-fixed audio + per-episode boost trigger
-  icons              → BoltIcon (SVG; used on yellow buttons)
-  boost-modal/
-    index            → orchestrator: state + go() + modal chrome
-    rail-picker      → NWC / WebLN selector + paste-URI flow
-    amount-input     → numeric field + 4 preset buttons
-    message-input    → boostagram textarea (200 chars)
-    sender-name      → From input + signed-as indicator
-    nostr-share-toggle → opt-in checkbox + relay-source label
-    splits-preview   → per-recipient list with ✓/✗
-    publish-status   → idle / publishing / done / error states
+  player · fullscreen-player · transport-controls   → shared <audio>/<video>, mini + fullscreen
+  nostr-live-streams · live-chat                     → kind:30311 cards, kind:1311/9735 chat
+  wallet-modal · nwc-wallet · spark-wallet · webln-wallet · wallet-balance
+  nostr-auth/  (index · sign-in-modal · login-methods · account-menu · muted-accounts)
+  global/podcast/episode-nostr-feed · nostr-note-card · episode-social-thread · discussion-view
+  boost-modal/ (index · amount-input · message-input · sender-name · splits-preview · publish-status)
+  boost-all-modal · boost-card · lists · search-bar · podcast-cover · avatar · icons · theme-toggle
 lib/
-  pi.ts          → Podcast Index server client (SHA1 auth, buildPodcast factory)
-  store.ts       → Zustand: identity + current episode + favorites
+  pi.ts          → Podcast Index server client (SHA1 auth, RSS enrichment)
+  store.ts       → Zustand: identity, current, player/view state, favorites, mutes
   storage.ts     → typed localStorage accessors for every bmb:* key
-  types.ts       → shared types (Podcast, Episode, ValueBlock, Boostagram,
-                   BoostResult, FavoritePodcast)
-  util.ts        → getErrorMessage(e, fallback)
+  types.ts · util.ts  (isMusicMedium, hasValueRecipients, isHlsUrl, fnvHash, getErrorMessage)
+  format.tsx     → fmt/fmtDuration/fmtClock/fmtLiveTime/timeAgo, linkify, confetti
   nostr/
-    index.ts        → barrel re-export
-    auth.ts         → loginWithExtension, shortNpub, identity types,
-                      window.nostr / window.webln globals
-    pool.ts         → withPool(relays, fn) — SimplePool lifecycle wrapper
-    publish.ts      → signAndPublish(template, relays) — used by both
-                      boost notes and favorites
-    profile.ts      → fetchProfile (kind:0)
-    relays.ts       → DEFAULT_RELAYS, fetchRelayList (kind:10002),
-                      resolvePublishRelays
-    boost-notes.ts  → publishBoostNote (kind:1), formatContent,
-                      podcastLandingUrl
-    favorites.ts    → fetchFavoriteGuids / publishFavorites (kind:30003),
-                      schedulePublishFavorites (debounced)
+    auth · signer · amber · bunker        → NIP-07 / NIP-55 / NIP-46 sign-in + window.nostr swap
+    pool · publish · relays · profile     → SimplePool wrapper, signAndPublish, relay sets, kind:0
+    discover · event-queries · use-feed   → feed assembly, queries, stale-while-revalidate hook
+    boost-notes · interactions            → kind:1 boost notes, replies/reposts
+    favorites · mutes · *-hydrator        → NIP-51 kind:30003 / kind:10000
+    live-streams · live-chat              → kind:30311 streams, kind:1311 chat + kind:9735 zaps
+    wallet-backup · settings-backup       → NIP-44 encrypted-to-self (Spark seed, NWC, settings)
   v4v/
-    boost.ts     → orchestrator: split sats, pick rail, fire payments,
-                   per-recipient customKey/customValue routing
-    nwc.ts       → NIP-47 via @getalby/sdk
-    webln.ts     → window.webln
-    lnaddr.ts    → LNURL-pay invoice fetch (for type=lnaddress)
+    boost.ts     → orchestrator: split sats, pick rail, keysend/lnaddress, TLV routing
+    zap.ts       → NIP-57 zap (kind:9734 → kind:9735 receipt) — used for note + live-stream boosts
+    nwc.ts · spark.ts · webln.ts          → the three rails
+    lnaddr.ts · bolt11.ts · boostbox.ts · wallets.ts
 public/
-  hero.jpg       → 16:9 collage art, used as fixed bg + OG image
+  hero.jpg · manifest.json · sw.js · icons/ · splash/
 ```
+
+`lib/v4v/*` and `lib/nostr/` are the **only** files that talk to wallets / signers; components import them through the `lib/nostr/` barrel and the `lib/v4v/*` entry points, so the toolkit can be swapped without touching `components/`.
 
 ---
 
 ## Boost flow
 
-There are two entry points:
+Entry points: **⚡ BOOST in the player** (current episode, `ts` = playback position), **⚡ BOOST on the show header** (channel-level value block, `ts: 0`), **⚡ per-track** on music rows, and **⚡ BOOST N TRACKS** (boost-all). All open a modal that computes splits from the value block and pays.
 
-- **⚡ BOOST in the player** — boosts the currently-playing episode. `ts` carries the playback position.
-- **⚡ BOOST on the show header** — boosts the channel-level value block without playing anything (`ts: 0`, no episode-level fields in the boostagram).
+**Rail.** `pickRail()` honors the user's last-used rail (`storage.railPref`), else priority **NWC > Spark > WebLN**. Per recipient:
 
-Either path opens the same modal:
+- **`type=node`** → keysend with TLV record `7629169` carrying the boostagram JSON. Per-recipient `customKey`/`customValue` (e.g. shared-node sub-account routing for getalby.com) is a separate TLV record. (Spark can't keysend — node legs are rejected on the Spark rail.)
+- **`type=lnaddress`** → LNURL-pay invoice fetch (amount-verified against the BOLT11 before paying), then pay via the chosen rail.
 
-1. Modal computes splits from `episode.value.recipients` (or `podcast.value.recipients` for show-level).
-2. User picks rail — NWC takes priority if a URI is saved, else WebLN.
-3. For each recipient:
-   - `type=node` → keysend with TLV record `7629169` containing the boostagram JSON.
-     Per-recipient `customKey`/`customValue` from the value block (e.g. shared-node sub-account routing for `getalby.com`) is attached as a separate TLV record.
-   - `type=lnaddress` → LNURL-pay invoice fetch, then pay via the chosen rail.
-4. Per-recipient progress + errors render live; bolt-yellow / nostr-magenta confetti fires when at least one leg succeeds.
-5. **If signed in with Nostr and at least one payment landed**, a kind:1 note is signed via NIP-07 and broadcast to the user's NIP-65 write relays.
+Per-recipient progress + errors render live; confetti fires when a leg lands. **If signed in and at least one payment landed**, a kind:1 boost note is published.
+
+**Live-stream boosts → real zaps.** When you boost a Nostr live stream signed-in, with an active signer and a host whose Lightning address supports NIP-57 (checked *before* paying, so no double-pay), the boost is sent as a real **zap** (`sendZap`, `lib/v4v/zap.ts`) tagged to the stream — the recipient's LN service then publishes a kind:9735 receipt that renders as a boost in Fountain / tunestr / zap.stream **and** in BMB's chat. Otherwise it falls back to a normal boostagram payment plus a kind:1311 "⚡ Boosted N sats" chat line.
 
 ### WebLN customRecords vs NWC tlv_records
 
-These look symmetric but the wire formats are different:
+These look symmetric but the wire formats differ:
 
-- **WebLN** (`weblnKeysend`): `customRecords` values are **plain UTF-8 strings**. The Alby/Mutiny extensions hex-encode internally before transmission. Pre-hexing here causes double-encoding and Helipad can't `JSON.parse` the boostagram.
-- **NWC** (`pay_keysend`): `tlv_records` values are **hex-encoded** per NIP-47 spec.
+- **WebLN** (`weblnKeysend`): `customRecords` values are **plain UTF-8 strings** — the extension hex-encodes internally. Pre-hexing double-encodes and Helipad can't `JSON.parse` the boostagram.
+- **NWC** (`pay_keysend`): `tlv_records` values are **hex-encoded** per NIP-47.
 
-`tlvHexFor` (NWC path) and `recordsForKeysend` (WebLN path) in `lib/v4v/boost.ts` apply the right encoding for each rail.
+`tlvHexFor` (NWC) and `recordsForKeysend` (WebLN) in `lib/v4v/boost.ts` apply the right encoding per rail.
+
+---
+
+## Nostr live streams (NIP-53)
+
+A **"Live on Nostr"** row surfaces kind:30311 streams (`fetchNostrLiveStreams`), dropping stale `live` events (no `ended` update within 2h) and sorting upcoming-first then newest. Everything is the shared NIP-53 standard, so it interoperates with **Fountain, tunestr, and zap.stream** — only relay coverage varies.
+
+- **HLS video** plays in-app via `hls.js` (dynamic-imported; native HLS on Safari). A single `<video>` lives in a **reverse portal** so it moves between the mini-bar and the fullscreen pane without remounting (audio keeps playing when collapsed). Non-HLS media stays on the native `<audio>`.
+- **Dedicated route** `/stream/<naddr>` — a shareable page that fetches the stream and opens the player, so a refresh restores it. `<Player>` is mounted in the root layout, so playback survives the browse ↔ stream navigation.
+- **Live chat** subscribes to **kind:1311** (chat) **and kind:9735** (zap receipts / boosts) for the stream. Both render in one row list; zaps get a `⚡ N sats` badge, and a **total-sats-zapped** line shows at the top. New messages re-sync periodically and on focus (relay subscriptions go stale when a device backgrounds). Signed-in users can post (kind:1311).
 
 ---
 
 ## Boostagram TLV (record 7629169)
 
-Castamatic-shape Podcasting 2.0 fields, plus Nostr-aware additions:
+Podcasting 2.0 fields, plus Nostr-aware additions — drops into Helipad / Fountain / Castamatic ingestion without mapping:
 
 | Field | Source | Notes |
 | --- | --- | --- |
-| `app_name` | hard-coded | `"BoostMeBitch"` |
-| `app_version` | hard-coded | `"0.1.0"` |
-| `podcast`, `episode` | feed metadata | `episode` omitted on show-level boosts |
-| `feedID`, `itemID` | Podcast Index | `itemID` omitted on show-level boosts |
+| `app_name`, `app_version` | hard-coded | `"BoostMeBitch"`, `"0.1.0"` |
+| `podcast`, `episode` | feed / stream | `episode` omitted on show-level boosts |
+| `feedID`, `itemID` | Podcast Index | omitted on show-level boosts |
 | `url` | feed metadata | RSS feed URL (Helipad reads this) |
-| `ts` | playback position | `0` on show-level boosts |
+| `ts` | playback position | `0` on show-level / live boosts |
 | `value_msat`, `value_msat_total` | per-leg / total | both in millisats |
-| `message` | user input | optional; omitted when empty |
-| `sender_name` | Nostr `display_name` / `name` | auto-filled at login, user-editable |
+| `message` | user input | optional |
+| `sender_name` | Nostr `display_name` / `name` | auto-filled at login, editable |
 | `sender_id` | Nostr pubkey hex | omitted when not signed in |
-| `action` | hard-coded | `"boost"` |
-| `uuid` | `crypto.randomUUID()` | one per boost — Helipad groups multi-leg boosts by this |
-| `name` | per-recipient (set in `payOne`) | recipient label, e.g. `"Spencer"` |
-| `remote_feed_guid` | `<podcast:guid>` | NIP-73 canonical feed ID |
-| `episode_guid`, `remote_item_guid` | RSS `<guid>` | both set so any aggregator key works |
+| `action`, `uuid` | hard-coded / `crypto.randomUUID()` | one uuid per boost — Helipad groups legs by it |
+| `remote_feed_guid`, `remote_item_guid` | `<podcast:guid>` / item guid | NIP-73 refs; carry the **stream** for live-stream / boost-all legs |
 
-The shape is designed to drop into Helipad / Fountain / Castamatic / BoostBot ingestion without further mapping.
+We emit the boostagram in TLV `7629169` only — never a separate `696969` sender record (it collides with shared-node sub-account routing). LNURL legs put the boostagram message in the LUD-21 `comment`; BoostBox legs prepend their `rss::payment::boost` desc.
 
 ---
 
@@ -161,100 +168,68 @@ The shape is designed to drop into Helipad / Fountain / Castamatic / BoostBot in
 | Tag | Value |
 | --- | --- |
 | `i`, `k` | `podcast:guid:<feed-guid>` + `k=podcast:guid` (NIP-73) |
-| `i`, `k` | `podcast:item:guid:<item-guid>` + `k=podcast:item:guid` (NIP-73, omitted on show-level boosts) |
-| `r` | `https://pod.link/<itunesId>` if known, else PI page, else RSS URL |
+| `i`, `k` | `podcast:item:guid:<item-guid>` + `k=podcast:item:guid` (omitted on show-level boosts) |
+| `r` | listen link (`pod.link/<itunesId>` → PI page → RSS) **and** a `boostmebitch.com/?podcast=<guid>` deep link |
 | `amount` | total millisats *intended* (not sum of successful legs) |
 | `client` | `BoostMeBitch` |
 | `t` | `boostagram` + `value4value` |
 
-Auto-formatted body:
+`pod.link/<itunesId>` smart-links a click to the visitor's podcast app; `lib/nostr/boost-notes.ts:podcastLandingUrl` falls back to PI then RSS.
+
+**Where it publishes.** `resolvePublishRelays(identity)`: a manual `localStorage.bmb:relays` override, else the user's NIP-65 (kind:10002) write relays **unioned with the defaults** (so a note still lands when the write relays are dead/AUTH-gated). Capped at 20. Defaults:
 
 ```
-⚡ Boost ⚡
-
-[boostagram message, if any]
-
-Boosted 500 sats → [podcast title]
-📻 [episode title]               # omitted on show-level boosts
-
-https://pod.link/<itunesId>
+wss://relay.damus.io · wss://relay.primal.net · wss://nos.lol · wss://relay.nostr.band · wss://relay.fountain.fm
 ```
 
-After publish, the modal shows accepted/total relay counts and a `view note ↗` link to njump.me.
+---
 
-### Why pod.link for the link
+## Wallets
 
-`pod.link/<itunesId>` is a smart-link service that auto-routes a click to the visitor's preferred podcast app (Apple Podcasts, Castamatic, Fountain, Overcast, …). Far better landing experience than a raw RSS URL. iTunes IDs come from Podcast Index. `lib/nostr/boost-notes.ts:podcastLandingUrl` falls back to `podcastindex.org/podcast/<feedId>` if there's no iTunes ID, then RSS as a last resort.
+Configured in the account menu's **wallet modal** (`components/wallet-modal.tsx`); a balance chip reads the active rail.
 
-### Where it publishes
-
-`resolvePublishRelays(identity)` resolves the publish target in this order:
-
-1. Manual override at `localStorage.bmb:relays` (JSON array) — used as an escape hatch, no UI yet.
-2. The user's NIP-65 (kind:10002) write relays, fetched at login.
-3. `DEFAULT_RELAYS`:
-   ```
-   wss://relay.damus.io
-   wss://relay.primal.net
-   wss://nos.lol
-   wss://relay.nostr.band
-   ```
-
-Capped at 20 relays to keep publish latency bounded.
+- **NWC** (NIP-47, `@getalby/sdk`) — paste a connection URI. Optionally **back it up encrypted to Nostr** (kind:30078, NIP-44 to-self) so it restores on other devices; opt-in and deletable.
+- **Spark** (`@buildonspark/spark-sdk`) — paste/create/restore a seed; **no API key**. The mnemonic is stored **encrypted to Nostr** (kind:30078) for silent restore. Account number matches Primal/BlitzWallet so the same seed shows the same balance.
+- **WebLN** — the injected extension (Alby), enabled on demand (we never call `wl.enable()` speculatively).
 
 ---
 
-## Favorites (NIP-51 kind:30003)
+## Signers
 
-Heart icons next to each podcast row toggle a per-user favorites set. Storage is split:
+`window.nostr` is the single interface; three paths feed it (swapped by `lib/nostr/signer.ts`):
 
-- **Authoritative source:** a NIP-51 kind:30003 ("bookmark set") event with `d`-tag `boostmebitch:favorites` and one `i: podcast:guid:<guid>` + `k: podcast:guid` per favorite. Visible in any NIP-51-aware client (Habla, Nostrudel) under your bookmark sets.
-- **Local cache:** `localStorage.bmb:favorites:<npub>` (or `:guest`) holds the full `FavoritePodcast` metadata so the "Favorites" panel renders instantly without re-resolving GUIDs against PI.
+- **NIP-07** browser extension (Alby, nos2x, nostash on iOS).
+- **Amber** (NIP-55) on Android — `nostrsigner:` URL scheme + clipboard round-trip.
+- **NIP-46 bunker / `nostrconnect://`** remote signer (nsec.app, Clave, Amber-as-bunker, Primal).
 
-Toggle UX is optimistic — Zustand + localStorage update immediately. The Nostr publish is debounced 1.5s via `schedulePublishFavorites` so rapid hearting collapses into a single signing prompt.
-
-On login the cache is reconciled with the Nostr event using last-write-wins on `created_at` vs the newest local `addedAt`. Unknown GUIDs get resolved through the new `/api/by-guid` route (which proxies Podcast Index `/podcasts/byguid`).
-
----
-
-## Setup checklist for a real boost
-
-You need:
-
-- A NIP-07 extension (Alby, nos2x) **or** any signer your browser surfaces as `window.nostr`. Required for sign-in and boost-note signing.
-- A Lightning wallet that supports **either**:
-  - **NWC** with TLV passthrough — Alby Hub on a real LND, ideally. Some hosted NWC services strip TLVs and Helipad receives bare keysends with no metadata; if that happens to you, switch to WebLN.
-  - **WebLN** with `keysend` — Alby browser extension.
-- (Optional) A NIP-65 (kind:10002) relay list event published to one of the default relays so your boost notes land where your followers actually look. Without one, we publish to the four defaults.
+One **"Sign in with Nostr"** button opens a two-tab modal (Extension / Remote signer). `nostr-tools` is pinned to **exactly `2.19.4`** — `2.20.0+`'s NIP-46 rewrite breaks the `nostrconnect://` handshake on our relays.
 
 ---
 
-## Swapping in `v4v-toolkit`
+## Favorites + Mutes (NIP-51)
 
-`lib/v4v/*` and `lib/nostr/` are the only files that talk to wallets / signers. Components import only from these entry points, so swapping is contained:
-
-- `lib/v4v/boost.ts` → `v4v-toolkit`'s boost orchestrator if it exposes one (`splitSats`, `sendBoost`).
-- `lib/v4v/nwc.ts` → if `v4v-toolkit` ships an NWC client, replace `@getalby/sdk` imports.
-- `lib/v4v/lnaddr.ts` → use `v4v-toolkit`'s LNURL helper if available.
-- `lib/nostr/` submodules → drop in `v4v-toolkit`'s NIP-07 / NIP-19 / publish helpers; the `index.ts` barrel keeps callers stable.
+- **Favorites** (kind:30003, `d:boostmebitch:favorites`) — ♡ on a podcast row. One `i: podcast:guid:<guid>` per favorite; visible in any NIP-51 client. Optimistic + debounced publish; a per-npub localStorage cache renders the Favorites panel instantly.
+- **Mutes** (kind:10000) — 🚫 on a note card. Interoperates with Damus/Amethyst; new mutes go to the private (NIP-04-encrypted) list, and an unreadable private blob from another client is preserved verbatim. Filtered at render time across all feeds.
 
 ---
 
-## Notes
+## PWA + themes
 
-- **Background art** (`public/hero.jpg`) is rendered as a fixed full-viewport `<Image fill />` behind everything, with a 75% ink overlay. Same file doubles as the Open Graph image via `app/layout.tsx` metadata. The `bg-ink` fallback lives on `<html>`, not `<body>` — putting it on `<body>` would propagate to the canvas and paint over the fixed image layer.
-- **Boost button glyph** is an inline SVG (`components/icons.tsx:BoltIcon`), not the `⚡` emoji. The colored emoji is invisible on the yellow `btn-bolt` background.
-- `<img>` (not `next/image`) for podcast artwork — `next.config.mjs` allows all HTTPS hosts, but per-feed image origins make `next/image` configuration painful. The hero asset uses `next/image` because it's a single known local file.
-- Player uses native HTML5 `<audio>` — same enclosure URL the RSS feed advertises.
-- NWC URI is stored in `localStorage` only on the device. Nothing persists server-side.
-- Nostr publish is opt-in per-boost (defaults to on when signed in). Lightning is sent first, publish only fires if at least one payment landed — no false "I boosted" notes.
-- `nostr-tools` is bundled for `nip19`, `SimplePool`, and event types.
-- `canvas-confetti` fires bolt-yellow / nostr-magenta / bone particles when a boost lands.
+Installable (`public/manifest.json` + `public/sw.js` + `<SwRegister>`); the service worker has **no precaching** (hashed bundle URLs would go stale) — its empty `fetch` handler just enables the install prompt. Light/dark via role-based CSS tokens (`--ink`, `--bone`, `--bolt`, …) flipped on `:root[data-theme='light']`; a FOUC blocker sets the theme before first paint.
+
+---
+
+## Notes / gotchas
+
+- The page background lives on `<html>`, not `<body>` (a `<body>` bg paints over the fixed hero image). `html, body` use `overflow-x: clip` (not `hidden`) so the sticky header actually sticks.
+- Podcast artwork uses `<img>` (not `next/image`) — arbitrary per-feed hosts. The local hero uses `next/image`.
+- Boost button glyph is an inline SVG (`BoltIcon`) — the `⚡` emoji is invisible on the yellow `btn-bolt`.
+- Native HTML5 `<audio>` plays the enclosure URL directly; the one exception is HLS (`.m3u8`) live streams, which go through `<video>` + `hls.js`.
+- Wallet creds + Spark seed live in `localStorage` (and, opt-in, encrypted on Nostr) — nothing wallet-related is sent to our server.
+- Nostr publish is opt-in per boost; **Lightning is sent first**, the note/zap only fires after a payment lands — no false "I boosted" posts.
 
 ## Roadmap-ish
 
-- Streaming sats per minute (the obvious next feature)
-- Settings panel for relay-list management
-- Helipad-style boost log view fed by your own boost notes
-- Episode chapters via `podcast:chapters`
-- Manage NIP-51 categories so favorites can split into "podcasts I host", "music I love", etc.
+- Relay-list management UI (the `bmb:relays` override has no UI yet).
+- Helipad-style boost-log view fed by your own boost notes.
+- NIP-51 favorite categories ("podcasts I host", "music I love").
