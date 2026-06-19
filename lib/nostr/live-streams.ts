@@ -2,6 +2,7 @@ import { nip19, type Event } from 'nostr-tools';
 import { withPool, FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS, sanitizeRelays } from './relays';
 import { fetchProfile } from './profile';
+import { fetchLatestEvent } from './event-queries';
 import { storage } from '../storage';
 import type { Episode, Podcast, ValueBlock, ValueRecipient } from '../types';
 import type { ProfileMetadata } from './auth';
@@ -193,19 +194,15 @@ export async function fetchLiveStreamByAddr(
   relayHints: string[] = [],
 ): Promise<NostrLiveStream | null> {
   const relays = sanitizeRelays([...relayHints, ...LIVE_STREAM_RELAYS]).slice(0, 20);
-  return withPool(relays, async (pool) => {
-    try {
-      const events = await pool.querySync(
-        relays,
-        { kinds: [30311], authors: [pubkey], '#d': [dTag], limit: 4 },
-        { maxWait: FEED_QUERY_MAX_WAIT_MS },
-      );
-      const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
-      return newest ? parseNostrLiveStream(newest) : null;
-    } catch {
-      return null;
-    }
-  });
+  // fetchLatestEvent resolves ~1.5s after the first match (grace for a newer
+  // replaceable version) instead of waiting the full timeout like querySync —
+  // so the deep-link opens fast.
+  const newest = await fetchLatestEvent(
+    relays,
+    { kinds: [30311], authors: [pubkey], '#d': [dTag], limit: 4 },
+    FEED_QUERY_MAX_WAIT_MS,
+  );
+  return newest ? parseNostrLiveStream(newest) : null;
 }
 
 /**

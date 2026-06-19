@@ -32,6 +32,9 @@ export default function Home() {
   const [publisherSource, setPublisherSource] = useState<Podcast | null>(null);
   const [publisherAlbums, setPublisherAlbums] = useState<Podcast[] | null>(null);
   const [publisherLoading, setPublisherLoading] = useState(false);
+  // True while a ?stream=<naddr> deep link is resolving — shows a loading
+  // overlay so the user doesn't see the browse page flash before the player.
+  const [resolvingStream, setResolvingStream] = useState(false);
   // `selected` lives in the Zustand store so cross-component surfaces (e.g.
   // the podcast-name link in a Nostr note card) can route into the detail
   // view without prop-drilling through the feed components.
@@ -79,19 +82,33 @@ export default function Home() {
     if (!decoded || decoded.type !== 'naddr' || decoded.data.kind !== 30311) return;
     const { pubkey, identifier, relays } = decoded.data;
 
+    setResolvingStream(true); // show a loading overlay instead of the browse page
     (async () => {
-      const stream = await fetchLiveStreamByAddr(pubkey, identifier, relays ?? []);
-      if (!stream || useApp.getState().current) return;
-      const profile = await fetchProfile(stream.pubkey).catch(() => null);
-      const value = await resolveStreamV4V(stream).catch(() => null);
-      play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
-      setPlayerExpanded(true);
-    })().finally(() => {
-      // Clear just the `stream` param, preserving the rest.
-      const url = new URL(window.location.href);
-      url.searchParams.delete('stream');
-      window.history.replaceState({}, '', url.toString());
-    });
+      try {
+        const stream = await fetchLiveStreamByAddr(pubkey, identifier, relays ?? []);
+        if (!stream || useApp.getState().current) return;
+        // Open the player the moment we have the event — video + chat don't need
+        // the profile or value block. Then enrich in the background; episode.id
+        // is stable (fnvHash of the stream id) so the second play() doesn't
+        // restart the video/hls, it just fills in the host name + boost value.
+        play(streamToEpisode(stream, null), streamToPodcast(stream, null));
+        setPlayerExpanded(true);
+        setResolvingStream(false);
+        const [profile, value] = await Promise.all([
+          fetchProfile(stream.pubkey).catch(() => null),
+          resolveStreamV4V(stream).catch(() => null),
+        ]);
+        if (useApp.getState().current?.episode.guid === stream.id) {
+          play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
+        }
+      } finally {
+        setResolvingStream(false);
+        // Clear just the `stream` param, preserving the rest.
+        const url = new URL(window.location.href);
+        url.searchParams.delete('stream');
+        window.history.replaceState({}, '', url.toString());
+      }
+    })();
   }, [play, setPlayerExpanded]);
 
   // Selection → URL: replaceState so navigation doesn't pile browser history
@@ -164,6 +181,15 @@ export default function Home() {
 
   return (
     <main className="min-h-screen pb-32">
+      {resolvingStream && (
+        <div
+          className="fixed inset-0 z-40 bg-ink flex flex-col items-center justify-center gap-3 text-muted"
+          style={{ paddingTop: 'env(safe-area-inset-top)' }}
+        >
+          <span className="text-nostr animate-bolt text-3xl">●</span>
+          <span className="text-sm font-mono uppercase tracking-widest">Loading live stream…</span>
+        </div>
+      )}
       {/* Header */}
       <header className="border-b border-bone/15 sticky top-0 z-20 bg-ink/90 backdrop-blur pt-[env(safe-area-inset-top)]">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-4">
