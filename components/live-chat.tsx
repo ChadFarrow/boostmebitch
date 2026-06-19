@@ -27,6 +27,33 @@ function shortNpub(bech: string) {
   return bech.length > 16 ? `${bech.slice(0, 10)}…${bech.slice(-4)}` : bech;
 }
 
+// Parse a kind:9735 zap receipt (a boost from Fountain / zap.stream / any NIP-57
+// client). The zapper, amount, and comment live in the embedded zap request
+// (the `description` tag), not on the receipt itself.
+function zapInfo(e: Event): { pubkey: string; sats: number; comment: string } | null {
+  const desc = e.tags.find((t) => t[0] === 'description')?.[1];
+  if (!desc) return null;
+  try {
+    const req = JSON.parse(desc) as { pubkey?: unknown; content?: unknown; tags?: string[][] };
+    if (typeof req.pubkey !== 'string') return null;
+    const amount = req.tags?.find((t) => t[0] === 'amount')?.[1];
+    const msat = amount ? parseInt(amount, 10) : NaN;
+    return {
+      pubkey: req.pubkey,
+      sats: Number.isFinite(msat) ? Math.floor(msat / 1000) : 0,
+      comment: typeof req.content === 'string' ? req.content : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+// The display author of a chat item — the zapper for a zap receipt, else the
+// event author. Used for profile resolution and mute filtering.
+function itemAuthor(e: Event): string {
+  return e.kind === 9735 ? zapInfo(e)?.pubkey ?? e.pubkey : e.pubkey;
+}
+
 // Pubkeys mentioned in a message body (so we can resolve their names too).
 function mentionedPubkeys(content: string): string[] {
   const out: string[] = [];
@@ -125,8 +152,13 @@ export function LiveChat({ streamId }: { streamId: string }) {
       else toFetch.push(pk);
     };
     for (const m of messages) {
-      consider(m.pubkey);
-      for (const pk of mentionedPubkeys(m.content)) consider(pk);
+      if (m.kind === 9735) {
+        const z = zapInfo(m);
+        if (z) { consider(z.pubkey); for (const pk of mentionedPubkeys(z.comment)) consider(pk); }
+      } else {
+        consider(m.pubkey);
+        for (const pk of mentionedPubkeys(m.content)) consider(pk);
+      }
     }
     if (Object.keys(seed).length) setProfiles((p) => ({ ...p, ...seed }));
     toFetch.forEach((pk) => {
@@ -171,7 +203,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
     }
   }
 
-  const visible = messages.filter((m) => !mutedPubkeys.has(m.pubkey));
+  const visible = messages.filter((m) => !mutedPubkeys.has(itemAuthor(m)));
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -188,6 +220,35 @@ export function LiveChat({ streamId }: { streamId: string }) {
           <p className="text-xs text-muted">No messages yet.</p>
         ) : (
           visible.map((m) => {
+            // Zap receipt (boost) — distinct bolt-styled row.
+            if (m.kind === 9735) {
+              const z = zapInfo(m);
+              if (!z) return null;
+              const zp = profiles[z.pubkey];
+              return (
+                <div key={m.id} className="flex gap-2 text-sm bg-bolt/5 rounded -mx-1 px-1 py-0.5">
+                  <Avatar
+                    pubkey={z.pubkey}
+                    picture={zp?.picture}
+                    name={zp?.name}
+                    className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <span className="text-xs font-display text-bolt mr-1.5">{authorName(zp, z.pubkey)}</span>
+                    <span className="stamp text-bolt border-bolt/60 bg-bolt/10 text-[10px] px-1 py-0 mr-1.5">
+                      ⚡ {z.sats.toLocaleString()} sats
+                    </span>
+                    <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(m.created_at * 1000).toLocaleString()}>
+                      {fmtClock(m.created_at)}
+                    </span>
+                    {z.comment && (
+                      <span className="text-bone/90 break-words whitespace-pre-wrap">{renderContent(z.comment, profiles)}</span>
+                    )}
+                  </div>
+                </div>
+              );
+            }
+            // Chat message.
             const p = profiles[m.pubkey];
             return (
               <div key={m.id} className="flex gap-2 text-sm">

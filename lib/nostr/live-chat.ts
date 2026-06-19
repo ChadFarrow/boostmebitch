@@ -31,7 +31,9 @@ export function subscribeLiveChat(
 ): () => void {
   const pool = new SimplePool();
   const relays = LIVE_STREAM_RELAYS;
-  const filter = { kinds: [1311], '#a': [streamChatAddr(streamId)] };
+  // kind:1311 = chat messages, kind:9735 = zap receipts (boosts from Fountain /
+  // zap.stream / any NIP-57 client) — both tagged with the stream's `a` address.
+  const filter = { kinds: [1311, 9735], '#a': [streamChatAddr(streamId)] };
   let closed = false;
   let sub: { close: () => void } | undefined;
   let newest = 0; // created_at of the newest delivered message — bounds re-syncs
