@@ -160,9 +160,9 @@ export async function fetchNostrLiveStreams(opts?: {
           (s.status === 'live' && s.rawEvent.created_at >= liveFreshAfter),
         )
         .sort((a, b) => {
-          // Upcoming (planned) first, then live. Within a group, soonest start first.
+          // Upcoming (planned) first, then live. Within a group, newest first.
           if (a.status !== b.status) return a.status === 'planned' ? -1 : 1;
-          return (a.startsAt ?? 0) - (b.startsAt ?? 0);
+          return (b.startsAt ?? 0) - (a.startsAt ?? 0);
         });
     } catch {
       return [];
@@ -231,14 +231,16 @@ export async function resolveStreamV4V(
     candidates.map(async ({ pubkey, relay, weight }) => {
       const cached = storage.profile.get(pubkey);
       let profile: ProfileMetadata | null | undefined = cached;
-      if (profile === undefined) {
-        // Not cached — fetch. Query the broad live-stream relay set (incl. the
-        // split's relay hint), not just DEFAULT_RELAYS: a streamer's
-        // lud16-bearing kind:0 often lives on the stream's relays
-        // (zap.stream/nostr.wine), so a narrow query misses it and hides BOOST
-        // for viewers whose default relays don't carry that profile.
+      // Re-fetch when absent (undefined) OR a cached miss (null): the recipient's
+      // lud16 is what gates BOOST, and a streamer's profile can miss transiently
+      // or live on the stream's relays (zap.stream/nostr.wine) rather than a
+      // viewer's defaults — don't let one earlier miss hide BOOST for 15 min.
+      // A cached profile object (even without lud16) is trusted, so this never
+      // re-queries hosts that genuinely have no Lightning address in a hot loop.
+      if (profile === undefined || profile === null) {
         const relays = sanitizeRelays([...(relay ? [relay] : []), ...LIVE_STREAM_RELAYS]);
-        profile = await fetchProfile(pubkey, relays);
+        const fetched = await fetchProfile(pubkey, relays);
+        if (fetched) profile = fetched;
       }
       const address = profile?.lud16 ?? profile?.lud06;
       if (!address) return null;
