@@ -23,6 +23,12 @@ interface AppState {
   playNext: () => void;
   playPrev: () => void;
 
+  // Whether the fullscreen "Now Playing" player is expanded. Lifted into the
+  // store so surfaces outside <Player> (e.g. a live-stream card) can open it.
+  // <Player> still owns the <FullscreenPlayer> render — this is just the flag.
+  playerExpanded: boolean;
+  setPlayerExpanded: (b: boolean) => void;
+
   // The podcast currently shown in the detail view. Lifted into the store so
   // surfaces outside `app/page.tsx` (e.g. a podcast-name link in a Nostr note
   // card) can navigate to a show without prop-drilling.
@@ -91,6 +97,9 @@ export const useApp = create<AppState>((set, get) => ({
     if (!prev) return s;
     return { current: { episode: prev, podcast: s.current.podcast }, isPlaying: true, positionSec: 0 };
   }),
+
+  playerExpanded: false,
+  setPlayerExpanded: (b) => set({ playerExpanded: b }),
 
   selectedPodcast: null,
   // Leaving the detail view (or switching shows) also drops any open

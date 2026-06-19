@@ -49,6 +49,12 @@ const LIVE_STREAM_RELAYS = sanitizeRelays([
   'wss://nostr.wine',
 ]);
 
+// A `live`-tagged event whose newest version is older than this is treated as a
+// stale/ended broadcast and dropped (streams that ended without an `ended`
+// status update). Generous enough not to hide a real stream whose client
+// updates the event infrequently.
+const LIVE_FRESH_SECS = 2 * 3600;
+
 function parseNostrLiveStream(event: Event): NostrLiveStream {
   const getTag = (name: string) => event.tags.find((t) => t[0] === name)?.[1];
   const getAllTags = (name: string) =>
@@ -132,11 +138,24 @@ export async function fetchNostrLiveStreams(opts?: {
         }
       }
 
+      // A genuinely-live kind:30311 event is re-published periodically while
+      // broadcasting (zap.stream et al. bump `current_participants` ~every
+      // minute), so an active stream always has a fresh `created_at`. When a
+      // stream ends, most clients never publish the `ended` status — they just
+      // stop updating — so a stale event tagged `live` is almost certainly a
+      // dead broadcast. Require live events to have been updated recently;
+      // planned streams are exempt (their event is set once, ahead of time).
+      const liveFreshAfter = Math.floor(Date.now() / 1000) - LIVE_FRESH_SECS;
+
       return Array.from(byAddr.values())
         .map(parseNostrLiveStream)
-        .filter((s) => s.status === 'live' || s.status === 'planned')
+        .filter((s) =>
+          s.status === 'planned' ||
+          (s.status === 'live' && s.rawEvent.created_at >= liveFreshAfter),
+        )
         .sort((a, b) => {
-          if (a.status !== b.status) return a.status === 'live' ? -1 : 1;
+          // Upcoming (planned) first, then live. Within a group, soonest start first.
+          if (a.status !== b.status) return a.status === 'planned' ? -1 : 1;
           return (a.startsAt ?? 0) - (b.startsAt ?? 0);
         });
     } catch {

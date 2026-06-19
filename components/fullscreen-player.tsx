@@ -1,5 +1,6 @@
 'use client';
 import { RefObject, useEffect, useState } from 'react';
+import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt, stripHtml } from '@/lib/format';
 import { useChapters } from '@/lib/chapters';
@@ -61,12 +62,16 @@ export function FullscreenPlayer({
   open,
   duration,
   audioRef,
+  videoNode,
+  isVideo,
   onClose,
   onBoost,
 }: {
   open: boolean;
   duration: number;
   audioRef: RefObject<HTMLAudioElement | null>;
+  videoNode: HtmlPortalNode | null;
+  isVideo: boolean;
   onClose: () => void;
   onBoost: () => void;
 }) {
@@ -109,24 +114,38 @@ export function FullscreenPlayer({
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
-        <span className="text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
+        <div className="flex items-center gap-3">
+          <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs" aria-label="Back">
+            ← back
+          </button>
+          <span className="text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
+        </div>
         <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
           ✕
         </button>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col sm:flex-row">
-        {/* Artwork — centered in the left half; sticky so it stays put as the page scrolls */}
+        {/* Artwork (or live video) — centered in the left half; sticky so it
+            stays put as the page scrolls. For HLS streams the shared <video>
+            is displayed here via its OutPortal while the player is open; when
+            closed it moves back to the mini-bar so audio keeps playing. */}
         <div className="flex items-center justify-center p-6 lg:p-10 sm:w-1/2 sm:flex-shrink-0 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
-          <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
-            <PodcastCover
-              image={episode.image ?? podcast.image}
-              artwork={podcast.artwork}
-              title={podcast.title}
-              seed={podcast.id?.toString()}
-              className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
-            />
-          </div>
+          {isVideo ? (
+            <div className="w-full max-w-md sm:max-w-lg lg:max-w-2xl aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black">
+              {open && videoNode && <OutPortal node={videoNode} />}
+            </div>
+          ) : (
+            <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
+              <PodcastCover
+                image={episode.image ?? podcast.image}
+                artwork={podcast.artwork}
+                title={podcast.title}
+                seed={podcast.id?.toString()}
+                className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
+              />
+            </div>
+          )}
         </div>
 
         {/* Info + controls — right half; scrolls with the page (no separate scroll region) */}
