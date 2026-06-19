@@ -176,7 +176,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   }
 
   return (
-    <div className="fixed inset-0 z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="card w-full max-w-xl bg-ink relative max-h-[92vh] overflow-y-auto">
         <button
           onClick={onClose}

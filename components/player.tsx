@@ -239,7 +239,7 @@ export function Player() {
         videoNode={videoNode}
         isVideo={isHls}
         onClose={() => setPlayerExpanded(false)}
-        onBoost={() => { setBoostOpen(true); setPlayerExpanded(false); }}
+        onBoost={() => setBoostOpen(true)}
       />
 
       {boostOpen && hasValue && (
