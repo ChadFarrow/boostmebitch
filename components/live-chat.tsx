@@ -106,6 +106,41 @@ function renderContent(content: string, profiles: Profiles): ReactNode[] {
   return parts;
 }
 
+// One chat row: avatar + name + timestamp + content. `badge` (a zap amount
+// stamp) also tints the row, so the same row renders both messages and boosts.
+function ChatRow({
+  pubkey,
+  profile,
+  timestamp,
+  content,
+  badge,
+}: {
+  pubkey: string;
+  profile?: ProfileMetadata | null;
+  timestamp: number;
+  content: ReactNode;
+  badge?: ReactNode;
+}) {
+  return (
+    <div className={`flex gap-2 text-sm ${badge ? 'bg-bolt/5 rounded -mx-1 px-1 py-0.5' : ''}`}>
+      <Avatar
+        pubkey={pubkey}
+        picture={profile?.picture}
+        name={profile?.name}
+        className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5"
+      />
+      <div className="min-w-0 flex-1">
+        <span className="text-xs font-display text-bolt mr-1.5">{authorName(profile, pubkey)}</span>
+        {badge}
+        <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(timestamp * 1000).toLocaleString()}>
+          {fmtClock(timestamp)}
+        </span>
+        {content}
+      </div>
+    </div>
+  );
+}
+
 // Append a chat message to the list, de-duped by id, sorted oldest-first, capped.
 function mergeMessage(prev: Event[], e: Event): Event[] {
   if (prev.some((m) => m.id === e.id)) return prev;
@@ -220,54 +255,39 @@ export function LiveChat({ streamId }: { streamId: string }) {
           <p className="text-xs text-muted">No messages yet.</p>
         ) : (
           visible.map((m) => {
-            // Zap receipt (boost) — distinct bolt-styled row.
+            // Zap receipt (boost) — same row with a bolt amount badge.
             if (m.kind === 9735) {
               const z = zapInfo(m);
               if (!z) return null;
-              const zp = profiles[z.pubkey];
               return (
-                <div key={m.id} className="flex gap-2 text-sm bg-bolt/5 rounded -mx-1 px-1 py-0.5">
-                  <Avatar
-                    pubkey={z.pubkey}
-                    picture={zp?.picture}
-                    name={zp?.name}
-                    className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <span className="text-xs font-display text-bolt mr-1.5">{authorName(zp, z.pubkey)}</span>
+                <ChatRow
+                  key={m.id}
+                  pubkey={z.pubkey}
+                  profile={profiles[z.pubkey]}
+                  timestamp={m.created_at}
+                  badge={
                     <span className="stamp text-bolt border-bolt/60 bg-bolt/10 text-[10px] px-1 py-0 mr-1.5">
                       ⚡ {z.sats.toLocaleString()} sats
                     </span>
-                    <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(m.created_at * 1000).toLocaleString()}>
-                      {fmtClock(m.created_at)}
-                    </span>
-                    {z.comment && (
+                  }
+                  content={
+                    z.comment ? (
                       <span className="text-bone/90 break-words whitespace-pre-wrap">{renderContent(z.comment, profiles)}</span>
-                    )}
-                  </div>
-                </div>
+                    ) : null
+                  }
+                />
               );
             }
-            // Chat message.
-            const p = profiles[m.pubkey];
             return (
-              <div key={m.id} className="flex gap-2 text-sm">
-                <Avatar
-                  pubkey={m.pubkey}
-                  picture={p?.picture}
-                  name={p?.name}
-                  className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5"
-                />
-                <div className="min-w-0 flex-1">
-                  <span className="text-xs font-display text-bolt mr-1.5">
-                    {authorName(p, m.pubkey)}
-                  </span>
-                  <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(m.created_at * 1000).toLocaleString()}>
-                    {fmtClock(m.created_at)}
-                  </span>
+              <ChatRow
+                key={m.id}
+                pubkey={m.pubkey}
+                profile={profiles[m.pubkey]}
+                timestamp={m.created_at}
+                content={
                   <span className="text-bone/90 break-words whitespace-pre-wrap">{renderContent(m.content, profiles)}</span>
-                </div>
-              </div>
+                }
+              />
             );
           })
         )}
