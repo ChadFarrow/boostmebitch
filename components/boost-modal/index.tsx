@@ -5,7 +5,7 @@ import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
-import { publishBoostNote, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS } from '@/lib/nostr';
+import { publishBoostNote, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -73,6 +73,42 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const value = (episode?.value ?? podcast.value)!;
   const splits = useMemo(() => splitSats(sats, value.recipients), [sats, value.recipients]);
 
+  // Persist the boost to the local sent-boost log (the only thing that differs
+  // between the zap and boostagram paths is the `legs`).
+  function logStoredBoost(boostagram: Boostagram, legs: StoredBoost['legs']) {
+    const stored: StoredBoost = {
+      uuid: boostagram.uuid!,
+      ts: Date.now(),
+      podcastTitle: podcast.title,
+      podcastId: podcast.id,
+      podcastGuid: podcast.podcastGuid,
+      podcastImage: episode?.image ?? podcast.image,
+      episodeTitle: episode?.title,
+      episodeGuid: episode?.guid,
+      sats,
+      message: msg || undefined,
+      senderName: name || undefined,
+      legs,
+    };
+    storage.boosts.add(identity?.npub, stored);
+    bumpBoosts();
+  }
+
+  // Publish the kind:1 "I boosted" note when opted in & signed in, patching the
+  // stored boost with the note id. Shared by both payment paths.
+  async function maybePublishNote(boostagram: Boostagram, results: BoostResult[]) {
+    if (!shareNostr || !identity) return;
+    setPubState({ kind: 'publishing' });
+    try {
+      const note = await publishBoostNote({ podcast, episode, boostagram, results, relays });
+      setPubState({ kind: 'done', note });
+      storage.boosts.update(identity.npub, boostagram.uuid!, { noteId: note.id });
+      bumpBoosts();
+    } catch (e) {
+      setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
+    }
+  }
+
   async function go() {
     if (!rail) return;
     if (name) storage.senderName.set(name);
@@ -109,8 +145,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // *as a boost* in Fountain / tunestr / zap.stream (and BMB). Pre-check zap
     // support BEFORE paying so we never double-pay; on a real zap we skip the
     // kind:1311 text line (the receipt already renders as a boost).
-    const liveStreamId =
-      episode?.guid && /^[0-9a-f]{64}:/.test(episode.guid) ? episode.guid : null;
+    const liveStreamId = isLiveStreamId(episode?.guid) ? episode!.guid! : null;
     const hostLnaddr =
       value.recipients.length === 1 && value.recipients[0].type === 'lnaddress'
         ? value.recipients[0].address
@@ -119,11 +154,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     if (liveStreamId && identity && hasSigner && hostLnaddr && (await lnaddrSupportsZaps(hostLnaddr))) {
       try {
         await sendZap({
-          recipientPubkey: liveStreamId.slice(0, liveStreamId.indexOf(':')),
+          recipientPubkey: parseStreamId(liveStreamId)!.pubkey,
           recipientLud16: hostLnaddr,
           amountSats: sats,
           comment: msg || undefined,
-          aTag: `30311:${liveStreamId}`,
+          aTag: streamChatAddr(liveStreamId),
           relays: LIVE_STREAM_RELAYS,
         });
       } catch (e) {
@@ -135,34 +170,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       setPaymentDone(true);
       setRunning(false);
       if (rail) recordLastRail(rail, identity);
-      const stored: StoredBoost = {
-        uuid: boostagram.uuid!,
-        ts: Date.now(),
-        podcastTitle: podcast.title,
-        podcastId: podcast.id,
-        podcastGuid: podcast.podcastGuid,
-        podcastImage: episode?.image ?? podcast.image,
-        episodeTitle: episode?.title,
-        episodeGuid: episode?.guid,
-        sats,
-        message: msg || undefined,
-        senderName: name || undefined,
-        legs: [{ recipient: hostLnaddr, recipientName: value.recipients[0].name, sats, ok: true }],
-      };
-      storage.boosts.add(identity.npub, stored);
-      bumpBoosts();
+      logStoredBoost(boostagram, [
+        { recipient: hostLnaddr, recipientName: value.recipients[0].name, sats, ok: true },
+      ]);
       setTimeout(() => onClose(), 1500);
-      if (shareNostr) {
-        setPubState({ kind: 'publishing' });
-        try {
-          const note = await publishBoostNote({ podcast, episode, boostagram, results: [], relays });
-          setPubState({ kind: 'done', note });
-          storage.boosts.update(identity.npub, boostagram.uuid!, { noteId: note.id });
-          bumpBoosts();
-        } catch (e) {
-          setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
-        }
-      }
+      await maybePublishNote(boostagram, []);
       return;
     }
 
@@ -208,22 +220,14 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     if (anyPaid && rail) recordLastRail(rail, identity);
 
     // Persist the boost locally so the user's "view" surface (the global feed)
-    // can render it. Logged regardless of rail; the Nostr publish step below
-    // patches in `noteId` for dedupe against the relay-discovered version.
+    // can render it. Logged regardless of rail; maybePublishNote patches in
+    // `noteId` for dedupe against the relay-discovered version. Publish is gated
+    // on at least one successful leg — failed-only boosts shouldn't pollute the
+    // network.
     if (anyPaid) {
-      const stored: StoredBoost = {
-        uuid: boostagram.uuid!,
-        ts: Date.now(),
-        podcastTitle: podcast.title,
-        podcastId: podcast.id,
-        podcastGuid: podcast.podcastGuid,
-        podcastImage: episode?.image ?? podcast.image,
-        episodeTitle: episode?.title,
-        episodeGuid: episode?.guid,
-        sats,
-        message: msg || undefined,
-        senderName: name || undefined,
-        legs: collected.map((r) => ({
+      logStoredBoost(
+        boostagram,
+        collected.map((r) => ({
           recipient: r.recipient.address,
           recipientName: r.recipient.name,
           sats: r.sats,
@@ -231,29 +235,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           error: r.error,
           boostboxUrl: r.boostboxUrl,
         })),
-      };
-      storage.boosts.add(identity?.npub, stored);
-      bumpBoosts();
-    }
-
-    // Publish to Nostr if signed in & opted in. Gate on at least one successful
-    // leg — failed-only boosts shouldn't pollute the network.
-    if (shareNostr && identity && anyPaid) {
-      setPubState({ kind: 'publishing' });
-      try {
-        const note = await publishBoostNote({
-          podcast,
-          episode,
-          boostagram,
-          results: collected,
-          relays,
-        });
-        setPubState({ kind: 'done', note });
-        storage.boosts.update(identity.npub, boostagram.uuid!, { noteId: note.id });
-        bumpBoosts();
-      } catch (e) {
-        setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
-      }
+      );
+      await maybePublishNote(boostagram, collected);
     }
   }
 
