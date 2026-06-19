@@ -5,6 +5,7 @@ import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { Player } from '@/components/player';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
+import { NostrLiveStreams } from '@/components/nostr-live-streams';
 import { DiscussionView } from '@/components/discussion-view';
 import { EpisodeDetailView } from '@/components/episode-detail-view';
 import { BoltIcon } from '@/components/icons';
@@ -244,9 +245,14 @@ export default function Home() {
       </section>
 
       {!inDetailView && (
-        <section className="max-w-7xl mx-auto px-4 pt-12">
-          <GlobalNostrFeed />
-        </section>
+        <>
+          <section className="max-w-7xl mx-auto px-4 pt-8">
+            <NostrLiveStreams />
+          </section>
+          <section className="max-w-7xl mx-auto px-4 pt-12">
+            <GlobalNostrFeed />
+          </section>
+        </>
       )}
 
       <Player />
