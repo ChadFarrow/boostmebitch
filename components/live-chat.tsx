@@ -7,6 +7,8 @@ import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
+import { fmtClock } from '@/lib/format';
+import { Avatar } from './avatar';
 
 const MAX_MESSAGES = 200;
 
@@ -14,11 +16,11 @@ function authorName(p: ProfileMetadata | null | undefined, pubkey: string) {
   return p?.display_name?.trim() || p?.name?.trim() || `${pubkey.slice(0, 8)}…`;
 }
 
-function fmtChatTime(unixSec: number) {
-  return new Date(unixSec * 1000).toLocaleTimeString([], {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+// Append a chat message to the list, de-duped by id, sorted oldest-first, capped.
+function mergeMessage(prev: Event[], e: Event): Event[] {
+  if (prev.some((m) => m.id === e.id)) return prev;
+  const next = [...prev, e].sort((a, b) => a.created_at - b.created_at);
+  return next.length > MAX_MESSAGES ? next.slice(next.length - MAX_MESSAGES) : next;
 }
 
 export function LiveChat({ streamId }: { streamId: string }) {
@@ -42,11 +44,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
     setMessages([]);
     attempted.current = new Set();
     const unsub = subscribeLiveChat(streamId, (e) => {
-      setMessages((prev) => {
-        if (prev.some((m) => m.id === e.id)) return prev;
-        const next = [...prev, e].sort((a, b) => a.created_at - b.created_at);
-        return next.length > MAX_MESSAGES ? next.slice(next.length - MAX_MESSAGES) : next;
-      });
+      setMessages((prev) => mergeMessage(prev, e));
     });
     return unsub;
   }, [streamId]);
@@ -91,11 +89,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
     nearBottomRef.current = true;
     try {
       const { event } = await publishLiveChat(streamId, content);
-      setMessages((prev) =>
-        prev.some((m) => m.id === event.id)
-          ? prev
-          : [...prev, event].sort((a, b) => a.created_at - b.created_at),
-      );
+      setMessages((prev) => mergeMessage(prev, event));
     } catch (e) {
       setErr(getErrorMessage(e, 'failed to send'));
       // Restore the text so it isn't lost — but not over a new draft they've
@@ -126,22 +120,18 @@ export function LiveChat({ streamId }: { streamId: string }) {
             const p = profiles[m.pubkey];
             return (
               <div key={m.id} className="flex gap-2 text-sm">
-                {p?.picture ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={p.picture}
-                    alt=""
-                    className="w-6 h-6 rounded-full object-cover flex-shrink-0 mt-0.5 bg-bone/10"
-                  />
-                ) : (
-                  <div className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5 bg-bone/10" />
-                )}
+                <Avatar
+                  pubkey={m.pubkey}
+                  picture={p?.picture}
+                  name={p?.name}
+                  className="w-6 h-6 rounded-full flex-shrink-0 mt-0.5"
+                />
                 <div className="min-w-0 flex-1">
                   <span className="text-xs font-display text-bolt mr-1.5">
                     {authorName(p, m.pubkey)}
                   </span>
                   <span className="text-[10px] text-muted font-mono mr-1.5" title={new Date(m.created_at * 1000).toLocaleString()}>
-                    {fmtChatTime(m.created_at)}
+                    {fmtClock(m.created_at)}
                   </span>
                   <span className="text-bone/90 break-words whitespace-pre-wrap">{m.content}</span>
                 </div>

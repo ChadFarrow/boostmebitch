@@ -13,16 +13,8 @@ import { useApp } from '@/lib/store';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { BoostModal } from './boost-modal';
 import { PodcastCover } from './podcast-cover';
+import { fmtLiveTime } from '@/lib/format';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
-
-function fmtLiveTime(unixSec: number) {
-  const d = new Date(unixSec * 1000);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  if (sameDay) return time;
-  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
-}
 
 interface ResolvedStream {
   stream: NostrLiveStream;
@@ -135,35 +127,32 @@ export function NostrLiveStreams() {
       </h3>
 
       <div ref={scrollRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
-        {resolved.map(({ stream, profile, value }) => (
-          <StreamCard
-            key={stream.id}
-            stream={stream}
-            profile={profile}
-            value={value}
-            onPlay={() => {
-              play(
-                streamToEpisode(stream, value),
-                streamToPodcast(stream, profile),
-              );
-            }}
-            onOpen={() => {
-              play(
-                streamToEpisode(stream, value),
-                streamToPodcast(stream, profile),
-              );
-              setPlayerExpanded(true);
-            }}
-            onBoost={() => {
-              const podcast = streamToPodcast(stream, profile);
-              podcast.value = value;
-              setBoostTarget({
-                episode: streamToEpisode(stream, value),
-                podcast,
-              });
-            }}
-          />
-        ))}
+        {resolved.map(({ stream, profile, value }) => {
+          // Play the stream in the mini-bar; optionally also expand the
+          // fullscreen player (card click vs the PLAY button).
+          const start = (expand: boolean) => {
+            play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
+            if (expand) setPlayerExpanded(true);
+          };
+          return (
+            <StreamCard
+              key={stream.id}
+              stream={stream}
+              profile={profile}
+              value={value}
+              onPlay={() => start(false)}
+              onOpen={() => start(true)}
+              onBoost={() => {
+                const podcast = streamToPodcast(stream, profile);
+                podcast.value = value;
+                setBoostTarget({
+                  episode: streamToEpisode(stream, value),
+                  podcast,
+                });
+              }}
+            />
+          );
+        })}
       </div>
 
       {boostTarget && (

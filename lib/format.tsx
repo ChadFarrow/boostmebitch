@@ -24,6 +24,20 @@ export function fmt(t: number): string {
   return `${m}:${s}`;
 }
 
+/** Time-of-day clock, e.g. "3:45 PM". Accepts unix seconds. */
+export function fmtClock(unixSec: number): string {
+  return new Date(unixSec * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+/** Clock time for today, else "Mon D <clock>". Accepts unix seconds. */
+export function fmtLiveTime(unixSec: number): string {
+  const d = new Date(unixSec * 1000);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return sameDay
+    ? fmtClock(unixSec)
+    : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${fmtClock(unixSec)}`;
+}
+
 /** Human-readable relative timestamp. Accepts unix seconds. */
 export function timeAgo(unixSec: number): string {
   const diff = Date.now() / 1000 - unixSec;
