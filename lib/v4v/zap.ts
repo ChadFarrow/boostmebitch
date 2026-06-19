@@ -59,6 +59,10 @@ export async function sendZap(args: {
   comment?: string;
   /** Optional event id being zapped (omit for pubkey-only "profile zap"). */
   eventId?: string;
+  /** Optional NIP-33 address being zapped, e.g. a live stream
+   *  `30311:<pubkey>:<dTag>` — makes the receipt show up in that stream's boost
+   *  feed (Fountain / tunestr / zap.stream). */
+  aTag?: string;
   /** Relays where the zap receipt should be published; the recipient's LN
    *  service publishes the receipt, so include relays the recipient is likely
    *  to read from. */
@@ -102,6 +106,7 @@ export async function sendZap(args: {
     ['p', args.recipientPubkey],
   ];
   if (args.eventId) tags.push(['e', args.eventId]);
+  if (args.aTag) tags.push(['a', args.aTag]);
 
   const template: EventTemplate = {
     kind: 9734,
@@ -160,4 +165,18 @@ export async function sendZap(args: {
     throw new Error(`${rail} wallet rejected the zap invoice: ${msg}`);
   }
   return { preimage };
+}
+
+/**
+ * Does a Lightning address support NIP-57 zaps? Used to decide BEFORE any
+ * payment whether to send a real zap (renders as a boost everywhere) or fall
+ * back to a plain boostagram — so we never double-pay.
+ */
+export async function lnaddrSupportsZaps(lud16: string): Promise<boolean> {
+  try {
+    const meta = await fetchPayMetadata(lnAddressToUrl(lud16));
+    return !!(meta.allowsNostr && meta.nostrPubkey);
+  } catch {
+    return false;
+  }
 }

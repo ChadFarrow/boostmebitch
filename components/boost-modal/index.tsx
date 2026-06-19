@@ -5,7 +5,8 @@ import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
-import { publishBoostNote, resolvePublishRelays, recordLastRail, publishLiveChat } from '@/lib/nostr';
+import { publishBoostNote, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS } from '@/lib/nostr';
+import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { fireConfetti } from '@/lib/format';
@@ -100,6 +101,71 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
     setRunning(true);
     setResults([]);
+
+    // ── Live-stream zap path ────────────────────────────────────────────────
+    // Boosting a Nostr live stream while signed in, when the host's Lightning
+    // address supports NIP-57 zaps, sends a REAL zap: the recipient's LN service
+    // publishes a kind:9735 receipt tagged to the stream, so the boost shows up
+    // *as a boost* in Fountain / tunestr / zap.stream (and BMB). Pre-check zap
+    // support BEFORE paying so we never double-pay; on a real zap we skip the
+    // kind:1311 text line (the receipt already renders as a boost).
+    const liveStreamId =
+      episode?.guid && /^[0-9a-f]{64}:/.test(episode.guid) ? episode.guid : null;
+    const hostLnaddr =
+      value.recipients.length === 1 && value.recipients[0].type === 'lnaddress'
+        ? value.recipients[0].address
+        : null;
+    const hasSigner = typeof window !== 'undefined' && !!window.nostr;
+    if (liveStreamId && identity && hasSigner && hostLnaddr && (await lnaddrSupportsZaps(hostLnaddr))) {
+      try {
+        await sendZap({
+          recipientPubkey: liveStreamId.slice(0, liveStreamId.indexOf(':')),
+          recipientLud16: hostLnaddr,
+          amountSats: sats,
+          comment: msg || undefined,
+          aTag: `30311:${liveStreamId}`,
+          relays: LIVE_STREAM_RELAYS,
+        });
+      } catch (e) {
+        alert(getErrorMessage(e, 'zap failed'));
+        setRunning(false);
+        return;
+      }
+      fireConfetti();
+      setPaymentDone(true);
+      setRunning(false);
+      if (rail) recordLastRail(rail, identity);
+      const stored: StoredBoost = {
+        uuid: boostagram.uuid!,
+        ts: Date.now(),
+        podcastTitle: podcast.title,
+        podcastId: podcast.id,
+        podcastGuid: podcast.podcastGuid,
+        podcastImage: episode?.image ?? podcast.image,
+        episodeTitle: episode?.title,
+        episodeGuid: episode?.guid,
+        sats,
+        message: msg || undefined,
+        senderName: name || undefined,
+        legs: [{ recipient: hostLnaddr, recipientName: value.recipients[0].name, sats, ok: true }],
+      };
+      storage.boosts.add(identity.npub, stored);
+      bumpBoosts();
+      setTimeout(() => onClose(), 1500);
+      if (shareNostr) {
+        setPubState({ kind: 'publishing' });
+        try {
+          const note = await publishBoostNote({ podcast, episode, boostagram, results: [], relays });
+          setPubState({ kind: 'done', note });
+          storage.boosts.update(identity.npub, boostagram.uuid!, { noteId: note.id });
+          bumpBoosts();
+        } catch (e) {
+          setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
+        }
+      }
+      return;
+    }
+
     let collected: BoostResult[] = [];
     try {
       collected = await sendBoost({
@@ -127,12 +193,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // failed boost leaves the modal open so the user sees the error.
     if (anyPaid) setTimeout(() => onClose(), 1500);
 
-    // A live-stream boost posts into the stream's chat (kind:1311) so other
-    // viewers see it — independent of the Share-on-Nostr toggle. Nostr streams
-    // set episode.guid = `<64-hex pubkey>:<dTag>`. Signed-in only (the message
+    // Fallback (non-zap) path only reaches here. A live-stream boost that
+    // didn't go out as a real zap (host doesn't support NIP-57, or signed out)
+    // posts into the stream's chat (kind:1311) so other viewers still see it —
+    // independent of the Share-on-Nostr toggle. Signed-in only (the message
     // must be signed); non-fatal so a relay hiccup can't fail the boost.
-    const liveStreamId =
-      episode?.guid && /^[0-9a-f]{64}:/.test(episode.guid) ? episode.guid : null;
     if (anyPaid && identity && liveStreamId) {
       const chatMsg = `⚡ Boosted ${sats.toLocaleString()} sats${msg ? `: ${msg}` : ''}`;
       publishLiveChat(liveStreamId, chatMsg).catch(() => { /* non-fatal */ });
