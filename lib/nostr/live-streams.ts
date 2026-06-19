@@ -43,11 +43,17 @@ export interface NostrLiveStream {
 
 // Union of DEFAULT_RELAYS and a few extras known to carry kind:30311 events
 // (e.g. zap.stream publishes to these).
-const LIVE_STREAM_RELAYS = sanitizeRelays([
+export const LIVE_STREAM_RELAYS = sanitizeRelays([
   ...DEFAULT_RELAYS,
   'wss://relay.zap.stream',
   'wss://nostr.wine',
 ]);
+
+// A `live`-tagged event whose newest version is older than this is treated as a
+// stale/ended broadcast and dropped (streams that ended without an `ended`
+// status update). Generous enough not to hide a real stream whose client
+// updates the event infrequently.
+const LIVE_FRESH_SECS = 2 * 3600;
 
 function parseNostrLiveStream(event: Event): NostrLiveStream {
   const getTag = (name: string) => event.tags.find((t) => t[0] === name)?.[1];
@@ -62,14 +68,19 @@ function parseNostrLiveStream(event: Event): NostrLiveStream {
   let npub = '';
   try { npub = nip19.npubEncode(event.pubkey); } catch { /* ignore */ }
 
-  // NIP-53 zap splits: ["zap", "<pubkey>", "<relay>", "<weight>"]
+  // NIP-53 zap splits: ["zap", "<pubkey>", "<relay>", "<weight>"]. Default a
+  // missing/garbage weight to 1, but preserve an explicit 0 (host opted this
+  // participant out) — `parseFloat(...) || 1` would wrongly turn 0 into 1.
   const zapWeights = event.tags
     .filter((t) => t[0] === 'zap' && typeof t[1] === 'string' && t[1].length === 64)
-    .map((t) => ({
-      pubkey: t[1],
-      relay: t[2] || undefined,
-      weight: parseFloat(t[3] ?? '1') || 1,
-    }));
+    .map((t) => {
+      const w = parseFloat(t[3] ?? '1');
+      return {
+        pubkey: t[1],
+        relay: t[2] || undefined,
+        weight: Number.isFinite(w) ? w : 1,
+      };
+    });
 
   return {
     id: `${event.pubkey}:${dTag}`,
@@ -132,11 +143,24 @@ export async function fetchNostrLiveStreams(opts?: {
         }
       }
 
+      // A genuinely-live kind:30311 event is re-published periodically while
+      // broadcasting (zap.stream et al. bump `current_participants` ~every
+      // minute), so an active stream always has a fresh `created_at`. When a
+      // stream ends, most clients never publish the `ended` status — they just
+      // stop updating — so a stale event tagged `live` is almost certainly a
+      // dead broadcast. Require live events to have been updated recently;
+      // planned streams are exempt (their event is set once, ahead of time).
+      const liveFreshAfter = Math.floor(Date.now() / 1000) - LIVE_FRESH_SECS;
+
       return Array.from(byAddr.values())
         .map(parseNostrLiveStream)
-        .filter((s) => s.status === 'live' || s.status === 'planned')
+        .filter((s) =>
+          s.status === 'planned' ||
+          (s.status === 'live' && s.rawEvent.created_at >= liveFreshAfter),
+        )
         .sort((a, b) => {
-          if (a.status !== b.status) return a.status === 'live' ? -1 : 1;
+          // Upcoming (planned) first, then live. Within a group, soonest start first.
+          if (a.status !== b.status) return a.status === 'planned' ? -1 : 1;
           return (a.startsAt ?? 0) - (b.startsAt ?? 0);
         });
     } catch {
@@ -159,10 +183,12 @@ export async function fetchNostrLiveStreams(opts?: {
 export async function resolveStreamV4V(
   stream: NostrLiveStream,
 ): Promise<ValueBlock | null> {
-  // Build the candidate list: zap-split participants, or host as fallback
+  // Build the candidate list: zap-split participants (dropping any the host
+  // opted out with weight <= 0), or the host as the sole fallback.
+  const splitCandidates = stream.zapWeights.filter((z) => z.weight > 0);
   const candidates: Array<{ pubkey: string; relay?: string; weight: number }> =
-    stream.zapWeights.length
-      ? stream.zapWeights
+    splitCandidates.length
+      ? splitCandidates
       : [{ pubkey: stream.pubkey, weight: 1 }];
 
   const results = await Promise.all(

@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, startTransition } from 'react';
+import { useEffect, startTransition } from 'react';
 import { nip19 } from 'nostr-tools';
 import {
   loginWithExtension,
@@ -42,8 +42,11 @@ export function NostrAuth() {
   const setFavorites = useApp((s) => s.setFavorites);
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
   // One button opens the sign-in modal, which owns the per-method (extension
-  // / remote-signer / Amber) flows and their own busy/error state.
-  const [modalOpen, setModalOpen] = useState(false);
+  // / remote-signer / Amber) flows and their own busy/error state. Open-state
+  // lives in the store so other surfaces (fullscreen player, live chat) can
+  // open it without leaving the page.
+  const modalOpen = useApp((s) => s.signInOpen);
+  const setModalOpen = useApp((s) => s.setSignInOpen);
 
   async function loadProfile(id: NostrIdentity) {
     // Dedupe across remounts (StrictMode runs effects twice in dev; Fast

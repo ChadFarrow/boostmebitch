@@ -13,16 +13,8 @@ import { useApp } from '@/lib/store';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { BoostModal } from './boost-modal';
 import { PodcastCover } from './podcast-cover';
+import { fmtLiveTime } from '@/lib/format';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
-
-function fmtLiveTime(unixSec: number) {
-  const d = new Date(unixSec * 1000);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  if (sameDay) return time;
-  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
-}
 
 interface ResolvedStream {
   stream: NostrLiveStream;
@@ -35,7 +27,30 @@ export function NostrLiveStreams() {
   const [loading, setLoading] = useState(true);
   const [boostTarget, setBoostTarget] = useState<{ episode: Episode; podcast: Podcast } | null>(null);
   const play = useApp((s) => s.play);
+  const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const mountedRef = useRef(true);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  // Translate vertical mouse-wheel into horizontal scroll over the row. React's
+  // onWheel is passive (can't preventDefault), so attach natively. We only hijack
+  // when there's horizontal overflow, the gesture is vertical (mouse wheel, not a
+  // trackpad swipe), and the row isn't already at the edge in that direction —
+  // so page scroll still takes over once you reach the end.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (el.scrollWidth <= el.clientWidth) return;
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      const atStart = el.scrollLeft <= 0;
+      const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
+      if ((e.deltaY < 0 && atStart) || (e.deltaY > 0 && atEnd)) return;
+      el.scrollLeft += e.deltaY;
+      e.preventDefault();
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [resolved.length]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -111,29 +126,33 @@ export function NostrLiveStreams() {
         </span>
       </h3>
 
-      <div className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
-        {resolved.map(({ stream, profile, value }) => (
-          <StreamCard
-            key={stream.id}
-            stream={stream}
-            profile={profile}
-            value={value}
-            onPlay={() => {
-              play(
-                streamToEpisode(stream, value),
-                streamToPodcast(stream, profile),
-              );
-            }}
-            onBoost={() => {
-              const podcast = streamToPodcast(stream, profile);
-              podcast.value = value;
-              setBoostTarget({
-                episode: streamToEpisode(stream, value),
-                podcast,
-              });
-            }}
-          />
-        ))}
+      <div ref={scrollRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
+        {resolved.map(({ stream, profile, value }) => {
+          // Play the stream in the mini-bar; optionally also expand the
+          // fullscreen player (card click vs the PLAY button).
+          const start = (expand: boolean) => {
+            play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
+            if (expand) setPlayerExpanded(true);
+          };
+          return (
+            <StreamCard
+              key={stream.id}
+              stream={stream}
+              profile={profile}
+              value={value}
+              onPlay={() => start(false)}
+              onOpen={() => start(true)}
+              onBoost={() => {
+                const podcast = streamToPodcast(stream, profile);
+                podcast.value = value;
+                setBoostTarget({
+                  episode: streamToEpisode(stream, value),
+                  podcast,
+                });
+              }}
+            />
+          );
+        })}
       </div>
 
       {boostTarget && (
@@ -152,25 +171,35 @@ function StreamCard({
   profile,
   value,
   onPlay,
+  onOpen,
   onBoost,
 }: {
   stream: NostrLiveStream;
   profile: ProfileMetadata | null;
   value: ValueBlock | null;
   onPlay: () => void;
+  onOpen: () => void;
   onBoost: () => void;
 }) {
   const current = useApp((s) => s.current);
   const isPlaying = useApp((s) => s.isPlaying);
   const isCurrentStream =
     current?.episode.guid === stream.id;
+  // Only playable streams (live, with a URL) open the fullscreen player on a
+  // card click; an upcoming/URL-less card click does nothing.
+  const playable = stream.status !== 'planned' && !!stream.streamUrl;
 
   const displayName =
     profile?.display_name ?? profile?.name ?? stream.npub.slice(0, 12) + '…';
   const image = stream.image ?? profile?.picture;
 
   return (
-    <article className="flex-shrink-0 w-64 card p-3 flex flex-col gap-2">
+    <article
+      className={`flex-shrink-0 w-64 card p-3 flex flex-col gap-2 ${
+        playable ? 'cursor-pointer hover:border-bone/30 transition-colors' : ''
+      }`}
+      onClick={playable ? onOpen : undefined}
+    >
       {/* Header row: artwork + status badge */}
       <div className="flex items-start gap-2">
         <PodcastCover
@@ -232,7 +261,7 @@ function StreamCard({
       <div className="flex gap-1.5 mt-auto pt-1">
         <button
           type="button"
-          onClick={onPlay}
+          onClick={(e) => { e.stopPropagation(); onPlay(); }}
           disabled={stream.status === 'planned' || !stream.streamUrl}
           className="btn text-xs py-1 flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
           title={
@@ -250,7 +279,7 @@ function StreamCard({
         {value && (
           <button
             type="button"
-            onClick={onBoost}
+            onClick={(e) => { e.stopPropagation(); onBoost(); }}
             className="btn-bolt text-xs py-1 px-2 flex-shrink-0 flex items-center gap-1"
             title="Boost this stream"
           >

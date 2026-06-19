@@ -1,5 +1,6 @@
 'use client';
 import { RefObject, useEffect, useState } from 'react';
+import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt, stripHtml } from '@/lib/format';
 import { useChapters } from '@/lib/chapters';
@@ -9,6 +10,7 @@ import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
 import { FavHeart } from './lists';
 import { TransportControls } from './transport-controls';
+import { LiveChat } from './live-chat';
 
 function ChaptersList({
   url,
@@ -61,16 +63,22 @@ export function FullscreenPlayer({
   open,
   duration,
   audioRef,
+  videoNode,
+  isVideo,
   onClose,
   onBoost,
 }: {
   open: boolean;
   duration: number;
   audioRef: RefObject<HTMLAudioElement | null>;
+  videoNode: HtmlPortalNode | null;
+  isVideo: boolean;
   onClose: () => void;
   onBoost: () => void;
 }) {
   const { current, isPlaying, positionSec, setPosition, episodeQueue, play } = useApp();
+  const identity = useApp((s) => s.identity);
+  const setSignInOpen = useApp((s) => s.setSignInOpen);
   const [valueOpen, setValueOpen] = useState(false);
 
   // Lock the page behind the overlay so its scrollbar doesn't show through.
@@ -94,6 +102,11 @@ export function FullscreenPlayer({
   const { episode, podcast } = current;
   const isMusic = isMusicMedium(podcast);
   const isLive = episode.liveStatus === 'live';
+  // A Nostr live stream's NIP-33 id is `<64-hex pubkey>:<dTag>`, carried as the
+  // episode guid. When present (and it's an HLS video stream) the right pane
+  // becomes the kind:1311 live chat instead of the usual episode info.
+  const liveStreamId =
+    isVideo && episode.guid && /^[0-9a-f]{64}:/.test(episode.guid) ? episode.guid : null;
   const value = episode.value ?? podcast.value;
   const hasValue = hasValueRecipients(value);
   const description = episode.description ? stripHtml(episode.description) : '';
@@ -109,27 +122,84 @@ export function FullscreenPlayer({
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
-        <span className="text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
-        <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
-          ✕
-        </button>
+        <div className="flex items-center gap-3">
+          <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs" aria-label="Back">
+            ← back
+          </button>
+          <span className="text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {!identity && (
+            <button
+              onClick={() => setSignInOpen(true)}
+              className="btn-ghost text-xs"
+              aria-label="Sign in with Nostr"
+            >
+              <span className="text-nostr">◆</span> Sign in
+            </button>
+          )}
+          <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
+            ✕
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto flex flex-col sm:flex-row">
-        {/* Artwork — centered in the left half; sticky so it stays put as the page scrolls */}
+        {/* Artwork (or live video) — centered in the left half; sticky so it
+            stays put as the page scrolls. For HLS streams the shared <video>
+            is displayed here via its OutPortal while the player is open; when
+            closed it moves back to the mini-bar so audio keeps playing. */}
         <div className="flex items-center justify-center p-6 lg:p-10 sm:w-1/2 sm:flex-shrink-0 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
-          <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
-            <PodcastCover
-              image={episode.image ?? podcast.image}
-              artwork={podcast.artwork}
-              title={podcast.title}
-              seed={podcast.id?.toString()}
-              className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
-            />
-          </div>
+          {isVideo ? (
+            <div className="w-full max-w-md sm:max-w-lg lg:max-w-2xl aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black">
+              {open && videoNode && <OutPortal node={videoNode} />}
+            </div>
+          ) : (
+            <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
+              <PodcastCover
+                image={episode.image ?? podcast.image}
+                artwork={podcast.artwork}
+                title={podcast.title}
+                seed={podcast.id?.toString()}
+                className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
+              />
+            </div>
+          )}
         </div>
 
-        {/* Info + controls — right half; scrolls with the page (no separate scroll region) */}
+        {/* Right pane: kind:1311 live chat for Nostr streams, else episode info */}
+        {liveStreamId ? (
+          <div className="sm:w-1/2 p-6 lg:p-10 flex flex-col gap-4 h-[70vh] sm:h-[calc(100vh-3.5rem)]">
+            <div className="flex-shrink-0 flex flex-col gap-3 min-w-0">
+              <div>
+                <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
+                <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
+                {podcast.author && (
+                  <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+                <span className="text-xs text-muted">streaming now</span>
+              </div>
+              <div className="flex items-center gap-3 flex-wrap">
+                <TransportControls size="lg" />
+                <button
+                  onClick={onBoost}
+                  disabled={!hasValue}
+                  className="btn-bolt disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={hasValue ? 'Send a boost' : 'Stream has no value block'}
+                >
+                  <BoltIcon /> BOOST
+                </button>
+                <FavHeart podcast={podcast} size="md" />
+              </div>
+            </div>
+            <div className="flex-1 min-h-0">
+              <LiveChat streamId={liveStreamId} />
+            </div>
+          </div>
+        ) : (
         <div className="sm:w-1/2 p-6 lg:p-10">
           <div className="flex flex-col gap-5 min-w-0">
             <div>
@@ -272,6 +342,7 @@ export function FullscreenPlayer({
             ) : null}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

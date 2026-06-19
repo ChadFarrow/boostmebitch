@@ -12,6 +12,14 @@ export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;
 }
 
+// True when an enclosure URL is an HLS playlist (`.m3u8`). HLS needs hls.js
+// (or native Safari support) and a <video> surface — not the native <audio>
+// element the rest of the app uses. Nostr live streams (kind:30311) carry HLS
+// URLs in their `streaming` tag.
+export function isHlsUrl(url: string | undefined | null): boolean {
+  return !!url && /\.m3u8(\?|#|$)/i.test(url);
+}
+
 // Coerce an unknown thrown value into a user-readable string. Use for the
 // fallback in `catch (e) { return { error: getErrorMessage(e, '<x> failed') } }`
 // patterns in API routes and UI handlers.

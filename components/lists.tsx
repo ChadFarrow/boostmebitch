@@ -3,23 +3,13 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, FavoritePodcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
-import { fmtDuration } from '@/lib/format';
+import { fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
-
-
-function fmtLiveTime(unixSec: number) {
-  const d = new Date(unixSec * 1000);
-  const today = new Date();
-  const sameDay = d.toDateString() === today.toDateString();
-  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-  if (sameDay) return time;
-  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
-}
 
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   if (status === 'live') {

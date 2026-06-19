@@ -23,6 +23,18 @@ interface AppState {
   playNext: () => void;
   playPrev: () => void;
 
+  // Whether the fullscreen "Now Playing" player is expanded. Lifted into the
+  // store so surfaces outside <Player> (e.g. a live-stream card) can open it.
+  // <Player> still owns the <FullscreenPlayer> render — this is just the flag.
+  playerExpanded: boolean;
+  setPlayerExpanded: (b: boolean) => void;
+
+  // Whether the Nostr sign-in modal is open. Lifted into the store so surfaces
+  // other than the header (e.g. the fullscreen player / live chat) can open it
+  // without leaving the page. <NostrAuth> owns the modal render.
+  signInOpen: boolean;
+  setSignInOpen: (b: boolean) => void;
+
   // The podcast currently shown in the detail view. Lifted into the store so
   // surfaces outside `app/page.tsx` (e.g. a podcast-name link in a Nostr note
   // card) can navigate to a show without prop-drilling.
@@ -91,6 +103,12 @@ export const useApp = create<AppState>((set, get) => ({
     if (!prev) return s;
     return { current: { episode: prev, podcast: s.current.podcast }, isPlaying: true, positionSec: 0 };
   }),
+
+  playerExpanded: false,
+  setPlayerExpanded: (b) => set({ playerExpanded: b }),
+
+  signInOpen: false,
+  setSignInOpen: (b) => set({ signInOpen: b }),
 
   selectedPodcast: null,
   // Leaving the detail view (or switching shows) also drops any open
