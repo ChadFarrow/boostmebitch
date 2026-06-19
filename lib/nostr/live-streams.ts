@@ -208,13 +208,22 @@ export async function fetchLiveStreamByAddr(
   // deep-link MUST find the event, so completeness beats the early-resolve.
   return withPool(relays, async (pool) => {
     try {
+      // Query by AUTHOR only (no `#d` tag filter) and match the d-tag
+      // client-side. Some relays — notably fountain.fm, which is often the only
+      // relay carrying a stream's event — don't honor the `#d` tag filter
+      // reliably in-browser, so the filtered query came back empty and the
+      // deep-link said "not found" even though the main-page list (a broad,
+      // unfiltered query) found the same stream. A host has few streams, so
+      // fetching all and filtering is cheap.
       const events = await pool.querySync(
         relays,
-        { kinds: [30311], authors: [pubkey], '#d': [dTag], limit: 4 },
+        { kinds: [30311], authors: [pubkey], limit: 30 },
         { maxWait: FEED_QUERY_MAX_WAIT_MS },
       );
-      const newest = events.sort((a, b) => b.created_at - a.created_at)[0];
-      return newest ? parseNostrLiveStream(newest) : null;
+      const matches = events
+        .filter((e) => (e.tags.find((t) => t[0] === 'd')?.[1] ?? '') === dTag)
+        .sort((a, b) => b.created_at - a.created_at);
+      return matches[0] ? parseNostrLiveStream(matches[0]) : null;
     } catch {
       return null;
     }
