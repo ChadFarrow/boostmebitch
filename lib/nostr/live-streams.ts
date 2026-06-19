@@ -68,14 +68,19 @@ function parseNostrLiveStream(event: Event): NostrLiveStream {
   let npub = '';
   try { npub = nip19.npubEncode(event.pubkey); } catch { /* ignore */ }
 
-  // NIP-53 zap splits: ["zap", "<pubkey>", "<relay>", "<weight>"]
+  // NIP-53 zap splits: ["zap", "<pubkey>", "<relay>", "<weight>"]. Default a
+  // missing/garbage weight to 1, but preserve an explicit 0 (host opted this
+  // participant out) — `parseFloat(...) || 1` would wrongly turn 0 into 1.
   const zapWeights = event.tags
     .filter((t) => t[0] === 'zap' && typeof t[1] === 'string' && t[1].length === 64)
-    .map((t) => ({
-      pubkey: t[1],
-      relay: t[2] || undefined,
-      weight: parseFloat(t[3] ?? '1') || 1,
-    }));
+    .map((t) => {
+      const w = parseFloat(t[3] ?? '1');
+      return {
+        pubkey: t[1],
+        relay: t[2] || undefined,
+        weight: Number.isFinite(w) ? w : 1,
+      };
+    });
 
   return {
     id: `${event.pubkey}:${dTag}`,
@@ -178,10 +183,12 @@ export async function fetchNostrLiveStreams(opts?: {
 export async function resolveStreamV4V(
   stream: NostrLiveStream,
 ): Promise<ValueBlock | null> {
-  // Build the candidate list: zap-split participants, or host as fallback
+  // Build the candidate list: zap-split participants (dropping any the host
+  // opted out with weight <= 0), or the host as the sole fallback.
+  const splitCandidates = stream.zapWeights.filter((z) => z.weight > 0);
   const candidates: Array<{ pubkey: string; relay?: string; weight: number }> =
-    stream.zapWeights.length
-      ? stream.zapWeights
+    splitCandidates.length
+      ? splitCandidates
       : [{ pubkey: stream.pubkey, weight: 1 }];
 
   const results = await Promise.all(
