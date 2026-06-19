@@ -36,7 +36,11 @@ html, body {
   background: rgb(var(--ink));
   color: rgb(var(--bone));
   font-family: 'JetBrains Mono', ui-monospace, monospace;
-  overflow-x: hidden;
+  /* `clip` (not `hidden`) prevents sideways scroll WITHOUT making html/body a
+     scroll container — `overflow-x: hidden` computes overflow-y to `auto`,
+     which traps `position: sticky` descendants (the header) so they scroll
+     away instead of pinning to the viewport. */
+  overflow-x: clip;
 }
 
 /* Subtle paper-grain texture over the whole canvas */
