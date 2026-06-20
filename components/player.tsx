@@ -45,6 +45,7 @@ export function Player() {
   }
   const videoNode = videoNodeRef.current;
   const hls = useRef<Hls | null>(null);
+  const recoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
 
@@ -78,18 +79,70 @@ export function Player() {
             el.src = url; // last resort — most browsers will fail, surfaces as onError
             return;
           }
-          const inst = new HlsLib({ enableWorker: true, lowLatencyMode: true });
+          // We're a *viewer* client, not the broadcaster: smooth playback beats
+          // sub-second latency. lowLatencyMode hugged the live edge with a tiny
+          // buffer, so any jitter stalled playback and then hard-seeked forward to
+          // catch up — skipping content. Default live behaviour keeps a ~3-segment
+          // cushion and gently catches up (maxLiveSyncPlaybackRate) instead of
+          // seeking past missed segments.
+          const inst = new HlsLib({
+            enableWorker: true,
+            lowLatencyMode: false,
+            liveSyncDurationCount: 4,
+            maxLiveSyncPlaybackRate: 1.5,
+          });
           hls.current = inst;
           inst.loadSource(url);
           inst.attachMedia(el);
+          // Fatal hls.js errors used to freeze the stream until a hard page
+          // refresh — the old handler only showed a message and never restarted
+          // the loader, so the <video> stayed dead while the broadcaster was
+          // perfectly fine. Live streams throw fatal NETWORK errors constantly
+          // (a segment 404s / the playlist reload times out as the broadcaster
+          // rolls the live window, a CDN blip, a brief broadcaster dropout), so
+          // recover in place the way hls.js documents — this is the auto-version
+          // of the hard refresh. Counters are *consecutive* failures: a buffered
+          // fragment resets them, so an hours-long stream with occasional blips
+          // never exhausts the budget, but a genuinely dead stream settles into
+          // a slow reconnect poll instead of hammering.
+          let netRetries = 0;
+          let mediaRetries = 0;
+          const clearRecover = () => {
+            if (recoverTimer.current) { clearTimeout(recoverTimer.current); recoverTimer.current = null; }
+          };
+          inst.on(HlsLib.Events.FRAG_BUFFERED, () => {
+            netRetries = 0;
+            mediaRetries = 0;
+            setAudioErr(null);
+          });
           inst.on(HlsLib.Events.ERROR, (_evt, data) => {
-            if (data.fatal) setAudioErr('live stream unavailable');
+            if (!data.fatal) return;
+            if (data.type === HlsLib.ErrorTypes.NETWORK_ERROR) {
+              // Backoff 1s→15s so a longer dropout doesn't spin the network; no
+              // hard give-up — keep retrying so the stream auto-resumes when the
+              // broadcaster comes back (what a manual refresh used to do).
+              setAudioErr('reconnecting…');
+              clearRecover();
+              const delay = Math.min(1000 * 2 ** netRetries, 15000);
+              netRetries++;
+              recoverTimer.current = setTimeout(() => {
+                if (hls.current === inst) inst.startLoad();
+              }, delay);
+            } else if (data.type === HlsLib.ErrorTypes.MEDIA_ERROR && mediaRetries++ < 3) {
+              inst.recoverMediaError();
+            } else {
+              clearRecover();
+              setAudioErr('live stream unavailable');
+              inst.destroy();
+              if (hls.current === inst) hls.current = null;
+            }
           });
           if (isPlayingRef.current) el.play().catch(() => {});
         });
       }
       return () => {
         cancelled = true;
+        if (recoverTimer.current) { clearTimeout(recoverTimer.current); recoverTimer.current = null; }
         if (hls.current) {
           hls.current.destroy();
           hls.current = null;
