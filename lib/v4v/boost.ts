@@ -40,17 +40,36 @@ export function pickRail(): Rail | null {
   return null;
 }
 
-/** Distribute total sats across recipients by split weight. Floor + remainder to first non-fee recipient. */
+/**
+ * Distribute total sats across recipients by split weight, using the
+ * largest-remainder (Hamilton) method: floor every share, then hand the
+ * leftover sats out one at a time to the recipients whose exact share was
+ * rounded down the most (fee recipients broken last on a tie).
+ *
+ * The naive "floor everyone, dump all remainder on the first recipient"
+ * approach silently mispays small splits: a 100-sat boost to a 98%/1%/1%
+ * block whose 1% legs are really ~0.8% floors both to 0 sats, then sends the
+ * whole 100 to the artist and nothing to the other two. Largest-remainder
+ * gives those legs their 1 sat each (→ 98/1/1) instead.
+ */
 export function splitSats(total: number, recipients: ValueRecipient[]): number[] {
   const totalWeight = recipients.reduce((s, r) => s + (r.split || 0), 0);
   if (totalWeight === 0) return recipients.map(() => 0);
-  const allocated = recipients.map((r) =>
-    Math.floor((total * (r.split || 0)) / totalWeight),
-  );
-  const remainder = total - allocated.reduce((a, b) => a + b, 0);
+  const exact = recipients.map((r) => (total * (r.split || 0)) / totalWeight);
+  const allocated = exact.map((x) => Math.floor(x));
+  let remainder = total - allocated.reduce((a, b) => a + b, 0);
   if (remainder > 0) {
-    const idx = recipients.findIndex((r) => !r.fee);
-    allocated[idx >= 0 ? idx : 0] += remainder;
+    const order = recipients
+      .map((_, i) => i)
+      .sort((a, b) => {
+        const frac = exact[b] - allocated[b] - (exact[a] - allocated[a]);
+        if (Math.abs(frac) > 1e-9) return frac;
+        // Tie on fractional part: prefer non-fee recipients.
+        return (recipients[a].fee ? 1 : 0) - (recipients[b].fee ? 1 : 0);
+      });
+    for (let k = 0; k < order.length && remainder > 0; k++, remainder--) {
+      allocated[order[k]] += 1;
+    }
   }
   return allocated;
 }
