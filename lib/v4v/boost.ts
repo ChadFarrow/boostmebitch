@@ -51,6 +51,13 @@ export function pickRail(): Rail | null {
  * block whose 1% legs are really ~0.8% floors both to 0 sats, then sends the
  * whole 100 to the artist and nothing to the other two. Largest-remainder
  * gives those legs their 1 sat each (→ 98/1/1) instead.
+ *
+ * Finally, every weighted recipient is guaranteed at least 1 sat — that's the
+ * whole reason for the 100-sat minimum boost. If largest-remainder still left
+ * a positive-weight recipient at 0, pull the make-up sat from the largest
+ * allocation (which never drops below 1), so the total is preserved. When
+ * there are more recipients than sats to go round it tops up as many as it
+ * can and leaves the rest at 0.
  */
 export function splitSats(total: number, recipients: ValueRecipient[]): number[] {
   const totalWeight = recipients.reduce((s, r) => s + (r.split || 0), 0);
@@ -70,6 +77,20 @@ export function splitSats(total: number, recipients: ValueRecipient[]): number[]
     for (let k = 0; k < order.length && remainder > 0; k++, remainder--) {
       allocated[order[k]] += 1;
     }
+  }
+  // Floor of 1 sat per weighted recipient. Taking from the largest allocation
+  // (only ever one with >1 sat) keeps the total constant and can't create a
+  // new zero, so this terminates.
+  const needy = () =>
+    recipients.findIndex((r, i) => (r.split || 0) > 0 && allocated[i] === 0);
+  for (let i = needy(); i !== -1; i = needy()) {
+    let maxIdx = -1;
+    for (let j = 0; j < allocated.length; j++) {
+      if (allocated[j] > 1 && (maxIdx === -1 || allocated[j] > allocated[maxIdx])) maxIdx = j;
+    }
+    if (maxIdx === -1) break; // not enough sats to give everyone a sat
+    allocated[maxIdx] -= 1;
+    allocated[i] += 1;
   }
   return allocated;
 }
