@@ -359,7 +359,7 @@ export function FullscreenPlayer({
             {description && (
               <div className="border-t border-bone/10 pt-5">
                 <p className="text-[11px] uppercase tracking-widest text-muted mb-2">About this episode</p>
-                <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap max-h-72 overflow-y-auto pr-2">
+                <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words max-h-72 overflow-y-auto overflow-x-hidden pr-2">
                   {description}
                 </div>
               </div>

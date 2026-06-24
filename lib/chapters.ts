@@ -15,7 +15,9 @@ export function useChapters(url: string): { chapters: ChapterEntry[] | null; loa
     let cancelled = false;
     setLoading(true);
     setChapters(null);
-    fetch(url)
+    // Proxy through our own route: many chapter hosts (e.g. Fountain) serve the
+    // JSON without CORS headers, so a direct browser fetch is blocked.
+    fetch(`/api/chapters?url=${encodeURIComponent(url)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled) return;
