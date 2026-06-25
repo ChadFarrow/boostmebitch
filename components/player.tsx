@@ -10,6 +10,8 @@ import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { hasValueRecipients, isHlsUrl, isMusicMedium } from '@/lib/util';
+import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
+import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import { BoostModal } from './boost-modal';
 import { BoltIcon } from './icons';
 import { FullscreenPlayer } from './fullscreen-player';
@@ -170,10 +172,28 @@ export function Player() {
     else el.pause();
   }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Single chapters fetch for the whole player — passed down to <FullscreenPlayer>
+  // so it isn't fetched twice. No-ops on an empty url (music/live/no tag). Above
+  // the early return for hook order.
+  const { chapters, loading: chaptersLoading } = useChapters(chapterUrlFor(current));
+
   if (!current) return null;
   const { episode, podcast } = current;
   const hasValue = hasValueRecipients(episode.value);
   const isLive = episode.liveStatus === 'live';
+
+  const { index: activeIdx, chapter: activeChapter, end: activeChapterEnd } = chapterState(
+    chapters,
+    positionSec,
+    duration,
+  );
+
+  function seekAudio(v: number) {
+    if (audio.current) audio.current.currentTime = v;
+    lastTick.current = Math.floor(v);
+    setPosition(v);
+  }
+  const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekAudio);
 
   function onMediaError(code: number | undefined) {
     setAudioErr(
@@ -252,27 +272,32 @@ export function Player() {
                 <span className="text-[10px] text-muted">streaming now</span>
               </div>
             ) : (
-              <div className="flex items-center gap-2 mt-1" onClick={(e) => e.stopPropagation()}>
-                <span className="text-[10px] text-muted tabular-nums">{fmt(positionSec)}</span>
-                <input
-                  type="range"
-                  className="seek flex-1"
-                  min={0}
-                  max={duration || 0}
-                  value={positionSec}
-                  onChange={(e) => {
-                    const v = Number(e.target.value);
-                    if (audio.current) audio.current.currentTime = v;
-                    lastTick.current = Math.floor(v);
-                    setPosition(v);
-                  }}
+              <>
+                <div className="flex items-center gap-2 mt-1" onClick={(e) => e.stopPropagation()}>
+                  <span className="text-[10px] text-muted tabular-nums">{fmt(positionSec)}</span>
+                  <div className="relative flex-1 flex items-center">
+                    <ChapterTicks chapters={chapters} duration={duration} />
+                    <input
+                      type="range"
+                      className="seek block w-full relative"
+                      min={0}
+                      max={duration || 0}
+                      value={positionSec}
+                      onChange={(e) => seekAudio(Number(e.target.value))}
+                    />
+                  </div>
+                  <span className="text-[10px] text-muted tabular-nums">{fmt(duration)}</span>
+                </div>
+                <ChapterLabel
+                  chapter={activeChapter}
+                  end={activeChapterEnd}
+                  className="text-[10px] mt-0.5"
                 />
-                <span className="text-[10px] text-muted tabular-nums">{fmt(duration)}</span>
-              </div>
+              </>
             )}
           </div>
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <TransportControls />
+            <TransportControls prev={chapterNav?.prev} next={chapterNav?.next} />
             <button
               onClick={() => setBoostOpen(true)}
               disabled={!hasValue}
@@ -291,6 +316,8 @@ export function Player() {
         audioRef={audio}
         videoNode={videoNode}
         isVideo={isHls}
+        chapters={chapters}
+        chaptersLoading={chaptersLoading}
         onClose={() => setPlayerExpanded(false)}
         onBoost={() => setBoostOpen(true)}
       />

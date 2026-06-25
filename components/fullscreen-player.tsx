@@ -3,7 +3,8 @@ import { RefObject, useEffect, useState } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt, stripHtml } from '@/lib/format';
-import { useChapters } from '@/lib/chapters';
+import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
+import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import type { Podcast } from '@/lib/types';
 import { streamNaddr, parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { BoltIcon, ShareIcon } from './icons';
@@ -14,49 +15,92 @@ import { FavHeart } from './lists';
 import { TransportControls } from './transport-controls';
 import { LiveChat } from './live-chat';
 
-function ChaptersList({
-  url,
+// About-this-episode text + Podcasting 2.0 chapters, toggled by a tab strip.
+// Tabs only show when BOTH exist; with one, it renders that section under a
+// plain label. Returns null when there's neither (and nothing still loading).
+function EpisodeInfoPanel({
+  description,
+  chapters,
+  chaptersLoading,
+  hasChaptersUrl,
   onSeek,
   currentSec,
 }: {
-  url: string;
+  description: string;
+  chapters: ChapterEntry[] | null;
+  chaptersLoading: boolean;
+  hasChaptersUrl: boolean;
   onSeek: (s: number) => void;
   currentSec: number;
 }) {
-  const { chapters, loading } = useChapters(url);
+  const [tab, setTab] = useState<'about' | 'chapters'>('about');
 
-  if (loading && !chapters) {
-    return <p className="text-xs text-muted">Loading chapters…</p>;
-  }
-  if (!chapters?.length) return null;
+  const hasDescription = !!description;
+  const hasChapters = !!chapters?.length;
+  const chaptersPending = hasChaptersUrl && chaptersLoading;
+  if (!hasDescription && !hasChapters && !chaptersPending) return null;
+
+  const showTabs = hasDescription && hasChapters;
+  // When only one section is available, force it regardless of the tab state.
+  const active: 'about' | 'chapters' = showTabs ? tab : hasDescription ? 'about' : 'chapters';
+
+  const tabCls = (on: boolean) =>
+    `text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
+      on
+        ? 'bg-bolt text-ink shadow-sm'
+        : 'text-muted hover:text-bone hover:bg-bone/5'
+    }`;
 
   return (
-    <div>
-      <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
-        Chapters ({chapters.length})
-      </p>
-      <ul className="space-y-1 text-xs max-h-72 overflow-y-auto pr-2">
-        {chapters.map((c, i) => {
-          const next = chapters[i + 1];
-          const active = currentSec >= c.startTime && (!next || currentSec < next.startTime);
-          return (
-            <li key={`${c.startTime}-${c.title ?? ''}`}>
-              <button
-                type="button"
-                onClick={() => onSeek(c.startTime)}
-                className={`w-full flex gap-3 text-left transition py-1 px-2 -mx-2 ${
-                  active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
-                }`}
-              >
-                <span className="text-muted tabular-nums w-12 flex-shrink-0">
-                  {fmt(c.startTime)}
-                </span>
-                <span className="truncate">{c.title ?? `Chapter ${i + 1}`}</span>
-              </button>
-            </li>
-          );
-        })}
-      </ul>
+    <div className="border-t border-bone/10 pt-5">
+      {showTabs ? (
+        <div className="inline-flex gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
+          <button type="button" onClick={() => setTab('about')} className={tabCls(active === 'about')}>
+            About
+          </button>
+          <button type="button" onClick={() => setTab('chapters')} className={tabCls(active === 'chapters')}>
+            Chapters ({chapters!.length})
+          </button>
+        </div>
+      ) : (
+        <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
+          {active === 'chapters' ? `Chapters (${chapters?.length ?? 0})` : 'About this episode'}
+        </p>
+      )}
+
+      {active === 'about' && hasDescription && (
+        <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words">
+          {description}
+        </div>
+      )}
+
+      {active === 'chapters' &&
+        (hasChapters ? (
+          <ul className="text-xs">
+            {chapters!.map((c, i) => {
+              const next = chapters![i + 1];
+              const on = currentSec >= c.startTime && (!next || currentSec < next.startTime);
+              return (
+                <li key={`${c.startTime}-${c.title ?? ''}`}>
+                  <button
+                    type="button"
+                    onClick={() => onSeek(c.startTime)}
+                    className={`w-full flex gap-3 items-baseline text-left rounded transition py-1.5 px-2 -mx-2 ${
+                      on ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                    }`}
+                  >
+                    <span className={`tabular-nums w-12 flex-shrink-0 ${on ? 'text-bolt' : 'text-muted'}`}>
+                      {fmt(c.startTime)}
+                    </span>
+                    <span className="break-words">{c.title ?? `Chapter ${i + 1}`}</span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="text-xs text-muted">Loading chapters…</p>
+        ))}
     </div>
   );
 }
@@ -103,6 +147,8 @@ export function FullscreenPlayer({
   audioRef,
   videoNode,
   isVideo,
+  chapters,
+  chaptersLoading,
   onClose,
   onBoost,
 }: {
@@ -111,6 +157,9 @@ export function FullscreenPlayer({
   audioRef: RefObject<HTMLAudioElement | null>;
   videoNode: HtmlPortalNode | null;
   isVideo: boolean;
+  // Fetched once by <Player> and passed down (so it isn't fetched twice).
+  chapters: ChapterEntry[] | null;
+  chaptersLoading: boolean;
   onClose: () => void;
   onBoost: () => void;
 }) {
@@ -148,11 +197,22 @@ export function FullscreenPlayer({
   const value = episode.value ?? podcast.value;
   const hasValue = hasValueRecipients(value);
   const description = episode.description ? stripHtml(episode.description) : '';
+  const { index: activeIdx, chapter: activeChapter, end: activeChapterEnd } = chapterState(
+    chapters,
+    positionSec,
+    duration,
+  );
 
   function seekTo(s: number) {
     if (audioRef.current) audioRef.current.currentTime = s;
     setPosition(s);
   }
+
+  // When the episode has chapters, the prev/next transport buttons step between
+  // chapters instead of episodes (chapters are already gated off for music/live
+  // upstream in <Player>). Prev restarts the current chapter if >3s in, else
+  // jumps to the previous one.
+  const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekTo);
 
   return (
     <div
@@ -239,8 +299,10 @@ export function FullscreenPlayer({
             </div>
           </div>
         ) : (
-        <div className="sm:w-1/2 p-6 lg:p-10">
-          <div className="flex flex-col gap-5 min-w-0">
+        <div className="sm:w-1/2 p-6 lg:p-10 flex flex-col gap-5 min-w-0 sm:h-[calc(100vh-3.5rem)]">
+          {/* Fixed header: title, seek + transport controls stay put; only the
+              About/Chapters body below scrolls (on desktop). */}
+          <div className="flex-shrink-0 flex flex-col gap-5">
             <div>
               <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
               <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
@@ -256,23 +318,27 @@ export function FullscreenPlayer({
               </div>
             ) : (
               <div className="flex flex-col gap-1.5">
-                <input
-                  type="range"
-                  className="seek w-full"
-                  min={0}
-                  max={duration || 0}
-                  value={positionSec}
-                  onChange={(e) => seekTo(Number(e.target.value))}
-                />
+                <div className="relative flex items-center">
+                  <ChapterTicks chapters={chapters} duration={duration} />
+                  <input
+                    type="range"
+                    className="seek block w-full relative"
+                    min={0}
+                    max={duration || 0}
+                    value={positionSec}
+                    onChange={(e) => seekTo(Number(e.target.value))}
+                  />
+                </div>
                 <div className="flex justify-between text-[11px] text-muted tabular-nums">
                   <span>{fmt(positionSec)}</span>
                   <span>{fmt(duration)}</span>
                 </div>
+                <ChapterLabel chapter={activeChapter} end={activeChapterEnd} className="text-xs" />
               </div>
             )}
 
             <div className="flex items-center justify-center gap-3 flex-wrap">
-              <TransportControls size="lg" />
+              <TransportControls size="lg" prev={chapterNav?.prev} next={chapterNav?.next} />
               <button
                 onClick={onBoost}
                 disabled={!hasValue}
@@ -355,25 +421,18 @@ export function FullscreenPlayer({
                 </ul>
               </div>
             )}
+          </div>
 
-            {description && (
-              <div className="border-t border-bone/10 pt-5">
-                <p className="text-[11px] uppercase tracking-widest text-muted mb-2">About this episode</p>
-                <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words max-h-72 overflow-y-auto overflow-x-hidden pr-2">
-                  {description}
-                </div>
-              </div>
-            )}
-
-            {!isLive && episode.chaptersUrl && (
-              <div className="border-t border-bone/10 pt-5">
-                <ChaptersList
-                  url={episode.chaptersUrl}
-                  onSeek={seekTo}
-                  currentSec={positionSec}
-                />
-              </div>
-            )}
+          {/* Scrollable body — About / Chapters (+ discussion). */}
+          <div className="flex-1 sm:min-h-0 sm:overflow-y-auto">
+            <EpisodeInfoPanel
+              description={description}
+              chapters={chapters}
+              chaptersLoading={chaptersLoading}
+              hasChaptersUrl={!isLive && !!episode.chaptersUrl}
+              onSeek={seekTo}
+              currentSec={positionSec}
+            />
 
             {episode.socialInteract?.length ? (
               <div className="border-t border-bone/10 pt-5">
