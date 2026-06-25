@@ -1,24 +1,7 @@
 import type { Metadata } from 'next';
 import { HomePage } from '@/components/home-page';
 import { getPodcastByGuid, getPodcast, getEpisodeByGuid } from '@/lib/pi';
-
-// Inline HTML stripper: lib/format.tsx is 'use client' so stripHtml can't be
-// imported into a server component. The implementation is pure string regex
-// (identical to lib/format.tsx:stripHtml) — no DOM required.
-function stripHtml(s: string): string {
-  return s
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|li)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
+import { stripHtml } from '@/lib/util';
 
 // Trim show notes / descriptions to a card-sized blurb. stripHtml first so we
 // never emit raw markup into og:description.

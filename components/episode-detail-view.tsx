@@ -1,8 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
-import { fmtDuration, stripHtml } from '@/lib/format';
-import { hasValueRecipients } from '@/lib/util';
+import { fmtDuration } from '@/lib/format';
+import { hasValueRecipients, stripHtml } from '@/lib/util';
 import { useChapters } from '@/lib/chapters';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';

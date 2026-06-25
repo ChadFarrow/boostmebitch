@@ -43,3 +43,21 @@ export function getErrorMessage(e: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+// Strip HTML tags and entity-decode. Used by server components (lib/format.tsx
+// is 'use client' so can't be imported on the server side). Pure string regex,
+// no DOM required — isomorphic.
+export function stripHtml(s: string): string {
+  return s
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\/(p|div|li)\s*>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}

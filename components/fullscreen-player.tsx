@@ -2,13 +2,13 @@
 import { RefObject, useEffect, useState } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
-import { fmt, stripHtml } from '@/lib/format';
+import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import type { Podcast } from '@/lib/types';
 import { streamNaddr, parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { BoltIcon, ShareIcon } from './icons';
-import { hasValueRecipients, isMusicMedium } from '@/lib/util';
+import { hasValueRecipients, isMusicMedium, stripHtml } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
 import { FavHeart } from './lists';

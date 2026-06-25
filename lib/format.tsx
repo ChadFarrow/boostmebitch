@@ -48,23 +48,6 @@ export function timeAgo(unixSec: number): string {
   return new Date(unixSec * 1000).toLocaleDateString();
 }
 
-// ─── HTML stripping ───────────────────────────────────────────────────────────
-
-export function stripHtml(s: string): string {
-  return s
-    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
-    .replace(/<\/(p|div|li)\s*>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
 // ─── Link parsing & rendering ─────────────────────────────────────────────────
 
 const LINK_RE = /(https?:\/\/[^\s]+)/gi;
