@@ -11,15 +11,20 @@ type NavOverride = { onClick: () => void; disabled: boolean; label: string };
  *
  * `prev`/`next` override the default episode/track navigation — the fullscreen
  * player passes chapter-stepping handlers when the episode has chapters.
+ *
+ * `playOnly` renders just the play/pause button (no prev/next) — used for live
+ * streams, where stepping the queue isn't meaningful.
  */
 export function TransportControls({
   size = 'sm',
   prev,
   next,
+  playOnly = false,
 }: {
   size?: 'sm' | 'lg';
   prev?: NavOverride;
   next?: NavOverride;
+  playOnly?: boolean;
 }) {
   const current = useApp((s) => s.current);
   const isPlaying = useApp((s) => s.isPlaying);
@@ -43,6 +48,18 @@ export function TransportControls({
   const playBtn = size === 'lg'
     ? 'btn text-2xl w-14 h-14 flex items-center justify-center flex-shrink-0'
     : 'btn w-10 h-10 flex items-center justify-center flex-shrink-0';
+
+  if (playOnly) {
+    return (
+      <button
+        onClick={() => togglePlay()}
+        className={playBtn}
+        aria-label={isPlaying ? 'Pause' : 'Play'}
+      >
+        {isPlaying ? '❚❚' : '▶'}
+      </button>
+    );
+  }
 
   return (
     <>

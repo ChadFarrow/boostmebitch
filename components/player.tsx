@@ -297,7 +297,7 @@ export function Player() {
             )}
           </div>
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <TransportControls prev={chapterNav?.prev} next={chapterNav?.next} />
+            <TransportControls playOnly={isLive} prev={chapterNav?.prev} next={chapterNav?.next} />
             <button
               onClick={() => setBoostOpen(true)}
               disabled={!hasValue}
