@@ -216,7 +216,11 @@ export function FullscreenPlayer({
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex flex-col bg-ink transition-transform duration-300 ease-in-out ${open ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
+      // Height is the *dynamic* viewport (100dvh), not inset-0 / 100vh: on iOS
+      // Safari a fixed inset-0 element sizes to the large (toolbar-hidden)
+      // viewport, so its bottom — the live-chat composer — hides behind Safari's
+      // bottom address bar. 100dvh tracks the visible area as the bar shows/hides.
+      className={`fixed inset-x-0 top-0 h-[100dvh] z-50 flex flex-col bg-ink transition-transform duration-300 ease-in-out ${open ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
@@ -286,25 +290,22 @@ export function FullscreenPlayer({
                   <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
                 )}
               </div>
-              {/* BOOST stretches beside the transport buttons for a strong tap
-                  target; FAV / SHARE sit on their own tidy row so nothing wraps
-                  raggedly on a narrow phone. */}
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-3">
-                  <TransportControls size="lg" />
-                  <button
-                    onClick={onBoost}
-                    disabled={!hasValue}
-                    className="btn-bolt flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                    title={hasValue ? 'Send a boost' : 'Stream has no value block'}
-                  >
-                    <BoltIcon /> BOOST
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <FavHeart podcast={podcast} size="md" />
-                  <ShareButton liveStreamId={liveStreamId} podcast={podcast} />
-                </div>
+              {/* Compact controls for live: small transport buttons (you can't
+                  seek a live stream, so they need little prominence) keep this
+                  row short and hand the freed vertical space to the chat. BOOST
+                  stretches as the primary action; FAV / SHARE share its row. */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <TransportControls size="sm" />
+                <button
+                  onClick={onBoost}
+                  disabled={!hasValue}
+                  className="btn-bolt flex-1 min-w-[7rem] disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={hasValue ? 'Send a boost' : 'Stream has no value block'}
+                >
+                  <BoltIcon /> BOOST
+                </button>
+                <FavHeart podcast={podcast} size="md" />
+                <ShareButton liveStreamId={liveStreamId} podcast={podcast} />
               </div>
             </div>
             <div className="flex-1 min-h-0">
