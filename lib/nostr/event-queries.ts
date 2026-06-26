@@ -74,6 +74,9 @@ export interface CollectResult {
  * Resolves at the earliest of:
  *   - every pubkey in `expectedAuthors` seen at least once (all-found early exit),
  *   - aggregate EOSE (every relay reached end-of-stored-events),
+ *   - `quietMs` after the last event arrived (set > 0 to enable — backstops a
+ *     connected-but-stalled relay that never sends EOSE; leave 0 for the
+ *     profile path, which relies on the all-found exit + EOSE),
  *   - `maxWait`.
  *
  * Unlike `pool.querySync` (which waits for the slowest relay or the full maxWait
@@ -95,6 +98,7 @@ export async function collectEventsByAuthors(
   filter: Filter,
   expectedAuthors: string[],
   maxWait = FEED_QUERY_MAX_WAIT_MS,
+  quietMs = 0,
 ): Promise<CollectResult> {
   const byId = new Map<string, Event>();
   const seenAuthors = new Set<string>();
@@ -103,12 +107,21 @@ export async function collectEventsByAuthors(
 
   await new Promise<void>((resolve) => {
     let settled = false;
+    let quietTimer: ReturnType<typeof setTimeout> | null = null;
     const finish = () => {
       if (settled) return;
       settled = true;
       clearTimeout(hardTimer);
+      if (quietTimer) clearTimeout(quietTimer);
       try { sub?.close(); } catch { /* already closed */ }
       resolve();
+    };
+    // (Re)arm the quiet-period timer on each event so the scan resolves once
+    // the live relays stop trickling, rather than waiting out the slowest one.
+    const bumpQuiet = () => {
+      if (quietMs <= 0) return;
+      if (quietTimer) clearTimeout(quietTimer);
+      quietTimer = setTimeout(finish, quietMs);
     };
 
     const hardTimer = setTimeout(finish, maxWait);
@@ -123,6 +136,7 @@ export async function collectEventsByAuthors(
         onevent(e: Event) {
           if (!byId.has(e.id)) byId.set(e.id, e);
           seenAuthors.add(e.pubkey);
+          bumpQuiet();
           // All-found early exit: stop the moment every requested author has a
           // matching event in hand — no reason to wait on slow relays.
           if (want.size > 0 && seenAuthors.size >= want.size) {

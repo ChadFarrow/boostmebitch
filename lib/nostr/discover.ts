@@ -1,9 +1,10 @@
 import { nip19, type Event } from 'nostr-tools';
-import { withPool, withExtraRelays, FEED_QUERY_MAX_WAIT_MS, QUERY_MAX_WAIT_MS } from './pool';
+import { withPool, withExtraRelays, FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS, QUERY_MAX_WAIT_MS } from './pool';
 import { DEFAULT_RELAYS, PROFILE_RELAYS, sanitizeRelays } from './relays';
 import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
 import { collectEventsByAuthors } from './event-queries';
+import { warmRelays } from './relay-health';
 import { bolt11AmountMsat } from '../v4v/bolt11';
 import { stripNostrUris, extractImages } from '../format';
 
@@ -248,18 +249,21 @@ export async function fetchPodcastNotes(
   ];
 
   return withPool(relays, async (pool) => {
+    // Drop dead/penalty-boxed relays so the scan isn't pinned by one of them,
+    // then race the live set with a quiet-period early resolve.
+    const live = await warmRelays(pool, relays);
     let events: Event[] = [];
     try {
-      events = await pool.querySync(relays, {
+      ({ events } = await collectEventsByAuthors(pool, live, {
         kinds: [1],
         '#i': iTags,
         limit,
         ...(opts.since !== undefined ? { since: opts.since } : {}),
-      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
+      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS));
     } catch {
       return [];
     }
-    return await assembleNotes(pool, relays, events);
+    return await assembleNotes(pool, live, events);
   });
 }
 
@@ -275,18 +279,19 @@ export async function fetchEpisodeNotes(
   const limit = opts.limit ?? 100;
 
   return withPool(relays, async (pool) => {
+    const live = await warmRelays(pool, relays);
     let events: Event[] = [];
     try {
-      events = await pool.querySync(relays, {
+      ({ events } = await collectEventsByAuthors(pool, live, {
         kinds: [1],
         '#i': [`podcast:item:guid:${episodeGuid}`],
         limit,
         ...(opts.since !== undefined ? { since: opts.since } : {}),
-      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
+      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS));
     } catch {
       return [];
     }
-    return await assembleNotes(pool, relays, events);
+    return await assembleNotes(pool, live, events);
   });
 }
 
@@ -364,18 +369,19 @@ export async function fetchAllPodcastNotes(
   const limit = opts.limit ?? 100;
 
   return withPool(relays, async (pool) => {
+    const live = await warmRelays(pool, relays);
     let events: Event[] = [];
     try {
-      events = await pool.querySync(relays, {
+      ({ events } = await collectEventsByAuthors(pool, live, {
         kinds: [1],
         '#k': ['podcast:guid', 'podcast:item:guid'],
         limit,
         ...(opts.since !== undefined ? { since: opts.since } : {}),
-      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
+      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS));
     } catch {
       return [];
     }
-    return await assembleNotes(pool, relays, events);
+    return await assembleNotes(pool, live, events);
   });
 }
 

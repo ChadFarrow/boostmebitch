@@ -17,6 +17,15 @@ import { SimplePool } from 'nostr-tools';
 export const QUERY_MAX_WAIT_MS = 4000;
 export const FEED_QUERY_MAX_WAIT_MS = 8000;
 
+// Quiet-period early-resolve for broad feed scans. Once events have started
+// arriving, if none of the live relays sends a new one for this long, the scan
+// resolves rather than waiting out FEED_QUERY_MAX_WAIT_MS for a connected-but-
+// stalled relay that never sends EOSE. Generous enough not to truncate normal
+// trickle from a slow-but-healthy relay; far under the hard ceiling. Paired
+// with warmRelays (relay-health.ts), which has already dropped dead relays, so
+// the remaining set should go quiet quickly when genuinely done.
+export const FEED_QUIET_MS = 2500;
+
 // A single long-lived pool reused across every read query and publish. Relay
 // WebSockets live inside the pool keyed by URL, so a second query to the same
 // relay rides the already-open socket instead of paying a fresh TLS+WS

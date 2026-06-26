@@ -224,36 +224,51 @@ export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
   return out;
 }
 
-// Short-lived in-memory cache of raw feed XML, keyed by URL. A single
-// feed-page load parses the same feed twice — once for episode enrichment
-// (socialInteract / show notes / track order) and once for live items — and
-// the /api/feed route awaits them in sequence, so without this the same URL
-// is fetched (and re-downloaded) back-to-back. The first parse populates the
-// cache; the second is an instant hit. The window also collapses repeat
-// requests for the same feed across page loads. 60s matches the
-// `next: { revalidate }` below, so this and Next's data cache expire together.
-// Only successful bodies are cached — a transient fetch failure is retried.
-const RSS_XML_TTL_MS = 60_000;
-const rssXmlCache = new Map<string, { xml: string; expires: number }>();
+// In-memory cache of raw feed XML, keyed by URL. A single feed-page load
+// parses the same feed twice — once for episode enrichment (socialInteract /
+// show notes / track order) and once for live items — and the /api/feed route
+// awaits them in sequence, so without this the same URL is fetched (and
+// re-downloaded) back-to-back. The first parse populates the cache; the second
+// is an instant hit. The window also collapses repeat requests for the same
+// feed across page loads.
+//
+// Two-tier freshness:
+//   - within FRESH window: serve cached XML without refetching (matches the
+//     `next: { revalidate: 60 }` below, so this and Next's data cache align).
+//   - past FRESH but within STALE: refetch; if the refetch FAILS, serve the
+//     last-known-good copy rather than blanking the feed's live items /
+//     enrichment on a transient publisher outage (stale-while-error).
+// A successful fetch always replaces the cached copy and resets both windows.
+const RSS_FRESH_MS = 60_000;
+const RSS_STALE_MS = 10 * 60_000;
+const rssXmlCache = new Map<string, { xml: string; fetchedAt: number }>();
 
 async function fetchFeedXml(rssUrl: string): Promise<string | null> {
+  const now = Date.now();
   const hit = rssXmlCache.get(rssUrl);
-  if (hit && hit.expires > Date.now()) return hit.xml;
-  let res: Response;
+  if (hit && now - hit.fetchedAt < RSS_FRESH_MS) return hit.xml;
+
+  let xml: string | null = null;
   try {
     assertSafeFetchUrl(rssUrl);
-    res = await fetch(rssUrl, {
+    const res = await fetch(rssUrl, {
       headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
       next: { revalidate: 60 },
       signal: AbortSignal.timeout(8000),
     });
+    if (res.ok) xml = await res.text();
   } catch {
-    return null;
+    // fall through to the stale-on-error path
   }
-  if (!res.ok) return null;
-  const xml = await res.text();
-  rssXmlCache.set(rssUrl, { xml, expires: Date.now() + RSS_XML_TTL_MS });
-  return xml;
+
+  if (xml != null) {
+    rssXmlCache.set(rssUrl, { xml, fetchedAt: now });
+    return xml;
+  }
+  // Fetch failed or returned non-2xx — serve the last good copy if it's still
+  // within the hard stale window, otherwise give up.
+  if (hit && now - hit.fetchedAt < RSS_STALE_MS) return hit.xml;
+  return null;
 }
 
 // PI's /episodes/live only indexes currently-broadcasting items; pending
