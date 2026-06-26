@@ -224,6 +224,38 @@ export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
   return out;
 }
 
+// Short-lived in-memory cache of raw feed XML, keyed by URL. A single
+// feed-page load parses the same feed twice — once for episode enrichment
+// (socialInteract / show notes / track order) and once for live items — and
+// the /api/feed route awaits them in sequence, so without this the same URL
+// is fetched (and re-downloaded) back-to-back. The first parse populates the
+// cache; the second is an instant hit. The window also collapses repeat
+// requests for the same feed across page loads. 60s matches the
+// `next: { revalidate }` below, so this and Next's data cache expire together.
+// Only successful bodies are cached — a transient fetch failure is retried.
+const RSS_XML_TTL_MS = 60_000;
+const rssXmlCache = new Map<string, { xml: string; expires: number }>();
+
+async function fetchFeedXml(rssUrl: string): Promise<string | null> {
+  const hit = rssXmlCache.get(rssUrl);
+  if (hit && hit.expires > Date.now()) return hit.xml;
+  let res: Response;
+  try {
+    assertSafeFetchUrl(rssUrl);
+    res = await fetch(rssUrl, {
+      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
+      next: { revalidate: 60 },
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  const xml = await res.text();
+  rssXmlCache.set(rssUrl, { xml, expires: Date.now() + RSS_XML_TTL_MS });
+  return xml;
+}
+
 // PI's /episodes/live only indexes currently-broadcasting items; pending
 // liveItems live exclusively in the publisher's RSS. Fetch the feed XML
 // and pull <podcast:liveItem status="pending|live"> directly.
@@ -236,19 +268,8 @@ export async function getLiveItemsFromRss(
   feedId: number,
   podcastGuid?: string,
 ): Promise<Episode[]> {
-  let res: Response;
-  try {
-    assertSafeFetchUrl(rssUrl);
-    res = await fetch(rssUrl, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
-      next: { revalidate: 60 },
-      signal: AbortSignal.timeout(8000),
-    });
-  } catch {
-    return [];
-  }
-  if (!res.ok) return [];
-  const xml = await res.text();
+  const xml = await fetchFeedXml(rssUrl);
+  if (xml == null) return [];
   return parseRssLiveItems(xml).map((r): Episode => ({
     id: -fnvHash(r.guid ?? r.title ?? `${rssUrl}#${r.startTime ?? ''}`),
     guid: r.guid,
@@ -440,19 +461,8 @@ export async function getRssEpisodeEnrichment(
   rssUrl: string,
 ): Promise<RssFeedEnrichment> {
   const episodes = new Map<string, RssEpisodeEnrichment>();
-  let res: Response;
-  try {
-    assertSafeFetchUrl(rssUrl);
-    res = await fetch(rssUrl, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
-      next: { revalidate: 60 },
-      signal: AbortSignal.timeout(8000),
-    });
-  } catch {
-    return { episodes };
-  }
-  if (!res.ok) return { episodes };
-  const xml = await res.text();
+  const xml = await fetchFeedXml(rssUrl);
+  if (xml == null) return { episodes };
 
   // Channel-level podcast:medium (before first <item>)
   const firstItem = xml.search(/<item\b/i);

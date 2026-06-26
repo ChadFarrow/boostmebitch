@@ -17,28 +17,45 @@ import { SimplePool } from 'nostr-tools';
 export const QUERY_MAX_WAIT_MS = 4000;
 export const FEED_QUERY_MAX_WAIT_MS = 8000;
 
-// Wraps `new SimplePool()` + `pool.close()` so callers can't forget the
-// teardown. Used for every kind:0 / 10002 / 30003 query and every publish.
+// A single long-lived pool reused across every read query and publish. Relay
+// WebSockets live inside the pool keyed by URL, so a second query to the same
+// relay rides the already-open socket instead of paying a fresh TLS+WS
+// handshake — the dominant, variable latency on flaky networks. (This is
+// nostr-tools' intended usage: a SimplePool is built once and kept; it
+// reconnects dropped relays on the next query on its own.) Lazily constructed
+// so importing this module during SSR doesn't build a pool the server never
+// uses.
+let sharedPool: SimplePool | null = null;
+function getSharedPool(): SimplePool {
+  if (!sharedPool) sharedPool = new SimplePool();
+  return sharedPool;
+}
+
+// Runs `fn` against the shared pool. Used for every kind:0 / 10002 / 30003
+// query and every publish. Deliberately does NOT close the pool's relays
+// afterwards — that's what the old create-per-query version did, throwing away
+// every warm connection on each call. The only sockets still torn down are the
+// one-off extras opened by `withExtraRelays`, which bounds the persistent set
+// to the relays we actually want to keep warm. `relays` is now unused here
+// (callers pass their own relay list to querySync/subscribeMany inside `fn`),
+// but the signature is kept so callers read unchanged.
 export async function withPool<T>(
-  relays: string[],
+  _relays: string[],
   fn: (pool: SimplePool) => Promise<T>,
 ): Promise<T> {
-  const pool = new SimplePool();
-  try {
-    return await fn(pool);
-  } finally {
-    pool.close(relays);
-  }
+  return fn(getSharedPool());
 }
 
 /**
  * Run `fn` with the union of `baseRelays` + `extraRelays` (deduped),
  * closing only the newly-opened extras when done. Use inside a `withPool`
- * scope when a sub-query needs extra relays beyond the outer base set so
- * the extras are torn down before the outer pool exits — otherwise their
- * sockets leak past the surrounding `withPool.finally` (which only closes
- * its own relay list). Close errors are swallowed since extras going down
- * mid-query is a normal condition we never want to propagate.
+ * scope when a sub-query needs extra relays beyond the outer base set. The
+ * shared pool is never closed, so these one-off extras (quote-ref hints,
+ * other authors' write relays, nevent hints) MUST be torn down here or they
+ * accumulate open sockets for the life of the tab — closing them keeps the
+ * persistent connection set bounded to the relays we actually reuse. Close
+ * errors are swallowed since extras going down mid-query is a normal
+ * condition we never want to propagate.
  */
 export async function withExtraRelays<T>(
   pool: SimplePool,
