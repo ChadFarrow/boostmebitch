@@ -163,7 +163,7 @@ export function FullscreenPlayer({
   onClose: () => void;
   onBoost: () => void;
 }) {
-  const { current, isPlaying, positionSec, setPosition, episodeQueue, play } = useApp();
+  const { current, isPlaying, positionSec, setPosition, episodeQueue, play, togglePlay } = useApp();
   const identity = useApp((s) => s.identity);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const [valueOpen, setValueOpen] = useState(false);
@@ -216,7 +216,11 @@ export function FullscreenPlayer({
 
   return (
     <div
-      className={`fixed inset-0 z-50 flex flex-col bg-ink transition-transform duration-300 ease-in-out ${open ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
+      // Height is the *dynamic* viewport (100dvh), not inset-0 / 100vh: on iOS
+      // Safari a fixed inset-0 element sizes to the large (toolbar-hidden)
+      // viewport, so its bottom — the live-chat composer — hides behind Safari's
+      // bottom address bar. 100dvh tracks the visible area as the bar shows/hides.
+      className={`fixed inset-x-0 top-0 h-[100dvh] z-50 flex flex-col bg-ink transition-transform duration-300 ease-in-out ${open ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
@@ -253,8 +257,25 @@ export function FullscreenPlayer({
             closed it moves back to the mini-bar so audio keeps playing. */}
         <div className="flex items-center justify-center p-4 sm:p-6 lg:p-10 flex-shrink-0 sm:w-1/2 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
           {isVideo ? (
-            <div className="w-full max-w-md sm:max-w-lg lg:max-w-2xl aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black">
+            <div className="relative w-full max-w-md sm:max-w-lg lg:max-w-2xl aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black">
               {open && videoNode && <OutPortal node={videoNode} />}
+              {/* Play/pause lives on the video itself (tap anywhere to toggle).
+                  The glyph is prominent while paused and fades out while playing
+                  — reappearing on tap — so it doesn't cover the stream. */}
+              <button
+                type="button"
+                onClick={() => togglePlay()}
+                aria-label={isPlaying ? 'Pause' : 'Play'}
+                className="group absolute inset-0 flex items-center justify-center"
+              >
+                <span
+                  className={`flex items-center justify-center w-16 h-16 rounded-full bg-ink/55 text-bone text-2xl backdrop-blur-sm transition-opacity duration-200 ${
+                    isPlaying ? 'opacity-0 group-hover:opacity-100 group-active:opacity-100' : 'opacity-100'
+                  }`}
+                >
+                  {isPlaying ? '❚❚' : '▶'}
+                </span>
+              </button>
             </div>
           ) : (
             <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
@@ -286,25 +307,21 @@ export function FullscreenPlayer({
                   <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
                 )}
               </div>
-              {/* BOOST stretches beside the transport buttons for a strong tap
-                  target; FAV / SHARE sit on their own tidy row so nothing wraps
-                  raggedly on a narrow phone. */}
-              <div className="flex flex-col gap-2">
-                <div className="flex items-center gap-3">
-                  <TransportControls size="lg" />
-                  <button
-                    onClick={onBoost}
-                    disabled={!hasValue}
-                    className="btn-bolt flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                    title={hasValue ? 'Send a boost' : 'Stream has no value block'}
-                  >
-                    <BoltIcon /> BOOST
-                  </button>
-                </div>
-                <div className="flex items-center gap-2">
-                  <FavHeart podcast={podcast} size="md" />
-                  <ShareButton liveStreamId={liveStreamId} podcast={podcast} />
-                </div>
+              {/* Play/pause now lives on the video; prev/next aren't meaningful
+                  for a single live stream, so this row is just the actions —
+                  BOOST stretches as the primary one, FAV / SHARE share it. This
+                  keeps the controls short and hands the space to the chat. */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={onBoost}
+                  disabled={!hasValue}
+                  className="btn-bolt flex-1 min-w-[7rem] disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={hasValue ? 'Send a boost' : 'Stream has no value block'}
+                >
+                  <BoltIcon /> BOOST
+                </button>
+                <FavHeart podcast={podcast} size="md" />
+                <ShareButton liveStreamId={liveStreamId} podcast={podcast} />
               </div>
             </div>
             <div className="flex-1 min-h-0">
