@@ -163,7 +163,7 @@ export function FullscreenPlayer({
   onClose: () => void;
   onBoost: () => void;
 }) {
-  const { current, isPlaying, positionSec, setPosition, episodeQueue, play } = useApp();
+  const { current, isPlaying, positionSec, setPosition, episodeQueue, play, togglePlay } = useApp();
   const identity = useApp((s) => s.identity);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const [valueOpen, setValueOpen] = useState(false);
@@ -257,8 +257,25 @@ export function FullscreenPlayer({
             closed it moves back to the mini-bar so audio keeps playing. */}
         <div className="flex items-center justify-center p-4 sm:p-6 lg:p-10 flex-shrink-0 sm:w-1/2 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
           {isVideo ? (
-            <div className="w-full max-w-md sm:max-w-lg lg:max-w-2xl aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black">
+            <div className="relative w-full max-w-md sm:max-w-lg lg:max-w-2xl aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black">
               {open && videoNode && <OutPortal node={videoNode} />}
+              {/* Play/pause lives on the video itself (tap anywhere to toggle).
+                  The glyph is prominent while paused and fades out while playing
+                  — reappearing on tap — so it doesn't cover the stream. */}
+              <button
+                type="button"
+                onClick={() => togglePlay()}
+                aria-label={isPlaying ? 'Pause' : 'Play'}
+                className="group absolute inset-0 flex items-center justify-center"
+              >
+                <span
+                  className={`flex items-center justify-center w-16 h-16 rounded-full bg-ink/55 text-bone text-2xl backdrop-blur-sm transition-opacity duration-200 ${
+                    isPlaying ? 'opacity-0 group-hover:opacity-100 group-active:opacity-100' : 'opacity-100'
+                  }`}
+                >
+                  {isPlaying ? '❚❚' : '▶'}
+                </span>
+              </button>
             </div>
           ) : (
             <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
@@ -290,12 +307,11 @@ export function FullscreenPlayer({
                   <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
                 )}
               </div>
-              {/* Compact controls for live: small transport buttons (you can't
-                  seek a live stream, so they need little prominence) keep this
-                  row short and hand the freed vertical space to the chat. BOOST
-                  stretches as the primary action; FAV / SHARE share its row. */}
+              {/* Play/pause now lives on the video; prev/next aren't meaningful
+                  for a single live stream, so this row is just the actions —
+                  BOOST stretches as the primary one, FAV / SHARE share it. This
+                  keeps the controls short and hands the space to the chat. */}
               <div className="flex items-center gap-2 flex-wrap">
-                <TransportControls size="sm" />
                 <button
                   onClick={onBoost}
                   disabled={!hasValue}
