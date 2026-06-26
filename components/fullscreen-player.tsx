@@ -242,12 +242,16 @@ export function FullscreenPlayer({
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col sm:flex-row">
+      {/* Live streams lock to the viewport on mobile (overflow-hidden) so the
+          chat — not the page behind — fills the space below the video; the page
+          used to scroll past the overlay and reveal the browse view. Non-live
+          (podcast/music) keeps the normal single-scroll-container behavior. */}
+      <div className={`flex-1 min-h-0 flex flex-col sm:flex-row ${liveStreamId ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
         {/* Artwork (or live video) — centered in the left half; sticky so it
             stays put as the page scrolls. For HLS streams the shared <video>
             is displayed here via its OutPortal while the player is open; when
             closed it moves back to the mini-bar so audio keeps playing. */}
-        <div className="flex items-center justify-center p-6 lg:p-10 sm:w-1/2 sm:flex-shrink-0 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
+        <div className="flex items-center justify-center p-4 sm:p-6 lg:p-10 flex-shrink-0 sm:w-1/2 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
           {isVideo ? (
             <div className="w-full max-w-md sm:max-w-lg lg:max-w-2xl aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black">
               {open && videoNode && <OutPortal node={videoNode} />}
@@ -267,31 +271,40 @@ export function FullscreenPlayer({
 
         {/* Right pane: kind:1311 live chat for Nostr streams, else episode info */}
         {liveStreamId ? (
-          <div className="sm:w-1/2 p-6 lg:p-10 flex flex-col gap-4 h-[70vh] sm:h-[calc(100vh-3.5rem)]">
+          <div className="flex-1 min-h-0 sm:flex-none sm:w-1/2 p-4 sm:p-6 lg:p-10 flex flex-col gap-3 sm:gap-4 sm:h-[calc(100vh-3.5rem)]">
             <div className="flex-shrink-0 flex flex-col gap-3 min-w-0">
               <div>
-                <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
-                <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+                  <span className="text-xs text-muted">streaming now</span>
+                </div>
+                <h1 className="font-display text-xl sm:text-2xl lg:text-3xl leading-tight mt-2">{episode.title}</h1>
+                {podcast.title && podcast.title !== episode.title && (
+                  <p className="text-sm text-muted mt-1">{podcast.title}</p>
+                )}
                 {podcast.author && (
                   <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
                 )}
               </div>
-              <div className="flex items-center gap-2">
-                <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
-                <span className="text-xs text-muted">streaming now</span>
-              </div>
-              <div className="flex items-center gap-3 flex-wrap">
-                <TransportControls size="lg" />
-                <button
-                  onClick={onBoost}
-                  disabled={!hasValue}
-                  className="btn-bolt disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={hasValue ? 'Send a boost' : 'Stream has no value block'}
-                >
-                  <BoltIcon /> BOOST
-                </button>
-                <FavHeart podcast={podcast} size="md" />
-                <ShareButton liveStreamId={liveStreamId} podcast={podcast} />
+              {/* BOOST stretches beside the transport buttons for a strong tap
+                  target; FAV / SHARE sit on their own tidy row so nothing wraps
+                  raggedly on a narrow phone. */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-3">
+                  <TransportControls size="lg" />
+                  <button
+                    onClick={onBoost}
+                    disabled={!hasValue}
+                    className="btn-bolt flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                    title={hasValue ? 'Send a boost' : 'Stream has no value block'}
+                  >
+                    <BoltIcon /> BOOST
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <FavHeart podcast={podcast} size="md" />
+                  <ShareButton liveStreamId={liveStreamId} podcast={podcast} />
+                </div>
               </div>
             </div>
             <div className="flex-1 min-h-0">
@@ -299,7 +312,7 @@ export function FullscreenPlayer({
             </div>
           </div>
         ) : (
-        <div className="sm:w-1/2 p-6 lg:p-10 flex flex-col gap-5 min-w-0 sm:h-[calc(100vh-3.5rem)]">
+        <div className="sm:w-1/2 p-4 sm:p-6 lg:p-10 flex flex-col gap-5 min-w-0 sm:h-[calc(100vh-3.5rem)]">
           {/* Fixed header: title, seek + transport controls stay put; only the
               About/Chapters body below scrolls (on desktop). */}
           <div className="flex-shrink-0 flex flex-col gap-5">
@@ -337,18 +350,22 @@ export function FullscreenPlayer({
               </div>
             )}
 
-            <div className="flex items-center justify-center gap-3 flex-wrap">
-              <TransportControls size="lg" prev={chapterNav?.prev} next={chapterNav?.next} />
-              <button
-                onClick={onBoost}
-                disabled={!hasValue}
-                className="btn-bolt disabled:opacity-40 disabled:cursor-not-allowed ml-28"
-                title={hasValue ? 'Send a boost' : 'Episode has no value block'}
-              >
-                <BoltIcon /> BOOST
-              </button>
-              <FavHeart podcast={podcast} size="md" />
-              <ShareButton liveStreamId={null} podcast={podcast} />
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-3">
+                <TransportControls size="lg" prev={chapterNav?.prev} next={chapterNav?.next} />
+                <button
+                  onClick={onBoost}
+                  disabled={!hasValue}
+                  className="btn-bolt flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={hasValue ? 'Send a boost' : 'Episode has no value block'}
+                >
+                  <BoltIcon /> BOOST
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <FavHeart podcast={podcast} size="md" />
+                <ShareButton liveStreamId={null} podcast={podcast} />
+              </div>
             </div>
 
             {hasValue && value && (
