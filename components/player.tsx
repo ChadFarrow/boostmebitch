@@ -51,6 +51,8 @@ export function Player() {
   const videoNode = videoNodeRef.current;
   const hls = useRef<Hls | null>(null);
   const recoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Watchdog for the foreground-resume nudge — see the visibilitychange effect.
+  const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
 
@@ -174,6 +176,55 @@ export function Player() {
     if (isPlaying) el.play().catch(() => setPlaying(false));
     else el.pause();
   }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Resume a live HLS stream when the tab comes back to the foreground. iOS
+  // Safari suspends media loading while backgrounded; on return the <video> is
+  // paused and stalled at a stale position (the live window has rolled past
+  // what's buffered), so it can't resume on its own — the user had to refresh.
+  // This nudges it back to the live edge, which is what a refresh did.
+  useEffect(() => {
+    function onForeground() {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      if (!isHlsRef.current || !isPlayingRef.current) return;
+      const el = video.current;
+      if (!el) return;
+
+      const inst = hls.current;
+      if (inst) {
+        // hls.js path (Android Chrome / desktop): restart the loader, which
+        // re-fetches the playlist and catches back up to the live edge.
+        try { inst.startLoad(); } catch { /* destroyed mid-call — ignore */ }
+        el.play().catch(() => {});
+        return;
+      }
+
+      // Native HLS (iOS Safari). Try a plain resume first — a short background
+      // often recovers without a rebuffer. If it's still stalled shortly after,
+      // re-source to snap to the live edge (the manual-refresh path).
+      const before = el.currentTime;
+      el.play().catch(() => {});
+      if (resumeTimer.current) clearTimeout(resumeTimer.current);
+      resumeTimer.current = setTimeout(() => {
+        if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+        if (!isPlayingRef.current) return;
+        const stalled = el.paused || el.currentTime === before;
+        const url = current?.episode.enclosureUrl;
+        if (stalled && url) {
+          el.src = url;
+          el.load();
+          el.play().catch(() => {});
+        }
+      }, 1500);
+    }
+
+    document.addEventListener('visibilitychange', onForeground);
+    window.addEventListener('focus', onForeground);
+    return () => {
+      document.removeEventListener('visibilitychange', onForeground);
+      window.removeEventListener('focus', onForeground);
+      if (resumeTimer.current) { clearTimeout(resumeTimer.current); resumeTimer.current = null; }
+    };
+  }, [current?.episode.enclosureUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // PiP only applies to the HLS <video>; recompute when the item changes. The
   // <video> is always mounted (in the portal) so video.current is live here.
