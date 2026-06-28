@@ -7,7 +7,7 @@ import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import type { Podcast } from '@/lib/types';
 import { streamNaddr, parseStreamId, isLiveStreamId } from '@/lib/nostr';
-import { BoltIcon, ShareIcon } from './icons';
+import { BoltIcon, ShareIcon, PipIcon } from './icons';
 import { hasValueRecipients, isMusicMedium, stripHtml } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
@@ -147,6 +147,8 @@ export function FullscreenPlayer({
   audioRef,
   videoNode,
   isVideo,
+  pipAvailable,
+  onPip,
   chapters,
   chaptersLoading,
   onClose,
@@ -157,6 +159,8 @@ export function FullscreenPlayer({
   audioRef: RefObject<HTMLAudioElement | null>;
   videoNode: HtmlPortalNode | null;
   isVideo: boolean;
+  pipAvailable: boolean;
+  onPip: () => void;
   // Fetched once by <Player> and passed down (so it isn't fetched twice).
   chapters: ChapterEntry[] | null;
   chaptersLoading: boolean;
@@ -276,6 +280,17 @@ export function FullscreenPlayer({
                   {isPlaying ? '❚❚' : '▶'}
                 </span>
               </button>
+              {pipAvailable && (
+                <button
+                  type="button"
+                  onClick={onPip}
+                  aria-label="Picture-in-Picture"
+                  title="Picture-in-Picture"
+                  className="absolute top-2 right-2 z-10 flex items-center justify-center w-9 h-9 rounded-lg bg-ink/55 text-bone backdrop-blur-sm hover:bg-ink/75 transition-colors"
+                >
+                  <PipIcon className="w-5 h-5" />
+                </button>
+              )}
             </div>
           ) : (
             <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">

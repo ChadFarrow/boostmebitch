@@ -52,6 +52,24 @@ export function ShareIcon({ className = 'w-4 h-4' }: { className?: string }) {
   );
 }
 
+export function PipIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`flex-shrink-0 ${className}`}
+    >
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <rect x="12" y="11" width="8" height="6" rx="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 export function MoonIcon({ className = 'w-4 h-4' }: { className?: string }) {
   return (
     <svg
