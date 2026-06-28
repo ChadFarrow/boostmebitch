@@ -9,11 +9,11 @@ import {
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
-import { hasValueRecipients, isHlsUrl, isMusicMedium } from '@/lib/util';
+import { hasValueRecipients, isHlsUrl, isMusicMedium, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import { BoostModal } from './boost-modal';
-import { BoltIcon } from './icons';
+import { BoltIcon, PipIcon } from './icons';
 import { FullscreenPlayer } from './fullscreen-player';
 import { TransportControls } from './transport-controls';
 
@@ -24,6 +24,9 @@ export function Player() {
   const [duration, setDuration] = useState(0);
   const [boostOpen, setBoostOpen] = useState(false);
   const [audioErr, setAudioErr] = useState<string | null>(null);
+  // Whether the active <video> can enter Picture-in-Picture (HLS streams only —
+  // the native <audio> can't). Recomputed per item; gates the PiP button.
+  const [pipOk, setPipOk] = useState(false);
   // Last whole second pushed to the store. timeupdate fires ~4×/sec, but
   // every consumer renders whole seconds (fmt(), step=1 seek bars, chapter
   // highlighting) — gating on the floor cuts store-driven re-renders to 1 Hz.
@@ -172,6 +175,83 @@ export function Player() {
     else el.pause();
   }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // PiP only applies to the HLS <video>; recompute when the item changes. The
+  // <video> is always mounted (in the portal) so video.current is live here.
+  useEffect(() => {
+    setPipOk(isHls && pipSupported(video.current));
+  }, [isHls, current?.episode.id]);
+
+  function requestPip() {
+    void togglePip(video.current);
+  }
+
+  // Media Session — OS lock-screen / notification transport + metadata. Wires
+  // the system media controls to the same store actions the in-app UI uses, so
+  // play/pause/skip and (for podcasts) lock-screen scrubbing work with the
+  // screen off. Handlers read from the store via getState so this runs once.
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    const ms = navigator.mediaSession;
+    const seekActive = (t: number) => {
+      const el = isHlsRef.current ? video.current : audio.current;
+      if (el) el.currentTime = t;
+      lastTick.current = Math.floor(t);
+      setPosition(t);
+    };
+    const handlers: [MediaSessionAction, MediaSessionActionHandler][] = [
+      ['play', () => setPlaying(true)],
+      ['pause', () => setPlaying(false)],
+      ['previoustrack', () => useApp.getState().playPrev()],
+      ['nexttrack', () => useApp.getState().playNext()],
+      ['seekbackward', (d) => seekActive(Math.max(0, useApp.getState().positionSec - (d.seekOffset || 10)))],
+      ['seekforward', (d) => seekActive(useApp.getState().positionSec + (d.seekOffset || 10))],
+      ['seekto', (d) => { if (d.seekTime != null) seekActive(d.seekTime); }],
+    ];
+    for (const [action, handler] of handlers) {
+      try { ms.setActionHandler(action, handler); } catch { /* unsupported action — skip */ }
+    }
+    return () => {
+      for (const [action] of handlers) {
+        try { ms.setActionHandler(action, null); } catch { /* skip */ }
+      }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Metadata for the lock-screen / notification (title, podcast, artwork).
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    if (!current) { navigator.mediaSession.metadata = null; return; }
+    const { episode, podcast } = current;
+    const art = episode.image || podcast.image || podcast.artwork;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: episode.title,
+      artist: podcast.title,
+      album: podcast.title,
+      artwork: art ? [{ src: art }] : undefined,
+    });
+  }, [current?.episode.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Reflect play/pause to the OS so the lock-screen button shows the right state.
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+    }
+  }, [isPlaying]);
+
+  // Lock-screen scrub bar. Skipped for live streams (no finite duration).
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    if (typeof navigator.mediaSession.setPositionState !== 'function') return;
+    if (!duration || !isFinite(duration)) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        position: Math.min(positionSec, duration),
+        playbackRate: 1,
+      });
+    } catch { /* invalid state (e.g. position > duration mid-seek) — skip */ }
+  }, [positionSec, duration]);
+
   // Single chapters fetch for the whole player — passed down to <FullscreenPlayer>
   // so it isn't fetched twice. No-ops on an empty url (music/live/no tag). Above
   // the early return for hook order.
@@ -298,6 +378,16 @@ export function Player() {
           </div>
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             <TransportControls playOnly={isLive} prev={chapterNav?.prev} next={chapterNav?.next} />
+            {pipOk && (
+              <button
+                onClick={requestPip}
+                className="btn-ghost px-2"
+                title="Picture-in-Picture"
+                aria-label="Picture-in-Picture"
+              >
+                <PipIcon />
+              </button>
+            )}
             <button
               onClick={() => setBoostOpen(true)}
               disabled={!hasValue}
@@ -316,6 +406,8 @@ export function Player() {
         audioRef={audio}
         videoNode={videoNode}
         isVideo={isHls}
+        pipAvailable={pipOk}
+        onPip={requestPip}
         chapters={chapters}
         chaptersLoading={chaptersLoading}
         onClose={() => setPlayerExpanded(false)}

@@ -31,6 +31,50 @@ export function isHlsUrl(url: string | undefined | null): boolean {
   return !!url && /\.m3u8(\?|#|$)/i.test(url);
 }
 
+// Picture-in-Picture across the two web APIs: the standard `requestPictureInPicture`
+// (Android Chrome, desktop Chrome/Edge/Firefox/Safari) and WebKit's
+// `webkitSetPresentationMode` (iOS Safari, which doesn't implement the standard
+// one). Only matters for the HLS <video> path — the native <audio> the rest of
+// the app uses can't go into PiP. PiP also keeps a stream's audio playing while
+// the app is backgrounded on mobile, so it doubles as background audio for video.
+type WebkitVideo = HTMLVideoElement & {
+  webkitSupportsPresentationMode?: (mode: string) => boolean;
+  webkitSetPresentationMode?: (mode: string) => void;
+  webkitPresentationMode?: string;
+};
+
+export function pipSupported(el: HTMLVideoElement | null): boolean {
+  if (!el || typeof document === 'undefined') return false;
+  if (document.pictureInPictureEnabled && !el.disablePictureInPicture) return true;
+  const w = el as WebkitVideo;
+  return (
+    typeof w.webkitSupportsPresentationMode === 'function' &&
+    w.webkitSupportsPresentationMode('picture-in-picture')
+  );
+}
+
+// Toggle PiP for the given <video>. Prefers the standard API, falls back to
+// WebKit. Swallows errors (a missing user gesture / not-allowed throws and is
+// not worth surfacing).
+export async function togglePip(el: HTMLVideoElement | null): Promise<void> {
+  if (!el || typeof document === 'undefined') return;
+  if (document.pictureInPictureEnabled && !el.disablePictureInPicture) {
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else await el.requestPictureInPicture();
+    } catch { /* user gesture / not-allowed — silent */ }
+    return;
+  }
+  const w = el as WebkitVideo;
+  if (typeof w.webkitSetPresentationMode === 'function') {
+    try {
+      w.webkitSetPresentationMode(
+        w.webkitPresentationMode === 'picture-in-picture' ? 'inline' : 'picture-in-picture',
+      );
+    } catch { /* silent */ }
+  }
+}
+
 // Coerce an unknown thrown value into a user-readable string. Use for the
 // fallback in `catch (e) { return { error: getErrorMessage(e, '<x> failed') } }`
 // patterns in API routes and UI handlers.
