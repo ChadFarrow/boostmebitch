@@ -98,6 +98,7 @@ export { hydrateMutes } from './mutes-hydrator';
 export {
   fetchNostrLiveStreams,
   fetchLiveStreamByAddr,
+  fetchLatestStreamByPubkey,
   streamNaddr,
   resolveStreamV4V,
   streamToEpisode,

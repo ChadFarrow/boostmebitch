@@ -231,6 +231,66 @@ export async function fetchLiveStreamByAddr(
 }
 
 /**
+ * Fetch a host's *current* live stream by pubkey — the backing query for the
+ * permanent `/live/<npub>` share link. Unlike `fetchLiveStreamByAddr` (which
+ * pins one broadcast by its dTag), this ignores the dTag entirely so the link
+ * stays valid across broadcasts: most clients mint a fresh random dTag per
+ * stream, so a host's durable identity is their pubkey, not any one naddr.
+ *
+ * Priority: a genuinely-live stream (fresh `live` status, newest first); else
+ * the soonest upcoming `planned` stream (so the page can show a "next up" hint);
+ * else null. Ended broadcasts are never returned — we don't auto-open a dead
+ * stream behind a permanent link.
+ */
+export async function fetchLatestStreamByPubkey(
+  pubkey: string,
+  relayHints: string[] = [],
+): Promise<NostrLiveStream | null> {
+  const relays = sanitizeRelays([...relayHints, ...LIVE_STREAM_RELAYS]).slice(0, 20);
+  return withPool(relays, async (pool) => {
+    try {
+      // Query by AUTHOR only (no `#d` filter) — same reasoning as
+      // fetchLiveStreamByAddr: fountain.fm and other host relays don't honor
+      // tag filters reliably in-browser. A host has few streams, so fetch all
+      // and pick client-side.
+      const events = await pool.querySync(
+        relays,
+        { kinds: [30311], authors: [pubkey], limit: 50 },
+        { maxWait: FEED_QUERY_MAX_WAIT_MS },
+      );
+
+      // Dedupe replaceable events by NIP-33 address (newest version wins).
+      const byAddr = new Map<string, Event>();
+      for (const e of events) {
+        const dTag = e.tags.find((t) => t[0] === 'd')?.[1] ?? e.id;
+        const addr = `${e.pubkey}:${dTag}`;
+        const existing = byAddr.get(addr);
+        if (!existing || e.created_at > existing.created_at) byAddr.set(addr, e);
+      }
+
+      const liveFreshAfter = Math.floor(Date.now() / 1000) - LIVE_FRESH_SECS;
+      const streams = Array.from(byAddr.values()).map(parseNostrLiveStream);
+
+      // A fresh `live` event = broadcasting right now (clients re-publish it
+      // periodically). Newest first if the host somehow has two.
+      const live = streams
+        .filter((s) => s.status === 'live' && s.rawEvent.created_at >= liveFreshAfter)
+        .sort((a, b) => (b.startsAt ?? 0) - (a.startsAt ?? 0));
+      if (live[0]) return live[0];
+
+      // Otherwise the soonest upcoming planned stream (drives the "next up" hint
+      // on the offline placeholder).
+      const planned = streams
+        .filter((s) => s.status === 'planned')
+        .sort((a, b) => (a.startsAt ?? Infinity) - (b.startsAt ?? Infinity));
+      return planned[0] ?? null;
+    } catch {
+      return null;
+    }
+  });
+}
+
+/**
  * Resolve a ValueBlock for V4V boosts against a Nostr live stream.
  *
  * Two paths:
