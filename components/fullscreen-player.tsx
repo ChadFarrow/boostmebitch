@@ -6,7 +6,8 @@ import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import type { Podcast } from '@/lib/types';
-import { streamNaddr, parseStreamId, isLiveStreamId } from '@/lib/nostr';
+import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
+import { nip19 } from 'nostr-tools';
 import { BoltIcon, ShareIcon, PipIcon } from './icons';
 import { hasValueRecipients, isMusicMedium, stripHtml } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
@@ -105,9 +106,12 @@ function EpisodeInfoPanel({
   );
 }
 
-// Copy a BMB deep link to the current item: ?stream=<naddr> for a Nostr live
-// stream (liveStreamId = `<pubkey>:<dTag>`), else ?podcast=<guid>. Clipboard-only
-// with a COPIED flip, mirroring the episode-list ShareButton.
+// Copy a BMB deep link to the current item. For a Nostr live stream
+// (liveStreamId = `<pubkey>:<dTag>`) this hands out the PERMANENT per-host
+// link `/live/<npub>` — not the per-broadcast `/stream/<naddr>` — so a show can
+// share one URL that stays valid across broadcasts (each gets a fresh dTag).
+// Otherwise ?podcast=<guid>. Clipboard-only with a COPIED flip, mirroring the
+// episode-list ShareButton.
 function ShareButton({ liveStreamId, podcast }: { liveStreamId: string | null; podcast: Podcast }) {
   const [copied, setCopied] = useState(false);
 
@@ -117,7 +121,7 @@ function ShareButton({ liveStreamId, podcast }: { liveStreamId: string | null; p
     if (liveStreamId) {
       const parsed = parseStreamId(liveStreamId);
       if (!parsed) return null;
-      return `${origin}/stream/${streamNaddr(parsed.pubkey, parsed.dTag)}`;
+      return `${origin}/live/${nip19.npubEncode(parsed.pubkey)}`;
     }
     if (podcast.podcastGuid) return `${origin}/?podcast=${podcast.podcastGuid}`;
     return null;
