@@ -1,6 +1,6 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
-import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract } from './types';
+import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract, PodrollItem } from './types';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { assertSafeFetchUrl } from './safe-fetch';
 import { fnvHash } from './util';
@@ -463,6 +463,23 @@ interface RssEpisodeEnrichment {
 export interface RssFeedEnrichment {
   episodes: Map<string, RssEpisodeEnrichment>;
   feedMedium?: string;
+  feedPodroll?: PodrollItem[];
+}
+
+// Parse a channel-level <podcast:podroll> block into its remoteItem entries.
+// Same before-first-<item> channel slice + readAttr idiom used for feedMedium.
+function parsePodroll(channelXml: string): PodrollItem[] | undefined {
+  const podrollMatch = /<podcast:podroll\b[^>]*>([\s\S]*?)<\/podcast:podroll>/i.exec(channelXml);
+  if (!podrollMatch) return undefined;
+  const items: PodrollItem[] = [];
+  const riRe = /<podcast:remoteItem\b([^>]*?)\/?>/gi;
+  let rm: RegExpExecArray | null;
+  while ((rm = riRe.exec(podrollMatch[1]))) {
+    const feedGuid = readAttr(rm[1], 'feedGuid');
+    if (!feedGuid) continue;
+    items.push({ feedGuid, feedUrl: readAttr(rm[1], 'feedUrl') });
+  }
+  return items.length ? items : undefined;
 }
 
 /**
@@ -483,6 +500,7 @@ export async function getRssEpisodeEnrichment(
   const firstItem = xml.search(/<item\b/i);
   const channelXml = firstItem === -1 ? xml : xml.slice(0, firstItem);
   const feedMedium = extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined;
+  const feedPodroll = parsePodroll(channelXml);
 
   const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
   let m: RegExpExecArray | null;
@@ -505,7 +523,7 @@ export async function getRssEpisodeEnrichment(
       episodes.set(guid, { socialInteract, contentEncoded, season, episode });
     }
   }
-  return { episodes, feedMedium };
+  return { episodes, feedMedium, feedPodroll };
 }
 
 export async function getEpisodeByGuid(

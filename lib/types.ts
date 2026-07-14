@@ -37,6 +37,14 @@ export interface ValueTimeSplit {
   episodeGuid?: string;
 }
 
+// A single <podcast:podroll> entry — another show the host recommends.
+// Channel-scoped remote item (feedGuid/feedUrl, no itemGuid). Resolved to a
+// full Podcast client-side via resolvePodcastByGuid.
+export interface PodrollItem {
+  feedGuid: string;
+  feedUrl?: string;
+}
+
 export interface Podcast {
   id: number;
   podcastGuid?: string;   // namespace UUID for NIP-73 podcast:guid:
@@ -53,6 +61,7 @@ export interface Podcast {
   url?: string;           // RSS feed URL
   medium?: string;        // podcast:medium (e.g. 'music', 'publisher')
   value?: ValueBlock | null;
+  podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
 }
 
 export interface SocialInteract {

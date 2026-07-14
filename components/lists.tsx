@@ -10,6 +10,7 @@ import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
+import { Podroll } from './podroll';
 
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   if (status === 'live') {
@@ -520,6 +521,16 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           Load more episodes ({remaining})
         </button>
       )}
+
+      {data.podcast.podroll?.length ? (
+        <DeferredOnScroll
+          placeholder={
+            <h3 className="font-display text-lg mt-8 text-muted">Recommended shows</h3>
+          }
+        >
+          <Podroll items={data.podcast.podroll} />
+        </DeferredOnScroll>
+      ) : null}
 
       {data.podcast.podcastGuid && (
         <DeferredOnScroll
