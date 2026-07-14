@@ -23,13 +23,22 @@ function authHeaders() {
   };
 }
 
+/** Thrown by `pi()` on a non-2xx, carrying the status so callers can tell a
+ *  "PI doesn't know this" miss from a genuine outage. */
+export class PiHttpError extends Error {
+  constructor(readonly status: number, body: string) {
+    super(`PI ${status}: ${body}`);
+    this.name = 'PiHttpError';
+  }
+}
+
 async function pi<T>(path: string): Promise<T> {
   const res = await fetch(BASE + path, {
     headers: authHeaders(),
     // Podcast Index data is fairly cacheable; 60s is sane for search.
     next: { revalidate: 60 },
   });
-  if (!res.ok) throw new Error(`PI ${res.status}: ${await res.text()}`);
+  if (!res.ok) throw new PiHttpError(res.status, await res.text());
   return res.json() as Promise<T>;
 }
 
@@ -88,8 +97,21 @@ export async function getPodcast(feedId: number): Promise<Podcast | null> {
 }
 
 export async function getPodcastByFeedUrl(feedUrl: string): Promise<Podcast | null> {
-  const data = await pi<any>(`/podcasts/byfeedurl?url=${encodeURIComponent(feedUrl)}`);
-  return data.feed ? buildPodcast(data.feed) : null;
+  try {
+    const data = await pi<any>(`/podcasts/byfeedurl?url=${encodeURIComponent(feedUrl)}`);
+    return data.feed ? buildPodcast(data.feed) : null;
+  } catch (e) {
+    // PI answers an unknown feed URL with **400** `{"status":"false",
+    // "description":"Feed url not found."}` — a normal miss, not an outage.
+    // Return null so the route 404s. Letting it 500 would trip the client-side
+    // PI breaker (`resolveVia` in lib/podcast-meta.ts treats 5xx as "PI is
+    // down"), disabling all podcast metadata resolution for the rest of the
+    // tab — so one unresolvable podroll feedUrl would take out favorites
+    // hydration and the feed's podcast chips. Auth (401/403) and 5xx still
+    // throw: those really are breaker-worthy.
+    if (e instanceof PiHttpError && (e.status === 400 || e.status === 404)) return null;
+    throw e;
+  }
 }
 
 export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {

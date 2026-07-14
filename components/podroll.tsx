@@ -1,70 +1,65 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
-import { resolvePodcastByGuid, piMaybeUp } from '@/lib/podcast-meta';
+import { resolvePodcastByGuid, resolvePodcastByFeedUrl, piMaybeUp } from '@/lib/podcast-meta';
+import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel';
 import type { Podcast, PodrollItem } from '@/lib/types';
 import { PodcastCover } from './podcast-cover';
-import { FavHeart } from './lists';
+import { FavHeart } from './fav-heart';
 
 // <podcast:podroll> — the shows the current show's host recommends. Each entry
-// arrives as a raw feedGuid; we resolve it to a full Podcast client-side (via
-// the cached /api/by-guid resolver) and render a horizontal card row that
-// mirrors the "Live on Nostr" row. Clicking a card opens that show's detail
-// view through the same selectPodcast action a Nostr note's podcast link uses.
+// arrives as a feedGuid (plus an optional feedUrl hint); we resolve it to a
+// full Podcast client-side (via the cached /api/by-guid resolver) and render a
+// horizontal card row that mirrors the "Live on Nostr" row. Clicking a card
+// opens that show's detail view through the same selectPodcast action a Nostr
+// note's podcast link uses.
 export function Podroll({ items }: { items: PodrollItem[] }) {
   const [podcasts, setPodcasts] = useState<Podcast[]>([]);
   const [loading, setLoading] = useState(true);
   const selectPodcast = useApp((s) => s.selectPodcast);
-  const mountedRef = useRef(true);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Bumped on every resolve, so only the newest one may commit. Switching shows
+  // swaps `items` without unmounting this component (EpisodeList holds the
+  // previous feed's data until the new fetch lands), so two resolves can
+  // overlap — without this, a slow resolve for show A can settle last and paint
+  // A's recommendations under show B. Also covers StrictMode's double-mount.
+  const genRef = useRef(0);
 
-  // Translate vertical mouse-wheel into horizontal scroll over the row (copied
-  // from nostr-live-streams). React's onWheel is passive, so attach natively.
-  // Only hijack when overflowing, the gesture is vertical, and not at the edge.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (el.scrollWidth <= el.clientWidth) return;
-      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
-      const atStart = el.scrollLeft <= 0;
-      const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
-      if ((e.deltaY < 0 && atStart) || (e.deltaY > 0 && atEnd)) return;
-      el.scrollLeft += e.deltaY;
-      e.preventDefault();
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [podcasts.length]);
+  useHorizontalWheelScroll(scrollRef);
 
   useEffect(() => {
-    mountedRef.current = true;
     resolve();
-    return () => {
-      mountedRef.current = false;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items]);
 
+  // Resolve one podroll entry: feedGuid is canonical, but PI doesn't index
+  // every feed by guid — so fall back to the entry's feedUrl hint when it does
+  // carry one. Same PI-coverage gap that forced the RSS fallback in
+  // resolveValueTimeSplits (see CLAUDE.md).
+  async function resolveItem(item: PodrollItem): Promise<Podcast | null> {
+    const byGuid = item.feedGuid ? await resolvePodcastByGuid(item.feedGuid) : null;
+    if (byGuid) return byGuid;
+    return item.feedUrl ? resolvePodcastByFeedUrl(item.feedUrl) : null;
+  }
+
   async function resolve() {
+    const gen = ++genRef.current;
     setLoading(true);
-    // feedGuid is canonical; entries with only a feedUrl aren't resolvable here.
-    const guids = [...new Set(items.map((i) => i.feedGuid).filter(Boolean))];
+    const unique = [...new Map(items.map((i) => [i.feedGuid, i])).values()];
     // Probe-first-then-batch: resolve one, check the PI breaker, only then fan
     // out the rest — so a degraded Podcast Index isn't hammered (see CLAUDE.md).
     const resolved: Podcast[] = [];
-    if (guids.length) {
-      const first = await resolvePodcastByGuid(guids[0]);
+    if (unique.length) {
+      const first = await resolveItem(unique[0]);
       if (first) resolved.push(first);
-      if (piMaybeUp() && guids.length > 1) {
-        const rest = await Promise.all(guids.slice(1).map((g) => resolvePodcastByGuid(g)));
+      if (piMaybeUp() && unique.length > 1) {
+        const rest = await Promise.all(unique.slice(1).map(resolveItem));
         for (const p of rest) if (p) resolved.push(p);
       }
     }
-    if (!mountedRef.current) return;
+    if (gen !== genRef.current) return; // a newer resolve superseded us
     // De-dupe by feed id in case two entries resolve to the same show.
-    const seen = new Set<number>();
-    setPodcasts(resolved.filter((p) => (seen.has(p.id) ? false : (seen.add(p.id), true))));
+    setPodcasts([...new Map(resolved.map((p) => [p.id, p])).values()]);
     setLoading(false);
   }
 

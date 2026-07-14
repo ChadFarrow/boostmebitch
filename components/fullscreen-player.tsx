@@ -12,7 +12,7 @@ import { BoltIcon, ShareIcon, PipIcon } from './icons';
 import { hasValueRecipients, isMusicMedium, stripHtml } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
-import { FavHeart } from './lists';
+import { FavHeart } from './fav-heart';
 import { TransportControls } from './transport-controls';
 import { LiveChat } from './live-chat';
 
