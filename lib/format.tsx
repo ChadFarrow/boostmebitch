@@ -131,3 +131,20 @@ export function fireConfetti(): void {
     confetti({ particleCount: 50, spread: 100, startVelocity: 45, origin: { y: 0.7 }, colors });
   }, 200);
 }
+
+let boostAudio: HTMLAudioElement | null = null;
+
+/** Short celebratory sound on a successful boost. Silent no-op if the asset can't load. */
+export function playBoostSound(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (!boostAudio) {
+      boostAudio = new Audio('/boost.mp3');
+      boostAudio.preload = 'auto';
+    }
+    boostAudio.currentTime = 0;
+    void boostAudio.play().catch(() => {});
+  } catch {
+    /* ignore */
+  }
+}

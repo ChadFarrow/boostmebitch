@@ -9,7 +9,7 @@ import { publishBoostNote, resolvePublishRelays, recordLastRail, publishLiveChat
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
-import { fireConfetti } from '@/lib/format';
+import { fireConfetti, playBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
@@ -167,6 +167,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         return;
       }
       fireConfetti();
+      playBoostSound();
       setPaymentDone(true);
       setRunning(false);
       if (rail) recordLastRail(rail, identity);
@@ -188,7 +189,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         onProgress: (res) => setResults((prev) => [...prev, res]),
       });
       setResults(collected);
-      if (collected.some((r) => r.ok)) fireConfetti();
+      if (collected.some((r) => r.ok)) {
+        fireConfetti();
+        playBoostSound();
+      }
     } catch (e) {
       alert(getErrorMessage(e, 'boost failed'));
       setRunning(false);

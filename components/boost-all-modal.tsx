@@ -9,7 +9,7 @@ import { hasWebln } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage, hasValueRecipients } from '@/lib/util';
-import { fireConfetti } from '@/lib/format';
+import { fireConfetti, playBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './boost-modal/message-input';
@@ -272,7 +272,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     setRunning(false);
     setDone(true);
 
-    if (successfulIdx.length > 0) fireConfetti();
+    if (successfulIdx.length > 0) {
+      fireConfetti();
+      playBoostSound();
+    }
     if (successfulIdx.length > 0 && rail) recordLastRail(rail, identity);
 
     // Single summary note covering all successful tracks. Gated on the
