@@ -17,15 +17,13 @@ export function Podroll({ items }: { items: PodrollItem[] }) {
   const [podcasts, setPodcasts] = useState<Podcast[]>([]);
   const [loading, setLoading] = useState(true);
   const selectPodcast = useApp((s) => s.selectPodcast);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const rowRef = useHorizontalWheelScroll<HTMLDivElement>();
   // Bumped on every resolve, so only the newest one may commit. Switching shows
   // swaps `items` without unmounting this component (EpisodeList holds the
   // previous feed's data until the new fetch lands), so two resolves can
   // overlap — without this, a slow resolve for show A can settle last and paint
   // A's recommendations under show B. Also covers StrictMode's double-mount.
   const genRef = useRef(0);
-
-  useHorizontalWheelScroll(scrollRef);
 
   useEffect(() => {
     resolve();
@@ -86,7 +84,7 @@ export function Podroll({ items }: { items: PodrollItem[] }) {
           {podcasts.length}
         </span>
       </h3>
-      <div ref={scrollRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
+      <div ref={rowRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
         {podcasts.map((p) => (
           <article
             key={p.id}

@@ -32,9 +32,7 @@ export function NostrLiveStreams() {
   const play = useApp((s) => s.play);
   const router = useRouter();
   const mountedRef = useRef(true);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-
-  useHorizontalWheelScroll(scrollRef);
+  const rowRef = useHorizontalWheelScroll<HTMLDivElement>();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -110,7 +108,7 @@ export function NostrLiveStreams() {
         </span>
       </h3>
 
-      <div ref={scrollRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
+      <div ref={rowRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
         {resolved.map(({ stream, profile, value }) => {
           // Play instantly (the card already has the resolved data); a card
           // click (expand) also navigates to the dedicated /stream/<naddr> page
