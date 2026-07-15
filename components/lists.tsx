@@ -1,8 +1,7 @@
 'use client';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import type { Episode, Podcast, FavoritePodcast, ValueBlock } from '@/lib/types';
+import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 import { fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { BoostModal } from './boost-modal';
@@ -10,6 +9,11 @@ import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
+import { Podroll } from './podroll';
+import { FavHeart } from './fav-heart';
+
+// Re-exported for the surfaces that have always imported it from here.
+export { FavHeart };
 
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   if (status === 'live') {
@@ -21,68 +25,6 @@ function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
     return <span className="stamp text-bolt border-bolt/60">PENDING</span>;
   }
   return null;
-}
-
-export function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: 'sm' | 'md' }) {
-  const guid = podcast.podcastGuid;
-  const isFav = useApp((s) => s.isFavorite(guid));
-  const addFavorite = useApp((s) => s.addFavorite);
-  const removeFavorite = useApp((s) => s.removeFavorite);
-  const identity = useApp((s) => s.identity);
-
-  if (!guid) return null; // can't favorite a podcast without a canonical GUID
-
-  function toggle(e: React.MouseEvent) {
-    e.stopPropagation();
-    e.preventDefault();
-    if (isFav) {
-      removeFavorite(guid!);
-    } else {
-      const fav: FavoritePodcast = {
-        id: podcast.id,
-        podcastGuid: guid!,
-        title: podcast.title,
-        author: podcast.author,
-        image: podcast.image,
-        artwork: podcast.artwork,
-        url: podcast.url,
-        addedAt: Date.now(),
-      };
-      addFavorite(fav);
-    }
-    if (identity) {
-      schedulePublishFavorites(
-        () => Object.keys(useApp.getState().favorites),
-        resolvePublishRelays(identity),
-      );
-    }
-  }
-
-  return (
-    <button
-      onClick={toggle}
-      aria-label={isFav ? 'Unfavorite' : 'Favorite'}
-      title={
-        identity
-          ? (isFav ? 'Unfavorite (synced to Nostr)' : 'Favorite (syncs to Nostr)')
-          : (isFav ? 'Unfavorite' : 'Favorite (sign in with Nostr to sync)')
-      }
-      className={`inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 ${
-        size === 'md'
-          ? 'gap-2 px-4 py-2 text-sm'
-          : 'gap-1.5 px-3 text-xs leading-none'
-      } ${
-        isFav
-          ? 'border-nostr text-nostr hover:bg-nostr/10'
-          : 'border-bone/40 text-bone/70 hover:border-nostr/70 hover:text-nostr'
-      }`}
-    >
-      <span className={size === 'md' ? 'text-lg leading-none' : 'text-base leading-none'}>
-        {isFav ? '♥' : '♡'}
-      </span>
-      {isFav ? 'FAVORITED' : 'FAVORITE'}
-    </button>
-  );
 }
 
 function ShareButton({ podcast }: { podcast: Podcast }) {
@@ -520,6 +462,15 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           Load more episodes ({remaining})
         </button>
       )}
+
+      {/* No placeholder: <Podroll> renders its own skeleton while resolving and
+          nothing at all if no entry resolves, so a placeholder heading here
+          would flash in and then vanish. */}
+      {data.podcast.podroll?.length ? (
+        <DeferredOnScroll>
+          <Podroll items={data.podcast.podroll} />
+        </DeferredOnScroll>
+      ) : null}
 
       {data.podcast.podcastGuid && (
         <DeferredOnScroll

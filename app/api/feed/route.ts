@@ -30,9 +30,9 @@ export async function GET(req: Request) {
     // notes, so we fetch the RSS and parse both in one pass. Best-effort:
     // failure leaves episodes without socialInteract/contentEncoded rather
     // than breaking the whole feed.
-    const { episodes: enrichMap, feedMedium } = podcast?.url
-      ? await getRssEpisodeEnrichment(podcast.url).catch(() => ({ episodes: new Map(), feedMedium: undefined }))
-      : { episodes: new Map(), feedMedium: undefined };
+    const { episodes: enrichMap, feedMedium, feedPodroll } = podcast?.url
+      ? await getRssEpisodeEnrichment(podcast.url).catch(() => ({ episodes: new Map(), feedMedium: undefined, feedPodroll: undefined }))
+      : { episodes: new Map(), feedMedium: undefined, feedPodroll: undefined };
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
     // PI's /episodes/live only returns currently-broadcasting items; pending
     // liveItems live in the RSS itself, so we additionally parse the feed XML.
@@ -110,6 +110,9 @@ export async function GET(req: Request) {
     // Backfill the channel-level medium so the client gets the same music
     // signal the sort used (PI doesn't reliably index `medium`).
     if (!podcast.medium && feedMedium) podcast.medium = feedMedium;
+    // <podcast:podroll> — host-recommended shows. PI doesn't index it, so it
+    // comes only from the RSS pass above; attach it for the client to resolve.
+    if (feedPodroll) podcast.podroll = feedPodroll;
     return NextResponse.json(
       { podcast, episodes: merged },
       { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },

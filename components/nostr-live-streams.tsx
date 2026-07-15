@@ -12,6 +12,7 @@ import {
 import { fetchProfile } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
+import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { BoostModal } from './boost-modal';
 import { PodcastCover } from './podcast-cover';
@@ -31,28 +32,7 @@ export function NostrLiveStreams() {
   const play = useApp((s) => s.play);
   const router = useRouter();
   const mountedRef = useRef(true);
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-
-  // Translate vertical mouse-wheel into horizontal scroll over the row. React's
-  // onWheel is passive (can't preventDefault), so attach natively. We only hijack
-  // when there's horizontal overflow, the gesture is vertical (mouse wheel, not a
-  // trackpad swipe), and the row isn't already at the edge in that direction —
-  // so page scroll still takes over once you reach the end.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const onWheel = (e: WheelEvent) => {
-      if (el.scrollWidth <= el.clientWidth) return;
-      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
-      const atStart = el.scrollLeft <= 0;
-      const atEnd = el.scrollLeft + el.clientWidth >= el.scrollWidth - 1;
-      if ((e.deltaY < 0 && atStart) || (e.deltaY > 0 && atEnd)) return;
-      el.scrollLeft += e.deltaY;
-      e.preventDefault();
-    };
-    el.addEventListener('wheel', onWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onWheel);
-  }, [resolved.length]);
+  const rowRef = useHorizontalWheelScroll<HTMLDivElement>();
 
   useEffect(() => {
     mountedRef.current = true;
@@ -128,7 +108,7 @@ export function NostrLiveStreams() {
         </span>
       </h3>
 
-      <div ref={scrollRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
+      <div ref={rowRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
         {resolved.map(({ stream, profile, value }) => {
           // Play instantly (the card already has the resolved data); a card
           // click (expand) also navigates to the dedicated /stream/<naddr> page
