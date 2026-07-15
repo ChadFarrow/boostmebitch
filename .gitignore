@@ -9,3 +9,5 @@ out
 next-env.d.ts
 tsconfig.tsbuildinfo
 .superpowers/
+# copied out of @libre/wallet-embed by the postinstall script on every install
+public/liblightningjs.wasm

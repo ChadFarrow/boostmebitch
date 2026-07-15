@@ -54,7 +54,7 @@ function readRelays(identity: NostrIdentity): string[] {
 }
 
 function isRail(v: unknown): v is RailPref {
-  return v === 'nwc' || v === 'spark' || v === 'webln';
+  return v === 'nwc' || v === 'spark' || v === 'webln' || v === 'libre';
 }
 
 /** Decrypt the user's synced settings, or null if none exist / unreadable. */

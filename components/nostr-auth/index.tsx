@@ -19,6 +19,7 @@ import {
 } from '@/lib/nostr';
 import { hasSpark, sparkDisconnect, sparkInitFromMnemonic } from '@/lib/v4v/spark';
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
+import { libreDisconnect } from '@/lib/v4v/libre';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { AccountMenu } from './account-menu';
@@ -256,6 +257,9 @@ export function NostrAuth() {
       storage.nwcBackup.clear(identity.npub);
     }
     sparkDisconnect();
+    // Shared-device parity with the NWC clearing above: the Libre widget is a
+    // Google-session-scoped wallet, so it must not survive a sign-out.
+    void libreDisconnect();
     setIdentity(null);
     setFavorites({});
     setMutedPubkeys(new Set());
@@ -280,6 +284,7 @@ export function NostrAuth() {
     if (identity && identity.pubkey !== id.pubkey) {
       storage.walletBalance.clear(identity.npub);
       sparkDisconnect();
+      void libreDisconnect();
       clearNwcUri();
       storage.nwcBackup.clear(identity.npub);
     }

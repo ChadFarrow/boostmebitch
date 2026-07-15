@@ -3,6 +3,7 @@ import Image from 'next/image';
 import './globals.css';
 import { ServiceWorkerRegister } from '@/components/sw-register';
 import { Player } from '@/components/player';
+import { LibreWalletHost } from '@/components/libre-wallet-host';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://boostmebitch.vercel.app'),
@@ -140,6 +141,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             fullscreen player overlay) survives route changes, e.g. navigating
             between the browse page and the /stream/<naddr> page. */}
         <Player />
+        {/* Libre wallet dock — layout-mounted for the same reason as Player:
+            the embedded Lightning node must survive route changes (and the
+            Google OAuth redirect back to `/`). Renders nothing until the
+            user opts into the Libre rail. */}
+        <LibreWalletHost />
         <ServiceWorkerRegister />
       </body>
     </html>

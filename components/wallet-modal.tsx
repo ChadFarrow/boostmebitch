@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln, isWeblnEnabled, subscribeWebln, weblnEnable } from '@/lib/v4v/webln';
+import { hasLibre, isLibreRunning, libreConfigured, subscribeLibre } from '@/lib/v4v/libre';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
@@ -12,24 +13,32 @@ import { storage } from '@/lib/storage';
 import { NwcWallet } from './nwc-wallet';
 import { SparkWallet } from './spark-wallet';
 import { WeblnWallet } from './webln-wallet';
+import { LibreWallet } from './libre-wallet';
+
+type ModalRail = 'nwc' | 'spark' | 'webln' | 'libre';
 
 type WalletView =
   | { kind: 'picker'; switching: boolean }
-  | { kind: 'connecting'; rail: 'nwc' | 'spark' | 'webln'; switching: boolean }
+  | { kind: 'connecting'; rail: ModalRail; switching: boolean }
   | { kind: 'connected' };
 
-function railConnected(rail: 'nwc' | 'spark' | 'webln'): boolean {
-  return rail === 'nwc' ? hasNwc() : rail === 'spark' ? hasSpark() : isWeblnEnabled();
+function railConnected(rail: ModalRail): boolean {
+  return rail === 'nwc' ? hasNwc()
+    : rail === 'spark' ? hasSpark()
+    : rail === 'libre' ? isLibreRunning()
+    : isWeblnEnabled();
 }
 
-// Mirrors pickRail() (rail pref first, then NWC > Spark > WebLN priority)
-// but gates WebLN on isWeblnEnabled — inside the wallet UI "active" means
-// the user explicitly enabled it, not merely that the extension exists.
-function getActiveRail(): 'nwc' | 'spark' | 'webln' | null {
+// Mirrors pickRail() (rail pref first, then NWC > Spark > Libre > WebLN
+// priority) but gates WebLN on isWeblnEnabled — inside the wallet UI
+// "active" means the user explicitly enabled it, not merely that the
+// extension exists.
+function getActiveRail(): ModalRail | null {
   const pref = storage.railPref.get();
   if (pref && railConnected(pref)) return pref;
   if (hasNwc()) return 'nwc';
   if (hasSpark()) return 'spark';
+  if (isLibreRunning()) return 'libre';
   if (isWeblnEnabled()) return 'webln';
   return null;
 }
@@ -65,7 +74,8 @@ export function WalletModal({ onClose }: Props) {
     const unsubNwc = subscribeNwc(bump);
     const unsubSpark = subscribeSpark(bump);
     const unsubWebln = subscribeWebln(bump);
-    return () => { unsubNwc(); unsubSpark(); unsubWebln(); };
+    const unsubLibre = subscribeLibre(bump);
+    return () => { unsubNwc(); unsubSpark(); unsubWebln(); unsubLibre(); };
   }, []);
 
   useEffect(() => {
@@ -74,7 +84,7 @@ export function WalletModal({ onClose }: Props) {
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  async function handleConnected(rail: 'nwc' | 'spark' | 'webln') {
+  async function handleConnected(rail: ModalRail) {
     await clearOtherWallets(rail, identity?.npub);
     onClose();
   }
@@ -83,7 +93,7 @@ export function WalletModal({ onClose }: Props) {
   // active payer (rail pref → pickRail / balance chip / menu summary follow)
   // without touching the other connections. Only connecting a NEW wallet
   // disconnects the others (clearOtherWallets in handleConnected).
-  function handlePickerClick(rail: 'nwc' | 'spark' | 'webln', switching: boolean) {
+  function handlePickerClick(rail: ModalRail, switching: boolean) {
     if (switching && railConnected(rail)) {
       recordLastRail(rail, identity);
       setView({ kind: 'connected' });
@@ -123,10 +133,14 @@ export function WalletModal({ onClose }: Props) {
     headerTitle = activeRail === 'nwc' ? 'NWC'
       : activeRail === 'spark' ? 'Spark'
       : activeRail === 'webln' ? 'WebLN'
+      : activeRail === 'libre' ? 'Libre Wallet'
       : 'Lightning Wallet';
     headerSub = null;
   } else if (view.kind === 'connecting') {
-    headerTitle = view.rail === 'nwc' ? 'NWC' : view.rail === 'spark' ? 'Spark' : 'WebLN';
+    headerTitle = view.rail === 'nwc' ? 'NWC'
+      : view.rail === 'spark' ? 'Spark'
+      : view.rail === 'libre' ? 'Libre Wallet'
+      : 'WebLN';
     headerSub = null;
   } else if (view.kind === 'picker' && view.switching) {
     headerTitle = 'Switch wallet';
@@ -145,6 +159,9 @@ export function WalletModal({ onClose }: Props) {
           )}
           {activeRail === 'webln' && (
             <WeblnWallet mode="card" onDisconnected={handleDisconnected} />
+          )}
+          {activeRail === 'libre' && (
+            <LibreWallet mode="card" onDisconnected={handleDisconnected} />
           )}
           {!activeRail && (
             <div className="text-[11px] text-muted">No wallet active.</div>
@@ -183,17 +200,28 @@ export function WalletModal({ onClose }: Props) {
           {rail === 'webln' && (
             <WeblnWallet mode="form" onConnected={() => handleConnected('webln')} />
           )}
+          {rail === 'libre' && (
+            // The form already ran clearOtherWallets at its Enable click
+            // (redirect-safe); onConnected just closes the modal when the
+            // widget reports running in this same page instance.
+            <LibreWallet mode="form" onConnected={onClose} />
+          )}
         </div>
       );
     }
 
     // State 1 (nothing connected) or State 4 (switching)
     const { switching } = view;
-    type PickerRow = { rail: 'nwc' | 'spark' | 'webln'; icon: string; title: string; desc: string };
+    type PickerRow = { rail: ModalRail; icon: string; title: string; desc: string };
     const rows: PickerRow[] = [
       { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Paste a nostr+walletconnect:// URI' },
       { rail: 'spark', icon: '✶', title: 'Spark', desc: 'Self-custodial, create or restore' },
-      ...(weblnDetected
+      ...(libreConfigured()
+        ? [{ rail: 'libre' as const, icon: '▣', title: 'Libre Wallet', desc: 'Roaming Lightning wallet — runs in this app' }]
+        : []),
+      // Hidden while opted into Libre: installWebln makes window.webln BE the
+      // Libre provider, so a WebLN row would be a second door to that wallet.
+      ...(weblnDetected && !hasLibre()
         ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Alby extension · tap to enable' }]
         : []),
     ];

@@ -8,11 +8,13 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node -e \"require('fs').copyFileSync('node_modules/@libre/wallet-embed/dist/liblightningjs.wasm','public/liblightningjs.wasm')\""
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
     "@getalby/sdk": "^5.1.0",
+    "@libre/wallet-embed": "https://github.com/ChadFarrow/libre-listener-wallet-monorepo/releases/download/wallet-embed-latest/libre-wallet-embed.tgz",
     "@scure/bip39": "^2.0.1",
     "@types/canvas-confetti": "^1.9.0",
     "canvas-confetti": "^1.9.4",

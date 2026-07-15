@@ -4,6 +4,7 @@ import { subscribeBunkerHealth, restoreBunkerSigner, shortNpub, type NostrIdenti
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { isWeblnEnabled, subscribeWebln } from '@/lib/v4v/webln';
+import { hasLibre, isLibreRunning, subscribeLibre } from '@/lib/v4v/libre';
 import { storage, subscribeRailPref } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { WalletModal } from '../wallet-modal';
@@ -68,21 +69,26 @@ function WalletButton({ onClick }: { onClick: () => void }) {
     const unsubSpark = subscribeSpark(bump);
     const unsubNwc = subscribeNwc(bump);
     const unsubWebln = subscribeWebln(bump);
+    const unsubLibre = subscribeLibre(bump);
     const unsubPref = subscribeRailPref(bump);
-    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubPref(); };
+    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubLibre(); unsubPref(); };
   }, []);
 
   const sparkReady = hasSpark();
   const nwcReady = hasNwc();
-  const weblnReady = isWeblnEnabled();
+  // While opted into Libre, window.webln IS the Libre provider — don't also
+  // list it as WebLN (mirrors pickRail's suppression).
+  const weblnReady = isWeblnEnabled() && !hasLibre();
+  const libreReady = isLibreRunning();
   // Mirrors pickRail(): the rail pref wins when connected, else NWC > Spark
-  // > WebLN — so the first label names the rail that actually pays and whose
-  // balance the chip shows. Extra connected rails are listed after a "+" so
-  // a multi-wallet user can see everything that's wired up.
-  const labelFor = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' } as const;
+  // > Libre > WebLN — so the first label names the rail that actually pays
+  // and whose balance the chip shows. Extra connected rails are listed after
+  // a "+" so a multi-wallet user can see everything that's wired up.
+  const labelFor = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN', libre: 'Libre' } as const;
   const readyLabels: string[] = [
     nwcReady ? labelFor.nwc : null,
     sparkReady ? labelFor.spark : null,
+    libreReady ? labelFor.libre : null,
     weblnReady ? labelFor.webln : null,
   ].filter((l) => l !== null);
   const pref = storage.railPref.get();

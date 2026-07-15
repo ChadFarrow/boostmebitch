@@ -36,6 +36,12 @@ import {
   subscribeWebln,
   weblnGetBalance,
 } from '@/lib/v4v/webln';
+import {
+  hasLibre,
+  isLibreRunning,
+  libreGetBalance,
+  subscribeLibre,
+} from '@/lib/v4v/libre';
 import { useApp } from '@/lib/store';
 import { storage, subscribeRailPref } from '@/lib/storage';
 
@@ -55,6 +61,7 @@ export function useWalletBalance(
   const [sparkReady, setSparkReady] = useState(hasSpark());
   const [nwcReady, setNwcReady] = useState(hasNwc());
   const [weblnReady, setWeblnReady] = useState(isWeblnEnabled());
+  const [libreReady, setLibreReady] = useState(isLibreRunning());
   const [balance, setBalance] = useState<number | null>(null);
 
   const [, setPrefTick] = useState(0);
@@ -63,10 +70,11 @@ export function useWalletBalance(
     const unsubSpark = subscribeSpark(() => setSparkReady(hasSpark()));
     const unsubNwc = subscribeNwc(() => setNwcReady(hasNwc()));
     const unsubWebln = subscribeWebln(() => setWeblnReady(isWeblnEnabled()));
+    const unsubLibre = subscribeLibre(() => setLibreReady(isLibreRunning()));
     // Rail-pref switches change the effective rail without any readiness
     // flag moving — bump so the chip re-resolves and refetches.
     const unsubPref = subscribeRailPref(() => setPrefTick((t) => t + 1));
-    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubPref(); };
+    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubLibre(); unsubPref(); };
   }, []);
 
   // Resolve effective rail. If the caller forced one, we still gate on it
@@ -76,13 +84,22 @@ export function useWalletBalance(
   if (railOverride === undefined) {
     const pref = storage.railPref.get();
     rail =
-      (pref === 'nwc' && nwcReady) || (pref === 'spark' && sparkReady) || (pref === 'webln' && weblnReady)
+      (pref === 'nwc' && nwcReady) || (pref === 'spark' && sparkReady)
+      || (pref === 'libre' && libreReady) || (pref === 'webln' && weblnReady)
         ? pref
-        : nwcReady ? 'nwc' : sparkReady ? 'spark' : weblnReady ? 'webln' : null;
+        : nwcReady ? 'nwc'
+        : sparkReady ? 'spark'
+        : libreReady ? 'libre'
+        // While opted into Libre, window.webln IS the Libre provider —
+        // never surface it under the WebLN label (mirrors pickRail).
+        : weblnReady && !hasLibre() ? 'webln'
+        : null;
   } else if (railOverride === 'nwc') {
     rail = nwcReady ? 'nwc' : null;
   } else if (railOverride === 'spark') {
     rail = sparkReady ? 'spark' : null;
+  } else if (railOverride === 'libre') {
+    rail = libreReady ? 'libre' : null;
   } else if (railOverride === 'webln') {
     rail = weblnReady ? 'webln' : null;
   } else {
@@ -102,6 +119,9 @@ export function useWalletBalance(
         if (!cancelled && info) setBalance(info.balanceSats);
       } else if (rail === 'nwc') {
         const sats = await nwcGetBalance();
+        if (!cancelled && sats !== null) setBalance(sats);
+      } else if (rail === 'libre') {
+        const sats = await libreGetBalance();
         if (!cancelled && sats !== null) setBalance(sats);
       } else {
         const sats = await weblnGetBalance();
@@ -147,6 +167,19 @@ export function useWalletBalance(
       window.addEventListener('focus', onFocus);
       cleanups.push(() => {
         if (unsubNotifs) unsubNotifs();
+        document.removeEventListener('visibilitychange', onFocus);
+        window.removeEventListener('focus', onFocus);
+      });
+    } else if (rail === 'libre') {
+      // Libre: same shape as WebLN — the libre observable fires on state
+      // transitions and after every payment we send through it.
+      refresh();
+      const unsubLibre = subscribeLibre(refresh);
+      const onFocus = () => { if (document.visibilityState === 'visible') refresh(); };
+      document.addEventListener('visibilitychange', onFocus);
+      window.addEventListener('focus', onFocus);
+      cleanups.push(() => {
+        unsubLibre();
         document.removeEventListener('visibilitychange', onFocus);
         window.removeEventListener('focus', onFocus);
       });
@@ -216,12 +249,19 @@ export function useWalletBalance(
   return { balance: displayBalance, rail: displayRail };
 }
 
+const RAIL_NAMES: Record<Rail, string> = {
+  nwc: 'NWC',
+  spark: 'Spark',
+  webln: 'WebLN',
+  libre: 'Libre',
+};
+
 /** Compact balance pill for the header. Hidden when no rail is connected. */
 export function WalletBalanceChip() {
   const { balance, rail } = useWalletBalance();
   if (rail === null || balance === null) return null;
   const formatted = balance.toLocaleString();
-  const railName = rail === 'nwc' ? 'NWC' : 'Spark';
+  const railName = RAIL_NAMES[rail];
   return (
     <span
       className="text-bolt text-[11px] font-mono tabular-nums whitespace-nowrap"
@@ -249,7 +289,7 @@ export function BoostModalBalance({
   const { balance, rail } = useWalletBalance(railOverride);
   if (rail === null || balance === null) return null;
   const insufficient = amountSats > balance;
-  const railName = rail === 'nwc' ? 'NWC' : rail === 'spark' ? 'Spark' : 'WebLN';
+  const railName = RAIL_NAMES[rail];
   return (
     <span
       className={`text-[11px] font-mono tabular-nums whitespace-nowrap ${

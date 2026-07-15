@@ -6,6 +6,7 @@ import { sendBoost, pickRail, type Rail } from '@/lib/v4v/boost';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
+import { hasLibre, isLibreRunning, subscribeLibre } from '@/lib/v4v/libre';
 import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage, hasValueRecipients } from '@/lib/util';
@@ -72,7 +73,8 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     const bump = () => setRail(pickRail());
     const unsubNwc = subscribeNwc(bump);
     const unsubSpark = subscribeSpark(bump);
-    return () => { unsubNwc(); unsubSpark(); };
+    const unsubLibre = subscribeLibre(bump);
+    return () => { unsubNwc(); unsubSpark(); unsubLibre(); };
   }, []);
 
   useEffect(() => {
@@ -108,7 +110,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const availableRails: Rail[] = [];
   if (hasNwc()) availableRails.push('nwc');
   if (hasSpark()) availableRails.push('spark');
-  if (hasWebln()) availableRails.push('webln');
+  if (isLibreRunning()) availableRails.push('libre');
+  // While opted into Libre, window.webln IS the Libre provider — offering a
+  // WebLN pill too would be two doors to the same wallet.
+  if (hasWebln() && !hasLibre()) availableRails.push('webln');
 
   const total = sats * splits.length;
 
@@ -339,7 +344,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     }
   }
 
-  const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' };
+  const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN', libre: 'Libre' };
 
   return (
     <div className="fixed inset-0 z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">

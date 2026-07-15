@@ -5,6 +5,7 @@ import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
+import { subscribeLibre } from '@/lib/v4v/libre';
 import { publishBoostNote, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
@@ -45,7 +46,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     const bump = () => setRail(pickRail());
     const unsubNwc = subscribeNwc(bump);
     const unsubSpark = subscribeSpark(bump);
-    return () => { unsubNwc(); unsubSpark(); };
+    // Libre finishing its Google sign-in mid-modal flips rail from null.
+    const unsubLibre = subscribeLibre(bump);
+    return () => { unsubNwc(); unsubSpark(); unsubLibre(); };
   }, []);
 
   function handleShareNostrChange(v: boolean) {

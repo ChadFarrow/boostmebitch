@@ -8,6 +8,7 @@ import type { Boostagram, ValueBlock, ValueRecipient, BoostResult } from '@/lib/
 import { hasNwc, nwcKeysend, nwcPayInvoice } from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
+import { hasLibre, isLibreRunning, libreKeysend, librePayInvoice } from './libre';
 import { fetchLnInvoice } from './lnaddr';
 import { storeBoostMetadata } from './boostbox';
 import { storage } from '@/lib/storage';
@@ -19,7 +20,7 @@ import { storage } from '@/lib/storage';
 // customKey/customValue pairs.
 const TLV_BOOSTAGRAM = 7629169;
 
-export type Rail = 'nwc' | 'webln' | 'spark';
+export type Rail = 'nwc' | 'webln' | 'spark' | 'libre';
 
 // Re-export so callers can import from one place
 export type { BoostResult };
@@ -33,10 +34,15 @@ export function pickRail(): Rail | null {
   const pref = storage.railPref.get();
   if (pref === 'nwc' && hasNwc()) return 'nwc';
   if (pref === 'spark' && hasSpark()) return 'spark';
-  if (pref === 'webln' && hasWebln()) return 'webln';
+  if (pref === 'libre' && isLibreRunning()) return 'libre';
+  if (pref === 'webln' && hasWebln() && !hasLibre()) return 'webln';
   if (hasNwc()) return 'nwc';
   if (hasSpark()) return 'spark';
-  if (hasWebln()) return 'webln';
+  if (isLibreRunning()) return 'libre';
+  // While the user is opted into Libre, window.webln IS the Libre provider
+  // (installWebln), so a bare hasWebln() would silently route boosts through
+  // the embedded wallet under the WebLN name — suppress the rail instead.
+  if (hasWebln() && !hasLibre()) return 'webln';
   return null;
 }
 
@@ -165,6 +171,7 @@ async function payLnurl(
   let preimage: string;
   if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);
   else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
+  else if (rail === 'libre') preimage = await librePayInvoice(invoice);
   else preimage = await weblnPayInvoice(invoice);
   return {
     recipient,
@@ -201,6 +208,16 @@ async function payKeysend(
     });
     return { recipient, sats, ok: true, preimage };
   }
+  // Libre and WebLN share the provider contract (window.webln), so both take
+  // plain-JSON customRecords — the provider hex-encodes internally.
+  if (rail === 'libre') {
+    const preimage = await libreKeysend({
+      pubkey: recipient.address,
+      amount_sat: sats,
+      customRecords: recordsForKeysend(recPerRecipient, recipient),
+    });
+    return { recipient, sats, ok: true, preimage };
+  }
   const preimage = await weblnKeysend({
     pubkey: recipient.address,
     amount_sat: sats,
@@ -234,7 +251,7 @@ export async function sendBoost(args: {
   onProgress?: (r: BoostResult, index: number, total: number) => void;
 }): Promise<BoostResult[]> {
   const rail = args.rail ?? pickRail();
-  if (!rail) throw new Error('No payment provider available (connect NWC, Spark, or WebLN)');
+  if (!rail) throw new Error('No payment provider available (connect NWC, Spark, Libre, or WebLN)');
 
   const recipients = args.value.recipients;
   const splits = splitSats(args.totalSats, recipients);

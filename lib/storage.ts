@@ -37,10 +37,11 @@ const KEYS = {
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
   sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or connects another rail; suppresses auto-restore on next login
+  libre: 'bmb:libre',                 // '1' when the user opted into the embedded Libre wallet; the layout host mounts the widget whenever it's set (survives the Google OAuth full-page redirect)
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
 } as const;
 
-export type RailPref = 'nwc' | 'spark' | 'webln';
+export type RailPref = 'nwc' | 'spark' | 'webln' | 'libre';
 export type ThemeMode = 'light' | 'dark';
 export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
 
@@ -232,7 +233,7 @@ export const storage = {
   railPref: {
     get: (): RailPref | null => {
       const v = safeGet(KEYS.railPref);
-      if (v === 'nwc' || v === 'spark' || v === 'webln') return v;
+      if (v === 'nwc' || v === 'spark' || v === 'webln' || v === 'libre') return v;
       return null;
     },
     set: (v: RailPref) => { safeSet(KEYS.railPref, v); railPrefObservable.notify(); },
@@ -243,6 +244,17 @@ export const storage = {
     get: () => safeGet(KEYS.sparkOptOut) === '1',
     set: () => safeSet(KEYS.sparkOptOut, '1'),
     clear: () => safeRemove(KEYS.sparkOptOut),
+  },
+
+  /** Libre embedded-wallet opt-in. Set/cleared via lib/v4v/libre.ts
+   *  (libreOptIn / libreDisconnect) so the libre observable fires — don't
+   *  write it directly from components. Global, not per-npub: the widget's
+   *  session is a browser/origin-level Google session, same reasoning as
+   *  the global bmb:nwc_uri. */
+  libre: {
+    get: () => safeGet(KEYS.libre) === '1',
+    set: () => safeSet(KEYS.libre, '1'),
+    clear: () => safeRemove(KEYS.libre),
   },
 
   /** Per-npub opt-in flag: '1' when the user wants their NWC connection
@@ -282,7 +294,7 @@ export const storage = {
       try {
         const p = JSON.parse(raw);
         if (
-          (p?.rail === 'nwc' || p?.rail === 'spark' || p?.rail === 'webln')
+          (p?.rail === 'nwc' || p?.rail === 'spark' || p?.rail === 'webln' || p?.rail === 'libre')
           && typeof p?.balance === 'number' && Number.isFinite(p.balance)
           && typeof p?.ts === 'number'
         ) {
