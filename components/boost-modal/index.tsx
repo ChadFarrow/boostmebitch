@@ -9,7 +9,7 @@ import { publishBoostNote, resolvePublishRelays, recordLastRail, publishLiveChat
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
-import { fireConfetti, playBoostSound } from '@/lib/format';
+import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
@@ -111,6 +111,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
   async function go() {
     if (!rail) return;
+    // Unlock the success sound NOW, inside the tap — the actual play() fires
+    // after the async payment, past the gesture's activation window on mobile.
+    primeBoostSound();
     if (name) storage.senderName.set(name);
 
     const boostagram: Boostagram = {
