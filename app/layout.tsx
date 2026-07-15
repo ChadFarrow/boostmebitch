@@ -3,6 +3,7 @@ import Image from 'next/image';
 import './globals.css';
 import { ServiceWorkerRegister } from '@/components/sw-register';
 import { Player } from '@/components/player';
+import { LibreWalletHost } from '@/components/libre/libre-wallet-host';
 
 export const metadata: Metadata = {
   metadataBase: new URL('https://boostmebitch.vercel.app'),
@@ -140,6 +141,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             fullscreen player overlay) survives route changes, e.g. navigating
             between the browse page and the /stream/<naddr> page. */}
         <Player />
+        {/* Persistent Libre wallet host — mounted app-wide so the in-page LDK node,
+            window.webln, and the Google-Drive OAuth redirect landing survive the wallet
+            modal opening/closing. Draws its own floating chip; no-ops without a client id. */}
+        <LibreWalletHost />
         <ServiceWorkerRegister />
       </body>
     </html>

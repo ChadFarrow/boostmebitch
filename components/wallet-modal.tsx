@@ -1,10 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln, isWeblnEnabled, subscribeWebln, weblnEnable } from '@/lib/v4v/webln';
+import {
+  borrowLibreElement,
+  isLibreRunning,
+  parkLibreElement,
+  requestLibreMount,
+  subscribeLibre,
+} from '@/lib/v4v/libre';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
@@ -13,25 +20,56 @@ import { NwcWallet } from './nwc-wallet';
 import { SparkWallet } from './spark-wallet';
 import { WeblnWallet } from './webln-wallet';
 
+// The Libre rail is available only when its OAuth client id is baked in (else the widget can't
+// mount — see components/libre/libre-wallet-host.tsx), so we hide the picker card without it.
+const LIBRE_AVAILABLE = !!process.env.NEXT_PUBLIC_LIBRE_GOOGLE_CLIENT_ID;
+
+// 'libre' is a modal-only rail: it fronts window.webln (the widget sets it on connect), so boosts
+// flow through the existing WebLN path in lib/v4v/boost.ts with no changes there.
+type ModalRail = 'nwc' | 'spark' | 'webln' | 'libre';
+
 type WalletView =
   | { kind: 'picker'; switching: boolean }
-  | { kind: 'connecting'; rail: 'nwc' | 'spark' | 'webln'; switching: boolean }
+  | { kind: 'connecting'; rail: ModalRail; switching: boolean }
   | { kind: 'connected' };
 
-function railConnected(rail: 'nwc' | 'spark' | 'webln'): boolean {
-  return rail === 'nwc' ? hasNwc() : rail === 'spark' ? hasSpark() : isWeblnEnabled();
+function railConnected(rail: ModalRail): boolean {
+  return rail === 'nwc' ? hasNwc()
+    : rail === 'spark' ? hasSpark()
+    : rail === 'libre' ? isLibreRunning()
+    : isWeblnEnabled();
 }
 
 // Mirrors pickRail() (rail pref first, then NWC > Spark > WebLN priority)
 // but gates WebLN on isWeblnEnabled — inside the wallet UI "active" means
 // the user explicitly enabled it, not merely that the extension exists.
-function getActiveRail(): 'nwc' | 'spark' | 'webln' | null {
+// Libre, when running, is the active rail (it clears the others on connect, and
+// pickRail() routes boosts through the window.webln it owns).
+function getActiveRail(): ModalRail | null {
   const pref = storage.railPref.get();
   if (pref && railConnected(pref)) return pref;
+  if (isLibreRunning()) return 'libre';
   if (hasNwc()) return 'nwc';
   if (hasSpark()) return 'spark';
   if (isWeblnEnabled()) return 'webln';
   return null;
+}
+
+// Reparents the single persistent <libre-wallet> element (mounted in the layout) into the modal
+// while the Libre rail is shown, and returns it to its floating home slot on unmount. The element
+// has no teardown-on-detach, so the move preserves the session / window.webln / roaming lease.
+function LibreRailSlot() {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Borrow now if the widget is already mounted, or as soon as it finishes its dynamic import
+    // (the modal can open before the LDK/WASM bundle has loaded). borrowLibreElement no-ops until
+    // the element exists and only notifies on the first borrow, so re-calling it is safe.
+    const attach = () => { if (ref.current) borrowLibreElement(ref.current); };
+    attach();
+    const unsub = subscribeLibre(attach);
+    return () => { unsub(); parkLibreElement(); };
+  }, []);
+  return <div ref={ref} />;
 }
 
 interface Props {
@@ -46,17 +84,22 @@ export function WalletModal({ onClose }: Props) {
   // Portal target only resolves on the client; tracking it in state lets the
   // first render no-op during SSR and re-render once the body is available.
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  // Force a re-render on rail-state changes that don't change `view` (e.g. Libre starts running
+  // while the picker is open — the WebLN card must hide, the Libre card flip to connected).
+  const [, force] = useState(0);
 
   useEffect(() => {
     setPortalTarget(document.body);
     // Sync view when wallet state changes externally (e.g. auto-restore completes
-    // after the modal is already open, or a disconnect fires from outside).
+    // after the modal is already open, a disconnect fires from outside, or the Libre
+    // widget reaches "running" via its own connect button).
     const bump = () => {
+      force((n) => n + 1);
       setView((v) => {
         const active = getActiveRail();
         if (v.kind === 'connected' && !active) return { kind: 'picker', switching: false };
         if (v.kind === 'picker' && !v.switching && active) return { kind: 'connected' };
-        // Auto-restore completing while the form for that rail is showing:
+        // Auto-restore/connect completing while the form for that rail is showing:
         // flip straight to connected without requiring the user to re-paste.
         if (v.kind === 'connecting' && active === v.rail) return { kind: 'connected' };
         return v;
@@ -65,7 +108,8 @@ export function WalletModal({ onClose }: Props) {
     const unsubNwc = subscribeNwc(bump);
     const unsubSpark = subscribeSpark(bump);
     const unsubWebln = subscribeWebln(bump);
-    return () => { unsubNwc(); unsubSpark(); unsubWebln(); };
+    const unsubLibre = subscribeLibre(bump);
+    return () => { unsubNwc(); unsubSpark(); unsubWebln(); unsubLibre(); };
   }, []);
 
   useEffect(() => {
@@ -83,13 +127,17 @@ export function WalletModal({ onClose }: Props) {
   // active payer (rail pref → pickRail / balance chip / menu summary follow)
   // without touching the other connections. Only connecting a NEW wallet
   // disconnects the others (clearOtherWallets in handleConnected).
-  function handlePickerClick(rail: 'nwc' | 'spark' | 'webln', switching: boolean) {
+  function handlePickerClick(rail: ModalRail, switching: boolean) {
     if (switching && railConnected(rail)) {
-      recordLastRail(rail, identity);
+      // Libre isn't persisted in railPref (it fronts window.webln); tapping it just re-focuses.
+      if (rail !== 'libre') recordLastRail(rail, identity);
       setView({ kind: 'connected' });
       return;
     }
     if (rail === 'webln') { void handleWeblnPickerClick(switching); return; }
+    // 'libre': ask the host to load + mount the widget (idempotent); it draws its own connect UI
+    // in the reparented slot. nwc/spark just show the connecting form.
+    if (rail === 'libre') requestLibreMount();
     setView({ kind: 'connecting', rail, switching });
   }
 
@@ -115,7 +163,9 @@ export function WalletModal({ onClose }: Props) {
   if (!portalTarget) return null;
 
   const activeRail = getActiveRail();
-  const weblnDetected = hasWebln();
+  // Libre fronts window.webln once running, so hasWebln() would light up the WebLN card as a
+  // second door to the same wallet — hide it while Libre is the active provider.
+  const weblnDetected = hasWebln() && !isLibreRunning();
 
   let headerTitle = 'Connect a wallet';
   let headerSub: string | null = 'Pick one to send Lightning payments.';
@@ -123,10 +173,14 @@ export function WalletModal({ onClose }: Props) {
     headerTitle = activeRail === 'nwc' ? 'NWC'
       : activeRail === 'spark' ? 'Spark'
       : activeRail === 'webln' ? 'WebLN'
+      : activeRail === 'libre' ? 'Libre Wallet'
       : 'Lightning Wallet';
     headerSub = null;
   } else if (view.kind === 'connecting') {
-    headerTitle = view.rail === 'nwc' ? 'NWC' : view.rail === 'spark' ? 'Spark' : 'WebLN';
+    headerTitle = view.rail === 'nwc' ? 'NWC'
+      : view.rail === 'spark' ? 'Spark'
+      : view.rail === 'libre' ? 'Libre Wallet'
+      : 'WebLN';
     headerSub = null;
   } else if (view.kind === 'picker' && view.switching) {
     headerTitle = 'Switch wallet';
@@ -134,6 +188,44 @@ export function WalletModal({ onClose }: Props) {
   }
 
   function renderBody() {
+    // Libre draws its own connect + running UI inside the reparented widget element, so both the
+    // connecting and connected states show the same single slot — keyed so the connecting→connected
+    // flip doesn't remount it (which would park + re-borrow the element and flicker it).
+    const libreFocused =
+      (view.kind === 'connecting' && view.rail === 'libre') ||
+      (view.kind === 'connected' && activeRail === 'libre');
+    if (libreFocused) {
+      const showBack = view.kind === 'connecting';
+      const back: WalletView =
+        view.kind === 'connecting' && view.switching
+          ? { kind: 'connected' }
+          : { kind: 'picker', switching: false };
+      return (
+        <div className="p-5 space-y-4">
+          {showBack && (
+            <button
+              key="back"
+              onClick={() => setView(back)}
+              className="text-[11px] text-muted hover:text-bone"
+            >
+              ← Back
+            </button>
+          )}
+          <LibreRailSlot key="libre-slot" />
+          {view.kind === 'connected' && (
+            <div className="border-t border-bone/15 pt-3 text-center">
+              <button
+                onClick={() => setView({ kind: 'picker', switching: true })}
+                className="text-[11px] text-muted hover:text-bone"
+              >
+                Switch wallet →
+              </button>
+            </div>
+          )}
+        </div>
+      );
+    }
+
     if (view.kind === 'connected') {
       return (
         <div className="p-5 space-y-4">
@@ -189,8 +281,11 @@ export function WalletModal({ onClose }: Props) {
 
     // State 1 (nothing connected) or State 4 (switching)
     const { switching } = view;
-    type PickerRow = { rail: 'nwc' | 'spark' | 'webln'; icon: string; title: string; desc: string };
+    type PickerRow = { rail: ModalRail; icon: string; title: string; desc: string };
     const rows: PickerRow[] = [
+      ...(LIBRE_AVAILABLE
+        ? [{ rail: 'libre' as const, icon: '◆', title: 'Libre Wallet', desc: 'Your roaming Lightning wallet — runs in this app' }]
+        : []),
       { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Paste a nostr+walletconnect:// URI' },
       { rail: 'spark', icon: '✶', title: 'Spark', desc: 'Self-custodial, create or restore' },
       ...(weblnDetected
