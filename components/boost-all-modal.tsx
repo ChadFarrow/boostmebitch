@@ -9,7 +9,7 @@ import { hasWebln } from '@/lib/v4v/webln';
 import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage, hasValueRecipients } from '@/lib/util';
-import { fireConfetti, playBoostSound } from '@/lib/format';
+import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './boost-modal/message-input';
@@ -114,6 +114,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
   async function go() {
     if (!rail || !splits.length) return;
+    // Unlock the success sound NOW, inside the tap — the actual play() fires
+    // after the async per-track payments, past the gesture window on mobile.
+    primeBoostSound();
     if (name) storage.senderName.set(name);
 
     setRunning(true);

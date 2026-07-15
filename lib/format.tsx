@@ -133,17 +133,56 @@ export function fireConfetti(): void {
 }
 
 let boostAudio: HTMLAudioElement | null = null;
+let boostAudioPrimed = false;
+
+function ensureBoostAudio(): HTMLAudioElement | null {
+  if (typeof window === 'undefined') return null;
+  if (!boostAudio) {
+    boostAudio = new Audio('/boost.mp3');
+    boostAudio.preload = 'auto';
+  }
+  return boostAudio;
+}
+
+/**
+ * Unlock the boost sound within a user gesture so a LATER programmatic
+ * play() isn't blocked by mobile autoplay policy. `playBoostSound()` fires
+ * only after the async Lightning payment resolves — seconds after the tap —
+ * by which point iOS Safari has expired the button's transient activation
+ * and rejects an unprimed play(). iOS only permits play() on an element that
+ * has already played inside a real gesture, so we do a silent (muted)
+ * play+pause here. Call synchronously at the top of a boost click handler,
+ * BEFORE any await. Desktop doesn't need this, but priming is harmless there.
+ */
+export function primeBoostSound(): void {
+  const audio = ensureBoostAudio();
+  if (!audio || boostAudioPrimed) return;
+  try {
+    audio.muted = true;
+    void audio
+      .play()
+      .then(() => {
+        audio.pause();
+        audio.currentTime = 0;
+        audio.muted = false;
+        boostAudioPrimed = true;
+      })
+      .catch(() => {
+        audio.muted = false;
+      });
+  } catch {
+    audio.muted = false;
+  }
+}
 
 /** Short celebratory sound on a successful boost. Silent no-op if the asset can't load. */
 export function playBoostSound(): void {
-  if (typeof window === 'undefined') return;
+  const audio = ensureBoostAudio();
+  if (!audio) return;
   try {
-    if (!boostAudio) {
-      boostAudio = new Audio('/boost.mp3');
-      boostAudio.preload = 'auto';
-    }
-    boostAudio.currentTime = 0;
-    void boostAudio.play().catch(() => {});
+    audio.muted = false;
+    audio.currentTime = 0;
+    void audio.play().catch(() => {});
   } catch {
     /* ignore */
   }
