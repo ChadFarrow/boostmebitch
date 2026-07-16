@@ -232,14 +232,15 @@ export function WalletModal({ onClose }: Props) {
               >
                 Switch wallet →
               </button>
-              {/* The widget's own disconnect only stops the session; this also forgets the
-                  adoption, so later visits stop pulling the ~17 MB LDK bundle. Without a path to
-                  it here there is no way to stop using Libre on this browser at all. */}
+              {/* NOT a duplicate of the widget's own "Disconnect" (which sits inside the card and
+                  just stops the session, leaving Libre this browser's wallet). This forgets the
+                  adoption too, so later visits stop pulling the ~17 MB LDK bundle. Labelled for the
+                  difference — two buttons reading "Disconnect" side by side is a coin toss. */}
               <button
                 onClick={() => { void libreDisconnect().then(() => setView({ kind: 'picker', switching: false })); }}
                 className="text-[11px] text-muted hover:text-nostr"
               >
-                Disconnect
+                Stop using Libre here
               </button>
             </div>
           )}

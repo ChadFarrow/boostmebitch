@@ -10,9 +10,24 @@ import {
   isLibreMounted,
   isLibreWanted,
   subscribeLibre,
+  type LibreView,
 } from '@/lib/v4v/libre';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
 import { LibreMountStatus, LIBRE_MOUNT_OPTS, libreConfigured, libreStatusKind } from './libre-mount';
+
+// Roaming views where the wallet needs the user to DO something, and the widget's own card is the
+// only place to do it: blocked by another origin, halted, paused (Drive unreachable), moved to
+// another device, wants the recovery phrase, or has no wallet to roam yet. The rest —
+// checking / moving / starting / running / stopped — either resolve themselves or are reached via
+// the wallet modal, so the card stays out of the way.
+const ATTENTION_VIEWS = new Set<LibreView>([
+  'blocked',
+  'halted',
+  'paused',
+  'moved-away',
+  'need-secret',
+  'setup-needed',
+]);
 
 /**
  * The single, persistent Libre wallet host. Mounted once in the root layout so:
@@ -62,21 +77,30 @@ export function LibreWalletHost() {
 
   if (!libreConfigured()) return null;
 
-  // The modal draws the widget itself while it has it borrowed. Otherwise show the card whenever
-  // there's something worth showing: a live session, or the loading/error state of one being set up.
-  // 'stopped' means the user disconnected (the widget's own reconnect UI is inside the card, but a
-  // floating card for a wallet you just turned off is noise — the modal's picker is the way back).
-  const idle = !isLibreMounted() && libreStatusKind() === null;
-  const hidden = isLibreBorrowed() || idle || getLibreView() === 'stopped';
+  // A wallet that's working needs no floating card — it was camping on the page over real content.
+  // Show it only when it wants something from you (and never while the modal has it borrowed).
+  const attention = ATTENTION_VIEWS.has(getLibreView()) || libreStatusKind() === 'error';
+  const show = !isLibreBorrowed() && isLibreMounted() && attention;
 
+  // Collapsed, NOT `display: none`. The widget's spend-approval sheet is a top-layer <dialog>, and
+  // the top layer renders nothing under a display:none ancestor — hiding it that way would bring
+  // back the hang this whole rail was blocked on. Clipping to a 0×0 box removes the card from the
+  // page (top-layer children escape ancestor clipping) while keeping it renderable.
+  //
+  // It has to be clipping, specifically: the widget sets `:host { all: initial }`, which resets
+  // `visibility` and `pointer-events`, so `visibility: hidden` leaves the card fully visible and
+  // `opacity: 0` leaves an invisible click-blocker over the page. Both verified in a browser.
   return (
     <div
-      className="fixed bottom-3 right-3 z-30 w-[320px] max-w-[calc(100vw-1.5rem)]"
-      style={{ display: hidden ? 'none' : undefined }}
-      aria-hidden={hidden}
+      className={
+        show
+          ? 'fixed bottom-3 right-3 z-30 w-[320px] max-w-[calc(100vw-1.5rem)]'
+          : 'fixed bottom-0 right-0 z-30 w-0 h-0 overflow-hidden'
+      }
+      aria-hidden={!show}
     >
       <div ref={slotRef} />
-      <LibreMountStatus slot={slotRef} />
+      {show && <LibreMountStatus slot={slotRef} />}
     </div>
   );
 }
