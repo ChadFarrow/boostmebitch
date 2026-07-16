@@ -43,6 +43,25 @@ html, body {
   overflow-x: clip;
 }
 
+/* The Libre wallet widget (<libre-wallet>, @libre/wallet-embed) draws itself in a shadow root and
+   ships in Libre green. Every colour it uses is a --lw-* custom property on its :host, and custom
+   properties inherit through the shadow boundary — while an outer page's declarations outrank
+   :host — so pointing them at our own tokens re-skins the whole card without forking it. They're
+   the same role-based tokens the rest of the app uses, so the widget follows the light/dark toggle
+   for free. Mapping, not literals: a hardcoded colour here would strand it in dark mode. */
+libre-wallet {
+  --lw-bg: rgb(var(--ink));
+  --lw-fg: rgb(var(--bone));
+  --lw-line: rgb(var(--line));
+  --lw-muted: rgb(var(--muted));
+  --lw-accent: rgb(var(--bolt));
+  --lw-accent-2: rgb(var(--bolt));
+  --lw-accent-3: rgb(var(--bolt));
+  --lw-ink: rgb(var(--ink));
+  --lw-bad: rgb(var(--nostr));
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+
 /* Subtle paper-grain texture over the whole canvas */
 body::before {
   content: '';

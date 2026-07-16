@@ -4,6 +4,8 @@ import { subscribeBunkerHealth, restoreBunkerSigner, shortNpub, type NostrIdenti
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { isWeblnEnabled, subscribeWebln } from '@/lib/v4v/webln';
+import { isLibreRunning, subscribeLibre } from '@/lib/v4v/libre';
+import { railLabel } from '@/lib/v4v/wallets';
 import { storage, subscribeRailPref } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { WalletModal } from '../wallet-modal';
@@ -68,18 +70,24 @@ function WalletButton({ onClick }: { onClick: () => void }) {
     const unsubSpark = subscribeSpark(bump);
     const unsubNwc = subscribeNwc(bump);
     const unsubWebln = subscribeWebln(bump);
+    // Libre changes state on its own (connect, roam away, Drive drop) without touching the other
+    // rails' observables — the summary has to follow it too.
+    const unsubLibre = subscribeLibre(bump);
     const unsubPref = subscribeRailPref(bump);
-    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubPref(); };
+    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubLibre(); unsubPref(); };
   }, []);
 
   const sparkReady = hasSpark();
   const nwcReady = hasNwc();
-  const weblnReady = isWeblnEnabled();
+  // Libre pays over the WebLN rail (it installs itself as window.webln), but weblnEnabled only
+  // flips on the first payment — so a freshly connected Libre wallet would read "Not connected"
+  // here until you boosted with it. Running Libre IS a connected WebLN rail.
+  const weblnReady = isWeblnEnabled() || isLibreRunning();
   // Mirrors pickRail(): the rail pref wins when connected, else NWC > Spark
   // > WebLN — so the first label names the rail that actually pays and whose
   // balance the chip shows. Extra connected rails are listed after a "+" so
   // a multi-wallet user can see everything that's wired up.
-  const labelFor = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' } as const;
+  const labelFor = { nwc: railLabel('nwc'), spark: railLabel('spark'), webln: railLabel('webln') } as const;
   const readyLabels: string[] = [
     nwcReady ? labelFor.nwc : null,
     sparkReady ? labelFor.spark : null,

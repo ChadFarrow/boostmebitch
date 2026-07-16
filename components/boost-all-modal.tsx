@@ -6,6 +6,8 @@ import { sendBoost, pickRail, type Rail } from '@/lib/v4v/boost';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
+import { subscribeLibre } from '@/lib/v4v/libre';
+import { railLabel } from '@/lib/v4v/wallets';
 import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage, hasValueRecipients } from '@/lib/util';
@@ -72,7 +74,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     const bump = () => setRail(pickRail());
     const unsubNwc = subscribeNwc(bump);
     const unsubSpark = subscribeSpark(bump);
-    return () => { unsubNwc(); unsubSpark(); };
+    // Libre installing/releasing window.webln changes both the available rails and their labels.
+    const unsubLibre = subscribeLibre(bump);
+    return () => { unsubNwc(); unsubSpark(); unsubLibre(); };
   }, []);
 
   useEffect(() => {
@@ -339,7 +343,13 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     }
   }
 
-  const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' };
+  // Not a module const: railLabel('webln') reads live state — it's "Libre" while the Libre wallet
+  // is the page's window.webln provider.
+  const RAIL_LABELS: Record<Rail, string> = {
+    nwc: railLabel('nwc'),
+    spark: railLabel('spark'),
+    webln: railLabel('webln'),
+  };
 
   return (
     <div className="fixed inset-0 z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">

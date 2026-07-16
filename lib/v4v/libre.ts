@@ -12,23 +12,37 @@
 // synchronous readers (wallet-modal's getActiveRail) and React subscribers stay in sync. The
 // wallet-embed package is imported dynamically (inside ensureLibreMounted) so its LDK/WASM bundle
 // never lands in the main chunk or on the server; only `import type` runs at module load.
+//
+// Libre is NOT a fourth Rail. It becomes window.webln while it runs, so boosts go down the
+// existing WebLN path with no changes to boost.ts / zap.ts / RailPref. Two consequences worth
+// keeping in mind here:
+//   - Everything below distinguishes "running" from "adopted". `view` is module state and resets to
+//     'stopped' on every page load, so it can never answer "is Libre this browser's wallet?" —
+//     that's storage.libreActive, and conflating the two silently wiped users' NWC URIs on reload.
+//   - We own window.webln, so we must hand it back: releaseWebln restores the provider we displaced
+//     and turns the WebLN rail's session flag off. Leaving either behind strands the user with a UI
+//     that says "connected" and a boost path that throws.
 
 import { createObservable } from '../pubsub';
+import { storage } from '@/lib/storage';
+import { getErrorMessage } from '@/lib/util';
+import { weblnDisable } from './webln';
 import type { MountHandle, MountOptions, RoamingViewState } from '@libre/wallet-embed';
 
-type LibreView = RoamingViewState['view'];
-
-// The LDK widget bundle is ~5 MB JS + ~12 MB WASM, so we do NOT load it for every visitor. It is
-// mounted only when there's a reason to: the user picks Libre (requestLibreMount), a returning
-// Libre user (the 'libre:used' marker), or a Google-Drive OAuth redirect landing on the page.
-const USED_MARKER = 'libre:used';
+export type LibreView = RoamingViewState['view'];
 
 let handle: MountHandle | null = null;
 let mounting: Promise<void> | null = null;
+let mountError: string | null = null;
+let unsubState: (() => void) | null = null;
 let homeSlot: HTMLElement | null = null;
 let borrowed = false;
 let wantMount = false;
 let view: LibreView = 'stopped';
+// The provider window.webln held before we claimed it (an extension like Alby, usually). Restored
+// on release — see claimWebln.
+let priorWebln: unknown;
+let claimed = false;
 
 const { subscribe: subscribeLibre, notify } = createObservable();
 export { subscribeLibre };
@@ -41,17 +55,35 @@ export function requestLibreMount(): void {
   }
 }
 
-/** Whether the widget should be mounted (an explicit pick, a returning user, or an OAuth return). */
+/**
+ * Whether the widget should be mounted. The LDK bundle is ~5 MB JS + ~12 MB WASM, so it loads only
+ * when there's a reason: an explicit pick this page-life, a user who already adopted Libre here, or
+ * a Drive OAuth redirect landing that nothing else can complete.
+ */
 export function isLibreWanted(): boolean {
   if (wantMount) return true;
   if (typeof window === 'undefined') return false;
   try {
-    // A Drive OAuth redirect returns the token in the URL fragment — mount to complete it.
+    // The installed-PWA Drive login is a full-page redirect back to '/' with the token in the
+    // fragment, which kills `wantMount` and lands before the user has ever reached 'running' (so
+    // libreActive isn't set yet either). This check is therefore the ONLY thing that mounts the
+    // widget to complete a first-ever connect on iOS — load-bearing, not opportunistic. Nothing
+    // else in this app puts a token in the fragment (grep: this is the sole `location.hash` use).
     if (window.location.hash.includes('access_token')) return true;
-    return window.localStorage.getItem(USED_MARKER) === '1';
+    return storage.libreActive.get();
   } catch {
     return false;
   }
+}
+
+/** Why the widget failed to load, if it did. Cleared on a retry. */
+export function getLibreMountError(): string | null {
+  return mountError;
+}
+
+/** True while the LDK bundle is downloading — the widget draws nothing until it lands. */
+export function isLibreLoading(): boolean {
+  return mounting !== null;
 }
 
 /** True once the roaming session is live here (the node is running). */
@@ -78,18 +110,25 @@ export function getLibreElement(): HTMLElement | null {
   return handle?.element ?? null;
 }
 
-// Make Libre the page's WebLN provider. The widget's own installWebln is deliberately POLITE
-// (it won't replace an existing window.webln — see the MountHandle.installedWebln note), but
-// connecting Libre in-app is an explicit choice to pay through it here, so we override even a
-// browser extension. A configurable property lets us cleanly remove it again on disconnect.
+// Make Libre the page's WebLN provider. The widget's own installWebln is deliberately POLITE (it
+// won't replace an existing window.webln — see MountHandle.installedWebln), but picking Libre in
+// the wallet modal is an explicit choice to pay through it here, so we override even an extension.
+//
+// We snapshot whoever held window.webln first and put them back on release. Same shape as
+// lib/nostr/signer.ts captureOriginal() does for window.nostr, and for the same reason: an
+// extension injects once at page load, so a provider we delete instead of restoring is gone until
+// a reload — a user who stops Libre would silently lose Alby with no way to get it back.
 function claimWebln(): void {
   if (!handle || typeof window === 'undefined') return;
   try {
+    const w = window as { webln?: unknown };
+    if (!claimed) priorWebln = w.webln;
     Object.defineProperty(window, 'webln', {
       value: handle.webln,
       writable: false,
       configurable: true,
     });
+    claimed = true;
     window.dispatchEvent(new Event('webln:ready'));
   } catch {
     // A non-configurable existing provider — leave it; nothing else we can safely do.
@@ -97,13 +136,30 @@ function claimWebln(): void {
 }
 
 function releaseWebln(): void {
-  if (!handle || typeof window === 'undefined') return;
+  if (typeof window === 'undefined' || !claimed) return;
   try {
     const w = window as { webln?: unknown };
-    if (w.webln === handle.webln) delete w.webln;
+    // Only stand down if we're still the one installed.
+    if (handle && w.webln !== handle.webln) return;
+    if (priorWebln === undefined) {
+      delete w.webln;
+    } else {
+      Object.defineProperty(window, 'webln', {
+        value: priorWebln,
+        writable: false,
+        configurable: true,
+      });
+    }
   } catch {
     // ignore
   }
+  claimed = false;
+  priorWebln = undefined;
+  // The WebLN rail's `enabled` flag is per-session module state that a Libre payment turns on (any
+  // boost goes through ensureWebln). Leaving it set after Libre stops makes the account menu and
+  // the wallet modal claim "WebLN — connected" while pickRail throws "no payment provider" — three
+  // surfaces disagreeing. Whoever we handed back to must be re-enabled explicitly, as ever.
+  weblnDisable();
 }
 
 function applyState(next: LibreView): void {
@@ -111,22 +167,23 @@ function applyState(next: LibreView): void {
   view = next;
   if (view === 'running' && was !== 'running') {
     claimWebln();
-    // Remember that this browser uses Libre here, so future visits auto-mount the widget (and can
-    // catch the OAuth redirect) without the user re-picking it from the wallet modal.
-    try {
-      window.localStorage.setItem(USED_MARKER, '1');
-    } catch {
-      /* ignore */
-    }
+    // This browser has adopted Libre: auto-mount on later visits, and don't re-tear-down the other
+    // rails on a reload (see storage.libreActive).
+    storage.libreActive.set();
   }
+  // Every exit from 'running' — the user disconnected, or the wallet roamed to another device, or
+  // Drive went unreachable mid-session — hands window.webln back. Only 'running' can pay.
   if (view !== 'running' && was === 'running') releaseWebln();
   notify();
 }
 
 /**
- * Mount the single wallet-embed instance into `home` (idempotent). Dynamically imports the
- * package so the LDK/WASM bundle stays out of the main chunk and off the server. Safe to call on
- * every host mount; if the element already exists it is simply re-parked into `home`.
+ * Mount the single wallet-embed instance into `home` (idempotent). Dynamically imports the package
+ * so the LDK/WASM bundle stays out of the main chunk and off the server. Safe to call on every host
+ * mount; if the element already exists it is simply re-parked into `home`.
+ *
+ * Never rejects: the callers are effects that can only `void` this, and the widget's own card is
+ * the surface where a failure has to be reported anyway (see getLibreMountError).
  */
 export async function ensureLibreMounted(home: HTMLElement, opts: MountOptions): Promise<void> {
   homeSlot = home;
@@ -135,17 +192,58 @@ export async function ensureLibreMounted(home: HTMLElement, opts: MountOptions):
     return;
   }
   if (mounting) return mounting;
+  mountError = null;
   mounting = (async () => {
-    const { mountLibreWallet } = await import('@libre/wallet-embed');
-    // installWebln:false — we own window.webln ourselves (claimWebln, on the running transition).
-    handle = mountLibreWallet(home, { ...opts, installWebln: false });
-    applyState(handle.state().view);
-    handle.onState((s) => applyState(s.view));
+    try {
+      const { mountLibreWallet } = await import('@libre/wallet-embed');
+      // The home slot can be replaced while the ~17 MB bundle is in flight (a remount of the
+      // layout subtree). Mount into whatever the CURRENT home is, not the one captured at call
+      // time, or the element lands in a detached div and the widget is simply invisible.
+      handle = mountLibreWallet(homeSlot ?? home, { ...opts, installWebln: false });
+      // installWebln:false — we own window.webln ourselves (claimWebln, on the running transition).
+      applyState(handle.state().view);
+      unsubState = handle.onState((s) => applyState(s.view));
+    } catch (e) {
+      // A chunk 404 (a redeploy under an open PWA tab), offline, or a missing /liblightningjs.wasm.
+      // Without this the rejection is unhandled AND the widget is a dead end: `handle` stays null
+      // and nothing ever retries, so the user watches an empty card forever.
+      mountError = getErrorMessage(e, 'Could not load the Libre wallet.');
+    }
   })();
   try {
     await mounting;
   } finally {
     mounting = null;
+    notify();
+  }
+}
+
+/** Retry a failed mount (the widget card's "Try again"). */
+export async function retryLibreMount(home: HTMLElement, opts: MountOptions): Promise<void> {
+  mountError = null;
+  notify();
+  await ensureLibreMounted(home, opts);
+}
+
+/**
+ * Stop using Libre on this browser: hand window.webln back, tear the LDK node down, and forget the
+ * adoption so later visits don't re-download 17 MB. Idempotent.
+ */
+export async function libreDisconnect(): Promise<void> {
+  storage.libreActive.clear();
+  wantMount = false;
+  releaseWebln();
+  unsubState?.();
+  unsubState = null;
+  const h = handle;
+  handle = null;
+  view = 'stopped';
+  notify();
+  // Last — it's async (final Drive flush + lease release) and must not strand the state above.
+  try {
+    await h?.dispose();
+  } catch {
+    // Best-effort: the node is going away regardless.
   }
 }
 

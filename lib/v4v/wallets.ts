@@ -4,21 +4,43 @@
 import { clearNwcUri, hasNwc } from './nwc';
 import { hasSpark, sparkDisconnect } from './spark';
 import { weblnDisable } from './webln';
+import { isLibreRunning, libreDisconnect } from './libre';
 import { storage } from '@/lib/storage';
+import type { Rail } from './boost';
+
+/**
+ * What to call a rail in the UI. 'webln' is the interesting one: while Libre runs it *is*
+ * window.webln, so every WebLN surface — the balance chip, the account-menu summary, the boost-all
+ * picker — would otherwise label a wallet the user connected as "Libre Wallet" as "WebLN".
+ */
+export function railLabel(rail: Rail): string {
+  if (rail === 'nwc') return 'NWC';
+  if (rail === 'spark') return 'Spark';
+  return isLibreRunning() ? 'Libre' : 'WebLN';
+}
 
 /**
  * Disconnect every rail except `keep`.
  * - Sets sparkOptOut when moving away from Spark (so auto-restore is suppressed on reload).
  * - Does NOT touch sparkOptOut when moving TO Spark — SparkWallet clears it before init.
  * - Clears the cached wallet balance so the header chip resets immediately.
+ *
+ * 'libre' is a `keep` value of its own even though Libre pays over the WebLN rail (it installs
+ * itself as window.webln). Two reasons it can't just be 'webln': keeping Libre must not disable
+ * the WebLN session flag it pays through, and — the important one — every OTHER rail winning must
+ * actually stop Libre. Libre left running while NWC is "connected" keeps window.webln, keeps its
+ * LDK node alive, and keeps `libreActive` set, so the next reload re-adopts Libre and wipes the
+ * NWC URI the user just pasted.
  */
 export async function clearOtherWallets(
-  keep: 'nwc' | 'spark' | 'webln',
+  keep: 'nwc' | 'spark' | 'webln' | 'libre',
   npub?: string,
 ): Promise<void> {
   if (keep !== 'nwc' && hasNwc()) clearNwcUri();
   if (keep !== 'spark' && hasSpark()) await sparkDisconnect();
-  if (keep !== 'webln') weblnDisable();
+  if (keep !== 'libre' && storage.libreActive.get()) await libreDisconnect();
+  // Libre IS the WebLN provider while it runs, so keeping it keeps the rail it pays over.
+  if (keep !== 'webln' && keep !== 'libre') weblnDisable();
   if (keep !== 'spark') storage.sparkOptOut.set();
   storage.walletBalance.clear(npub);
 }

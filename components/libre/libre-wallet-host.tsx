@@ -12,8 +12,8 @@ import {
   subscribeLibre,
 } from '@/lib/v4v/libre';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
-
-const CLIENT_ID = process.env.NEXT_PUBLIC_LIBRE_GOOGLE_CLIENT_ID;
+import { storage } from '@/lib/storage';
+import { LibreMountStatus, LIBRE_MOUNT_OPTS, libreConfigured, libreStatusKind } from './libre-mount';
 
 /**
  * The single, persistent Libre wallet host. Mounted once in the root layout so:
@@ -21,12 +21,15 @@ const CLIENT_ID = process.env.NEXT_PUBLIC_LIBRE_GOOGLE_CLIENT_ID;
  *    route changes (the node lives here, not in the modal),
  *  - the Google-Drive OAuth full-page redirect (installed iOS PWA) lands back on a page where the
  *    widget is already mounted to pick up the token from the URL fragment,
- *  - the widget's own spend-approval modal + running chip can surface during a boost even while
- *    the wallet modal is closed.
+ *  - the widget's own running chip stays reachable during a boost, even with the wallet modal shut.
  *
- * It floats bottom-right and hides itself while the session is fully stopped (nothing to show —
- * a visitor who never chose Libre sees no floating card) or while the wallet modal has borrowed
- * the element (it renders there instead). Absent NEXT_PUBLIC_LIBRE_GOOGLE_CLIENT_ID, it no-ops.
+ * The spend-approval sheet does NOT depend on this element's z-index: the widget opens it as a
+ * top-layer <dialog>, so it clears the boost modal's z-60 backdrop. It does still depend on this
+ * host not being `display: none` — the top layer renders nothing under a hidden ancestor — which is
+ * safe because approvals only happen while 'running', and 'running' is never hidden below.
+ *
+ * It floats bottom-right and hides itself when there's nothing to show (a visitor who never chose
+ * Libre) or while the wallet modal has borrowed the element. Without a client id, it no-ops.
  */
 export function LibreWalletHost() {
   const slotRef = useRef<HTMLDivElement>(null);
@@ -36,48 +39,49 @@ export function LibreWalletHost() {
   const [, force] = useState(0);
 
   useEffect(() => {
-    if (!CLIENT_ID) return;
-    const opts = {
-      googleClientId: CLIENT_ID,
-      wasmUrl: '/liblightningjs.wasm',
-      appName: 'boostmebitch',
-      network: 'mainnet' as const,
-    };
-    // Mount the widget only when wanted — a returning Libre user or a Drive OAuth redirect landing
-    // (isLibreWanted), or an explicit pick in the wallet modal (requestLibreMount → subscribeLibre).
-    // This keeps the ~17 MB LDK/WASM bundle off every visitor who never uses Libre.
+    if (!libreConfigured()) return;
+    // Mount only when wanted — an explicit pick, a user who already adopted Libre, or a Drive OAuth
+    // redirect landing. Keeps the ~17 MB LDK/WASM bundle off every visitor who never uses Libre.
     const mountIfWanted = () => {
-      if (isLibreWanted() && slotRef.current) void ensureLibreMounted(slotRef.current, opts);
+      if (isLibreWanted() && slotRef.current) void ensureLibreMounted(slotRef.current, LIBRE_MOUNT_OPTS);
     };
     mountIfWanted();
 
-    // Re-render so visibility follows state, mount on an explicit pick, and make Libre the active
-    // payer the moment it starts running (disconnect the other rails — same effect as picking
-    // WebLN; Libre only reaches "running" after an explicit connect, so this never surprises).
+    // Adopting Libre disconnects the other rails — but ONLY on the visit where it's adopted.
+    // `libreActive` is read once, here, because reaching 'running' sets it before subscribers run,
+    // and because module state (`view`) resets to 'stopped' on every page load: a returning user's
+    // auto-mount therefore looks identical to a fresh connect at this seam. Clearing on that edge
+    // unconditionally silently deleted the user's NWC URI on every single reload.
+    const adoptedBeforeThisVisit = storage.libreActive.get();
     let wasRunning = isLibreRunning();
     return subscribeLibre(() => {
       mountIfWanted();
       const nowRunning = isLibreRunning();
-      if (nowRunning && !wasRunning) {
-        void clearOtherWallets('webln', identityRef.current?.npub);
+      if (nowRunning && !wasRunning && !adoptedBeforeThisVisit) {
+        void clearOtherWallets('libre', identityRef.current?.npub);
       }
       wasRunning = nowRunning;
       force((n) => n + 1);
     });
   }, []);
 
-  if (!CLIENT_ID) return null;
+  if (!libreConfigured()) return null;
 
-  // Nothing to show until the widget is mounted and the session is past "stopped"; also hidden
-  // while the wallet modal has borrowed the element (it renders there instead).
-  const hidden = isLibreBorrowed() || !isLibreMounted() || getLibreView() === 'stopped';
+  // The modal draws the widget itself while it has it borrowed. Otherwise show the card whenever
+  // there's something worth showing: a live session, or the loading/error state of one being set up.
+  // 'stopped' means the user disconnected (the widget's own reconnect UI is inside the card, but a
+  // floating card for a wallet you just turned off is noise — the modal's picker is the way back).
+  const idle = !isLibreMounted() && libreStatusKind() === null;
+  const hidden = isLibreBorrowed() || idle || getLibreView() === 'stopped';
 
   return (
     <div
-      ref={slotRef}
       className="fixed bottom-3 right-3 z-30 w-[320px] max-w-[calc(100vw-1.5rem)]"
       style={{ display: hidden ? 'none' : undefined }}
       aria-hidden={hidden}
-    />
+    >
+      <div ref={slotRef} />
+      <LibreMountStatus slot={slotRef} />
+    </div>
   );
 }

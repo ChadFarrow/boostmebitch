@@ -8,6 +8,7 @@ import { hasWebln, isWeblnEnabled, subscribeWebln, weblnEnable } from '@/lib/v4v
 import {
   borrowLibreElement,
   isLibreRunning,
+  libreDisconnect,
   parkLibreElement,
   requestLibreMount,
   subscribeLibre,
@@ -16,13 +17,14 @@ import { clearOtherWallets } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
+import { LibreMountStatus, libreConfigured } from './libre/libre-mount';
 import { NwcWallet } from './nwc-wallet';
 import { SparkWallet } from './spark-wallet';
 import { WeblnWallet } from './webln-wallet';
 
-// The Libre rail is available only when its OAuth client id is baked in (else the widget can't
-// mount — see components/libre/libre-wallet-host.tsx), so we hide the picker card without it.
-const LIBRE_AVAILABLE = !!process.env.NEXT_PUBLIC_LIBRE_GOOGLE_CLIENT_ID;
+// The Libre rail exists only where its OAuth client id is baked in (else the widget can't mount —
+// see components/libre/libre-mount.tsx), so we hide the picker card without it.
+const LIBRE_AVAILABLE = libreConfigured();
 
 // 'libre' is a modal-only rail: it fronts window.webln (the widget sets it on connect), so boosts
 // flow through the existing WebLN path in lib/v4v/boost.ts with no changes there.
@@ -43,12 +45,15 @@ function railConnected(rail: ModalRail): boolean {
 // Mirrors pickRail() (rail pref first, then NWC > Spark > WebLN priority)
 // but gates WebLN on isWeblnEnabled — inside the wallet UI "active" means
 // the user explicitly enabled it, not merely that the extension exists.
-// Libre, when running, is the active rail (it clears the others on connect, and
-// pickRail() routes boosts through the window.webln it owns).
 function getActiveRail(): ModalRail | null {
+  // Libre outranks the stored pref, because while it runs it IS window.webln — it isn't one
+  // candidate among several. Checking the pref first got this backwards the moment you boosted:
+  // paying via Libre goes through the WebLN rail, so recordLastRail writes pref='webln' and
+  // ensureWebln flips weblnEnabled on — and from then on this returned 'webln', quietly replacing
+  // the Libre card with a WebLN one whose Disconnect can't stop Libre at all.
+  if (isLibreRunning()) return 'libre';
   const pref = storage.railPref.get();
   if (pref && railConnected(pref)) return pref;
-  if (isLibreRunning()) return 'libre';
   if (hasNwc()) return 'nwc';
   if (hasSpark()) return 'spark';
   if (isWeblnEnabled()) return 'webln';
@@ -69,7 +74,14 @@ function LibreRailSlot() {
     const unsub = subscribeLibre(attach);
     return () => { unsub(); parkLibreElement(); };
   }, []);
-  return <div ref={ref} />;
+  return (
+    <div>
+      <div ref={ref} />
+      {/* There's no element to borrow until the bundle lands — and none at all if it failed. Both
+          look identical without this: an empty card the user can only stare at. */}
+      <LibreMountStatus slot={ref} />
+    </div>
+  );
 }
 
 interface Props {
@@ -213,12 +225,21 @@ export function WalletModal({ onClose }: Props) {
           )}
           <LibreRailSlot key="libre-slot" />
           {view.kind === 'connected' && (
-            <div className="border-t border-bone/15 pt-3 text-center">
+            <div className="border-t border-bone/15 pt-3 flex items-center justify-between">
               <button
                 onClick={() => setView({ kind: 'picker', switching: true })}
                 className="text-[11px] text-muted hover:text-bone"
               >
                 Switch wallet →
+              </button>
+              {/* The widget's own disconnect only stops the session; this also forgets the
+                  adoption, so later visits stop pulling the ~17 MB LDK bundle. Without a path to
+                  it here there is no way to stop using Libre on this browser at all. */}
+              <button
+                onClick={() => { void libreDisconnect().then(() => setView({ kind: 'picker', switching: false })); }}
+                className="text-[11px] text-muted hover:text-nostr"
+              >
+                Disconnect
               </button>
             </div>
           )}
