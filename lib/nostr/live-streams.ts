@@ -21,6 +21,18 @@ export function isLiveStreamId(s: string | undefined | null): boolean {
   return !!s && /^[0-9a-f]{64}:/.test(s);
 }
 
+/**
+ * The stream's actual host. NIP-53 lets a streaming provider (Shosho,
+ * zap.stream, …) publish the kind:30311 event under the PLATFORM's key and tag
+ * the real host as a `p` participant with role "host" — so `event.pubkey` is
+ * not always the person on camera. Prefer the first host-role participant;
+ * fall back to the event author (self-published streams).
+ */
+export function streamHostPubkey(stream: NostrLiveStream): string {
+  const host = stream.participants.find((p) => p.role.toLowerCase() === 'host');
+  return host?.pubkey ?? stream.pubkey;
+}
+
 export interface NostrLiveStream {
   /** NIP-33 replaceable address: `${pubkey}:${dTag}` */
   id: string;
@@ -237,6 +249,10 @@ export async function fetchLiveStreamByAddr(
  * stays valid across broadcasts: most clients mint a fresh random dTag per
  * stream, so a host's durable identity is their pubkey, not any one naddr.
  *
+ * "Hosted by pubkey" means authored by it OR p-tagged with role "host" —
+ * platform-published streams (Shosho, zap.stream) are authored by the
+ * platform's key, so an author-only query can never find an artist's stream.
+ *
  * Priority: a genuinely-live stream (fresh `live` status, newest first); else
  * the soonest upcoming `planned` stream (so the page can show a "next up" hint);
  * else null. Ended broadcasts are never returned — we don't auto-open a dead
@@ -249,15 +265,24 @@ export async function fetchLatestStreamByPubkey(
   const relays = sanitizeRelays([...relayHints, ...LIVE_STREAM_RELAYS]).slice(0, 20);
   return withPool(relays, async (pool) => {
     try {
-      // Query by AUTHOR only (no `#d` filter) — same reasoning as
-      // fetchLiveStreamByAddr: fountain.fm and other host relays don't honor
-      // tag filters reliably in-browser. A host has few streams, so fetch all
-      // and pick client-side.
-      const events = await pool.querySync(
-        relays,
-        { kinds: [30311], authors: [pubkey], limit: 50 },
-        { maxWait: FEED_QUERY_MAX_WAIT_MS },
-      );
+      // Two queries: streams the pubkey AUTHORED (self-published) and streams
+      // that p-TAG the pubkey (platform-published on their behalf). Neither
+      // uses a `#d` filter — same reasoning as fetchLiveStreamByAddr:
+      // fountain.fm and other host relays don't honor tag filters reliably
+      // in-browser — and the host-role check is applied client-side below.
+      const [authored, tagged] = await Promise.all([
+        pool.querySync(
+          relays,
+          { kinds: [30311], authors: [pubkey], limit: 50 },
+          { maxWait: FEED_QUERY_MAX_WAIT_MS },
+        ),
+        pool.querySync(
+          relays,
+          { kinds: [30311], '#p': [pubkey], limit: 50 },
+          { maxWait: FEED_QUERY_MAX_WAIT_MS },
+        ),
+      ]);
+      const events = [...authored, ...tagged];
 
       // Dedupe replaceable events by NIP-33 address (newest version wins).
       const byAddr = new Map<string, Event>();
@@ -269,7 +294,16 @@ export async function fetchLatestStreamByPubkey(
       }
 
       const liveFreshAfter = Math.floor(Date.now() / 1000) - LIVE_FRESH_SECS;
-      const streams = Array.from(byAddr.values()).map(parseNostrLiveStream);
+      // Keep only streams this pubkey actually HOSTS: authored it, or is a
+      // host-role participant. A mere guest/speaker p-tag doesn't qualify —
+      // /live/<npub> must not hijack to a show they're only tagged in.
+      const streams = Array.from(byAddr.values())
+        .map(parseNostrLiveStream)
+        .filter(
+          (s) =>
+            s.pubkey === pubkey ||
+            s.participants.some((p) => p.pubkey === pubkey && p.role.toLowerCase() === 'host'),
+        );
 
       // A fresh `live` event = broadcasting right now (clients re-publish it
       // periodically). Newest first if the host somehow has two.
@@ -363,6 +397,7 @@ export function streamToEpisode(
     feedId: 0,
     liveStatus: stream.status === 'planned' ? 'pending' : stream.status,
     liveStartTime: stream.startsAt,
+    liveHostPubkey: streamHostPubkey(stream),
     value: value ?? null,
   };
 }

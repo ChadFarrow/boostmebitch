@@ -110,9 +110,21 @@ function EpisodeInfoPanel({
 // (liveStreamId = `<pubkey>:<dTag>`) this hands out the PERMANENT per-host
 // link `/live/<npub>` — not the per-broadcast `/stream/<naddr>` — so a show can
 // share one URL that stays valid across broadcasts (each gets a fresh dTag).
+// The npub is the HOST's (episode.liveHostPubkey), NOT the stream id's author
+// half: platform-published streams (Shosho, zap.stream) are authored by the
+// PLATFORM's key, and `/live/<platform npub>` resolves to whatever that
+// platform streams next — a different show entirely.
 // Otherwise ?podcast=<guid>. Clipboard-only with a COPIED flip, mirroring the
 // episode-list ShareButton.
-function ShareButton({ liveStreamId, podcast }: { liveStreamId: string | null; podcast: Podcast }) {
+function ShareButton({
+  liveStreamId,
+  liveHostPubkey,
+  podcast,
+}: {
+  liveStreamId: string | null;
+  liveHostPubkey?: string;
+  podcast: Podcast;
+}) {
   const [copied, setCopied] = useState(false);
 
   function buildUrl(): string | null {
@@ -121,7 +133,7 @@ function ShareButton({ liveStreamId, podcast }: { liveStreamId: string | null; p
     if (liveStreamId) {
       const parsed = parseStreamId(liveStreamId);
       if (!parsed) return null;
-      return `${origin}/live/${nip19.npubEncode(parsed.pubkey)}`;
+      return `${origin}/live/${nip19.npubEncode(liveHostPubkey ?? parsed.pubkey)}`;
     }
     if (podcast.podcastGuid) return `${origin}/?podcast=${podcast.podcastGuid}`;
     return null;
@@ -340,7 +352,11 @@ export function FullscreenPlayer({
                   <BoltIcon /> BOOST
                 </button>
                 <FavHeart podcast={podcast} size="md" />
-                <ShareButton liveStreamId={liveStreamId} podcast={podcast} />
+                <ShareButton
+                  liveStreamId={liveStreamId}
+                  liveHostPubkey={episode.liveHostPubkey}
+                  podcast={podcast}
+                />
               </div>
             </div>
             <div className="flex-1 min-h-0">
