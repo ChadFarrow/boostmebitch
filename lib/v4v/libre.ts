@@ -43,6 +43,7 @@ let view: LibreView = 'stopped';
 // on release — see claimWebln.
 let priorWebln: unknown;
 let claimed = false;
+let freshAdoption = false;
 
 const { subscribe: subscribeLibre, notify } = createObservable();
 export { subscribeLibre };
@@ -89,6 +90,23 @@ export function isLibreLoading(): boolean {
 /** True once the roaming session is live here (the node is running). */
 export function isLibreRunning(): boolean {
   return view === 'running';
+}
+
+/**
+ * True exactly once per adoption: Libre just reached 'running' on a browser that hadn't adopted it
+ * yet. The host uses it to disconnect the other rails — and ONLY then.
+ *
+ * This has to be captured inside the state transition rather than sampled by the caller. `view` is
+ * module state that resets to 'stopped' on every page load, so a returning user's auto-mount
+ * reaching 'running' looks exactly like a fresh connect from outside; clearing on that edge
+ * unconditionally deleted the user's NWC URI on every reload. Sampling `libreActive` once at effect
+ * setup fixes the reload but goes stale within a page life (disconnect Libre → connect NWC →
+ * reconnect Libre would then leave both wired up, with pickRail quietly preferring NWC).
+ */
+export function consumeFreshAdoption(): boolean {
+  const v = freshAdoption;
+  freshAdoption = false;
+  return v;
 }
 
 /** The current roaming view — the host reflects in-progress/blocked/halted states from it. */
@@ -167,8 +185,10 @@ function applyState(next: LibreView): void {
   view = next;
   if (view === 'running' && was !== 'running') {
     claimWebln();
-    // This browser has adopted Libre: auto-mount on later visits, and don't re-tear-down the other
-    // rails on a reload (see storage.libreActive).
+    // Whether THIS transition is the moment Libre became this browser's wallet, captured before
+    // the flag is written — it's the only instant the answer is knowable. The host consumes it to
+    // decide whether to disconnect the other rails. See consumeFreshAdoption.
+    freshAdoption = !storage.libreActive.get();
     storage.libreActive.set();
   }
   // Every exit from 'running' — the user disconnected, or the wallet roamed to another device, or
@@ -232,6 +252,9 @@ export async function retryLibreMount(home: HTMLElement, opts: MountOptions): Pr
 export async function libreDisconnect(): Promise<void> {
   storage.libreActive.clear();
   wantMount = false;
+  // Never let an unconsumed adoption survive a disconnect and fire against a later, unrelated
+  // connect — that would tear down whatever wallet the user moved to in the meantime.
+  freshAdoption = false;
   releaseWebln();
   unsubState?.();
   unsubState = null;

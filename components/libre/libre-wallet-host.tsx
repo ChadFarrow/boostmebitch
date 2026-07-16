@@ -3,16 +3,15 @@
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import {
+  consumeFreshAdoption,
   ensureLibreMounted,
   getLibreView,
   isLibreBorrowed,
   isLibreMounted,
-  isLibreRunning,
   isLibreWanted,
   subscribeLibre,
 } from '@/lib/v4v/libre';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
-import { storage } from '@/lib/storage';
 import { LibreMountStatus, LIBRE_MOUNT_OPTS, libreConfigured, libreStatusKind } from './libre-mount';
 
 /**
@@ -47,20 +46,16 @@ export function LibreWalletHost() {
     };
     mountIfWanted();
 
-    // Adopting Libre disconnects the other rails — but ONLY on the visit where it's adopted.
-    // `libreActive` is read once, here, because reaching 'running' sets it before subscribers run,
-    // and because module state (`view`) resets to 'stopped' on every page load: a returning user's
-    // auto-mount therefore looks identical to a fresh connect at this seam. Clearing on that edge
-    // unconditionally silently deleted the user's NWC URI on every single reload.
-    const adoptedBeforeThisVisit = storage.libreActive.get();
-    let wasRunning = isLibreRunning();
+    // Adopting Libre disconnects the other rails — but ONLY on the transition where it's actually
+    // adopted, which `consumeFreshAdoption` reports once. Deriving that here from `isLibreRunning()`
+    // is not possible: module state resets to 'stopped' on every load, so a returning user's
+    // auto-mount reaching 'running' is indistinguishable from a fresh connect, and clearing on that
+    // edge silently deleted the user's NWC URI on every single reload.
     return subscribeLibre(() => {
       mountIfWanted();
-      const nowRunning = isLibreRunning();
-      if (nowRunning && !wasRunning && !adoptedBeforeThisVisit) {
+      if (consumeFreshAdoption()) {
         void clearOtherWallets('libre', identityRef.current?.npub);
       }
-      wasRunning = nowRunning;
       force((n) => n + 1);
     });
   }, []);
