@@ -330,52 +330,65 @@ export async function fetchLatestStreamByPubkey(
  * Two paths:
  *  1. If the event has NIP-53 `zap` split tags → resolve each participant's
  *     Lightning address from their kind:0 profile and build a split ValueBlock.
- *  2. Most streams have no split tags (single host) → fall back to the host
- *     pubkey's own Lightning address as the sole 100% recipient.
+ *  2. Most streams have no split tags → pay the HOST (the p-tag with role
+ *     "host"), not the event author: platform-published streams (Shosho,
+ *     zap.stream) are authored by the platform's bot key, and paying that key
+ *     sends the artist's boosts to the platform. The author is only tried as
+ *     a last resort when the host has no Lightning address.
  *
  * Returns null when no resolvable Lightning address is found.
  */
 export async function resolveStreamV4V(
   stream: NostrLiveStream,
 ): Promise<ValueBlock | null> {
-  // Build the candidate list: zap-split participants (dropping any the host
-  // opted out with weight <= 0), or the host as the sole fallback.
+  async function resolveRecipients(
+    candidates: Array<{ pubkey: string; relay?: string; weight: number }>,
+  ): Promise<ValueRecipient[]> {
+    const results = await Promise.all(
+      candidates.map(async ({ pubkey, relay, weight }) => {
+        const cached = storage.profile.get(pubkey);
+        let profile: ProfileMetadata | null | undefined = cached;
+        // Re-fetch when absent (undefined) OR a cached miss (null): the recipient's
+        // lud16 is what gates BOOST, and a streamer's profile can miss transiently
+        // or live on the stream's relays (zap.stream/nostr.wine) rather than a
+        // viewer's defaults — don't let one earlier miss hide BOOST for 15 min.
+        // A cached profile object (even without lud16) is trusted, so this never
+        // re-queries hosts that genuinely have no Lightning address in a hot loop.
+        if (profile === undefined || profile === null) {
+          const relays = sanitizeRelays([...(relay ? [relay] : []), ...LIVE_STREAM_RELAYS]);
+          const fetched = await fetchProfile(pubkey, relays);
+          if (fetched) profile = fetched;
+        }
+        const address = profile?.lud16 ?? profile?.lud06;
+        if (!address) return null;
+        const recipient: ValueRecipient = {
+          name: profile?.display_name ?? profile?.name ?? pubkey.slice(0, 8),
+          type: 'lnaddress',
+          address,
+          split: weight,
+        };
+        return recipient;
+      }),
+    );
+    return results.filter((r): r is ValueRecipient => r !== null);
+  }
+
+  // Explicit zap splits win (dropping any the host opted out with weight <= 0).
   const splitCandidates = stream.zapWeights.filter((z) => z.weight > 0);
-  const candidates: Array<{ pubkey: string; relay?: string; weight: number }> =
-    splitCandidates.length
-      ? splitCandidates
-      : [{ pubkey: stream.pubkey, weight: 1 }];
+  if (splitCandidates.length) {
+    const recipients = await resolveRecipients(splitCandidates);
+    return recipients.length ? { type: 'lightning', method: 'lnaddress', recipients } : null;
+  }
 
-  const results = await Promise.all(
-    candidates.map(async ({ pubkey, relay, weight }) => {
-      const cached = storage.profile.get(pubkey);
-      let profile: ProfileMetadata | null | undefined = cached;
-      // Re-fetch when absent (undefined) OR a cached miss (null): the recipient's
-      // lud16 is what gates BOOST, and a streamer's profile can miss transiently
-      // or live on the stream's relays (zap.stream/nostr.wine) rather than a
-      // viewer's defaults — don't let one earlier miss hide BOOST for 15 min.
-      // A cached profile object (even without lud16) is trusted, so this never
-      // re-queries hosts that genuinely have no Lightning address in a hot loop.
-      if (profile === undefined || profile === null) {
-        const relays = sanitizeRelays([...(relay ? [relay] : []), ...LIVE_STREAM_RELAYS]);
-        const fetched = await fetchProfile(pubkey, relays);
-        if (fetched) profile = fetched;
-      }
-      const address = profile?.lud16 ?? profile?.lud06;
-      if (!address) return null;
-      const recipient: ValueRecipient = {
-        name: profile?.display_name ?? profile?.name ?? pubkey.slice(0, 8),
-        type: 'lnaddress',
-        address,
-        split: weight,
-      };
-      return recipient;
-    }),
-  );
-
-  const recipients = results.filter((r): r is ValueRecipient => r !== null);
-  if (!recipients.length) return null;
-  return { type: 'lightning', method: 'lnaddress', recipients };
+  // No splits: host first, event author as the fallback (they're the same key
+  // on self-published streams, so the second attempt only runs for
+  // platform-published events whose host profile has no LN address).
+  const host = streamHostPubkey(stream);
+  let recipients = await resolveRecipients([{ pubkey: host, weight: 1 }]);
+  if (!recipients.length && host !== stream.pubkey) {
+    recipients = await resolveRecipients([{ pubkey: stream.pubkey, weight: 1 }]);
+  }
+  return recipients.length ? { type: 'lightning', method: 'lnaddress', recipients } : null;
 }
 
 /**
