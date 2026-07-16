@@ -13,7 +13,7 @@ import {
   requestLibreMount,
   subscribeLibre,
 } from '@/lib/v4v/libre';
-import { clearOtherWallets } from '@/lib/v4v/wallets';
+import { clearOtherWallets, railLabel, type WalletChoice } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
@@ -26,16 +26,21 @@ import { WeblnWallet } from './webln-wallet';
 // see components/libre/libre-mount.tsx), so we hide the picker card without it.
 const LIBRE_AVAILABLE = libreConfigured();
 
-// 'libre' is a modal-only rail: it fronts window.webln (the widget sets it on connect), so boosts
-// flow through the existing WebLN path in lib/v4v/boost.ts with no changes there.
-type ModalRail = 'nwc' | 'spark' | 'webln' | 'libre';
-
+// The set of wallets the picker offers is WalletChoice (lib/v4v/wallets.ts) — Rail plus 'libre',
+// which fronts window.webln rather than being a rail of its own, so boosts keep flowing through the
+// existing WebLN path in lib/v4v/boost.ts with no changes there.
 type WalletView =
   | { kind: 'picker'; switching: boolean }
-  | { kind: 'connecting'; rail: ModalRail; switching: boolean }
+  | { kind: 'connecting'; rail: WalletChoice; switching: boolean }
   | { kind: 'connected' };
 
-function railConnected(rail: ModalRail): boolean {
+/** Modal-side title for a wallet. `railLabel` covers the rails (and renames 'webln' → "Libre" while
+ *  Libre owns it); 'libre' isn't a Rail, and reads long-form here because it's a heading. */
+function walletTitle(choice: WalletChoice): string {
+  return choice === 'libre' ? 'Libre Wallet' : railLabel(choice);
+}
+
+function railConnected(rail: WalletChoice): boolean {
   return rail === 'nwc' ? hasNwc()
     : rail === 'spark' ? hasSpark()
     : rail === 'libre' ? isLibreRunning()
@@ -45,7 +50,7 @@ function railConnected(rail: ModalRail): boolean {
 // Mirrors pickRail() (rail pref first, then NWC > Spark > WebLN priority)
 // but gates WebLN on isWeblnEnabled — inside the wallet UI "active" means
 // the user explicitly enabled it, not merely that the extension exists.
-function getActiveRail(): ModalRail | null {
+function getActiveRail(): WalletChoice | null {
   // Libre outranks the stored pref, because while it runs it IS window.webln — it isn't one
   // candidate among several. Checking the pref first got this backwards the moment you boosted:
   // paying via Libre goes through the WebLN rail, so recordLastRail writes pref='webln' and
@@ -139,7 +144,7 @@ export function WalletModal({ onClose }: Props) {
   // active payer (rail pref → pickRail / balance chip / menu summary follow)
   // without touching the other connections. Only connecting a NEW wallet
   // disconnects the others (clearOtherWallets in handleConnected).
-  function handlePickerClick(rail: ModalRail, switching: boolean) {
+  function handlePickerClick(rail: WalletChoice, switching: boolean) {
     if (switching && railConnected(rail)) {
       // Libre isn't persisted in railPref (it fronts window.webln); tapping it just re-focuses.
       if (rail !== 'libre') recordLastRail(rail, identity);
@@ -182,17 +187,10 @@ export function WalletModal({ onClose }: Props) {
   let headerTitle = 'Connect a wallet';
   let headerSub: string | null = 'Pick one to send Lightning payments.';
   if (view.kind === 'connected') {
-    headerTitle = activeRail === 'nwc' ? 'NWC'
-      : activeRail === 'spark' ? 'Spark'
-      : activeRail === 'webln' ? 'WebLN'
-      : activeRail === 'libre' ? 'Libre Wallet'
-      : 'Lightning Wallet';
+    headerTitle = activeRail ? walletTitle(activeRail) : 'Lightning Wallet';
     headerSub = null;
   } else if (view.kind === 'connecting') {
-    headerTitle = view.rail === 'nwc' ? 'NWC'
-      : view.rail === 'spark' ? 'Spark'
-      : view.rail === 'libre' ? 'Libre Wallet'
-      : 'WebLN';
+    headerTitle = walletTitle(view.rail);
     headerSub = null;
   } else if (view.kind === 'picker' && view.switching) {
     headerTitle = 'Switch wallet';
@@ -303,7 +301,7 @@ export function WalletModal({ onClose }: Props) {
 
     // State 1 (nothing connected) or State 4 (switching)
     const { switching } = view;
-    type PickerRow = { rail: ModalRail; icon: string; title: string; desc: string };
+    type PickerRow = { rail: WalletChoice; icon: string; title: string; desc: string };
     const rows: PickerRow[] = [
       ...(LIBRE_AVAILABLE
         ? [{ rail: 'libre' as const, icon: '◆', title: 'Libre Wallet', desc: 'Your roaming Lightning wallet — runs in this app' }]

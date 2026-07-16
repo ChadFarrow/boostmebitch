@@ -124,10 +124,6 @@ export function isLibreMounted(): boolean {
   return handle !== null;
 }
 
-export function getLibreElement(): HTMLElement | null {
-  return handle?.element ?? null;
-}
-
 // Make Libre the page's WebLN provider. The widget's own installWebln is deliberately POLITE (it
 // won't replace an existing window.webln — see MountHandle.installedWebln), but picking Libre in
 // the wallet modal is an explicit choice to pay through it here, so we override even an extension.

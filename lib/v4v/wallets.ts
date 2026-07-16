@@ -9,6 +9,15 @@ import { storage } from '@/lib/storage';
 import type { Rail } from './boost';
 
 /**
+ * A wallet the user can pick — which is NOT the same set as `Rail`, the protocol that moves the
+ * money. Libre pays over the WebLN rail (it installs itself as window.webln), so it's a choice
+ * without being a rail. Everything that asks "which wallet did the user choose?" — the modal's
+ * picker, clearOtherWallets — is keyed on this; everything that asks "how do I pay?" stays on
+ * `Rail`. Keeping them apart is what lets boost.ts / zap.ts / RailPref stay untouched by Libre.
+ */
+export type WalletChoice = Rail | 'libre';
+
+/**
  * What to call a rail in the UI. 'webln' is the interesting one: while Libre runs it *is*
  * window.webln, so every WebLN surface — the balance chip, the account-menu summary, the boost-all
  * picker — would otherwise label a wallet the user connected as "Libre Wallet" as "WebLN".
@@ -32,10 +41,7 @@ export function railLabel(rail: Rail): string {
  * LDK node alive, and keeps `libreActive` set, so the next reload re-adopts Libre and wipes the
  * NWC URI the user just pasted.
  */
-export async function clearOtherWallets(
-  keep: 'nwc' | 'spark' | 'webln' | 'libre',
-  npub?: string,
-): Promise<void> {
+export async function clearOtherWallets(keep: WalletChoice, npub?: string): Promise<void> {
   if (keep !== 'nwc' && hasNwc()) clearNwcUri();
   if (keep !== 'spark' && hasSpark()) await sparkDisconnect();
   if (keep !== 'libre' && storage.libreActive.get()) await libreDisconnect();

@@ -5,6 +5,7 @@ import { useApp } from '@/lib/store';
 import {
   consumeFreshAdoption,
   ensureLibreMounted,
+  getLibreMountError,
   getLibreView,
   isLibreBorrowed,
   isLibreMounted,
@@ -56,8 +57,14 @@ export function LibreWalletHost() {
     if (!libreConfigured()) return;
     // Mount only when wanted — an explicit pick, a user who already adopted Libre, or a Drive OAuth
     // redirect landing. Keeps the ~17 MB LDK/WASM bundle off every visitor who never uses Libre.
+    //
+    // Not after a failure, though: ensureLibreMounted notifies when it settles, which lands right
+    // back here — so retrying on its own error would re-fetch the 5 MB chunk in a loop, and clear
+    // the very error the card needs to show. Recovery is the explicit "Try again" (retryLibreMount).
     const mountIfWanted = () => {
-      if (isLibreWanted() && slotRef.current) void ensureLibreMounted(slotRef.current, LIBRE_MOUNT_OPTS);
+      if (isLibreWanted() && !getLibreMountError() && slotRef.current) {
+        void ensureLibreMounted(slotRef.current, LIBRE_MOUNT_OPTS);
+      }
     };
     mountIfWanted();
 
@@ -78,9 +85,14 @@ export function LibreWalletHost() {
   if (!libreConfigured()) return null;
 
   // A wallet that's working needs no floating card — it was camping on the page over real content.
-  // Show it only when it wants something from you (and never while the modal has it borrowed).
-  const attention = ATTENTION_VIEWS.has(getLibreView()) || libreStatusKind() === 'error';
-  const show = !isLibreBorrowed() && isLibreMounted() && attention;
+  // Show it only when it wants something from you (and never while the modal has it borrowed):
+  // a mounted widget in a view that needs an answer, or a mount that failed outright (an adopted
+  // user whose bundle 404'd has no other way to find out — the modal's copy only helps if they
+  // happen to open it). `loading` deliberately doesn't qualify: a spinner that appears unbidden on
+  // every visit is the noise this collapse exists to remove.
+  const show =
+    !isLibreBorrowed() &&
+    (libreStatusKind() === 'error' || (isLibreMounted() && ATTENTION_VIEWS.has(getLibreView())));
 
   // Collapsed, NOT `display: none`. The widget's spend-approval sheet is a top-layer <dialog>, and
   // the top layer renders nothing under a display:none ancestor — hiding it that way would bring
