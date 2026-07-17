@@ -5,7 +5,7 @@ import { useApp } from '@/lib/store';
 import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
-import { publishBoostNote, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -94,15 +94,19 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     bumpBoosts();
   }
 
-  // Publish the kind:1 "I boosted" note when opted in & signed in, patching the
-  // stored boost with the note id. Shared by both payment paths.
+  // Publish the kind:1 "I boosted" note when opted in, patching the stored boost
+  // with the note id. Signed in → signed by the user's own key; signed out →
+  // signed by the site's Nostr identity server-side (publishBoostNoteViaSite),
+  // so an anonymous boost still lands on Nostr. Shared by both payment paths.
   async function maybePublishNote(boostagram: Boostagram, results: BoostResult[]) {
-    if (!shareNostr || !identity) return;
+    if (!shareNostr) return;
     setPubState({ kind: 'publishing' });
     try {
-      const note = await publishBoostNote({ podcast, episode, boostagram, results, relays });
+      const note = identity
+        ? await publishBoostNote({ podcast, episode, boostagram, results, relays })
+        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results });
       setPubState({ kind: 'done', note });
-      storage.boosts.update(identity.npub, boostagram.uuid!, { noteId: note.id });
+      storage.boosts.update(identity?.npub, boostagram.uuid!, { noteId: note.id });
       bumpBoosts();
     } catch (e) {
       setPubState({ kind: 'error', message: getErrorMessage(e, 'publish failed') });
@@ -280,32 +284,27 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           <SenderName value={name} onChange={setName} />
           <label
             className={`card flex items-start gap-3 p-3 cursor-pointer transition ${
-              !identity ? 'opacity-40 cursor-not-allowed' : ''
-            } ${shareNostr && identity ? '!border-nostr/60' : ''}`}
+              shareNostr ? '!border-nostr/60' : ''
+            }`}
           >
             <input
               type="checkbox"
-              checked={shareNostr && !!identity}
-              disabled={!identity}
+              checked={shareNostr}
               onChange={(e) => handleShareNostrChange(e.target.checked)}
               className="accent-nostr mt-0.5"
             />
             <div className="flex-1 text-xs">
               <div className="text-bone flex items-center gap-2">
-                <span className={shareNostr && identity ? 'text-nostr' : 'text-muted'}>◆</span>
+                <span className={shareNostr ? 'text-nostr' : 'text-muted'}>◆</span>
                 Share boost on Nostr
               </div>
-              {identity ? (
-                <div className="text-muted mt-0.5 leading-relaxed">
-                  {shareNostr
+              <div className="text-muted mt-0.5 leading-relaxed">
+                {!shareNostr
+                  ? 'Lightning only — nothing posted publicly.'
+                  : identity
                     ? 'A public note will be posted to your Nostr feed.'
-                    : 'Lightning only — nothing posted publicly.'}
-                </div>
-              ) : (
-                <div className="text-muted mt-0.5 leading-relaxed">
-                  Sign in with Nostr to enable.
-                </div>
-              )}
+                    : "Posted from boostmebitch.com's Nostr account."}
+              </div>
             </div>
           </label>
           <SplitsPreview recipients={value.recipients} splits={splits} results={results} />

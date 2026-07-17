@@ -6,7 +6,7 @@ import { sendBoost, pickRail, type Rail } from '@/lib/v4v/boost';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
-import { publishBoostNote, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage, hasValueRecipients } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
@@ -285,7 +285,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // share-on-Nostr toggle and at least one paid leg — matches BoostModal's
     // "don't pollute the network with failed-only boosts" rule.
     if (cancelled.current) return;
-    if (!shareNostr || !identity || successfulIdx.length === 0) return;
+    if (!shareNostr || successfulIdx.length === 0) return;
 
     const totalSats = successfulIdx.length * sats;
     const trackList = successfulIdx
@@ -305,15 +305,16 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       value_msat_total: totalSats * 1000,
       message: msg || undefined,
       sender_name: name || undefined,
-      sender_id: identity.pubkey,
+      sender_id: identity?.pubkey,
       action: 'boost',
       uuid: crypto.randomUUID(),
     };
 
     const lines: string[] = ['⚡ Boost ⚡', ''];
     if (msg.trim()) lines.push(msg.trim(), '');
+    const sender = name.trim();
     lines.push(
-      `Boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats`,
+      `${sender ? `${sender} boosted` : 'Boosted'} ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats`,
     );
     if (trackList.length) {
       lines.push('');
@@ -323,14 +324,14 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
     setPubState({ kind: 'publishing' });
     try {
-      const note = await publishBoostNote({
-        podcast,
-        episode,
-        boostagram: summaryBoostagram,
-        results: [],
-        relays,
-        contentOverride,
-      });
+      // Signed in → user's own key; signed out → the site's Nostr identity.
+      const note = identity
+        ? await publishBoostNote({
+            podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
+          })
+        : await publishBoostNoteViaSite({
+            podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
+          });
       if (cancelled.current) return;
       setPubState({ kind: 'done', note });
     } catch (e) {
@@ -444,32 +445,27 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               <SenderName value={name} onChange={setName} />
               <label
                 className={`card flex items-start gap-3 p-3 cursor-pointer transition ${
-                  !identity ? 'opacity-40 cursor-not-allowed' : ''
-                } ${shareNostr && identity ? '!border-nostr/60' : ''}`}
+                  shareNostr ? '!border-nostr/60' : ''
+                }`}
               >
                 <input
                   type="checkbox"
-                  checked={shareNostr && !!identity}
-                  disabled={!identity}
+                  checked={shareNostr}
                   onChange={(e) => handleShareNostrChange(e.target.checked)}
                   className="accent-nostr mt-0.5"
                 />
                 <div className="flex-1 text-xs">
                   <div className="text-bone flex items-center gap-2">
-                    <span className={shareNostr && identity ? 'text-nostr' : 'text-muted'}>◆</span>
+                    <span className={shareNostr ? 'text-nostr' : 'text-muted'}>◆</span>
                     Share boost on Nostr
                   </div>
-                  {identity ? (
-                    <div className="text-muted mt-0.5 leading-relaxed">
-                      {shareNostr
+                  <div className="text-muted mt-0.5 leading-relaxed">
+                    {!shareNostr
+                      ? 'Lightning only — nothing posted publicly.'
+                      : identity
                         ? 'One summary note will be posted to your Nostr feed.'
-                        : 'Lightning only — nothing posted publicly.'}
-                    </div>
-                  ) : (
-                    <div className="text-muted mt-0.5 leading-relaxed">
-                      Sign in with Nostr to enable.
-                    </div>
-                  )}
+                        : "One summary note posted from boostmebitch.com's Nostr account."}
+                  </div>
                 </div>
               </label>
             </>

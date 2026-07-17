@@ -361,6 +361,16 @@ Boosted N sats → [podcast title]
 
 `signAndPublish` handles both kind:1 boost notes and kind:30003 favorites — a third event kind is ~10 lines.
 
+## Site Nostr identity (boost notes for signed-out users)
+
+Since Lightning and Nostr are two independent logins (a user can boost without any Nostr identity — see the wallet/`AuthControl` header split), a signed-out boost would otherwise never reach Nostr. The **site itself owns one persistent Nostr identity** that signs the boost note on their behalf, so the "Share on Nostr" checkbox is usable (not disabled) when signed out.
+
+- **`SITE_NOSTR_SK` is a server-only secret** (nsec or 32-byte hex), read only by `lib/nostr/site-key.ts` (`siteSecretKey()` / `sitePubkey()`) — **never** `NEXT_PUBLIC`, never shipped to the browser (a signing key in the bundle is extractable by anyone). Absent/malformed → the feature is simply off. Set it in Vercel (Production) + `.env.local` for dev.
+- **Signing is server-side.** `app/api/nostr/site-sign/route.ts` accepts an unsigned kind:1 template, **validates it's a boost note** (kind 1, `t:boostagram` + `t:value4value` markers, content/tag caps, `created_at` within ±5 min — bounding the signing oracle so it can't sign arbitrary events as the site), signs with `finalizeEvent`, returns the signed event. 503 when unconfigured.
+- **Client path:** `publishBoostNoteViaSite()` (`lib/nostr/boost-notes.ts`) builds the same template as `publishBoostNote` (shared `buildBoostNoteTemplate`), POSTs to the route, then publishes the returned signed event via `publishSignedEvent` (`publish.ts`, the relay-fan-out half split out of `signAndPublish`) to `DEFAULT_RELAYS`. `maybePublishNote` in both boost modals branches on `identity`: signed in → user's own key; signed out → the site key. Publish failures are swallowed (the boost still pays).
+- **NIP-05:** `app/.well-known/nostr.json/route.ts` maps the root `_@boostmebitch.com` (shown as the bare domain) to the site pubkey, derived from `SITE_NOSTR_SK` so it can't drift. CORS-open per spec; served by the Next app on Vercel (nothing to configure at the registrar). Verifies once deployed to `boostmebitch.com`.
+- **Profile:** `scripts/publish-site-profile.mjs` publishes/updates the kind:0 (name, avatar, about, `nip05`, `lud16`). One-off maintenance script: `node --env-file=.env.local scripts/publish-site-profile.mjs`. Edit `PROFILE` and re-run to change it (kind:0 is replaceable, newest wins).
+
 ## v4v-toolkit swap-out boundary
 
 `lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets/signers. Components import only: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence), `lib/v4v/spark.ts` (wallet surface), `lib/nostr/` barrel (auth + publish + wallet backup). Swap toolkit by replacing internals here without touching `components/` or `app/`.
