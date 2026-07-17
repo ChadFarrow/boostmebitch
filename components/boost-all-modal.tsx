@@ -7,7 +7,7 @@ import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
-import { storage } from '@/lib/storage';
+import { storage, type ShareNostrAs } from '@/lib/storage';
 import { getErrorMessage, hasValueRecipients } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
@@ -15,6 +15,7 @@ import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './boost-modal/message-input';
 import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
+import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
 
 interface Props {
@@ -46,12 +47,18 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const [progress, setProgress] = useState<TrackProgress[]>([]);
 
   const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
+  const [shareAs, setShareAs] = useState<ShareNostrAs>(() => storage.shareNostrAs.get());
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
 
   function handleShareNostrChange(v: boolean) {
     setShareNostr(v);
     storage.shareNostr.set(v);
+  }
+
+  function handleShareAsChange(v: ShareNostrAs) {
+    setShareAs(v);
+    storage.shareNostrAs.set(v);
   }
 
   // Set on unmount so the in-flight loop bails before firing more sends or
@@ -324,8 +331,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
     setPubState({ kind: 'publishing' });
     try {
-      // Signed in → user's own key; signed out → the site's Nostr identity.
-      const note = identity
+      // User's own key only when signed in AND they picked "Post to my Nostr
+      // feed"; otherwise the site's Nostr identity (signed out, or the
+      // signed-in "Post via boostmebitch.com" choice).
+      const note = identity && shareAs === 'self'
         ? await publishBoostNote({
             podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
           })
@@ -443,31 +452,14 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             <>
               <MessageInput value={msg} onChange={setMsg} />
               <SenderName value={name} onChange={setName} />
-              <label
-                className={`card flex items-start gap-3 p-3 cursor-pointer transition ${
-                  shareNostr ? '!border-nostr/60' : ''
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={shareNostr}
-                  onChange={(e) => handleShareNostrChange(e.target.checked)}
-                  className="accent-nostr mt-0.5"
-                />
-                <div className="flex-1 text-xs">
-                  <div className="text-bone flex items-center gap-2">
-                    <span className={shareNostr ? 'text-nostr' : 'text-muted'}>◆</span>
-                    Share boost on Nostr
-                  </div>
-                  <div className="text-muted mt-0.5 leading-relaxed">
-                    {!shareNostr
-                      ? 'Lightning only — nothing posted publicly.'
-                      : identity
-                        ? 'One summary note will be posted to your Nostr feed.'
-                        : "One summary note posted from boostmebitch.com's Nostr account."}
-                  </div>
-                </div>
-              </label>
+              <ShareNostrPicker
+                signedIn={!!identity}
+                share={shareNostr}
+                shareAs={shareAs}
+                onShareChange={handleShareNostrChange}
+                onShareAsChange={handleShareAsChange}
+                noteNoun="One summary note"
+              />
             </>
           )}
 

@@ -7,7 +7,7 @@ import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
-import { storage } from '@/lib/storage';
+import { storage, type ShareNostrAs } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -17,6 +17,7 @@ import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
 import { SplitsPreview, LightningStatus } from './splits-preview';
 import { PublishStatus, type PublishState } from './publish-status';
+import { ShareNostrPicker } from './share-nostr-picker';
 
 interface Props {
   podcast: Podcast;
@@ -38,6 +39,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const [paymentDone, setPaymentDone] = useState(false);
 
   const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
+  const [shareAs, setShareAs] = useState<ShareNostrAs>(() => storage.shareNostrAs.get());
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
 
   // Keep rail in sync if wallet connects/disconnects while the modal is open.
@@ -51,6 +53,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   function handleShareNostrChange(v: boolean) {
     setShareNostr(v);
     storage.shareNostr.set(v);
+  }
+
+  function handleShareAsChange(v: ShareNostrAs) {
+    setShareAs(v);
+    storage.shareNostrAs.set(v);
   }
 
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
@@ -95,14 +102,15 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   }
 
   // Publish the kind:1 "I boosted" note when opted in, patching the stored boost
-  // with the note id. Signed in → signed by the user's own key; signed out →
-  // signed by the site's Nostr identity server-side (publishBoostNoteViaSite),
-  // so an anonymous boost still lands on Nostr. Shared by both payment paths.
+  // with the note id. Signed by the user's own key when they're signed in AND
+  // picked "Post to my Nostr feed"; otherwise by the site's Nostr identity
+  // server-side (publishBoostNoteViaSite) — the signed-out path and the
+  // signed-in "Post via boostmebitch.com" choice. Shared by both payment paths.
   async function maybePublishNote(boostagram: Boostagram, results: BoostResult[]) {
     if (!shareNostr) return;
     setPubState({ kind: 'publishing' });
     try {
-      const note = identity
+      const note = identity && shareAs === 'self'
         ? await publishBoostNote({ podcast, episode, boostagram, results, relays })
         : await publishBoostNoteViaSite({ podcast, episode, boostagram, results });
       setPubState({ kind: 'done', note });
@@ -282,31 +290,14 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           <AmountInput sats={sats} onChange={setSats} />
           <MessageInput value={msg} onChange={setMsg} />
           <SenderName value={name} onChange={setName} />
-          <label
-            className={`card flex items-start gap-3 p-3 cursor-pointer transition ${
-              shareNostr ? '!border-nostr/60' : ''
-            }`}
-          >
-            <input
-              type="checkbox"
-              checked={shareNostr}
-              onChange={(e) => handleShareNostrChange(e.target.checked)}
-              className="accent-nostr mt-0.5"
-            />
-            <div className="flex-1 text-xs">
-              <div className="text-bone flex items-center gap-2">
-                <span className={shareNostr ? 'text-nostr' : 'text-muted'}>◆</span>
-                Share boost on Nostr
-              </div>
-              <div className="text-muted mt-0.5 leading-relaxed">
-                {!shareNostr
-                  ? 'Lightning only — nothing posted publicly.'
-                  : identity
-                    ? 'A public note will be posted to your Nostr feed.'
-                    : "Posted from boostmebitch.com's Nostr account."}
-              </div>
-            </div>
-          </label>
+          <ShareNostrPicker
+            signedIn={!!identity}
+            share={shareNostr}
+            shareAs={shareAs}
+            onShareChange={handleShareNostrChange}
+            onShareAsChange={handleShareAsChange}
+            noteNoun="A public note"
+          />
           <SplitsPreview recipients={value.recipients} splits={splits} results={results} />
           <LightningStatus results={results} totalRecipients={value.recipients.length} />
           <PublishStatus state={pubState} />
