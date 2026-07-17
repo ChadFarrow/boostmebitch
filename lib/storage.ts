@@ -37,7 +37,7 @@ const KEYS = {
   railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
-  sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or connects another rail; suppresses auto-restore on next login
+  sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
 } as const;
 
