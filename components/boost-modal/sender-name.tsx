@@ -14,7 +14,7 @@ export function SenderName({
         className="input mt-1.5 w-full"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="anon"
+        placeholder="boostmebitch.com user"
       />
     </div>
   );

@@ -3,8 +3,17 @@
 
 import { clearNwcUri, hasNwc } from './nwc';
 import { hasSpark, sparkDisconnect } from './spark';
-import { weblnDisable } from './webln';
+import { isWeblnEnabled, weblnDisable } from './webln';
 import { storage } from '@/lib/storage';
+
+/**
+ * True when any rail is connected/enabled. WebLN is gated on isWeblnEnabled()
+ * (explicit user enable), not mere detection — mirrors getActiveRail() in
+ * wallet-modal.tsx. Drives the header wallet control's connected/not state.
+ */
+export function hasAnyWallet(): boolean {
+  return hasNwc() || hasSpark() || isWeblnEnabled();
+}
 
 /**
  * Disconnect every rail except `keep`.

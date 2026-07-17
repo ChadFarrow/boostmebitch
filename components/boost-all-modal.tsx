@@ -360,7 +360,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
           {!rail && (
             <div className="text-[11px] text-nostr/80">
-              No wallet connected — set one up in the account menu (top right).
+              No wallet connected — connect one with ⚡ Connect wallet (top right).
             </div>
           )}
 

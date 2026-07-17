@@ -35,6 +35,13 @@ interface AppState {
   signInOpen: boolean;
   setSignInOpen: (b: boolean) => void;
 
+  // Whether the Lightning wallet modal is open. Lifted into the store — like
+  // signInOpen — so any surface can open the one shared <WalletModal> (owned by
+  // <WalletControl> in the header) without prop-drilling. Wallet auth is fully
+  // independent of Nostr: connecting a wallet never requires an identity.
+  walletOpen: boolean;
+  setWalletOpen: (b: boolean) => void;
+
   // The podcast currently shown in the detail view. Lifted into the store so
   // surfaces outside `app/page.tsx` (e.g. a podcast-name link in a Nostr note
   // card) can navigate to a show without prop-drilling.
@@ -109,6 +116,9 @@ export const useApp = create<AppState>((set, get) => ({
 
   signInOpen: false,
   setSignInOpen: (b) => set({ signInOpen: b }),
+
+  walletOpen: false,
+  setWalletOpen: (b) => set({ walletOpen: b }),
 
   selectedPodcast: null,
   // Leaving the detail view (or switching shows) also drops any open

@@ -1,13 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { subscribeBunkerHealth, restoreBunkerSigner, shortNpub, type NostrIdentity } from '@/lib/nostr';
-import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
-import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
-import { isWeblnEnabled, subscribeWebln } from '@/lib/v4v/webln';
-import { storage, subscribeRailPref } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
-import { WalletModal } from '../wallet-modal';
-import { WalletBalanceChip } from '../wallet-balance';
 import { MutedAccountsSection } from './muted-accounts';
 
 // Surfaced inside AccountMenu when the NIP-46 bunker subscription has
@@ -57,63 +51,6 @@ function BunkerHealthBanner() {
   );
 }
 
-// Single-row summary that replaces the inline NWC / Spark / WebLN cards in
-// the account menu. Reads each rail's connect state on every render and
-// re-renders on rail-state changes so disconnecting from inside the modal
-// flips the summary back to "Not connected" without remounting the menu.
-function WalletButton({ onClick }: { onClick: () => void }) {
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const bump = () => setTick((t) => t + 1);
-    const unsubSpark = subscribeSpark(bump);
-    const unsubNwc = subscribeNwc(bump);
-    const unsubWebln = subscribeWebln(bump);
-    const unsubPref = subscribeRailPref(bump);
-    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubPref(); };
-  }, []);
-
-  const sparkReady = hasSpark();
-  const nwcReady = hasNwc();
-  const weblnReady = isWeblnEnabled();
-  // Mirrors pickRail(): the rail pref wins when connected, else NWC > Spark
-  // > WebLN — so the first label names the rail that actually pays and whose
-  // balance the chip shows. Extra connected rails are listed after a "+" so
-  // a multi-wallet user can see everything that's wired up.
-  const labelFor = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' } as const;
-  const readyLabels: string[] = [
-    nwcReady ? labelFor.nwc : null,
-    sparkReady ? labelFor.spark : null,
-    weblnReady ? labelFor.webln : null,
-  ].filter((l) => l !== null);
-  const pref = storage.railPref.get();
-  const prefLabel = pref ? labelFor[pref] : null;
-  if (prefLabel && readyLabels.includes(prefLabel)) {
-    readyLabels.splice(readyLabels.indexOf(prefLabel), 1);
-    readyLabels.unshift(prefLabel);
-  }
-  const summary = readyLabels.length
-    ? `${readyLabels[0]} connected${readyLabels.length > 1 ? ` + ${readyLabels.slice(1).join(' + ')}` : ''}`
-    : 'Not connected';
-  const connected = readyLabels.length > 0;
-
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="card mt-2 mb-1 p-3 w-full flex items-center justify-between hover:border-bolt/40 transition text-left"
-    >
-      <span className="flex items-center gap-2">
-        <span className={connected ? 'text-bolt text-base' : 'text-muted text-base'}>⚡</span>
-        <span className="flex flex-col">
-          <span className="text-[11px] uppercase tracking-widest text-muted">Lightning wallet</span>
-          <span className="text-sm">{summary}</span>
-        </span>
-      </span>
-      <span className="text-[11px] text-muted">{connected ? 'Manage' : 'Connect'} →</span>
-    </button>
-  );
-}
-
 export function AccountMenu({
   identity,
   onSignOut,
@@ -122,7 +59,6 @@ export function AccountMenu({
   onSignOut: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [walletOpen, setWalletOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Dismiss on click-outside / Escape so the menu doesn't trap focus.
@@ -166,7 +102,6 @@ export function AccountMenu({
         ) : (
           <span className="text-nostr">◆</span>
         )}
-        <WalletBalanceChip />
         <span className="hidden sm:inline truncate max-w-[160px] lg:max-w-[280px]">
           {name || shortNpub(identity.npub, 6)}
         </span>
@@ -187,8 +122,6 @@ export function AccountMenu({
 
           <BunkerHealthBanner />
 
-          <WalletButton onClick={() => setWalletOpen(true)} />
-
           <MutedAccountsSection />
 
           <div className="border-t border-bone/15 mt-4 pt-3">
@@ -201,7 +134,6 @@ export function AccountMenu({
           </div>
         </div>
       )}
-      {walletOpen && <WalletModal onClose={() => setWalletOpen(false)} />}
     </div>
   );
 }

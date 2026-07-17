@@ -191,11 +191,11 @@ export function WalletModal({ onClose }: Props) {
     const { switching } = view;
     type PickerRow = { rail: 'nwc' | 'spark' | 'webln'; icon: string; title: string; desc: string };
     const rows: PickerRow[] = [
-      { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Paste a nostr+walletconnect:// URI' },
-      { rail: 'spark', icon: '✶', title: 'Spark', desc: 'Self-custodial, create or restore' },
       ...(weblnDetected
         ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Alby extension · tap to enable' }]
         : []),
+      { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Paste a nostr+walletconnect:// URI' },
+      { rail: 'spark', icon: '✶', title: 'Spark', desc: 'Self-custodial, create or restore' },
     ];
 
     return (
@@ -219,14 +219,25 @@ export function WalletModal({ onClose }: Props) {
         <div className="space-y-2">
           {rows.map(({ rail, icon, title, desc }) => {
             const connected = railConnected(rail);
+            // Spark encrypts its seed to the user's Nostr key and backs it up to
+            // their relays, so it genuinely can't run without an identity — its
+            // connect card would dead-end on the same guard. Disable the row with
+            // a hint instead. NWC/WebLN work fully signed-out.
+            const needsNostr = rail === 'spark' && !identity;
             return (
               <button
                 key={rail}
                 onClick={() => handlePickerClick(rail, switching)}
-                className="w-full text-left card p-3 hover:border-bone/40 transition"
+                disabled={needsNostr}
+                className={`w-full text-left card p-3 transition ${
+                  needsNostr ? 'opacity-50 cursor-not-allowed' : 'hover:border-bone/40'
+                }`}
               >
                 <div className="text-sm font-medium">
                   {icon} {title}
+                  {needsNostr && (
+                    <span className="ml-2 text-[11px] text-nostr">◆ Sign in with Nostr</span>
+                  )}
                   {switching && activeRail === rail && (
                     <span className="ml-2 text-[11px] text-bolt">(active)</span>
                   )}
