@@ -467,11 +467,15 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                 <div className="flex-1 text-xs">
                   <div className="text-bone flex items-center gap-2">
                     <span className={shareNostr && identity ? 'text-nostr' : 'text-muted'}>◆</span>
-                    {identity && !shareNostr
-                      ? 'Private boost — Lightning only'
-                      : 'Share boost on Nostr (one summary note)'}
+                    Share boost on Nostr
                   </div>
-                  {!identity && (
+                  {identity ? (
+                    <div className="text-muted mt-0.5 leading-relaxed">
+                      {shareNostr
+                        ? 'One summary note will be posted to your Nostr feed.'
+                        : 'Lightning only — nothing posted publicly.'}
+                    </div>
+                  ) : (
                     <div className="text-muted mt-0.5 leading-relaxed">
                       Sign in with Nostr to enable.
                     </div>
