@@ -163,6 +163,7 @@ export function FullscreenPlayer({
   audioRef,
   videoNode,
   isVideo,
+  audioErr,
   pipAvailable,
   onPip,
   chapters,
@@ -175,6 +176,10 @@ export function FullscreenPlayer({
   audioRef: RefObject<HTMLAudioElement | null>;
   videoNode: HtmlPortalNode | null;
   isVideo: boolean;
+  /** Playback error from <Player> — the fullscreen surface must show it too,
+      or a failing live stream reads as a silent black box (the mini-bar's tiny
+      error line is hidden behind this overlay). */
+  audioErr: string | null;
   pipAvailable: boolean;
   onPip: () => void;
   // Fetched once by <Player> and passed down (so it isn't fetched twice).
@@ -296,6 +301,14 @@ export function FullscreenPlayer({
                   {isPlaying ? '❚❚' : '▶'}
                 </span>
               </button>
+              {/* Playback error banner — sits over the (black) video so the
+                  failure is readable right where the stream should be.
+                  pointer-events-none keeps the tap-to-play surface intact. */}
+              {audioErr && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-ink/85 backdrop-blur-sm px-3 py-2 text-center text-xs text-nostr break-words">
+                  ⚠ {audioErr}
+                </div>
+              )}
               {pipAvailable && (
                 <button
                   type="button"
@@ -373,6 +386,9 @@ export function FullscreenPlayer({
               <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
               {podcast.author && (
                 <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
+              )}
+              {audioErr && (
+                <p className="text-xs text-nostr mt-2 break-words">⚠ {audioErr}</p>
               )}
             </div>
 
