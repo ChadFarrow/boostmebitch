@@ -70,7 +70,7 @@ Only one polyfill is active at a time. `captureOriginal()` snapshots the underly
 
 ### Sign-in UI — one button → `<SignInModal>` (`components/nostr-auth/sign-in-modal.tsx`)
 
-The header shows a single **"Sign in with Nostr"** button (`components/nostr-auth/index.tsx`); clicking it opens a portal'd two-tab modal (same overlay pattern as `wallet-modal.tsx`):
+The sign-in entry point lives in the combined **`<AuthControl>`** header control (see "Auth: two independent logins"), not a standalone button — signed out, `<NostrAuth>` (`components/nostr-auth/index.tsx`) renders **only** the modal (its identity-hydration effects and `completeSignIn` still run). Opening it flips `signInOpen`; the modal is the same portal'd two-tab overlay (same pattern as `wallet-modal.tsx`):
 
 - **Browser Extension** — `loginWithExtension` (NIP-07). The "Connect with Extension" button is disabled with a hint when `window.nostr` is absent.
 - **Remote Signer** — both options stacked: *Option 1 — Generate QR* (`nostrconnect://` via `loginWithNostrConnect`, with QR + copy) and *Option 2 — Paste Bunker URI* (`loginWithBunker`), plus a **"Sign in with Amber"** button (`loginWithAmber`) on Android. Default tab when no extension is detected.
@@ -108,13 +108,17 @@ Sign-out clears in-memory favorites; the per-npub cache is left so re-signing in
 
 Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-level + replies before mapping). Storage `bmb:muted:<npub>` is `MuteListState` JSON; `lib/storage.ts` auto-promotes the legacy `{ pubkeys, otherTags }` shape on read. Account menu surfaces a collapsible "Muted accounts (N)" with kind:0 lookups firing only while expanded.
 
-## Wallets — account menu
+## Auth: two independent logins (`<AuthControl>`)
 
-All wallet config now lives in **`components/wallet-modal.tsx`** — a portal'd overlay opened by `<WalletButton>` inside `<AccountMenu>` (`components/nostr-auth/account-menu.tsx`). The modal is portal'd to `document.body` so `position: fixed` resolves against the viewport, not the sticky `<header>` (the header's `backdrop-blur` creates a containing block for fixed descendants per CSS spec — without the portal, mobile renders it clipped to the header).
+**Lightning and Nostr are two separate logins.** A user can connect a wallet and boost with **no Nostr identity** — the payment rails, boost orchestrator, and `:guest` storage never touch `identity`. `components/auth-control.tsx` is the single header control that fronts both: it renders one **"Sign in ▾"** dropdown when neither is connected (options: **⚡ Connect wallet** / **◆ Sign in with Nostr**), the wallet balance chip inline once a wallet connects, and a direct button for whichever single login remains; once both are set it delegates the Nostr side to `<NostrAuth>`'s `<AccountMenu>` (which sits right after it in the header). Both modals' open-state lives in the store (`walletOpen` / `signInOpen`), so `<AuthControl>` just flips a flag; it **owns the `<WalletModal>` render** and `<NostrAuth>` owns the `<SignInModal>`. The account menu is now **Nostr-only** — the wallet button/chip/modal moved out of it into `<AuthControl>`.
 
-All three sub-cards (NWC, Spark, WebLN) render unconditionally — each flips internally between its connected card and its connect form. This lets the user wire up a second rail (or switch wallets) without first disconnecting the active one. WebLN only appears when `weblnAvailable` (extension injected).
+## Wallets — the wallet modal
 
-Sub-cards (each its own component): `nwc-wallet.tsx`, `spark-wallet.tsx`, `webln-wallet.tsx`. State changes propagate via `subscribeNwc()` + `subscribeSpark()`; the modal `setTick`s on either to flip between modes without remount.
+All wallet config lives in **`components/wallet-modal.tsx`** — a portal'd overlay opened from `<AuthControl>` in the header (`walletOpen` in the store). The modal is portal'd to `document.body` so `position: fixed` resolves against the viewport, not the sticky `<header>` (the header's `backdrop-blur` creates a containing block for fixed descendants per CSS spec — without the portal, mobile renders it clipped to the header). Picker row order is **WebLN, NWC, Spark**; when signed out the **Spark row is disabled** with a "◆ Sign in with Nostr" hint (its seed is NIP-44-encrypted to the user's key — see Spark rail), while NWC + WebLN work fully signed-out.
+
+The modal is a three-view state machine — `WalletView = picker | connecting | connected` — showing **one rail at a time**. It opens on `connected` when `getActiveRail()` finds one (rail-pref first, then NWC > Spark > WebLN, WebLN gated on `isWeblnEnabled()`), else the `picker`. "Switch wallet →" reopens the picker; tapping an already-connected rail there just makes it the active payer, while connecting a new one clears the others.
+
+Sub-cards (each its own component): `nwc-wallet.tsx`, `spark-wallet.tsx`, `webln-wallet.tsx` (`mode="form"` when connecting, `mode="card"` when connected). State changes propagate via `subscribeNwc()` / `subscribeSpark()` / `subscribeWebln()`; the modal `setTick`s on any to flip views without remount.
 
 **NWC Nostr backup (opt-in).** `nwc-wallet.tsx` has an **"Encrypt & back up this connection to Nostr"** checkbox on both the connect form and the connected card (default **off** — an NWC URI is a budgeted spending credential). On → `publishEncryptedNwc` (kind:30078, `d:boostmebitch:wallet:nwc`, NIP-44 encrypted-to-self `{ uri }`) + `storage.nwcBackup.set(npub)`. Off → `deleteEncryptedNwc` tombstones it (empty-content replaceable event; `fetchEncryptedNwc` treats empty content as "no backup") + clears the flag. Gated on a NIP-44-capable signer (`getNip44()`). Auto-restored in `loadProfile` when the device has no local NWC URI. Unlike the Spark seed (always backed up), this is explicit-opt-in + deletable.
 
@@ -130,7 +134,7 @@ Load-bearing details:
 
 **Wallet balance display.** Two surfaces share one hook:
 
-- `<WalletBalanceChip>` inside the `<AccountMenu>` trigger button — always-on glance, follows priority order.
+- `<WalletBalanceChip>` inside the `<AuthControl>` header button (shown once a wallet is connected) — always-on glance, follows priority order.
 - `<BoostModalBalance rail={rail}>` in the boost-modal sticky footer — accepts the modal's selected rail so the displayed balance always tracks the picker. Turns nostr-magenta when `amountSats > balance`.
 
 Both come from `components/wallet-balance.tsx`. `useWalletBalance(railOverride?)` returns `{ balance, rail }`. With no override, priority is **NWC > Spark > WebLN** (matches `pickRail()` in `lib/v4v/boost.ts`). With an override, the hook fetches that specific rail's balance, collapsing to null if the override points at a disconnected/disabled rail.
@@ -410,7 +414,7 @@ Fan-out callers use **probe-first-then-batch**: await one resolve, check `piMayb
 
 ## State + persistence
 
-Zustand store (`lib/store.ts`) holds: `identity`, `current`, `isPlaying`, `positionSec`, `playerExpanded` (fullscreen player open — lifted so a live-stream card can open the player `<Player>` owns), `signInOpen` (sign-in modal open — lifted so the fullscreen player / live chat can open the modal `<NostrAuth>` owns), `selectedPodcast` (lifted out of `app/page.tsx` so a podcast-name link inside a `<NoteCard>` can flip the layout without prop-drilling), `discussionEpisode` (the episode whose `socialInteract` thread the full-page discussion view shows; `selectPodcast` clears it), `favorites`, `mutedPubkeys`, `boostsTick`. **In-memory only.**
+Zustand store (`lib/store.ts`) holds: `identity`, `current`, `isPlaying`, `positionSec`, `playerExpanded` (fullscreen player open — lifted so a live-stream card can open the player `<Player>` owns), `signInOpen` (sign-in modal open — lifted so the fullscreen player / live chat can open the modal `<NostrAuth>` owns), `walletOpen` (wallet modal open — lifted, mirroring `signInOpen`, so any surface can open the one `<WalletModal>` that `<AuthControl>` owns), `selectedPodcast` (lifted out of `app/page.tsx` so a podcast-name link inside a `<NoteCard>` can flip the layout without prop-drilling), `discussionEpisode` (the episode whose `socialInteract` thread the full-page discussion view shows; `selectPodcast` clears it), `favorites`, `mutedPubkeys`, `boostsTick`. **In-memory only.**
 
 Everything else lives in `localStorage` and is never sent server-side. **All `bmb:*` keys go through typed helpers in `lib/storage.ts`** — don't call `localStorage.getItem`/`setItem` directly anywhere else. If you add a persisted field, add an accessor and use the `bmb:*` prefix.
 

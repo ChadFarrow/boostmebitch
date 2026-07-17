@@ -1,8 +1,8 @@
 # Boost Me Bitch — Podcast Boost Station
 
 Search, listen, and **boost** Podcasting 2.0 shows — and **watch + boost Nostr live streams** — over Lightning.
-Sign in with Nostr (NIP-07, Amber, or a NIP-46 bunker). Pay via **NWC, Spark, WebLN, or Lightning Address**.
-**Boosts publish a kind:1 note** to Nostr with NIP-73 podcast refs; **live-stream boosts go out as real NIP-57 zaps** so they show up as boosts in Fountain / tunestr / zap.stream.
+**Lightning and Nostr are two independent logins:** connect a wallet (**NWC, Spark, WebLN, or Lightning Address**) and boost with no Nostr account, or **sign in with Nostr** (NIP-07, Amber, or a NIP-46 bunker) for the social layer.
+**Boosts publish a kind:1 note** to Nostr with NIP-73 podcast refs — signed by your key when signed in, or by the **app's own Nostr identity** (server-side) when you're not, so signed-out boosts still reach Nostr; **live-stream boosts go out as real NIP-57 zaps** so they show up as boosts in Fountain / tunestr / zap.stream.
 Favorite shows and mute accounts sync across any Nostr-aware client via NIP-51. Installable PWA, light + dark.
 
 Live at <https://boostmebitch.vercel.app>.
@@ -40,6 +40,8 @@ vercel
 #   PODCAST_INDEX_SECRET
 #   APP_NAME=boostmebitch        (optional — User-Agent default)
 #   BOOSTBOX_URL / BOOSTBOX_API_KEY   (optional — BoostBox LNURL metadata proxy)
+#   SITE_NOSTR_SK                (optional — server-only nsec/hex; lets signed-out
+#                                 boosts post a note from the app's Nostr identity)
 ```
 
 Podcast Index credentials live only in API routes (`app/api/*`) so they never reach the browser. The Spark SDK talks straight to Spark's signing operators, so it needs no key.
@@ -49,7 +51,9 @@ Podcast Index credentials live only in API routes (`app/api/*`) so they never re
 ## Features
 
 - **Search** Podcast Index and play any episode (native HTML5 `<audio>`, no proxy).
+- **Two independent logins** — connect a Lightning wallet and boost with **no Nostr account**, or sign in with Nostr for the social layer. One combined **"Sign in ▾"** header control (`<AuthControl>`) fronts both.
 - **V4V boosts** over three rails — **NWC** (NIP-47), **Spark**, or **WebLN** — to keysend nodes *or* Lightning addresses, with per-recipient value splits and a Podcasting 2.0 boostagram.
+- **Signed-out boosts still reach Nostr** — the app has its own Nostr identity that signs the kind:1 note server-side (`SITE_NOSTR_SK`) so an anonymous boost is still posted (attributed by your typed "From" name), with a NIP-05 (`_@boostmebitch.com`) + kind:0 profile + kind:10002 relay list.
 - **Nostr live streams** — a "Live on Nostr" row of kind:30311 streams; watch HLS video in-app; **live chat** (kind:1311) and **boosts/zaps** (kind:9735) rendered together; a shareable `/stream/<naddr>` page.
 - **Boost-all tracks** — split a boost across every `valueTimeSplit` remote item on a music episode.
 - **Favorites** (NIP-51 kind:30003) and **mutes** (NIP-51 kind:10000) that sync across Nostr clients.
@@ -69,14 +73,16 @@ app/
   api/value-splits/      → resolve valueTimeSplit remote items  (PI + RSS fallback)
   api/publisher/         → publisher feed → album children
   api/lightning/boostbox → BoostBox LNURL metadata proxy
+  api/nostr/site-sign/   → sign a boost note as the site identity (server-only key)
+  .well-known/nostr.json → NIP-05 for the site identity (_@boostmebitch.com)
   layout.tsx             → bg art layer + OG metadata + FOUC theme blocker + <Player>
   page.tsx               → search, favorites, live-streams row, global feed; URL-restored views
   stream/[naddr]/        → standalone live-stream page (opens the layout player)
 components/
   player · fullscreen-player · transport-controls   → shared <audio>/<video>, mini + fullscreen
   nostr-live-streams · live-chat                     → kind:30311 cards, kind:1311/9735 chat
-  wallet-modal · nwc-wallet · spark-wallet · webln-wallet · wallet-balance
-  nostr-auth/  (index · sign-in-modal · login-methods · account-menu · muted-accounts)
+  auth-control · wallet-modal · nwc-wallet · spark-wallet · webln-wallet · wallet-balance
+  nostr-auth/  (index · sign-in-modal · login-methods · account-menu[Nostr-only] · muted-accounts)
   global/podcast/episode-nostr-feed · nostr-note-card · episode-social-thread · discussion-view
   boost-modal/ (index · amount-input · message-input · sender-name · splits-preview · publish-status)
   boost-all-modal · boost-card · lists · search-bar · podcast-cover · avatar · icons · theme-toggle
@@ -88,9 +94,10 @@ lib/
   format.tsx     → fmt/fmtDuration/fmtClock/fmtLiveTime/timeAgo, linkify, confetti
   nostr/
     auth · signer · amber · bunker        → NIP-07 / NIP-55 / NIP-46 sign-in + window.nostr swap
-    pool · publish · relays · profile     → SimplePool wrapper, signAndPublish, relay sets, kind:0
+    pool · publish · relays · profile     → SimplePool wrapper, signAndPublish/publishSignedEvent, relay sets, kind:0
     discover · event-queries · use-feed   → feed assembly, queries, stale-while-revalidate hook
-    boost-notes · interactions            → kind:1 boost notes, replies/reposts
+    boost-notes · interactions            → kind:1 boost notes (user + site-signed), replies/reposts
+    site-key                              → server-only SITE_NOSTR_SK resolver (sign route + NIP-05)
     favorites · mutes · *-hydrator        → NIP-51 kind:30003 / kind:10000
     live-streams · live-chat              → kind:30311 streams, kind:1311 chat + kind:9735 zaps
     wallet-backup · settings-backup       → NIP-44 encrypted-to-self (Spark seed, NWC, settings)
@@ -116,7 +123,7 @@ Entry points: **⚡ BOOST in the player** (current episode, `ts` = playback posi
 - **`type=node`** → keysend with TLV record `7629169` carrying the boostagram JSON. Per-recipient `customKey`/`customValue` (e.g. shared-node sub-account routing for getalby.com) is a separate TLV record. (Spark can't keysend — node legs are rejected on the Spark rail.)
 - **`type=lnaddress`** → LNURL-pay invoice fetch (amount-verified against the BOLT11 before paying), then pay via the chosen rail.
 
-Per-recipient progress + errors render live; confetti fires when a leg lands. **If signed in and at least one payment landed**, a kind:1 boost note is published.
+Per-recipient progress + errors render live; confetti fires when a leg lands. **When "Share on Nostr" is on and at least one payment landed**, a kind:1 boost note is published — signed by your own key when signed in, or by the site's Nostr identity server-side (`app/api/nostr/site-sign`, `SITE_NOSTR_SK`) when you're not, so signed-out boosts still reach Nostr. The note attributes the sender by their typed "From" name (`"ChadF boosted 100 sats → …"`).
 
 **Live-stream boosts → real zaps.** When you boost a Nostr live stream signed-in, with an active signer and a host whose Lightning address supports NIP-57 (checked *before* paying, so no double-pay), the boost is sent as a real **zap** (`sendZap`, `lib/v4v/zap.ts`) tagged to the stream — the recipient's LN service then publishes a kind:9735 receipt that renders as a boost in Fountain / tunestr / zap.stream **and** in BMB's chat. Otherwise it falls back to a normal boostagram payment plus a kind:1311 "⚡ Boosted N sats" chat line.
 
@@ -176,7 +183,9 @@ We emit the boostagram in TLV `7629169` only — never a separate `696969` sende
 
 `pod.link/<itunesId>` smart-links a click to the visitor's podcast app; `lib/nostr/boost-notes.ts:podcastLandingUrl` falls back to PI then RSS.
 
-**Where it publishes.** `resolvePublishRelays(identity)`: a manual `localStorage.bmb:relays` override, else the user's NIP-65 (kind:10002) write relays **unioned with the defaults** (so a note still lands when the write relays are dead/AUTH-gated). Capped at 20. Defaults:
+**Who signs it.** Signed in → your own key via `window.nostr` (`signAndPublish`). Signed out → the site's own Nostr identity, signed **server-side** at `app/api/nostr/site-sign` (which validates the note is boost-shaped before signing with `SITE_NOSTR_SK`) and published from the browser via `publishBoostNoteViaSite`. Either way the sender is attributed by their "From" name in the body.
+
+**Where it publishes.** Signed in → `resolvePublishRelays(identity)`: a manual `localStorage.bmb:relays` override, else the user's NIP-65 (kind:10002) write relays **unioned with the defaults** (so a note still lands when the write relays are dead/AUTH-gated), capped at 20. Signed out (site identity) → the defaults. Defaults:
 
 ```
 wss://relay.damus.io · wss://relay.primal.net · wss://nos.lol · wss://relay.nostr.band · wss://relay.fountain.fm
@@ -186,10 +195,10 @@ wss://relay.damus.io · wss://relay.primal.net · wss://nos.lol · wss://relay.n
 
 ## Wallets
 
-Configured in the account menu's **wallet modal** (`components/wallet-modal.tsx`); a balance chip reads the active rail.
+Connected from the header's **`<AuthControl>`** (the combined "Sign in ▾" login — wallet and Nostr are separate) via the **wallet modal** (`components/wallet-modal.tsx`); a balance chip reads the active rail. Signed out, **NWC + WebLN work fully**; the Spark row needs Nostr sign-in (its seed is encrypted to your key).
 
 - **NWC** (NIP-47, `@getalby/sdk`) — paste a connection URI. Optionally **back it up encrypted to Nostr** (kind:30078, NIP-44 to-self) so it restores on other devices; opt-in and deletable.
-- **Spark** (`@buildonspark/spark-sdk`) — paste/create/restore a seed; **no API key**. The mnemonic is stored **encrypted to Nostr** (kind:30078) for silent restore. Account number matches Primal/BlitzWallet so the same seed shows the same balance.
+- **Spark** (`@buildonspark/spark-sdk`) — paste/create/restore a seed; **no API key**. The mnemonic is stored **encrypted to Nostr** (kind:30078) for silent restore, so this rail requires a Nostr identity. Account number matches Primal/BlitzWallet so the same seed shows the same balance.
 - **WebLN** — the injected extension (Alby), enabled on demand (we never call `wl.enable()` speculatively).
 
 ---
@@ -202,7 +211,7 @@ Configured in the account menu's **wallet modal** (`components/wallet-modal.tsx`
 - **Amber** (NIP-55) on Android — `nostrsigner:` URL scheme + clipboard round-trip.
 - **NIP-46 bunker / `nostrconnect://`** remote signer (nsec.app, Clave, Amber-as-bunker, Primal).
 
-One **"Sign in with Nostr"** button opens a two-tab modal (Extension / Remote signer). `nostr-tools` is pinned to **exactly `2.19.4`** — `2.20.0+`'s NIP-46 rewrite breaks the `nostrconnect://` handshake on our relays.
+The header's combined **"Sign in ▾"** control (`<AuthControl>`) opens a two-tab modal (Extension / Remote signer) for the Nostr login. `nostr-tools` is pinned to **exactly `2.19.4`** — `2.20.0+`'s NIP-46 rewrite breaks the `nostrconnect://` handshake on our relays.
 
 ---
 
