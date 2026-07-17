@@ -25,6 +25,7 @@ const KEYS = {
   relays: 'bmb:relays',
   senderName: 'bmb:sender_name',
   shareNostr: 'bmb:share_nostr',
+  shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favoritesPrefix: 'bmb:favorites',
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
@@ -41,6 +42,7 @@ const KEYS = {
 } as const;
 
 export type RailPref = 'nwc' | 'spark' | 'webln';
+export type ShareNostrAs = 'self' | 'site';
 export type ThemeMode = 'light' | 'dark';
 export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
 
@@ -332,6 +334,17 @@ export const storage = {
   shareNostr: {
     get: (): boolean => safeGet(KEYS.shareNostr) !== '0',
     set: (v: boolean) => safeSet(KEYS.shareNostr, v ? '1' : '0'),
+  },
+
+  /**
+   * WHO signs the boost note when sharing is on and the user is signed in:
+   * 'self' (default) = their own Nostr key, 'site' = the site's identity
+   * (the same server-signed path signed-out boosts use). Signed-out shares
+   * always go via the site key regardless of this value.
+   */
+  shareNostrAs: {
+    get: (): ShareNostrAs => (safeGet(KEYS.shareNostrAs) === 'site' ? 'site' : 'self'),
+    set: (v: ShareNostrAs) => safeSet(KEYS.shareNostrAs, v),
   },
 
   /**
