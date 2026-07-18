@@ -261,7 +261,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
   return (
     <div className="fixed inset-0 z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="card w-full max-w-xl bg-ink relative max-h-[92vh] overflow-y-auto">
+      {/* scrollbar-gutter reserves the scrollbar's width even while it's not
+          shown, so content growing past 92vh (a wrapped desc line, status
+          rows appearing) can't jitter the content width when the scrollbar
+          pops in. */}
+      <div className="card w-full max-w-xl bg-ink relative max-h-[92vh] overflow-y-auto [scrollbar-gutter:stable]">
         <button
           onClick={onClose}
           className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
