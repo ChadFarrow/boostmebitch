@@ -36,7 +36,16 @@ import {
   subscribeWebln,
   weblnGetBalance,
 } from '@/lib/v4v/webln';
+import { isLibreRunning, subscribeLibre } from '@/lib/v4v/libre';
 import { railLabel } from '@/lib/v4v/wallets';
+
+// Libre pays over the WebLN rail (it installs window.webln), but isWeblnEnabled()
+// is per-session and only flips on the first payment — so after a reload a running
+// Libre would read "not ready" and the resolver would fall through to NWC/Spark,
+// disagreeing with pickRail() (which counts hasWebln()) and the wallet modal. A
+// running Libre IS a live WebLN rail. One predicate, used everywhere the chip
+// decides readiness, keeps the header, payer, and modal on the same wallet.
+const weblnLive = () => isWeblnEnabled() || isLibreRunning();
 import { useApp } from '@/lib/store';
 import { storage, subscribeRailPref } from '@/lib/storage';
 
@@ -55,7 +64,7 @@ export function useWalletBalance(
   const npub = useApp((s) => s.identity?.npub) ?? null;
   const [sparkReady, setSparkReady] = useState(hasSpark());
   const [nwcReady, setNwcReady] = useState(hasNwc());
-  const [weblnReady, setWeblnReady] = useState(isWeblnEnabled());
+  const [weblnReady, setWeblnReady] = useState(weblnLive());
   const [balance, setBalance] = useState<number | null>(null);
 
   const [, setPrefTick] = useState(0);
@@ -63,11 +72,14 @@ export function useWalletBalance(
   useEffect(() => {
     const unsubSpark = subscribeSpark(() => setSparkReady(hasSpark()));
     const unsubNwc = subscribeNwc(() => setNwcReady(hasNwc()));
-    const unsubWebln = subscribeWebln(() => setWeblnReady(isWeblnEnabled()));
+    const unsubWebln = subscribeWebln(() => setWeblnReady(weblnLive()));
+    // Libre starting/stopping flips WebLN-readiness without a webln event, so it
+    // must re-resolve the chip too (Libre pays over window.webln).
+    const unsubLibre = subscribeLibre(() => setWeblnReady(weblnLive()));
     // Rail-pref switches change the effective rail without any readiness
     // flag moving — bump so the chip re-resolves and refetches.
     const unsubPref = subscribeRailPref(() => setPrefTick((t) => t + 1));
-    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubPref(); };
+    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubLibre(); unsubPref(); };
   }, []);
 
   // Resolve effective rail. If the caller forced one, we still gate on it

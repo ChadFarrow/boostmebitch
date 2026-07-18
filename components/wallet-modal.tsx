@@ -45,25 +45,27 @@ function railConnected(rail: WalletChoice): boolean {
   return rail === 'nwc' ? hasNwc()
     : rail === 'spark' ? hasSpark()
     : rail === 'libre' ? isLibreRunning()
-    : isWeblnEnabled();
+    // Libre pays over the WebLN rail, so a running Libre means the webln slot is live too.
+    : isWeblnEnabled() || isLibreRunning();
 }
 
-// Mirrors pickRail() (rail pref first, then NWC > Spark > WebLN priority)
-// but gates WebLN on isWeblnEnabled — inside the wallet UI "active" means
-// the user explicitly enabled it, not merely that the extension exists.
+// The one "which wallet is live" resolver for the modal — kept in lockstep with
+// pickRail() (the payer) and useWalletBalance() (the header chip) so all three
+// always agree. Libre is just one option, NOT special: the live wallet is the
+// one you last picked (rail pref) if still connected, else NWC > Spark > WebLN.
+// A running Libre counts as the WebLN slot being live (it IS window.webln), and
+// when the webln slot wins with Libre running we surface it as the 'libre' card
+// (not a generic WebLN card whose Disconnect couldn't stop Libre).
 function getActiveRail(): WalletChoice | null {
-  // Libre outranks the stored pref, because while it runs it IS window.webln — it isn't one
-  // candidate among several. Checking the pref first got this backwards the moment you boosted:
-  // paying via Libre goes through the WebLN rail, so recordLastRail writes pref='webln' and
-  // ensureWebln flips weblnEnabled on — and from then on this returned 'webln', quietly replacing
-  // the Libre card with a WebLN one whose Disconnect can't stop Libre at all.
-  if (isLibreRunning()) return 'libre';
   const pref = storage.railPref.get();
-  if (pref && railConnected(pref)) return pref;
-  if (hasNwc()) return 'nwc';
-  if (hasSpark()) return 'spark';
-  if (isWeblnEnabled()) return 'webln';
-  return null;
+  let rail: WalletChoice | null =
+    pref && railConnected(pref) ? pref
+    : hasNwc() ? 'nwc'
+    : hasSpark() ? 'spark'
+    : isWeblnEnabled() || isLibreRunning() ? 'webln'
+    : null;
+  if (rail === 'webln' && isLibreRunning()) rail = 'libre';
+  return rail;
 }
 
 // Reparents the single persistent <libre-wallet> element (mounted in the layout) into the modal
@@ -147,8 +149,11 @@ export function WalletModal({ onClose }: Props) {
   // disconnects the others (clearOtherWallets in handleConnected).
   function handlePickerClick(rail: WalletChoice, switching: boolean) {
     if (switching && railConnected(rail)) {
-      // Libre isn't persisted in railPref (it fronts window.webln); tapping it just re-focuses.
-      if (rail !== 'libre') recordLastRail(rail, identity);
+      // Make the tapped wallet the live one. Libre pays over the webln rail, so it's
+      // recorded as pref 'webln' (getActiveRail maps that back to the Libre card while
+      // Libre runs) — that's how a running Libre becomes the active payer + chip like
+      // any other option, and how you switch AWAY from it by picking another rail.
+      recordLastRail(rail === 'libre' ? 'webln' : rail, identity);
       setView({ kind: 'connected' });
       return;
     }
