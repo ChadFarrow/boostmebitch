@@ -67,7 +67,10 @@ export function ShareNostrPicker({
     {
       value: 'site',
       label: 'Anonymous',
-      desc: `${noteNoun} posted from boostmebitch.com's account — not linked to your npub.`,
+      // Kept short enough to fit ONE line at full modal width, like the other
+      // two descs — a second line grows the modal past its 92vh cap and
+      // toggles the scrollbar (width jitter) when flipping options.
+      desc: `${noteNoun} posted from boostmebitch.com's account, not your npub.`,
     },
     {
       value: 'off',
