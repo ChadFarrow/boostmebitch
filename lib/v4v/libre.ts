@@ -343,12 +343,23 @@ function clearLibreDb(name: string): Promise<void> {
  * recoverable from the user's saved recovery phrase (+ that wallet's Drive backup). Mirrors the
  * package's own `resetWallet()` (clear the wallet DBs) + "the UI also clears localStorage + reloads".
  *
+ * GATED ON `isLibreRunning()` — deliberately. `dispose()` below only flushes the final backup and
+ * publishes a CLEAN `released` lease when the node is running (its `wasRunning` guard). If we wiped
+ * while the node was mid-roam / halted / blocked, the account's Drive lease stays `live` @ this
+ * origin, and because we just deleted the local state that would prove the handoff, RETURNING to that
+ * account self-halts with "last session on <this origin> didn't finish saving" — unrecoverable except
+ * by a force-close. So we refuse the switch unless running (the wallet-modal button is also disabled
+ * then; this is defense-in-depth). Returns without doing anything in that case.
+ *
  * The reload is required: the package caches the OAuth access token in module scope for the page's
  * life with no reset API, so `ensureDrive` won't re-run OAuth until a fresh load.
  */
 export async function switchLibreDriveAccount(): Promise<void> {
   if (typeof window === 'undefined') return;
-  // Close the LDK node's IndexedDB handles first so the wipe isn't racing live channel-state writes.
+  if (!isLibreRunning()) return;
+  // Dispose FIRST, while running: this flushes the final backup and releases the lease as `released`,
+  // so returning to this account later proves the handoff cleanly instead of self-halting. Also closes
+  // the LDK node's IndexedDB handles so the wipe below isn't racing live channel-state writes.
   try {
     await handle?.dispose();
   } catch {

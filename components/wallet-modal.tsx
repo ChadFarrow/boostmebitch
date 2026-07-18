@@ -247,9 +247,14 @@ export function WalletModal({ onClose }: Props) {
                   prompts for an account and loads that account's wallet (asking for its recovery
                   phrase). Destructive — the seed only comes back from the user's saved phrase — so we
                   confirm first. Reloads because the package caches the OAuth token for the page's
-                  life; see switchLibreDriveAccount. */}
+                  life; see switchLibreDriveAccount.
+                  Disabled unless the node is fully running: the wipe is only safe once dispose() can
+                  flush + release the lease cleanly, else returning to this account self-halts (see
+                  switchLibreDriveAccount). */}
               <button
+                disabled={!isLibreRunning()}
                 onClick={() => {
+                  if (!isLibreRunning()) return;
                   if (
                     window.confirm(
                       'Switch to a different Google account?\n\n' +
@@ -260,7 +265,12 @@ export function WalletModal({ onClose }: Props) {
                     void switchLibreDriveAccount();
                   }
                 }}
-                className="w-full text-[11px] text-muted hover:text-nostr text-center"
+                title={
+                  isLibreRunning()
+                    ? undefined
+                    : 'Wait until the wallet is fully connected before switching accounts.'
+                }
+                className="w-full text-[11px] text-muted hover:text-nostr text-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted"
               >
                 Switch Google account
               </button>
