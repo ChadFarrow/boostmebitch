@@ -9,3 +9,7 @@ out
 next-env.d.ts
 tsconfig.tsbuildinfo
 .superpowers/
+
+# Libre wallet-embed LDK WASM — copied from the package into public/ by the
+# postinstall script on every install (Vercel included), so it's never committed.
+public/liblightningjs.wasm

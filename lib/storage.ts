@@ -38,6 +38,7 @@ const KEYS = {
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
   sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
+  libreActive: 'bmb:libre_active',    // set once Libre is this browser's wallet; auto-mounts the widget on later visits AND marks the other rails as already-cleared, so a reload can't re-run that teardown. Cleared by clearOtherWallets when another rail wins.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
 } as const;
 
@@ -245,6 +246,17 @@ export const storage = {
     get: () => safeGet(KEYS.sparkOptOut) === '1',
     set: () => safeSet(KEYS.sparkOptOut, '1'),
     clear: () => safeRemove(KEYS.sparkOptOut),
+  },
+
+  /** '1' once the user has adopted Libre as this browser's wallet. Two jobs: the host auto-mounts
+   *  the widget on later visits (so a returning user doesn't re-pick it, and the Drive OAuth
+   *  redirect lands somewhere that can complete it), and it records that the other rails were
+   *  already torn down for this adoption — Libre reaching 'running' on a reload must NOT clear
+   *  them a second time, or every reload would silently delete the user's NWC URI. */
+  libreActive: {
+    get: () => safeGet(KEYS.libreActive) === '1',
+    set: () => safeSet(KEYS.libreActive, '1'),
+    clear: () => safeRemove(KEYS.libreActive),
   },
 
   /** Per-npub opt-in flag: '1' when the user wants their NWC connection

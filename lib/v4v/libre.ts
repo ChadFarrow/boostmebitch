@@ -1,0 +1,399 @@
+// Libre Wallet rail — a roaming, in-page LDK Lightning wallet embedded via @libre/wallet-embed.
+//
+// Unlike the other rails, the whole wallet UI (connect, roaming states, the spend-approval modal,
+// the running balance chip) is drawn by the <libre-wallet> custom element inside its own shadow
+// root. We mount ONE instance for the app's lifetime (see components/libre/libre-wallet-host.tsx)
+// so the LDK node, the window.webln provider, and the Google-Drive OAuth redirect landing all
+// survive the wallet modal opening and closing. The element is a stable DOM node with no
+// teardown-on-detach, so it can be moved between the persistent host slot and the modal body
+// (borrow/park below) without losing the session.
+//
+// This module mirrors the nwc / spark / webln rails: module-level state + a createObservable so
+// synchronous readers (wallet-modal's getActiveRail) and React subscribers stay in sync. The
+// wallet-embed package is imported dynamically (inside ensureLibreMounted) so its LDK/WASM bundle
+// never lands in the main chunk or on the server; only `import type` runs at module load.
+//
+// Libre is NOT a fourth Rail. It becomes window.webln while it runs, so boosts go down the
+// existing WebLN path with no changes to boost.ts / zap.ts / RailPref. Two consequences worth
+// keeping in mind here:
+//   - Everything below distinguishes "running" from "adopted". `view` is module state and resets to
+//     'stopped' on every page load, so it can never answer "is Libre this browser's wallet?" —
+//     that's storage.libreActive, and conflating the two silently wiped users' NWC URIs on reload.
+//   - We own window.webln, so we must hand it back: releaseWebln restores the provider we displaced
+//     and turns the WebLN rail's session flag off. Leaving either behind strands the user with a UI
+//     that says "connected" and a boost path that throws.
+
+import { createObservable } from '../pubsub';
+import { storage } from '@/lib/storage';
+import { getErrorMessage } from '@/lib/util';
+import { weblnDisable } from './webln';
+import type { MountHandle, MountOptions, RoamingViewState } from '@libre/wallet-embed';
+
+export type LibreView = RoamingViewState['view'];
+
+let handle: MountHandle | null = null;
+let mounting: Promise<void> | null = null;
+let mountError: string | null = null;
+let unsubState: (() => void) | null = null;
+let homeSlot: HTMLElement | null = null;
+let borrowed = false;
+let wantMount = false;
+let view: LibreView = 'stopped';
+// The provider window.webln held before we claimed it (an extension like Alby, usually). Restored
+// on release — see claimWebln.
+let priorWebln: unknown;
+let claimed = false;
+let freshAdoption = false;
+
+const { subscribe: subscribeLibre, notify } = createObservable();
+export { subscribeLibre };
+
+/** Ask the host to load + mount the widget (idempotent). Set when the user picks the Libre rail. */
+export function requestLibreMount(): void {
+  if (!wantMount) {
+    wantMount = true;
+    notify();
+  }
+}
+
+/**
+ * Whether the widget should be mounted. The LDK bundle is ~5 MB JS + ~12 MB WASM, so it loads only
+ * when there's a reason: an explicit pick this page-life, a user who already adopted Libre here, or
+ * a Drive OAuth redirect landing that nothing else can complete.
+ */
+export function isLibreWanted(): boolean {
+  if (wantMount) return true;
+  if (typeof window === 'undefined') return false;
+  try {
+    // The installed-PWA Drive login is a full-page redirect back to '/' with the token in the
+    // fragment, which kills `wantMount` and lands before the user has ever reached 'running' (so
+    // libreActive isn't set yet either). This check is therefore the ONLY thing that mounts the
+    // widget to complete a first-ever connect on iOS — load-bearing, not opportunistic. Nothing
+    // else in this app puts a token in the fragment (grep: this is the sole `location.hash` use).
+    if (window.location.hash.includes('access_token')) return true;
+    return storage.libreActive.get();
+  } catch {
+    return false;
+  }
+}
+
+/** Why the widget failed to load, if it did. Cleared on a retry. */
+export function getLibreMountError(): string | null {
+  return mountError;
+}
+
+/** True while the LDK bundle is downloading — the widget draws nothing until it lands. */
+export function isLibreLoading(): boolean {
+  return mounting !== null;
+}
+
+/** True once the roaming session is live here (the node is running). */
+export function isLibreRunning(): boolean {
+  return view === 'running';
+}
+
+/**
+ * True exactly once per adoption: Libre just reached 'running' on a browser that hadn't adopted it
+ * yet. The host uses it to disconnect the other rails — and ONLY then.
+ *
+ * This has to be captured inside the state transition rather than sampled by the caller. `view` is
+ * module state that resets to 'stopped' on every page load, so a returning user's auto-mount
+ * reaching 'running' looks exactly like a fresh connect from outside; clearing on that edge
+ * unconditionally deleted the user's NWC URI on every reload. Sampling `libreActive` once at effect
+ * setup fixes the reload but goes stale within a page life (disconnect Libre → connect NWC →
+ * reconnect Libre would then leave both wired up, with pickRail quietly preferring NWC).
+ */
+export function consumeFreshAdoption(): boolean {
+  const v = freshAdoption;
+  freshAdoption = false;
+  return v;
+}
+
+/** The current roaming view — the host reflects in-progress/blocked/halted states from it. */
+export function getLibreView(): LibreView {
+  return view;
+}
+
+/** True while the element has been reparented out of its home slot (into the wallet modal). */
+export function isLibreBorrowed(): boolean {
+  return borrowed;
+}
+
+/** True once the single instance has been mounted (the widget exists in the DOM). */
+export function isLibreMounted(): boolean {
+  return handle !== null;
+}
+
+// Make Libre the page's WebLN provider. The widget's own installWebln is deliberately POLITE (it
+// won't replace an existing window.webln — see MountHandle.installedWebln), but picking Libre in
+// the wallet modal is an explicit choice to pay through it here, so we override even an extension.
+//
+// We snapshot whoever held window.webln first and put them back on release. Same shape as
+// lib/nostr/signer.ts captureOriginal() does for window.nostr, and for the same reason: an
+// extension injects once at page load, so a provider we delete instead of restoring is gone until
+// a reload — a user who stops Libre would silently lose Alby with no way to get it back.
+function claimWebln(): void {
+  if (!handle || typeof window === 'undefined') return;
+  try {
+    const w = window as { webln?: unknown };
+    if (!claimed) priorWebln = w.webln;
+    Object.defineProperty(window, 'webln', {
+      value: handle.webln,
+      writable: false,
+      configurable: true,
+    });
+    claimed = true;
+    window.dispatchEvent(new Event('webln:ready'));
+  } catch {
+    // A non-configurable existing provider — leave it; nothing else we can safely do.
+  }
+}
+
+function releaseWebln(): void {
+  if (typeof window === 'undefined' || !claimed) return;
+  try {
+    const w = window as { webln?: unknown };
+    // Only stand down if we're still the one installed.
+    if (handle && w.webln !== handle.webln) return;
+    if (priorWebln === undefined) {
+      delete w.webln;
+    } else {
+      Object.defineProperty(window, 'webln', {
+        value: priorWebln,
+        writable: false,
+        configurable: true,
+      });
+    }
+  } catch {
+    // ignore
+  }
+  claimed = false;
+  priorWebln = undefined;
+  // The WebLN rail's `enabled` flag is per-session module state that a Libre payment turns on (any
+  // boost goes through ensureWebln). Leaving it set after Libre stops makes the account menu and
+  // the wallet modal claim "WebLN — connected" while pickRail throws "no payment provider" — three
+  // surfaces disagreeing. Whoever we handed back to must be re-enabled explicitly, as ever.
+  weblnDisable();
+}
+
+function applyState(next: LibreView): void {
+  const was = view;
+  view = next;
+  if (view === 'running' && was !== 'running') {
+    claimWebln();
+    // Whether THIS transition is the moment Libre became this browser's wallet, captured before
+    // the flag is written — it's the only instant the answer is knowable. The host consumes it to
+    // decide whether to disconnect the other rails. See consumeFreshAdoption.
+    freshAdoption = !storage.libreActive.get();
+    storage.libreActive.set();
+  }
+  // Every exit from 'running' — the user disconnected, or the wallet roamed to another device, or
+  // Drive went unreachable mid-session — hands window.webln back. Only 'running' can pay.
+  if (view !== 'running' && was === 'running') releaseWebln();
+  notify();
+}
+
+/**
+ * Mount the single wallet-embed instance into `home` (idempotent). Dynamically imports the package
+ * so the LDK/WASM bundle stays out of the main chunk and off the server. Safe to call on every host
+ * mount; if the element already exists it is simply re-parked into `home`.
+ *
+ * Never rejects: the callers are effects that can only `void` this, and the widget's own card is
+ * the surface where a failure has to be reported anyway (see getLibreMountError).
+ */
+export async function ensureLibreMounted(home: HTMLElement, opts: MountOptions): Promise<void> {
+  homeSlot = home;
+  if (handle) {
+    if (!borrowed && handle.element.parentElement !== home) home.appendChild(handle.element);
+    return;
+  }
+  if (mounting) return mounting;
+  mountError = null;
+  mounting = (async () => {
+    try {
+      const { mountLibreWallet } = await import('@libre/wallet-embed');
+      // The home slot can be replaced while the ~17 MB bundle is in flight (a remount of the
+      // layout subtree). Mount into whatever the CURRENT home is, not the one captured at call
+      // time, or the element lands in a detached div and the widget is simply invisible.
+      handle = mountLibreWallet(homeSlot ?? home, { ...opts, installWebln: false });
+      // installWebln:false — we own window.webln ourselves (claimWebln, on the running transition).
+      applyState(handle.state().view);
+      unsubState = handle.onState((s) => applyState(s.view));
+    } catch (e) {
+      // A chunk 404 (a redeploy under an open PWA tab), offline, or a missing /liblightningjs.wasm.
+      // Without this the rejection is unhandled AND the widget is a dead end: `handle` stays null
+      // and nothing ever retries, so the user watches an empty card forever.
+      mountError = getErrorMessage(e, 'Could not load the Libre wallet.');
+    }
+  })();
+  try {
+    await mounting;
+  } finally {
+    mounting = null;
+    notify();
+  }
+}
+
+/** Retry a failed mount (the widget card's "Try again"). */
+export async function retryLibreMount(home: HTMLElement, opts: MountOptions): Promise<void> {
+  mountError = null;
+  notify();
+  await ensureLibreMounted(home, opts);
+}
+
+/**
+ * Stop using Libre on this browser: hand window.webln back, tear the LDK node down, and forget the
+ * adoption so later visits don't re-download 17 MB. Idempotent.
+ */
+export async function libreDisconnect(): Promise<void> {
+  storage.libreActive.clear();
+  wantMount = false;
+  // Never let an unconsumed adoption survive a disconnect and fire against a later, unrelated
+  // connect — that would tear down whatever wallet the user moved to in the meantime.
+  freshAdoption = false;
+  releaseWebln();
+  unsubState?.();
+  unsubState = null;
+  const h = handle;
+  handle = null;
+  view = 'stopped';
+  notify();
+  // Last — it's async (final Drive flush + lease release) and must not strand the state above.
+  try {
+    await h?.dispose();
+  } catch {
+    // Best-effort: the node is going away regardless.
+  }
+}
+
+// These are @libre/wallet-embed's OWN localStorage keys for its Google-Drive OAuth — NOT bmb:* keys,
+// so they're deliberately not in lib/storage.ts. The package saves the connected email as
+// `libre_drive_hint` and hands it back to Google as `login_hint` on every connect; together with the
+// empty `prompt` it requests, that is exactly why Google silently reuses that one account and never
+// shows the chooser (the "it just auto connects" symptom). `libre_drive_configured` is what drives
+// the silent auto-reconnect on load. Clearing both makes the next connect prompt for an account.
+// Names are coupled to the pinned wallet-embed commit — revisit these strings on a version bump.
+const LIBRE_DRIVE_HINT_KEY = 'libre_drive_hint';
+const LIBRE_DRIVE_CONFIGURED_KEY = 'libre_drive_configured';
+
+// The package keeps the wallet SEED + channel state in IndexedDB, keyed by NETWORK and per-origin
+// (NOT per Google account): `libre-wallet-<network>` for each network, `libre-wallet-meta` for the
+// active-network pointer, and the legacy un-namespaced `libre-wallet`. Store name is always
+// `settings`. Mirrors the DB list in the package's own `resetWallet()`. Coupled to the pinned commit.
+const LIBRE_DB_NAMES = [
+  'libre-wallet-mainnet',
+  'libre-wallet-testnet',
+  'libre-wallet-signet',
+  'libre-wallet-regtest',
+  'libre-wallet-meta',
+  'libre-wallet',
+];
+const LIBRE_DB_STORE = 'settings';
+
+/**
+ * Empty one wallet-embed IndexedDB store. Opens WITHOUT a version so it never triggers an upgrade or
+ * blocks on the LDK node's open handle (the package clears rather than deleteDatabase for the same
+ * reason — deleteDatabase blocks on open connections). A DB that doesn't exist is opened empty (no
+ * `settings` store) and skipped. Always resolves — a failed wipe must not strand the reload.
+ */
+function clearLibreDb(name: string): Promise<void> {
+  return new Promise((resolve) => {
+    let req: IDBOpenDBRequest;
+    try {
+      req = indexedDB.open(name);
+    } catch {
+      resolve();
+      return;
+    }
+    req.onerror = () => resolve();
+    req.onsuccess = () => {
+      const db = req.result;
+      try {
+        if (!db.objectStoreNames.contains(LIBRE_DB_STORE)) {
+          db.close();
+          resolve();
+          return;
+        }
+        const tx = db.transaction(LIBRE_DB_STORE, 'readwrite');
+        tx.objectStore(LIBRE_DB_STORE).clear();
+        const done = () => {
+          db.close();
+          resolve();
+        };
+        tx.oncomplete = done;
+        tx.onerror = done;
+        tx.onabort = done;
+      } catch {
+        db.close();
+        resolve();
+      }
+    };
+  });
+}
+
+/**
+ * Switch to a different Google account by starting over on this browser: wipe the local wallet seed +
+ * channel state and forget the Drive binding, so the next connect prompts for an account AND — because
+ * no local seed remains — routes into the widget's restore ("enter your recovery phrase") or setup
+ * flow for whatever wallet the new account holds. Without the IndexedDB wipe the boot logic sees a
+ * local seed (`roamingBootDecision → start`) and silently runs the OLD wallet against the NEW account,
+ * never asking for a seed.
+ *
+ * DESTRUCTIVE — the caller MUST confirm first (the wallet modal does): the wiped seed is only
+ * recoverable from the user's saved recovery phrase (+ that wallet's Drive backup). Mirrors the
+ * package's own `resetWallet()` (clear the wallet DBs) + "the UI also clears localStorage + reloads".
+ *
+ * GATED ON `isLibreRunning()` — deliberately. `dispose()` below only flushes the final backup and
+ * publishes a CLEAN `released` lease when the node is running (its `wasRunning` guard). If we wiped
+ * while the node was mid-roam / halted / blocked, the account's Drive lease stays `live` @ this
+ * origin, and because we just deleted the local state that would prove the handoff, RETURNING to that
+ * account self-halts with "last session on <this origin> didn't finish saving" — unrecoverable except
+ * by a force-close. So we refuse the switch unless running (the wallet-modal button is also disabled
+ * then; this is defense-in-depth). Returns without doing anything in that case.
+ *
+ * The reload is required: the package caches the OAuth access token in module scope for the page's
+ * life with no reset API, so `ensureDrive` won't re-run OAuth until a fresh load.
+ */
+export async function switchLibreDriveAccount(): Promise<void> {
+  if (typeof window === 'undefined') return;
+  if (!isLibreRunning()) return;
+  // Dispose FIRST, while running: this flushes the final backup and releases the lease as `released`,
+  // so returning to this account later proves the handoff cleanly instead of self-halting. Also closes
+  // the LDK node's IndexedDB handles so the wipe below isn't racing live channel-state writes.
+  try {
+    await handle?.dispose();
+  } catch {
+    // Best-effort — we're tearing this wallet down and reloading regardless.
+  }
+  handle = null;
+  await Promise.all(LIBRE_DB_NAMES.map(clearLibreDb));
+  try {
+    localStorage.removeItem(LIBRE_DRIVE_HINT_KEY);
+    localStorage.removeItem(LIBRE_DRIVE_CONFIGURED_KEY);
+  } catch {
+    // Storage unavailable — the hint was never written either, so there's nothing to forget.
+  }
+  window.location.reload();
+}
+
+// Move the element into `target` (the wallet modal). The node keeps its session — no remount.
+// notify() only fires on the borrowed:false→true transition, so a caller that re-borrows from a
+// subscribeLibre handler (to catch the element mounting after the modal opened) can't loop.
+export function borrowLibreElement(target: HTMLElement): void {
+  if (!handle) return;
+  if (handle.element.parentElement !== target) target.appendChild(handle.element);
+  if (!borrowed) {
+    borrowed = true;
+    notify();
+  }
+}
+
+/** Return the element to its persistent home slot (called when the modal closes / rail switches). */
+export function parkLibreElement(): void {
+  if (!handle || !homeSlot) return;
+  if (handle.element.parentElement !== homeSlot) homeSlot.appendChild(handle.element);
+  if (borrowed) {
+    borrowed = false;
+    notify();
+  }
+}

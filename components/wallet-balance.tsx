@@ -36,6 +36,7 @@ import {
   subscribeWebln,
   weblnGetBalance,
 } from '@/lib/v4v/webln';
+import { railLabel } from '@/lib/v4v/wallets';
 import { useApp } from '@/lib/store';
 import { storage, subscribeRailPref } from '@/lib/storage';
 
@@ -221,11 +222,10 @@ export function WalletBalanceChip() {
   const { balance, rail } = useWalletBalance();
   if (rail === null || balance === null) return null;
   const formatted = balance.toLocaleString();
-  const railName = rail === 'nwc' ? 'NWC' : 'Spark';
   return (
     <span
       className="text-bolt text-[11px] font-mono tabular-nums whitespace-nowrap"
-      title={`${formatted} sats (${railName})`}
+      title={`${formatted} sats (${railLabel(rail)})`}
     >
       ⚡{formatted}
     </span>
@@ -249,13 +249,12 @@ export function BoostModalBalance({
   const { balance, rail } = useWalletBalance(railOverride);
   if (rail === null || balance === null) return null;
   const insufficient = amountSats > balance;
-  const railName = rail === 'nwc' ? 'NWC' : rail === 'spark' ? 'Spark' : 'WebLN';
   return (
     <span
       className={`text-[11px] font-mono tabular-nums whitespace-nowrap ${
         insufficient ? 'text-nostr' : 'text-muted'
       }`}
-      title={`${balance.toLocaleString()} sats available on ${railName}`}
+      title={`${balance.toLocaleString()} sats available on ${railLabel(rail)}`}
     >
       <span className={insufficient ? 'text-nostr' : 'text-bolt'}>⚡</span>
       {balance.toLocaleString()}
