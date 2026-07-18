@@ -1,12 +1,14 @@
 'use client';
-import { useId } from 'react';
 import type { ShareNostrAs } from '@/lib/storage';
 
 // The "Share boost on Nostr" chooser, shared by BoostModal and BoostAllModal.
 //
 // Signed in with Nostr the user gets an explicit three-way pick: post signed
 // by their OWN key, post via the SITE's Nostr identity (server-signed, same
-// path signed-out boosts use), or don't post at all. Signed out there are only
+// path signed-out boosts use), or don't post at all. Rendered as one compact
+// pill row (same pattern as BoostAllModal's "Pay via" rail picker) with a
+// single description line for the selected option — three stacked radios with
+// permanent descriptions ate too much of the modal. Signed out there are only
 // two real outcomes (site key or nothing), so the original checkbox stays.
 //
 // State lives in the parent (share on/off + shareAs), matching how the old
@@ -27,8 +29,6 @@ type ShareMode = ShareNostrAs | 'off';
 export function ShareNostrPicker({
   signedIn, share, shareAs, onShareChange, onShareAsChange, noteNoun,
 }: Props) {
-  const group = useId();
-
   if (!signedIn) {
     return (
       <label
@@ -61,20 +61,21 @@ export function ShareNostrPicker({
   const options: { value: ShareMode; label: string; desc: string }[] = [
     {
       value: 'self',
-      label: 'Post to my Nostr feed',
+      label: 'My feed',
       desc: `${noteNoun} posted to your feed, signed with your key.`,
     },
     {
       value: 'site',
-      label: 'Post via boostmebitch.com',
-      desc: `${noteNoun} posted from the site's Nostr account instead of yours.`,
+      label: 'Anonymous',
+      desc: `${noteNoun} posted from boostmebitch.com's account — not linked to your npub.`,
     },
     {
       value: 'off',
-      label: "Don't post to Nostr",
+      label: "Don't post",
       desc: 'Lightning only — nothing posted publicly.',
     },
   ];
+  const selected = options.find((o) => o.value === mode) ?? options[0];
 
   function select(value: ShareMode) {
     if (value === 'off') {
@@ -86,26 +87,27 @@ export function ShareNostrPicker({
   }
 
   return (
-    <div className={`card p-3 space-y-2.5 transition ${share ? '!border-nostr/60' : ''}`}>
-      <div className="text-xs text-bone flex items-center gap-2">
-        <span className={share ? 'text-nostr' : 'text-muted'}>◆</span>
-        Share boost on Nostr
+    <div className={`card p-3 space-y-1.5 transition ${share ? '!border-nostr/60' : ''}`}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={`text-xs ${share ? 'text-nostr' : 'text-muted'}`}>◆</span>
+        <span className="text-xs text-bone">Share on Nostr</span>
+        <div className="flex gap-1.5 flex-wrap sm:ml-auto">
+          {options.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => select(o.value)}
+              aria-pressed={mode === o.value}
+              className={`btn-ghost !px-2.5 !py-1 text-[11px] ${
+                mode === o.value ? '!border-nostr text-nostr' : ''
+              }`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
       </div>
-      {options.map((opt) => (
-        <label key={opt.value} className="flex items-start gap-3 cursor-pointer">
-          <input
-            type="radio"
-            name={group}
-            checked={mode === opt.value}
-            onChange={() => select(opt.value)}
-            className="accent-nostr mt-0.5"
-          />
-          <div className="flex-1 text-xs">
-            <div className="text-bone">{opt.label}</div>
-            <div className="text-muted mt-0.5 leading-relaxed">{opt.desc}</div>
-          </div>
-        </label>
-      ))}
+      <div className="text-[11px] text-muted leading-relaxed">{selected.desc}</div>
     </div>
   );
 }
