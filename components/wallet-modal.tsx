@@ -12,6 +12,7 @@ import {
   parkLibreElement,
   requestLibreMount,
   subscribeLibre,
+  switchLibreDriveAccount,
 } from '@/lib/v4v/libre';
 import { clearOtherWallets, railLabel, type WalletChoice } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
@@ -223,22 +224,33 @@ export function WalletModal({ onClose }: Props) {
           )}
           <LibreRailSlot key="libre-slot" />
           {view.kind === 'connected' && (
-            <div className="border-t border-bone/15 pt-3 flex items-center justify-between">
+            <div className="border-t border-bone/15 pt-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <button
+                  onClick={() => setView({ kind: 'picker', switching: true })}
+                  className="text-[11px] text-muted hover:text-bone"
+                >
+                  Switch wallet →
+                </button>
+                {/* NOT a duplicate of the widget's own "Disconnect" (which sits inside the card and
+                    just stops the session, leaving Libre this browser's wallet). This forgets the
+                    adoption too, so later visits stop pulling the ~17 MB LDK bundle. Labelled for the
+                    difference — two buttons reading "Disconnect" side by side is a coin toss. */}
+                <button
+                  onClick={() => { void libreDisconnect().then(() => setView({ kind: 'picker', switching: false })); }}
+                  className="text-[11px] text-muted hover:text-nostr"
+                >
+                  Stop using Libre here
+                </button>
+              </div>
+              {/* Keeps Libre adopted — just forgets which Google account it's bound to so the next
+                  connect shows Google's chooser. Reloads because the package caches the OAuth token
+                  for the page's life; see switchLibreDriveAccount. */}
               <button
-                onClick={() => setView({ kind: 'picker', switching: true })}
-                className="text-[11px] text-muted hover:text-bone"
+                onClick={() => switchLibreDriveAccount()}
+                className="w-full text-[11px] text-muted hover:text-bone text-center"
               >
-                Switch wallet →
-              </button>
-              {/* NOT a duplicate of the widget's own "Disconnect" (which sits inside the card and
-                  just stops the session, leaving Libre this browser's wallet). This forgets the
-                  adoption too, so later visits stop pulling the ~17 MB LDK bundle. Labelled for the
-                  difference — two buttons reading "Disconnect" side by side is a coin toss. */}
-              <button
-                onClick={() => { void libreDisconnect().then(() => setView({ kind: 'picker', switching: false })); }}
-                className="text-[11px] text-muted hover:text-nostr"
-              >
-                Stop using Libre here
+                Switch Google account
               </button>
             </div>
           )}

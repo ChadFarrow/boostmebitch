@@ -266,6 +266,38 @@ export async function libreDisconnect(): Promise<void> {
   }
 }
 
+// These are @libre/wallet-embed's OWN localStorage keys for its Google-Drive OAuth — NOT bmb:* keys,
+// so they're deliberately not in lib/storage.ts. The package saves the connected email as
+// `libre_drive_hint` and hands it back to Google as `login_hint` on every connect; together with the
+// empty `prompt` it requests, that is exactly why Google silently reuses that one account and never
+// shows the chooser (the "it just auto connects" symptom). `libre_drive_configured` is what drives
+// the silent auto-reconnect on load. Clearing both makes the next connect prompt for an account.
+// Names are coupled to the pinned wallet-embed commit — revisit these strings on a version bump.
+const LIBRE_DRIVE_HINT_KEY = 'libre_drive_hint';
+const LIBRE_DRIVE_CONFIGURED_KEY = 'libre_drive_configured';
+
+/**
+ * Forget which Google account Libre is bound to so the next connect shows Google's account chooser
+ * and the user can pick a different one. This is a "switch account", NOT "stop using Libre" — the
+ * adoption (storage.libreActive) is left intact, so after the user picks a new account the package
+ * re-saves its hint and silent auto-reconnect resumes on that account.
+ *
+ * A full reload is required, not optional: the package caches the OAuth access token in module scope
+ * for the page's whole life and exposes no API to reset it, so `ensureDrive` short-circuits and won't
+ * re-run OAuth until a fresh load. After the reload the widget renders its Connect button (configured
+ * flag cleared), and tapping it prompts for an account (hint cleared).
+ */
+export function switchLibreDriveAccount(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.removeItem(LIBRE_DRIVE_HINT_KEY);
+    localStorage.removeItem(LIBRE_DRIVE_CONFIGURED_KEY);
+  } catch {
+    // Storage unavailable — the hint was never written either, so there's nothing to forget.
+  }
+  window.location.reload();
+}
+
 // Move the element into `target` (the wallet modal). The node keeps its session — no remount.
 // notify() only fires on the borrowed:false→true transition, so a caller that re-borrows from a
 // subscribeLibre handler (to catch the element mounting after the modal opened) can't loop.
