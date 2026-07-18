@@ -14,7 +14,7 @@
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
     "@getalby/sdk": "^5.1.0",
-    "@libre/wallet-embed": "https://github.com/ChadFarrow/libre-listener-wallet-monorepo/releases/download/wallet-embed-latest/libre-wallet-embed-63c035c17f332632ec842b92085211c7d4ca7e8f.tgz",
+    "@libre/wallet-embed": "https://github.com/ChadFarrow/libre-listener-wallet-monorepo/releases/download/wallet-embed-latest/libre-wallet-embed-468ac13b468b1898d538fda6b0d97433a6c8a2ce.tgz",
     "@scure/bip39": "^2.0.1",
     "@types/canvas-confetti": "^1.9.0",
     "canvas-confetti": "^1.9.4",
