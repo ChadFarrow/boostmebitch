@@ -239,8 +239,9 @@ export function WalletModal({ onClose }: Props) {
                 <button
                   onClick={() => { void libreDisconnect().then(() => setView({ kind: 'picker', switching: false })); }}
                   className="text-[11px] text-muted hover:text-nostr"
+                  title="Signs out and releases the wallet, but keeps it on this device so you can return without your recovery phrase. Use on your own device."
                 >
-                  Stop using Libre here
+                  Sign out (keep wallet here)
                 </button>
               </div>
               {/* Forgets the Google binding AND wipes the local wallet seed, so the next connect
@@ -257,10 +258,10 @@ export function WalletModal({ onClose }: Props) {
                   if (!isLibreRunning()) return;
                   if (
                     window.confirm(
-                      'Sign out and switch to a different wallet?\n\n' +
-                        'This signs out of the current Libre wallet and removes it from this browser, then lets you connect ' +
-                        "a different Google account / wallet. Make sure you've saved this wallet's recovery phrase — you'll " +
-                        'need it to load it again. Continue?',
+                      'Sign out and remove this wallet from this browser?\n\n' +
+                        'Use this when switching to a different wallet or leaving a shared computer: it signs out, releases ' +
+                        'the wallet, and deletes it from this device, then lets you connect a different Google account / wallet. ' +
+                        "Make sure you've saved this wallet's recovery phrase — you'll need it to load it again. Continue?",
                     )
                   ) {
                     void switchLibreDriveAccount();
@@ -268,12 +269,12 @@ export function WalletModal({ onClose }: Props) {
                 }}
                 title={
                   isLibreRunning()
-                    ? undefined
-                    : 'Wait until the wallet is fully connected before switching wallets.'
+                    ? 'Full sign-out: releases the wallet and deletes it from this device. Use when switching wallets or leaving a shared computer.'
+                    : 'Wait until the wallet is fully connected before signing out.'
                 }
                 className="w-full text-[11px] text-muted hover:text-nostr text-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted"
               >
-                Sign out &amp; switch wallet
+                Sign out &amp; remove from this device
               </button>
             </div>
           )}
