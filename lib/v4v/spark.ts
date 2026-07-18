@@ -71,16 +71,80 @@ export function sparkOwner(): string | null {
   return activePubkey;
 }
 
+// Bound how long callers wait on SparkWallet.initialize(). The SDK's operator
+// handshake retries challenge-based auth internally and can stay pending for
+// minutes on a degraded connection — without a cap, the wallet modal's
+// "Restoring…" spinner never resolves and never errors. The underlying init
+// keeps running past the timeout; if it eventually succeeds it still sets
+// `sdk` + notify(), so the UI flips to connected late rather than never.
+const SPARK_INIT_TIMEOUT_MS = 30_000;
+
+// Single-flight guard: the login-time auto-restore (nostr-auth doLoadProfile)
+// and the manual "Restore from Nostr" button can both call init with the same
+// seed. Two CONCURRENT SparkWallet.initialize() runs for one identity key
+// fight over Spark's per-identity auth challenges ("Authentication failed
+// after retrying expired challenges") and retry-loop — the visible symptom is
+// a restore stuck on "Restoring…". Same-seed callers share one initialize;
+// a different-seed caller (paste racing the auto-restore) waits for the
+// in-flight one to settle, then runs its own init, which replaces the SDK.
+let initInFlight: { key: string; promise: Promise<void> } | null = null;
+// Normalized seed of the ACTIVE wallet, kept only to make init idempotent
+// (re-initing the same seed is a no-op; a different seed re-inits). The seed
+// already lives in the SDK instance, so this widens no security boundary.
+let activeMnemonic: string | null = null;
+
+const normalizeSeed = (m: string) => m.trim().replace(/\s+/g, ' ');
+
 /**
  * Initialize the Spark SDK from a BIP-39 mnemonic. Call this once after
  * wallet-backup.ts hands you the decrypted seed, after a fresh mnemonic is
  * generated for first-time users, or when the user pastes an existing seed.
+ * Idempotent for an already-loaded seed; concurrent same-seed calls share one
+ * SDK initialize; the wait is capped at SPARK_INIT_TIMEOUT_MS.
  */
 export async function sparkInitFromMnemonic(args: {
   mnemonic: string;
   ownerPubkey: string;
   // Spark supports `mainnet` and `regtest` only — there's no public testnet
   // for Spark. Use `regtest` against a local node for development.
+  network?: 'mainnet' | 'regtest';
+}): Promise<void> {
+  const key = normalizeSeed(args.mnemonic);
+  // Already connected with this exact seed — the auto-restore beat a manual
+  // restore (or vice versa). Nothing to do.
+  if (sdk && activePubkey === args.ownerPubkey && activeMnemonic === key) return;
+
+  while (initInFlight && initInFlight.key !== key) {
+    // A different seed is mid-handshake. Let it settle (success or failure)
+    // before starting ours — serializing avoids the challenge fight.
+    await initInFlight.promise.catch(() => { /* its caller reports the error */ });
+  }
+  if (!initInFlight) {
+    const promise = doInitFromMnemonic(args).finally(() => { initInFlight = null; });
+    // Branch handler so a rejection after every racer timed out doesn't
+    // surface as an unhandled-rejection; racers awaiting `promise` itself
+    // still see the real error.
+    promise.catch(() => {});
+    initInFlight = { key, promise };
+  }
+  const pending = initInFlight.promise;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error('Spark connection timed out — check your network and try again')),
+      SPARK_INIT_TIMEOUT_MS,
+    );
+  });
+  try {
+    await Promise.race([pending, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function doInitFromMnemonic(args: {
+  mnemonic: string;
+  ownerPubkey: string;
   network?: 'mainnet' | 'regtest';
 }): Promise<void> {
   // Dynamic import keeps the heavy SDK out of the initial bundle.
@@ -98,6 +162,7 @@ export async function sparkInitFromMnemonic(args: {
 
   sdk = wallet as unknown as SparkSdk;
   activePubkey = args.ownerPubkey;
+  activeMnemonic = normalizeSeed(args.mnemonic);
   notify();
 }
 
@@ -130,6 +195,7 @@ export async function sparkDisconnect(): Promise<void> {
   }
   sdk = null;
   activePubkey = null;
+  activeMnemonic = null;
   notify();
 }
 
