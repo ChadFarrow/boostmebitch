@@ -257,9 +257,10 @@ export function WalletModal({ onClose }: Props) {
                   if (!isLibreRunning()) return;
                   if (
                     window.confirm(
-                      'Switch to a different Google account?\n\n' +
-                        'This removes the current Libre wallet from this browser. Make sure you have saved its recovery phrase — ' +
-                        "you'll need it (plus that account's Google Drive backup) to restore this wallet. Continue?",
+                      'Sign out and switch to a different wallet?\n\n' +
+                        'This signs out of the current Libre wallet and removes it from this browser, then lets you connect ' +
+                        "a different Google account / wallet. Make sure you've saved this wallet's recovery phrase — you'll " +
+                        'need it to load it again. Continue?',
                     )
                   ) {
                     void switchLibreDriveAccount();
@@ -268,11 +269,11 @@ export function WalletModal({ onClose }: Props) {
                 title={
                   isLibreRunning()
                     ? undefined
-                    : 'Wait until the wallet is fully connected before switching accounts.'
+                    : 'Wait until the wallet is fully connected before switching wallets.'
                 }
                 className="w-full text-[11px] text-muted hover:text-nostr text-center disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted"
               >
-                Switch Google account
+                Sign out &amp; switch wallet
               </button>
             </div>
           )}
