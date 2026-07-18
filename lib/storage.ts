@@ -25,6 +25,7 @@ const KEYS = {
   relays: 'bmb:relays',
   senderName: 'bmb:sender_name',
   shareNostr: 'bmb:share_nostr',
+  shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favoritesPrefix: 'bmb:favorites',
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
@@ -36,12 +37,13 @@ const KEYS = {
   railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
-  sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or connects another rail; suppresses auto-restore on next login
+  sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
   libreActive: 'bmb:libre_active',    // set once Libre is this browser's wallet; auto-mounts the widget on later visits AND marks the other rails as already-cleared, so a reload can't re-run that teardown. Cleared by clearOtherWallets when another rail wins.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
 } as const;
 
 export type RailPref = 'nwc' | 'spark' | 'webln';
+export type ShareNostrAs = 'self' | 'site';
 export type ThemeMode = 'light' | 'dark';
 export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
 
@@ -344,6 +346,17 @@ export const storage = {
   shareNostr: {
     get: (): boolean => safeGet(KEYS.shareNostr) !== '0',
     set: (v: boolean) => safeSet(KEYS.shareNostr, v ? '1' : '0'),
+  },
+
+  /**
+   * WHO signs the boost note when sharing is on and the user is signed in:
+   * 'self' (default) = their own Nostr key, 'site' = the site's identity
+   * (the same server-signed path signed-out boosts use). Signed-out shares
+   * always go via the site key regardless of this value.
+   */
+  shareNostrAs: {
+    get: (): ShareNostrAs => (safeGet(KEYS.shareNostrAs) === 'site' ? 'site' : 'self'),
+    set: (v: ShareNostrAs) => safeSet(KEYS.shareNostrAs, v),
   },
 
   /**

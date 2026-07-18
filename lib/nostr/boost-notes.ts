@@ -1,7 +1,7 @@
-import type { EventTemplate } from 'nostr-tools';
+import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, Podcast, BoostResult } from '../types';
 import { DEFAULT_RELAYS } from './relays';
-import { signAndPublish, type PublishedNote } from './publish';
+import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
 
 interface PublishArgs {
   podcast: Podcast;
@@ -45,7 +45,12 @@ function formatContent(args: PublishArgs): string {
   if (boostagram.message?.trim()) {
     lines.push(boostagram.message.trim(), '');
   }
-  lines.push(`Boosted ${totalSats} sats → ${podcast.title}`);
+  // Attribute the sender by their "From" name when set. Load-bearing for
+  // site-signed notes (signed-out users): the note is authored by the site's
+  // identity, so without this their name appears nowhere. Natural for the
+  // self-signed case too ("ChadF boosted …").
+  const sender = boostagram.sender_name?.trim();
+  lines.push(`${sender ? `${sender} boosted` : 'Boosted'} ${totalSats} sats → ${podcast.title}`);
   if (episode?.title) lines.push(`📻 ${episode.title}`);
   const link = podcastLandingUrl(podcast);
   if (link) lines.push('', link);
@@ -54,11 +59,10 @@ function formatContent(args: PublishArgs): string {
   return lines.join('\n');
 }
 
-export async function publishBoostNote(
-  args: PublishArgs,
-): Promise<PublishedNote> {
+// The unsigned kind:1 boost-note template — shared by the user-signed path
+// (signAndPublish, via window.nostr) and the site-signed path (server route).
+function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
   const { podcast, episode, boostagram, results } = args;
-  const relays = args.relays ?? DEFAULT_RELAYS;
   const totalMsat =
     boostagram.value_msat_total ??
     results.reduce((sum, r) => sum + r.sats * 1000, 0);
@@ -82,12 +86,42 @@ export async function publishBoostNote(
   tags.push(['t', 'boostagram']);
   tags.push(['t', 'value4value']);
 
-  const template: EventTemplate = {
+  return {
     kind: 1,
     created_at: Math.floor(Date.now() / 1000),
     tags,
     content: args.contentOverride ?? formatContent(args),
   };
+}
 
-  return signAndPublish(template, relays);
+export async function publishBoostNote(
+  args: PublishArgs,
+): Promise<PublishedNote> {
+  const relays = args.relays ?? DEFAULT_RELAYS;
+  return signAndPublish(buildBoostNoteTemplate(args), relays);
+}
+
+/**
+ * Publish the boost note signed by the SITE's own Nostr identity, for users who
+ * aren't signed into Nostr. The unsigned template is sent to /api/nostr/site-sign
+ * (which holds the server-only key), and the signed event is published from here
+ * to DEFAULT_RELAYS. Throws on a 503 (feature not configured) / 400 / network
+ * error — callers (maybePublishNote) already swallow publish failures, so a boost
+ * still succeeds even if the note can't be posted.
+ */
+export async function publishBoostNoteViaSite(
+  args: PublishArgs,
+): Promise<PublishedNote> {
+  const template = buildBoostNoteTemplate(args);
+  const res = await fetch('/api/nostr/site-sign', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(template),
+  });
+  if (!res.ok) {
+    const msg = await res.json().catch(() => null);
+    throw new Error(msg?.error ?? `site-sign ${res.status}`);
+  }
+  const { event } = (await res.json()) as { event: Event };
+  return publishSignedEvent(event, DEFAULT_RELAYS);
 }

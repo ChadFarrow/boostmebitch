@@ -3,7 +3,7 @@
 
 import { clearNwcUri, hasNwc } from './nwc';
 import { hasSpark, sparkDisconnect } from './spark';
-import { weblnDisable } from './webln';
+import { isWeblnEnabled, weblnDisable } from './webln';
 import { isLibreRunning, libreDisconnect } from './libre';
 import { storage } from '@/lib/storage';
 import type { Rail } from './boost';
@@ -29,8 +29,25 @@ export function railLabel(rail: Rail): string {
 }
 
 /**
+ * True when any rail is connected/enabled. WebLN is gated on isWeblnEnabled()
+ * (explicit user enable), not mere detection — mirrors getActiveRail() in
+ * wallet-modal.tsx. A running Libre counts too: it fronts window.webln but
+ * isWeblnEnabled() only flips on the first payment, so a freshly connected
+ * Libre would otherwise read "not connected" here. Drives the header wallet
+ * control's connected/not state.
+ */
+export function hasAnyWallet(): boolean {
+  return hasNwc() || hasSpark() || isWeblnEnabled() || isLibreRunning();
+}
+
+/**
  * Disconnect every rail except `keep`.
- * - Sets sparkOptOut when moving away from Spark (so auto-restore is suppressed on reload).
+ * - Sets sparkOptOut only when a connected Spark wallet is being disconnected
+ *   (the user genuinely moved away from Spark), so auto-restore is suppressed
+ *   on reload. A device that never had Spark this session must NOT be opted
+ *   out: with the two-login split, connecting NWC/WebLN while signed OUT is a
+ *   normal first step, and an unconditional set here poisoned the flag before
+ *   the user ever signed in — silently blocking the Spark restore at login.
  * - Does NOT touch sparkOptOut when moving TO Spark — SparkWallet clears it before init.
  * - Clears the cached wallet balance so the header chip resets immediately.
  *
@@ -43,10 +60,12 @@ export function railLabel(rail: Rail): string {
  */
 export async function clearOtherWallets(keep: WalletChoice, npub?: string): Promise<void> {
   if (keep !== 'nwc' && hasNwc()) clearNwcUri();
-  if (keep !== 'spark' && hasSpark()) await sparkDisconnect();
+  if (keep !== 'spark' && hasSpark()) {
+    await sparkDisconnect();
+    storage.sparkOptOut.set();
+  }
   if (keep !== 'libre' && storage.libreActive.get()) await libreDisconnect();
   // Libre IS the WebLN provider while it runs, so keeping it keeps the rail it pays over.
   if (keep !== 'webln' && keep !== 'libre') weblnDisable();
-  if (keep !== 'spark') storage.sparkOptOut.set();
   storage.walletBalance.clear(npub);
 }

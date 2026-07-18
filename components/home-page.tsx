@@ -9,6 +9,7 @@ import { DiscussionView } from '@/components/discussion-view';
 import { EpisodeDetailView } from '@/components/episode-detail-view';
 import { BoltIcon } from '@/components/icons';
 import { ThemeToggle } from '@/components/theme-toggle';
+import { AuthControl } from '@/components/auth-control';
 import { useApp } from '@/lib/store';
 import { resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
@@ -222,6 +223,7 @@ export function HomePage() {
           </button>
           <div className="flex-1" />
           <ThemeToggle />
+          <AuthControl />
           <NostrAuth />
         </div>
       </header>

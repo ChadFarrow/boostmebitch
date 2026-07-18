@@ -97,6 +97,12 @@ export interface Episode {
   liveStatus?: 'pending' | 'live' | 'ended';
   /** Scheduled start, unix seconds. */
   liveStartTime?: number;
+  /** Nostr live streams only: the actual host's pubkey — the NIP-53 `p` tag
+   *  with role "host", falling back to the event author. Platform-published
+   *  streams (Shosho, zap.stream) are authored by the PLATFORM's key, so the
+   *  `/live/<npub>` share link must be built from this, not from the stream
+   *  id's author half. */
+  liveHostPubkey?: string;
 }
 
 export interface Boostagram {

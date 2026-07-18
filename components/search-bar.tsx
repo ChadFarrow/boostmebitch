@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Podcast } from '@/lib/types';
 
 interface Props {
@@ -12,6 +12,15 @@ interface Props {
 
 export function SearchBar({ onResults, onLoading }: Props) {
   const [q, setQ] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Focus on mount only for fine-pointer (mouse) devices. On touch devices
+  // autofocus pops the keyboard and scrolls the viewport to the input — and
+  // since goHome() remounts the bar via searchKey, tapping the header title
+  // on mobile jumped to the search box instead of just showing home.
+  useEffect(() => {
+    if (window.matchMedia('(pointer: fine)').matches) inputRef.current?.focus();
+  }, []);
 
   useEffect(() => {
     if (!q.trim()) { onResults([], ''); return; }
@@ -30,7 +39,7 @@ export function SearchBar({ onResults, onLoading }: Props) {
     <div className="relative">
       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs">⌕</span>
       <input
-        autoFocus
+        ref={inputRef}
         className="input pl-8 pr-8"
         value={q}
         onChange={(e) => setQ(e.target.value)}

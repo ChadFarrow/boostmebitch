@@ -124,11 +124,15 @@ export function Player() {
           });
           inst.on(HlsLib.Events.ERROR, (_evt, data) => {
             if (!data.fatal) return;
+            // hls.js's `details` code (manifestLoadError, fragLoadError, …) is
+            // the only clue to WHAT failed — surface it so a stuck stream is
+            // diagnosable from the UI instead of reading as a silent black box.
+            const detail = data.details ? ` (${data.details})` : '';
             if (data.type === HlsLib.ErrorTypes.NETWORK_ERROR) {
               // Backoff 1s→15s so a longer dropout doesn't spin the network; no
               // hard give-up — keep retrying so the stream auto-resumes when the
               // broadcaster comes back (what a manual refresh used to do).
-              setAudioErr('reconnecting…');
+              setAudioErr(`stream unreachable — reconnecting…${detail}`);
               clearRecover();
               const delay = Math.min(1000 * 2 ** netRetries, 15000);
               netRetries++;
@@ -139,7 +143,7 @@ export function Player() {
               inst.recoverMediaError();
             } else {
               clearRecover();
-              setAudioErr('live stream unavailable');
+              setAudioErr(`live stream unavailable${detail}`);
               inst.destroy();
               if (hls.current === inst) hls.current = null;
             }
@@ -327,11 +331,13 @@ export function Player() {
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekAudio);
 
   function onMediaError(code: number | undefined) {
+    // Fired by the <video> too (native Safari HLS), so name the right medium.
+    const what = isHlsRef.current ? 'live stream' : 'audio';
     setAudioErr(
-      code === 2 ? 'network error while loading audio'
-      : code === 3 ? 'audio failed to decode'
-      : code === 4 ? 'audio format not supported or URL unreachable'
-      : 'audio playback failed',
+      code === 2 ? `network error while loading ${what}`
+      : code === 3 ? `${what} failed to decode`
+      : code === 4 ? `${what} format not supported or URL unreachable`
+      : `${what} playback failed`,
     );
     setPlaying(false);
   }
@@ -394,8 +400,10 @@ export function Player() {
           <div className="min-w-0 flex-1">
             <div className="text-sm font-display leading-tight truncate">{episode.title}</div>
             <div className="text-[11px] text-muted truncate">{podcast.title}</div>
+            {/* The error is the one line the user actually needs to read when
+                playback dies — wrap it (break-words), never truncate it. */}
             {audioErr && (
-              <div className="text-[10px] text-nostr mt-1 truncate">⚠ {audioErr}</div>
+              <div className="text-[11px] text-nostr mt-1 break-words">⚠ {audioErr}</div>
             )}
             {isLive ? (
               <div className="flex items-center gap-2 mt-1">
@@ -457,6 +465,7 @@ export function Player() {
         audioRef={audio}
         videoNode={videoNode}
         isVideo={isHls}
+        audioErr={audioErr}
         pipAvailable={pipOk}
         onPip={requestPip}
         chapters={chapters}

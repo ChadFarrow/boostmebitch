@@ -110,9 +110,21 @@ function EpisodeInfoPanel({
 // (liveStreamId = `<pubkey>:<dTag>`) this hands out the PERMANENT per-host
 // link `/live/<npub>` — not the per-broadcast `/stream/<naddr>` — so a show can
 // share one URL that stays valid across broadcasts (each gets a fresh dTag).
+// The npub is the HOST's (episode.liveHostPubkey), NOT the stream id's author
+// half: platform-published streams (Shosho, zap.stream) are authored by the
+// PLATFORM's key, and `/live/<platform npub>` resolves to whatever that
+// platform streams next — a different show entirely.
 // Otherwise ?podcast=<guid>. Clipboard-only with a COPIED flip, mirroring the
 // episode-list ShareButton.
-function ShareButton({ liveStreamId, podcast }: { liveStreamId: string | null; podcast: Podcast }) {
+function ShareButton({
+  liveStreamId,
+  liveHostPubkey,
+  podcast,
+}: {
+  liveStreamId: string | null;
+  liveHostPubkey?: string;
+  podcast: Podcast;
+}) {
   const [copied, setCopied] = useState(false);
 
   function buildUrl(): string | null {
@@ -121,7 +133,7 @@ function ShareButton({ liveStreamId, podcast }: { liveStreamId: string | null; p
     if (liveStreamId) {
       const parsed = parseStreamId(liveStreamId);
       if (!parsed) return null;
-      return `${origin}/live/${nip19.npubEncode(parsed.pubkey)}`;
+      return `${origin}/live/${nip19.npubEncode(liveHostPubkey ?? parsed.pubkey)}`;
     }
     if (podcast.podcastGuid) return `${origin}/?podcast=${podcast.podcastGuid}`;
     return null;
@@ -151,6 +163,7 @@ export function FullscreenPlayer({
   audioRef,
   videoNode,
   isVideo,
+  audioErr,
   pipAvailable,
   onPip,
   chapters,
@@ -163,6 +176,10 @@ export function FullscreenPlayer({
   audioRef: RefObject<HTMLAudioElement | null>;
   videoNode: HtmlPortalNode | null;
   isVideo: boolean;
+  /** Playback error from <Player> — the fullscreen surface must show it too,
+      or a failing live stream reads as a silent black box (the mini-bar's tiny
+      error line is hidden behind this overlay). */
+  audioErr: string | null;
   pipAvailable: boolean;
   onPip: () => void;
   // Fetched once by <Player> and passed down (so it isn't fetched twice).
@@ -284,6 +301,14 @@ export function FullscreenPlayer({
                   {isPlaying ? '❚❚' : '▶'}
                 </span>
               </button>
+              {/* Playback error banner — sits over the (black) video so the
+                  failure is readable right where the stream should be.
+                  pointer-events-none keeps the tap-to-play surface intact. */}
+              {audioErr && (
+                <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-ink/85 backdrop-blur-sm px-3 py-2 text-center text-xs text-nostr break-words">
+                  ⚠ {audioErr}
+                </div>
+              )}
               {pipAvailable && (
                 <button
                   type="button"
@@ -340,7 +365,11 @@ export function FullscreenPlayer({
                   <BoltIcon /> BOOST
                 </button>
                 <FavHeart podcast={podcast} size="md" />
-                <ShareButton liveStreamId={liveStreamId} podcast={podcast} />
+                <ShareButton
+                  liveStreamId={liveStreamId}
+                  liveHostPubkey={episode.liveHostPubkey}
+                  podcast={podcast}
+                />
               </div>
             </div>
             <div className="flex-1 min-h-0">
@@ -357,6 +386,9 @@ export function FullscreenPlayer({
               <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
               {podcast.author && (
                 <p className="text-xs text-muted/70 mt-0.5">{podcast.author}</p>
+              )}
+              {audioErr && (
+                <p className="text-xs text-nostr mt-2 break-words">⚠ {audioErr}</p>
               )}
             </div>
 

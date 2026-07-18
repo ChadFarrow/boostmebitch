@@ -48,6 +48,7 @@ export { fetchViewerReposts, useViewerReposts } from './viewer-state';
 
 export {
   publishBoostNote,
+  publishBoostNoteViaSite,
 } from './boost-notes';
 
 export {

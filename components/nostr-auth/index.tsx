@@ -291,18 +291,14 @@ export function NostrAuth() {
     loadProfile(id);
   }
 
-  return (
-    <div className="relative flex flex-col items-end gap-1">
-      <button onClick={() => setModalOpen(true)} className="btn-ghost">
-        <span className="text-nostr">◆</span>
-        <span>Sign in with Nostr</span>
-      </button>
-      {modalOpen && (
-        <SignInModal
-          onClose={() => setModalOpen(false)}
-          onSuccess={(id, kind) => completeSignIn(id, kind)}
-        />
-      )}
-    </div>
-  );
+  // Signed out: render only the modal. The visible "Sign in" trigger lives in
+  // <AuthControl> (the combined header login), which flips signInOpen in the
+  // store. Keeping the modal owned here preserves completeSignIn + all the
+  // identity-hydration effects above.
+  return modalOpen ? (
+    <SignInModal
+      onClose={() => setModalOpen(false)}
+      onSuccess={(id, kind) => completeSignIn(id, kind)}
+    />
+  ) : null;
 }

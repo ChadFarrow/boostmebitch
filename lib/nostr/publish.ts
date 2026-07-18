@@ -19,7 +19,17 @@ export async function signAndPublish(
     throw new Error('No Nostr signer available');
   }
   const signed = await window.nostr.signEvent(template);
+  return publishSignedEvent(signed, relays);
+}
 
+// Publish an already-signed event across the given relays. Split out of
+// signAndPublish so callers that obtain a signature elsewhere — e.g. the
+// site-key path, which signs server-side (app/api/nostr/site-sign) — can reuse
+// the identical relay-fan-out + PublishedNote assembly.
+export async function publishSignedEvent(
+  signed: Event,
+  relays: string[],
+): Promise<PublishedNote> {
   return withPool(relays, async (pool) => {
     const accepted: string[] = [];
     const failed: string[] = [];
