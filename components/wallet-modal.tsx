@@ -243,12 +243,24 @@ export function WalletModal({ onClose }: Props) {
                   Stop using Libre here
                 </button>
               </div>
-              {/* Keeps Libre adopted — just forgets which Google account it's bound to so the next
-                  connect shows Google's chooser. Reloads because the package caches the OAuth token
-                  for the page's life; see switchLibreDriveAccount. */}
+              {/* Forgets the Google binding AND wipes the local wallet seed, so the next connect
+                  prompts for an account and loads that account's wallet (asking for its recovery
+                  phrase). Destructive — the seed only comes back from the user's saved phrase — so we
+                  confirm first. Reloads because the package caches the OAuth token for the page's
+                  life; see switchLibreDriveAccount. */}
               <button
-                onClick={() => switchLibreDriveAccount()}
-                className="w-full text-[11px] text-muted hover:text-bone text-center"
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      'Switch to a different Google account?\n\n' +
+                        'This removes the current Libre wallet from this browser. Make sure you have saved its recovery phrase — ' +
+                        "you'll need it (plus that account's Google Drive backup) to restore this wallet. Continue?",
+                    )
+                  ) {
+                    void switchLibreDriveAccount();
+                  }
+                }}
+                className="w-full text-[11px] text-muted hover:text-nostr text-center"
               >
                 Switch Google account
               </button>

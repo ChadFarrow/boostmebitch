@@ -276,19 +276,86 @@ export async function libreDisconnect(): Promise<void> {
 const LIBRE_DRIVE_HINT_KEY = 'libre_drive_hint';
 const LIBRE_DRIVE_CONFIGURED_KEY = 'libre_drive_configured';
 
+// The package keeps the wallet SEED + channel state in IndexedDB, keyed by NETWORK and per-origin
+// (NOT per Google account): `libre-wallet-<network>` for each network, `libre-wallet-meta` for the
+// active-network pointer, and the legacy un-namespaced `libre-wallet`. Store name is always
+// `settings`. Mirrors the DB list in the package's own `resetWallet()`. Coupled to the pinned commit.
+const LIBRE_DB_NAMES = [
+  'libre-wallet-mainnet',
+  'libre-wallet-testnet',
+  'libre-wallet-signet',
+  'libre-wallet-regtest',
+  'libre-wallet-meta',
+  'libre-wallet',
+];
+const LIBRE_DB_STORE = 'settings';
+
 /**
- * Forget which Google account Libre is bound to so the next connect shows Google's account chooser
- * and the user can pick a different one. This is a "switch account", NOT "stop using Libre" — the
- * adoption (storage.libreActive) is left intact, so after the user picks a new account the package
- * re-saves its hint and silent auto-reconnect resumes on that account.
- *
- * A full reload is required, not optional: the package caches the OAuth access token in module scope
- * for the page's whole life and exposes no API to reset it, so `ensureDrive` short-circuits and won't
- * re-run OAuth until a fresh load. After the reload the widget renders its Connect button (configured
- * flag cleared), and tapping it prompts for an account (hint cleared).
+ * Empty one wallet-embed IndexedDB store. Opens WITHOUT a version so it never triggers an upgrade or
+ * blocks on the LDK node's open handle (the package clears rather than deleteDatabase for the same
+ * reason — deleteDatabase blocks on open connections). A DB that doesn't exist is opened empty (no
+ * `settings` store) and skipped. Always resolves — a failed wipe must not strand the reload.
  */
-export function switchLibreDriveAccount(): void {
+function clearLibreDb(name: string): Promise<void> {
+  return new Promise((resolve) => {
+    let req: IDBOpenDBRequest;
+    try {
+      req = indexedDB.open(name);
+    } catch {
+      resolve();
+      return;
+    }
+    req.onerror = () => resolve();
+    req.onsuccess = () => {
+      const db = req.result;
+      try {
+        if (!db.objectStoreNames.contains(LIBRE_DB_STORE)) {
+          db.close();
+          resolve();
+          return;
+        }
+        const tx = db.transaction(LIBRE_DB_STORE, 'readwrite');
+        tx.objectStore(LIBRE_DB_STORE).clear();
+        const done = () => {
+          db.close();
+          resolve();
+        };
+        tx.oncomplete = done;
+        tx.onerror = done;
+        tx.onabort = done;
+      } catch {
+        db.close();
+        resolve();
+      }
+    };
+  });
+}
+
+/**
+ * Switch to a different Google account by starting over on this browser: wipe the local wallet seed +
+ * channel state and forget the Drive binding, so the next connect prompts for an account AND — because
+ * no local seed remains — routes into the widget's restore ("enter your recovery phrase") or setup
+ * flow for whatever wallet the new account holds. Without the IndexedDB wipe the boot logic sees a
+ * local seed (`roamingBootDecision → start`) and silently runs the OLD wallet against the NEW account,
+ * never asking for a seed.
+ *
+ * DESTRUCTIVE — the caller MUST confirm first (the wallet modal does): the wiped seed is only
+ * recoverable from the user's saved recovery phrase (+ that wallet's Drive backup). Mirrors the
+ * package's own `resetWallet()` (clear the wallet DBs) + "the UI also clears localStorage + reloads".
+ *
+ * The reload is required: the package caches the OAuth access token in module scope for the page's
+ * life with no reset API, so `ensureDrive` won't re-run OAuth until a fresh load.
+ */
+export async function switchLibreDriveAccount(): Promise<void> {
   if (typeof window === 'undefined') return;
+  // Close the LDK node's IndexedDB handles first so the wipe isn't racing live channel-state writes.
+  try {
+    await handle?.dispose();
+  } catch {
+    // Best-effort — we're tearing this wallet down and reloading regardless.
+  }
+  handle = null;
+  await Promise.all(LIBRE_DB_NAMES.map(clearLibreDb));
   try {
     localStorage.removeItem(LIBRE_DRIVE_HINT_KEY);
     localStorage.removeItem(LIBRE_DRIVE_CONFIGURED_KEY);
