@@ -105,7 +105,7 @@ Sign-out clears in-memory favorites; the per-npub cache is left so re-signing in
 
 ## Inbox + Listen Queue
 
-Two browse-view sections in `components/home-page.tsx`'s aside: the **Inbox** (your favorited shows, surfacing new episodes) and the **Queue** ("Up Next", a cross-show play-later list). Both are **device-local** (localStorage), unlike favorites which sync to Nostr — see the two keys below. Rendered independently of each other's presence: the aside shows when `!query && (hasFavorites || listenQueue.length > 0)`.
+Two browse-view sections in `components/home-page.tsx`'s aside: the **Inbox** (your favorited shows, surfacing new episodes) and the **Queue** ("Up Next", a cross-show play-later list). Both are localStorage-backed and, when signed in with a NIP-44 signer, **sync across devices via the user's Nostr identity** (see Cross-device sync below) — falling back to purely local for signed-out / no-NIP-44 users. Rendered independently of each other's presence: the aside shows when `!query && (hasFavorites || listenQueue.length > 0)`.
 
 **Shared "seen" state.** `seenGuids: Set<string>` in the store (persisted at `bmb:inbox_seen:<npub>` as a string[]) marks episodes the user has handled. Set three ways, all funneling through `markSeenInternal(s, episode)` (`lib/store.ts`, returns a store patch so callers fold it into one `set`): (a) the **✓ seen** button (`markSeen`), (b) **finishing** playback (`handlePlaybackEnded`), (c) **adding to the queue** (`enqueueEpisode` — "adding = handled"). `seedSeenKeys(keys[])` bulk-marks. Episode identity everywhere is **`epKey(e) = e.guid ?? \`${e.feedId}:${e.id}\`\`** (exported from `lib/store.ts`).
 
@@ -115,7 +115,7 @@ Two browse-view sections in `components/home-page.tsx`'s aside: the **Inbox** (y
 
 **`+ queue` on Nostr notes (`components/nostr-note-card.tsx`).** Every note that references a specific episode (has a `podcast:item:guid`) gets a **+ queue** button (works signed-out — the queue is local). It resolves the episode **on demand** via `GET /api/episode?feedGuid=&itemGuid=` (wraps server-only `getEpisodeByGuid`) — **prefetched on hover/pointer-down** so the click is usually instant — then `enqueueEpisode`. Show-level boosts (no item guid) get no button.
 
-**Login/logout** (`components/nostr-auth/index.tsx`): seen + queue hydrate from the npub bucket alongside favorites/mutes and reset to empty on logout (per-account isolation; both are local-only, no relay sync).
+**Login/logout** (`components/nostr-auth/index.tsx`): seen + queue hydrate from the npub bucket alongside favorites/mutes (and, for signed-in NIP-44 users, merge with the Nostr-synced copy — see Cross-device sync) and reset to empty on logout (per-account isolation).
 
 **Cross-device sync (kind:30078 NIP-44 encrypted-to-self, `lib/nostr/inbox-backup.ts`).** Seen-state and the queue sync to the user's npub, mirroring `settings-backup.ts`: `d:boostmebitch:inbox` = `{ seen: string[] }` (**union** merge — a mark on any device sticks; capped at newest ~2000 keys), `d:boostmebitch:queue` = `{ items, updatedAt }` (**newest-wins** vs local `bmb:listen_queue_ts`). Publishes are debounced from the store's `persistSeen`/`persistQueue` choke points (gated on a NIP-44 signer — signed-out/no-nip44 stays local); hydrated in `loadProfile` after favorites/mutes. Playback-position resume is a separate follow-up.
 
