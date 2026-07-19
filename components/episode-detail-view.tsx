@@ -6,6 +6,7 @@ import { hasValueRecipients, stripHtml } from '@/lib/util';
 import { useChapters, type ChapterEntry } from '@/lib/chapters';
 import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
+import { useNotesFollows } from './notes-follows';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { BoostModal } from './boost-modal';
@@ -189,6 +190,9 @@ export function EpisodeDetailView() {
     episode?.transcriptUrl ?? '',
     episode?.transcriptType,
   );
+  // Callback ref for the show-notes container: injects Follow buttons after each
+  // npub when signed in. No-op signed out.
+  const notesFollowRef = useNotesFollows(episode?.id);
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -383,6 +387,7 @@ export function EpisodeDetailView() {
               <>
                 {episode.contentEncoded ? (
                   <div
+                    ref={notesFollowRef}
                     className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-hidden"
                     dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
                   />

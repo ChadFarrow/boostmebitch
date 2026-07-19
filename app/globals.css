@@ -89,6 +89,18 @@ body::before {
            hover:bg-bolt/20 active:translate-y-px;
     font-variant-emoji: text;
   }
+  /* Inline follow toggle injected after an npub in show notes (components/notes-follows.ts). */
+  .npub-follow-btn {
+    @apply ml-2 align-middle inline-flex items-center text-[10px] font-mono font-semibold uppercase tracking-wider
+           px-1.5 py-0.5 rounded border border-bolt/50 text-bolt whitespace-nowrap
+           hover:bg-bolt/10 transition;
+  }
+  .npub-follow-btn.is-following {
+    @apply border-bone/25 text-muted hover:bg-bone/5;
+  }
+  .npub-follow-btn:disabled {
+    @apply opacity-40 cursor-default hover:bg-transparent;
+  }
   .input {
     @apply w-full bg-transparent border border-bone/30 px-3 py-2 font-mono text-sm
            placeholder:text-muted focus:border-bolt focus:outline-none;

@@ -524,7 +524,10 @@ function linkifyNostrRefs(html: string): string {
         ? seg // an existing anchor block — leave verbatim
         : seg.replace(NOSTR_REF_RE, (m) => {
             const bech = m.replace(/^nostr:/i, '');
-            return `<a href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer">${m}</a>`;
+            // Mark person refs (npub/nprofile) so the client can attach a follow
+            // button; events (nevent/note/naddr) aren't people, so no marker.
+            const person = /^n(pub|profile)1/i.test(bech) ? ` data-npub="${bech}"` : '';
+            return `<a href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer"${person}>${m}</a>`;
           }),
     )
     .join('');
