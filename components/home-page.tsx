@@ -1,7 +1,8 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
-import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
+import { PodcastResults, EpisodeList, InboxList } from '@/components/lists';
+import { QueueList } from '@/components/queue-list';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { NostrLiveStreams } from '@/components/nostr-live-streams';
@@ -201,8 +202,13 @@ export function HomePage() {
   }
   const favorites = useApp((s) => s.favorites);
   const hasFavorites = Object.keys(favorites).length > 0;
+  const listenQueue = useApp((s) => s.listenQueue);
+  const hasQueue = listenQueue.length > 0;
 
-  const showFavoritesPanel = !query && hasFavorites;
+  // Browse-mode aside hosts the Inbox (favorited shows + new episodes) and the
+  // listen Queue. Show it when either has content so a queue is reachable even
+  // with no favorites.
+  const showFavoritesPanel = !query && (hasFavorites || hasQueue);
   const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel || !!publisherSource;
   const inDetailView = !!selected;
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
@@ -273,9 +279,10 @@ export function HomePage() {
             </section>
           </div>
         ) : showLeftRightLayout ? (
-          // Browse mode: just the aside. Clicking a row flips to detail view
-          // (`inDetailView` branch above) so this layer never needs to host
-          // an episode pane.
+          // Browse mode: the Inbox aside + the listen Queue as a peer section
+          // (independent of the Inbox's collapse). Clicking a row flips to
+          // detail view (`inDetailView` branch above).
+          <>
           <aside className="card p-3 max-h-[70vh] overflow-y-auto">
             {publisherSource ? (
               <>
@@ -300,10 +307,10 @@ export function HomePage() {
                 type="button"
                 onClick={() => setFavoritesCollapsed((v) => !v)}
                 aria-expanded={!favoritesCollapsed}
-                className="w-full text-[11px] uppercase tracking-widest text-muted mb-2 px-1 flex items-center justify-between gap-2 hover:text-bone"
+                className="w-full mb-3 px-1 flex items-center justify-between gap-2 group"
               >
-                <span>{Object.keys(favorites).length} favorites</span>
-                <span aria-hidden className="text-bone/60">
+                <span className="font-display text-2xl text-bolt group-hover:opacity-80 transition">Inbox</span>
+                <span aria-hidden className="text-bolt/70 text-lg">
                   {favoritesCollapsed ? '▸' : '▾'}
                 </span>
               </button>
@@ -319,12 +326,18 @@ export function HomePage() {
                 onSelect={handleSelect}
               />
             ) : !publisherSource && !query && !loading && !favoritesCollapsed ? (
-              <FavoritesList
+              <InboxList
                 selected={null}
                 onSelect={setSelected}
               />
             ) : null}
           </aside>
+          {!publisherSource && !query && !loading && (hasFavorites || hasQueue) && (
+            <aside className="card p-3 mt-4">
+              <QueueList />
+            </aside>
+          )}
+          </>
         ) : (
           <EmptyState />
         )}

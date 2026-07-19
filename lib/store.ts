@@ -3,8 +3,20 @@ import { create } from 'zustand';
 import type { Episode, Podcast, FavoritePodcast } from './types';
 import type { NostrIdentity } from './nostr';
 import { storage } from './storage';
+import { isMusicMedium } from './util';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
+
+/** Stable per-episode identity for seen-tracking + the listen queue. Prefers the
+ *  Nostr/RSS guid; falls back to feedId:id so items without a guid still key. */
+export const epKey = (e: Episode) => e.guid ?? `${e.feedId}:${e.id}`;
+
+/** A listen-queue entry carries its OWN podcast — the queue mixes shows, so we
+ *  can't reuse `current.podcast` the way the single-show episodeQueue does. */
+export interface QueueItem {
+  episode: Episode;
+  podcast: Podcast;
+}
 
 interface AppState {
   identity: NostrIdentity | null;
@@ -80,6 +92,33 @@ interface AppState {
   removeFavorite: (guid: string) => void;
   setFavorites: (next: Record<string, FavoritePodcast>) => void;
 
+  // Inbox "seen"/handled episode keys (epKey). An episode leaves the inbox's
+  // "new" list once it's here — set by mark-seen, finishing playback, or being
+  // added to the listen queue. Persisted per-npub.
+  seenGuids: Set<string>;
+  isSeen: (key: string | undefined) => boolean;
+  markSeen: (episode: Episode) => void;
+  // Mark many episode keys seen at once — used to seed a newly-favorited show's
+  // back-catalog as seen so only its newest episode shows as NEW.
+  seedSeenKeys: (keys: string[]) => void;
+  setSeenGuids: (next: Set<string>) => void;
+
+  // The listen queue ("Up Next"): an ordered, cross-show list the user lines up
+  // and auto-listens through. Separate from episodeQueue (that's the open show's
+  // tracklist). Each item carries its own podcast. Persisted per-npub.
+  listenQueue: QueueItem[];
+  enqueueEpisode: (episode: Episode, podcast: Podcast) => void;
+  removeFromQueue: (key: string) => void;
+  moveQueueItem: (index: number, dir: -1 | 1) => void;
+  clearQueue: () => void;
+  playFromQueue: (index: number) => void;
+  setListenQueue: (next: QueueItem[]) => void;
+
+  // Called by <Player> on media 'ended'. Marks the finished episode seen; if it
+  // was in the listen queue, drains it and auto-plays the next queue item;
+  // otherwise falls back to today's music album-advance / stop behavior.
+  handlePlaybackEnded: () => void;
+
   // NIP-51 kind:10000 mute list, hydrated on login from the user's relay
   // event. Filter is applied at render time in NoteCard and feed surfaces.
   mutedPubkeys: Set<string>;
@@ -114,6 +153,22 @@ export const useApp = create<AppState>((set, get) => ({
   setEpisodeQueue: (episodes) => set({ episodeQueue: episodes }),
   playNext: () => set((s) => {
     if (!s.current) return s;
+    // Listen queue takes precedence when the current episode came from it —
+    // advance to the next queued item (with ITS own podcast). "Up Next wins",
+    // consistent with handlePlaybackEnded.
+    const qIdx = s.listenQueue.findIndex((i) => epKey(i.episode) === epKey(s.current!.episode));
+    if (qIdx >= 0) {
+      // Skipping clears the one you're leaving (same as finishing it). Only the
+      // CURRENT item is removed — items you merely tapped past stay, so the
+      // queue remains jumpable.
+      const nextItem = s.listenQueue[qIdx + 1];
+      const nextQueue = s.listenQueue.filter((_, i) => i !== qIdx);
+      storage.listenQueue.set(s.identity?.npub, nextQueue);
+      // Last item → clear it and stop (the queue is now empty).
+      if (!nextItem) return { listenQueue: nextQueue, isPlaying: false };
+      return { listenQueue: nextQueue, current: { episode: nextItem.episode, podcast: nextItem.podcast }, isPlaying: true, positionSec: 0 };
+    }
+    // Fallback: the open show's episodeQueue (single-show — reuse current podcast).
     const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
     const next = idx >= 0 ? s.episodeQueue[idx + 1] : undefined;
     if (!next) return s;
@@ -121,6 +176,12 @@ export const useApp = create<AppState>((set, get) => ({
   }),
   playPrev: () => set((s) => {
     if (!s.current) return s;
+    const qIdx = s.listenQueue.findIndex((i) => epKey(i.episode) === epKey(s.current!.episode));
+    if (qIdx >= 0) {
+      const prevItem = qIdx > 0 ? s.listenQueue[qIdx - 1] : undefined;
+      if (!prevItem) return s;
+      return { current: { episode: prevItem.episode, podcast: prevItem.podcast }, isPlaying: true, positionSec: 0 };
+    }
     const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
     const prev = idx > 0 ? s.episodeQueue[idx - 1] : undefined;
     if (!prev) return s;
@@ -178,6 +239,101 @@ export const useApp = create<AppState>((set, get) => ({
     return { favorites: next };
   }),
 
+  // Hydrate seen + listen queue from the guest bucket on creation; nostr-auth
+  // swaps to the per-npub bucket on login and resets on logout.
+  seenGuids: storage.inboxSeen.get(null),
+  isSeen: (key) => !!key && get().seenGuids.has(key),
+  markSeen: (episode) => set((s) => markSeenInternal(s, episode)),
+  seedSeenKeys: (keys) => set((s) => {
+    if (!keys.length) return {};
+    const next = new Set(s.seenGuids);
+    let changed = false;
+    for (const k of keys) if (k && !next.has(k)) { next.add(k); changed = true; }
+    if (!changed) return {};
+    storage.inboxSeen.set(s.identity?.npub, next);
+    return { seenGuids: next };
+  }),
+  setSeenGuids: (next) => set({ seenGuids: next }),
+
+  listenQueue: storage.listenQueue.get(null),
+  enqueueEpisode: (episode, podcast) => set((s) => {
+    const key = epKey(episode);
+    const already = s.listenQueue.some((i) => epKey(i.episode) === key);
+    // Adding to the queue also marks the episode seen ("adding = handled" →
+    // it leaves the inbox). Fold both writes into this one set().
+    const seenPatch = markSeenInternal(s, episode);
+    if (already) return seenPatch;
+    const nextQueue = [...s.listenQueue, { episode, podcast }];
+    storage.listenQueue.set(s.identity?.npub, nextQueue);
+    return { ...seenPatch, listenQueue: nextQueue };
+  }),
+  removeFromQueue: (key) => set((s) => {
+    const nextQueue = s.listenQueue.filter((i) => epKey(i.episode) !== key);
+    if (nextQueue.length === s.listenQueue.length) return s;
+    storage.listenQueue.set(s.identity?.npub, nextQueue);
+    return { listenQueue: nextQueue };
+  }),
+  moveQueueItem: (index, dir) => set((s) => {
+    const j = index + dir;
+    if (index < 0 || j < 0 || index >= s.listenQueue.length || j >= s.listenQueue.length) return s;
+    const next = [...s.listenQueue];
+    [next[index], next[j]] = [next[j], next[index]];
+    storage.listenQueue.set(s.identity?.npub, next);
+    return { listenQueue: next };
+  }),
+  clearQueue: () => set((s) => {
+    storage.listenQueue.set(s.identity?.npub, []);
+    return { listenQueue: [] };
+  }),
+  playFromQueue: (index) => set((s) => {
+    const item = s.listenQueue[index];
+    if (!item) return s;
+    // Tapping a row just plays it — the queue is left intact so you can jump
+    // around without losing items. Only ⏭ skip and finishing drain.
+    return { current: { episode: item.episode, podcast: item.podcast }, isPlaying: true, positionSec: 0 };
+  }),
+  setListenQueue: (next) => set({ listenQueue: next }),
+
+  handlePlaybackEnded: () => set((s) => {
+    const cur = s.current;
+    if (!cur) return s;
+
+    // (b) finishing ALWAYS marks the finished episode seen.
+    const seenPatch = markSeenInternal(s, cur.episode);
+
+    const key = epKey(cur.episode);
+    const qIdx = s.listenQueue.findIndex((i) => epKey(i.episode) === key);
+
+    if (qIdx >= 0) {
+      // The finished episode was in the listen queue: drop it and auto-play the
+      // item that followed it — with ITS OWN podcast — else stop. The drain.
+      const nextItem = s.listenQueue[qIdx + 1];
+      const nextQueue = s.listenQueue.filter((_, i) => i !== qIdx);
+      storage.listenQueue.set(s.identity?.npub, nextQueue);
+      if (nextItem) {
+        return {
+          ...seenPatch,
+          listenQueue: nextQueue,
+          current: { episode: nextItem.episode, podcast: nextItem.podcast },
+          isPlaying: true,
+          positionSec: 0,
+        };
+      }
+      return { ...seenPatch, listenQueue: nextQueue, isPlaying: false };
+    }
+
+    // Not a queue episode → preserve existing behavior exactly: music medium
+    // advances the open show's album; everything else stops.
+    if (isMusicMedium(cur.podcast)) {
+      const idx = s.episodeQueue.findIndex((e) => e.id === cur.episode.id);
+      const next = idx >= 0 ? s.episodeQueue[idx + 1] : undefined;
+      if (next) {
+        return { ...seenPatch, current: { episode: next, podcast: cur.podcast }, isPlaying: true, positionSec: 0 };
+      }
+    }
+    return { ...seenPatch, isPlaying: false };
+  }),
+
   // Hydrate from the guest cache; once the user signs in, hydrateMutes
   // replaces this with their NIP-51 set reconciled against the relay event.
   mutedPubkeys: unionMutedPubkeys(storage.muted.get(null)),
@@ -215,6 +371,19 @@ export const useApp = create<AppState>((set, get) => ({
   boostsTick: 0,
   bumpBoosts: () => set((s) => ({ boostsTick: s.boostsTick + 1 })),
 }));
+
+// Mark an episode seen, returning a store patch (idempotent — empty patch when
+// already seen, so StrictMode double-invokes and repeat calls are no-ops). A
+// NEW Set is created so v5 per-field selectors on `seenGuids` re-render.
+// Callers fold this into their own set() so seen + queue writes are one update.
+function markSeenInternal(s: AppState, episode: Episode): Partial<AppState> {
+  const key = epKey(episode);
+  if (s.seenGuids.has(key)) return {};
+  const next = new Set(s.seenGuids);
+  next.add(key);
+  storage.inboxSeen.set(s.identity?.npub, next);
+  return { seenGuids: next };
+}
 
 // Persist the full mute-list state and (when signed in) schedule a debounced
 // kind:10000 republish. The encryption decision happens at publish time so

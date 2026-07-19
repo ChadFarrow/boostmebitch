@@ -41,6 +41,8 @@ export function NostrAuth() {
   const setIdentity = useApp((s) => s.setIdentity);
   const setFavorites = useApp((s) => s.setFavorites);
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
+  const setSeenGuids = useApp((s) => s.setSeenGuids);
+  const setListenQueue = useApp((s) => s.setListenQueue);
   // One button opens the sign-in modal, which owns the per-method (extension
   // / remote-signer / Amber) flows and their own busy/error state. Open-state
   // lives in the store so other surfaces (fullscreen player, live chat) can
@@ -181,10 +183,14 @@ export function NostrAuth() {
     if (cachedMutes.publicPubkeys.length || cachedMutes.privatePubkeys.length) {
       setMutedPubkeys(unionMutedPubkeys(cachedMutes));
     }
+    // Inbox seen + listen queue are local-only (no relay sync), so load them
+    // straight from this npub's bucket.
+    setSeenGuids(storage.inboxSeen.get(stored));
+    setListenQueue(storage.listenQueue.get(stored));
     loadProfile(bare);
     // loadProfile is re-created each render; the effect self-guards on
     // `identity` so listing it would only add no-op re-runs.
-  }, [identity, setIdentity, setFavorites, setMutedPubkeys]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [identity, setIdentity, setFavorites, setMutedPubkeys, setSeenGuids, setListenQueue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Account-change detector for multi-identity NIP-07 extensions
   // (Alby and nos2x both let the user switch active accounts in their
@@ -259,6 +265,8 @@ export function NostrAuth() {
     setIdentity(null);
     setFavorites({});
     setMutedPubkeys(new Set());
+    setSeenGuids(new Set());
+    setListenQueue([]);
     storage.npub.clear();
     storage.signer.clear();
     clearAmberSigner();
@@ -285,6 +293,10 @@ export function NostrAuth() {
     }
     startTransition(() => setIdentity(id));
     storage.npub.set(id.npub);
+    // Load this account's local-only Inbox seen + listen queue (empty for a
+    // fresh account; discards the guest's — per-account isolation).
+    setSeenGuids(storage.inboxSeen.get(id.npub));
+    setListenQueue(storage.listenQueue.get(id.npub));
     if (kind === 'amber') storage.signer.set('amber');
     else if (kind === 'bunker') storage.signer.set('bunker');
     else storage.signer.clear();

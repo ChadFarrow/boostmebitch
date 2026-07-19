@@ -5,7 +5,7 @@
 // raw key strings live in exactly one file and SSR/quota guards aren't
 // duplicated across components.
 
-import type { FavoritePodcast, Podcast, StoredBoost } from './types';
+import type { Episode, FavoritePodcast, Podcast, StoredBoost } from './types';
 import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
 import { coerceProfileMetadata } from './nostr/auth';
 import { createObservable } from './pubsub';
@@ -27,6 +27,8 @@ const KEYS = {
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favoritesPrefix: 'bmb:favorites',
+  inboxSeenPrefix: 'bmb:inbox_seen',  // per-npub set of "seen"/handled episode keys for the Inbox (string[] on disk)
+  listenQueuePrefix: 'bmb:listen_queue', // per-npub ordered listen queue ({ episode, podcast }[]); survives reload
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   socialThreadPrefix: 'bmb:social',   // last DiscoveredNote[] per podcast:socialInteract URI
@@ -561,6 +563,44 @@ export const storage = {
     },
     set: (npub: string | null | undefined, v: Record<string, FavoritePodcast>) => {
       safeSet(identityKey(KEYS.favoritesPrefix, npub), JSON.stringify(v));
+    },
+  },
+
+  /** Per-npub set of "seen"/handled episode keys for the Inbox. Guest uses `:guest`.
+   *  Stored as a plain string[] on disk; surfaced as a Set in memory. */
+  inboxSeen: {
+    get: (npub: string | null | undefined): Set<string> => {
+      const raw = safeGet(identityKey(KEYS.inboxSeenPrefix, npub));
+      if (!raw) return new Set<string>();
+      try {
+        const arr = JSON.parse(raw);
+        return new Set<string>(Array.isArray(arr) ? arr.filter((x) => typeof x === 'string') : []);
+      } catch {
+        return new Set<string>();
+      }
+    },
+    set: (npub: string | null | undefined, v: Set<string>) => {
+      safeSet(identityKey(KEYS.inboxSeenPrefix, npub), JSON.stringify([...v]));
+    },
+  },
+
+  /** Per-npub ordered listen queue ("Up Next"). Persisted so it survives reload.
+   *  Entries carry their own podcast (the queue mixes shows). */
+  listenQueue: {
+    get: (npub: string | null | undefined): { episode: Episode; podcast: Podcast }[] => {
+      const raw = safeGet(identityKey(KEYS.listenQueuePrefix, npub));
+      if (!raw) return [];
+      try {
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr)
+          ? arr.filter((i) => i && typeof i === 'object' && i.episode && i.podcast)
+          : [];
+      } catch {
+        return [];
+      }
+    },
+    set: (npub: string | null | undefined, v: { episode: Episode; podcast: Podcast }[]) => {
+      safeSet(identityKey(KEYS.listenQueuePrefix, npub), JSON.stringify(v));
     },
   },
 };

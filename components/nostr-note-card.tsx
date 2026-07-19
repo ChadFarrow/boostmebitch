@@ -1,5 +1,5 @@
 'use client';
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   resolvePublishRelays,
@@ -9,7 +9,7 @@ import {
 import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/interactions';
 import { sendZap } from '@/lib/v4v/zap';
 import { useApp } from '@/lib/store';
-import type { Podcast } from '@/lib/types';
+import type { Episode, Podcast } from '@/lib/types';
 import { getErrorMessage } from '@/lib/util';
 import { linkify, extractImages, stripNostrUris, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
@@ -42,6 +42,7 @@ function NoteCardImpl({
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
   const mutePubkey = useApp((s) => s.mutePubkey);
   const selectPodcast = useApp((s) => s.selectPodcast);
+  const enqueueEpisode = useApp((s) => s.enqueueEpisode);
   const name =
     note.author?.display_name?.trim() ||
     note.author?.name?.trim() ||
@@ -74,6 +75,64 @@ function NoteCardImpl({
   }, [alreadyReposted, repostState]);
 
   const [zapOpen, setZapOpen] = useState(false);
+
+  // "+ queue" — resolve the episode this note references (from its NIP-73
+  // podcast:guid + podcast:item:guid) and add it to the listen queue. Only
+  // possible when the note points at a specific episode (not a show-level
+  // boost). The episode is resolved on demand (one PI call per click), not
+  // upfront for every note. Works signed-out — the queue is local.
+  const epItemGuid = note.episodeGuids[0];
+  const feedGuidForEp = podcast?.podcastGuid ?? note.podcastGuid;
+  const canQueue = !!epItemGuid && !!feedGuidForEp;
+  const [queueState, setQueueState] = useState<ActionState>('idle');
+  // Cache the resolved episode so a hover-prefetch makes the later click instant.
+  const prefetchedEp = useRef<Episode | null>(null);
+  const prefetchInFlight = useRef<Promise<Episode | null> | null>(null);
+
+  function resolveEpisode(): Promise<Episode | null> {
+    if (prefetchedEp.current) return Promise.resolve(prefetchedEp.current);
+    if (prefetchInFlight.current) return prefetchInFlight.current;
+    if (!canQueue) return Promise.resolve(null);
+    const p = fetch(
+      `/api/episode?feedGuid=${encodeURIComponent(feedGuidForEp!)}&itemGuid=${encodeURIComponent(epItemGuid!)}`,
+    )
+      .then((r) => r.json().then((d) => (r.ok && d.episode ? (d.episode as Episode) : null)))
+      .catch(() => null)
+      .then((ep) => {
+        prefetchedEp.current = ep;
+        prefetchInFlight.current = null;
+        return ep;
+      });
+    prefetchInFlight.current = p;
+    return p;
+  }
+
+  // Start the lookup on hover/press so the click usually hits a warm cache.
+  function prefetchQueue() {
+    if (canQueue && !prefetchedEp.current) void resolveEpisode();
+  }
+
+  async function onAddToQueue() {
+    if (!canQueue || queueState === 'busy' || queueState === 'done') return;
+    setQueueState('busy');
+    const ep = await resolveEpisode();
+    if (!ep) {
+      prefetchedEp.current = null; // let a retry re-fetch
+      setQueueState('error');
+      setTimeout(() => setQueueState('idle'), 2500);
+      return;
+    }
+    // Prefer the already-resolved show; else build a minimal one from the
+    // episode's own feed fields so it's still playable + labelled in the queue.
+    const pod: Podcast = podcast ?? {
+      id: ep.feedId,
+      podcastGuid: ep.podcastGuid ?? feedGuidForEp!,
+      title: ep.feedTitle ?? 'Podcast',
+      image: ep.feedImage,
+    };
+    enqueueEpisode(ep, pod);
+    setQueueState('done');
+  }
 
   function openComposer(mode: 'reply' | 'quote') {
     setComposerMode((curr) => (curr === mode ? null : mode));
@@ -285,6 +344,29 @@ function NoteCardImpl({
             </>
           ) : (
             <span className="text-muted">sign in to reply / repost / quote / zap</span>
+          )}
+          {canQueue && (
+            <button
+              onClick={onAddToQueue}
+              onPointerEnter={prefetchQueue}
+              onPointerDown={prefetchQueue}
+              disabled={queueState === 'busy' || queueState === 'done'}
+              className={
+                queueState === 'done'
+                  ? 'text-bolt disabled:opacity-100'
+                  : 'text-muted hover:text-bolt disabled:opacity-60'
+              }
+              aria-label="Add episode to queue"
+              title="Add this episode to your listen queue"
+            >
+              {queueState === 'done'
+                ? '✓ queued'
+                : queueState === 'busy'
+                  ? '+ …'
+                  : queueState === 'error'
+                    ? '↻ retry'
+                    : '+ queue'}
+            </button>
           )}
           <span className="flex-1" />
           <a
