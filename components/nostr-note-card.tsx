@@ -12,6 +12,7 @@ import type { Podcast } from '@/lib/types';
 import { getErrorMessage } from '@/lib/util';
 import { linkify, extractImages, stripNostrUris, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
+import { FollowButton } from './follow-button';
 
 type ActionState = 'idle' | 'busy' | 'done' | 'error';
 
@@ -166,6 +167,7 @@ function NoteCardImpl({
           >
             {name}
           </a>
+          <FollowButton pubkey={note.pubkey} />
           <span className="text-muted">· {timeAgo(note.createdAt)}</span>
           {note.isBoost && sats !== null && (
             <span className="stamp text-bolt border-bolt/60">⚡ {sats} sats</span>
