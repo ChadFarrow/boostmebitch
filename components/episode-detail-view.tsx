@@ -170,6 +170,7 @@ export function EpisodeDetailView() {
   const podcast = useApp((s) => s.selectedPodcast);
   const closeEpisode = useApp((s) => s.closeEpisode);
   const play = useApp((s) => s.play);
+  const enqueueEpisode = useApp((s) => s.enqueueEpisode);
   const requestSeek = useApp((s) => s.requestSeek);
   const togglePlay = useApp((s) => s.togglePlay);
   const current = useApp((s) => s.current);
@@ -307,6 +308,15 @@ export function EpisodeDetailView() {
             aria-label={isThisPlaying && isPlaying ? 'Pause' : isThisPlaying ? 'Resume' : 'Play'}
           >
             {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : '▶ PLAY'}
+          </button>
+          <button
+            type="button"
+            onClick={() => enqueueEpisode(episode, podcast)}
+            className="btn-ghost"
+            aria-label="Add to queue"
+            title="Add to queue"
+          >
+            + queue
           </button>
           <EpisodeShareButton episode={episode} podcast={podcast} />
           {/* SUPPORT before BOOST to match the show page's cluster order

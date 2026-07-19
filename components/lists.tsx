@@ -434,6 +434,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const isPlaying = useApp((s) => s.isPlaying);
   const current = useApp((s) => s.current);
   const openEpisode = useApp((s) => s.openEpisode);
+  const enqueueEpisode = useApp((s) => s.enqueueEpisode);
   const setEpisodeQueue = useApp((s) => s.setEpisodeQueue);
   const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
 
@@ -642,6 +643,20 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   <span className="text-bolt text-[11px] mt-0.5">⚡ {e.valueTimeSplits.length} tracks</span>
                 ) : null}
               </div>
+              {e.liveStatus !== 'pending' && (
+                <button
+                  type="button"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    if (data.podcast) enqueueEpisode(e, data.podcast);
+                  }}
+                  className="btn-ghost text-xs px-2 self-center flex-shrink-0"
+                  aria-label="Add to queue"
+                  title="Add to queue"
+                >
+                  + queue
+                </button>
+              )}
               {hasValueRecipients(e.value) && (
                 <button
                   type="button"
