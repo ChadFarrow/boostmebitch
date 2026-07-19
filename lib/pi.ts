@@ -654,7 +654,12 @@ export async function getRssEpisodeEnrichment(
     const guid = extractText(inner, 'guid');
     if (!guid) continue;
     const socialInteract = parseSocialInteractsFromRss(inner) ?? undefined;
-    const raw = extractRawContent(inner, 'content:encoded');
+    // Full show notes: prefer <content:encoded>; when a feed doesn't use it
+    // (e.g. Podcasting 2.0's own feed), fall back to the item <description>,
+    // which holds the full HTML. PI's `description` is the same field but
+    // truncated (~3000 chars, mid-word) and tag-stripped, so this untruncated,
+    // link-preserving version is strictly better and the detail view prefers it.
+    const raw = extractRawContent(inner, 'content:encoded') ?? extractRawContent(inner, 'description');
     const contentEncoded = raw ? sanitizeShowNotes(raw) || undefined : undefined;
     // podcast:season number attr takes precedence over text content
     const seasonTagMatch = /<podcast:season\b([^>]*)>/i.exec(inner);
