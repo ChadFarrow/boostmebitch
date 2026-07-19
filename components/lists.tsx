@@ -1,7 +1,7 @@
 'use client';
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import type { Episode, Podcast, ValueBlock } from '@/lib/types';
-import { useApp } from '@/lib/store';
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { Episode, FavoritePodcast, Podcast, ValueBlock } from '@/lib/types';
+import { useApp, epKey } from '@/lib/store';
 import { fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { BoostModal } from './boost-modal';
@@ -84,39 +84,75 @@ function PodcastRow({
   selected,
   onSelect,
   showV4VStamp,
+  newCount = 0,
+  expanded = false,
+  onToggleExpand,
+  favSize = 'sm',
+  children,
 }: {
   podcast: Podcast;
   selected: boolean;
   onSelect: (p: Podcast) => void;
   showV4VStamp: boolean;
+  // Inbox: count of unseen new episodes for this show, plus an expandable
+  // sublist rendered as `children`. Absent/0 keeps the plain search-result row.
+  newCount?: number;
+  expanded?: boolean;
+  onToggleExpand?: () => void;
+  // Inbox rows pass 'icon' — every row is already a favorite there, so a bare
+  // heart declutters vs. the full FAVORITED button used in search results.
+  favSize?: 'sm' | 'md' | 'icon';
+  children?: ReactNode;
 }) {
   return (
-    <li
-      onClick={() => onSelect(podcast)}
-      className={`flex gap-3 py-3 px-1 cursor-pointer group transition ${
-        selected ? 'bg-bolt/10' : 'hover:bg-bone/5'
-      }`}
-    >
-      <PodcastCover
-        image={podcast.image}
-        artwork={podcast.artwork}
-        title={podcast.title}
-        seed={podcast.podcastGuid ?? String(podcast.id)}
-        className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
-          {podcast.medium === 'publisher' && (
-            <span className="stamp text-muted border-muted/40">▸ ALBUMS</span>
-          )}
-          {showV4VStamp && podcast.value && (
-            <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
-          )}
+    <li className="py-3 px-1">
+      <div
+        onClick={() => onSelect(podcast)}
+        className={`flex gap-3 cursor-pointer group transition ${
+          selected ? 'bg-bolt/10' : 'hover:bg-bone/5'
+        }`}
+      >
+        <PodcastCover
+          image={podcast.image}
+          artwork={podcast.artwork}
+          title={podcast.title}
+          seed={podcast.podcastGuid ?? String(podcast.id)}
+          className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
+            {podcast.medium === 'publisher' && (
+              <span className="stamp text-muted border-muted/40">▸ ALBUMS</span>
+            )}
+            {showV4VStamp && podcast.value && (
+              <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
+            )}
+          </div>
+          <div className="text-xs text-muted truncate">{podcast.author}</div>
         </div>
-        <div className="text-xs text-muted truncate">{podcast.author}</div>
+        {newCount > 0 && onToggleExpand ? (
+          // The badge IS the disclosure control — click to reveal the show's new
+          // episodes. Placed by the FAVORITE button so the revealed episodes'
+          // + queue / play actions sit right under where you tapped. A chevron
+          // (not a play triangle) signals expand.
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onToggleExpand(); }}
+            aria-expanded={expanded}
+            aria-label={expanded ? 'Hide new episodes' : 'Show new episodes'}
+            className="stamp text-bolt border-bolt/60 hover:bg-bolt/10 transition self-center flex-shrink-0"
+          >
+            {newCount} NEW <span aria-hidden>{expanded ? '⌃' : '⌄'}</span>
+          </button>
+        ) : newCount > 0 ? (
+          <span className="stamp text-bolt border-bolt/60 self-center flex-shrink-0">{newCount} NEW</span>
+        ) : null}
+        <FavHeart podcast={podcast} size={favSize} />
       </div>
-      <FavHeart podcast={podcast} />
+      {expanded && children ? (
+        <div onClick={(e) => e.stopPropagation()}>{children}</div>
+      ) : null}
     </li>
   );
 }
@@ -148,7 +184,109 @@ export function PodcastResults({
   );
 }
 
-export function FavoritesList({
+// New-episode window: an episode counts as "new" in the inbox if it's within
+// 30 days and unseen. We deliberately do NOT gate on the favorite's addedAt —
+// for Nostr-synced favorites addedAt is "when this device first resolved the
+// show" (favorites-hydrator sets Date.now()), not when the user favorited, so
+// it would wrongly suppress every already-published episode. The 30-day window
+// + the seen set bound the volume instead. datePublished is unix SECONDS.
+const NEW_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+// Fetch recent episodes across all favorited feeds in one call. Mount + when
+// the favorites id-set changes + manual refresh only — never on a timer
+// (mirrors the EpisodeList fetch convention). Groups the flat response by feed.
+function useInboxNew(favoriteIds: number[]) {
+  const idsKey = useMemo(
+    () => [...favoriteIds].filter((n) => Number.isInteger(n) && n > 0).sort((a, b) => a - b).join(','),
+    [favoriteIds],
+  );
+  const [byFeed, setByFeed] = useState<Record<number, Episode[]>>({});
+  const [loading, setLoading] = useState(false);
+  const [tick, setTick] = useState(0);
+  const refresh = () => setTick((n) => n + 1);
+
+  useEffect(() => {
+    if (!idsKey) { setByFeed({}); return; }
+    let cancelled = false;
+    setLoading(true);
+    fetch(`/api/new-episodes?ids=${idsKey}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (cancelled) return;
+        const grouped: Record<number, Episode[]> = {};
+        for (const e of (d.episodes ?? []) as Episode[]) {
+          (grouped[e.feedId] ??= []).push(e);
+        }
+        setByFeed(grouped);
+      })
+      .catch(() => { if (!cancelled) setByFeed({}); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [idsKey, tick]);
+
+  return { byFeed, refresh, loading };
+}
+
+// FavoritePodcast → minimal Podcast (the favorites cache carries no value block).
+function favToPodcast(p: FavoritePodcast): Podcast {
+  return {
+    id: p.id,
+    podcastGuid: p.podcastGuid,
+    title: p.title,
+    author: p.author,
+    image: p.image,
+    artwork: p.artwork,
+    url: p.url,
+  };
+}
+
+// The new episodes for one favorited show: unseen, guid-bearing, within window.
+function newEpisodesFor(eps: Episode[] | undefined, seen: Set<string>): Episode[] {
+  if (!eps?.length) return [];
+  const floor = Date.now() - NEW_WINDOW_MS;
+  return eps
+    .filter((e) => !!e.guid && !seen.has(epKey(e)) && (e.datePublished ?? 0) * 1000 >= floor)
+    .sort((a, b) => (b.datePublished ?? 0) - (a.datePublished ?? 0));
+}
+
+function InboxEpisodeRow({ episode, podcast }: { episode: Episode; podcast: Podcast }) {
+  const play = useApp((s) => s.play);
+  const enqueueEpisode = useApp((s) => s.enqueueEpisode);
+  const markSeen = useApp((s) => s.markSeen);
+  const date = episode.datePublished
+    ? new Date(episode.datePublished * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    : '';
+  return (
+    <div className="flex items-center gap-3 py-1.5 pl-16 pr-1">
+      <div className="min-w-0 flex-1">
+        <div className="text-sm leading-tight truncate">{episode.title}</div>
+        <div className="text-[11px] text-muted">
+          {date}
+          {episode.duration ? ` · ${fmtDuration(episode.duration)}` : ''}
+        </div>
+      </div>
+      <div className="flex items-center gap-1 flex-shrink-0">
+        <button type="button" onClick={() => play(episode, podcast)} className="btn-ghost text-xs px-2" aria-label="Play" title="Play">
+          ▶
+        </button>
+        <button
+          type="button"
+          onClick={() => enqueueEpisode(episode, podcast)}
+          className="btn-ghost text-xs px-2"
+          aria-label="Add to queue"
+          title="Add to queue"
+        >
+          + queue
+        </button>
+        <button type="button" onClick={() => markSeen(episode)} className="btn-ghost text-xs px-2" aria-label="Mark seen" title="Mark seen">
+          ✓
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function InboxList({
   selected,
   onSelect,
 }: {
@@ -156,41 +294,80 @@ export function FavoritesList({
   onSelect: (p: Podcast) => void;
 }) {
   const favorites = useApp((s) => s.favorites);
-  const list = useMemo(
-    () =>
-      Object.values(favorites).sort((a, b) =>
-        (a.title ?? '').localeCompare(b.title ?? '', undefined, { sensitivity: 'base' }),
-      ),
-    [favorites],
-  );
+  const seenGuids = useApp((s) => s.seenGuids);
+  const favoriteIds = useMemo(() => Object.values(favorites).map((f) => f.id), [favorites]);
+  const { byFeed, refresh, loading } = useInboxNew(favoriteIds);
+  // Per-show expand override; undefined → default (auto-expand shows with new eps).
+  const [expandedOverride, setExpandedOverride] = useState<Record<string, boolean>>({});
 
-  if (!list.length) return null;
+  const rows = useMemo(() => {
+    const out = Object.values(favorites).map((f) => {
+      const raw = byFeed[f.id];
+      return {
+        fav: f,
+        newEps: newEpisodesFor(raw, seenGuids),
+        // Stable sort key: the newest release date from the RAW list (NOT the
+        // seen-filtered one). Marking an episode seen must not change a show's
+        // position — otherwise marking the newest re-sorts the show out from
+        // under you and it reads as "everything below got cleared."
+        sortDate: raw?.length ? Math.max(...raw.map((e) => e.datePublished ?? 0)) : 0,
+      };
+    });
+    // Shows with unseen new episodes float to the top (most recent release
+    // first); the rest keep alphabetical order.
+    out.sort((a, b) => {
+      const an = a.newEps.length > 0 ? 1 : 0;
+      const bn = b.newEps.length > 0 ? 1 : 0;
+      if (an !== bn) return bn - an;
+      if (an === 1) return b.sortDate - a.sortDate;
+      return (a.fav.title ?? '').localeCompare(b.fav.title ?? '', undefined, { sensitivity: 'base' });
+    });
+    return out;
+  }, [favorites, byFeed, seenGuids]);
+
+  if (!rows.length) return null;
 
   return (
-    <ul className="divide-y divide-bone/10">
-      {list.map((p) => {
-        // FavoritePodcast → Podcast: the cache doesn't carry the value block,
-        // so the value-aware stamp is hidden via showV4VStamp={false}.
-        const minimal: Podcast = {
-          id: p.id,
-          podcastGuid: p.podcastGuid,
-          title: p.title,
-          author: p.author,
-          image: p.image,
-          artwork: p.artwork,
-          url: p.url,
-        };
-        return (
-          <PodcastRow
-            key={p.podcastGuid}
-            podcast={minimal}
-            selected={selected === p.id}
-            onSelect={onSelect}
-            showV4VStamp={false}
-          />
-        );
-      })}
-    </ul>
+    <div>
+      <div className="flex justify-end px-1 pb-1">
+        <button
+          type="button"
+          onClick={refresh}
+          disabled={loading}
+          className="btn-ghost text-xs px-2 disabled:opacity-40"
+          aria-label="Refresh new episodes"
+        >
+          {loading ? '…' : '⟳'} refresh
+        </button>
+      </div>
+      <ul className="divide-y divide-bone/10">
+        {rows.map(({ fav, newEps }) => {
+          const minimal = favToPodcast(fav);
+          // Collapsed by default — the "N NEW" badge signals there's content;
+          // tap the caret to reveal the episodes. Keeps the list scannable.
+          const expanded = expandedOverride[fav.podcastGuid] ?? false;
+          return (
+            <PodcastRow
+              key={fav.podcastGuid}
+              podcast={minimal}
+              selected={selected === fav.id}
+              onSelect={onSelect}
+              showV4VStamp={false}
+              newCount={newEps.length}
+              favSize="icon"
+              expanded={expanded}
+              onToggleExpand={() =>
+                setExpandedOverride((m) => ({ ...m, [fav.podcastGuid]: !expanded }))
+              }
+            >
+              {newEps.map((e) => (
+                <InboxEpisodeRow key={epKey(e)} episode={e} podcast={minimal} />
+              ))}
+            </PodcastRow>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -257,8 +434,14 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const isPlaying = useApp((s) => s.isPlaying);
   const current = useApp((s) => s.current);
   const openEpisode = useApp((s) => s.openEpisode);
+  const enqueueEpisode = useApp((s) => s.enqueueEpisode);
+  const listenQueue = useApp((s) => s.listenQueue);
   const setEpisodeQueue = useApp((s) => s.setEpisodeQueue);
   const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
+  const queuedKeys = useMemo(
+    () => new Set(listenQueue.map((i) => epKey(i.episode))),
+    [listenQueue],
+  );
 
   useEffect(() => {
     setValueOpen(false);
@@ -465,6 +648,26 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   <span className="text-bolt text-[11px] mt-0.5">⚡ {e.valueTimeSplits.length} tracks</span>
                 ) : null}
               </div>
+              {e.liveStatus !== 'pending' && (() => {
+                const queued = queuedKeys.has(epKey(e));
+                return (
+                  <button
+                    type="button"
+                    disabled={queued}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      if (data.podcast) enqueueEpisode(e, data.podcast);
+                    }}
+                    className={`btn-ghost text-xs px-2 self-center flex-shrink-0 ${
+                      queued ? 'text-bolt border-bolt/60 disabled:opacity-100' : ''
+                    }`}
+                    aria-label={queued ? 'In your queue' : 'Add to queue'}
+                    title={queued ? 'Already in your queue' : 'Add to queue'}
+                  >
+                    {queued ? '✓ queued' : '+ queue'}
+                  </button>
+                );
+              })()}
               {hasValueRecipients(e.value) && (
                 <button
                   type="button"

@@ -229,6 +229,36 @@ export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> 
   return (data.items ?? []).map(buildEpisode);
 }
 
+// Recent episodes across MANY feeds in one shot, for the Inbox "new episodes"
+// check. PI's /episodes/byfeedid accepts a comma-joined id list and each
+// returned item carries its own feedId, so the client can group by show.
+// `sinceSec` bounds the payload to recent items — without it 100 favorites
+// would return thousands of episodes. Ids are chunked (default 40/request) to
+// keep the URL under length limits; chunks run in parallel and a failed chunk
+// yields [] rather than blanking the whole inbox. Falls back to per-feed
+// fan-out if PI ever ignores `since` on a comma id list (contract unchanged).
+export async function getRecentEpisodesForFeeds(
+  feedIds: number[],
+  sinceSec: number,
+  perChunk = 40,
+): Promise<Episode[]> {
+  const chunks: number[][] = [];
+  for (let i = 0; i < feedIds.length; i += perChunk) chunks.push(feedIds.slice(i, i + perChunk));
+  const results = await Promise.all(
+    chunks.map(async (chunk) => {
+      try {
+        const data = await pi<any>(
+          `/episodes/byfeedid?id=${chunk.join(',')}&since=${sinceSec}&max=1000`,
+        );
+        return (data.items ?? []).map(buildEpisode) as Episode[];
+      } catch {
+        return [] as Episode[];
+      }
+    }),
+  );
+  return results.flat();
+}
+
 // PI exposes liveItem records globally at /episodes/live. There is no per-feed
 // endpoint, so we pull a wide page and filter. PI's status field can be
 // 'live' | 'pending' | 'ended'; we drop ended — old broadcasts shouldn't

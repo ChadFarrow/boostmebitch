@@ -9,7 +9,7 @@ import {
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
-import { hasValueRecipients, isHlsUrl, isMusicMedium, pipSupported, togglePip } from '@/lib/util';
+import { hasValueRecipients, isHlsUrl, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
@@ -33,7 +33,6 @@ export function Player() {
   const seekReq = useApp((s) => s.seekReq);
   const setPlaying = useApp((s) => s.setPlaying);
   const setPosition = useApp((s) => s.setPosition);
-  const playNext = useApp((s) => s.playNext);
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
@@ -436,10 +435,7 @@ export function Player() {
             }
           }}
           onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); setAudioErr(null); }}
-          onEnded={() => {
-            if (current && isMusicMedium(current.podcast)) playNext();
-            else setPlaying(false);
-          }}
+          onEnded={() => useApp.getState().handlePlaybackEnded()}
           onError={(e) => { if (!isHlsRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4">

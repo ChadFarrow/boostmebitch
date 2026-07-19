@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { useApp } from '@/lib/store';
+import { useApp, epKey } from '@/lib/store';
 import { fmtDuration } from '@/lib/format';
 import { hasValueRecipients, stripHtml } from '@/lib/util';
 import { useChapters, type ChapterEntry } from '@/lib/chapters';
@@ -170,6 +170,8 @@ export function EpisodeDetailView() {
   const podcast = useApp((s) => s.selectedPodcast);
   const closeEpisode = useApp((s) => s.closeEpisode);
   const play = useApp((s) => s.play);
+  const enqueueEpisode = useApp((s) => s.enqueueEpisode);
+  const listenQueue = useApp((s) => s.listenQueue);
   const requestSeek = useApp((s) => s.requestSeek);
   const togglePlay = useApp((s) => s.togglePlay);
   const current = useApp((s) => s.current);
@@ -308,6 +310,21 @@ export function EpisodeDetailView() {
           >
             {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : '▶ PLAY'}
           </button>
+          {(() => {
+            const queued = listenQueue.some((i) => epKey(i.episode) === epKey(episode));
+            return (
+              <button
+                type="button"
+                disabled={queued}
+                onClick={() => enqueueEpisode(episode, podcast)}
+                className={queued ? 'btn-ghost text-bolt border-bolt/60 disabled:opacity-100' : 'btn-ghost'}
+                aria-label={queued ? 'In your queue' : 'Add to queue'}
+                title={queued ? 'Already in your queue' : 'Add to queue'}
+              >
+                {queued ? '✓ queued' : '+ queue'}
+              </button>
+            );
+          })()}
           <EpisodeShareButton episode={episode} podcast={podcast} />
           {/* SUPPORT before BOOST to match the show page's cluster order
               (FAVORITE · SHARE · SUPPORT · BOOST). */}
