@@ -1,5 +1,6 @@
 'use client';
 import { memo, useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import {
   resolvePublishRelays,
   shortNpub,
@@ -380,6 +381,11 @@ function ZapDialog({
   const [comment, setComment] = useState('');
   const [state, setState] = useState<ActionState>('idle');
   const [err, setErr] = useState<string | null>(null);
+  // Portal to <body>: NoteCard renders inside feeds, which sit in the layout's
+  // `relative z-0` content wrapper, so this dialog's z-index couldn't rise above
+  // the body-level mini-player (z-30) without escaping the wrapper.
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => { setPortalTarget(document.body); }, []);
 
   const lud = note.author?.lud16 || note.author?.lud06;
   const canZap = !!lud;
@@ -406,8 +412,10 @@ function ZapDialog({
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-40 bg-ink/80 backdrop-blur-sm grid place-items-center px-4">
+  if (!portalTarget) return null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[60] bg-ink/80 backdrop-blur-sm grid place-items-center px-4 pb-28">
       <div className="card p-4 max-w-sm w-full">
         <header className="flex items-center justify-between mb-3">
           <h3 className="font-display text-lg">⚡ Zap {note.author?.display_name || note.author?.name || shortNpub(note.npub, 6)}</h3>
@@ -458,6 +466,7 @@ function ZapDialog({
           </>
         )}
       </div>
-    </div>
+    </div>,
+    portalTarget,
   );
 }

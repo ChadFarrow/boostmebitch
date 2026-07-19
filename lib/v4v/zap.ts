@@ -15,7 +15,7 @@ import type { EventTemplate } from 'nostr-tools';
 import { nwcPayInvoice } from './nwc';
 import { sparkPayInvoice } from './spark';
 import { weblnPayInvoice } from './webln';
-import { pickRail } from './boost';
+import { pickRail, type Rail } from './boost';
 import { bolt11AmountMsat } from './bolt11';
 
 interface LnurlPayMetadata {
@@ -67,11 +67,14 @@ export async function sendZap(args: {
    *  service publishes the receipt, so include relays the recipient is likely
    *  to read from. */
   relays: string[];
+  /** Rail the user picked in the modal. Falls back to pickRail() priority when
+   *  omitted — without threading it, a WebLN-override user got zapped over NWC. */
+  rail?: Rail;
 }): Promise<{ preimage: string }> {
   if (typeof window === 'undefined' || !window.nostr) {
     throw new Error('No Nostr signer available');
   }
-  const rail = pickRail();
+  const rail = args.rail ?? pickRail();
   if (!rail) {
     throw new Error('No payment provider available (connect NWC, Spark, or WebLN)');
   }

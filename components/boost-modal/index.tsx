@@ -1,8 +1,9 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, splitSats, pickRail, type BoostResult, type Rail } from '@/lib/v4v/boost';
+import { sendBoost, splitSats, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
@@ -41,6 +42,14 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
   const [shareAs, setShareAs] = useState<ShareNostrAs>(() => storage.shareNostrAs.get());
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
+
+  // Portal to <body> so the overlay escapes the layout's `relative z-0` content
+  // wrapper — otherwise, when this modal is opened from the episode list / detail
+  // view (inside that wrapper), the mini-player (body-level, z-30) paints over
+  // its footer. Opening from the player already worked because the player shares
+  // the body-level context; portaling makes every entry point behave the same.
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => { setPortalTarget(document.body); }, []);
 
   // Keep rail in sync if wallet connects/disconnects while the modal is open.
   useEffect(() => {
@@ -181,6 +190,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           comment: msg || undefined,
           aTag: streamChatAddr(liveStreamId),
           relays: LIVE_STREAM_RELAYS,
+          rail: rail ?? undefined,
         });
       } catch (e) {
         alert(getErrorMessage(e, 'zap failed'));
@@ -210,7 +220,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         onProgress: (res) => setResults((prev) => [...prev, res]),
       });
       setResults(collected);
-      if (collected.some((r) => r.ok)) {
+      if (paidAny(collected)) {
         fireConfetti();
         playBoostSound();
       }
@@ -222,7 +232,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     setPaymentDone(true);
     setRunning(false);
 
-    const anyPaid = collected.some((r) => r.ok);
+    const anyPaid = paidAny(collected);
 
     // Auto-close after a successful send (brief delay so the confetti + "sent"
     // state register). The Nostr note + chat publishes below continue in the
@@ -265,8 +275,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">
+  if (!portalTarget) return null;
+
+  return createPortal(
+    // pb-28 clears the fixed mini-player bar so the sticky footer isn't hidden behind it.
+    <div className="fixed inset-0 z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pb-28">
       {/* scrollbar-gutter reserves the scrollbar's width even while it's not
           shown, so content growing past 92vh (a wrapped desc line, status
           rows appearing) can't jitter the content width when the scrollbar
@@ -333,6 +346,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    portalTarget,
   );
 }

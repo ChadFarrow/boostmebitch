@@ -1,8 +1,9 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, pickRail, type Rail } from '@/lib/v4v/boost';
+import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
@@ -50,6 +51,14 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const [shareAs, setShareAs] = useState<ShareNostrAs>(() => storage.shareNostrAs.get());
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
+
+  // Portal to <body> so the overlay escapes the layout's `relative z-0` content
+  // wrapper (app/layout.tsx). Inside that wrapper a `fixed` modal's z-index only
+  // competes WITHIN the wrapper's stacking context, so the mini-player (a
+  // body-level sibling at z-30) painted on top of it — burying the Cancel /
+  // BOOST footer. Same fix wallet-modal / sign-in-modal use.
+  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
+  useEffect(() => { setPortalTarget(document.body); }, []);
 
   function handleShareNostrChange(v: boolean) {
     setShareNostr(v);
@@ -182,7 +191,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             boostagram: trackBoostagram,
             rail,
           });
-          trackOk = results.some((r) => r.ok);
+          trackOk = paidAny(results);
           if (trackOk) {
             const stored: StoredBoost = {
               uuid: trackBoostagram.uuid!,
@@ -250,7 +259,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             boostagram: hostBoostagram,
             rail,
           });
-          if (hostResults.some((r) => r.ok)) {
+          if (paidAny(hostResults)) {
             const stored: StoredBoost = {
               uuid: hostBoostagram.uuid!,
               ts: Date.now(),
@@ -356,8 +365,12 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
   const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' };
 
-  return (
-    <div className="fixed inset-0 z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">
+  if (!portalTarget) return null;
+
+  return createPortal(
+    // pb-28 clears the fixed mini-player bar so the sticky footer (Cancel / BOOST)
+    // is never hidden behind it.
+    <div className="fixed inset-0 z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pb-28">
       {/* Same stable scrollbar gutter as BoostModal — per-track progress rows
           appear dynamically and would otherwise jitter the width. */}
       <div className="card w-full max-w-xl bg-ink relative max-h-[92vh] overflow-y-auto [scrollbar-gutter:stable]">
@@ -505,6 +518,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    portalTarget,
   );
 }

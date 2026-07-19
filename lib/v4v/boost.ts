@@ -60,9 +60,13 @@ export function pickRail(): Rail | null {
  * can and leaves the rest at 0.
  */
 export function splitSats(total: number, recipients: ValueRecipient[]): number[] {
-  const totalWeight = recipients.reduce((s, r) => s + (r.split || 0), 0);
+  // Clamp weights at 0: a malformed feed with a negative `split` would
+  // otherwise poison totalWeight (even flip it negative) and produce nonsensical
+  // — including negative — allocations.
+  const w = (r: ValueRecipient) => Math.max(0, r.split || 0);
+  const totalWeight = recipients.reduce((s, r) => s + w(r), 0);
   if (totalWeight === 0) return recipients.map(() => 0);
-  const exact = recipients.map((r) => (total * (r.split || 0)) / totalWeight);
+  const exact = recipients.map((r) => (total * w(r)) / totalWeight);
   const allocated = exact.map((x) => Math.floor(x));
   let remainder = total - allocated.reduce((a, b) => a + b, 0);
   if (remainder > 0) {
@@ -82,7 +86,7 @@ export function splitSats(total: number, recipients: ValueRecipient[]): number[]
   // (only ever one with >1 sat) keeps the total constant and can't create a
   // new zero, so this terminates.
   const needy = () =>
-    recipients.findIndex((r, i) => (r.split || 0) > 0 && allocated[i] === 0);
+    recipients.findIndex((r, i) => w(r) > 0 && allocated[i] === 0);
   for (let i = needy(); i !== -1; i = needy()) {
     let maxIdx = -1;
     for (let j = 0; j < allocated.length; j++) {
@@ -224,6 +228,18 @@ async function payOne(
   } catch (e: any) {
     return { ...base, ok: false, error: e?.message ?? String(e) };
   }
+}
+
+/**
+ * A boost "succeeded" only when at least one leg paid a POSITIVE amount. A
+ * zero-sat leg returns `ok: true` on purpose (a recipient rounded out of a
+ * multi-recipient split isn't a failure) — but if EVERY leg is a zero-sat
+ * ok (e.g. a feed whose recipients all have `split: 0`), no Lightning traffic
+ * left the wallet, so we must not celebrate, log, or post a "Boosted N sats"
+ * note. Gate all of those on this, not on a bare `.some(r => r.ok)`.
+ */
+export function paidAny(results: BoostResult[]): boolean {
+  return results.some((r) => r.ok && r.sats > 0);
 }
 
 export async function sendBoost(args: {
