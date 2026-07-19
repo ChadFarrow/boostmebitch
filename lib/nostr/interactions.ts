@@ -8,7 +8,7 @@ function inheritPodcastTags(parent: Event): string[][] {
     (t) =>
       (t[0] === 'i' || t[0] === 'k') &&
       typeof t[1] === 'string' &&
-      (t[1].startsWith('podcast:') || t[1] === 'podcast:guid' || t[1] === 'podcast:item:guid'),
+      t[1].startsWith('podcast:'), // subsumes the exact podcast:guid / :item:guid k-values
   );
 }
 

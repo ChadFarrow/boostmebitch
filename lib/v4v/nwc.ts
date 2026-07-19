@@ -18,8 +18,6 @@ export { subscribeNwc };
 let cachedNwcMethods: string[] | null = null;
 
 export const nwcGetMethods = () => cachedNwcMethods;
-export const nwcSupportsKeysend = () => cachedNwcMethods?.includes('pay_keysend') ?? null;
-export const nwcSupportsPayInvoice = () => cachedNwcMethods?.includes('pay_invoice') ?? null;
 
 /** Fetch and cache the wallet's supported methods. No-op if not connected. */
 export async function nwcFetchCapabilities(): Promise<string[]> {
