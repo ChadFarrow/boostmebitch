@@ -9,3 +9,6 @@ out
 next-env.d.ts
 tsconfig.tsbuildinfo
 .superpowers/
+
+# Libre LDK wasm — copied into public/ by postinstall, not source
+/public/liblightningjs.wasm
