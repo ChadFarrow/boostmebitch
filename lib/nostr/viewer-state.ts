@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Event } from 'nostr-tools';
 import type { NostrIdentity } from './auth';
 import type { DiscoveredNote } from './discover';
@@ -67,7 +67,11 @@ export function useViewerReposts(
   const [reposted, setReposted] = useState<Set<string>>(() => new Set());
 
   const pubkey = identity?.pubkey ?? null;
-  const idsKey = notes ? flattenIds(notes).sort().join(',') : '';
+  // Memoized: flattenIds walks the entire nested reply tree, and a firehose
+  // global feed is hundreds of ids to sort+join. Without this it ran on every
+  // render of all three feeds (which re-render on podcast-metadata resolve,
+  // mute changes, boostsTick). `notes` is a stable ref until the set changes.
+  const idsKey = useMemo(() => (notes ? flattenIds(notes).sort().join(',') : ''), [notes]);
 
   useEffect(() => {
     if (!pubkey || !notes || notes.length === 0) {

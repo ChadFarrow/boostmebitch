@@ -19,7 +19,22 @@ import { FullscreenPlayer } from './fullscreen-player';
 import { TransportControls } from './transport-controls';
 
 export function Player() {
-  const { current, isPlaying, setPlaying, setPosition, positionSec, playNext, playerExpanded, setPlayerExpanded, seekReq } = useApp();
+  // Per-field selectors, not a bare `useApp()`. In zustand v5 a selector-less
+  // call re-renders on EVERY store write; <Player> is mounted in the root
+  // layout and owns the fullscreen player, chapters/transcript fetches, and the
+  // reverse-portal <video>, so an unrelated write (mute, favorite, boostsTick,
+  // selectPodcast, signInOpen, walletOpen, …) would re-render this whole heavy
+  // subtree on top of the 1 Hz position ticks. Actions are stable refs — free
+  // to select individually.
+  const current = useApp((s) => s.current);
+  const isPlaying = useApp((s) => s.isPlaying);
+  const positionSec = useApp((s) => s.positionSec);
+  const playerExpanded = useApp((s) => s.playerExpanded);
+  const seekReq = useApp((s) => s.seekReq);
+  const setPlaying = useApp((s) => s.setPlaying);
+  const setPosition = useApp((s) => s.setPosition);
+  const playNext = useApp((s) => s.playNext);
+  const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);

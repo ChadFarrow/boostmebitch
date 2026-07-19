@@ -257,7 +257,15 @@ export function FullscreenPlayer({
   onClose: () => void;
   onBoost: () => void;
 }) {
-  const { current, isPlaying, positionSec, setPosition, episodeQueue, play, togglePlay } = useApp();
+  // Per-field selectors (see the note in player.tsx) — a bare useApp() here
+  // re-renders the whole fullscreen surface on every unrelated store write.
+  const current = useApp((s) => s.current);
+  const isPlaying = useApp((s) => s.isPlaying);
+  const positionSec = useApp((s) => s.positionSec);
+  const setPosition = useApp((s) => s.setPosition);
+  const episodeQueue = useApp((s) => s.episodeQueue);
+  const play = useApp((s) => s.play);
+  const togglePlay = useApp((s) => s.togglePlay);
   const identity = useApp((s) => s.identity);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const [valueOpen, setValueOpen] = useState(false);

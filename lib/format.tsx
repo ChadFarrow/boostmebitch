@@ -1,6 +1,5 @@
 'use client';
 import { Fragment, type ReactNode } from 'react';
-import confetti from 'canvas-confetti';
 
 // ─── Time formatting ──────────────────────────────────────────────────────────
 
@@ -123,13 +122,22 @@ export function extractImages(text: string): { body: string; images: string[] } 
 
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
-/** Brand-coloured confetti burst: bolt yellow, nostr magenta, bone. */
+/**
+ * Brand-coloured confetti burst: bolt yellow, nostr magenta, bone.
+ *
+ * `canvas-confetti` is dynamic-imported so it stays out of the initial bundle —
+ * format.tsx sits on the critical render path (imported by player, note cards,
+ * live chat), but confetti only ever fires after a successful boost. Same
+ * lazy-load pattern as hls.js and the Spark SDK.
+ */
 export function fireConfetti(): void {
   const colors = ['#fae500', '#ff2d92', '#f5f1e8'];
-  confetti({ particleCount: 80, spread: 70, startVelocity: 55, origin: { y: 0.7 }, colors });
-  setTimeout(() => {
-    confetti({ particleCount: 50, spread: 100, startVelocity: 45, origin: { y: 0.7 }, colors });
-  }, 200);
+  void import('canvas-confetti').then(({ default: confetti }) => {
+    confetti({ particleCount: 80, spread: 70, startVelocity: 55, origin: { y: 0.7 }, colors });
+    setTimeout(() => {
+      confetti({ particleCount: 50, spread: 100, startVelocity: 45, origin: { y: 0.7 }, colors });
+    }, 200);
+  }).catch(() => {}); // a missing/blocked confetti module is a silent no-op
 }
 
 let boostAudio: HTMLAudioElement | null = null;

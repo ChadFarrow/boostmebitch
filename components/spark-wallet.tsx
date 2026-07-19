@@ -1,7 +1,10 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { QRCodeSVG } from 'qrcode.react';
+import dynamic from 'next/dynamic';
+// Lazy-loaded (reached only through the wallet modal's Spark tab) so
+// qrcode.react stays out of the initial bundle.
+const QRCodeSVG = dynamic(() => import('qrcode.react').then((m) => m.QRCodeSVG), { ssr: false });
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import {

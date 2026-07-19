@@ -2,7 +2,11 @@
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { QRCodeSVG } from 'qrcode.react';
+import dynamic from 'next/dynamic';
+// Lazy-loaded: <SignInModal> is imported by the header-mounted <NostrAuth> on
+// every page, but the QR only renders on the "Remote Signer → Generate QR" tab.
+// Dynamic import keeps qrcode.react out of the initial bundle.
+const QRCodeSVG = dynamic(() => import('qrcode.react').then((m) => m.QRCodeSVG), { ssr: false });
 import {
   loginWithExtension,
   loginWithAmber,
