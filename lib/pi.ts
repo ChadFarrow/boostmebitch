@@ -444,13 +444,34 @@ const SHOW_NOTES_ALLOWED = new Set([
 // Allowlist-based HTML sanitizer for RSS <content:encoded> show notes.
 // Safe for dangerouslySetInnerHTML: strips dangerous tags + attributes,
 // forces links to open in a new tab, blocks javascript: and data: URIs.
+
+// Some feeds entity-escape their WHOLE notes: structural tags arrive as
+// &lt;p&gt; / &lt;a href&gt; and render as literal "<p>" text. Detect that
+// (escaped structural tags, not just inline emphasis) so we can decode it.
+function looksEscapedHtml(s: string): boolean {
+  return /&lt;\/?(p|div|ul|ol|li|blockquote|h[1-6])\b/i.test(s) || /&lt;a\s+href=/i.test(s);
+}
+
+// Decode the markup entities (not display entities like &mdash; — the browser
+// handles those). &amp; is decoded LAST so it can't re-form the others.
+function decodeMarkupEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
 function sanitizeShowNotes(html: string): string {
-  let out = html
-    // Some feeds (e.g. Podcasting 2.0's own) HTML-escape their inline emphasis
-    // tags — the <description> arrives with real <p>/<a> but &lt;b&gt;/&lt;i&gt;
-    // for bold/italic, which would otherwise render as literal "<b>" text.
-    // Un-escape a small whitelist of harmless inline tags so they render; the
-    // allowlist pass below still runs, so this can't smuggle anything unsafe.
+  let out = html;
+  // Whole-notes-escaped feeds (e.g. Bowl After Bowl): decode the markup first so
+  // <p>/<a>/lists render instead of showing as literal tag text. The allowlist
+  // pass below still runs, so decoding can't smuggle anything unsafe.
+  if (looksEscapedHtml(out)) out = decodeMarkupEntities(out);
+  out = out
+    // Feeds that escape only inline emphasis (real <p>/<a> but &lt;b&gt;/&lt;i&gt;,
+    // e.g. Podcasting 2.0's own): un-escape a small whitelist so bold/italic render.
     .replace(/&lt;(\/?)(b|strong|i|em|u|s|br)\s*\/?&gt;/gi, '<$1$2>')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(
