@@ -10,6 +10,7 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const feedUrl = searchParams.get('feedUrl')?.trim();
   if (!feedUrl) return NextResponse.json({ feeds: [] });
+  if (feedUrl.length > 2048) return NextResponse.json({ error: 'invalid feedUrl' }, { status: 400 });
   return withErrorHandling(async () => {
     const albumUrls = await getPublisherAlbumUrls(feedUrl);
     const results = await Promise.all(

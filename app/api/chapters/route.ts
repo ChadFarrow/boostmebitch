@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { assertSafeFetchUrl } from '@/lib/safe-fetch';
+import { safeFetch } from '@/lib/safe-fetch';
 
 // Server-side proxy for Podcasting 2.0 chapters JSON. Many chapter hosts
 // (e.g. feeds.fountain.fm) serve the file without an Access-Control-Allow-Origin
@@ -16,8 +16,7 @@ export async function GET(req: Request) {
   // Chapter JSON URLs are long (Fountain nests item/file ids), so allow slack.
   if (url.length > 2000) return NextResponse.json({ error: 'invalid url' }, { status: 400 });
   return withErrorHandling(async () => {
-    assertSafeFetchUrl(url);
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
       next: { revalidate: 300 },
       signal: AbortSignal.timeout(8000),

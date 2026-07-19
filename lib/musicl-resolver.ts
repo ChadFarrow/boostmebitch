@@ -13,7 +13,7 @@
 // the item itself has none.
 
 import type { ValueBlock, ValueRecipient } from './types';
-import { assertSafeFetchUrl } from './safe-fetch';
+import { safeFetch } from './safe-fetch';
 
 const FETCH_TIMEOUT_MS = 5000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -28,8 +28,7 @@ async function fetchFeedXml(url: string): Promise<string | null> {
   const cached = feedCache.get(url);
   if (cached && cached.expires > Date.now()) return cached.xml;
   try {
-    assertSafeFetchUrl(url);
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
       headers: { 'User-Agent': 'boostmebitch musicl-resolver' },
     });

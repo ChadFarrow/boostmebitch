@@ -53,3 +53,33 @@ export function assertSafeFetchUrl(raw: string): void {
     throw new Error(`unsafe fetch url (private IPv4): ${host}`);
   }
 }
+
+const MAX_REDIRECTS = 5;
+
+/**
+ * `fetch` that re-runs {@link assertSafeFetchUrl} on **every** hop.
+ *
+ * The plain guard only validates the initial URL; with the default
+ * `redirect: 'follow'` a public feed/chapter/transcript host can 302 to an
+ * internal address (`http://169.254.169.254/…`, `localhost`, an RFC-1918 host)
+ * and the response is proxied straight back — a full SSRF bypass of the guard
+ * this module exists to enforce. We follow redirects manually (Node/undici
+ * exposes the 3xx + `Location` under `redirect: 'manual'`), validating each
+ * target before the next request. Relative `Location` values resolve against
+ * the current hop. Caps the chain so a redirect loop can't spin forever.
+ *
+ * Any per-request `redirect` in `init` is overridden — callers can't opt back
+ * into automatic (unvalidated) following.
+ */
+export async function safeFetch(rawUrl: string, init?: RequestInit): Promise<Response> {
+  let url = rawUrl;
+  for (let hop = 0; ; hop++) {
+    assertSafeFetchUrl(url);
+    const res = await fetch(url, { ...init, redirect: 'manual' });
+    if (res.status < 300 || res.status >= 400) return res;
+    const loc = res.headers.get('location');
+    if (!loc) return res; // 3xx without a target — hand it back as-is
+    if (hop >= MAX_REDIRECTS) throw new Error('unsafe fetch url (too many redirects)');
+    url = new URL(loc, url).toString();
+  }
+}

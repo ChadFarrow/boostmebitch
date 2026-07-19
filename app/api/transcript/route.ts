@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { assertSafeFetchUrl } from '@/lib/safe-fetch';
+import { safeFetch } from '@/lib/safe-fetch';
 
 // Server-side proxy for Podcasting 2.0 <podcast:transcript> files. Same reason
 // as /api/chapters: many transcript hosts serve without an
@@ -18,8 +18,7 @@ export async function GET(req: Request) {
   if (!url) return NextResponse.json({ error: 'missing url' }, { status: 400 });
   if (url.length > 2000) return NextResponse.json({ error: 'invalid url' }, { status: 400 });
   return withErrorHandling(async () => {
-    assertSafeFetchUrl(url);
-    const res = await fetch(url, {
+    const res = await safeFetch(url, {
       headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
       next: { revalidate: 300 },
       signal: AbortSignal.timeout(8000),
@@ -28,10 +27,16 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: `upstream ${res.status}` }, { status: 502 });
     }
     const text = await res.text();
-    const upstreamType = res.headers.get('content-type');
+    // Serve as inert text/plain regardless of the upstream Content-Type. The
+    // client parser (lib/transcript.ts) branches on the `?type=` hint, not the
+    // MIME, so nothing here needs the real type — and reflecting a malicious
+    // transcript host's `text/html` would let it execute in *our* origin and
+    // read localStorage (NWC spending credential, bunker key). nosniff blocks
+    // the browser from re-inferring HTML from the body.
     return new NextResponse(text, {
       headers: {
-        'Content-Type': upstreamType ?? 'text/plain; charset=utf-8',
+        'Content-Type': 'text/plain; charset=utf-8',
+        'X-Content-Type-Options': 'nosniff',
         'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
       },
     });

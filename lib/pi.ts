@@ -2,7 +2,7 @@
 import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract, PodrollItem, FundingLink } from './types';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
-import { assertSafeFetchUrl } from './safe-fetch';
+import { safeFetch } from './safe-fetch';
 import { fnvHash } from './util';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -275,8 +275,7 @@ async function fetchFeedXml(rssUrl: string): Promise<string | null> {
 
   let xml: string | null = null;
   try {
-    assertSafeFetchUrl(rssUrl);
-    const res = await fetch(rssUrl, {
+    const res = await safeFetch(rssUrl, {
       headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
       next: { revalidate: 60 },
       signal: AbortSignal.timeout(8000),
@@ -490,7 +489,9 @@ function sanitizeShowNotes(html: string): string {
     if (tag === 'br' || tag === 'hr') return `<${tag}>`;
     if (tag === 'a') {
       const href = readAttr(attrs, 'href');
-      if (!href || /^\s*javascript:/i.test(href)) return '<a>';
+      // Block dangerous schemes: javascript: (script), data: (data-URL HTML
+      // phishing), vbscript: (legacy). Mirrors the img src check.
+      if (!href || /^\s*(javascript|data|vbscript):/i.test(href)) return '<a>';
       return `<a href="${href.replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer">`;
     }
     if (tag === 'img') {

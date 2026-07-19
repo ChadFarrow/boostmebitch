@@ -19,6 +19,12 @@ import { siteSecretKey } from '@/lib/nostr/site-key';
 const MAX_CONTENT = 2000;
 const MAX_TAGS = 40;
 const CREATED_AT_SKEW_SECS = 300; // reject notes back/post-dated beyond ±5 min
+// Every genuine boost note — single and boost-all summary alike — is framed by
+// formatContent()/the summary override with this exact prefix. Requiring it
+// stops the oracle being repurposed to sign arbitrary free-text (spam,
+// harassment, defamation) as the site's NIP-05-verified identity: whatever is
+// signed must at least be shaped like a boost announcement.
+const BOOST_CONTENT_PREFIX = '⚡ Boost ⚡';
 
 // Bound the signing oracle: this endpoint must only ever sign boost-shaped
 // kind:1 notes as the site, never arbitrary events (DMs, kind:0 hijack, etc.).
@@ -28,6 +34,9 @@ function validateBoostTemplate(body: unknown): EventTemplate {
   if (t.kind !== 1) throw new Error('only kind:1 boost notes may be signed');
   if (typeof t.content !== 'string' || t.content.length > MAX_CONTENT) {
     throw new Error('invalid content');
+  }
+  if (!t.content.startsWith(BOOST_CONTENT_PREFIX)) {
+    throw new Error('not a boost note');
   }
   if (!Array.isArray(t.tags) || t.tags.length > MAX_TAGS) throw new Error('invalid tags');
   const tags = t.tags as unknown[];

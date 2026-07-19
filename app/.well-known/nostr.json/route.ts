@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { sitePubkey } from '@/lib/nostr/site-key';
 import { DEFAULT_RELAYS } from '@/lib/nostr/relays';
+import { rateLimit } from '@/lib/rate-limit';
 
 // NIP-05: maps the root identifier `_@boostmebitch.com` (clients render it as
 // the bare domain "boostmebitch.com") to the site's Nostr pubkey, giving the
@@ -19,6 +20,8 @@ const CORS = {
 } as const;
 
 export async function GET(req: Request) {
+  const limited = rateLimit(req, 'nostr-json', 120);
+  if (limited) return limited;
   const pk = sitePubkey();
   const names: Record<string, string> = {};
   const relays: Record<string, string[]> = {};

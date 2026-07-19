@@ -16,7 +16,13 @@ export async function POST(req: Request) {
     if (raw.length > 10_000) {
       return NextResponse.json({ error: 'payload too large' }, { status: 400 });
     }
-    const payload = JSON.parse(raw);
+    let payload: unknown;
+    try {
+      payload = JSON.parse(raw);
+    } catch {
+      // A malformed body is the client's fault — 400, not a 500 via the handler.
+      return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
+    }
     const upstream = await fetch(`${BOOSTBOX_URL}/boost`, {
       method: 'POST',
       headers: {
