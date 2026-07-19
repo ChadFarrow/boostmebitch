@@ -29,6 +29,7 @@ const KEYS = {
   favoritesPrefix: 'bmb:favorites',
   inboxSeenPrefix: 'bmb:inbox_seen',  // per-npub set of "seen"/handled episode keys for the Inbox (string[] on disk)
   listenQueuePrefix: 'bmb:listen_queue', // per-npub ordered listen queue ({ episode, podcast }[]); survives reload
+  listenQueueTsPrefix: 'bmb:listen_queue_ts', // unix-ms last local queue edit, for newest-wins sync
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   socialThreadPrefix: 'bmb:social',   // last DiscoveredNote[] per podcast:socialInteract URI
@@ -601,6 +602,19 @@ export const storage = {
     },
     set: (npub: string | null | undefined, v: { episode: Episode; podcast: Podcast }[]) => {
       safeSet(identityKey(KEYS.listenQueuePrefix, npub), JSON.stringify(v));
+    },
+  },
+
+  /** Per-npub unix-ms timestamp of the last local listen-queue edit. Read at
+   *  login to decide newest-wins against a remote synced queue. */
+  listenQueueTs: {
+    get: (npub: string | null | undefined): number => {
+      const raw = safeGet(identityKey(KEYS.listenQueueTsPrefix, npub));
+      const n = raw ? Number(raw) : 0;
+      return Number.isFinite(n) ? n : 0;
+    },
+    set: (npub: string | null | undefined, ts: number) => {
+      safeSet(identityKey(KEYS.listenQueueTsPrefix, npub), String(ts));
     },
   },
 };

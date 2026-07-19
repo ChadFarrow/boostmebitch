@@ -6,6 +6,7 @@ import { storage } from './storage';
 import { isMusicMedium } from './util';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
+import { scheduleInboxSeenSync, scheduleListenQueueSync } from './nostr/inbox-backup';
 
 /** Stable per-episode identity for seen-tracking + the listen queue. Prefers the
  *  Nostr/RSS guid; falls back to feedId:id so items without a guid still key. */
@@ -163,7 +164,7 @@ export const useApp = create<AppState>((set, get) => ({
       // queue remains jumpable.
       const nextItem = s.listenQueue[qIdx + 1];
       const nextQueue = s.listenQueue.filter((_, i) => i !== qIdx);
-      storage.listenQueue.set(s.identity?.npub, nextQueue);
+      persistQueue(s.identity, nextQueue);
       // Last item → clear it and stop (the queue is now empty).
       if (!nextItem) return { listenQueue: nextQueue, isPlaying: false };
       return { listenQueue: nextQueue, current: { episode: nextItem.episode, podcast: nextItem.podcast }, isPlaying: true, positionSec: 0 };
@@ -250,7 +251,7 @@ export const useApp = create<AppState>((set, get) => ({
     let changed = false;
     for (const k of keys) if (k && !next.has(k)) { next.add(k); changed = true; }
     if (!changed) return {};
-    storage.inboxSeen.set(s.identity?.npub, next);
+    persistSeen(s.identity, next);
     return { seenGuids: next };
   }),
   setSeenGuids: (next) => set({ seenGuids: next }),
@@ -264,13 +265,13 @@ export const useApp = create<AppState>((set, get) => ({
     const seenPatch = markSeenInternal(s, episode);
     if (already) return seenPatch;
     const nextQueue = [...s.listenQueue, { episode, podcast }];
-    storage.listenQueue.set(s.identity?.npub, nextQueue);
+    persistQueue(s.identity, nextQueue);
     return { ...seenPatch, listenQueue: nextQueue };
   }),
   removeFromQueue: (key) => set((s) => {
     const nextQueue = s.listenQueue.filter((i) => epKey(i.episode) !== key);
     if (nextQueue.length === s.listenQueue.length) return s;
-    storage.listenQueue.set(s.identity?.npub, nextQueue);
+    persistQueue(s.identity, nextQueue);
     return { listenQueue: nextQueue };
   }),
   moveQueueItem: (index, dir) => set((s) => {
@@ -278,11 +279,11 @@ export const useApp = create<AppState>((set, get) => ({
     if (index < 0 || j < 0 || index >= s.listenQueue.length || j >= s.listenQueue.length) return s;
     const next = [...s.listenQueue];
     [next[index], next[j]] = [next[j], next[index]];
-    storage.listenQueue.set(s.identity?.npub, next);
+    persistQueue(s.identity, next);
     return { listenQueue: next };
   }),
   clearQueue: () => set((s) => {
-    storage.listenQueue.set(s.identity?.npub, []);
+    persistQueue(s.identity, []);
     return { listenQueue: [] };
   }),
   playFromQueue: (index) => set((s) => {
@@ -309,7 +310,7 @@ export const useApp = create<AppState>((set, get) => ({
       // item that followed it — with ITS OWN podcast — else stop. The drain.
       const nextItem = s.listenQueue[qIdx + 1];
       const nextQueue = s.listenQueue.filter((_, i) => i !== qIdx);
-      storage.listenQueue.set(s.identity?.npub, nextQueue);
+      persistQueue(s.identity, nextQueue);
       if (nextItem) {
         return {
           ...seenPatch,
@@ -381,7 +382,7 @@ function markSeenInternal(s: AppState, episode: Episode): Partial<AppState> {
   if (s.seenGuids.has(key)) return {};
   const next = new Set(s.seenGuids);
   next.add(key);
-  storage.inboxSeen.set(s.identity?.npub, next);
+  persistSeen(s.identity, next);
   return { seenGuids: next };
 }
 
@@ -397,4 +398,21 @@ function persistMuted(identity: NostrIdentity | null, state: MuteListState) {
     () => storage.muted.get(identity.npub),
     resolvePublishRelays(identity),
   );
+}
+
+// Persist the seen set locally AND (when signed in with a NIP-44 signer)
+// schedule a debounced encrypted publish. One choke point so no seen mutation
+// site is missed — mirrors persistMuted for the mute list.
+function persistSeen(identity: NostrIdentity | null, seen: Set<string>) {
+  storage.inboxSeen.set(identity?.npub ?? null, seen);
+  if (identity) scheduleInboxSeenSync(identity, seen);
+}
+
+// Persist the queue + its edit timestamp locally, and schedule a debounced
+// encrypted publish. The timestamp drives newest-wins reconciliation on login.
+function persistQueue(identity: NostrIdentity | null, items: QueueItem[]) {
+  const ts = Date.now();
+  storage.listenQueue.set(identity?.npub ?? null, items);
+  storage.listenQueueTs.set(identity?.npub ?? null, ts);
+  if (identity) scheduleListenQueueSync(identity, items, ts);
 }
