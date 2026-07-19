@@ -54,6 +54,11 @@ interface AppState {
   // card) can navigate to a show without prop-drilling.
   selectedPodcast: Podcast | null;
   selectPodcast: (p: Podcast | null) => void;
+  // Refresh selectedPodcast with a fresher/enriched copy of the SAME show —
+  // e.g. the RSS-enriched podcast from /api/feed, which carries funding /
+  // medium / podroll that PI's by-guid lookup doesn't index — WITHOUT touching
+  // the current episode/discussion navigation. No-op for a different show.
+  syncSelectedPodcast: (p: Podcast | null) => void;
 
   // When set, the page swaps to a full-screen discussion view for this
   // episode's podcast:socialInteract thread (opened from the "💬 discussion"
@@ -135,6 +140,14 @@ export const useApp = create<AppState>((set, get) => ({
   // Leaving the detail view (or switching shows) also drops any open
   // discussion and episode detail so stale views can't outlive their podcast.
   selectPodcast: (p) => set({ selectedPodcast: p, discussionEpisode: null, selectedEpisode: null }),
+  syncSelectedPodcast: (p) =>
+    set((s) => {
+      if (!p || !s.selectedPodcast) return {};
+      const same =
+        (!!p.podcastGuid && p.podcastGuid === s.selectedPodcast.podcastGuid) ||
+        p.id === s.selectedPodcast.id;
+      return same ? { selectedPodcast: p } : {};
+    }),
 
   discussionEpisode: null,
   openDiscussion: (e) => set({ discussionEpisode: e }),

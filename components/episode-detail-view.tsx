@@ -7,7 +7,7 @@ import { useChapters, type ChapterEntry } from '@/lib/chapters';
 import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
 import { useNotesFollows } from './notes-follows';
-import { BoltIcon, ShareIcon } from './icons';
+import { BoltIcon, ShareIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { BoostModal } from './boost-modal';
 import { BoostAllModal } from './boost-all-modal';
@@ -309,6 +309,19 @@ export function EpisodeDetailView() {
             {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : '▶ PLAY'}
           </button>
           <EpisodeShareButton episode={episode} podcast={podcast} />
+          {/* SUPPORT before BOOST to match the show page's cluster order
+              (FAVORITE · SHARE · SUPPORT · BOOST). */}
+          {podcast.funding?.[0]?.url ? (
+            <a
+              href={podcast.funding[0].url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-ghost"
+              title={podcast.funding[0].message || 'Support this show'}
+            >
+              <CoinIcon /> SUPPORT
+            </a>
+          ) : null}
           {hasValue && (
             <button
               type="button"
@@ -319,17 +332,6 @@ export function EpisodeDetailView() {
               <BoltIcon /> BOOST
             </button>
           )}
-          {podcast.funding?.[0]?.url ? (
-            <a
-              href={podcast.funding[0].url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn-ghost"
-              title={podcast.funding[0].message || 'Support this show'}
-            >
-              <ShareIcon /> SUPPORT
-            </a>
-          ) : null}
           {episode.socialInteract?.length ? (
             <button
               type="button"

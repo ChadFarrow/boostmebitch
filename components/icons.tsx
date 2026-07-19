@@ -52,6 +52,26 @@ export function ShareIcon({ className = 'w-4 h-4' }: { className?: string }) {
   );
 }
 
+// Coin with a "$" — the non-Lightning funding/support link (Patreon etc.),
+// distinct from ShareIcon so SUPPORT and SHARE don't look alike.
+export function CoinIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`flex-shrink-0 ${className}`}
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M14.5 9.4c-.6-.7-1.5-1-2.5-1-1.5 0-2.6.8-2.6 1.9 0 1.2 1.1 1.6 2.6 1.9s2.6.8 2.6 2c0 1.1-1.1 1.9-2.6 1.9-1 0-1.9-.3-2.5-1M12 6.8v10.4" />
+    </svg>
+  );
+}
+
 export function PipIcon({ className = 'w-4 h-4' }: { className?: string }) {
   return (
     <svg

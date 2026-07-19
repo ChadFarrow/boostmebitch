@@ -5,7 +5,7 @@ import { useApp } from '@/lib/store';
 import { fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { BoostModal } from './boost-modal';
-import { BoltIcon, ShareIcon } from './icons';
+import { BoltIcon, ShareIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
@@ -71,7 +71,7 @@ function SupportButton({ podcast }: { podcast: Podcast }) {
       className="btn-ghost"
       title={funding.message || 'Support this show'}
     >
-      <ShareIcon /> SUPPORT
+      <CoinIcon /> SUPPORT
     </a>
   );
 }
@@ -258,6 +258,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const current = useApp((s) => s.current);
   const openEpisode = useApp((s) => s.openEpisode);
   const setEpisodeQueue = useApp((s) => s.setEpisodeQueue);
+  const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
 
   useEffect(() => {
     setValueOpen(false);
@@ -266,12 +267,19 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
     setLoading(true);
     fetch(`/api/feed?id=${feedId}`)
       .then((r) => r.json())
-      .then((d) => { setData({ podcast: d.podcast, episodes: d.episodes }); setEpisodeQueue(d.episodes); })
+      .then((d) => {
+        setData({ podcast: d.podcast, episodes: d.episodes });
+        setEpisodeQueue(d.episodes);
+        // Push the RSS-enriched podcast (funding/medium/podroll) back into the
+        // store so the episode detail view — which reads selectedPodcast — shows
+        // the SUPPORT link the show page gets. No-op if it's a different show.
+        if (d.podcast) syncSelectedPodcast(d.podcast);
+      })
       .finally(() => setLoading(false));
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [feedId, setEpisodeQueue]);
+  }, [feedId, setEpisodeQueue, syncSelectedPodcast]);
 
   if (!feedId) {
     return (

@@ -70,6 +70,10 @@ export function HomePage() {
       try {
         const res = await fetch(`/api/feed?id=${podcast.id}`);
         const data = await res.json();
+        // Enrich the selection with the RSS-derived funding/medium/podroll (the
+        // by-guid resolve above doesn't carry them), so a cold deep-link to an
+        // episode also shows the SUPPORT link. No-op if it's a different show.
+        if (data.podcast) useApp.getState().syncSelectedPodcast(data.podcast);
         const ep = (data.episodes as Episode[] | undefined)?.find((e) => e.guid === episodeGuid);
         if (!ep) return;
         if (wantDiscussion && ep.socialInteract?.length) {
