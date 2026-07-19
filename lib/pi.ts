@@ -445,6 +445,12 @@ const SHOW_NOTES_ALLOWED = new Set([
 // forces links to open in a new tab, blocks javascript: and data: URIs.
 function sanitizeShowNotes(html: string): string {
   let out = html
+    // Some feeds (e.g. Podcasting 2.0's own) HTML-escape their inline emphasis
+    // tags — the <description> arrives with real <p>/<a> but &lt;b&gt;/&lt;i&gt;
+    // for bold/italic, which would otherwise render as literal "<b>" text.
+    // Un-escape a small whitelist of harmless inline tags so they render; the
+    // allowlist pass below still runs, so this can't smuggle anything unsafe.
+    .replace(/&lt;(\/?)(b|strong|i|em|u|s|br)\s*\/?&gt;/gi, '<$1$2>')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(
       /<(script|style|iframe|object|embed|form|input|textarea|select|button|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
