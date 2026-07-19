@@ -391,8 +391,8 @@ export function EpisodeDetailView() {
                     {description}
                   </div>
                 ) : null}
-                {/* Feeds often abbreviate the notes; the episode's web page has
-                    the full write-up. */}
+                {/* Link out to the episode's own web page (some feeds' pages
+                    carry richer content than the feed; PC20's mirrors the feed). */}
                 {episode.link && (
                   <a
                     href={episode.link}
@@ -400,7 +400,7 @@ export function EpisodeDetailView() {
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 mt-4 text-xs font-semibold uppercase tracking-widest text-muted hover:text-bolt transition"
                   >
-                    Full notes ↗
+                    Episode page ↗
                   </a>
                 )}
               </>
