@@ -5,6 +5,7 @@ import { DEFAULT_RELAYS, PROFILE_RELAYS, resolvePublishRelays, sanitizeRelays } 
 import { collectEventsByAuthors } from './event-queries';
 import { withPool, FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS } from './pool';
 import { signAndPublish } from './publish';
+import { storage } from '../storage';
 
 // NIP-02 kind:3 contact-list ("follow list") read/write. The rest of the app
 // deliberately doesn't touch kind:3 — this is the only module that does, so the
@@ -45,11 +46,11 @@ export async function fetchFollowList(identity: NostrIdentity): Promise<FollowLi
     );
     // kind:3 is replaceable — newest wins.
     const event = events.sort((a, b) => b.created_at - a.created_at)[0] ?? null;
-    return {
-      event,
-      following: event ? followingFromTags(event.tags) : new Set(),
-      ok: gotAnyEvent || allEosed,
-    };
+    const following = event ? followingFromTags(event.tags) : new Set<string>();
+    // Cache ONLY a real kind:3 (never a possibly-false-empty result) as the
+    // last-known-good nuke-guard signal read by toggleFollow.
+    if (event) storage.follows.set(identity.npub, [...following]);
+    return { event, following, ok: gotAnyEvent || allEosed };
   } catch {
     return { event: null, following: new Set(), ok: false };
   }
@@ -156,8 +157,43 @@ let chain: Promise<void> = Promise.resolve();
 export function toggleFollow(identity: NostrIdentity, hex: string): Promise<void> {
   const run = chain.then(async () => {
     if (!state.ok) throw new Error('follow list not loaded');
+    // Nuke-guard. The ONLY way a toggle wipes the real list is publishing onto
+    // an empty base (state.event === null) that was actually a transient
+    // false-empty: the initial load EOSE'd against relays that didn't hold the
+    // list (classic case: right after login, before NIP-65 hydrated, when we
+    // fell back to default relays). allEosed only means "every *reachable*
+    // relay confirmed none" — a relay that failed to connect doesn't hold the
+    // aggregate EOSE open — so an empty+ok result isn't proof the list is gone.
+    //
+    // A genuine brand-new user also has a null base, so we can't just refuse.
+    // Instead re-confirm at the last moment, when relays are more likely warm:
+    //   - the confirm now finds a list  → rebase on it (never wipe)
+    //   - the confirm can't be trusted  → refuse (button shows retry)
+    //   - the confirm reliably finds none → safe to create the first list
+    // Only runs on the empty-base path, so normal toggles pay no extra fetch.
+    if (state.event === null) {
+      const confirm = await fetchFollowList(identity);
+      if (confirm.event) {
+        state = { ...confirm, ok: true };
+      } else if (!confirm.ok) {
+        throw new Error('could not confirm your (empty) follow list — not publishing');
+      } else {
+        // Reliably empty across reachable relays, but we hold a non-empty
+        // last-known-good set from a previous real load → almost certainly a
+        // transient false-empty (your kind:3 exists, no relay we reached served
+        // it). Refuse rather than publish a fresh list that overwrites it. A
+        // genuinely new user has no cached set here, so they can still create
+        // their first list; a user who really emptied their list elsewhere has a
+        // non-null (empty) kind:3, so this branch (event === null) isn't reached.
+        const cached = storage.follows.get(identity.npub);
+        if (cached && cached.length > 0) {
+          throw new Error('your follow list looks temporarily unavailable — reload and try again');
+        }
+      }
+    }
     const { event, following } = await publishFollow(identity, state.event, hex, !state.following.has(hex));
     state = { event, following, ok: true };
+    storage.follows.set(identity.npub, [...following]); // update last-known-good
     notify();
   });
   chain = run.catch(() => {}); // keep the chain alive after a failed toggle
