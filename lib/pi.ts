@@ -502,7 +502,32 @@ function sanitizeShowNotes(html: string): string {
     return `<${tag}>`;
   });
 
+  out = linkifyNostrRefs(out);
   return out.trim();
+}
+
+// Turn bare nostr identifiers in the (already-sanitized) notes HTML into
+// njump.me links — npubs/nprofiles/etc. that feeds list as plain text. Runs
+// after the allowlist pass so every real <a> is normalized; we split on whole
+// anchor blocks and only linkify the text between them, so an npub already
+// inside a feed link (e.g. an href) isn't double-wrapped. bech32 is [0-9a-z]
+// only, so the href/label need no escaping. njump.me is the app's universal
+// nostr link convention (see nostr-note-card.tsx / live-chat.tsx).
+const NOSTR_REF_RE =
+  /(?<![\w])((?:nostr:)?n(?:pub|profile|event|ote|addr)1[023456789acdefghjklmnpqrstuvwxyz]{20,})/gi;
+
+function linkifyNostrRefs(html: string): string {
+  return html
+    .split(/(<a\b[^>]*>[\s\S]*?<\/a>)/gi)
+    .map((seg, i) =>
+      i % 2 === 1
+        ? seg // an existing anchor block — leave verbatim
+        : seg.replace(NOSTR_REF_RE, (m) => {
+            const bech = m.replace(/^nostr:/i, '');
+            return `<a href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer">${m}</a>`;
+          }),
+    )
+    .join('');
 }
 
 interface RssEpisodeEnrichment {
