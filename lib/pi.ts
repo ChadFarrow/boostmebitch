@@ -1,6 +1,6 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
-import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract, PodrollItem } from './types';
+import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract, PodrollItem, FundingLink } from './types';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { assertSafeFetchUrl } from './safe-fetch';
 import { fnvHash } from './util';
@@ -81,6 +81,7 @@ function buildPodcast(f: any): Podcast {
     url: f.url,
     medium: typeof f.medium === 'string' && f.medium.length > 0 ? f.medium : undefined,
     value: normalizeValue(f.value),
+    funding: fundingFromPi(f),
   };
 }
 
@@ -201,6 +202,7 @@ function buildEpisode(e: any): Episode {
     guid: e.guid,
     title: e.title,
     description: e.description,
+    link: typeof e.link === 'string' && e.link ? e.link : undefined,
     enclosureUrl: e.enclosureUrl,
     enclosureType: e.enclosureType,
     duration: e.duration,
@@ -213,6 +215,7 @@ function buildEpisode(e: any): Episode {
     episode: typeof e.episode === 'number' ? e.episode : null,
     season: typeof e.season === 'number' && e.season > 0 ? e.season : null,
     chaptersUrl: typeof e.chaptersUrl === 'string' && e.chaptersUrl.length > 0 ? e.chaptersUrl : undefined,
+    ...transcriptFromPi(e),
     value: normalizeValue(e.value),
     valueTimeSplits: parseRawValueTimeSplits(e.timesplits),
     socialInteract: parseNostrSocialInteracts(e.socialInteract),
@@ -441,8 +444,35 @@ const SHOW_NOTES_ALLOWED = new Set([
 // Allowlist-based HTML sanitizer for RSS <content:encoded> show notes.
 // Safe for dangerouslySetInnerHTML: strips dangerous tags + attributes,
 // forces links to open in a new tab, blocks javascript: and data: URIs.
+
+// Some feeds entity-escape their WHOLE notes: structural tags arrive as
+// &lt;p&gt; / &lt;a href&gt; and render as literal "<p>" text. Detect that
+// (escaped structural tags, not just inline emphasis) so we can decode it.
+function looksEscapedHtml(s: string): boolean {
+  return /&lt;\/?(p|div|ul|ol|li|blockquote|h[1-6])\b/i.test(s) || /&lt;a\s+href=/i.test(s);
+}
+
+// Decode the markup entities (not display entities like &mdash; — the browser
+// handles those). &amp; is decoded LAST so it can't re-form the others.
+function decodeMarkupEntities(s: string): string {
+  return s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0*39;|&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
 function sanitizeShowNotes(html: string): string {
-  let out = html
+  let out = html;
+  // Whole-notes-escaped feeds (e.g. Bowl After Bowl): decode the markup first so
+  // <p>/<a>/lists render instead of showing as literal tag text. The allowlist
+  // pass below still runs, so decoding can't smuggle anything unsafe.
+  if (looksEscapedHtml(out)) out = decodeMarkupEntities(out);
+  out = out
+    // Feeds that escape only inline emphasis (real <p>/<a> but &lt;b&gt;/&lt;i&gt;,
+    // e.g. Podcasting 2.0's own): un-escape a small whitelist so bold/italic render.
+    .replace(/&lt;(\/?)(b|strong|i|em|u|s|br)\s*\/?&gt;/gi, '<$1$2>')
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(
       /<(script|style|iframe|object|embed|form|input|textarea|select|button|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
@@ -472,7 +502,35 @@ function sanitizeShowNotes(html: string): string {
     return `<${tag}>`;
   });
 
+  out = linkifyNostrRefs(out);
   return out.trim();
+}
+
+// Turn bare nostr identifiers in the (already-sanitized) notes HTML into
+// njump.me links — npubs/nprofiles/etc. that feeds list as plain text. Runs
+// after the allowlist pass so every real <a> is normalized; we split on whole
+// anchor blocks and only linkify the text between them, so an npub already
+// inside a feed link (e.g. an href) isn't double-wrapped. bech32 is [0-9a-z]
+// only, so the href/label need no escaping. njump.me is the app's universal
+// nostr link convention (see nostr-note-card.tsx / live-chat.tsx).
+const NOSTR_REF_RE =
+  /(?<![\w])((?:nostr:)?n(?:pub|profile|event|ote|addr)1[023456789acdefghjklmnpqrstuvwxyz]{20,})/gi;
+
+function linkifyNostrRefs(html: string): string {
+  return html
+    .split(/(<a\b[^>]*>[\s\S]*?<\/a>)/gi)
+    .map((seg, i) =>
+      i % 2 === 1
+        ? seg // an existing anchor block — leave verbatim
+        : seg.replace(NOSTR_REF_RE, (m) => {
+            const bech = m.replace(/^nostr:/i, '');
+            // Mark person refs (npub/nprofile) so the client can attach a follow
+            // button; events (nevent/note/naddr) aren't people, so no marker.
+            const person = /^n(pub|profile)1/i.test(bech) ? ` data-npub="${bech}"` : '';
+            return `<a href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer"${person}>${m}</a>`;
+          }),
+    )
+    .join('');
 }
 
 interface RssEpisodeEnrichment {
@@ -480,12 +538,133 @@ interface RssEpisodeEnrichment {
   contentEncoded?: string;
   season?: number | null;
   episode?: number | null;
+  transcriptUrl?: string;
+  transcriptType?: string;
+  link?: string;
 }
 
 export interface RssFeedEnrichment {
   episodes: Map<string, RssEpisodeEnrichment>;
   feedMedium?: string;
   feedPodroll?: PodrollItem[];
+  feedFunding?: FundingLink[];
+}
+
+// Decode the handful of XML entities that show up in short text nodes
+// (funding labels). Mirrors the entity pass inside extractText.
+function decodeXmlText(raw: string): string {
+  return raw
+    .replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1')
+    .trim()
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
+}
+
+// --- <podcast:transcript> selection ---------------------------------------
+// A single episode may carry several transcript formats. We keep just one — the
+// best *timed* one for the synced player view — ranked JSON > SRT > VTT, with
+// untimed (html/plain) a last resort. The client parser (lib/transcript.ts)
+// branches on the chosen MIME type.
+function inferTranscriptType(url: string): string | undefined {
+  const path = url.split(/[?#]/, 1)[0].toLowerCase();
+  if (path.endsWith('.json')) return 'application/json';
+  if (path.endsWith('.srt')) return 'application/x-subrip';
+  if (path.endsWith('.vtt')) return 'text/vtt';
+  if (path.endsWith('.html') || path.endsWith('.htm')) return 'text/html';
+  if (path.endsWith('.txt')) return 'text/plain';
+  return undefined;
+}
+
+function transcriptRank(type: string | undefined): number {
+  const t = (type ?? '').toLowerCase();
+  if (t.includes('json')) return 0;
+  if (t.includes('subrip') || t.includes('srt')) return 1;
+  if (t.includes('vtt')) return 2;
+  return 3; // html / plain / unknown — untimed, readable fallback
+}
+
+function pickBestTranscript(
+  entries: { url: string; type?: string }[],
+): { transcriptUrl?: string; transcriptType?: string } {
+  let best: { url: string; type?: string } | undefined;
+  let bestRank = Infinity;
+  for (const e of entries) {
+    if (!e.url) continue;
+    const type = e.type || inferTranscriptType(e.url);
+    const rank = transcriptRank(type);
+    if (rank < bestRank) {
+      best = { url: e.url, type };
+      bestRank = rank;
+    }
+  }
+  return best ? { transcriptUrl: best.url, transcriptType: best.type } : {};
+}
+
+// PI exposes transcripts either as a `transcripts` array ({ url, type }) or a
+// single `transcriptUrl` string, depending on endpoint. Take whatever's there.
+function transcriptFromPi(e: any): { transcriptUrl?: string; transcriptType?: string } {
+  const entries: { url: string; type?: string }[] = [];
+  if (Array.isArray(e.transcripts)) {
+    for (const t of e.transcripts) {
+      if (typeof t?.url === 'string' && t.url) {
+        entries.push({ url: t.url, type: typeof t.type === 'string' ? t.type : undefined });
+      }
+    }
+  }
+  if (typeof e.transcriptUrl === 'string' && e.transcriptUrl) {
+    entries.push({
+      url: e.transcriptUrl,
+      type: typeof e.transcriptType === 'string' ? e.transcriptType : undefined,
+    });
+  }
+  return pickBestTranscript(entries);
+}
+
+// Parse an item's <podcast:transcript url type /> tags and pick the best one.
+function parseTranscripts(inner: string): { transcriptUrl?: string; transcriptType?: string } {
+  const entries: { url: string; type?: string }[] = [];
+  const re = /<podcast:transcript\b([^>]*?)\/?>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(inner))) {
+    const url = readAttr(m[1], 'url');
+    if (!url) continue;
+    entries.push({ url, type: readAttr(m[1], 'type') });
+  }
+  return pickBestTranscript(entries);
+}
+
+// Parse channel-level <podcast:funding url="...">message</podcast:funding>
+// entries (both paired and self-closing forms). PI usually indexes one; RSS may
+// carry several.
+function parseFunding(channelXml: string): FundingLink[] | undefined {
+  const out: FundingLink[] = [];
+  const re = /<podcast:funding\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:funding>)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(channelXml))) {
+    const url = readAttr(m[1], 'url');
+    if (!url) continue;
+    const message = m[2] != null ? decodeXmlText(m[2]) : '';
+    out.push({ url, message: message || undefined });
+  }
+  return out.length ? out : undefined;
+}
+
+// PI returns `funding` as a single { url, message } object (occasionally an
+// array). Normalize to our FundingLink[].
+function fundingFromPi(f: any): FundingLink[] | undefined {
+  const raw = Array.isArray(f.funding) ? f.funding : f.funding ? [f.funding] : [];
+  const out: FundingLink[] = [];
+  for (const x of raw) {
+    if (typeof x?.url === 'string' && x.url) {
+      out.push({ url: x.url, message: typeof x.message === 'string' && x.message ? x.message : undefined });
+    }
+  }
+  return out.length ? out : undefined;
 }
 
 // Parse a channel-level <podcast:podroll> block into its remoteItem entries.
@@ -523,6 +702,7 @@ export async function getRssEpisodeEnrichment(
   const channelXml = firstItem === -1 ? xml : xml.slice(0, firstItem);
   const feedMedium = extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined;
   const feedPodroll = parsePodroll(channelXml);
+  const feedFunding = parseFunding(channelXml);
 
   const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
   let m: RegExpExecArray | null;
@@ -531,7 +711,12 @@ export async function getRssEpisodeEnrichment(
     const guid = extractText(inner, 'guid');
     if (!guid) continue;
     const socialInteract = parseSocialInteractsFromRss(inner) ?? undefined;
-    const raw = extractRawContent(inner, 'content:encoded');
+    // Full show notes: prefer <content:encoded>; when a feed doesn't use it
+    // (e.g. Podcasting 2.0's own feed), fall back to the item <description>,
+    // which holds the full HTML. PI's `description` is the same field but
+    // truncated (~3000 chars, mid-word) and tag-stripped, so this untruncated,
+    // link-preserving version is strictly better and the detail view prefers it.
+    const raw = extractRawContent(inner, 'content:encoded') ?? extractRawContent(inner, 'description');
     const contentEncoded = raw ? sanitizeShowNotes(raw) || undefined : undefined;
     // podcast:season number attr takes precedence over text content
     const seasonTagMatch = /<podcast:season\b([^>]*)>/i.exec(inner);
@@ -541,11 +726,15 @@ export async function getRssEpisodeEnrichment(
     // podcast:episode is plain text content per spec
     const episodeStr = extractText(inner, 'podcast:episode');
     const episode = episodeStr != null && episodeStr !== '' ? (Number(episodeStr) || null) : null;
-    if (socialInteract || contentEncoded || season != null || episode != null) {
-      episodes.set(guid, { socialInteract, contentEncoded, season, episode });
+    const { transcriptUrl, transcriptType } = parseTranscripts(inner);
+    // Item <link> — the episode web page (RSS <link>, not <atom:link>). Full
+    // notes often live here when the feed's <description> is abbreviated.
+    const link = extractText(inner, 'link') || undefined;
+    if (socialInteract || contentEncoded || season != null || episode != null || transcriptUrl || link) {
+      episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link });
     }
   }
-  return { episodes, feedMedium, feedPodroll };
+  return { episodes, feedMedium, feedPodroll, feedFunding };
 }
 
 export async function getEpisodeByGuid(

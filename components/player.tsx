@@ -11,6 +11,7 @@ import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { hasValueRecipients, isHlsUrl, isMusicMedium, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
+import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, PipIcon } from './icons';
@@ -18,7 +19,7 @@ import { FullscreenPlayer } from './fullscreen-player';
 import { TransportControls } from './transport-controls';
 
 export function Player() {
-  const { current, isPlaying, setPlaying, setPosition, positionSec, playNext, playerExpanded, setPlayerExpanded } = useApp();
+  const { current, isPlaying, setPlaying, setPosition, positionSec, playNext, playerExpanded, setPlayerExpanded, seekReq } = useApp();
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
   const [duration, setDuration] = useState(0);
@@ -167,8 +168,18 @@ export function Player() {
 
     // Audio path (unchanged behaviour).
     if (!audio.current || !current) return;
-    audio.current.src = current.episode.enclosureUrl;
-    if (isPlaying) audio.current.play().catch(() => setPlaying(false));
+    const el = audio.current;
+    el.src = current.episode.enclosureUrl;
+    // Start position: play(episode, podcast, startSec) sets positionSec before
+    // this effect runs, so an episode launched from a transcript line / chapter
+    // begins there. Applied once metadata is ready (currentTime isn't settable
+    // before). positionSec 0 (a normal play) → no seek.
+    const startAt = useApp.getState().positionSec;
+    if (startAt > 0) {
+      const seekOnLoad = () => { el.currentTime = startAt; };
+      el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
+    }
+    if (isPlaying) el.play().catch(() => setPlaying(false));
   }, [current?.episode.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Play/pause the active element on store toggles. Reads isHls from a ref so an
@@ -180,6 +191,18 @@ export function Player() {
     if (isPlaying) el.play().catch(() => setPlaying(false));
     else el.pause();
   }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Honor a seek request for the current episode (from a transcript line /
+  // chapter tap in the detail view). Fires per nonce, so re-clicking the same
+  // line seeks again.
+  useEffect(() => {
+    if (!seekReq) return;
+    const el = isHlsRef.current ? video.current : audio.current;
+    if (!el) return;
+    el.currentTime = seekReq.t;
+    lastTick.current = Math.floor(seekReq.t);
+    setPosition(seekReq.t);
+  }, [seekReq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Resume a live HLS stream when the tab comes back to the foreground. iOS
   // Safari suspends media loading while backgrounded; on return the <video> is
@@ -312,6 +335,15 @@ export function Player() {
   // the early return for hook order.
   const { chapters, loading: chaptersLoading } = useChapters(chapterUrlFor(current));
 
+  // Single transcript fetch for the whole player — passed down to
+  // <FullscreenPlayer>. Mirrors the chapters fetch (no-ops when there's no
+  // transcript / on music / live). Above the early return for hook order.
+  const transcriptSrc = transcriptSourceFor(current);
+  const { cues: transcriptCues, loading: transcriptLoading } = useTranscript(
+    transcriptSrc.url,
+    transcriptSrc.type,
+  );
+
   if (!current) return null;
   const { episode, podcast } = current;
   const hasValue = hasValueRecipients(episode.value);
@@ -329,6 +361,7 @@ export function Player() {
     setPosition(v);
   }
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekAudio);
+  const transcriptActiveIdx = transcriptIndexAt(transcriptCues, positionSec);
 
   function onMediaError(code: number | undefined) {
     // Fired by the <video> too (native Safari HLS), so name the right medium.
@@ -470,6 +503,10 @@ export function Player() {
         onPip={requestPip}
         chapters={chapters}
         chaptersLoading={chaptersLoading}
+        transcriptCues={transcriptCues}
+        transcriptLoading={transcriptLoading}
+        transcriptActiveIdx={transcriptActiveIdx}
+        hasTranscriptUrl={!!transcriptSrc.url}
         onClose={() => setPlayerExpanded(false)}
         onBoost={() => setBoostOpen(true)}
       />

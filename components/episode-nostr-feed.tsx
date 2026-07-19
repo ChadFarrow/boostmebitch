@@ -37,7 +37,6 @@ export function EpisodeNostrFeed({
 
   return (
     <FeedSection
-      className="mt-8"
       heading={
         <h3 className="font-display text-lg">
           <span className="text-nostr">#</span> Boosts &amp; chatter on Nostr

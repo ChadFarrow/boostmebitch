@@ -6,6 +6,8 @@ import type { Episode, Podcast } from './types';
 export interface ChapterEntry {
   startTime: number;
   title?: string;
+  img?: string;   // per-chapter artwork (Podcasting 2.0 chapters `img`)
+  url?: string;   // per-chapter external link (chapters `url`)
 }
 
 /** Fetch and parse a Podcasting 2.0 chapters JSON file. Re-fetches when `url` changes. */
@@ -29,9 +31,11 @@ export function useChapters(url: string): { chapters: ChapterEntry[] | null; loa
       .then((data) => {
         if (cancelled) return;
         const list: ChapterEntry[] = Array.isArray(data?.chapters)
-          ? data.chapters.map((c: { startTime?: unknown; title?: unknown }) => ({
+          ? data.chapters.map((c: { startTime?: unknown; title?: unknown; img?: unknown; url?: unknown }) => ({
               startTime: Number(c.startTime) || 0,
               title: typeof c.title === 'string' ? c.title : undefined,
+              img: typeof c.img === 'string' && c.img ? c.img : undefined,
+              url: typeof c.url === 'string' && c.url ? c.url : undefined,
             }))
           : [];
         setChapters(list);

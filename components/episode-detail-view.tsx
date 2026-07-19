@@ -3,7 +3,10 @@ import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDuration } from '@/lib/format';
 import { hasValueRecipients, stripHtml } from '@/lib/util';
-import { useChapters } from '@/lib/chapters';
+import { useChapters, type ChapterEntry } from '@/lib/chapters';
+import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
+import { TranscriptPanel } from './transcript-ui';
+import { useNotesFollows } from './notes-follows';
 import { BoltIcon, ShareIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { BoostModal } from './boost-modal';
@@ -11,30 +14,77 @@ import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
 import type { Episode, ValueBlock } from '@/lib/types';
 
-function ChaptersList({ url }: { url: string }) {
-  const { chapters, loading } = useChapters(url);
-
-  if (loading && chapters === null) {
-    return <p className="text-xs text-muted">Loading chapters…</p>;
-  }
-  if (!chapters?.length) return null;
-
+// Chapter list. The fetch is lifted to EpisodeDetailView so the tab strip knows
+// whether chapters exist. `activeIdx` (>= 0 only while this episode is playing)
+// highlights the current chapter so the list tracks playback. Tapping a row
+// seeks playback there via `onSeek`. No auto-scroll — the list flows in the
+// page, and scrolling it would yank the whole page every chapter change (the
+// fullscreen player's chapters highlight without scrolling too).
+function ChaptersList({
+  chapters,
+  activeIdx,
+  onSeek,
+}: {
+  chapters: ChapterEntry[];
+  activeIdx: number;
+  onSeek: (t: number) => void;
+}) {
   return (
-    <div>
-      <p className="text-[11px] uppercase tracking-widest text-muted mb-1.5">
-        Chapters ({chapters.length})
-      </p>
-      <ul className="space-y-1 text-xs">
-        {chapters.map((c, i) => (
-          <li key={i} className="flex gap-3 text-bone/80">
-            <span className="text-muted tabular-nums w-12 flex-shrink-0">
-              {fmtDuration(c.startTime)}
-            </span>
-            <span>{c.title ?? `Chapter ${i + 1}`}</span>
+    <ul className="-mx-1 text-sm">
+      {chapters.map((c, i) => {
+        const on = i === activeIdx;
+        return (
+          <li
+            key={i}
+            className={`flex items-center gap-1 rounded-md transition ${
+              on ? 'bg-bolt/10 ring-1 ring-inset ring-bolt/30' : ''
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => onSeek(c.startTime)}
+              title={`Jump to ${fmtDuration(c.startTime)}`}
+              className={`flex-1 min-w-0 flex gap-3 items-center text-left px-3 py-1.5 rounded-md transition ${
+                on ? '' : 'hover:bg-bone/5'
+              }`}
+            >
+              {c.img && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={c.img}
+                  alt=""
+                  loading="lazy"
+                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                  className="w-10 h-10 rounded object-cover flex-shrink-0 border border-bone/15"
+                />
+              )}
+              <span
+                className={`tabular-nums text-xs w-12 flex-shrink-0 text-right ${
+                  on ? 'text-bolt' : 'text-muted'
+                }`}
+              >
+                {fmtDuration(c.startTime)}
+              </span>
+              <span className={`leading-snug break-words min-w-0 ${on ? 'text-bolt' : 'text-bone/85'}`}>
+                {c.title ?? `Chapter ${i + 1}`}
+              </span>
+            </button>
+            {c.url && (
+              <a
+                href={c.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open chapter link"
+                aria-label="Open chapter link"
+                className="flex-shrink-0 px-3 py-1.5 text-muted hover:text-bolt transition"
+              >
+                ↗
+              </a>
+            )}
           </li>
-        ))}
-      </ul>
-    </div>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -110,11 +160,17 @@ function EpisodeShareButton({ episode, podcast }: { episode: Episode; podcast: N
   );
 }
 
+// Tabs over the long content sections so the page doesn't stack them all.
+// Mirrors the fullscreen player's EpisodeInfoPanel (About/Chapters/Transcript),
+// plus a Boosts tab for the episode's Nostr feed.
+type InfoTab = 'notes' | 'chapters' | 'transcript' | 'boosts';
+
 export function EpisodeDetailView() {
   const episode = useApp((s) => s.selectedEpisode);
   const podcast = useApp((s) => s.selectedPodcast);
   const closeEpisode = useApp((s) => s.closeEpisode);
   const play = useApp((s) => s.play);
+  const requestSeek = useApp((s) => s.requestSeek);
   const togglePlay = useApp((s) => s.togglePlay);
   const current = useApp((s) => s.current);
   const isPlaying = useApp((s) => s.isPlaying);
@@ -124,6 +180,19 @@ export function EpisodeDetailView() {
   const [boostFor, setBoostFor] = useState<Episode | null>(null);
   const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
+  const [infoTab, setInfoTab] = useState<InfoTab>('notes');
+
+  // Lifted here (not in child components) so the tab strip below knows which
+  // sections have content. Both hooks no-op on an empty url. Above the early
+  // return for stable hook order.
+  const { chapters, loading: chaptersLoading } = useChapters(episode?.chaptersUrl ?? '');
+  const { cues: transcriptCues, loading: transcriptLoading } = useTranscript(
+    episode?.transcriptUrl ?? '',
+    episode?.transcriptType,
+  );
+  // Callback ref for the show-notes container: injects Follow buttons after each
+  // npub when signed in. No-op signed out.
+  const notesFollowRef = useNotesFollows(episode?.id);
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -146,6 +215,54 @@ export function EpisodeDetailView() {
       play(episode!, podcast!);
     }
   }
+
+  // Which content sections exist, and which tab is active. A section gets a tab
+  // only once it has content; a still-loading chapters/transcript renders its
+  // own loading state under the active tab. Mirrors EpisodeInfoPanel.
+  const hasShowNotes = !!episode.contentEncoded || !!description;
+  const hasChapters = !!chapters?.length;
+  const hasTranscript = !!transcriptCues?.length;
+  const hasBoosts = !!episode.guid; // the feed owns its own loading/empty state
+  const chaptersPending = !!episode.chaptersUrl && chaptersLoading;
+  const transcriptPending = !!episode.transcriptUrl && transcriptLoading;
+  const anyInfo = hasShowNotes || hasChapters || hasTranscript || hasBoosts || chaptersPending || transcriptPending;
+
+  const infoTabs: InfoTab[] = [];
+  if (hasShowNotes) infoTabs.push('notes');
+  if (hasChapters) infoTabs.push('chapters');
+  if (hasTranscript) infoTabs.push('transcript');
+  if (hasBoosts) infoTabs.push('boosts');
+  const showInfoTabs = infoTabs.length >= 2;
+  const activeInfo: InfoTab =
+    showInfoTabs && infoTabs.includes(infoTab) ? infoTab
+    : infoTabs.length ? infoTabs[0]
+    : chaptersPending ? 'chapters'
+    : transcriptPending ? 'transcript'
+    : 'notes';
+  const infoTabCls = (on: boolean) =>
+    `shrink-0 whitespace-nowrap text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
+      on ? 'bg-bolt text-ink shadow-sm' : 'text-muted hover:text-bone hover:bg-bone/5'
+    }`;
+  const infoLabel = (t: InfoTab) =>
+    t === 'chapters' ? `Chapters (${chapters?.length ?? 0})`
+    : t === 'transcript' ? 'Transcript'
+    : t === 'boosts' ? 'Boosts'
+    : 'Show notes';
+
+  // Highlight the current chapter/line only while THIS episode is the one
+  // playing — otherwise the list is a static reference (-1 = nothing active).
+  const chaptersActiveIdx =
+    isThisPlaying && chapters
+      ? chapters.reduce((acc, c, i) => (positionSec >= c.startTime ? i : acc), -1)
+      : -1;
+  const transcriptActiveIdx = isThisPlaying ? transcriptIndexAt(transcriptCues, positionSec) : -1;
+
+  // Jump playback to a timestamp from a chapter/transcript tap. If this episode
+  // is already current, seek in place; otherwise start it at that point.
+  const seekEpisodeTo = (t: number) => {
+    if (isThisPlaying) requestSeek(t);
+    else play(episode!, podcast!, t);
+  };
 
   return (
     <div>
@@ -186,7 +303,7 @@ export function EpisodeDetailView() {
           <button
             type="button"
             onClick={handlePlay}
-            className={`btn ${isThisPlaying ? 'border-bolt text-bolt' : ''}`}
+            className={isThisPlaying ? 'btn-bolt-soft' : 'btn'}
             aria-label={isThisPlaying && isPlaying ? 'Pause' : isThisPlaying ? 'Resume' : 'Play'}
           >
             {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : '▶ PLAY'}
@@ -202,6 +319,17 @@ export function EpisodeDetailView() {
               <BoltIcon /> BOOST
             </button>
           )}
+          {podcast.funding?.[0]?.url ? (
+            <a
+              href={podcast.funding[0].url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="btn-ghost"
+              title={podcast.funding[0].message || 'Support this show'}
+            >
+              <ShareIcon /> SUPPORT
+            </a>
+          ) : null}
           {episode.socialInteract?.length ? (
             <button
               type="button"
@@ -240,33 +368,76 @@ export function EpisodeDetailView() {
           </div>
         )}
 
-        {/* Chapters */}
-        {episode.chaptersUrl && (
-          <ChaptersList url={episode.chaptersUrl} />
+        {/* Show notes / Chapters / Transcript — tabbed so they don't all stack. */}
+        {anyInfo && (
+          <div className="border-t border-bone/10 pt-4">
+            {showInfoTabs ? (
+              <div className="inline-flex max-w-full overflow-x-auto gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
+                {infoTabs.map((t) => (
+                  <button key={t} type="button" onClick={() => setInfoTab(t)} className={infoTabCls(activeInfo === t)}>
+                    {t === 'chapters' ? `Chapters (${chapters!.length})` : t === 'transcript' ? 'Transcript' : t === 'boosts' ? 'Boosts' : 'Show notes'}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[11px] uppercase tracking-widest text-muted mb-2">{infoLabel(activeInfo)}</p>
+            )}
+
+            {activeInfo === 'notes' && (
+              <>
+                {episode.contentEncoded ? (
+                  <div
+                    ref={notesFollowRef}
+                    className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-hidden"
+                    dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
+                  />
+                ) : description ? (
+                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap overflow-x-hidden">
+                    {description}
+                  </div>
+                ) : null}
+                {/* Link out to the episode's own web page (some feeds' pages
+                    carry richer content than the feed; PC20's mirrors the feed). */}
+                {episode.link && (
+                  <a
+                    href={episode.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 mt-4 text-xs font-semibold uppercase tracking-widest text-muted hover:text-bolt transition"
+                  >
+                    Episode page ↗
+                  </a>
+                )}
+              </>
+            )}
+
+            {activeInfo === 'chapters' &&
+              (hasChapters
+                ? <ChaptersList chapters={chapters!} activeIdx={chaptersActiveIdx} onSeek={seekEpisodeTo} />
+                : <p className="text-xs text-muted">Loading chapters…</p>)}
+
+            {activeInfo === 'transcript' && (
+              <TranscriptPanel
+                cues={transcriptCues}
+                activeIdx={transcriptActiveIdx}
+                onSeek={seekEpisodeTo}
+                loading={transcriptLoading}
+              />
+            )}
+
+            {/* Mounted only when active — lazy-loads the relay query (the feed
+                paints its cache instantly on remount) and keeps its own
+                loading/empty state. min-height reserves the feed's area so its
+                short "searching relays…" first frame can't collapse the page
+                height and yank the scroll position up when you open this tab. */}
+            {activeInfo === 'boosts' && episode.guid && (
+              <div className="min-h-[70vh]">
+                <EpisodeNostrFeed episodeGuid={episode.guid} episodeTitle={episode.title} />
+              </div>
+            )}
+          </div>
         )}
-
-        {/* Show notes */}
-        {episode.contentEncoded ? (
-          <div>
-            <p className="text-[11px] uppercase tracking-widest text-muted mb-2">Show notes</p>
-            <div
-              className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-hidden"
-              dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
-            />
-          </div>
-        ) : description ? (
-          <div>
-            <p className="text-[11px] uppercase tracking-widest text-muted mb-2">Show notes</p>
-            <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap overflow-x-hidden">
-              {description}
-            </div>
-          </div>
-        ) : null}
       </section>
-
-      {episode.guid && (
-        <EpisodeNostrFeed episodeGuid={episode.guid} episodeTitle={episode.title} />
-      )}
 
       {hasValue && (
         <button

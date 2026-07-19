@@ -15,10 +15,17 @@ interface AppState {
   positionSec: number;
   episodeQueue: Episode[];
 
-  play: (episode: Episode, podcast: Podcast) => void;
+  play: (episode: Episode, podcast: Podcast, startSec?: number) => void;
   togglePlay: () => void;
   setPlaying: (b: boolean) => void;
   setPosition: (s: number) => void;
+
+  // A seek request for the CURRENT episode, consumed by <Player> (which owns the
+  // audio element). The nonce lets the same target fire twice. Surfaces that
+  // aren't the player — e.g. a transcript line or chapter in the detail view —
+  // request a seek through this instead of touching the media element.
+  seekReq: { t: number; n: number } | null;
+  requestSeek: (t: number) => void;
   setEpisodeQueue: (episodes: Episode[]) => void;
   playNext: () => void;
   playPrev: () => void;
@@ -91,10 +98,14 @@ export const useApp = create<AppState>((set, get) => ({
   positionSec: 0,
   episodeQueue: [],
 
-  play: (episode, podcast) => set({ current: { episode, podcast }, isPlaying: true, positionSec: 0 }),
+  play: (episode, podcast, startSec = 0) =>
+    set({ current: { episode, podcast }, isPlaying: true, positionSec: startSec }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
   setPlaying: (b) => set({ isPlaying: b }),
   setPosition: (s) => set({ positionSec: s }),
+
+  seekReq: null,
+  requestSeek: (t) => set((s) => ({ seekReq: { t, n: (s.seekReq?.n ?? 0) + 1 } })),
   setEpisodeQueue: (episodes) => set({ episodeQueue: episodes }),
   playNext: () => set((s) => {
     if (!s.current) return s;

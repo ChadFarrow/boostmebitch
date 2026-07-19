@@ -30,9 +30,9 @@ export async function GET(req: Request) {
     // notes, so we fetch the RSS and parse both in one pass. Best-effort:
     // failure leaves episodes without socialInteract/contentEncoded rather
     // than breaking the whole feed.
-    const { episodes: enrichMap, feedMedium, feedPodroll } = podcast?.url
-      ? await getRssEpisodeEnrichment(podcast.url).catch(() => ({ episodes: new Map(), feedMedium: undefined, feedPodroll: undefined }))
-      : { episodes: new Map(), feedMedium: undefined, feedPodroll: undefined };
+    const { episodes: enrichMap, feedMedium, feedPodroll, feedFunding } = podcast?.url
+      ? await getRssEpisodeEnrichment(podcast.url).catch(() => ({ episodes: new Map(), feedMedium: undefined, feedPodroll: undefined, feedFunding: undefined }))
+      : { episodes: new Map(), feedMedium: undefined, feedPodroll: undefined, feedFunding: undefined };
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
     // PI's /episodes/live only returns currently-broadcasting items; pending
     // liveItems live in the RSS itself, so we additionally parse the feed XML.
@@ -81,6 +81,13 @@ export async function GET(req: Request) {
         // RSS-parsed season/episode fill in when PI doesn't return them.
         season: e.season ?? rss?.season ?? null,
         episode: e.episode ?? rss?.episode ?? null,
+        // <podcast:transcript> — PI sometimes indexes one; RSS carries the full
+        // set (with types) so the best timed transcript can be chosen.
+        transcriptUrl: e.transcriptUrl ?? rss?.transcriptUrl,
+        transcriptType: e.transcriptType ?? rss?.transcriptType,
+        // Episode web page — where the full write-up lives when the feed's
+        // notes are abbreviated.
+        link: e.link ?? rss?.link,
       };
     });
     // Live first (live > pending), then regular by datePublished desc.
@@ -113,6 +120,9 @@ export async function GET(req: Request) {
     // <podcast:podroll> — host-recommended shows. PI doesn't index it, so it
     // comes only from the RSS pass above; attach it for the client to resolve.
     if (feedPodroll) podcast.podroll = feedPodroll;
+    // <podcast:funding> — non-Lightning support links. Prefer PI's value, fall
+    // back to the RSS channel parse (same backfill pattern as podroll/medium).
+    if (!podcast.funding?.length && feedFunding) podcast.funding = feedFunding;
     return NextResponse.json(
       { podcast, episodes: merged },
       { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },

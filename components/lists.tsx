@@ -57,6 +57,25 @@ function ShareButton({ podcast }: { podcast: Podcast }) {
   );
 }
 
+// <podcast:funding> — the host's non-Lightning support link (Patreon, etc.),
+// shown next to the V4V BOOST button. Uses the first funding entry; its message
+// is the tooltip. Renders nothing when the feed carries no funding tag.
+function SupportButton({ podcast }: { podcast: Podcast }) {
+  const funding = podcast.funding?.[0];
+  if (!funding?.url) return null;
+  return (
+    <a
+      href={funding.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="btn-ghost"
+      title={funding.message || 'Support this show'}
+    >
+      <ShareIcon /> SUPPORT
+    </a>
+  );
+}
+
 // One row used by both the search-results panel and the favorites panel.
 // `showV4VStamp` is on for search results (where the value-block is known)
 // and off for favorites (the cache only carries metadata, not value).
@@ -334,6 +353,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
           <div className="flex flex-wrap items-center gap-2 mt-3">
             <FavHeart podcast={data.podcast} size="md" />
             <ShareButton podcast={data.podcast} />
+            <SupportButton podcast={data.podcast} />
             {showHasValue && (
               <button
                 onClick={() => setShowBoostOpen(true)}
