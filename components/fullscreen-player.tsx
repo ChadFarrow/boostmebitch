@@ -109,19 +109,44 @@ function EpisodeInfoPanel({
               const next = chapters![i + 1];
               const on = currentSec >= c.startTime && (!next || currentSec < next.startTime);
               return (
-                <li key={`${c.startTime}-${c.title ?? ''}`}>
+                <li
+                  key={`${c.startTime}-${c.title ?? ''}`}
+                  className={`flex items-center gap-1 rounded -mx-2 transition ${on ? 'bg-bolt/10' : ''}`}
+                >
                   <button
                     type="button"
                     onClick={() => onSeek(c.startTime)}
-                    className={`w-full flex gap-3 items-baseline text-left rounded transition py-1.5 px-2 -mx-2 ${
-                      on ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                    className={`flex-1 min-w-0 flex gap-3 items-center text-left rounded transition py-1.5 px-2 ${
+                      on ? 'text-bolt' : 'text-bone/80 hover:bg-bone/5'
                     }`}
                   >
+                    {c.img && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img
+                        src={c.img}
+                        alt=""
+                        loading="lazy"
+                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
+                      />
+                    )}
                     <span className={`tabular-nums w-12 flex-shrink-0 ${on ? 'text-bolt' : 'text-muted'}`}>
                       {fmt(c.startTime)}
                     </span>
-                    <span className="break-words">{c.title ?? `Chapter ${i + 1}`}</span>
+                    <span className="break-words min-w-0">{c.title ?? `Chapter ${i + 1}`}</span>
                   </button>
+                  {c.url && (
+                    <a
+                      href={c.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="Open chapter link"
+                      aria-label="Open chapter link"
+                      className="flex-shrink-0 px-2 py-1.5 text-muted hover:text-bolt transition"
+                    >
+                      ↗
+                    </a>
+                  )}
                 </li>
               );
             })}

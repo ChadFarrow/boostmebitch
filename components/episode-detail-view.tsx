@@ -33,15 +33,30 @@ function ChaptersList({
       {chapters.map((c, i) => {
         const on = i === activeIdx;
         return (
-          <li key={i}>
+          <li
+            key={i}
+            className={`flex items-center gap-1 rounded-md transition ${
+              on ? 'bg-bolt/10 ring-1 ring-inset ring-bolt/30' : ''
+            }`}
+          >
             <button
               type="button"
               onClick={() => onSeek(c.startTime)}
               title={`Jump to ${fmtDuration(c.startTime)}`}
-              className={`w-full flex gap-3 items-baseline text-left px-3 py-1.5 rounded-md transition ${
-                on ? 'bg-bolt/10 ring-1 ring-inset ring-bolt/30' : 'hover:bg-bone/5'
+              className={`flex-1 min-w-0 flex gap-3 items-center text-left px-3 py-1.5 rounded-md transition ${
+                on ? '' : 'hover:bg-bone/5'
               }`}
             >
+              {c.img && (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={c.img}
+                  alt=""
+                  loading="lazy"
+                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                  className="w-10 h-10 rounded object-cover flex-shrink-0 border border-bone/15"
+                />
+              )}
               <span
                 className={`tabular-nums text-xs w-12 flex-shrink-0 text-right ${
                   on ? 'text-bolt' : 'text-muted'
@@ -49,10 +64,22 @@ function ChaptersList({
               >
                 {fmtDuration(c.startTime)}
               </span>
-              <span className={`leading-snug break-words ${on ? 'text-bolt' : 'text-bone/85'}`}>
+              <span className={`leading-snug break-words min-w-0 ${on ? 'text-bolt' : 'text-bone/85'}`}>
                 {c.title ?? `Chapter ${i + 1}`}
               </span>
             </button>
+            {c.url && (
+              <a
+                href={c.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open chapter link"
+                aria-label="Open chapter link"
+                className="flex-shrink-0 px-3 py-1.5 text-muted hover:text-bolt transition"
+              >
+                ↗
+              </a>
+            )}
           </li>
         );
       })}
