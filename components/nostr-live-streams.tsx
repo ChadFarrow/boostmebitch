@@ -25,6 +25,15 @@ interface ResolvedStream {
   value: ValueBlock | null;
 }
 
+type StreamFilter = 'live' | 'radio' | 'upcoming';
+
+// Perpetual "24/7" radio-style streams (24/7 Vapor Funk Radio, 24/7 Chiptune…)
+// have no distinct NIP-53 field, so detect them by the title convention. Splits
+// the always-on stations out of the genuinely-live-event row.
+function is247(stream: NostrLiveStream): boolean {
+  return /\b24\s*[/\-]\s*7\b/i.test(stream.title ?? '');
+}
+
 export function NostrLiveStreams() {
   const [resolved, setResolved] = useState<ResolvedStream[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,22 +41,40 @@ export function NostrLiveStreams() {
   const play = useApp((s) => s.play);
   const router = useRouter();
   const mountedRef = useRef(true);
+  const lastLoadRef = useRef(0);
   const rowRef = useHorizontalWheelScroll<HTMLDivElement>();
+  // Which group the single row shows. Falls back to the first non-empty group
+  // (see `active` below) when the selected one has nothing.
+  const [filter, setFilter] = useState<StreamFilter>('live');
 
   useEffect(() => {
     mountedRef.current = true;
     load();
-    const timer = setInterval(load, 60_000);
-    const onFocus = () => load();
-    window.addEventListener('focus', onFocus);
+    // Refetch is gated on visibility + a minimum interval. fetchNostrLiveStreams
+    // is a kind:30311 querySync across ~12 relays; polling it every 60 s and on
+    // every window.focus regardless of whether the tab is even visible (or
+    // anything changed) was pure waste. Skip while backgrounded; on the
+    // interval tick / focus / becoming-visible, only reload if it's been a
+    // while since the last one.
+    const REFRESH_MIN_MS = 45_000;
+    const maybeLoad = () => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      if (Date.now() - lastLoadRef.current < REFRESH_MIN_MS) return;
+      load();
+    };
+    const timer = setInterval(maybeLoad, 60_000);
+    document.addEventListener('visibilitychange', maybeLoad);
+    window.addEventListener('focus', maybeLoad);
     return () => {
       mountedRef.current = false;
       clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', maybeLoad);
+      window.removeEventListener('focus', maybeLoad);
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function load() {
+    lastLoadRef.current = Date.now(); // stamp at entry so overlapping triggers debounce
     try {
       const streams = await fetchNostrLiveStreams();
       if (!mountedRef.current) return;
@@ -96,47 +123,81 @@ export function NostrLiveStreams() {
 
   if (!resolved.length) return null;
 
+  // Split into their own rows so live streams aren't buried behind a long list
+  // of upcoming ones, and so perpetual 24/7 stations don't crowd out genuine
+  // live events. (fetchNostrLiveStreams already sorts upcoming-soonest /
+  // live-newest within each group.)
+  const live = resolved.filter((r) => r.stream.status === 'live' && !is247(r.stream));
+  const radio = resolved.filter((r) => r.stream.status === 'live' && is247(r.stream));
+  const upcoming = resolved.filter((r) => r.stream.status === 'planned');
+
+  const renderCard = ({ stream, profile, value }: ResolvedStream) => {
+    // Play instantly (the card already has the resolved data); a card click
+    // (expand) also navigates to the dedicated /stream/<naddr> page so the URL
+    // reflects it and a refresh restores the stream. The PLAY button stays in
+    // the mini-bar (no navigation).
+    const start = (expand: boolean) => {
+      play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
+      if (expand) router.push(`/stream/${streamNaddr(stream.pubkey, stream.dTag)}`);
+    };
+    return (
+      <StreamCard
+        key={stream.id}
+        stream={stream}
+        profile={profile}
+        value={value}
+        onPlay={() => start(false)}
+        onOpen={() => start(true)}
+        onBoost={() => {
+          const podcast = streamToPodcast(stream, profile);
+          podcast.value = value;
+          setBoostTarget({ episode: streamToEpisode(stream, value), podcast });
+        }}
+      />
+    );
+  };
+
+  // Only offer tabs that have streams; keep them in a stable order. The active
+  // tab falls back to the first available when the selected group is empty
+  // (e.g. `filter` defaults to 'live' but there are only upcoming streams).
+  const tabs = (
+    [
+      { key: 'live', label: 'Live', icon: '●', items: live },
+      { key: 'radio', label: '24/7', icon: '📻', items: radio },
+      { key: 'upcoming', label: 'Upcoming', icon: '◷', items: upcoming },
+    ] as const
+  ).filter((t) => t.items.length > 0);
+  const active = tabs.find((t) => t.key === filter) ?? tabs[0];
+
   return (
     <section>
-      <h3 className="font-display text-lg mb-3 flex items-center gap-2">
-        <span className="text-nostr animate-bolt text-sm">●</span>
-        Live on Nostr
-        <span className="text-[11px] font-mono text-muted uppercase tracking-widest">
-          {resolved.filter((r) => r.stream.status === 'live').length} live
-          {resolved.filter((r) => r.stream.status === 'planned').length > 0 &&
-            ` · ${resolved.filter((r) => r.stream.status === 'planned').length} upcoming`}
-        </span>
-      </h3>
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        <h3 className="font-display text-lg flex items-center gap-2">
+          <span className="text-nostr animate-bolt text-sm">●</span>
+          Live on Nostr
+        </h3>
+        {/* One row, tab-selected — saves the vertical space of stacked sections. */}
+        <div className="inline-flex gap-1">
+          {tabs.map((t) => {
+            const on = active.key === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setFilter(t.key)}
+                aria-pressed={on}
+                className={`btn-ghost !px-2.5 !py-1 text-xs ${on ? '!border-nostr text-nostr' : 'text-muted'}`}
+              >
+                <span aria-hidden className="mr-1">{t.icon}</span>
+                {t.label} <span className="opacity-60">{t.items.length}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
 
       <div ref={rowRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
-        {resolved.map(({ stream, profile, value }) => {
-          // Play instantly (the card already has the resolved data); a card
-          // click (expand) also navigates to the dedicated /stream/<naddr> page
-          // so the URL reflects it and a refresh restores the stream. The PLAY
-          // button stays in the mini-bar (no navigation).
-          const start = (expand: boolean) => {
-            play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
-            if (expand) router.push(`/stream/${streamNaddr(stream.pubkey, stream.dTag)}`);
-          };
-          return (
-            <StreamCard
-              key={stream.id}
-              stream={stream}
-              profile={profile}
-              value={value}
-              onPlay={() => start(false)}
-              onOpen={() => start(true)}
-              onBoost={() => {
-                const podcast = streamToPodcast(stream, profile);
-                podcast.value = value;
-                setBoostTarget({
-                  episode: streamToEpisode(stream, value),
-                  podcast,
-                });
-              }}
-            />
-          );
-        })}
+        {active.items.map(renderCard)}
       </div>
 
       {boostTarget && (
