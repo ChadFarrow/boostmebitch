@@ -400,8 +400,11 @@ export function FullscreenPlayer({
             </div>
           ) : (
             <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
+              {/* Prefer the active chapter's artwork (Podcasting 2.0 chapters
+                  `img`); PodcastCover falls back image→artwork→initial-tile, so
+                  a broken/missing chapter img degrades to the episode/podcast art. */}
               <PodcastCover
-                image={episode.image ?? podcast.image}
+                image={activeChapter?.img ?? episode.image ?? podcast.image}
                 artwork={podcast.artwork}
                 title={podcast.title}
                 seed={podcast.id?.toString()}

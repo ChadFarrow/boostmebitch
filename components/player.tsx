@@ -310,19 +310,30 @@ export function Player() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Metadata for the lock-screen / notification (title, podcast, artwork).
+  // Single chapters fetch for the whole player — passed down to <FullscreenPlayer>
+  // so it isn't fetched twice. No-ops on an empty url (music/live/no tag). Above
+  // the early return (and the lock-screen metadata effect below, which reads the
+  // active chapter's art) for hook order.
+  const { chapters, loading: chaptersLoading } = useChapters(chapterUrlFor(current));
+
+  // Metadata for the lock-screen / notification (title, podcast, artwork). Art
+  // tracks the active chapter (Podcasting 2.0 chapters `img`) so the OS surface
+  // stays in sync with the in-app now-playing art. Depends on the derived image
+  // string — not positionSec — so it only re-runs when the chapter art changes,
+  // not every 1 Hz position tick.
+  const activeChapterImg = chapterState(chapters, positionSec, duration).chapter?.img;
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     if (!current) { navigator.mediaSession.metadata = null; return; }
     const { episode, podcast } = current;
-    const art = episode.image || podcast.image || podcast.artwork;
+    const art = activeChapterImg || episode.image || podcast.image || podcast.artwork;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: episode.title,
       artist: podcast.title,
       album: podcast.title,
       artwork: art ? [{ src: art }] : undefined,
     });
-  }, [current?.episode.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [current?.episode.id, activeChapterImg]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reflect play/pause to the OS so the lock-screen button shows the right state.
   useEffect(() => {
@@ -344,11 +355,6 @@ export function Player() {
       });
     } catch { /* invalid state (e.g. position > duration mid-seek) — skip */ }
   }, [positionSec, duration]);
-
-  // Single chapters fetch for the whole player — passed down to <FullscreenPlayer>
-  // so it isn't fetched twice. No-ops on an empty url (music/live/no tag). Above
-  // the early return for hook order.
-  const { chapters, loading: chaptersLoading } = useChapters(chapterUrlFor(current));
 
   // Single transcript fetch for the whole player — passed down to
   // <FullscreenPlayer>. Mirrors the chapters fetch (no-ops when there's no
@@ -441,9 +447,19 @@ export function Player() {
             <div className="w-12 h-12 flex-shrink-0 bg-black overflow-hidden border border-bone/20">
               {videoNode && !playerExpanded && <OutPortal node={videoNode} />}
             </div>
-          ) : episode.image ? (
+          ) : (activeChapter?.img || episode.image) ? (
+            // Prefer the active chapter's artwork (Podcasting 2.0 chapters `img`),
+            // falling back to the episode cover on a missing/broken chapter image.
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={episode.image} alt="" className="w-12 h-12 object-cover border border-bone/20 flex-shrink-0" />
+            <img
+              src={activeChapter?.img || episode.image}
+              alt=""
+              onError={(e) => {
+                if (episode.image && e.currentTarget.src !== episode.image)
+                  e.currentTarget.src = episode.image;
+              }}
+              className="w-12 h-12 object-cover border border-bone/20 flex-shrink-0"
+            />
           ) : null}
           <div className="min-w-0 flex-1">
             <div className="text-sm font-display leading-tight truncate">{episode.title}</div>

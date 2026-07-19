@@ -1,5 +1,5 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 // Renders the podcast's artwork with a deterministic colored-initial
 // fallback when every candidate URL is missing, blocked, or 404s. Mirrors
@@ -36,6 +36,11 @@ export function PodcastCover({
     return out;
   }, [image, artwork]);
   const [idx, setIdx] = useState(0);
+  // Re-attempt from the first candidate whenever the source URLs change. Without
+  // this, a caller that swaps `image` over time (e.g. per-chapter artwork in the
+  // player) would keep a stale failing-index: once a bad img advanced idx to the
+  // artwork fallback, the next (valid) image would be skipped for artwork.
+  useEffect(() => { setIdx(0); }, [image, artwork]);
   const current = candidates[idx];
   if (current) {
     return (
