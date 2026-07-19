@@ -30,18 +30,29 @@ export function useFollows(): FollowsSnapshot {
 // publish flips to a retry state.
 export function FollowButton({ pubkey, className = '' }: { pubkey: string; className?: string }) {
   const identity = useApp((s) => s.identity);
-  const { following, ok } = useFollows();
+  const { following, ok, loading } = useFollows();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(false);
 
   if (!identity || identity.pubkey === pubkey) return null;
 
   const on = following.has(pubkey);
+  // The list fetch itself failed (degraded relays) — distinct from a failed
+  // toggle. Offer retry rather than sitting disabled on a misleading "loading".
+  const fetchFailed = !ok && !loading;
+  const retry = err || fetchFailed;
 
   async function onClick(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (busy || (!ok && !err)) return;
+    if (busy || loading) return;
+    if (fetchFailed) {
+      // Re-run the one-time load (loadedFor is null after a degraded fetch, so
+      // this actually re-queries instead of no-oping).
+      ensureFollowsLoaded(identity!);
+      return;
+    }
+    if (!ok) return;
     setBusy(true);
     setErr(false);
     try {
@@ -57,11 +68,21 @@ export function FollowButton({ pubkey, className = '' }: { pubkey: string; class
     <button
       type="button"
       onClick={onClick}
-      disabled={busy || (!ok && !err)}
+      disabled={busy || loading}
       className={`npub-follow-btn${on ? ' is-following' : ''} ${className}`}
-      title={err ? 'Failed — tap to retry' : !ok ? 'Loading your follows…' : on ? 'Unfollow' : 'Follow'}
+      title={
+        err
+          ? 'Failed — tap to retry'
+          : fetchFailed
+            ? "Couldn't load your follows — tap to retry"
+            : loading
+              ? 'Loading your follows…'
+              : on
+                ? 'Unfollow'
+                : 'Follow'
+      }
     >
-      {err ? '↻ retry' : busy ? '…' : on ? '✓ Following' : '+ Follow'}
+      {retry ? '↻ retry' : busy || loading ? '…' : on ? '✓ Following' : '+ Follow'}
     </button>
   );
 }

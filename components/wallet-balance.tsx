@@ -221,7 +221,7 @@ export function WalletBalanceChip() {
   const { balance, rail } = useWalletBalance();
   if (rail === null || balance === null) return null;
   const formatted = balance.toLocaleString();
-  const railName = rail === 'nwc' ? 'NWC' : 'Spark';
+  const railName = rail === 'nwc' ? 'NWC' : rail === 'webln' ? 'WebLN' : 'Spark';
   return (
     <span
       className="text-bolt text-[11px] font-mono tabular-nums whitespace-nowrap"

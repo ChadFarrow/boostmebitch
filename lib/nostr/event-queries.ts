@@ -29,27 +29,36 @@ export async function fetchLatestEvent(
         let best: Event | null = null;
         let settled = false;
         let graceTimer: ReturnType<typeof setTimeout> | null = null;
+        // Declared before subscribeMany so finish() can clear the hard timer and
+        // close the sub even if subscribeMany throws synchronously (malformed
+        // relay URL) — otherwise the timer kept running to maxWait. Mirrors the
+        // sub-first pattern in collectEventsByAuthors.
+        let sub: { close: () => void } | null = null;
 
         const finish = () => {
           if (settled) return;
           settled = true;
           clearTimeout(hardTimer);
           if (graceTimer) clearTimeout(graceTimer);
-          try { sub.close(); } catch { /* already closed */ }
+          try { sub?.close(); } catch { /* already closed / never opened */ }
           resolve(best);
         };
 
         const hardTimer = setTimeout(finish, maxWait);
-        const sub = pool.subscribeMany(relays, filter, {
-          onevent(e: Event) {
-            if (!best || e.created_at > best.created_at) best = e;
-            if (!graceTimer) graceTimer = setTimeout(finish, FIRST_EVENT_GRACE_MS);
-          },
-          oneose() {
-            // Fires once all relays have EOSE'd — nothing more is coming.
-            finish();
-          },
-        });
+        try {
+          sub = pool.subscribeMany(relays, filter, {
+            onevent(e: Event) {
+              if (!best || e.created_at > best.created_at) best = e;
+              if (!graceTimer) graceTimer = setTimeout(finish, FIRST_EVENT_GRACE_MS);
+            },
+            oneose() {
+              // Fires once all relays have EOSE'd — nothing more is coming.
+              finish();
+            },
+          });
+        } catch {
+          finish();
+        }
       });
     } catch {
       return null;

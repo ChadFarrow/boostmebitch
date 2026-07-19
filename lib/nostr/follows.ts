@@ -135,8 +135,14 @@ export async function ensureFollowsLoaded(identity: NostrIdentity): Promise<void
   const fetched = await fetchFollowList(identity);
   if (pendingFor !== identity.pubkey) return; // superseded by an identity switch
   state = fetched;
-  loadedFor = identity.pubkey;
   loading = false;
+  // Only mark loaded when the fetch was TRUSTWORTHY (an event arrived or every
+  // relay EOSE'd). Pinning loadedFor on a degraded fetch (ok:false) made the
+  // entry guard a permanent no-op, so a transient relay outage left every
+  // follow button disabled ("Loading your follows…") until reload. Leaving it
+  // null lets a re-invocation (button retry) fetch again. Never wipes — the
+  // list-safety invariant holds either way.
+  if (fetched.ok) loadedFor = identity.pubkey;
   notify();
 }
 
