@@ -5,6 +5,8 @@ import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
+import type { TranscriptCue } from '@/lib/transcript';
+import { TranscriptPanel } from './transcript-ui';
 import type { Podcast } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
@@ -16,14 +18,20 @@ import { FavHeart } from './fav-heart';
 import { TransportControls } from './transport-controls';
 import { LiveChat } from './live-chat';
 
-// About-this-episode text + Podcasting 2.0 chapters, toggled by a tab strip.
-// Tabs only show when BOTH exist; with one, it renders that section under a
-// plain label. Returns null when there's neither (and nothing still loading).
+// About-this-episode text + Podcasting 2.0 chapters + transcript, toggled by a
+// tab strip. Tabs show only for sections with real content (2+); a lone section
+// renders under a plain label. A still-loading section renders its own loading
+// state. Returns null when there's nothing to show and nothing loading.
+type InfoTab = 'about' | 'chapters' | 'transcript';
 function EpisodeInfoPanel({
   description,
   chapters,
   chaptersLoading,
   hasChaptersUrl,
+  transcriptCues,
+  transcriptLoading,
+  transcriptActiveIdx,
+  hasTranscriptUrl,
   onSeek,
   currentSec,
 }: {
@@ -31,19 +39,37 @@ function EpisodeInfoPanel({
   chapters: ChapterEntry[] | null;
   chaptersLoading: boolean;
   hasChaptersUrl: boolean;
+  transcriptCues: TranscriptCue[] | null;
+  transcriptLoading: boolean;
+  transcriptActiveIdx: number;
+  hasTranscriptUrl: boolean;
   onSeek: (s: number) => void;
   currentSec: number;
 }) {
-  const [tab, setTab] = useState<'about' | 'chapters'>('about');
+  const [tab, setTab] = useState<InfoTab>('about');
 
   const hasDescription = !!description;
   const hasChapters = !!chapters?.length;
+  const hasTranscript = !!transcriptCues?.length;
   const chaptersPending = hasChaptersUrl && chaptersLoading;
-  if (!hasDescription && !hasChapters && !chaptersPending) return null;
+  const transcriptPending = hasTranscriptUrl && transcriptLoading;
+  if (!hasDescription && !hasChapters && !hasTranscript && !chaptersPending && !transcriptPending) {
+    return null;
+  }
 
-  const showTabs = hasDescription && hasChapters;
-  // When only one section is available, force it regardless of the tab state.
-  const active: 'about' | 'chapters' = showTabs ? tab : hasDescription ? 'about' : 'chapters';
+  // Only sections with loaded content get a tab; a pending section joins once
+  // it resolves.
+  const tabs: InfoTab[] = [];
+  if (hasDescription) tabs.push('about');
+  if (hasChapters) tabs.push('chapters');
+  if (hasTranscript) tabs.push('transcript');
+
+  const showTabs = tabs.length >= 2;
+  const active: InfoTab =
+    showTabs && tabs.includes(tab) ? tab
+    : tabs.length ? tabs[0]
+    : chaptersPending ? 'chapters'
+    : 'transcript';
 
   const tabCls = (on: boolean) =>
     `text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
@@ -51,22 +77,23 @@ function EpisodeInfoPanel({
         ? 'bg-bolt text-ink shadow-sm'
         : 'text-muted hover:text-bone hover:bg-bone/5'
     }`;
+  const label = (t: InfoTab) =>
+    t === 'chapters' ? `Chapters (${chapters?.length ?? 0})`
+    : t === 'transcript' ? 'Transcript'
+    : 'About this episode';
 
   return (
     <div className="border-t border-bone/10 pt-5">
       {showTabs ? (
         <div className="inline-flex gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
-          <button type="button" onClick={() => setTab('about')} className={tabCls(active === 'about')}>
-            About
-          </button>
-          <button type="button" onClick={() => setTab('chapters')} className={tabCls(active === 'chapters')}>
-            Chapters ({chapters!.length})
-          </button>
+          {tabs.map((t) => (
+            <button key={t} type="button" onClick={() => setTab(t)} className={tabCls(active === t)}>
+              {t === 'chapters' ? `Chapters (${chapters!.length})` : t === 'transcript' ? 'Transcript' : 'About'}
+            </button>
+          ))}
         </div>
       ) : (
-        <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
-          {active === 'chapters' ? `Chapters (${chapters?.length ?? 0})` : 'About this episode'}
-        </p>
+        <p className="text-[11px] uppercase tracking-widest text-muted mb-2">{label(active)}</p>
       )}
 
       {active === 'about' && hasDescription && (
@@ -102,6 +129,15 @@ function EpisodeInfoPanel({
         ) : (
           <p className="text-xs text-muted">Loading chapters…</p>
         ))}
+
+      {active === 'transcript' && (
+        <TranscriptPanel
+          cues={transcriptCues}
+          activeIdx={transcriptActiveIdx}
+          onSeek={onSeek}
+          loading={transcriptLoading}
+        />
+      )}
     </div>
   );
 }
@@ -168,6 +204,10 @@ export function FullscreenPlayer({
   onPip,
   chapters,
   chaptersLoading,
+  transcriptCues,
+  transcriptLoading,
+  transcriptActiveIdx,
+  hasTranscriptUrl,
   onClose,
   onBoost,
 }: {
@@ -185,6 +225,10 @@ export function FullscreenPlayer({
   // Fetched once by <Player> and passed down (so it isn't fetched twice).
   chapters: ChapterEntry[] | null;
   chaptersLoading: boolean;
+  transcriptCues: TranscriptCue[] | null;
+  transcriptLoading: boolean;
+  transcriptActiveIdx: number;
+  hasTranscriptUrl: boolean;
   onClose: () => void;
   onBoost: () => void;
 }) {
@@ -508,13 +552,17 @@ export function FullscreenPlayer({
             )}
           </div>
 
-          {/* Scrollable body — About / Chapters (+ discussion). */}
+          {/* Scrollable body — About / Chapters / Transcript (+ discussion). */}
           <div className="flex-1 sm:min-h-0 sm:overflow-y-auto">
             <EpisodeInfoPanel
               description={description}
               chapters={chapters}
               chaptersLoading={chaptersLoading}
               hasChaptersUrl={!isLive && !!episode.chaptersUrl}
+              transcriptCues={transcriptCues}
+              transcriptLoading={transcriptLoading}
+              transcriptActiveIdx={transcriptActiveIdx}
+              hasTranscriptUrl={hasTranscriptUrl}
               onSeek={seekTo}
               currentSec={positionSec}
             />

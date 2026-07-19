@@ -37,6 +37,14 @@ export interface ValueTimeSplit {
   episodeGuid?: string;
 }
 
+// A single <podcast:funding> entry — a host's non-Lightning support link
+// (Patreon, Buy Me a Coffee, etc.). `message` is the tag's text content, shown
+// as a label/tooltip. Channel-scoped; PI indexes one, RSS may carry several.
+export interface FundingLink {
+  url: string;
+  message?: string;
+}
+
 // A single <podcast:podroll> entry — another show the host recommends.
 // Channel-scoped remote item (feedGuid/feedUrl, no itemGuid). Resolved to a
 // full Podcast client-side via resolvePodcastByGuid.
@@ -62,6 +70,7 @@ export interface Podcast {
   medium?: string;        // podcast:medium (e.g. 'music', 'publisher')
   value?: ValueBlock | null;
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
+  funding?: FundingLink[]; // <podcast:funding> — non-Lightning support links
 }
 
 export interface SocialInteract {
@@ -88,6 +97,11 @@ export interface Episode {
   episode?: number | null;     // <podcast:episode> / <itunes:episode> if present
   season?: number | null;      // <podcast:season> if present (disc number for music)
   chaptersUrl?: string;        // PI exposes Podcasting 2.0 chapters JSON URL
+  /** Chosen <podcast:transcript> URL — the best *timed* transcript for this
+   *  episode (JSON > SRT > VTT), fetched + parsed client-side by lib/transcript.ts. */
+  transcriptUrl?: string;
+  /** MIME type of `transcriptUrl` so the parser knows the format. */
+  transcriptType?: string;
   value?: ValueBlock | null;
   valueTimeSplits?: ValueTimeSplit[];
   socialInteract?: SocialInteract[];
