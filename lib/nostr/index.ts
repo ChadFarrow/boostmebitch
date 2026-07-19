@@ -82,6 +82,18 @@ export {
   type SyncedSettings,
 } from './settings-backup';
 
+export {
+  INBOX_KIND,
+  INBOX_SEEN_D_TAG,
+  LISTEN_QUEUE_D_TAG,
+  fetchInboxSeen,
+  publishInboxSeen,
+  scheduleInboxSeenSync,
+  fetchListenQueue,
+  publishListenQueue,
+  scheduleListenQueueSync,
+} from './inbox-backup';
+
 export { hydrateFavorites } from './favorites-hydrator';
 
 export {
