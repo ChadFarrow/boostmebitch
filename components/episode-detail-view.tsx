@@ -441,12 +441,15 @@ export function EpisodeDetailView() {
         )}
       </section>
 
-      {hasValue && (
+      {/* Hidden while the now-playing bar is up — the mini-player carries its own
+          BOOST button, and the episode's inline SHARE · SUPPORT · BOOST cluster
+          remains — so the FAB would just overlap the bar. */}
+      {hasValue && !playerVisible && (
         <button
           type="button"
           onClick={() => setBoostFor(episode)}
           className="btn-bolt fixed right-4 z-40 shadow-xl rounded-full"
-          style={{ bottom: `calc(${playerVisible ? '5rem' : '1.5rem'} + env(safe-area-inset-bottom))` }}
+          style={{ bottom: 'calc(1.5rem + env(safe-area-inset-bottom))' }}
           aria-label="Boost this episode"
         >
           <BoltIcon /> BOOST
