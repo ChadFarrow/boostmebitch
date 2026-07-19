@@ -128,6 +128,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     primeBoostSound();
     if (name) storage.senderName.set(name);
 
+    // "Anonymous" has to anonymize the PAYMENT too, not just the Nostr note:
+    // sender_id is the user's nostr pubkey, which recipient aggregators
+    // (Helipad/Fountain) resolve to their profile — avatar + name. Omitting it
+    // honors the picker's "not your npub" promise.
+    const anonymous = shareNostr && shareAs === 'site';
+
     const boostagram: Boostagram = {
       app_name: 'BoostMeBitch',
       app_version: '0.1.0',
@@ -138,7 +144,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       value_msat_total: sats * 1000,
       message: msg || undefined,
       sender_name: name || undefined,
-      sender_id: identity?.pubkey,
+      sender_id: anonymous ? undefined : identity?.pubkey,
       action: 'boost',
       uuid: crypto.randomUUID(),
       remote_feed_guid: podcast.podcastGuid,

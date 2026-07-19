@@ -126,6 +126,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     primeBoostSound();
     if (name) storage.senderName.set(name);
 
+    // "Anonymous" must anonymize the PAYMENT too — omit the nostr pubkey so
+    // recipient aggregators can't resolve it to the user's profile. Applies to
+    // every leg below (per-track, host share, summary).
+    const anonymous = shareNostr && shareAs === 'site';
+
     setRunning(true);
     setProgress([]);
 
@@ -164,7 +169,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         value_msat_total: trackSats * 1000,
         message: msg || undefined,
         sender_name: name || undefined,
-        sender_id: identity?.pubkey,
+        sender_id: anonymous ? undefined : identity?.pubkey,
         action: 'boost',
         uuid: crypto.randomUUID(),
       };
@@ -234,7 +239,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           value_msat_total: showLegSats * 1000,
           message: msg || undefined,
           sender_name: name || undefined,
-          sender_id: identity?.pubkey,
+          sender_id: anonymous ? undefined : identity?.pubkey,
           action: 'boost',
           uuid: crypto.randomUUID(),
         };
@@ -312,7 +317,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       value_msat_total: totalSats * 1000,
       message: msg || undefined,
       sender_name: name || undefined,
-      sender_id: identity?.pubkey,
+      sender_id: anonymous ? undefined : identity?.pubkey,
       action: 'boost',
       uuid: crypto.randomUUID(),
     };
