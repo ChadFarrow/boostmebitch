@@ -381,9 +381,13 @@ export function EpisodeDetailView() {
 
             {/* Mounted only when active — lazy-loads the relay query (the feed
                 paints its cache instantly on remount) and keeps its own
-                loading/empty state. */}
+                loading/empty state. min-height reserves the feed's area so its
+                short "searching relays…" first frame can't collapse the page
+                height and yank the scroll position up when you open this tab. */}
             {activeInfo === 'boosts' && episode.guid && (
-              <EpisodeNostrFeed episodeGuid={episode.guid} episodeTitle={episode.title} />
+              <div className="min-h-[70vh]">
+                <EpisodeNostrFeed episodeGuid={episode.guid} episodeTitle={episode.title} />
+              </div>
             )}
           </div>
         )}
