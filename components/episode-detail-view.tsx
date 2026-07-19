@@ -209,7 +209,7 @@ export function EpisodeDetailView() {
     : transcriptPending ? 'transcript'
     : 'notes';
   const infoTabCls = (on: boolean) =>
-    `text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
+    `shrink-0 whitespace-nowrap text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
       on ? 'bg-bolt text-ink shadow-sm' : 'text-muted hover:text-bone hover:bg-bone/5'
     }`;
   const infoLabel = (t: InfoTab) =>
@@ -341,7 +341,7 @@ export function EpisodeDetailView() {
         {anyInfo && (
           <div className="border-t border-bone/10 pt-4">
             {showInfoTabs ? (
-              <div className="inline-flex gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
+              <div className="inline-flex max-w-full overflow-x-auto gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
                 {infoTabs.map((t) => (
                   <button key={t} type="button" onClick={() => setInfoTab(t)} className={infoTabCls(activeInfo === t)}>
                     {t === 'chapters' ? `Chapters (${chapters!.length})` : t === 'transcript' ? 'Transcript' : t === 'boosts' ? 'Boosts' : 'Show notes'}

@@ -72,7 +72,7 @@ function EpisodeInfoPanel({
     : 'transcript';
 
   const tabCls = (on: boolean) =>
-    `text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
+    `shrink-0 whitespace-nowrap text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
       on
         ? 'bg-bolt text-ink shadow-sm'
         : 'text-muted hover:text-bone hover:bg-bone/5'
@@ -85,7 +85,7 @@ function EpisodeInfoPanel({
   return (
     <div className="border-t border-bone/10 pt-5">
       {showTabs ? (
-        <div className="inline-flex gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
+        <div className="inline-flex max-w-full overflow-x-auto gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
           {tabs.map((t) => (
             <button key={t} type="button" onClick={() => setTab(t)} className={tabCls(active === t)}>
               {t === 'chapters' ? `Chapters (${chapters!.length})` : t === 'transcript' ? 'Transcript' : 'About'}
