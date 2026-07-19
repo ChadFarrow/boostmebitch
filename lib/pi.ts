@@ -202,6 +202,7 @@ function buildEpisode(e: any): Episode {
     guid: e.guid,
     title: e.title,
     description: e.description,
+    link: typeof e.link === 'string' && e.link ? e.link : undefined,
     enclosureUrl: e.enclosureUrl,
     enclosureType: e.enclosureType,
     duration: e.duration,
@@ -490,6 +491,7 @@ interface RssEpisodeEnrichment {
   episode?: number | null;
   transcriptUrl?: string;
   transcriptType?: string;
+  link?: string;
 }
 
 export interface RssFeedEnrichment {
@@ -676,8 +678,11 @@ export async function getRssEpisodeEnrichment(
     const episodeStr = extractText(inner, 'podcast:episode');
     const episode = episodeStr != null && episodeStr !== '' ? (Number(episodeStr) || null) : null;
     const { transcriptUrl, transcriptType } = parseTranscripts(inner);
-    if (socialInteract || contentEncoded || season != null || episode != null || transcriptUrl) {
-      episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType });
+    // Item <link> — the episode web page (RSS <link>, not <atom:link>). Full
+    // notes often live here when the feed's <description> is abbreviated.
+    const link = extractText(inner, 'link') || undefined;
+    if (socialInteract || contentEncoded || season != null || episode != null || transcriptUrl || link) {
+      episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link });
     }
   }
   return { episodes, feedMedium, feedPodroll, feedFunding };

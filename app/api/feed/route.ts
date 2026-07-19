@@ -85,6 +85,9 @@ export async function GET(req: Request) {
         // set (with types) so the best timed transcript can be chosen.
         transcriptUrl: e.transcriptUrl ?? rss?.transcriptUrl,
         transcriptType: e.transcriptType ?? rss?.transcriptType,
+        // Episode web page — where the full write-up lives when the feed's
+        // notes are abbreviated.
+        link: e.link ?? rss?.link,
       };
     });
     // Live first (live > pending), then regular by datePublished desc.

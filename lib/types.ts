@@ -85,6 +85,7 @@ export interface Episode {
   title: string;
   description?: string;
   contentEncoded?: string; // Sanitized HTML from RSS <content:encoded> — full show notes
+  link?: string;          // Episode web page (RSS <link> / PI `link`) — full notes live here
   enclosureUrl: string;
   enclosureType?: string;
   duration?: number;

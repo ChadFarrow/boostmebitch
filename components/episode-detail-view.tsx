@@ -380,16 +380,30 @@ export function EpisodeDetailView() {
             )}
 
             {activeInfo === 'notes' && (
-              episode.contentEncoded ? (
-                <div
-                  className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-hidden"
-                  dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
-                />
-              ) : description ? (
-                <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap overflow-x-hidden">
-                  {description}
-                </div>
-              ) : null
+              <>
+                {episode.contentEncoded ? (
+                  <div
+                    className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-hidden"
+                    dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
+                  />
+                ) : description ? (
+                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap overflow-x-hidden">
+                    {description}
+                  </div>
+                ) : null}
+                {/* Feeds often abbreviate the notes; the episode's web page has
+                    the full write-up. */}
+                {episode.link && (
+                  <a
+                    href={episode.link}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 mt-4 text-xs font-semibold uppercase tracking-widest text-muted hover:text-bolt transition"
+                  >
+                    Full notes ↗
+                  </a>
+                )}
+              </>
             )}
 
             {activeInfo === 'chapters' &&
