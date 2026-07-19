@@ -29,6 +29,14 @@ export function AuthControl() {
   const [, setTick] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  // Wallet state is read from localStorage (hasAnyWallet), which the server
+  // can't see — so gate it behind mount. Without this, SSR renders the
+  // signed-out "Sign in" control while the client's first render sees the
+  // connected wallet, a hydration mismatch that made React discard and
+  // regenerate the whole header subtree on every load. First client render now
+  // matches SSR; the real wallet state paints one tick later.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
 
   // Re-render on rail-state changes so the control flips between the
   // "Sign in" affordance and the connected chip without a remount.
@@ -60,7 +68,7 @@ export function AuthControl() {
     };
   }, [menuOpen]);
 
-  const walletConnected = hasAnyWallet();
+  const walletConnected = mounted && hasAnyWallet();
   const needNostr = !identity;
 
   return (
