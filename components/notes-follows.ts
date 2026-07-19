@@ -33,12 +33,18 @@ function setup(container: HTMLElement, identity: NostrIdentity): () => void {
     const snap = followsSnapshot();
     const on = snap.following.has(hex);
     const busy = btn.dataset.busy === '1';
-    const err = btn.dataset.err === '1';
-    btn.textContent = err ? '↻ retry' : busy ? '…' : on ? '✓ Following' : '+ Follow';
-    btn.className = `npub-follow-btn${on ? ' is-following' : ''}`;
-    btn.disabled = busy || (!snap.ok && !err);
+    const err = btn.dataset.err === '1';            // a toggle failed
+    const fetchFailed = !snap.ok && !snap.loading;   // the follow list didn't load
+    // Offer retry instead of sitting disabled on a degraded load — otherwise a
+    // transient relay failure (e.g. "too many concurrent REQs" on cold load)
+    // leaves this a dimmed dead chip until the user reloads. Mirrors <FollowButton>.
+    const retry = err || fetchFailed;
+    btn.textContent = retry ? '↻ retry' : busy || snap.loading ? '…' : on ? '✓ Following' : '+ Follow';
+    btn.className = `npub-follow-btn${on && !retry ? ' is-following' : ''}`;
+    btn.disabled = busy || snap.loading; // enabled while retryable, not a dead chip
     btn.title = err ? 'Failed — tap to retry'
-      : !snap.ok ? 'Loading your follows…'
+      : fetchFailed ? "Couldn't load your follows — tap to retry"
+      : snap.loading ? 'Loading your follows…'
       : on ? 'Unfollow' : 'Follow';
   };
   const paintAll = () => buttons.forEach(paint);
@@ -59,7 +65,17 @@ function setup(container: HTMLElement, identity: NostrIdentity): () => void {
 
   const toggle = async (btn: HTMLButtonElement) => {
     if (btn.dataset.busy === '1') return;
-    if (!followsSnapshot().ok && btn.dataset.err !== '1') return;
+    const snap = followsSnapshot();
+    if (snap.loading) return; // still loading — ignore taps
+    if (!snap.ok) {
+      // Follows didn't load — retry the fetch (subscribeFollows repaints when
+      // the shared state flips loading→ok). Don't attempt a toggle on a list we
+      // never loaded (the kind:3 nuke-guard).
+      btn.dataset.err = '0';
+      ensureFollowsLoaded(identity);
+      paint(btn);
+      return;
+    }
     btn.dataset.busy = '1';
     btn.dataset.err = '0';
     paint(btn);
