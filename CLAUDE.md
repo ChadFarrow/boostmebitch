@@ -43,6 +43,7 @@ Components fetch via local API routes (`fetch('/api/feed?id=…')`) — never ca
 - **Spark wallet backup (kind:30078, `d:boostmebitch:wallet:spark`):** NIP-44 v2 encrypted-to-self mnemonic. Best-effort silent restore; failures are swallowed.
 - **Synced settings (kind:30078, `d:boostmebitch:settings`):** NIP-44 encrypted-to-self JSON; currently just `railPref` (last-used boost rail) → applied to `storage.railPref`. `lib/nostr/settings-backup.ts`.
 - **NWC connection backup (kind:30078, `d:boostmebitch:wallet:nwc`):** NIP-44 encrypted-to-self `{ uri }`, **opt-in only**. Restored to `bmb:nwc_uri` when this device has no NWC URI yet. See Wallets. `lib/nostr/wallet-backup.ts`.
+- **Inbox seen + listen queue (kind:30078, `d:boostmebitch:inbox` / `d:boostmebitch:queue`):** NIP-44 encrypted-to-self; seen unions, queue newest-wins. `lib/nostr/inbox-backup.ts`.
 
 NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (private mutes), `nip44.{en,de}crypt` (wallet backup). No DMs, no reactions. **kind:3 contacts** are now read + written — but only for the Follow feature (see Follows), on-demand when a follow button is shown, **not** in `loadProfile`; `signEvent` already covers it, so no new perm.
 
@@ -115,6 +116,8 @@ Two browse-view sections in `components/home-page.tsx`'s aside: the **Inbox** (y
 **`+ queue` on Nostr notes (`components/nostr-note-card.tsx`).** Every note that references a specific episode (has a `podcast:item:guid`) gets a **+ queue** button (works signed-out — the queue is local). It resolves the episode **on demand** via `GET /api/episode?feedGuid=&itemGuid=` (wraps server-only `getEpisodeByGuid`) — **prefetched on hover/pointer-down** so the click is usually instant — then `enqueueEpisode`. Show-level boosts (no item guid) get no button.
 
 **Login/logout** (`components/nostr-auth/index.tsx`): seen + queue hydrate from the npub bucket alongside favorites/mutes and reset to empty on logout (per-account isolation; both are local-only, no relay sync).
+
+**Cross-device sync (kind:30078 NIP-44 encrypted-to-self, `lib/nostr/inbox-backup.ts`).** Seen-state and the queue sync to the user's npub, mirroring `settings-backup.ts`: `d:boostmebitch:inbox` = `{ seen: string[] }` (**union** merge — a mark on any device sticks; capped at newest ~2000 keys), `d:boostmebitch:queue` = `{ items, updatedAt }` (**newest-wins** vs local `bmb:listen_queue_ts`). Publishes are debounced from the store's `persistSeen`/`persistQueue` choke points (gated on a NIP-44 signer — signed-out/no-nip44 stays local); hydrated in `loadProfile` after favorites/mutes. Playback-position resume is a separate follow-up.
 
 ## Mutes (NIP-51 kind:10000)
 
@@ -503,6 +506,7 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 | `bmb:feed:<key>` | `DiscoveredNote[]` per feed. **No TTL** — every mount paints it, then a full relay fetch replaces it. Legacy `{ t, v }` wrapper is tolerated on read. Keys: `'global'`, `'podcast:<guid>'`. |
 | `bmb:social:<uri>` | `DiscoveredNote[]` per `podcast:socialInteract` URI. Same no-TTL stale-while-revalidate paint as `bmb:feed` (reuses its `replies` normalizer + legacy-wrapper tolerance). Written on every successful thread fetch and after an optimistic comment; never on fetch error. |
 | `bmb:boosts:*` | Local sent-boost log, capped 200 newest-first. Each entry holds intent + per-leg results + Nostr `noteId` patched in once `publishBoostNote` resolves. `boostsTick` wakes subscribers; `GlobalNostrFeed` mixes these in and dedupes against returned notes by `noteId`. |
+| `bmb:listen_queue_ts:*` | Per-npub unix-ms of the last local queue edit; drives newest-wins vs the synced `d:boostmebitch:queue` event. |
 | `bmb:pi:dead` (sessionStorage) | Circuit-breaker sentinel; cleared on hard-refresh-into-new-tab. |
 | `bmb:nwc_uri_sess:<npub>` (sessionStorage) | NWC URI stashed at sign-out so a same-tab sign-back-in restores instantly without a relay query + NIP-44 decrypt (which hangs when iOS kills the extension's service worker mid-wait). Consumed (and removed) by the fast-path at the top of `doLoadProfile`; cleared on explicit NWC disconnect so a disconnected wallet can't resurrect. |
 
