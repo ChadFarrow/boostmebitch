@@ -435,8 +435,13 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
   const current = useApp((s) => s.current);
   const openEpisode = useApp((s) => s.openEpisode);
   const enqueueEpisode = useApp((s) => s.enqueueEpisode);
+  const listenQueue = useApp((s) => s.listenQueue);
   const setEpisodeQueue = useApp((s) => s.setEpisodeQueue);
   const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
+  const queuedKeys = useMemo(
+    () => new Set(listenQueue.map((i) => epKey(i.episode))),
+    [listenQueue],
+  );
 
   useEffect(() => {
     setValueOpen(false);
@@ -643,20 +648,26 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
                   <span className="text-bolt text-[11px] mt-0.5">⚡ {e.valueTimeSplits.length} tracks</span>
                 ) : null}
               </div>
-              {e.liveStatus !== 'pending' && (
-                <button
-                  type="button"
-                  onClick={(ev) => {
-                    ev.stopPropagation();
-                    if (data.podcast) enqueueEpisode(e, data.podcast);
-                  }}
-                  className="btn-ghost text-xs px-2 self-center flex-shrink-0"
-                  aria-label="Add to queue"
-                  title="Add to queue"
-                >
-                  + queue
-                </button>
-              )}
+              {e.liveStatus !== 'pending' && (() => {
+                const queued = queuedKeys.has(epKey(e));
+                return (
+                  <button
+                    type="button"
+                    disabled={queued}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      if (data.podcast) enqueueEpisode(e, data.podcast);
+                    }}
+                    className={`btn-ghost text-xs px-2 self-center flex-shrink-0 ${
+                      queued ? 'text-bolt border-bolt/60 disabled:opacity-100' : ''
+                    }`}
+                    aria-label={queued ? 'In your queue' : 'Add to queue'}
+                    title={queued ? 'Already in your queue' : 'Add to queue'}
+                  >
+                    {queued ? '✓ queued' : '+ queue'}
+                  </button>
+                );
+              })()}
               {hasValueRecipients(e.value) && (
                 <button
                   type="button"
