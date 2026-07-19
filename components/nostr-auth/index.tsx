@@ -12,6 +12,8 @@ import {
   fetchEncryptedMnemonic,
   fetchEncryptedNwc,
   fetchSettings,
+  fetchInboxSeen,
+  fetchListenQueue,
   hydrateFavorites,
   hydrateMutes,
   unionMutedPubkeys,
@@ -43,6 +45,7 @@ export function NostrAuth() {
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
   const setSeenGuids = useApp((s) => s.setSeenGuids);
   const setListenQueue = useApp((s) => s.setListenQueue);
+  const seedSeenKeys = useApp((s) => s.seedSeenKeys);
   // One button opens the sign-in modal, which owns the per-method (extension
   // / remote-signer / Amber) flows and their own busy/error state. Open-state
   // lives in the store so other surfaces (fullscreen player, live chat) can
@@ -138,6 +141,20 @@ export function NostrAuth() {
     // Wait for the rest so the dedup map's resolved promise doesn't release
     // before everything settles (in_flight guards re-entrant remounts).
     await Promise.allSettled([favoritesPromise, mutesPromise, sparkPromise, settingsPromise, nwcPromise]);
+
+    // Cross-device sync (best-effort): union the seen set, adopt a newer queue.
+    try {
+      const remoteSeen = await fetchInboxSeen(enriched);
+      if (remoteSeen?.length) seedSeenKeys(remoteSeen); // union → persists + republishes merged
+    } catch { /* keep local seen */ }
+    try {
+      const remoteQ = await fetchListenQueue(enriched);
+      if (remoteQ && remoteQ.updatedAt > storage.listenQueueTs.get(id.npub)) {
+        setListenQueue(remoteQ.items);
+        storage.listenQueue.set(id.npub, remoteQ.items);
+        storage.listenQueueTs.set(id.npub, remoteQ.updatedAt);
+      }
+    } catch { /* keep local queue */ }
   }
 
   useEffect(() => {
