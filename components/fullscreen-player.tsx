@@ -398,9 +398,12 @@ export function FullscreenPlayer({
                   <PipIcon className="w-5 h-5" />
                 </button>
               )}
+              {/* Audio/Video picker overlaid on the video (top-left, clear of the
+                  PiP button) so you can switch back to audio. */}
+              <VideoToggle variant="overlay" className="inline-flex absolute top-2 left-2 z-10" />
             </div>
           ) : (
-            <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
+            <div className="relative w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
               {/* Prefer the active chapter's artwork (Podcasting 2.0 chapters
                   `img`); PodcastCover falls back image→artwork→initial-tile, so
                   a broken/missing chapter img degrades to the episode/podcast art. */}
@@ -411,6 +414,8 @@ export function FullscreenPlayer({
                 seed={podcast.id?.toString()}
                 className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
               />
+              {/* Audio/Video picker as a small overlay on the show art. */}
+              <VideoToggle variant="overlay" className="inline-flex absolute top-2 left-2 z-10" />
             </div>
           )}
         </div>
@@ -515,9 +520,6 @@ export function FullscreenPlayer({
                 <FavHeart podcast={podcast} size="md" />
                 <ShareButton liveStreamId={null} podcast={podcast} />
               </div>
-              {/* Audio/Video mode picker — its own row so it's obvious on mobile,
-                  and only present when the episode has a video rendition. */}
-              <VideoToggle className="inline-flex self-start" />
             </div>
 
             {hasValue && value && (
