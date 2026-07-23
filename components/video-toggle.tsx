@@ -12,15 +12,8 @@ import { isHlsUrl, pickVideoAlternate } from '@/lib/util';
 //
 // The caller owns the `display` utility via className (e.g. `inline-flex`, or
 // `hidden sm:inline-flex` to drop it on a cramped mobile mini-bar) — the base
-// class sets no display so those don't collide. `variant="overlay"` gives it an
-// opaque, blurred backdrop so it stays legible sitting on top of artwork/video.
-export function VideoToggle({
-  className = 'inline-flex',
-  variant = 'plain',
-}: {
-  className?: string;
-  variant?: 'plain' | 'overlay';
-}) {
+// class sets no display so those don't collide.
+export function VideoToggle({ className = 'inline-flex' }: { className?: string }) {
   const current = useApp((s) => s.current);
   const videoMode = useApp((s) => s.videoMode);
   const setVideoMode = useApp((s) => s.setVideoMode);
@@ -30,10 +23,6 @@ export function VideoToggle({
   if (isHlsUrl(current.episode.enclosureUrl)) return null;
   if (!pickVideoAlternate(current.episode)) return null;
 
-  const shell =
-    variant === 'overlay'
-      ? 'border border-bone/25 bg-ink/70 backdrop-blur-sm shadow-lg'
-      : 'border border-bone/15 bg-bone/5';
   const seg = (on: boolean) =>
     `px-3 py-1.5 text-xs font-semibold uppercase tracking-widest rounded-full transition ${
       on ? 'bg-bolt text-ink shadow-sm' : 'text-bone/70 hover:text-bone'
@@ -43,7 +32,7 @@ export function VideoToggle({
     <div
       role="group"
       aria-label="Play audio or video"
-      className={`items-center gap-0.5 p-0.5 rounded-full ${shell} ${className}`}
+      className={`items-center gap-0.5 p-0.5 rounded-full border border-bone/15 bg-bone/5 ${className}`}
     >
       <button
         type="button"

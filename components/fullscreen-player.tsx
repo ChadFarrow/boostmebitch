@@ -358,7 +358,7 @@ export function FullscreenPlayer({
             stays put as the page scrolls. For HLS streams the shared <video>
             is displayed here via its OutPortal while the player is open; when
             closed it moves back to the mini-bar so audio keeps playing. */}
-        <div className="flex items-center justify-center p-4 sm:p-6 lg:p-10 flex-shrink-0 sm:w-1/2 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
+        <div className="flex flex-col items-center justify-center gap-4 p-4 sm:p-6 lg:p-10 flex-shrink-0 sm:w-1/2 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
           {isVideo ? (
             <div className="relative w-full max-w-md sm:max-w-lg lg:max-w-2xl aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black">
               {open && videoNode && <OutPortal node={videoNode} />}
@@ -398,12 +398,9 @@ export function FullscreenPlayer({
                   <PipIcon className="w-5 h-5" />
                 </button>
               )}
-              {/* Audio/Video picker overlaid on the video (top-left, clear of the
-                  PiP button) so you can switch back to audio. */}
-              <VideoToggle variant="overlay" className="inline-flex absolute top-2 left-2 z-10" />
             </div>
           ) : (
-            <div className="relative w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
+            <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
               {/* Prefer the active chapter's artwork (Podcasting 2.0 chapters
                   `img`); PodcastCover falls back image→artwork→initial-tile, so
                   a broken/missing chapter img degrades to the episode/podcast art. */}
@@ -414,10 +411,12 @@ export function FullscreenPlayer({
                 seed={podcast.id?.toString()}
                 className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
               />
-              {/* Audio/Video picker as a small overlay on the show art. */}
-              <VideoToggle variant="overlay" className="inline-flex absolute top-2 left-2 z-10" />
             </div>
           )}
+          {/* Audio/Video picker sits directly UNDER the art/video (centered), so
+              it never covers the media. Only present when there's a video
+              rendition (the component returns null otherwise). */}
+          <VideoToggle className="inline-flex" />
         </div>
 
         {/* Right pane: kind:1311 live chat for Nostr streams, else episode info */}
