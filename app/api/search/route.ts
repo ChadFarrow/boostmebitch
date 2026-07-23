@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { searchPodcasts, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
+import { searchPodcasts, getPodcast, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -17,6 +17,14 @@ function looksLikeFeedUrl(q: string): boolean {
   }
 }
 
+// A pasted Podcast Index show page (podcastindex.org/podcast/<id>). The numeric
+// path segment IS the PI feed id, so we can resolve it straight to the feed
+// rather than treating the HTML page as an RSS feed (which finds nothing).
+function parsePodcastIndexFeedId(q: string): number | null {
+  const m = /^https?:\/\/(?:www\.)?podcastindex\.org\/podcast\/(\d+)\b/i.exec(q);
+  return m ? Number(m[1]) : null;
+}
+
 export async function GET(req: Request) {
   const limited = rateLimit(req, 'search', 60);
   if (limited) return limited;
@@ -30,6 +38,12 @@ export async function GET(req: Request) {
   // parse the raw RSS so the publisher can preview it before submitting to PI.
   if (looksLikeFeedUrl(query)) {
     return withErrorHandling(async () => {
+      // A Podcast Index show-page link resolves by its numeric feed id.
+      const piId = parsePodcastIndexFeedId(query);
+      if (piId) {
+        const p = await getPodcast(piId);
+        return NextResponse.json({ feeds: p ? [p] : [] }, { headers: SEARCH_CACHE });
+      }
       const piHit = await getPodcastByFeedUrl(query);
       if (piHit) return NextResponse.json({ feeds: [piHit] }, { headers: SEARCH_CACHE });
       const parsed = await getFeedFromRss(query);
