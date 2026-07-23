@@ -31,15 +31,31 @@ export function isHlsUrl(url: string | undefined | null): boolean {
   return !!url && /\.m3u8(\?|#|$)/i.test(url);
 }
 
+// Whether an alternate enclosure is a video rendition. Covers progressive video
+// (`video/mp4`, `video/webm`), HLS delivered with an mpegurl content type
+// (`application/x-mpegurl` / `application/vnd.apple.mpegurl` — Fountain uses this
+// for some video feeds), and an untyped `.m3u8` source. Excludes anything
+// explicitly tagged `audio/…`.
+function isVideoAlternate(a: AlternateEnclosure): boolean {
+  if (!a.source) return false;
+  const t = a.type?.toLowerCase() ?? '';
+  if (t.startsWith('audio/')) return false;
+  if (t.startsWith('video/') || t.includes('mpegurl')) return true;
+  // No (or an unhelpful) type — infer from the source URL: an HLS playlist or a
+  // known video container extension. Guards feeds that under-tag their <source>.
+  if (!t.startsWith('image/') && !t.startsWith('text/')) {
+    return isHlsUrl(a.source) || /\.(mp4|m4v|mov|webm|mkv|ogv)(\?|#|$)/i.test(a.source);
+  }
+  return false;
+}
+
 // The best video <podcast:alternateEnclosure> for an episode, or undefined when
 // there's no video rendition. Prefers the publisher's `default`, then the
 // highest-resolution variant, then the first listed. Drives the "Video" toggle
 // in the player — a video rendition plays through the shared <video> element the
-// HLS path already uses.
+// HLS path already uses (progressive video plays natively; HLS via hls.js).
 export function pickVideoAlternate(ep: Pick<Episode, 'alternateEnclosures'>): AlternateEnclosure | undefined {
-  const videos = ep.alternateEnclosures?.filter(
-    (a) => a.source && a.type?.toLowerCase().startsWith('video/'),
-  );
+  const videos = ep.alternateEnclosures?.filter(isVideoAlternate);
   if (!videos?.length) return undefined;
   return (
     videos.find((a) => a.default) ??
