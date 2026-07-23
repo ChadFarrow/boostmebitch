@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getEpisodes, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment } from '@/lib/pi';
+import { getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
@@ -14,6 +14,19 @@ export async function GET(req: Request) {
   const limited = rateLimit(req, 'feed', 60);
   if (limited) return limited;
   const { searchParams } = new URL(req.url);
+  // Non-PI preview feed: build the whole { podcast, episodes } from raw RSS.
+  // The synthetic id can't be re-resolved server-side to a URL, so the client
+  // passes the feed URL directly for these.
+  const url = searchParams.get('url');
+  if (url) {
+    return withErrorHandling(async () => {
+      const parsed = await getFeedFromRss(url);
+      if (!parsed) return NextResponse.json({ error: 'not found' }, { status: 404 });
+      return NextResponse.json(parsed, {
+        headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' },
+      });
+    }, 'feed fetch failed');
+  }
   const id = Number(searchParams.get('id'));
   if (!Number.isInteger(id) || id <= 0) {
     return NextResponse.json({ error: 'missing or invalid id' }, { status: 400 });

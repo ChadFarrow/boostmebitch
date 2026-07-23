@@ -107,6 +107,9 @@ function PodcastRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
+          {podcast.isPreview && (
+            <span className="stamp text-muted border-muted/40">NOT IN PI</span>
+          )}
           {podcast.medium === 'publisher' && (
             <span className="stamp text-muted border-muted/40">▸ ALBUMS</span>
           )}
@@ -239,7 +242,7 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
   );
 }
 
-export function EpisodeList({ feedId }: { feedId: number | null }) {
+export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUrl?: string }) {
   const [data, setData] = useState<{ podcast: Podcast | null; episodes: Episode[] }>({
     podcast: null, episodes: [],
   });
@@ -265,7 +268,12 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
     setVisibleCount(10);
     if (!feedId) { setData({ podcast: null, episodes: [] }); return; }
     setLoading(true);
-    fetch(`/api/feed?id=${feedId}`)
+    // Preview (not-in-PI) feeds load by URL — the synthetic id can't be
+    // resolved server-side. PI feeds load by numeric id as before.
+    const endpoint = feedUrl
+      ? `/api/feed?url=${encodeURIComponent(feedUrl)}`
+      : `/api/feed?id=${feedId}`;
+    fetch(endpoint)
       .then((r) => r.json())
       .then((d) => {
         setData({ podcast: d.podcast, episodes: d.episodes });
@@ -279,7 +287,7 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [feedId, setEpisodeQueue, syncSelectedPodcast]);
+  }, [feedId, feedUrl, setEpisodeQueue, syncSelectedPodcast]);
 
   if (!feedId) {
     return (
@@ -346,6 +354,14 @@ export function EpisodeList({ feedId }: { feedId: number | null }) {
         <div className="min-w-0 flex-1">
           <h2 className="font-display text-3xl leading-tight font-semibold break-words">{data.podcast.title}</h2>
           <p className="text-sm text-muted mt-1">{data.podcast.author}</p>
+          {data.podcast.isPreview && (
+            <span
+              className="stamp mt-2 text-muted border-muted/40"
+              title="This feed isn't in Podcast Index — parsed directly from RSS for preview"
+            >
+              NOT IN PI · PREVIEW
+            </span>
+          )}
           {data.podcast.value && (
             <button
               type="button"

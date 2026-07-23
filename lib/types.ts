@@ -71,6 +71,11 @@ export interface Podcast {
   value?: ValueBlock | null;
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
   funding?: FundingLink[]; // <podcast:funding> — non-Lightning support links
+  /** Synthetic feed parsed directly from raw RSS because it isn't in Podcast
+   *  Index — a preview so a publisher can see how a test feed displays before
+   *  submitting it to PI. Carries a negative `id` (`-fnvHash(url)`) and no
+   *  `podcastGuid`, which disables favorite/share/Nostr and URL mirroring. */
+  isPreview?: boolean;
 }
 
 export interface SocialInteract {
