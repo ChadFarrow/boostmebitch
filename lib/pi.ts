@@ -1,6 +1,6 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
-import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract, PodrollItem, FundingLink } from './types';
+import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure } from './types';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { fnvHash } from './util';
@@ -542,6 +542,7 @@ interface RssEpisodeEnrichment {
   transcriptUrl?: string;
   transcriptType?: string;
   link?: string;
+  alternateEnclosures?: AlternateEnclosure[];
 }
 
 export interface RssFeedEnrichment {
@@ -639,6 +640,50 @@ function parseTranscripts(inner: string): { transcriptUrl?: string; transcriptTy
   return pickBestTranscript(entries);
 }
 
+// Parse an item's <podcast:alternateEnclosure> blocks. Each block wraps one or
+// more <podcast:source uri> mirrors; we keep the first usable https(-ish) source
+// per block. PI doesn't index the tag, so this is RSS-only. The URLs are played
+// directly by the browser <audio>/<video> (like the standard enclosure), so no
+// server-side fetch / SSRF surface here.
+function parseAlternateEnclosures(inner: string): AlternateEnclosure[] | undefined {
+  const out: AlternateEnclosure[] = [];
+  const blockRe = /<podcast:alternateEnclosure\b([^>]*)>([\s\S]*?)<\/podcast:alternateEnclosure>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = blockRe.exec(inner))) {
+    const attrs = m[1];
+    const body = m[2];
+    // Collect all <podcast:source uri> mirrors (with their contentType), then
+    // prefer an https URL.
+    const sources: { uri: string; contentType?: string }[] = [];
+    const srcRe = /<podcast:source\b([^>]*?)\/?>/gi;
+    let sm: RegExpExecArray | null;
+    while ((sm = srcRe.exec(body))) {
+      const uri = readAttr(sm[1], 'uri');
+      if (uri) sources.push({ uri, contentType: readAttr(sm[1], 'contentType') });
+    }
+    const chosen = sources.find((s) => /^https:/i.test(s.uri)) ?? sources[0];
+    if (!chosen) continue;
+    const num = (name: string): number | undefined => {
+      const raw = readAttr(attrs, name);
+      if (raw == null || raw === '') return undefined;
+      const n = Number(raw);
+      return Number.isFinite(n) ? n : undefined;
+    };
+    out.push({
+      // `type` is required on the block per spec, but fall back to the chosen
+      // source's contentType so a feed that only tags the <source> still resolves.
+      type: readAttr(attrs, 'type') ?? chosen.contentType,
+      title: readAttr(attrs, 'title'),
+      source: chosen.uri,
+      length: num('length'),
+      bitrate: num('bitrate'),
+      height: num('height'),
+      default: readAttr(attrs, 'default')?.toLowerCase() === 'true',
+    });
+  }
+  return out.length ? out : undefined;
+}
+
 // Parse channel-level <podcast:funding url="...">message</podcast:funding>
 // entries (both paired and self-closing forms). PI usually indexes one; RSS may
 // carry several.
@@ -731,8 +776,10 @@ export async function getRssEpisodeEnrichment(
     // Item <link> — the episode web page (RSS <link>, not <atom:link>). Full
     // notes often live here when the feed's <description> is abbreviated.
     const link = extractText(inner, 'link') || undefined;
-    if (socialInteract || contentEncoded || season != null || episode != null || transcriptUrl || link) {
-      episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link });
+    // <podcast:alternateEnclosure> — alternate renditions (e.g. a video version).
+    const alternateEnclosures = parseAlternateEnclosures(inner);
+    if (socialInteract || contentEncoded || season != null || episode != null || transcriptUrl || link || alternateEnclosures) {
+      episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures });
     }
   }
   return { episodes, feedMedium, feedPodroll, feedFunding };
@@ -844,6 +891,7 @@ export async function getFeedFromRss(
     const chaptersMatch = inner.match(/<podcast:chapters\b([^>]*?)\/?>/i);
     const chaptersUrl = chaptersMatch ? readAttr(chaptersMatch[1], 'url') : undefined;
     const itemValue = parseValueBlock(inner);
+    const alternateEnclosures = parseAlternateEnclosures(inner);
     episodes.push({
       id: -fnvHash(guid ?? enclosureUrl ?? `${rssUrl}#${idx}`),
       guid,
@@ -853,6 +901,7 @@ export async function getFeedFromRss(
       link: extractText(inner, 'link') || undefined,
       enclosureUrl: enclosureUrl ?? '',
       enclosureType: enc ? readAttr(enc[1], 'type') : undefined,
+      alternateEnclosures,
       duration: parseItunesDuration(extractText(inner, 'itunes:duration')),
       datePublished: parsePubDate(extractText(inner, 'pubDate')),
       image: itemImage,
