@@ -9,7 +9,7 @@ import {
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
-import { hasValueRecipients, isHlsUrl, isMusicMedium, pipSupported, togglePip } from '@/lib/util';
+import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
@@ -17,6 +17,7 @@ import { BoostModal } from './boost-modal';
 import { BoltIcon, PipIcon } from './icons';
 import { FullscreenPlayer } from './fullscreen-player';
 import { TransportControls } from './transport-controls';
+import { VideoToggle } from './video-toggle';
 
 export function Player() {
   // Per-field selectors, not a bare `useApp()`. In zustand v5 a selector-less
@@ -30,6 +31,7 @@ export function Player() {
   const isPlaying = useApp((s) => s.isPlaying);
   const positionSec = useApp((s) => s.positionSec);
   const playerExpanded = useApp((s) => s.playerExpanded);
+  const videoMode = useApp((s) => s.videoMode);
   const seekReq = useApp((s) => s.seekReq);
   const setPlaying = useApp((s) => s.setPlaying);
   const setPosition = useApp((s) => s.setPosition);
@@ -48,14 +50,29 @@ export function Player() {
   // highlighting) — gating on the floor cuts store-driven re-renders to 1 Hz.
   const lastTick = useRef(-1);
 
-  // HLS (.m3u8) streams — Nostr live streams — play through a <video> + hls.js
-  // instead of the native <audio>. The <video> lives in a reverse portal so it
-  // can move between the mini-bar thumbnail and the fullscreen art pane WITHOUT
-  // remounting (a remount would kill playback + the hls.js attachment), which
-  // is what keeps audio playing when you collapse the fullscreen player.
+  // Video plays through a <video> + (for HLS) hls.js instead of the native
+  // <audio>. Two sources feed the <video>: (1) an HLS (.m3u8) enclosure — a
+  // Nostr live stream; (2) a video <podcast:alternateEnclosure> the user opted
+  // into via <VideoToggle> (videoMode). The <video> lives in a reverse portal so
+  // it can move between the mini-bar thumbnail and the fullscreen art pane
+  // WITHOUT remounting (a remount would kill playback + the hls.js attachment),
+  // which is what keeps playback alive when you collapse the fullscreen player.
   const isHls = isHlsUrl(current?.episode.enclosureUrl);
+  const videoAlt = current ? pickVideoAlternate(current.episode) : undefined;
+  // The URL that should play through the <video>, if any. Live HLS wins; else
+  // the chosen video alternate when the user toggled video on.
+  const videoUrl = isHls
+    ? current?.episode.enclosureUrl
+    : videoMode && videoAlt
+      ? videoAlt.source
+      : undefined;
+  const isVideo = !!videoUrl;
+  // isHlsRef gates the live-stream-only foreground-resume nudge; isVideoRef
+  // selects the active media element (video vs audio) in the other effects.
   const isHlsRef = useRef(isHls);
   isHlsRef.current = isHls;
+  const isVideoRef = useRef(isVideo);
+  isVideoRef.current = isVideo;
   // Created lazily on the client only — createHtmlPortalNode() touches
   // document, which would crash Next's server render. Player renders null until
   // there's a `current` (client-only state), so the server never needs it and
@@ -80,15 +97,34 @@ export function Player() {
     lastTick.current = -1;
     setAudioErr(null);
 
-    if (isHls) {
-      // Park the audio element so it doesn't error on the m3u8 URL.
+    if (isVideo) {
+      // Park the audio element so it doesn't error on the video URL.
       if (audio.current) {
         audio.current.removeAttribute('src');
         audio.current.load();
       }
       const el = video.current;
-      const url = current?.episode.enclosureUrl;
+      const url = videoUrl;
       if (!el || !url) return;
+
+      // Start position: preserved when toggling audio→video mid-play (positionSec
+      // holds the live position), and set by play(ep, pod, startSec). Applied on
+      // loadedmetadata; 0 (a fresh play, or a live stream) → no seek.
+      const startAt = useApp.getState().positionSec;
+      const seekOnLoad = () => { if (startAt > 0) el.currentTime = startAt; };
+
+      // A plain progressive video (mp4/webm) — an alternateEnclosure rendition —
+      // plays natively; only HLS needs hls.js. isHlsUrl(url) distinguishes them.
+      if (!isHlsUrl(url)) {
+        el.src = url;
+        el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
+        if (isPlayingRef.current) el.play().catch(() => {});
+        return () => {
+          el.removeEventListener('loadedmetadata', seekOnLoad);
+          el.removeAttribute('src');
+          el.load();
+        };
+      }
 
       let cancelled = false;
       const nativeHls = el.canPlayType('application/vnd.apple.mpegurl') !== '';
@@ -195,13 +231,13 @@ export function Player() {
       el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
     }
     if (isPlaying) el.play().catch(() => setPlaying(false));
-  }, [current?.episode.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [current?.episode.id, videoMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Play/pause the active element on store toggles. Reads isHls from a ref so an
-  // episode switch (which doesn't change isPlaying) can't re-run this and call
+  // Play/pause the active element on store toggles. Reads isVideo from a ref so
+  // an episode switch (which doesn't change isPlaying) can't re-run this and call
   // play() on a not-yet-sourced element — the source effect above owns first play.
   useEffect(() => {
-    const el = isHlsRef.current ? video.current : audio.current;
+    const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
     if (isPlaying) el.play().catch(() => setPlaying(false));
     else el.pause();
@@ -212,7 +248,7 @@ export function Player() {
   // line seeks again.
   useEffect(() => {
     if (!seekReq) return;
-    const el = isHlsRef.current ? video.current : audio.current;
+    const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
     el.currentTime = seekReq.t;
     lastTick.current = Math.floor(seekReq.t);
@@ -268,11 +304,12 @@ export function Player() {
     };
   }, [current?.episode.enclosureUrl]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // PiP only applies to the HLS <video>; recompute when the item changes. The
-  // <video> is always mounted (in the portal) so video.current is live here.
+  // PiP applies to the <video> path (HLS stream or a video alternateEnclosure);
+  // recompute when the item OR the audio/video mode changes. The <video> is
+  // always mounted (in the portal) so video.current is live here.
   useEffect(() => {
-    setPipOk(isHls && pipSupported(video.current));
-  }, [isHls, current?.episode.id]);
+    setPipOk(isVideo && pipSupported(video.current));
+  }, [isVideo, current?.episode.id]);
 
   function requestPip() {
     void togglePip(video.current);
@@ -286,7 +323,7 @@ export function Player() {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     const ms = navigator.mediaSession;
     const seekActive = (t: number) => {
-      const el = isHlsRef.current ? video.current : audio.current;
+      const el = isVideoRef.current ? video.current : audio.current;
       if (el) el.currentTime = t;
       lastTick.current = Math.floor(t);
       setPosition(t);
@@ -376,17 +413,18 @@ export function Player() {
     duration,
   );
 
-  function seekAudio(v: number) {
-    if (audio.current) audio.current.currentTime = v;
+  function seekMedia(v: number) {
+    const el = isVideoRef.current ? video.current : audio.current;
+    if (el) el.currentTime = v;
     lastTick.current = Math.floor(v);
     setPosition(v);
   }
-  const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekAudio);
+  const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekMedia);
   const transcriptActiveIdx = transcriptIndexAt(transcriptCues, positionSec);
 
   function onMediaError(code: number | undefined) {
-    // Fired by the <video> too (native Safari HLS), so name the right medium.
-    const what = isHlsRef.current ? 'live stream' : 'audio';
+    // Fired by the <video> too, so name the right medium.
+    const what = isHlsRef.current ? 'live stream' : isVideoRef.current ? 'video' : 'audio';
     setAudioErr(
       code === 2 ? `network error while loading ${what}`
       : code === 3 ? `${what} failed to decode`
@@ -414,6 +452,17 @@ export function Player() {
                 setPosition(t);
               }
             }}
+            // A video alternateEnclosure has a finite duration (unlike a live HLS
+            // stream, whose duration is Infinity) — feed the seek bar. Guard on
+            // isFinite so a live stream doesn't set a bogus duration.
+            onLoadedMetadata={(e) => {
+              const d = e.currentTarget.duration;
+              if (isFinite(d)) setDuration(d);
+              setAudioErr(null);
+            }}
+            // Progressive video (a podcast video rendition) just stops at the end;
+            // live HLS never fires this. Music auto-advance stays on the <audio>.
+            onEnded={() => setPlaying(false)}
             onError={(e) => onMediaError(e.currentTarget.error?.code)}
           />
         </InPortal>
@@ -440,10 +489,10 @@ export function Player() {
             if (current && isMusicMedium(current.podcast)) playNext();
             else setPlaying(false);
           }}
-          onError={(e) => { if (!isHlsRef.current) onMediaError(e.currentTarget.error?.code); }}
+          onError={(e) => { if (!isVideoRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4">
-          {isHls ? (
+          {isVideo ? (
             <div className="w-12 h-12 flex-shrink-0 bg-black overflow-hidden border border-bone/20">
               {videoNode && !playerExpanded && <OutPortal node={videoNode} />}
             </div>
@@ -486,7 +535,7 @@ export function Player() {
                       min={0}
                       max={duration || 0}
                       value={positionSec}
-                      onChange={(e) => seekAudio(Number(e.target.value))}
+                      onChange={(e) => seekMedia(Number(e.target.value))}
                     />
                   </div>
                   <span className="text-[10px] text-muted tabular-nums">{fmt(duration)}</span>
@@ -501,6 +550,7 @@ export function Player() {
           </div>
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             <TransportControls playOnly={isLive} prev={chapterNav?.prev} next={chapterNav?.next} />
+            <VideoToggle />
             {pipOk && (
               <button
                 onClick={requestPip}
@@ -526,9 +576,9 @@ export function Player() {
       <FullscreenPlayer
         open={playerExpanded}
         duration={duration}
-        audioRef={audio}
+        onSeek={seekMedia}
         videoNode={videoNode}
-        isVideo={isHls}
+        isVideo={isVideo}
         audioErr={audioErr}
         pipAvailable={pipOk}
         onPip={requestPip}

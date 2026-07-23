@@ -1,5 +1,5 @@
 'use client';
-import { RefObject, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
@@ -16,6 +16,7 @@ import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
 import { FavHeart } from './fav-heart';
 import { TransportControls } from './transport-controls';
+import { VideoToggle } from './video-toggle';
 import { LiveChat } from './live-chat';
 
 // About-this-episode text + Podcasting 2.0 chapters + transcript, toggled by a
@@ -221,7 +222,7 @@ function ShareButton({
 export function FullscreenPlayer({
   open,
   duration,
-  audioRef,
+  onSeek,
   videoNode,
   isVideo,
   audioErr,
@@ -238,7 +239,9 @@ export function FullscreenPlayer({
 }: {
   open: boolean;
   duration: number;
-  audioRef: RefObject<HTMLAudioElement | null>;
+  /** Seek the active media element (audio or video) — owned by <Player>, which
+      knows which element is live. Also updates the store position. */
+  onSeek: (s: number) => void;
   videoNode: HtmlPortalNode | null;
   isVideo: boolean;
   /** Playback error from <Player> — the fullscreen surface must show it too,
@@ -262,7 +265,6 @@ export function FullscreenPlayer({
   const current = useApp((s) => s.current);
   const isPlaying = useApp((s) => s.isPlaying);
   const positionSec = useApp((s) => s.positionSec);
-  const setPosition = useApp((s) => s.setPosition);
   const episodeQueue = useApp((s) => s.episodeQueue);
   const play = useApp((s) => s.play);
   const togglePlay = useApp((s) => s.togglePlay);
@@ -306,8 +308,7 @@ export function FullscreenPlayer({
   );
 
   function seekTo(s: number) {
-    if (audioRef.current) audioRef.current.currentTime = s;
-    setPosition(s);
+    onSeek(s);
   }
 
   // When the episode has chapters, the prev/next transport buttons step between
@@ -513,6 +514,7 @@ export function FullscreenPlayer({
               <div className="flex items-center gap-2">
                 <FavHeart podcast={podcast} size="md" />
                 <ShareButton liveStreamId={null} podcast={podcast} />
+                <VideoToggle />
               </div>
             </div>
 

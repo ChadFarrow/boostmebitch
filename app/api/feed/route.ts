@@ -101,6 +101,9 @@ export async function GET(req: Request) {
         // Episode web page — where the full write-up lives when the feed's
         // notes are abbreviated.
         link: e.link ?? rss?.link,
+        // <podcast:alternateEnclosure> — alternate renditions (e.g. video). PI
+        // doesn't index the tag, so it only comes from the RSS pass.
+        alternateEnclosures: e.alternateEnclosures ?? rss?.alternateEnclosures,
       };
     });
     // Live first (live > pending), then regular by datePublished desc.

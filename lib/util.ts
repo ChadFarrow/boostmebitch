@@ -1,4 +1,4 @@
-import type { Podcast, ValueBlock } from './types';
+import type { Podcast, ValueBlock, Episode, AlternateEnclosure } from './types';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
 // Case-insensitive — PI doesn't normalize the tag. Drives album-specific UI
@@ -29,6 +29,22 @@ export function fnvHash(s: string): number {
 // URLs in their `streaming` tag.
 export function isHlsUrl(url: string | undefined | null): boolean {
   return !!url && /\.m3u8(\?|#|$)/i.test(url);
+}
+
+// The best video <podcast:alternateEnclosure> for an episode, or undefined when
+// there's no video rendition. Prefers the publisher's `default`, then the
+// highest-resolution variant, then the first listed. Drives the "Video" toggle
+// in the player — a video rendition plays through the shared <video> element the
+// HLS path already uses.
+export function pickVideoAlternate(ep: Pick<Episode, 'alternateEnclosures'>): AlternateEnclosure | undefined {
+  const videos = ep.alternateEnclosures?.filter(
+    (a) => a.source && a.type?.toLowerCase().startsWith('video/'),
+  );
+  if (!videos?.length) return undefined;
+  return (
+    videos.find((a) => a.default) ??
+    [...videos].sort((a, b) => (b.height ?? 0) - (a.height ?? 0))[0]
+  );
 }
 
 // Picture-in-Picture across the two web APIs: the standard `requestPictureInPicture`

@@ -20,6 +20,13 @@ interface AppState {
   setPlaying: (b: boolean) => void;
   setPosition: (s: number) => void;
 
+  // Whether the current item is playing its video <podcast:alternateEnclosure>
+  // rather than the audio enclosure. User-toggled via <VideoToggle>; reset to
+  // false whenever the current item changes (play/next/prev), so a new episode
+  // always starts on audio. <Player> reads it to route the shared <video>.
+  videoMode: boolean;
+  setVideoMode: (b: boolean) => void;
+
   // A seek request for the CURRENT episode, consumed by <Player> (which owns the
   // audio element). The nonce lets the same target fire twice. Surfaces that
   // aren't the player — e.g. a transcript line or chapter in the detail view —
@@ -104,10 +111,13 @@ export const useApp = create<AppState>((set, get) => ({
   episodeQueue: [],
 
   play: (episode, podcast, startSec = 0) =>
-    set({ current: { episode, podcast }, isPlaying: true, positionSec: startSec }),
+    set({ current: { episode, podcast }, isPlaying: true, positionSec: startSec, videoMode: false }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
   setPlaying: (b) => set({ isPlaying: b }),
   setPosition: (s) => set({ positionSec: s }),
+
+  videoMode: false,
+  setVideoMode: (b) => set({ videoMode: b }),
 
   seekReq: null,
   requestSeek: (t) => set((s) => ({ seekReq: { t, n: (s.seekReq?.n ?? 0) + 1 } })),
@@ -117,14 +127,14 @@ export const useApp = create<AppState>((set, get) => ({
     const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
     const next = idx >= 0 ? s.episodeQueue[idx + 1] : undefined;
     if (!next) return s;
-    return { current: { episode: next, podcast: s.current.podcast }, isPlaying: true, positionSec: 0 };
+    return { current: { episode: next, podcast: s.current.podcast }, isPlaying: true, positionSec: 0, videoMode: false };
   }),
   playPrev: () => set((s) => {
     if (!s.current) return s;
     const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
     const prev = idx > 0 ? s.episodeQueue[idx - 1] : undefined;
     if (!prev) return s;
-    return { current: { episode: prev, podcast: s.current.podcast }, isPlaying: true, positionSec: 0 };
+    return { current: { episode: prev, podcast: s.current.podcast }, isPlaying: true, positionSec: 0, videoMode: false };
   }),
 
   playerExpanded: false,

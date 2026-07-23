@@ -84,6 +84,27 @@ export interface SocialInteract {
   priority?: number;
 }
 
+// A Podcasting 2.0 <podcast:alternateEnclosure> — an alternate rendition of the
+// same episode (e.g. a video version, or a different bitrate/codec). Each block
+// carries one or more <podcast:source uri> mirrors; we keep the first usable
+// source. Used to offer a "Video" playback option alongside the audio enclosure.
+export interface AlternateEnclosure {
+  /** MIME type from the `type` attr, e.g. "video/mp4" or "audio/mpeg". */
+  type?: string;
+  /** Human label from the `title` attr, e.g. "Video". */
+  title?: string;
+  /** Chosen media URL — the first `<podcast:source uri>` (mirror). */
+  source: string;
+  /** Byte length from the `length` attr, if present. */
+  length?: number;
+  /** Bitrate (bits/s) from the `bitrate` attr, if present. */
+  bitrate?: number;
+  /** Pixel height for video variants (`height` attr), if present. */
+  height?: number;
+  /** `default="true"` — the publisher's preferred rendition. */
+  default?: boolean;
+}
+
 export interface Episode {
   id: number;
   guid?: string;          // episode GUID for NIP-73 podcast:item:guid:
@@ -93,6 +114,9 @@ export interface Episode {
   link?: string;          // Episode web page (RSS <link> / PI `link`) — full notes live here
   enclosureUrl: string;
   enclosureType?: string;
+  /** Podcasting 2.0 <podcast:alternateEnclosure> renditions (e.g. a video
+   *  version). Parsed from RSS — PI doesn't index the tag. */
+  alternateEnclosures?: AlternateEnclosure[];
   duration?: number;
   datePublished?: number;
   image?: string;
