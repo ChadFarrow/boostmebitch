@@ -652,16 +652,17 @@ function parseAlternateEnclosures(inner: string): AlternateEnclosure[] | undefin
   while ((m = blockRe.exec(inner))) {
     const attrs = m[1];
     const body = m[2];
-    // Collect all <podcast:source uri> mirrors, then prefer an https URL.
-    const uris: string[] = [];
+    // Collect all <podcast:source uri> mirrors (with their contentType), then
+    // prefer an https URL.
+    const sources: { uri: string; contentType?: string }[] = [];
     const srcRe = /<podcast:source\b([^>]*?)\/?>/gi;
     let sm: RegExpExecArray | null;
     while ((sm = srcRe.exec(body))) {
       const uri = readAttr(sm[1], 'uri');
-      if (uri) uris.push(uri);
+      if (uri) sources.push({ uri, contentType: readAttr(sm[1], 'contentType') });
     }
-    const source = uris.find((u) => /^https:/i.test(u)) ?? uris[0];
-    if (!source) continue;
+    const chosen = sources.find((s) => /^https:/i.test(s.uri)) ?? sources[0];
+    if (!chosen) continue;
     const num = (name: string): number | undefined => {
       const raw = readAttr(attrs, name);
       if (raw == null || raw === '') return undefined;
@@ -669,9 +670,11 @@ function parseAlternateEnclosures(inner: string): AlternateEnclosure[] | undefin
       return Number.isFinite(n) ? n : undefined;
     };
     out.push({
-      type: readAttr(attrs, 'type'),
+      // `type` is required on the block per spec, but fall back to the chosen
+      // source's contentType so a feed that only tags the <source> still resolves.
+      type: readAttr(attrs, 'type') ?? chosen.contentType,
       title: readAttr(attrs, 'title'),
-      source,
+      source: chosen.uri,
       length: num('length'),
       bitrate: num('bitrate'),
       height: num('height'),

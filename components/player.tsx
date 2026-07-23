@@ -550,7 +550,9 @@ export function Player() {
           </div>
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
             <TransportControls playOnly={isLive} prev={chapterNav?.prev} next={chapterNav?.next} />
-            <VideoToggle />
+            {/* Compact enough for the mini-bar on desktop; hidden on the cramped
+                mobile mini-bar (the fullscreen player carries the toggle there). */}
+            <VideoToggle className="hidden sm:inline-flex" />
             {pipOk && (
               <button
                 onClick={requestPip}

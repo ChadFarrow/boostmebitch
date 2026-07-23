@@ -514,8 +514,10 @@ export function FullscreenPlayer({
               <div className="flex items-center gap-2">
                 <FavHeart podcast={podcast} size="md" />
                 <ShareButton liveStreamId={null} podcast={podcast} />
-                <VideoToggle />
               </div>
+              {/* Audio/Video mode picker — its own row so it's obvious on mobile,
+                  and only present when the episode has a video rendition. */}
+              <VideoToggle className="inline-flex self-start" />
             </div>
 
             {hasValue && value && (
