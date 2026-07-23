@@ -738,6 +738,152 @@ export async function getRssEpisodeEnrichment(
   return { episodes, feedMedium, feedPodroll, feedFunding };
 }
 
+// --- Non-PI feed preview ---------------------------------------------------
+// Build a full { podcast, episodes } straight from raw RSS, bypassing Podcast
+// Index entirely. Used when a publisher pastes a feed URL that PI doesn't index
+// yet, so they can preview how the feed displays before submitting it. Reuses
+// every RSS extractor above; the only new parsing is enclosure/pubDate/duration,
+// which PI normally supplies.
+//
+// The feed gets a NEGATIVE synthetic id (-fnvHash(url)) — the same "not a real
+// PI feed" convention live items and Nostr streams use — and NO podcastGuid,
+// which keeps it out of favorites/share/Nostr and URL mirroring. Returns null
+// when the URL isn't fetchable or doesn't look like an RSS feed (e.g. a pasted
+// HTML page).
+
+// <itunes:duration>: raw seconds ("1387") OR H:MM:SS / MM:SS clock form. The
+// rest of the app treats Episode.duration as seconds, so a naive Number() on
+// "23:07" (→ NaN) would break the duration display.
+function parseItunesDuration(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const s = raw.trim();
+  if (/^\d+$/.test(s)) return Number(s) || undefined;
+  if (/^\d{1,2}(:\d{1,2}){1,2}$/.test(s)) {
+    const secs = s.split(':').reduce((acc, part) => acc * 60 + Number(part), 0);
+    return Number.isFinite(secs) && secs > 0 ? secs : undefined;
+  }
+  return undefined;
+}
+
+// <pubDate> (RFC-822) → unix seconds. Date.parse handles most real-world forms;
+// non-standard strings yield NaN, which we drop (the app multiplies by 1000).
+function parsePubDate(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined;
+}
+
+// Artwork for a channel or item: prefer <itunes:image href>, fall back to the
+// RSS <image><url> block (same two-source fallback as musicl-resolver).
+function extractItunesImageHref(xml: string): string | undefined {
+  const m = xml.match(/<itunes:image\b([^>]*?)\/?>/i);
+  return m ? readAttr(m[1], 'href') : undefined;
+}
+function extractRssImageUrl(xml: string): string | undefined {
+  const m = xml.match(/<image\b[^>]*>[\s\S]*?<url>([^<]+)<\/url>/i);
+  return m ? decodeXmlText(m[1]) : undefined;
+}
+
+export async function getFeedFromRss(
+  rssUrl: string,
+): Promise<{ podcast: Podcast; episodes: Episode[] } | null> {
+  const xml = await fetchFeedXml(rssUrl);
+  if (xml == null) return null;
+  // Guard against a non-feed URL (e.g. an HTML page pasted by mistake): a real
+  // RSS feed has a <channel> and/or at least one <item>.
+  if (!/<channel\b/i.test(xml) && !/<item\b/i.test(xml)) return null;
+
+  const firstItem = xml.search(/<item\b/i);
+  const channelXml = firstItem === -1 ? xml : xml.slice(0, firstItem);
+
+  const feedId = -fnvHash(rssUrl);
+  const medium = extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined;
+  const channelRssImage = extractRssImageUrl(channelXml);
+  const channelItunesImage = extractItunesImageHref(channelXml);
+  const channelImage = channelRssImage ?? channelItunesImage;
+
+  const podcast: Podcast = {
+    id: feedId,
+    title: extractText(channelXml, 'title') || rssUrl,
+    author: extractText(channelXml, 'itunes:author') ?? extractText(channelXml, 'managingEditor'),
+    description: extractText(channelXml, 'description'),
+    image: channelImage,
+    // Keep itunes:image as a second-chance source when it differs from <image>.
+    artwork: channelItunesImage && channelItunesImage !== channelImage ? channelItunesImage : undefined,
+    url: rssUrl,
+    medium,
+    value: parseValueBlock(channelXml),
+    funding: parseFunding(channelXml),
+    podroll: parsePodroll(channelXml),
+    isPreview: true,
+  };
+
+  const episodes: Episode[] = [];
+  const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
+  let m: RegExpExecArray | null;
+  let idx = 0;
+  while ((m = itemRe.exec(xml))) {
+    const inner = m[1];
+    const guid = extractText(inner, 'guid');
+    const enc = inner.match(/<enclosure\b([^>]*?)\/?>/i);
+    const enclosureUrl = enc ? readAttr(enc[1], 'url') : undefined;
+    // Not a playable episode without either a guid or a media enclosure.
+    if (!enclosureUrl && !guid) { idx++; continue; }
+    const title = extractText(inner, 'title') || 'Untitled';
+    const raw = extractRawContent(inner, 'content:encoded') ?? extractRawContent(inner, 'description');
+    const contentEncoded = raw ? sanitizeShowNotes(raw) || undefined : undefined;
+    const itemImage = extractItunesImageHref(inner) ?? extractRssImageUrl(inner);
+    // podcast:season number attr wins over text; podcast:episode is text.
+    const seasonTagMatch = /<podcast:season\b([^>]*)>/i.exec(inner);
+    const seasonStr = (seasonTagMatch ? readAttr(seasonTagMatch[1], 'number') : undefined)
+      ?? extractText(inner, 'podcast:season');
+    const season = seasonStr != null && seasonStr !== '' ? (Number(seasonStr) || null) : null;
+    const episodeStr = extractText(inner, 'podcast:episode') ?? extractText(inner, 'itunes:episode');
+    const episodeNum = episodeStr != null && episodeStr !== '' ? (Number(episodeStr) || null) : null;
+    const { transcriptUrl, transcriptType } = parseTranscripts(inner);
+    const chaptersMatch = inner.match(/<podcast:chapters\b([^>]*?)\/?>/i);
+    const chaptersUrl = chaptersMatch ? readAttr(chaptersMatch[1], 'url') : undefined;
+    const itemValue = parseValueBlock(inner);
+    episodes.push({
+      id: -fnvHash(guid ?? enclosureUrl ?? `${rssUrl}#${idx}`),
+      guid,
+      title,
+      description: extractText(inner, 'description'),
+      contentEncoded,
+      link: extractText(inner, 'link') || undefined,
+      enclosureUrl: enclosureUrl ?? '',
+      enclosureType: enc ? readAttr(enc[1], 'type') : undefined,
+      duration: parseItunesDuration(extractText(inner, 'itunes:duration')),
+      datePublished: parsePubDate(extractText(inner, 'pubDate')),
+      image: itemImage,
+      feedId,
+      season,
+      episode: episodeNum,
+      chaptersUrl,
+      transcriptUrl,
+      transcriptType,
+      // Episode value block, else the channel's (matches /api/feed's fallback).
+      value: itemValue ?? podcast.value,
+      socialInteract: parseSocialInteractsFromRss(inner),
+    });
+    idx++;
+  }
+
+  // Music album feeds sort by disc (podcast:season) then track (podcast:episode)
+  // ascending; everything else newest-first — same rule as /api/feed.
+  const isMusic = medium === 'music';
+  episodes.sort((a, b) => {
+    if (isMusic) {
+      const seasonDiff = (a.season ?? 1) - (b.season ?? 1);
+      if (seasonDiff !== 0) return seasonDiff;
+      return (a.episode ?? 0) - (b.episode ?? 0);
+    }
+    return (b.datePublished ?? 0) - (a.datePublished ?? 0);
+  });
+
+  return { podcast, episodes };
+}
+
 export async function getEpisodeByGuid(
   feedGuid: string,
   itemGuid: string,

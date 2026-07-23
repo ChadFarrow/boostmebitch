@@ -100,10 +100,14 @@ export function HomePage() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
+    // Preview (not-in-PI) feeds have a synthetic negative id and no guid — they
+    // aren't restorable from the URL (a refresh would hit /api/feed?id=<neg> and
+    // blank the view), so mirror nothing for them; they're an ephemeral preview.
+    const isPreview = !!selected?.isPreview;
     if (selected?.podcastGuid) {
       url.searchParams.set('podcast', selected.podcastGuid);
       url.searchParams.delete('feed');
-    } else if (selected) {
+    } else if (selected && !isPreview) {
       url.searchParams.set('feed', String(selected.id));
       url.searchParams.delete('podcast');
     } else {
@@ -111,11 +115,12 @@ export function HomePage() {
       url.searchParams.delete('feed');
     }
     // Discussion is opened from episode detail, so selectedEpisode is usually
-    // set; fall back to discussionEpisode for the restored case.
+    // set; fall back to discussionEpisode for the restored case. Skip for
+    // preview feeds — the episode can't be re-resolved without a real feed.
     const episodeForUrl = selectedEpisode ?? discussionEpisode;
-    if (episodeForUrl?.guid) url.searchParams.set('episode', episodeForUrl.guid);
+    if (episodeForUrl?.guid && !isPreview) url.searchParams.set('episode', episodeForUrl.guid);
     else url.searchParams.delete('episode');
-    if (discussionEpisode) url.searchParams.set('discussion', '1');
+    if (discussionEpisode && !isPreview) url.searchParams.set('discussion', '1');
     else url.searchParams.delete('discussion');
     window.history.replaceState({}, '', url.toString());
   }, [selected?.podcastGuid, selected?.id, selected, selectedEpisode?.guid, selectedEpisode, discussionEpisode]);
@@ -269,7 +274,7 @@ export function HomePage() {
               ← back to results
             </button>
             <section className="card p-4 min-h-[40vh]">
-              <EpisodeList feedId={selected!.id} />
+              <EpisodeList feedId={selected!.id} feedUrl={selected!.isPreview ? selected!.url : undefined} />
             </section>
           </div>
         ) : showLeftRightLayout ? (
