@@ -5,8 +5,10 @@ import {
   loginWithExtension,
   restoreAmberSigner,
   restoreBunkerSigner,
+  restoreLocalSigner,
   clearAmberSigner,
   clearBunkerSigner,
+  clearLocalSigner,
   fetchProfile,
   fetchRelayList,
   fetchEncryptedMnemonic,
@@ -170,6 +172,14 @@ export function NostrAuth() {
       restoreBunkerSigner().then((ok) => {
         if (!ok) storage.signer.clear();
       }).catch(() => storage.signer.clear());
+    } else if (signerKindStored === 'local') {
+      // Async like the bunker path, not synchronous like Amber: the key has to
+      // come back out of IndexedDB and be decrypted under the origin's
+      // non-extractable wrap key. Identity still paints immediately from the
+      // cached npub below; only signing waits.
+      restoreLocalSigner().then((ok) => {
+        if (!ok) storage.signer.clear();
+      }).catch(() => storage.signer.clear());
     }
     const bare: NostrIdentity = { pubkey, npub: stored };
     const cachedProfile = storage.profile.get(pubkey);
@@ -263,6 +273,9 @@ export function NostrAuth() {
     storage.signer.clear();
     clearAmberSigner();
     clearBunkerSigner();
+    // Wipes the ciphertext AND the wrap key, so nothing left behind can
+    // decrypt a later blob.
+    clearLocalSigner().catch(() => { /* storage already gone */ });
   }
 
   if (identity) {
@@ -273,7 +286,7 @@ export function NostrAuth() {
   // remote-signer flows. The login function has already
   // installed whichever polyfill it needs and persisted bmb:bunker /
   // amber state; we just propagate identity to the store and hydrate.
-  function completeSignIn(id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker') {
+  function completeSignIn(id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker' | 'local') {
     // Switching to a different npub — disconnect the previous wallets so they
     // don't leak across identities. NWC's global URI is cleared here so the
     // new identity's own backup restores cleanly in loadProfile (!hasNwc()).
@@ -287,6 +300,7 @@ export function NostrAuth() {
     storage.npub.set(id.npub);
     if (kind === 'amber') storage.signer.set('amber');
     else if (kind === 'bunker') storage.signer.set('bunker');
+    else if (kind === 'local') storage.signer.set('local');
     else storage.signer.clear();
     loadProfile(id);
   }

@@ -47,7 +47,7 @@ export type ShareNostrAs = 'self' | 'site';
 export type ThemeMode = 'light' | 'dark';
 export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
 
-export type SignerKind = 'amber' | 'bunker';
+export type SignerKind = 'amber' | 'bunker' | 'local';
 
 const BOOSTS_CAP = 200;
 
@@ -167,13 +167,16 @@ export const storage = {
 
   /** Which signer the user picked. Absent = NIP-07 extension or signed out;
    *  'amber' = Android Amber app via NIP-55 deep links;
-   *  'bunker' = NIP-46 remote signer via the persisted bunker session.
+   *  'bunker' = NIP-46 remote signer via the persisted bunker session;
+   *  'local' = a key this app holds, kept in IndexedDB under a non-extractable
+   *  CryptoKey (see lib/nostr/local-key-store.ts) — NOT in localStorage.
    *  Read on page load to decide which polyfill to install onto window.nostr. */
   signer: {
     get: (): SignerKind | null => {
       const v = safeGet(KEYS.signer);
       if (v === 'amber') return 'amber';
       if (v === 'bunker') return 'bunker';
+      if (v === 'local') return 'local';
       return null;
     },
     set: (v: SignerKind) => safeSet(KEYS.signer, v),

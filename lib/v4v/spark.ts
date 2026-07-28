@@ -188,6 +188,36 @@ export async function sparkGenerateMnemonic(): Promise<string> {
   return generateMnemonic(wordlist);
 }
 
+/**
+ * Derive a wallet mnemonic deterministically from a Nostr secret key, so a
+ * user onboarded via Google lands with a working boost rail instead of an
+ * empty wallet modal. Mirrors Wisp's "derive default Spark wallet from user's
+ * nsec".
+ *
+ * Deterministic is the point: the wallet is recoverable from the nsec alone,
+ * so it survives even if the kind:30078 backup is ever lost. And because this
+ * returns an ordinary 12-word BIP-39 phrase, everything downstream —
+ * sparkInitFromMnemonic, publishEncryptedMnemonic, the seed-phrase display —
+ * is untouched.
+ *
+ * The HMAC domain-separates the wallet seed from the signing key: the wallet
+ * seed can't be walked back to the nsec.
+ */
+export async function sparkMnemonicFromKey(skHex: string): Promise<string> {
+  if (!/^[0-9a-fA-F]{64}$/.test(skHex)) {
+    throw new Error('Wallet derivation requires a 32-byte hex secret key');
+  }
+  const { hmac } = await import('@noble/hashes/hmac.js');
+  const { sha256 } = await import('@noble/hashes/sha2.js');
+  const { hexToBytes } = await import('@noble/hashes/utils.js');
+  const { entropyToMnemonic } = await import('@scure/bip39');
+  const { wordlist } = await import('@scure/bip39/wordlists/english.js');
+
+  const full = hmac(sha256, new TextEncoder().encode('bmb-spark-wallet'), hexToBytes(skHex));
+  // 16 bytes -> 12 words, matching what the wallet UI shows users to write down.
+  return entropyToMnemonic(full.slice(0, 16), wordlist);
+}
+
 /** Tear down the SDK on sign-out. */
 export async function sparkDisconnect(): Promise<void> {
   if (sdk) {

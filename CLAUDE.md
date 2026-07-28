@@ -54,19 +54,46 @@ NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (
 
 **`sanitizeRelays(urls)`** (also `lib/nostr/relays.ts`) drops any entry that isn't a parseable `ws://`/`wss://` URL (gated on `new URL()`), then dedupes and strips trailing slashes. Applied at **every point an untrusted relay list enters a pool query**: the NIP-65 parse in `fetchRelayList`, the output of `resolvePublishRelays` (covers the `bmb:relays` override too; falls back to `DEFAULT_RELAYS` if sanitizing empties the list), and — in the feed path (`lib/nostr/discover.ts`) — `fetchAuthorWriteRelays` (other authors' NIP-65 `r`-tags), `fetchQuotedEvents` (`q`/`e`/nevent quote-ref hints), and `fetchSocialInteractThread` (nevent hints). A corrupt entry — e.g. a NIP-65 `r`-tag value of `"avatar wss://purplerelay.com"`, or a spammer's ad stuffed into an `r`-tag as `"wss://SOLUTION TO ALL PHONE HACKING…, …"` (note: a bare `startsWith('wss://')` check does **not** catch this — only `new URL()` does, because the comma in the host is what throws) — otherwise reaches nostr-tools' `normalizeURL`, which **throws `Invalid URL` synchronously inside `pool.querySync`/`subscribeMany`**; that rejection escapes per-call try/catch and aborts the whole flow (it killed the Spark "Create new" backup check, and surfaced raw spam as a feed error on show pages). A survivor of `sanitizeRelays` is guaranteed to parse, so `normalizeURL` can't throw on it. Defense in depth: `collectEventsByAuthors` (`lib/nostr/event-queries.ts`) also wraps its `subscribeMany` so a relay that slips past sanitizing resolves the query empty instead of aborting.
 
-## Signers (NIP-07 + Amber NIP-55 + NIP-46 bunker)
+## Signers (NIP-07 + Amber NIP-55 + NIP-46 bunker + local key)
 
-The whole codebase reads from `window.nostr`. Three signer paths feed it, swapped in/out by `lib/nostr/signer.ts`:
+The whole codebase reads from `window.nostr`. Four signer paths feed it, swapped in/out by `lib/nostr/signer.ts`:
 
 - **NIP-07 extension** (Alby, nos2x, Flamingo, nostash on iOS Safari). Already at `window.nostr`; we don't polyfill. Sign-out clears `bmb:npub` but leaves `window.nostr` alone.
 - **Amber on Android** (NIP-55, `lib/nostr/amber.ts`). Polyfills `window.nostr` with an `AmberSigner` that dispatches via `nostrsigner:` URL scheme and reads results back from the system clipboard. Round-trip: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<…>` (no callbackUrl per spec) → user approves in Amber → first user gesture (`pointerdown`/`touchstart`/`keydown`) reads the clipboard with fresh transient activation. `restoreAmberSigner(pubkey)` is the synchronous fast-path on page load.
 - **NIP-46 bunker / remote signer** (`lib/nostr/bunker.ts`, wraps nostr-tools `BunkerSigner`). Two flows: paste a `bunker://` URI or generate a `nostrconnect://` URI. Reconnect on reload is async (`restoreBunkerSigner()` rebuilds from `bmb:bunker:{uri,clientSk}`); signing calls before it resolves throw, but nothing signs unprompted post-load. Compatible with **Clave** (iOS-native, APNs-driven), **nsec.app**, **Amber-as-bunker**, Primal.
+- **Local key** (`lib/nostr/local-signer.ts`). The only path where *we* hold the key — it exists for Google onboarding (see below), where the user starts with no Nostr identity at all. `LocalSigner` signs in-process via nostr-tools `finalizeEvent` and implements nip04 + nip44 directly. `restoreLocalSigner()` is **async** (the key has to come out of IndexedDB and be decrypted), so it follows the bunker pattern, not Amber's synchronous one.
 
 > **`nostr-tools` is pinned to exact `2.19.4` — do NOT bump or relax the caret.** The `2.20.0+` NIP-46 rewrite added `limit: 0` to the `nostrconnect`/bunker subscription filters (`fromURI` + `setupSubscription`). On the relays we use, that silently drops the remote signer's connect-ack, so **Primal's `nostrconnect://` "scan/paste a URI" login hangs and times out**. `2.19.4` (no `limit: 0`) is the last known-good version; latest (`2.23.5`) and `master` still carry the regression. `npm update` or a `^`/`~` range will reintroduce the break. `NOSTRCONNECT_RELAYS` in `bunker.ts` is the 4-relay set (`nsec.app`/`damus`/`primal`/`nos.lol`) for connect-ack redundancy — single-relay loses the ack when iOS Safari suspends the WebSocket during the app-switch to the signer.
 
 ### `lib/nostr/signer.ts` — the swap point
 
 Only one polyfill is active at a time. `captureOriginal()` snapshots the underlying NIP-07 extension on first activation so deactivation can restore it. `bmb:signer` holds `'amber' | 'bunker' | absent` so the fast-path useEffect knows what to restore. Capability accessors live here too: `getNip04()`/`getNip44()` (return API or null), `requireNip44()` (throws). Use these instead of inlining `typeof window !== 'undefined' && window.nostr?.nipXX`.
+
+### Google onboarding — a key for users who have none
+
+Ported from **Wisp** (github.com/barrydeen/wisp, `v1.1.0`), whose central insight is worth restating because the obvious version of this feature is wrong: **Google is not an identity provider here — it's a zero-knowledge blob store.** The key is generated locally at random (`generateSecretKey()`); nothing is derived from the Google account. Wisp shipped deterministic `sub`-derived nsecs once and reverted it.
+
+The construction (`lib/nostr/backup-crypto.ts`, mirroring Wisp's `BackupCrypto.kt`):
+
+```
+salt = HMAC-SHA256(key = "bmb-google-backup", msg = google `sub`)
+key  = PBKDF2-HMAC-SHA256(pin, salt, 600_000)         → 32 bytes  (~300ms)
+blob = NIP-44 v2 over the hex nsec, with that key substituted for the
+       usual ECDH conversation key
+```
+
+The Google `sub` is **salt, not a secret** — it makes the salt per-account without us storing one. **The PIN (4–8 digits) is the only secret**, which is why the 600k iteration count is load-bearing (~26 bits of PIN entropy alone is weak; the slow KDF is what buys weeks-of-compute against an offline attack). **Don't lower it.** Losing the PIN loses the account, with no reset path — the setup screen has to say so in `text-nostr`.
+
+- **`lib/nostr/google-auth.ts`** — GIS token client for `openid` + `drive.appdata`, then `sub` from the **userinfo endpoint**. Deliberately *not* One Tap: `google.accounts.id.prompt()` can be silently suppressed (FedCM opt-out, prior dismissal, no Google session) and its callback then never fires, hanging the flow on a spinner with no error. The token client always presents UI. One consent popup, no silent-failure mode.
+- **`lib/nostr/drive-backup.ts`** — blobs live in Drive **`appDataFolder`** (app-private, invisible in the user's Drive UI) as `bmb_bk_<uuid>.bin`. Fresh UUID per upload, never an overwrite: a create can't lose a race the way a read-modify-write can, and restore tries every file anyway. No identifying metadata — the npub exists only inside the ciphertext, so Google can't link a Google account to a Nostr identity. A 401 throws `DriveAuthExpiredError` so the caller re-requests a token; **an expired token must never read as "no backups"**, which would walk a returning user into creating a second identity and orphan their real one.
+- **Restore** downloads every blob and tries the PIN against each. A failure is not an error — it just means that blob belongs to a different PIN (a shared Google account). Successes dedupe by npub into a picker.
+- **`⚠ drive.appdata` is a *sensitive* Google scope.** Until the Cloud project passes OAuth verification, users see an "unverified app" screen and the app is capped at 100 of them. `NEXT_PUBLIC_GOOGLE_CLIENT_ID` absent ⇒ the whole entry point doesn't render.
+
+**Key at rest (`lib/nostr/local-key-store.ts`) — the part that differs most from Wisp.** Wisp gets Android Keystore via `EncryptedSharedPreferences`; the browser has no equivalent, and plaintext `localStorage` would mean anything that reads storage walks away with the identity forever. Instead: an **AES-GCM `CryptoKey` generated with `extractable: false`**, persisted in IndexedDB (structured clone stores the handle; `localStorage` couldn't hold it anyway — strings only). The nsec is encrypted under it; `{ iv, ct }` sit in the same store. **There is no `bmb:*` key for the nsec, by design.** A storage dump yields ciphertext plus a handle whose bytes JS cannot export, so the identity can't be exfiltrated for offline reuse. It does **not** stop script running on this origin from calling the signer live. Private-mode fallback is memory-only for the session (`isKeyEphemeral()`) — never silently downgrade to a persistent plaintext copy. `clearKey()` drops the wrap key too, not just the ciphertext.
+
+**No script-src CSP, deliberately** (see the comment in `next.config.mjs`). Two structural blockers: the FOUC blocker in `app/layout.tsx` is an inline script that must run pre-paint (needs nonce plumbing), and `connect-src` can't be constrained because the app talks to arbitrary relays, feed hosts, and LNURL servers by design — so a `script-src` alone would read as more protection than it delivers. What *is* set: `base-uri 'self'; object-src 'none'; frame-ancestors 'none'`.
+
+**A new account gets a Spark wallet for free.** `sparkMnemonicFromKey(skHex)` (`lib/v4v/spark.ts`) derives a 12-word BIP-39 phrase from `HMAC-SHA256("bmb-spark-wallet", sk)` — mirroring Wisp's "derive default wallet from nsec during onboarding". Deterministic, so the wallet is recoverable from the nsec alone even if the kind:30078 backup is lost; the HMAC domain-separates it so the wallet seed can't be walked back to the signing key. Because it returns an ordinary mnemonic, `sparkInitFromMnemonic` / `publishEncryptedMnemonic` / the seed display are all untouched. `components/nostr-auth/provision-spark.ts` runs it **only on the new-account branch** (on restore, `loadProfile`'s silent restore owns that path and a derived wallet could stomp the user's real one), respects `bmb:spark:opted_out`, and is best-effort — sign-in completes even if it fails.
 
 ### Sign-in UI — one button → `<SignInModal>` (`components/nostr-auth/sign-in-modal.tsx`)
 
@@ -468,7 +495,7 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 
 | Key | Purpose / quirk |
 |---|---|
-| `bmb:signer` | `'amber' \| 'bunker'` when a polyfill signer is active; absent for NIP-07 / signed out. Page-load fast-path branches on this. |
+| `bmb:signer` | `'amber' \| 'bunker' \| 'local'` when a polyfill signer is active; absent for NIP-07 / signed out. Page-load fast-path branches on this. `'local'` restores **asynchronously** (IndexedDB read + decrypt), like `'bunker'`. |
 | `bmb:bunker` | NIP-46 `{ uri, clientSk }`. Persisting `clientSk` keeps the bunker treating us as the same logical client across reloads (no re-auth). |
 | `bmb:nwc_uri` | NWC URI. Global (one key, not per-npub). Restored from the opt-in Nostr backup (`d:boostmebitch:wallet:nwc`) on login when absent; **cleared on sign-out and npub-switch** so it can't leak across accounts on a shared device. |
 | `bmb:rail_pref` | `'nwc' \| 'spark' \| 'webln'` — preferred boost rail, written by `recordLastRail` after a successful boost AND by the wallet modal's "Switch wallet" picker (tapping an already-connected rail makes it the active payer without disconnecting the others) — both **synced to Nostr** (`d:boostmebitch:settings`). Honored by `pickRail()`; falls back to NWC > Spark > WebLN priority when absent or when the preferred rail isn't available. Setter notifies `subscribeRailPref`. |
@@ -491,6 +518,8 @@ Keys (per-identity ones key on `<npub>` or `:guest`):
 | `bmb:boosts:*` | Local sent-boost log, capped 200 newest-first. Each entry holds intent + per-leg results + Nostr `noteId` patched in once `publishBoostNote` resolves. `boostsTick` wakes subscribers; `GlobalNostrFeed` mixes these in and dedupes against returned notes by `noteId`. |
 | `bmb:pi:dead` (sessionStorage) | Circuit-breaker sentinel; cleared on hard-refresh-into-new-tab. |
 | `bmb:nwc_uri_sess:<npub>` (sessionStorage) | NWC URI stashed at sign-out so a same-tab sign-back-in restores instantly without a relay query + NIP-44 decrypt (which hangs when iOS kills the extension's service worker mid-wait). Consumed (and removed) by the fast-path at the top of `doLoadProfile`; cleared on explicit NWC disconnect so a disconnected wallet can't resurrect. |
+
+**Not in `localStorage`:** the local-signer nsec. It lives in **IndexedDB** (`bmb-keys` / `keys`) as `{ iv, ct }` plus a non-extractable AES-GCM `CryptoKey` — see `lib/nostr/local-key-store.ts`. Don't add a `bmb:*` accessor for it.
 
 External: the **Spark mnemonic** lives encrypted on Nostr as kind:30078. The `@buildonspark/spark-sdk` `SparkWallet` keeps its own wallet state (leaves, transfer history) keyed off the seed + `accountNumber: 0`; we don't manage a storage dir for it.
 
