@@ -10,7 +10,10 @@
 // Google is not an identity provider here. It never sees the Nostr key, and we
 // never store the user's email or name. The access token is held in memory for
 // its ~1h lifetime and is never persisted; the implicit flow issues no refresh
-// token, so an expired token means re-prompting.
+// token, so an expired token means asking GIS again — silently where the grant
+// is still live (see refreshAccessToken), interactively where it isn't.
+
+import { getErrorMessage } from '@/lib/util';
 
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
@@ -40,6 +43,12 @@ export function isGoogleAuthConfigured(): boolean {
 interface GsiTokenResponse {
   access_token?: string;
   error?: string;
+}
+/** GIS error_callback payload. `type` is the only field worth branching on;
+ *  `message` is a developer string, not user copy. */
+interface GsiErrorEvent {
+  type?: string;
+  message?: string;
 }
 interface GsiGlobal {
   accounts: {
@@ -112,7 +121,20 @@ async function fetchSub(accessToken: string): Promise<string> {
   return json.sub;
 }
 
-function requestAccessToken(clientId: string): Promise<string> {
+// GIS reports "the browser blocked the popup" and "the user closed the popup"
+// through the same callback. Collapsing both to "cancelled" tells a user whose
+// popup blocker fired that they did something they didn't do, and hides the one
+// thing they can actually fix.
+function gisErrorMessage(e: unknown): string {
+  const type = (e as GsiErrorEvent | null)?.type;
+  if (type === 'popup_failed_to_open') {
+    return 'Your browser blocked the Google sign-in popup. Allow popups for this site, then try again.';
+  }
+  if (type === 'popup_closed') return 'Google sign-in was cancelled';
+  return getErrorMessage(e, 'Google sign-in failed');
+}
+
+function requestAccessToken(clientId: string, silent = false): Promise<string> {
   return new Promise((resolve, reject) => {
     const gis = window.google;
     if (!gis) {
@@ -126,27 +148,65 @@ function requestAccessToken(clientId: string): Promise<string> {
         if (r.access_token) resolve(r.access_token);
         else reject(new Error(r.error || 'Google did not grant Drive access'));
       },
-      error_callback: () => reject(new Error('Google sign-in was cancelled')),
+      error_callback: (e) => reject(new Error(gisErrorMessage(e))),
     });
-    client.requestAccessToken();
+    // prompt:'' reuses the grant the user already gave without showing consent
+    // UI. GIS's default opens a popup — fine inside the click that started
+    // sign-in, fatal on the refresh path, which runs after a Drive 401 with no
+    // transient activation left and therefore gets blocked outright.
+    client.requestAccessToken(silent ? { prompt: '' } : undefined);
   });
+}
+
+/**
+ * Warm the GIS script before the user commits to anything. Fetching it inside
+ * the click path is what burns the click's transient activation on a cold first
+ * visit and gets the consent popup blocked. `loadGis()` is memoized, so calling
+ * this when the sign-in modal opens makes the later click path effectively
+ * synchronous. Failures are swallowed — signInWithGoogle() surfaces them with
+ * real copy when it matters.
+ */
+export function preloadGis(): void {
+  void loadGis().catch(() => { /* the real attempt reports this properly */ });
 }
 
 /** Full sign-in: one consent popup for both scopes, then read `sub` back. */
 export async function signInWithGoogle(): Promise<GoogleAuthResult> {
   const clientId = googleClientId();
   if (!clientId) throw new Error('Google sign-in is not configured for this site');
+  // Keep this await: once preloadGis() has run it resolves in a microtask,
+  // which does NOT consume transient activation — it was the cold network fetch
+  // that did. Removing it would just reintroduce the unloaded-script case.
   await loadGis();
   const accessToken = await requestAccessToken(clientId);
   const sub = await fetchSub(accessToken);
   return { sub, accessToken };
 }
 
-/** Re-request an access token after a 401. The user has already consented, so
- *  this is usually silent. */
+/**
+ * Thrown when a silent token refresh can't be satisfied (no live Google
+ * session, grant revoked). An interactive retry needs a fresh user gesture,
+ * which the mid-flow caller doesn't have — so the honest recovery is to send
+ * the user back through a click-initiated sign-in, which is what the panel's
+ * Retry button already is.
+ */
+export class GoogleReauthRequiredError extends Error {
+  constructor() {
+    super('Your Google session expired. Tap Retry to sign in with Google again.');
+    this.name = 'GoogleReauthRequiredError';
+  }
+}
+
+/** Re-request an access token after a 401. Silent-first: the user already
+ *  consented, and this runs mid-flow with no transient activation, so a popup
+ *  here would simply be blocked. */
 export async function refreshAccessToken(): Promise<string> {
   const clientId = googleClientId();
   if (!clientId) throw new Error('Google sign-in is not configured for this site');
   await loadGis();
-  return requestAccessToken(clientId);
+  try {
+    return await requestAccessToken(clientId, true);
+  } catch {
+    throw new GoogleReauthRequiredError();
+  }
 }

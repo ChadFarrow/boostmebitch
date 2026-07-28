@@ -104,6 +104,13 @@ export function NostrAuth() {
     // Apply profile + relay list as soon as both land. Both feed the
     // identity object, so we wait for them together to avoid two re-renders.
     const [profile, relayList] = await Promise.all([profilePromise, relayListPromise]);
+    // A failed signer restore (see abandonRestoredSession) can sign the user
+    // out while these queries are in flight. Re-applying the enriched identity
+    // would resurrect a session with no window.nostr — the exact state that
+    // path exists to fix — and the wallet/settings restores below would then
+    // run needing a signer that isn't there. The cached npub is the
+    // authoritative "still signed in" flag.
+    if (storage.npub.get() !== id.npub) return;
     const enriched: NostrIdentity = { ...id };
     if (profile) enriched.profile = profile;
     if (relayList?.write?.length) enriched.writeRelays = relayList.write;
@@ -168,18 +175,18 @@ export function NostrAuth() {
       // Bunker reconnect is async (NIP-46 transport handshake). Kick it off
       // in the background; signing operations that race ahead of it will
       // throw, but nothing signs unprompted right after page load. If the
-      // reconnect fails, drop the sentinel so the sign-in UI shows again.
+      // reconnect fails, fall all the way back to signed out.
       restoreBunkerSigner().then((ok) => {
-        if (!ok) storage.signer.clear();
-      }).catch(() => storage.signer.clear());
+        if (!ok) abandonRestoredSession();
+      }).catch(abandonRestoredSession);
     } else if (signerKindStored === 'local') {
       // Async like the bunker path, not synchronous like Amber: the key has to
       // come back out of IndexedDB and be decrypted under the origin's
       // non-extractable wrap key. Identity still paints immediately from the
       // cached npub below; only signing waits.
       restoreLocalSigner().then((ok) => {
-        if (!ok) storage.signer.clear();
-      }).catch(() => storage.signer.clear());
+        if (!ok) abandonRestoredSession();
+      }).catch(abandonRestoredSession);
     }
     const bare: NostrIdentity = { pubkey, npub: stored };
     const cachedProfile = storage.profile.get(pubkey);
@@ -248,7 +255,39 @@ export function NostrAuth() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity]);
 
+  /**
+   * A signer restore failed after identity already painted from the cached
+   * npub. Clearing only the `bmb:signer` sentinel isn't enough: the user looks
+   * signed in while window.nostr is undefined, and the next thing that signs
+   * dies with a generic error. Fall all the way back to signed out.
+   *
+   * Deliberately does NOT call clearLocalSigner(): a restore failure can be a
+   * transient IndexedDB error, and wiping the wrap key would turn a bad reload
+   * into permanent key loss. Explicit sign-out is the only place that erases.
+   */
+  function abandonRestoredSession() {
+    storage.signer.clear();
+    storage.npub.clear();
+    setIdentity(null);
+    setFavorites({});
+    setMutedPubkeys(new Set());
+  }
+
   function signout() {
+    // The local signer is the only kind where signing out destroys something:
+    // clearLocalSigner wipes the ciphertext AND the non-extractable wrap key,
+    // and the only way back in is the same Google account plus the PIN. An
+    // extension or bunker sign-out costs nothing, so it stays one click. Read
+    // the kind before the storage.signer.clear() below.
+    if (storage.signer.get() === 'local') {
+      const ok = window.confirm(
+        "Signing out erases this account's key from this browser.\n\n" +
+        'You can only get back in with the same Google account and the PIN you set. ' +
+        "If you've forgotten the PIN, this account is gone for good.\n\n" +
+        'Sign out anyway?',
+      );
+      if (!ok) return;
+    }
     if (identity) {
       storage.walletBalance.clear(identity.npub);
       // Stash the NWC URI in sessionStorage before clearing it. On same-account

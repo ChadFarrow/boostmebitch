@@ -17,7 +17,7 @@ import {
   type NostrIdentity,
 } from '@/lib/nostr';
 import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/amber';
-import { isGoogleAuthConfigured } from '@/lib/nostr/google-auth';
+import { isGoogleAuthConfigured, preloadGis } from '@/lib/nostr/google-auth';
 import { getErrorMessage } from '@/lib/util';
 import { AmberCompletion } from './login-methods';
 import { GoogleAuthPanel } from './google-auth-panel';
@@ -70,6 +70,14 @@ export function SignInModal({
   const [copied, setCopied] = useState(false);
 
   useEffect(() => setPortalTarget(document.body), []);
+
+  // Fetch the GIS script the moment the modal is on screen rather than when the
+  // user taps "Continue with Google" — a cold fetch inside the click path burns
+  // its transient activation and the consent popup gets blocked. See
+  // preloadGis().
+  useEffect(() => {
+    if (googleConfigured) preloadGis();
+  }, [googleConfigured]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

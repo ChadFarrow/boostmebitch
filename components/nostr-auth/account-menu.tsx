@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { subscribeBunkerHealth, restoreBunkerSigner, shortNpub, type NostrIdentity } from '@/lib/nostr';
+import { subscribeBunkerHealth, restoreBunkerSigner, isKeyEphemeral, shortNpub, type NostrIdentity } from '@/lib/nostr';
+import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { MutedAccountsSection } from './muted-accounts';
 
@@ -11,6 +12,21 @@ import { MutedAccountsSection } from './muted-accounts';
 // reconnect button calls restoreBunkerSigner which reuses the same
 // persisted client_sk, so the bunker treats us as the same logical
 // client and skips re-auth.
+// Storage-restricted browsers (private mode, partitioned storage) leave the
+// local key in memory only — the session works, a reload loses it. A soft
+// hint, mirroring the storage.nwcUri.isEphemeral() line in nwc-wallet.tsx,
+// rather than a banner demanding action: the Drive backup still exists, so the
+// recovery is just signing in again.
+function LocalKeyEphemeralBanner() {
+  if (storage.signer.get() !== 'local' || !isKeyEphemeral()) return null;
+  return (
+    <div className="text-[11px] text-bolt/80 border border-bolt/40 bg-bolt/10 px-2 py-1.5 mb-3">
+      Storage is restricted in this browser — you&apos;ll be signed out when you
+      reload. Sign in with Google and your PIN to come back.
+    </div>
+  );
+}
+
 function BunkerHealthBanner() {
   const [stale, setStale] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -121,6 +137,7 @@ export function AccountMenu({
           </div>
 
           <BunkerHealthBanner />
+          <LocalKeyEphemeralBanner />
 
           <MutedAccountsSection />
 

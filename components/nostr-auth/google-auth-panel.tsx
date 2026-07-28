@@ -8,6 +8,7 @@ import { Avatar } from '@/components/avatar';
 import {
   loginWithLocalKey,
   fetchProfile,
+  isKeyEphemeral,
   shortNpub,
   type NostrIdentity,
   type ProfileMetadata,
@@ -46,6 +47,7 @@ type Stage =
   | { s: 'choose' }
   | { s: 'enterPin' }
   | { s: 'working' }
+  | { s: 'ephemeral' }
   | { s: 'error'; message: string };
 
 interface FoundAccount {
@@ -68,15 +70,46 @@ export function GoogleAuthPanel({
   const [pinErr, setPinErr] = useState<string | null>(null);
   const [accounts, setAccounts] = useState<FoundAccount[]>([]);
   const [selected, setSelected] = useState<FoundAccount | null>(null);
+  // Backups Drive listed but wouldn't hand over. Load-bearing: while this is
+  // non-zero we can't tell "wrong PIN" from "the matching blob is one we
+  // couldn't read", so it gates both the error copy and the create path.
+  const [missed, setMissed] = useState(0);
 
   // Google session state for the current attempt. Held in refs, never
   // persisted: the access token is short-lived and the sub is only salt.
   const subRef = useRef<string | null>(null);
   const tokenRef = useRef<string | null>(null);
   const blobsRef = useRef<string[]>([]);
+  const pendingIdRef = useRef<NostrIdentity | null>(null);
+  // One in-flight refresh at a time. Without this, a token that expires between
+  // list and download makes every parallel downloadBackup 401 at once, and each
+  // one independently asks GIS for a token — N popups, N-1 of them blocked.
+  // (Only matters because the downloads are parallel.)
+  const refreshingRef = useRef<Promise<string> | null>(null);
 
   const fail = useCallback((e: unknown, fallback: string) => {
     setStage({ s: 'error', message: getErrorMessage(e, fallback) });
+  }, []);
+
+  /** Run a Drive call with the current token, refreshing once on a 401. Every
+   *  Drive call goes through this: an expired token that reads as "no backups"
+   *  is what walks a returning user into creating a second identity. */
+  const withDrive = useCallback(async <T,>(fn: (token: string) => Promise<T>): Promise<T> => {
+    const token = tokenRef.current;
+    if (!token) throw new Error('Google session expired. Try again.');
+    try {
+      return await fn(token);
+    } catch (e) {
+      if (!(e instanceof DriveAuthExpiredError)) throw e;
+      if (!refreshingRef.current) {
+        refreshingRef.current = refreshAccessToken().finally(() => {
+          refreshingRef.current = null;
+        });
+      }
+      const fresh = await refreshingRef.current;
+      tokenRef.current = fresh;
+      return fn(fresh);
+    }
   }, []);
 
   /** Step 1: Google consent, then pull down every blob this account holds.
@@ -87,6 +120,8 @@ export function GoogleAuthPanel({
     setPinErr(null);
     setAccounts([]);
     setSelected(null);
+    blobsRef.current = [];
+    setMissed(0);
     setStage({ s: 'signingIn' });
     try {
       const { sub, accessToken } = await signInWithGoogle();
@@ -94,31 +129,40 @@ export function GoogleAuthPanel({
       tokenRef.current = accessToken;
 
       setStage({ s: 'checkingDrive' });
-      let files;
-      try {
-        files = await listBackups(accessToken);
-      } catch (e) {
-        if (!(e instanceof DriveAuthExpiredError)) throw e;
-        // Never let an expired token read as "no backups" — that would walk a
-        // returning user into creating a second identity and orphan their real
-        // one.
-        const fresh = await refreshAccessToken();
-        tokenRef.current = fresh;
-        files = await listBackups(fresh);
+      const files = await withDrive(listBackups);
+      const settled = await Promise.all(
+        files.map((f) =>
+          withDrive((t) => downloadBackup(t, f.id)).then<string | null, null>(
+            (blob) => blob,
+            () => null,
+          ),
+        ),
+      );
+      const blobs = settled.filter((b): b is string => b !== null);
+      blobsRef.current = blobs;
+      setMissed(files.length - blobs.length);
+
+      // Three outcomes, and only the first may ever reach setupPin.
+      if (files.length === 0) {
+        setStage({ s: 'setupPin' }); // genuinely new to this Google account
+      } else if (blobs.length === 0) {
+        // Backups exist and not one of them came back — a token that died
+        // between list and download, or Drive 5xx. Falling through to setupPin
+        // here is precisely how a returning user mints a second identity and
+        // orphans their real one, so this is a hard stop with no create path.
+        setStage({
+          s: 'error',
+          message:
+            "This Google account has a saved account, but Drive wouldn't hand it over. " +
+            'Check your connection and try again — creating a new one now would leave the old one behind.',
+        });
+      } else {
+        setStage({ s: 'choose' }); // may be partial; `missed` gates the create path
       }
-
-      const token = tokenRef.current;
-      blobsRef.current = (
-        await Promise.all(
-          files.map((f) => downloadBackup(token, f.id).catch(() => null)),
-        )
-      ).filter((b): b is string => b !== null);
-
-      setStage({ s: blobsRef.current.length > 0 ? 'choose' : 'setupPin' });
     } catch (e) {
       fail(e, 'Google sign-in failed');
     }
-  }, [fail]);
+  }, [fail, withDrive]);
 
   // Kick off on mount — the user already tapped "Continue with Google", and
   // running inside that gesture's transient activation is what keeps the
@@ -145,6 +189,15 @@ export function GoogleAuthPanel({
       // Best-effort: a failed wallet provision must not block sign-in.
       provisionSparkFromKey(skHex, id).catch(() => { /* wallet stays unconfigured */ });
     }
+    // putKey fell back to memory-only (private mode, partitioned storage): this
+    // session works, the next one doesn't. Say so before handing off rather
+    // than letting the user discover it as a silent sign-out on reload. Not
+    // fatal — the blob is in Drive, so Google + PIN gets them back.
+    if (isKeyEphemeral()) {
+      pendingIdRef.current = id;
+      setStage({ s: 'ephemeral' });
+      return;
+    }
     onSuccess(id);
   }
 
@@ -157,21 +210,30 @@ export function GoogleAuthPanel({
       return;
     }
     setStage({ s: 'working' });
+    let uploaded = false;
     try {
       const skHex = bytesToHex(generateSecretKey());
       const key = await deriveBackupKey(sub, pin);
       const payload = encryptNsec(skHex, key);
-      try {
-        await uploadBackup(token, payload);
-      } catch (e) {
-        if (!(e instanceof DriveAuthExpiredError)) throw e;
-        const fresh = await refreshAccessToken();
-        tokenRef.current = fresh;
-        await uploadBackup(fresh, payload);
-      }
+      await withDrive((t) => uploadBackup(t, payload));
+      uploaded = true;
       await finish(skHex, true);
     } catch (e) {
-      fail(e, 'Could not create your account');
+      // Once the upload lands the account exists, even though sign-in didn't
+      // finish. Retry re-runs begin(), which will now FIND that blob — so point
+      // the user at the PIN prompt instead of letting them mint a second key.
+      // (Set the stage directly rather than via fail(), whose getErrorMessage
+      // would let the underlying error win over this copy.)
+      if (uploaded) {
+        setStage({
+          s: 'error',
+          message:
+            "Your account was saved, but signing in didn't finish. " +
+            'Tap Retry and enter the PIN you just set.',
+        });
+      } else {
+        fail(e, 'Could not create your account');
+      }
     }
   }
 
@@ -204,7 +266,14 @@ export function GoogleAuthPanel({
       }
 
       if (found.length === 0) {
-        setPinErr('Incorrect PIN');
+        setPinErr(
+          missed > 0
+            // The blob that matches this PIN may be one of the ones that failed
+            // to download, so "Incorrect PIN" would be a claim we can't tell
+            // apart from the truth.
+            ? `That PIN didn't match the ${blobsRef.current.length} backup(s) we could read, and ${missed} more couldn't be downloaded. Tap "Retry downloads", then try again.`
+            : 'Incorrect PIN',
+        );
         setStage({ s: 'enterPin' });
         return;
       }
@@ -242,6 +311,71 @@ export function GoogleAuthPanel({
     }
     setPinErr(null);
     createAccount();
+  }
+
+  /** Every non-destructive stage needs a way out. <SignInModal> collapses the
+   *  tab strip while this panel is mounted, so without this a user who tapped
+   *  "Continue with Google" by mistake can only escape by closing the whole
+   *  modal. */
+  function goBack() {
+    if (stage.s === 'confirmPin') {
+      setConfirm('');
+      setPinErr(null);
+      setStage({ s: 'setupPin' });
+      return;
+    }
+    // setupPin/enterPin reached from a picker fall back to it; otherwise
+    // leaving the panel is what restores the tab strip.
+    if ((stage.s === 'setupPin' || stage.s === 'enterPin') && blobsRef.current.length > 0) {
+      setPin('');
+      setPinErr(null);
+      setStage({ s: 'choose' });
+      return;
+    }
+    onCancel();
+  }
+
+  // `working` is excluded on purpose: an upload may be in flight, and
+  // abandoning it is how you get a blob in Drive with no local key.
+  // signingIn/checkingDrive are safe — onCancel unmounts the panel, so a late
+  // resolve is a no-op. `error` and `ephemeral` carry their own buttons.
+  const canGoBack =
+    stage.s !== 'working' && stage.s !== 'error' && stage.s !== 'ephemeral';
+  // Mirrors goBack()'s branches exactly, so the label can't promise one
+  // destination while the handler goes to another.
+  const backToPicker =
+    stage.s === 'confirmPin' ||
+    (blobsRef.current.length > 0 && (stage.s === 'setupPin' || stage.s === 'enterPin'));
+
+  /** Suppressed while any backup failed to download: creating an account from
+   *  this state is the orphan path. Retrying the downloads is the fix. */
+  function createAnotherButton() {
+    if (missed > 0) {
+      return (
+        <>
+          <button onClick={begin} className="btn-ghost w-full text-[11px]">
+            Retry downloads
+          </button>
+          <p className="text-[11px] text-nostr/80">
+            {missed} saved account(s) couldn&apos;t be downloaded. Retry before creating a
+            new one — otherwise you may end up with a duplicate you can&apos;t find later.
+          </p>
+        </>
+      );
+    }
+    return (
+      <button
+        onClick={() => {
+          setAccounts([]);
+          setPin('');
+          setPinErr(null);
+          setStage({ s: 'setupPin' });
+        }}
+        className="btn-ghost w-full text-[11px]"
+      >
+        Create another account
+      </button>
+    );
   }
 
   const busyLabel =
@@ -323,12 +457,7 @@ export function GoogleAuthPanel({
           <button onClick={() => setStage({ s: 'enterPin' })} className="btn-bolt w-full">
             Enter PIN
           </button>
-          <button
-            onClick={() => setStage({ s: 'setupPin' })}
-            className="btn-ghost w-full text-[11px]"
-          >
-            Create another account
-          </button>
+          {createAnotherButton()}
         </>
       )}
 
@@ -359,16 +488,7 @@ export function GoogleAuthPanel({
               </li>
             ))}
           </ul>
-          <button
-            onClick={() => {
-              setAccounts([]);
-              setPin('');
-              setStage({ s: 'setupPin' });
-            }}
-            className="btn-ghost w-full text-[11px]"
-          >
-            Create another account
-          </button>
+          {createAnotherButton()}
         </>
       )}
 
@@ -385,19 +505,35 @@ export function GoogleAuthPanel({
           >
             Unlock
           </button>
+          {createAnotherButton()}
+        </>
+      )}
+
+      {stage.s === 'ephemeral' && (
+        <>
+          <h4 className="font-display text-sm">You&apos;re in — one thing first</h4>
+          <p className="text-[11px] text-nostr">
+            This browser won&apos;t let us save your key, so you&apos;ll be signed out
+            when you reload.
+          </p>
+          <p className="text-[11px] text-muted">
+            Sign in with Google and the same PIN to come back — your backup is safe
+            in Drive. Leaving private browsing will make it stick.
+          </p>
           <button
-            onClick={() => {
-              setPin('');
-              setPinErr(null);
-              setStage({ s: 'setupPin' });
-            }}
-            className="btn-ghost w-full text-[11px]"
+            onClick={() => pendingIdRef.current && onSuccess(pendingIdRef.current)}
+            className="btn-bolt w-full"
           >
-            Create another account
+            Continue
           </button>
         </>
       )}
 
+      {canGoBack && (
+        <button onClick={goBack} className="btn-ghost w-full text-[11px]">
+          {backToPicker ? '← Back' : '← Other sign-in options'}
+        </button>
+      )}
     </div>
   );
 }

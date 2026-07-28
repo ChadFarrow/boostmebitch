@@ -20,6 +20,7 @@ export {
 } from './auth';
 
 export { isAmberActive, isBunkerActive, isLocalActive, getNip44 } from './signer';
+export { isKeyEphemeral } from './local-key-store';
 export { isGoogleAuthConfigured } from './google-auth';
 export { isLikelyAndroid, isLikelyIOS } from './amber';
 export {
