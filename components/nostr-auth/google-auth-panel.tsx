@@ -186,8 +186,12 @@ export function GoogleAuthPanel({
     // The `bmb:signer` sentinel is written by <NostrAuth>'s completeSignIn,
     // which onSuccess feeds — don't duplicate it here.
     if (isNewAccount) {
-      // Best-effort: a failed wallet provision must not block sign-in.
-      provisionSparkFromKey(skHex, id).catch(() => { /* wallet stays unconfigured */ });
+      // Best-effort: a failed wallet provision must not block sign-in — but it
+      // must not vanish either. Swallowing this outright makes "no wallet" look
+      // identical to "still initializing", with nothing anywhere to explain it.
+      provisionSparkFromKey(skHex, id).catch((e) => {
+        console.warn('[bmb] Spark wallet provisioning failed:', e);
+      });
     }
     // putKey fell back to memory-only (private mode, partitioned storage): this
     // session works, the next one doesn't. Say so before handing off rather
