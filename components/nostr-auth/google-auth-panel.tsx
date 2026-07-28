@@ -102,9 +102,18 @@ export function GoogleAuthPanel({
     } catch (e) {
       if (!(e instanceof DriveAuthExpiredError)) throw e;
       if (!refreshingRef.current) {
-        refreshingRef.current = refreshAccessToken().finally(() => {
-          refreshingRef.current = null;
-        });
+        refreshingRef.current = refreshAccessToken();
+        // Clear on success only. A REJECTION stays cached for the rest of this
+        // attempt: a refresh that failed (blocked popup, revoked grant) will
+        // fail identically for every other caller, and clearing it lets the
+        // next one start its own — which is another popup. Parallel downloads
+        // don't 401 at the same instant, so a `finally` here staggers into a
+        // popup per caller and Firefox reports "Opening multiple popups was
+        // blocked due to lack of user activation". begin() resets it.
+        refreshingRef.current.then(
+          () => { refreshingRef.current = null; },
+          () => { /* keep the rejection cached — see above */ },
+        );
       }
       const fresh = await refreshingRef.current;
       tokenRef.current = fresh;
@@ -121,6 +130,7 @@ export function GoogleAuthPanel({
     setAccounts([]);
     setSelected(null);
     blobsRef.current = [];
+    refreshingRef.current = null; // a new attempt gets a fresh shot at refreshing
     setMissed(0);
     setStage({ s: 'signingIn' });
     try {
