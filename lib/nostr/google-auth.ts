@@ -134,6 +134,14 @@ function gisErrorMessage(e: unknown): string {
   return getErrorMessage(e, 'Google sign-in failed');
 }
 
+// GIS resolves a token request by invoking `callback` or `error_callback` —
+// and there are real situations where it does neither: a suppressed
+// `prompt: ''` request, a popup the user leaves open forever, a token client
+// torn down by a backgrounded tab. The promise then never settles, which is
+// how the panel ends up pinned on "Working…" with no error and no way out.
+// Bound it so every caller can always reach a terminal state.
+const TOKEN_REQUEST_TIMEOUT_MS = 60_000;
+
 function requestAccessToken(clientId: string, silent = false): Promise<string> {
   return new Promise((resolve, reject) => {
     const gis = window.google;
@@ -141,14 +149,34 @@ function requestAccessToken(clientId: string, silent = false): Promise<string> {
       reject(new Error('Google sign-in unavailable'));
       return;
     }
+    // GIS can invoke a callback more than once, and the timeout races both, so
+    // every exit goes through these two and the first one wins.
+    let settled = false;
+    const succeed = (token: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(token);
+    };
+    const fail = (message: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(message));
+    };
+    const timer = setTimeout(
+      () => fail("Google didn't respond. Check for a blocked or hidden popup, then try again."),
+      TOKEN_REQUEST_TIMEOUT_MS,
+    );
+
     const client = gis.accounts.oauth2.initTokenClient({
       client_id: clientId,
       scope: SCOPES,
       callback: (r) => {
-        if (r.access_token) resolve(r.access_token);
-        else reject(new Error(r.error || 'Google did not grant Drive access'));
+        if (r.access_token) succeed(r.access_token);
+        else fail(r.error || 'Google did not grant Drive access');
       },
-      error_callback: (e) => reject(new Error(gisErrorMessage(e))),
+      error_callback: (e) => fail(gisErrorMessage(e)),
     });
     // prompt:'' reuses the grant the user already gave without showing consent
     // UI. GIS's default opens a popup — fine inside the click that started
@@ -191,9 +219,20 @@ export async function signInWithGoogle(): Promise<GoogleAuthResult> {
  * Retry button already is.
  */
 export class GoogleReauthRequiredError extends Error {
-  constructor() {
-    super('Your Google session expired. Tap Retry to sign in with Google again.');
+  constructor(cause?: unknown) {
+    // Keep the underlying reason in the message when there is one. A silent
+    // refresh fails for several distinct reasons — popup blocked, scope
+    // refused, GIS gone, network — and collapsing them all into "session
+    // expired, tap Retry" hands the user one instruction that is wrong for
+    // most of them. Retrying a blocked popup just blocks again.
+    const detail = cause instanceof Error ? cause.message : '';
+    super(
+      detail
+        ? `Couldn't refresh your Google session: ${detail}`
+        : 'Your Google session expired. Tap Retry to sign in with Google again.',
+    );
     this.name = 'GoogleReauthRequiredError';
+    this.cause = cause;
   }
 }
 
@@ -206,7 +245,7 @@ export async function refreshAccessToken(): Promise<string> {
   await loadGis();
   try {
     return await requestAccessToken(clientId, true);
-  } catch {
-    throw new GoogleReauthRequiredError();
+  } catch (e) {
+    throw new GoogleReauthRequiredError(e);
   }
 }

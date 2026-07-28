@@ -20,7 +20,7 @@ export const subscribeRailPref = railPrefObservable.subscribe;
 
 const KEYS = {
   npub: 'bmb:npub',
-  signer: 'bmb:signer',               // 'amber' | 'bunker' when a polyfill signer is active; absent = NIP-07 extension or none
+  signer: 'bmb:signer',               // 'amber' | 'bunker' | 'local' when a polyfill signer is active; absent = NIP-07 extension or none
   nwcUri: 'bmb:nwc_uri',
   relays: 'bmb:relays',
   senderName: 'bmb:sender_name',
@@ -38,7 +38,8 @@ const KEYS = {
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
   followsPrefix: 'bmb:follows',       // per-npub last-known-good kind:3 follow set (hex[]) — a nuke-guard signal, see lib/nostr/follows.ts
-  sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
+  sparkOptOutPrefix: 'bmb:spark:opted_out', // + ':<npub>' — set when THAT account explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on its next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
+  sparkOptOutLegacy: 'bmb:spark:opted_out', // pre-per-npub global flag; read once and migrated into the per-npub bucket. Do not write.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
 } as const;
 
@@ -245,10 +246,44 @@ export const storage = {
     clear: () => { safeRemove(KEYS.railPref); railPrefObservable.notify(); },
   },
 
+  /**
+   * "This account turned Spark off" — **per-npub**, `:guest` when signed out.
+   *
+   * This was a single global key, which conflated device with identity: the
+   * flag answers a per-account question ("does THIS user want Spark?") but was
+   * stored once per browser. Two ways that bit:
+   *   - a Google signup for a brand-new key was suppressed by an opt-out some
+   *     other identity had made, leaving new users with no wallet at all;
+   *   - clearing it on that new account's behalf resurrected Spark for the
+   *     identity that had deliberately turned it off.
+   *
+   * The legacy global value is migrated on first read (below) rather than
+   * dropped, so an existing user's deliberate opt-out isn't silently undone by
+   * this refactor.
+   */
   sparkOptOut: {
-    get: () => safeGet(KEYS.sparkOptOut) === '1',
-    set: () => safeSet(KEYS.sparkOptOut, '1'),
-    clear: () => safeRemove(KEYS.sparkOptOut),
+    get: (npub: string | null | undefined): boolean => {
+      // Tri-state on purpose: '1' = opted out, '0' = explicitly opted IN,
+      // absent = no opinion yet. The '0' matters — if `clear` merely removed
+      // the key, the next read would fall through to the legacy global flag
+      // and resurrect an opt-out this account just overrode, which is the
+      // exact bug the per-npub split exists to fix.
+      const scoped = safeGet(identityKey(KEYS.sparkOptOutPrefix, npub));
+      if (scoped !== null) return scoped === '1';
+      // No opinion: inherit the pre-per-npub global flag once, so an existing
+      // user's deliberate opt-out isn't silently undone by this refactor.
+      // Only a set flag is inherited; absent already means "no".
+      if (safeGet(KEYS.sparkOptOutLegacy) === '1') {
+        safeSet(identityKey(KEYS.sparkOptOutPrefix, npub), '1');
+        return true;
+      }
+      return false;
+    },
+    set: (npub: string | null | undefined) =>
+      safeSet(identityKey(KEYS.sparkOptOutPrefix, npub), '1'),
+    /** Records an explicit "this account wants Spark" — see the tri-state note. */
+    clear: (npub: string | null | undefined) =>
+      safeSet(identityKey(KEYS.sparkOptOutPrefix, npub), '0'),
   },
 
   /** Per-npub opt-in flag: '1' when the user wants their NWC connection

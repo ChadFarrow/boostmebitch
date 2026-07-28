@@ -9,6 +9,7 @@ import {
   clearAmberSigner,
   clearBunkerSigner,
   clearLocalSigner,
+  deactivateLocalSigner,
   fetchProfile,
   fetchRelayList,
   fetchEncryptedMnemonic,
@@ -121,7 +122,7 @@ export function NostrAuth() {
     // them with the bare `id` queries only DEFAULT_RELAYS, silently missing
     // backups published from a session that had custom write relays — the
     // primary reason NWC and Spark failed to auto-restore on mobile.
-    const sparkPromise = !hasSpark() && !storage.sparkOptOut.get()
+    const sparkPromise = !hasSpark() && !storage.sparkOptOut.get(id.npub)
       ? fetchEncryptedMnemonic(enriched)
           .then((mnemonic) => {
             if (mnemonic) return sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
@@ -266,8 +267,34 @@ export function NostrAuth() {
    * into permanent key loss. Explicit sign-out is the only place that erases.
    */
   function abandonRestoredSession() {
+    const npub = storage.npub.get();
+    // Wallet teardown is NOT optional here, and leaving it out was a real leak.
+    // `bmb:nwc_uri` is a single global key and the Spark SDK is a module
+    // singleton, so both survive this function. Worse, setting identity to null
+    // below makes completeSignIn's cross-identity cleanup guard
+    // (`identity && identity.pubkey !== id.pubkey`) false on the NEXT sign-in,
+    // so it doesn't clean up either — and the next account boosts through the
+    // abandoned one's wallet, with its balance in the header chip.
+    if (npub) {
+      storage.walletBalance.clear(npub);
+      storage.nwcBackup.clear(npub);
+    }
+    clearNwcUri();
+    sparkDisconnect();
+    // Drop the polyfill too: a half-restored bunker adapter can be left on
+    // window.nostr with a live socket, and a queued local restore could
+    // otherwise install a signer *after* this ran. Deliberately NOT
+    // clearLocalSigner() — that wipes the wrap key, and a transient IndexedDB
+    // error must not become permanent key loss. Explicit sign-out erases.
+    clearAmberSigner();
+    clearBunkerSigner();
+    deactivateLocalSigner();
     storage.signer.clear();
     storage.npub.clear();
+    // An in-flight doLoadProfile for this pubkey has already bailed (it
+    // re-checks storage.npub); leaving its settled promise in the dedupe map
+    // would short-circuit a re-sign-in within 25s and skip hydration entirely.
+    pendingProfileLoad.clear();
     setIdentity(null);
     setFavorites({});
     setMutedPubkeys(new Set());

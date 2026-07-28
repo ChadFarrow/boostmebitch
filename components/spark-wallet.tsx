@@ -72,7 +72,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
     if (!identity || !draftMnemonic) return;
     setInternalMode('busy'); setErr(null);
     try {
-      storage.sparkOptOut.clear();
+      storage.sparkOptOut.clear(identity?.npub);
       await publishEncryptedMnemonic(identity, draftMnemonic);
       await sparkInitFromMnemonic({ mnemonic: draftMnemonic, ownerPubkey: identity.pubkey });
       setDraftMnemonic(null);
@@ -97,7 +97,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
     if (!identity) { setErr('Sign in with Nostr first — restore reads from your relays.'); return; }
     setInternalMode('restoring');
     try {
-      storage.sparkOptOut.clear();
+      storage.sparkOptOut.clear(identity?.npub);
       const m = await fetchEncryptedMnemonic(identity);
       if (!m) {
         setErr('No backup found on your write relays.');
@@ -137,7 +137,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
         );
         if (!ok) { setInternalMode('idle'); return; }
       }
-      storage.sparkOptOut.clear();
+      storage.sparkOptOut.clear(identity?.npub);
       await sparkInitFromMnemonic({ mnemonic: trimmed, ownerPubkey: identity.pubkey });
       // Back up so silent auto-restore works on the next load. Non-fatal.
       await publishEncryptedMnemonic(identity, trimmed).catch(() => {});
@@ -152,7 +152,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
 
   async function disconnect() {
     await sparkDisconnect();
-    storage.sparkOptOut.set();
+    storage.sparkOptOut.set(identity?.npub);
     storage.walletBalance.clear(identity?.npub);
     onDisconnected?.();
   }

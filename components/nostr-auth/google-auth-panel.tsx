@@ -102,7 +102,8 @@ export function GoogleAuthPanel({
     } catch (e) {
       if (!(e instanceof DriveAuthExpiredError)) throw e;
       if (!refreshingRef.current) {
-        refreshingRef.current = refreshAccessToken();
+        const p = refreshAccessToken();
+        refreshingRef.current = p;
         // Clear on success only. A REJECTION stays cached for the rest of this
         // attempt: a refresh that failed (blocked popup, revoked grant) will
         // fail identically for every other caller, and clearing it lets the
@@ -110,8 +111,13 @@ export function GoogleAuthPanel({
         // don't 401 at the same instant, so a `finally` here staggers into a
         // popup per caller and Firefox reports "Opening multiple popups was
         // blocked due to lack of user activation". begin() resets it.
-        refreshingRef.current.then(
-          () => { refreshingRef.current = null; },
+        //
+        // The identity check matters: begin() nulls the ref, so a slow refresh
+        // from an ABANDONED attempt could otherwise resolve later and clear a
+        // still-pending refresh belonging to the current one — reopening the
+        // multiple-popup hole this is here to close.
+        p.then(
+          () => { if (refreshingRef.current === p) refreshingRef.current = null; },
           () => { /* keep the rejection cached — see above */ },
         );
       }
@@ -199,8 +205,12 @@ export function GoogleAuthPanel({
       // Best-effort: a failed wallet provision must not block sign-in — but it
       // must not vanish either. Swallowing this outright makes "no wallet" look
       // identical to "still initializing", with nothing anywhere to explain it.
+      // Log the message, not the error object: this rejection can come from
+      // SparkWallet.initialize({ mnemonicOrSeed }), and SDKs routinely echo
+      // their options back in validation errors — which would put the wallet
+      // seed in the console.
       provisionSparkFromKey(skHex, id).catch((e) => {
-        console.warn('[bmb] Spark wallet provisioning failed:', e);
+        console.warn('[spark] wallet provisioning failed:', getErrorMessage(e, 'unknown error'));
       });
     }
     // putKey fell back to memory-only (private mode, partitioned storage): this
@@ -380,7 +390,11 @@ export function GoogleAuthPanel({
     return (
       <button
         onClick={() => {
-          setAccounts([]);
+          // Deliberately keeps `accounts`. Clearing it made goBack()'s
+          // "← Back" land on the picker's empty branch ("Welcome back / Enter
+          // your PIN") instead of the list the label promises — costing the
+          // user another PIN entry and another Argon2id derivation to get
+          // back what they already had.
           setPin('');
           setPinErr(null);
           setStage({ s: 'setupPin' });
@@ -484,6 +498,15 @@ export function GoogleAuthPanel({
                 <button
                   onClick={() => {
                     setSelected(a);
+                    // Move to `working` as well as disabling the siblings.
+                    // Staying on `choose` left BOTH the back button and
+                    // "Create another account" live while finish() ran: Back
+                    // unmounted the panel while the sign-in completed anyway
+                    // (signing the user in with the button they pressed to
+                    // escape), and Create minted a second key mid-flight —
+                    // the orphaned-identity case this whole flow guards
+                    // against, reached from the picker.
+                    setStage({ s: 'working' });
                     finish(a.skHex, false).catch((e) => fail(e, 'Sign-in failed'));
                   }}
                   disabled={selected !== null}

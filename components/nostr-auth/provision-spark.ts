@@ -1,7 +1,12 @@
 'use client';
 
 import { publishEncryptedMnemonic, type NostrIdentity } from '@/lib/nostr';
-import { hasSpark, sparkInitFromMnemonic, sparkMnemonicFromKey } from '@/lib/v4v/spark';
+import {
+  hasSpark,
+  sparkInitFromMnemonic,
+  sparkMnemonicFromKey,
+  sparkSeedIsActive,
+} from '@/lib/v4v/spark';
 import { storage } from '@/lib/storage';
 
 /**
@@ -27,28 +32,39 @@ export async function provisionSparkFromKey(
   // Something already connected a wallet mid-flow; don't fight it.
   if (hasSpark()) return;
 
-  // `bmb:spark:opted_out` is deliberately NOT honored here, and this is the one
-  // place that's correct. The flag is global (one key, not per-npub), so it
-  // records "some identity on this device turned Spark off" — but this runs
-  // only on the brand-new-account branch, for a key generated seconds ago that
-  // has never had a wallet of any kind. Honoring another identity's decision
-  // here silently left new users with no wallet at all, which is the opposite
-  // of the intent: a Google signup is supposed to come with a working boost
-  // rail. Clearing it also restores the invariant every other Spark connect
-  // path holds (spark-wallet.tsx clears it on create/paste/restore) — leaving
-  // it set while Spark is connected would make the next login's silent restore
-  // skip a wallet that IS connected.
-  //
-  // This does not fight rule 2 ("their wallet unless they connect a different
-  // one"): if the user later connects NWC/WebLN, clearOtherWallets sets the
-  // flag again and Spark stops auto-restoring.
-  storage.sparkOptOut.clear();
-
+  // The opt-out flag is per-npub, so a brand-new key has no opinion recorded
+  // and this doesn't need to consult it at all — nobody has ever turned Spark
+  // off for THIS account. (When the flag was device-global, this function had
+  // to choose between honoring another identity's decision, which left new
+  // users with no wallet, and clearing it, which resurrected Spark for the
+  // identity that turned it off. Neither was right; scoping the flag dissolved
+  // the choice.)
   const mnemonic = await sparkMnemonicFromKey(skHex);
+
+  // Re-check immediately before each side effect. Provisioning is fire-and-
+  // forget and spans seconds of SDK handshake and a relay publish, during
+  // which the user can open the wallet modal and paste their own seed. Without
+  // these, the derived wallet replaces the one they just connected and — worse
+  // — the publish below overwrites their real kind:30078 backup, which is
+  // replaceable and therefore unrecoverable.
+  if (hasSpark()) return;
   await sparkInitFromMnemonic({ mnemonic, ownerPubkey: identity.pubkey });
+
+  // Record the positive choice only once Spark is genuinely connected. Doing
+  // it up front meant an SDK failure left "this account wants Spark" written
+  // for a wallet that never came up.
+  storage.sparkOptOut.clear(identity.npub);
 
   // Back the seed up the same way every other Spark connect path does, so the
   // wallet restores on the user's other devices. A brand-new npub has no prior
   // kind:30078, so there's nothing here to overwrite.
+  //
+  // Guard on the wallet still being OURS rather than on hasSpark() — after the
+  // init above hasSpark() is unconditionally true, so it would prove nothing.
+  // If the user pasted their own seed while the SDK handshake was running,
+  // theirs is the active wallet and publishing here would replace their real
+  // backup with the derived one. kind:30078 is replaceable: that loss is
+  // permanent.
+  if (!sparkSeedIsActive(mnemonic)) return;
   await publishEncryptedMnemonic(identity, mnemonic);
 }

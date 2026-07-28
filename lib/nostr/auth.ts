@@ -7,6 +7,8 @@
 // rest of the app reads window.nostr without caring which backend it is.
 
 import { nip19, type Event, type EventTemplate } from 'nostr-tools';
+import { getPublicKey } from 'nostr-tools/pure';
+import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   activateAmberSigner,
   activateBunkerSigner,
@@ -231,6 +233,19 @@ export async function restoreLocalSigner(): Promise<boolean> {
   try {
     const skHex = await getKey();
     if (!skHex) return false;
+    // The stored key must match the identity the rest of the app is about to
+    // paint from `bmb:npub`. These CAN disagree: putKey swallows IndexedDB
+    // failures, so signing in as B on a device that already held A's key can
+    // leave A's ciphertext on disk while the session runs off the in-memory
+    // copy. After a reload the app would then sign every event as A while the
+    // header, favorites, mutes and wallet all say B — and the resulting
+    // nip44 failures are swallowed by their callers, so nothing surfaces it.
+    // Refusing here sends the user back through sign-in instead.
+    const stored = storage.npub.get();
+    if (stored) {
+      const pubkey = getPublicKey(hexToBytes(skHex));
+      if (nip19.npubEncode(pubkey) !== stored) return false;
+    }
     activateLocalSigner(skHex);
     return true;
   } catch {

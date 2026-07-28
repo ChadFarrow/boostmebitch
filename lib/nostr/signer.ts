@@ -121,8 +121,11 @@ export function activateLocalSigner(skHex: string): LocalSigner {
   amberInstance = null;
   bunkerInstance = null;
   localInstance = new LocalSigner(skHex);
-  // Cast: LocalSigner satisfies the structural shape declared in auth.ts.
-  window.nostr = localInstance as unknown as Window['nostr'];
+  // Publish the plain API object, NOT the instance — `private sk` is erased at
+  // runtime, so assigning the instance would put the raw secret key on
+  // window.nostr.sk for any script on this origin. Mirrors the bunker's
+  // adapter.nostrApi above. See the comment on LocalSigner.nostrApi.
+  window.nostr = localInstance.nostrApi as unknown as Window['nostr'];
   return localInstance;
 }
 

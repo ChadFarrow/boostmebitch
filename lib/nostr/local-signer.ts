@@ -54,8 +54,26 @@ export class LocalSigner {
       nip44.v2.decrypt(ciphertext, nip44.v2.utils.getConversationKey(this.sk, pubkey)),
   };
 
-  /** Hex secret key. Only for the backup/export paths — never log or transmit. */
-  secretKeyHex(): string {
-    return Array.from(this.sk, (b) => b.toString(16).padStart(2, '0')).join('');
-  }
+  /**
+   * The NIP-07 surface to publish on window.nostr — a plain object holding
+   * only bound methods, never `this`.
+   *
+   * This is load-bearing, not tidiness. `private sk` is a TypeScript
+   * annotation with no runtime effect: assigning the instance to window.nostr
+   * would expose the raw secret key as `window.nostr.sk` to any script on this
+   * origin (including Google's GIS script, which we inject and never remove).
+   * That turns "script on this origin can use the signer while the tab is
+   * open" into "script on this origin can walk off with the identity and the
+   * Lightning wallet derived from it, permanently".
+   *
+   * The bunker signer publishes a separate `nostrApi` object for the same
+   * reason; this mirrors it. Do not assign the instance to window.nostr, and
+   * do not add a key-export method here.
+   */
+  readonly nostrApi = {
+    getPublicKey: () => this.getPublicKey(),
+    signEvent: (template: EventTemplate) => this.signEvent(template),
+    nip04: this.nip04,
+    nip44: this.nip44,
+  };
 }

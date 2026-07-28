@@ -71,6 +71,20 @@ export function sparkOwner(): string | null {
   return activePubkey;
 }
 
+/**
+ * True when the connected wallet is the one this seed initialized.
+ *
+ * Deliberately a comparison rather than a `getActiveMnemonic()` accessor — the
+ * seed is spending authority, and nothing outside this module has a reason to
+ * hold it. Exists so a slow background caller can confirm the wallet it
+ * connected is still the active one before doing something destructive (see
+ * provision-spark.ts, which must not overwrite a kind:30078 backup belonging
+ * to a seed the user pasted mid-flight).
+ */
+export function sparkSeedIsActive(mnemonic: string): boolean {
+  return sdk !== null && activeMnemonic === normalizeSeed(mnemonic);
+}
+
 // Bound how long callers wait on SparkWallet.initialize(). The SDK's operator
 // handshake retries challenge-based auth internally and can stay pending for
 // minutes on a degraded connection — without a cap, the wallet modal's

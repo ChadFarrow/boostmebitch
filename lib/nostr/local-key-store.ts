@@ -14,12 +14,24 @@
 // it's strings only, which is the other reason the key can't live there). The
 // nsec is AES-GCM encrypted under it; ciphertext and IV sit in the same store.
 //
-// What this buys: an attacker who reads storage — a dumped profile directory, a
-// stolen device backup, a localStorage scrape — gets ciphertext plus a key
-// handle that cannot be exported, so the identity can't be exfiltrated for
-// offline reuse. What it does NOT buy: protection from script executing on this
-// origin, which can simply call the signer while it runs. That residual risk is
-// what a CSP is for.
+// Be precise about what this buys, because the obvious reading is too
+// generous. `extractable: false` is enforced by the browser's WebCrypto layer,
+// NOT by the bytes on disk: structured-cloning a CryptoKey into IndexedDB
+// serializes the raw AES key material into the record, with extractability as
+// a sibling flag. So an attacker holding the profile directory can parse the
+// store, read the key bytes and the IV/ciphertext next to them, and decrypt
+// offline. A dumped profile or a stolen device backup is NOT covered.
+//
+// What IS covered, and is still worth having: same-origin script cannot call
+// exportKey on the handle, and there is no plaintext key sitting in
+// localStorage for a scrape to pick up. That's the best the web platform
+// offers without prompting for a passphrase on every load.
+//
+// It also does not stop script executing on this origin from calling the
+// signer while it runs — which is why signer.ts publishes a plain API object
+// rather than the LocalSigner instance (an instance would expose the raw key
+// as window.nostr.sk, turning "use it while the tab is open" into "walk off
+// with it forever"). Reducing the remaining exposure is what a CSP is for.
 
 const DB_NAME = 'bmb-keys';
 const DB_VERSION = 1;
