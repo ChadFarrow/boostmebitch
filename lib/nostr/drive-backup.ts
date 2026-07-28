@@ -37,7 +37,21 @@ async function driveFetch(url: string, token: string, init?: RequestInit): Promi
   });
   if (res.status === 401) throw new DriveAuthExpiredError();
   if (!res.ok) {
-    throw new Error(`Google Drive request failed (${res.status})`);
+    // Surface Google's own explanation. A bare status is unactionable — a 403
+    // is "the Drive API isn't enabled on this project", "the token lacks the
+    // drive.appdata scope", and "rate limited" all at once, and only the body
+    // says which. Failing to read it is not fatal, so the status still stands
+    // on its own.
+    let reason = '';
+    try {
+      const body = (await res.json()) as { error?: { message?: string; status?: string } };
+      reason = body.error?.message ?? '';
+    } catch { /* non-JSON body — the status is all we have */ }
+    throw new Error(
+      reason
+        ? `Google Drive request failed (${res.status}): ${reason}`
+        : `Google Drive request failed (${res.status})`,
+    );
   }
   return res;
 }
