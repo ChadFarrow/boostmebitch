@@ -17,25 +17,79 @@ export { subscribeNwc };
 // Null means "not yet fetched" — distinct from [] which means "fetched, empty".
 let cachedNwcMethods: string[] | null = null;
 
-export const nwcGetMethods = () => cachedNwcMethods;
+/**
+ * Record the method list both in memory and in localStorage, tagged with the
+ * URI it belongs to. Connect-time validation is the main writer: capturing it
+ * there means the boost path never has to ask the wallet what it can do.
+ *
+ * `uri` is passed explicitly during validation because the connection hasn't
+ * been saved yet at that point.
+ */
+function setNwcMethods(methods: string[], uri?: string): string[] {
+  cachedNwcMethods = methods;
+  const target = uri ?? loadNwcUri();
+  if (target) storage.nwcMethods.set({ uri: target, methods });
+  return methods;
+}
+
+/**
+ * Supported NIP-47 methods for the current connection, or null when we've
+ * genuinely never asked. Falls back to the persisted record so the answer
+ * survives a page reload — but only when it was captured for the URI that's
+ * connected now, so switching wallets can't inherit the old one's
+ * capabilities.
+ */
+export const nwcGetMethods = (): string[] | null => {
+  if (cachedNwcMethods) return cachedNwcMethods;
+  const rec = storage.nwcMethods.get();
+  const uri = loadNwcUri();
+  if (!rec || !uri || rec.uri !== uri) return null;
+  cachedNwcMethods = rec.methods;
+  return cachedNwcMethods;
+};
 
 /** Fetch and cache the wallet's supported methods. No-op if not connected. */
 export async function nwcFetchCapabilities(): Promise<string[]> {
   if (!hasNwc()) return [];
+  let c: ReturnType<typeof client> | null = null;
   try {
-    const c = client();
+    c = client();
     const info = await c.getInfo();
-    cachedNwcMethods = info.methods ?? [];
-    return cachedNwcMethods;
+    return setNwcMethods(info.methods ?? []);
   } catch {
-    return cachedNwcMethods ?? [];
+    return nwcGetMethods() ?? [];
+  } finally {
+    // Matches nwcValidate — this now runs on every connect, so leaving the
+    // relay socket open each time would accumulate them.
+    try { c?.close(); } catch { /* ignore */ }
   }
 }
 
 // Re-export the URI accessors so existing call sites keep their imports.
-export const saveNwcUri = (uri: string) => { storage.nwcUri.set(uri); cachedNwcMethods = null; notify(); };
+// Drops the in-memory list only. The persisted record is uri-tagged, so if
+// this save is the one that follows nwcValidate (same URI) the connect-time
+// capability is still readable; a genuinely different URI won't match it.
+//
+// Every connect path funnels through here — paste, the Nostr-backup auto
+// restore, the manual restore button, and the login-time restore in
+// loadProfile — so this is where we make sure the wallet's capabilities are
+// settled at connect rather than during a boost. Fire-and-forget: it's a
+// prefetch, and a failure just defers the question to the first boost. The
+// guard makes it a no-op on the paste path, where nwcValidate already
+// recorded the methods for this URI.
+export const saveNwcUri = (uri: string) => {
+  storage.nwcUri.set(uri);
+  cachedNwcMethods = null;
+  notify();
+  if (!nwcGetMethods()) void nwcFetchCapabilities().catch(() => {});
+};
 export const loadNwcUri = () => storage.nwcUri.get();
-export const clearNwcUri = () => { storage.nwcUri.clear(); cachedNwcMethods = null; notify(); };
+export const clearNwcUri = () => {
+  storage.nwcUri.clear();
+  storage.nwcMethods.clear();
+  cachedNwcMethods = null;
+  notify();
+};
 export const hasNwc = () => storage.nwcUri.has();
 
 function client() {
@@ -76,7 +130,9 @@ export async function nwcValidate(uri: string): Promise<string | null> {
   try {
     try {
       const info = await withTimeout(c.getInfo());
-      cachedNwcMethods = info.methods ?? [];
+      // Captured here, at connect, so the boost path already knows whether
+      // this wallet can keysend and never pays for the check mid-payment.
+      setNwcMethods(info.methods ?? [], uri);
       return null;
     } catch (infoErr) {
       // get_info may not be granted on this connection. Try get_balance —

@@ -220,9 +220,18 @@ async function payKeysend(
   return { recipient, sats, ok: true, preimage };
 }
 
-// The keysend upgrade must never make a leg *less* likely to pay: LNURL works
-// on every rail, keysend doesn't. So only upgrade when we positively know the
-// rail can keysend — "unknown" counts as no, keeping today's LNURL behaviour.
+// Whether the wallet can keysend at all. This is the gate on the whole
+// upgrade: a wallet that can't keysend goes straight to LNURL and never even
+// probes the address, so the lookup costs nothing for those users.
+//
+// The answer is normally settled long before a boost — NWC records its method
+// list at connect time (nwcValidate → storage.nwcMethods) and WebLN is a
+// property read — so this resolves synchronously in the common case. The
+// await only bites for a connection made before the capability was persisted;
+// that fetch then records it, so it's once per wallet, not once per boost.
+//
+// "Unknown" counts as no: LNURL pays on every rail, keysend doesn't, so an
+// unverified guess must never downgrade a leg that would otherwise have paid.
 async function railCanKeysend(rail: Rail): Promise<boolean> {
   if (rail === 'spark') return false; // BOLT11-only by design
   if (rail === 'webln') {
