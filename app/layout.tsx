@@ -135,6 +135,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </div>
         <div className="relative z-0">
           {children}
+          {/* Google OAuth verification requires the privacy policy to be linked
+              from the homepage, with the same URL entered on the consent
+              screen. Living in the layout means it's on every page including
+              the homepage. `pb-28` clears the fixed mini-player. */}
+          <footer className="px-4 pb-28 pt-10 text-center">
+            <a href="/privacy" className="text-[11px] text-muted hover:text-bone">
+              Privacy Policy
+            </a>
+          </footer>
         </div>
         {/* App-global player — mounted in the layout so playback (and the
             fullscreen player overlay) survives route changes, e.g. navigating
