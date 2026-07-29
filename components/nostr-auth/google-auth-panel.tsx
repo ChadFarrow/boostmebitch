@@ -29,6 +29,7 @@ import {
 } from '@/lib/nostr/drive-backup';
 import { refreshAccessToken, signInWithGoogle } from '@/lib/nostr/google-auth';
 import { getErrorMessage } from '@/lib/util';
+import { buildGeneratedProfile } from '@/lib/nostr/generated-profile';
 import { provisionSparkFromKey } from './provision-spark';
 import { provisionProfileFromKey } from './provision-profile';
 
@@ -213,6 +214,14 @@ export function GoogleAuthPanel({
       provisionSparkFromKey(skHex, id).catch((e) => {
         console.warn('[spark] wallet provisioning failed:', getErrorMessage(e, 'unknown error'));
       });
+      // Attach the generated profile to the identity synchronously, before
+      // onSuccess hands it to completeSignIn. provisionProfileFromKey below
+      // is async (it awaits a signEvent + relay-publish round-trip) and can't
+      // land before then, but <AccountMenu> renders from identity.profile —
+      // never from storage.profile, which only the *next* page load's mount
+      // fast-path reads. Without this the header shows the bare npub for the
+      // whole signup session even though the kind:0 is on its way.
+      id.profile = buildGeneratedProfile(id.pubkey);
       // Same contract as the wallet: new-account only, best-effort, and the
       // failure is logged as a message rather than an object.
       provisionProfileFromKey(id).catch((e) => {

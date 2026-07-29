@@ -23,9 +23,12 @@ import type { NostrIdentity } from '@/lib/nostr';
 export async function provisionProfileFromKey(identity: NostrIdentity): Promise<void> {
   const profile = buildGeneratedProfile(identity.pubkey);
 
-  // Seed the cache BEFORE publishing. loadProfile's relay fetch races this
-  // publish and will usually lose, so without this the header shows "Anon"
-  // until some later refresh happens to catch the event.
+  // Seed the cache before publishing even starts. This does NOT reach the
+  // header this session — <AccountMenu> renders from identity.profile (set by
+  // the caller directly on the identity object), and this cache is only read
+  // by the next page load's mount fast-path (components/nostr-auth/index.tsx).
+  // It's here so that fast-path has something to paint if the publish below
+  // is still slow when the tab closes.
   storage.profile.set(identity.pubkey, profile);
 
   // PROFILE_RELAYS is load-bearing, not belt-and-braces: purplepag.es is the
@@ -45,4 +48,13 @@ export async function provisionProfileFromKey(identity: NostrIdentity): Promise<
     },
     relays,
   );
+
+  // loadProfile's fetchProfile(pubkey) races this publish — it fires its
+  // kind:0 REQ synchronously while this call is still suspended on the
+  // signEvent round-trip, so the relay usually sees REQ before EVENT. If
+  // EOSE arrives first, fetchProfile calls storage.profile.setMiss(pubkey),
+  // clobbering the seed above with a negative-cache entry for the miss TTL.
+  // Re-seed now that the event has actually been signed and sent, so a miss
+  // written mid-race gets overwritten instead of poisoning the next reload.
+  storage.profile.set(identity.pubkey, profile);
 }
