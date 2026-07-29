@@ -441,9 +441,18 @@ Since Lightning and Nostr are two independent logins (a user can boost without a
 
 ## Google OAuth verification surfaces (`/privacy` + the homepage blurb)
 
-Two bits of UI exist for Google's OAuth app verification, not for their own sake — **don't tidy either
-away.** They shipped ahead of the Google onboarding feature itself (PR #141) so brand verification
-could run while that branch was still unmerged.
+**Verification is complete** as of 2026-07-29: brand verification approved, branding published, and
+the app's Audience set to *In production*. So the consent screen shows `BoostMeBitch` + the logo, any
+Google account can authorize (no 100-test-user cap, no 7-day grant expiry), and there is nothing left
+to submit. The 7-day deadline in Google's docs applies only to clicking *Publish branding* after
+approval — already done, and it does not recur.
+
+Two bits of UI exist for that verification, not for their own sake — **don't tidy either away.** They
+shipped ahead of the Google onboarding feature itself (PR #141, still unmerged) so verification could
+run while that branch was in progress. Consequence to keep in mind: production currently serves a
+privacy policy describing a Google sign-in button that isn't live yet. That's fine — every claim on it
+is conditional ("if you sign in with Google…") — but it does mean the page went live before the code
+it documents.
 
 - **`app/privacy/page.tsx`**, linked from the **layout footer** (`app/layout.tsx`). Google requires the
   policy to be hosted on the same domain as the homepage, linked *from* the homepage, and reachable at
@@ -459,13 +468,32 @@ could run while that branch was still unmerged.
   it reads as landing copy — deliberately **not** gated on `showLeftRightLayout`, which flips on stored
   favorites, and a compliance-critical string must not vanish based on localStorage.
 
-Console-side facts worth not re-deriving: the scopes (`openid` + `drive.appdata`) are both
-**non-sensitive**, so this needs only **brand verification** — no demo video, no CASA assessment. The
-apex **307-redirects to `www`**, so `https://www.boostmebitch.com` is the origin GIS sees and the `www`
-form is what goes in the console's App-domain fields; authorized domain is `boostmebitch.com`, verified
-as a Search Console **domain property**. `*.vercel.app` can't be an authorized domain (you can't verify
-someone else's domain), so **Google sign-in does not work on preview deployments** — test on localhost
-and production only.
+### Console facts worth not re-deriving
+
+- **Both scopes are non-sensitive.** `openid` + `drive.appdata` — the Verification Center says it
+  outright ("Verification is not required since your app is not requesting any sensitive or restricted
+  scopes"), so brand verification was the only review: no demo video, no scope justification, no annual
+  CASA security assessment. `drive.appdata` is listed under non-sensitive in Google's Drive scope guide;
+  the restricted Drive scopes are `drive`, `drive.readonly`, `drive.metadata`, `drive.activity`,
+  `drive.scripts`, and the only sensitive one is `drive.apps.readonly`. **Adding a sensitive or
+  restricted scope later moves the app onto the heavy path** — check a scope's classification on the
+  Data Access page *before* building against it, and register every scope you request there (the GIS
+  token client requests them at runtime, so the console can't discover them on its own; `openid` is
+  absent from the picker because it's OIDC, which is normal).
+- **The apex 307-redirects to `www`.** `https://www.boostmebitch.com` is therefore the origin GIS sees
+  and the `www` form is what's in the console's App-domain fields. Authorized JavaScript origins:
+  `https://www.boostmebitch.com`, `https://boostmebitch.com`, `http://localhost`,
+  `http://localhost:3000`. No redirect URIs — the token client is origin-scoped, never redirects.
+- **`*.vercel.app` can't be an authorized domain** (you can't Search-Console-verify a domain Vercel
+  owns), so **Google sign-in does not work on preview deployments.** Test on localhost or production.
+- **DNS is at Namecheap, not Vercel** — nameservers `dns1/dns2.registrar-servers.com`, apex A record and
+  `www` CNAME both pointing at Vercel. The authorized domain `boostmebitch.com` is verified as a Search
+  Console **domain property** via a TXT record at host `@`, sitting alongside Namecheap's pre-existing
+  email-forwarding SPF record. **Never delete that record or fold it into the SPF one** — it
+  un-verifies the domain and invalidates the brand approval.
+- **Editing branding re-opens the review.** App name (`BoostMeBitch`), logo
+  (`public/icons/icon-120.png` — 120×120 is what Google wants; deliberately not in `manifest.json`,
+  since no browser asks for that size), home page URL, and privacy policy URL are verified as a set.
 
 ## v4v-toolkit swap-out boundary
 
