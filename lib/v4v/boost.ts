@@ -5,10 +5,17 @@
 // import from there and delete the bodies of the helpers below.
 
 import type { Boostagram, ValueBlock, ValueRecipient, BoostResult } from '@/lib/types';
-import { hasNwc, nwcKeysend, nwcPayInvoice } from './nwc';
+import {
+  hasNwc,
+  nwcFetchCapabilities,
+  nwcGetMethods,
+  nwcKeysend,
+  nwcPayInvoice,
+} from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
+import { lookupKeysendTarget } from './keysend-lookup';
 import { storeBoostMetadata } from './boostbox';
 import { storage } from '@/lib/storage';
 
@@ -213,18 +220,74 @@ async function payKeysend(
   return { recipient, sats, ok: true, preimage };
 }
 
+// Whether the wallet can keysend at all. This is the gate on the whole
+// upgrade: a wallet that can't keysend goes straight to LNURL and never even
+// probes the address, so the lookup costs nothing for those users.
+//
+// The answer is normally settled long before a boost — NWC records its method
+// list at connect time (nwcValidate → storage.nwcMethods) and WebLN is a
+// property read — so this resolves synchronously in the common case. The
+// await only bites for a connection made before the capability was persisted;
+// that fetch then records it, so it's once per wallet, not once per boost.
+//
+// "Unknown" counts as no: LNURL pays on every rail, keysend doesn't, so an
+// unverified guess must never downgrade a leg that would otherwise have paid.
+async function railCanKeysend(rail: Rail): Promise<boolean> {
+  if (rail === 'spark') return false; // BOLT11-only by design
+  if (rail === 'webln') {
+    // Reading the method off the provider doesn't require wl.enable(), so this
+    // costs no permission prompt.
+    return typeof window !== 'undefined' && typeof window.webln?.keysend === 'function';
+  }
+  const methods = nwcGetMethods() ?? (await nwcFetchCapabilities());
+  return methods.includes('pay_keysend');
+}
+
+/**
+ * Turn a `type="lnaddress"` recipient into a keysend recipient when its
+ * address publishes a `.well-known/keysend` endpoint. Returns null when it
+ * doesn't — the caller then pays LNURL exactly as before.
+ *
+ * The endpoint's routing pair wins over the feed's: for an lnaddress recipient
+ * the feed rarely carries customKey/customValue at all (the LNURL path ignores
+ * them entirely), while the endpoint's pair is what routes to the right
+ * sub-account on a shared node. The feed's pair is used only as a fallback.
+ */
+async function keysendRecipientFor(
+  recipient: ValueRecipient,
+): Promise<ValueRecipient | null> {
+  const target = await lookupKeysendTarget(recipient.address);
+  if (!target) return null;
+  const pair =
+    target.customKey && target.customValue
+      ? { customKey: target.customKey, customValue: target.customValue }
+      : { customKey: recipient.customKey, customValue: recipient.customValue };
+  return { ...recipient, type: 'node', address: target.pubkey, ...pair };
+}
+
 async function payOne(
   recipient: ValueRecipient,
   sats: number,
   rail: Rail,
   boostagram: Boostagram,
+  canKeysend: boolean,
 ): Promise<BoostResult> {
   const base: BoostResult = { recipient, sats, ok: false };
   if (sats <= 0) return { ...base, ok: true };
   try {
-    return recipient.type === 'lnaddress'
-      ? await payLnurl(recipient, sats, rail, boostagram)
-      : await payKeysend(recipient, sats, rail, boostagram);
+    if (recipient.type !== 'lnaddress') {
+      return await payKeysend(recipient, sats, rail, boostagram);
+    }
+    const upgraded = canKeysend ? await keysendRecipientFor(recipient) : null;
+    if (!upgraded) return await payLnurl(recipient, sats, rail, boostagram);
+    // No LNURL retry if this throws. A keysend that errors after the payment
+    // actually left the wallet (see the Zeus no-preimage case in nwcKeysend)
+    // would otherwise double-pay the recipient — a failed leg is the cheaper
+    // wrong answer.
+    const res = await payKeysend(upgraded, sats, rail, boostagram);
+    // Report the recipient the feed listed, not the resolved node pubkey, so
+    // the modal's per-leg rows and the stored boost log stay readable.
+    return { ...res, recipient };
   } catch (e: any) {
     return { ...base, ok: false, error: e?.message ?? String(e) };
   }
@@ -256,8 +319,18 @@ export async function sendBoost(args: {
   const splits = splitSats(args.totalSats, recipients);
   const results: BoostResult[] = [];
 
+  // Resolved once per boost, not per leg, and only when there's actually an
+  // lnaddress recipient to upgrade. Both halves matter: a node-only value
+  // block (still the common case) must not pay for a capability check it
+  // can't use, and on the NWC rail `nwcFetchCapabilities` does NOT populate
+  // its cache when get_info fails — so calling it per leg would re-fire a
+  // relay round trip for every recipient against an unreachable wallet.
+  const canKeysend = recipients.some((r) => r.type === 'lnaddress')
+    ? await railCanKeysend(rail)
+    : false;
+
   for (let i = 0; i < recipients.length; i++) {
-    const r = await payOne(recipients[i], splits[i], rail, args.boostagram);
+    const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend);
     results.push(r);
     args.onProgress?.(r, i, recipients.length);
   }
