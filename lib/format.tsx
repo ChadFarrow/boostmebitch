@@ -1,5 +1,6 @@
 'use client';
 import { Fragment, type ReactNode } from 'react';
+import { boostSoundPlan, hasAudioSessionSupport, isExclusiveAudioPlatform } from './boost-sound';
 
 // ─── Time formatting ──────────────────────────────────────────────────────────
 
@@ -183,15 +184,63 @@ export function primeBoostSound(): void {
   }
 }
 
-/** Short celebratory sound on a successful boost. Silent no-op if the asset can't load. */
-export function playBoostSound(): void {
+type AudioSessionish = { type?: string };
+
+/** The document's audio session, when the browser exposes one. */
+function audioSession(): AudioSessionish | null {
+  if (!hasAudioSessionSupport()) return null;
+  return (navigator as Navigator & { audioSession?: AudioSessionish }).audioSession ?? null;
+}
+
+/**
+ * Short celebratory sound on a successful boost. Silent no-op if the asset
+ * can't load.
+ *
+ * `appIsPlaying` must be the LIVE value at call time (read it via
+ * `useApp.getState().isPlaying`, not a value captured during render) — this
+ * fires seconds after the tap, once the payment resolves, and a stale `false`
+ * would retype the audio session out from under a podcast that started
+ * playing in the meantime.
+ *
+ * See `lib/boost-sound.ts` for why the plan differs by state; the short
+ * version is that an unmuted ping on an otherwise-idle page takes an
+ * exclusive `playback` session and permanently kills the user's music app.
+ */
+export function playBoostSound(opts: { appIsPlaying: boolean }): void {
   const audio = ensureBoostAudio();
   if (!audio) return;
+  const plan = boostSoundPlan({
+    appIsPlaying: opts.appIsPlaying,
+    hasAudioSession: hasAudioSessionSupport(),
+    exclusiveAudioPlatform: isExclusiveAudioPlatform(),
+  });
+  if (plan === 'skip') return;
+
+  const session = plan === 'transient' ? audioSession() : null;
+  // Restore whatever the page had, so a podcast started later doesn't inherit
+  // a transient session (which is exactly what stops audio on screen lock).
+  const previousType = session?.type;
+  const restore = () => {
+    if (!session || previousType === undefined) return;
+    try { session.type = previousType; } catch { /* ignore */ }
+  };
+
   try {
+    if (session) {
+      try { session.type = 'transient'; } catch { /* ignore */ }
+    }
     audio.muted = false;
     audio.currentTime = 0;
-    void audio.play().catch(() => {});
+    void audio
+      .play()
+      .then(() => {
+        // `ended` is the accurate signal; the timeout is a backstop for a
+        // stalled decode, which would otherwise leave the session retyped.
+        audio.addEventListener('ended', restore, { once: true });
+        setTimeout(restore, 5000);
+      })
+      .catch(() => restore());
   } catch {
-    /* ignore */
+    restore();
   }
 }

@@ -298,7 +298,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
     if (successfulIdx.length > 0) {
       fireConfetti();
-      playBoostSound();
+      playBoostSound({ appIsPlaying: useApp.getState().isPlaying });
     }
     if (successfulIdx.length > 0 && rail) recordLastRail(rail, identity);
 

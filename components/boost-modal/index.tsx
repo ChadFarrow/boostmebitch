@@ -198,7 +198,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         return;
       }
       fireConfetti();
-      playBoostSound();
+      playBoostSound({ appIsPlaying: useApp.getState().isPlaying });
       setPaymentDone(true);
       setRunning(false);
       if (rail) recordLastRail(rail, identity);
@@ -222,7 +222,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       setResults(collected);
       if (paidAny(collected)) {
         fireConfetti();
-        playBoostSound();
+        playBoostSound({ appIsPlaying: useApp.getState().isPlaying });
       }
     } catch (e) {
       alert(getErrorMessage(e, 'boost failed'));

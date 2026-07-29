@@ -91,7 +91,8 @@ lib/
   store.ts       → Zustand: identity, current, player/view state, favorites, mutes
   storage.ts     → typed localStorage accessors for every bmb:* key
   types.ts · util.ts  (isMusicMedium, hasValueRecipients, isHlsUrl, fnvHash, getErrorMessage)
-  format.tsx     → fmt/fmtDuration/fmtClock/fmtLiveTime/timeAgo, linkify, confetti
+  format.tsx     → fmt/fmtDuration/fmtClock/fmtLiveTime/timeAgo, linkify, confetti, boost ping
+  boost-sound.ts → audio-session plan for the boost ping (don't evict the user's music app)
   nostr/
     auth · signer · amber · bunker        → NIP-07 / NIP-55 / NIP-46 sign-in + window.nostr swap
     pool · publish · relays · profile     → SimplePool wrapper, signAndPublish/publishSignedEvent, relay sets, kind:0
