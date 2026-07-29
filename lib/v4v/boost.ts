@@ -11,6 +11,7 @@ import {
   nwcGetMethods,
   nwcKeysend,
   nwcPayInvoice,
+  NwcMethodUnsupportedError,
 } from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
@@ -220,27 +221,50 @@ async function payKeysend(
   return { recipient, sats, ok: true, preimage };
 }
 
-// Whether the wallet can keysend at all. This is the gate on the whole
-// upgrade: a wallet that can't keysend goes straight to LNURL and never even
-// probes the address, so the lookup costs nothing for those users.
-//
-// The answer is normally settled long before a boost — NWC records its method
-// list at connect time (nwcValidate → storage.nwcMethods) and WebLN is a
-// property read — so this resolves synchronously in the common case. The
-// await only bites for a connection made before the capability was persisted;
-// that fetch then records it, so it's once per wallet, not once per boost.
-//
-// "Unknown" counts as no: LNURL pays on every rail, keysend doesn't, so an
-// unverified guess must never downgrade a leg that would otherwise have paid.
-async function railCanKeysend(rail: Rail): Promise<boolean> {
-  if (rail === 'spark') return false; // BOLT11-only by design
+/**
+ * Whether the wallet can keysend — the gate on the whole lnaddress upgrade.
+ *
+ * Tri-state on purpose, because the three answers want three behaviours:
+ *
+ * - `'no'`   — provably can't. Skip the address probe entirely; those users pay
+ *              nothing for a feature they can't use.
+ * - `'yes'`  — provably can. Upgrade, and if the keysend then errors, fail the
+ *              leg (it may already have paid — no LNURL retry).
+ * - `'unknown'` — the wallet never told us. **Attempt it anyway**, and fall
+ *              back to LNURL only on a NOT_IMPLEMENTED refusal (see payOne).
+ *
+ * That last arm is why this isn't a boolean. Plenty of NWC wallets simply omit
+ * `methods` from `get_info`, or grant `get_balance` but not `get_info` — and
+ * folding those in with "no" meant the upgrade could never fire for them, no
+ * matter what the recipient's address published. Silently, since both gates
+ * fall back by design. A refusal costs one round trip; being wrong the other
+ * way cost the feature entirely.
+ *
+ * The answer is normally settled long before a boost: NWC records its method
+ * list at connect time (nwcValidate → storage.nwcMethods) and WebLN is a plain
+ * property read, so this resolves without network in the common case.
+ */
+type KeysendCapability = 'yes' | 'no' | 'unknown';
+
+async function railCanKeysend(rail: Rail): Promise<KeysendCapability> {
+  if (rail === 'spark') return 'no'; // BOLT11-only by design
   if (rail === 'webln') {
     // Reading the method off the provider doesn't require wl.enable(), so this
-    // costs no permission prompt.
-    return typeof window !== 'undefined' && typeof window.webln?.keysend === 'function';
+    // costs no permission prompt. The provider either exposes keysend or it
+    // doesn't — there's no unknown here.
+    const ok =
+      typeof window !== 'undefined' && typeof window.webln?.keysend === 'function';
+    return ok ? 'yes' : 'no';
   }
-  const methods = nwcGetMethods() ?? (await nwcFetchCapabilities());
-  return methods.includes('pay_keysend');
+  // nwcGetMethods() returns null for both "never asked" and "asked, got an
+  // empty list" — an empty list is no evidence either way.
+  let methods = nwcGetMethods();
+  if (!methods) {
+    await nwcFetchCapabilities();
+    methods = nwcGetMethods();
+  }
+  if (!methods) return 'unknown';
+  return methods.includes('pay_keysend') ? 'yes' : 'no';
 }
 
 /**
@@ -270,7 +294,7 @@ async function payOne(
   sats: number,
   rail: Rail,
   boostagram: Boostagram,
-  canKeysend: boolean,
+  canKeysend: KeysendCapability,
 ): Promise<BoostResult> {
   const base: BoostResult = { recipient, sats, ok: false };
   if (sats <= 0) return { ...base, ok: true };
@@ -278,27 +302,47 @@ async function payOne(
     if (recipient.type !== 'lnaddress') {
       return await payKeysend(recipient, sats, rail, boostagram);
     }
-    const upgraded = canKeysend ? await keysendRecipientFor(recipient) : null;
+    const upgraded =
+      canKeysend === 'no' ? null : await keysendRecipientFor(recipient);
     if (!upgraded) {
       // Both gates fall back silently by design, which makes a mis-detected
       // wallet capability and an address with no endpoint look identical from
       // the outside — say which one sent this leg to LNURL.
       console.info(
         `[keysend] ${recipient.address} → LNURL (${
-          canKeysend ? 'no .well-known/keysend endpoint' : `${rail} wallet cannot keysend`
+          canKeysend === 'no'
+            ? `${rail} wallet cannot keysend`
+            : 'no .well-known/keysend endpoint'
         })`,
       );
       return await payLnurl(recipient, sats, rail, boostagram);
     }
-    console.info(`[keysend] ${recipient.address} → keysend ${upgraded.address.slice(0, 12)}…`);
-    // No LNURL retry if this throws. A keysend that errors after the payment
-    // actually left the wallet (see the Zeus no-preimage case in nwcKeysend)
-    // would otherwise double-pay the recipient — a failed leg is the cheaper
-    // wrong answer.
-    const res = await payKeysend(upgraded, sats, rail, boostagram);
-    // Report the recipient the feed listed, not the resolved node pubkey, so
-    // the modal's per-leg rows and the stored boost log stay readable.
-    return { ...res, recipient };
+    console.info(
+      `[keysend] ${recipient.address} → keysend ${upgraded.address.slice(0, 12)}…` +
+        (canKeysend === 'unknown' ? ' (capability unknown — attempting)' : ''),
+    );
+    try {
+      const res = await payKeysend(upgraded, sats, rail, boostagram);
+      // Report the recipient the feed listed, not the resolved node pubkey, so
+      // the modal's per-leg rows and the stored boost log stay readable.
+      return { ...res, recipient };
+    } catch (e) {
+      // The ONLY error we may retry over LNURL. A NIP-47 NOT_IMPLEMENTED is the
+      // wallet declining the method *instead of* executing it, so no payment
+      // left the wallet and LNURL cannot double-pay. Every other failure stays
+      // fatal to the leg — a keysend that errors after the money moved (see the
+      // Zeus no-preimage case in nwcKeysend) would otherwise pay twice, and a
+      // failed leg is the cheaper wrong answer.
+      //
+      // Deliberately not gated on `canKeysend === 'unknown'`: a wallet that
+      // advertised pay_keysend and then refuses it has simply mis-advertised,
+      // and the refusal is equally proof-of-no-payment either way.
+      if (!(e instanceof NwcMethodUnsupportedError)) throw e;
+      console.info(
+        `[keysend] ${recipient.address} → LNURL (wallet refused keysend: NOT_IMPLEMENTED)`,
+      );
+      return await payLnurl(recipient, sats, rail, boostagram);
+    }
   } catch (e: any) {
     return { ...base, ok: false, error: e?.message ?? String(e) };
   }
@@ -336,9 +380,9 @@ export async function sendBoost(args: {
   // can't use, and on the NWC rail `nwcFetchCapabilities` does NOT populate
   // its cache when get_info fails — so calling it per leg would re-fire a
   // relay round trip for every recipient against an unreachable wallet.
-  const canKeysend = recipients.some((r) => r.type === 'lnaddress')
+  const canKeysend: KeysendCapability = recipients.some((r) => r.type === 'lnaddress')
     ? await railCanKeysend(rail)
-    : false;
+    : 'no';
 
   for (let i = 0; i < recipients.length; i++) {
     const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend);

@@ -56,7 +56,17 @@ export async function GET(req: Request) {
     if (!res.ok) {
       return NextResponse.json({ error: 'no keysend endpoint' }, { status: 404 });
     }
-    const data = await res.json();
+    // A 200 is not a promise of JSON. SPA-hosted domains serve their app shell
+    // for unknown paths with a 200 (primal.net does exactly this), so parsing
+    // straight into res.json() threw and withErrorHandling dressed "this
+    // address has no keysend endpoint" up as a 500. Same absent-endpoint case
+    // as the branch above — answer it the same way.
+    let data: unknown;
+    try {
+      data = await res.json();
+    } catch {
+      return NextResponse.json({ error: 'no keysend endpoint' }, { status: 404 });
+    }
     return NextResponse.json(data, {
       headers: { 'Cache-Control': 'public, s-maxage=21600, stale-while-revalidate=86400' },
     });

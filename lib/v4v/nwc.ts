@@ -12,9 +12,39 @@ import { createObservable } from '../pubsub';
 const { subscribe: subscribeNwc, notify } = createObservable();
 export { subscribeNwc };
 
+/**
+ * Thrown when the wallet answers a NIP-47 request with `NOT_IMPLEMENTED`.
+ *
+ * Load-bearing as a *type*, not just a message: the wallet returns this error
+ * **instead of** executing the payment, so nothing left the wallet and the
+ * caller may safely retry the leg by another route. `boost.ts` keys its one
+ * permitted keysend→LNURL fallback off `instanceof` this. Flattening it back
+ * into a plain Error (as this code used to) makes a wallet that can't keysend
+ * indistinguishable from a routing failure that may already have paid — and
+ * the fallback would then be a double-pay.
+ */
+export class NwcMethodUnsupportedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NwcMethodUnsupportedError';
+  }
+}
+
+const NOT_IMPLEMENTED_MSG =
+  'Wallet returned NOT_IMPLEMENTED — your NWC wallet may not support this payment type. Try Alby or Mutiny instead of an embedded node.';
+
+/** Map the SDK's typed NOT_IMPLEMENTED into ours; pass anything else through. */
+function mapNwcError(e: unknown): unknown {
+  if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
+    return new NwcMethodUnsupportedError(NOT_IMPLEMENTED_MSG);
+  }
+  return e;
+}
+
 // Cached methods list from the last successful get_info call. Populated by
 // nwcValidate (at connect time) and nwcFetchCapabilities (lazy on card mount).
-// Null means "not yet fetched" — distinct from [] which means "fetched, empty".
+// Null means "we don't know" — and so does an EMPTY list, deliberately: see
+// nwcGetMethods.
 let cachedNwcMethods: string[] | null = null;
 
 /**
@@ -24,26 +54,37 @@ let cachedNwcMethods: string[] | null = null;
  *
  * `uri` is passed explicitly during validation because the connection hasn't
  * been saved yet at that point.
+ *
+ * An empty list is deliberately NOT persisted. It carries no information (the
+ * wallet answered but told us nothing), and writing it created a permanent
+ * latch: the persisted `[]` read back as a settled answer, so the connection
+ * could never be re-probed for the life of that URI.
  */
 function setNwcMethods(methods: string[], uri?: string): string[] {
   cachedNwcMethods = methods;
   const target = uri ?? loadNwcUri();
-  if (target) storage.nwcMethods.set({ uri: target, methods });
+  if (target && methods.length) storage.nwcMethods.set({ uri: target, methods });
   return methods;
 }
 
 /**
- * Supported NIP-47 methods for the current connection, or null when we've
- * genuinely never asked. Falls back to the persisted record so the answer
- * survives a page reload — but only when it was captured for the URI that's
- * connected now, so switching wallets can't inherit the old one's
- * capabilities.
+ * Supported NIP-47 methods for the current connection, or null when we don't
+ * know. Falls back to the persisted record so the answer survives a page
+ * reload — but only when it was captured for the URI that's connected now, so
+ * switching wallets can't inherit the old one's capabilities.
+ *
+ * **An empty list counts as "don't know," not "fetched, empty."** Some wallets
+ * omit `methods` from their `get_info` response entirely, and `[]` is truthy
+ * in JS — so returning it here handed callers a confident "this wallet can do
+ * nothing," permanently disabling the keysend upgrade for a wallet that may
+ * well support it. Callers that need certainty must treat null as unknown and
+ * decide for themselves (see railCanKeysend's tri-state).
  */
 export const nwcGetMethods = (): string[] | null => {
-  if (cachedNwcMethods) return cachedNwcMethods;
+  if (cachedNwcMethods?.length) return cachedNwcMethods;
   const rec = storage.nwcMethods.get();
   const uri = loadNwcUri();
-  if (!rec || !uri || rec.uri !== uri) return null;
+  if (!rec || !uri || rec.uri !== uri || !rec.methods.length) return null;
   cachedNwcMethods = rec.methods;
   return cachedNwcMethods;
 };
@@ -160,10 +201,7 @@ export async function nwcPayInvoice(invoice: string): Promise<string> {
     const res = await c.payInvoice({ invoice });
     return res.preimage;
   } catch (e) {
-    if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
-      throw new Error('Wallet returned NOT_IMPLEMENTED — your NWC wallet may not support this payment type. Try Alby or Mutiny instead of an embedded node.');
-    }
-    throw e;
+    throw mapNwcError(e);
   }
 }
 
@@ -233,9 +271,10 @@ export async function nwcKeysend(args: {
     // IS the valid proof of payment. Re-throw anything else (routing failures,
     // method-not-supported, timeout) so the caller sees the real error.
     if (e instanceof nwc.Nip47ResponseValidationError) return preimage;
-    if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
-      throw new Error('Wallet returned NOT_IMPLEMENTED — your NWC wallet may not support this payment type. Try Alby or Mutiny instead of an embedded node.');
-    }
-    throw e;
+    // NOT_IMPLEMENTED becomes a typed NwcMethodUnsupportedError: the wallet
+    // returned it *instead of* paying, which is the one keysend failure
+    // boost.ts is allowed to retry over LNURL. Everything else stays opaque
+    // precisely because it may have paid already.
+    throw mapNwcError(e);
   }
 }
