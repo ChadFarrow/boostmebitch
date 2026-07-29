@@ -17,12 +17,12 @@ export interface KeysendTarget {
   customValue?: string;
 }
 
-// Deliberately shorter than the repo's usual 5s fetch budget. This probe is an
-// optimization with a working fallback and it runs *inside* a boost the user
-// is waiting on, so losing the upgrade on a slow network is much cheaper than
-// stalling the payment. A well-known GET that hasn't answered in 3s wasn't
-// going to be the fast path anyway.
-const LOOKUP_TIMEOUT_MS = 3000;
+// Kept tight because this runs *inside* a boost the user is waiting on, and
+// it's an optimization with a working fallback — losing the upgrade on a slow
+// network is much cheaper than stalling the payment. Slightly above the
+// proxy's own 3.5s upstream budget so the route can answer "no endpoint"
+// rather than having the caller abort first.
+const LOOKUP_TIMEOUT_MS = 4500;
 const HIT_TTL_MS = 6 * 60 * 60 * 1000;
 const MISS_TTL_MS = 15 * 60 * 1000;
 
@@ -91,10 +91,12 @@ export async function lookupKeysendTarget(address: string): Promise<KeysendTarge
 
   let value: KeysendTarget | null = null;
   try {
-    const res = await fetch(
-      `https://${domain}/.well-known/keysend/${encodeURIComponent(name)}`,
-      { signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS) },
-    );
+    // Through our own origin, never the provider directly: the keysend
+    // well-known carries no CORS headers, so a direct fetch is blocked and
+    // every address would silently look LNURL-only. See app/api/keysend.
+    const res = await fetch(`/api/keysend?addr=${encodeURIComponent(address)}`, {
+      signal: AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
+    });
     if (res.ok) value = parseKeysendResponse(await res.json());
   } catch {
     value = null;

@@ -279,7 +279,18 @@ async function payOne(
       return await payKeysend(recipient, sats, rail, boostagram);
     }
     const upgraded = canKeysend ? await keysendRecipientFor(recipient) : null;
-    if (!upgraded) return await payLnurl(recipient, sats, rail, boostagram);
+    if (!upgraded) {
+      // Both gates fall back silently by design, which makes a mis-detected
+      // wallet capability and an address with no endpoint look identical from
+      // the outside — say which one sent this leg to LNURL.
+      console.info(
+        `[keysend] ${recipient.address} → LNURL (${
+          canKeysend ? 'no .well-known/keysend endpoint' : `${rail} wallet cannot keysend`
+        })`,
+      );
+      return await payLnurl(recipient, sats, rail, boostagram);
+    }
+    console.info(`[keysend] ${recipient.address} → keysend ${upgraded.address.slice(0, 12)}…`);
     // No LNURL retry if this throws. A keysend that errors after the payment
     // actually left the wallet (see the Zeus no-preimage case in nwcKeysend)
     // would otherwise double-pay the recipient — a failed leg is the cheaper
