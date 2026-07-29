@@ -30,6 +30,7 @@ import {
 import { refreshAccessToken, signInWithGoogle } from '@/lib/nostr/google-auth';
 import { getErrorMessage } from '@/lib/util';
 import { provisionSparkFromKey } from './provision-spark';
+import { provisionProfileFromKey } from './provision-profile';
 
 // The Google onboarding state machine, ported from Wisp's GoogleAuthScreen.kt.
 //
@@ -211,6 +212,11 @@ export function GoogleAuthPanel({
       // seed in the console.
       provisionSparkFromKey(skHex, id).catch((e) => {
         console.warn('[spark] wallet provisioning failed:', getErrorMessage(e, 'unknown error'));
+      });
+      // Same contract as the wallet: new-account only, best-effort, and the
+      // failure is logged as a message rather than an object.
+      provisionProfileFromKey(id).catch((e) => {
+        console.warn('[profile] generated profile publish failed:', getErrorMessage(e, 'unknown error'));
       });
     }
     // putKey fell back to memory-only (private mode, partitioned storage): this
