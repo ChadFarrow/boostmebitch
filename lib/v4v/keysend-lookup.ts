@@ -17,7 +17,12 @@ export interface KeysendTarget {
   customValue?: string;
 }
 
-const LOOKUP_TIMEOUT_MS = 5000;
+// Deliberately shorter than the repo's usual 5s fetch budget. This probe is an
+// optimization with a working fallback and it runs *inside* a boost the user
+// is waiting on, so losing the upgrade on a slow network is much cheaper than
+// stalling the payment. A well-known GET that hasn't answered in 3s wasn't
+// going to be the fast path anyway.
+const LOOKUP_TIMEOUT_MS = 3000;
 const HIT_TTL_MS = 6 * 60 * 60 * 1000;
 const MISS_TTL_MS = 15 * 60 * 1000;
 

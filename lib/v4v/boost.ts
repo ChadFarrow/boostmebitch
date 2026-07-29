@@ -261,6 +261,7 @@ async function payOne(
   sats: number,
   rail: Rail,
   boostagram: Boostagram,
+  canKeysend: boolean,
 ): Promise<BoostResult> {
   const base: BoostResult = { recipient, sats, ok: false };
   if (sats <= 0) return { ...base, ok: true };
@@ -268,9 +269,7 @@ async function payOne(
     if (recipient.type !== 'lnaddress') {
       return await payKeysend(recipient, sats, rail, boostagram);
     }
-    const upgraded = (await railCanKeysend(rail))
-      ? await keysendRecipientFor(recipient)
-      : null;
+    const upgraded = canKeysend ? await keysendRecipientFor(recipient) : null;
     if (!upgraded) return await payLnurl(recipient, sats, rail, boostagram);
     // No LNURL retry if this throws. A keysend that errors after the payment
     // actually left the wallet (see the Zeus no-preimage case in nwcKeysend)
@@ -311,8 +310,18 @@ export async function sendBoost(args: {
   const splits = splitSats(args.totalSats, recipients);
   const results: BoostResult[] = [];
 
+  // Resolved once per boost, not per leg, and only when there's actually an
+  // lnaddress recipient to upgrade. Both halves matter: a node-only value
+  // block (still the common case) must not pay for a capability check it
+  // can't use, and on the NWC rail `nwcFetchCapabilities` does NOT populate
+  // its cache when get_info fails — so calling it per leg would re-fire a
+  // relay round trip for every recipient against an unreachable wallet.
+  const canKeysend = recipients.some((r) => r.type === 'lnaddress')
+    ? await railCanKeysend(rail)
+    : false;
+
   for (let i = 0; i < recipients.length; i++) {
-    const r = await payOne(recipients[i], splits[i], rail, args.boostagram);
+    const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend);
     results.push(r);
     args.onProgress?.(r, i, recipients.length);
   }
