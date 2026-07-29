@@ -244,6 +244,23 @@ export function HomePage() {
           listen<span className="text-bolt">.</span>{' '}
           <span className="text-bolt animate-bolt">boost</span><span className="text-bone">.</span>
         </h2>
+        {/* Load-bearing for Google OAuth verification, not just marketing copy:
+            the app home page must "fully describe your app's functionality" and
+            "explain with transparency the purpose for which your app requests
+            user data". The headline above is three words and carries neither.
+            Hidden in the drilled-in views (show / episode / discussion) so it's
+            landing copy rather than a permanent banner — deliberately NOT gated
+            on `showLeftRightLayout`, because that flips on stored favorites and
+            a compliance-critical string shouldn't disappear based on
+            localStorage. Keep this in sync with app/privacy/page.tsx. */}
+        {!inDetailView && !inEpisodeDetail && !inDiscussion && (
+          <p className="mt-4 max-w-xl text-sm leading-relaxed text-bone/80">
+            Search Podcasting 2.0 shows, stream episodes, and send Lightning boosts straight
+            to creators — no account, no middleman. Optional Google sign-in generates a Nostr
+            identity for you and keeps an encrypted backup of it in your own Google Drive; we
+            never see the key or your PIN.
+          </p>
+        )}
         <div className="mt-8 max-w-xl">
           <SearchBar
             key={searchKey}

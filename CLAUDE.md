@@ -439,6 +439,34 @@ Since Lightning and Nostr are two independent logins (a user can boost without a
 - **NIP-05:** `app/.well-known/nostr.json/route.ts` maps the root `_@boostmebitch.com` (shown as the bare domain) to the site pubkey, derived from `SITE_NOSTR_SK` so it can't drift. CORS-open per spec; served by the Next app on Vercel (nothing to configure at the registrar). Verifies once deployed to `boostmebitch.com`.
 - **Profile:** `scripts/publish-site-profile.mjs` publishes/updates the kind:0 (name, avatar, about, `nip05`, `lud16`). One-off maintenance script: `node --env-file=.env.local scripts/publish-site-profile.mjs`. Edit `PROFILE` and re-run to change it (kind:0 is replaceable, newest wins).
 
+## Google OAuth verification surfaces (`/privacy` + the homepage blurb)
+
+Two bits of UI exist for Google's OAuth app verification, not for their own sake — **don't tidy either
+away.** They shipped ahead of the Google onboarding feature itself (PR #141) so brand verification
+could run while that branch was still unmerged.
+
+- **`app/privacy/page.tsx`**, linked from the **layout footer** (`app/layout.tsx`). Google requires the
+  policy to be hosted on the same domain as the homepage, linked *from* the homepage, and reachable at
+  the identical URL entered on the consent screen. The footer lives in the layout precisely so it's on
+  the homepage. Every claim on that page is checkable against the source, and several ("we never
+  receive your name or email", "we cannot decrypt your backup") are only true because of specific
+  implementation choices — change those and the page has to change too. It also carries the required
+  Limited Use statement linking Google's API Services User Data Policy.
+- **The homepage description paragraph** in `components/home-page.tsx`, under the `search. listen.
+  boost.` headline. Google requires the home page to "fully describe your app's functionality" and
+  "explain with transparency the purpose for which your app requests user data"; a three-word headline
+  carries neither. Gated on the browse view (`!inDetailView && !inEpisodeDetail && !inDiscussion`) so
+  it reads as landing copy — deliberately **not** gated on `showLeftRightLayout`, which flips on stored
+  favorites, and a compliance-critical string must not vanish based on localStorage.
+
+Console-side facts worth not re-deriving: the scopes (`openid` + `drive.appdata`) are both
+**non-sensitive**, so this needs only **brand verification** — no demo video, no CASA assessment. The
+apex **307-redirects to `www`**, so `https://www.boostmebitch.com` is the origin GIS sees and the `www`
+form is what goes in the console's App-domain fields; authorized domain is `boostmebitch.com`, verified
+as a Search Console **domain property**. `*.vercel.app` can't be an authorized domain (you can't verify
+someone else's domain), so **Google sign-in does not work on preview deployments** — test on localhost
+and production only.
+
 ## v4v-toolkit swap-out boundary
 
 `lib/v4v/*` and `lib/nostr/` are intentionally the only files that talk to wallets/signers. Components import only: `lib/v4v/boost.ts` (orchestrator), `lib/v4v/nwc.ts` (URI persistence), `lib/v4v/spark.ts` (wallet surface), `lib/nostr/` barrel (auth + publish + wallet backup). Swap toolkit by replacing internals here without touching `components/` or `app/`.
