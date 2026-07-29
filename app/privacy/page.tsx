@@ -201,7 +201,7 @@ export default function PrivacyPage() {
           If this policy changes materially, the date at the top of this page changes with it.
         </p>
         <p>
-          Questions: <a href="mailto:support@boostmebitch.com" className="underline hover:text-bolt">support@boostmebitch.com</a>
+          Questions: <a href="mailto:chad.farrow@gmail.com" className="underline hover:text-bolt">chad.farrow@gmail.com</a>
         </p>
       </Section>
     </main>
