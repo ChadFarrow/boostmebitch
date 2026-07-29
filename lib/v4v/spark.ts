@@ -216,6 +216,20 @@ export async function sparkGenerateMnemonic(): Promise<string> {
  *
  * The HMAC domain-separates the wallet seed from the signing key: the wallet
  * seed can't be walked back to the nsec.
+ *
+ * ⚠️ THE LABEL IS A DERIVATION CONTRACT — treat `'bmb-spark-wallet'` as v1 and
+ * never edit it in place. Changing the label (or the truncation, or the hash)
+ * changes every derived wallet, and every user whose funds live in one loses
+ * access to them from the same nsec. There is no graceful failure: they simply
+ * land on a different, empty wallet. If the derivation ever has to change, add
+ * a NEW label (`bmb-spark-wallet-v2`), try v1 first on restore, and migrate
+ * balances deliberately. Wisp — where this is ported from — versions its salt
+ * (`wisp-spark-wallet-v1`) for exactly this reason and locks the contract with
+ * test vectors; ours is unversioned by history, so this comment is the guard.
+ *
+ * (Note we are NOT wire-compatible with Wisp and don't try to be: they use
+ * HKDF extract+expand with their own salt, we use HMAC-then-truncate with
+ * ours. Both are sound; they simply produce different wallets.)
  */
 export async function sparkMnemonicFromKey(skHex: string): Promise<string> {
   if (!/^[0-9a-fA-F]{64}$/.test(skHex)) {

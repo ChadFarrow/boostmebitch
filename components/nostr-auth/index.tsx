@@ -24,6 +24,7 @@ import { hasSpark, sparkDisconnect, sparkInitFromMnemonic } from '@/lib/v4v/spar
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
+import { deriveSparkFromLocalKey } from './provision-spark';
 import { AccountMenu } from './account-menu';
 import { SignInModal } from './sign-in-modal';
 import { markNwcRestored } from '../nwc-wallet';
@@ -123,11 +124,23 @@ export function NostrAuth() {
     // backups published from a session that had custom write relays — the
     // primary reason NWC and Spark failed to auto-restore on mobile.
     const sparkPromise = !hasSpark() && !storage.sparkOptOut.get(id.npub)
-      ? fetchEncryptedMnemonic(enriched)
-          .then((mnemonic) => {
-            if (mnemonic) return sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
-          })
-          .catch(() => {})
+      ? (async () => {
+          // Fast path first: for a local signer the seed derives from the key
+          // we already hold, so the wallet comes up immediately instead of
+          // after an 8s-capped relay query plus a NIP-44 decrypt. Returns null
+          // for every other signer kind, leaving the behaviour below unchanged.
+          const derived = await deriveSparkFromLocalKey(enriched).catch(() => null);
+
+          // The backup is still authoritative — a user who pasted their own
+          // seed has one that differs from the derived default, and it must
+          // win. Only re-init when it actually disagrees, so the common case
+          // (never changed wallets) costs nothing beyond the query we were
+          // already making.
+          const mnemonic = await fetchEncryptedMnemonic(enriched);
+          if (mnemonic && mnemonic !== derived) {
+            await sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
+          }
+        })().catch(() => {})
       : Promise.resolve();
     // Synced settings: apply the last-used boost rail.
     const settingsPromise = fetchSettings(enriched)

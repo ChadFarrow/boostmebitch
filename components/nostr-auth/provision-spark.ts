@@ -1,6 +1,7 @@
 'use client';
 
 import { publishEncryptedMnemonic, type NostrIdentity } from '@/lib/nostr';
+import { getKey } from '@/lib/nostr/local-key-store';
 import {
   hasSpark,
   sparkInitFromMnemonic,
@@ -8,6 +9,49 @@ import {
   sparkSeedIsActive,
 } from '@/lib/v4v/spark';
 import { storage } from '@/lib/storage';
+
+/**
+ * Bring a local-signer account's Spark wallet up without waiting on the
+ * network, and return the mnemonic it used (null when it didn't run).
+ *
+ * The normal restore path is: query relays for the kind:30078 backup → NIP-44
+ * decrypt → load the SDK → initialize. The relay query alone is capped at 8s
+ * and is the slowest, most variable link, which is why a returning user sits
+ * in front of a "connecting" wallet for several seconds.
+ *
+ * For a local signer none of that is necessary. We hold the key, and the seed
+ * is a pure function of it (`sparkMnemonicFromKey`), so the wallet can be
+ * derived in microseconds and the SDK started immediately. This is the same
+ * model Wisp uses — its derived wallet is the DEFAULT wallet, reachable from
+ * the nsec alone on a fresh install with no relay backup at all; the backup
+ * exists for wallets that differ from that default.
+ *
+ * Which is exactly why this is a fast path and not the source of truth: a user
+ * who pasted their own Spark seed has a kind:30078 backup that differs, and
+ * that backup must still win. The caller races this against the fetch and
+ * re-inits if they disagree.
+ *
+ * The key is read straight from the key store rather than from the signer:
+ * `LocalSigner` deliberately exposes no key-export method, because anything
+ * that reaches `window.nostr` is readable by every script on the origin.
+ */
+export async function deriveSparkFromLocalKey(
+  identity: NostrIdentity,
+): Promise<string | null> {
+  if (storage.signer.get() !== 'local') return null;
+  if (hasSpark() || storage.sparkOptOut.get(identity.npub)) return null;
+
+  const skHex = await getKey();
+  if (!skHex) return null;
+  const mnemonic = await sparkMnemonicFromKey(skHex);
+
+  // Re-check: the IndexedDB read and the derivation both await, and the wallet
+  // modal is reachable throughout. Don't init over a wallet the user connected
+  // in the meantime.
+  if (hasSpark()) return null;
+  await sparkInitFromMnemonic({ mnemonic, ownerPubkey: identity.pubkey });
+  return mnemonic;
+}
 
 /**
  * Give a brand-new Google-onboarded account a working boost rail, instead of
