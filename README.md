@@ -121,7 +121,7 @@ Entry points: **⚡ BOOST in the player** (current episode, `ts` = playback posi
 **Rail.** `pickRail()` honors the user's last-used rail (`storage.railPref`), else priority **NWC > Spark > WebLN**. Per recipient:
 
 - **`type=node`** → keysend with TLV record `7629169` carrying the boostagram JSON. Per-recipient `customKey`/`customValue` (e.g. shared-node sub-account routing for getalby.com) is a separate TLV record. (Spark can't keysend — node legs are rejected on the Spark rail.)
-- **`type=lnaddress`** → LNURL-pay invoice fetch (amount-verified against the BOLT11 before paying), then pay via the chosen rail.
+- **`type=lnaddress`** → probes `https://<domain>/.well-known/keysend/<name>` first. When the address publishes one **and** the rail can keysend, the leg is paid as a real **keysend** so the boostagram rides in TLV `7629169` intact (instead of degrading to a LUD-21 comment) and the endpoint's `customKey`/`customValue` routes to the right sub-account. Otherwise — the common case — LNURL-pay invoice fetch (amount-verified against the BOLT11 before paying), then pay via the chosen rail.
 
 Per-recipient progress + errors render live; confetti fires when a leg lands. **When "Share on Nostr" is on and at least one payment landed**, a kind:1 boost note is published — signed by your own key when signed in, or by the site's Nostr identity server-side (`app/api/nostr/site-sign`, `SITE_NOSTR_SK`) when you're not, so signed-out boosts still reach Nostr. The note attributes the sender by their typed "From" name (`"ChadF boosted 100 sats → …"`).
 
