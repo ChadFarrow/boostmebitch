@@ -134,7 +134,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     if (!rail) return;
     // Unlock the success sound NOW, inside the tap — the actual play() fires
     // after the async payment, past the gesture's activation window on mobile.
-    primeBoostSound();
+    // The muted unlock claims an audio session too, so it takes the same live
+    // isPlaying reading as the ping (see primeBoostSound).
+    primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
     if (name) storage.senderName.set(name);
 
     // "Anonymous" has to anonymize the PAYMENT too, not just the Nostr note:
