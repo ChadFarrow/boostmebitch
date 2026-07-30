@@ -1,6 +1,11 @@
 'use client';
 import { Fragment, type ReactNode } from 'react';
-import { boostSoundPlan, hasAudioSessionSupport, isExclusiveAudioPlatform } from './boost-sound';
+import {
+  boostSoundPlan,
+  hasAudioSessionSupport,
+  isExclusiveAudioPlatform,
+  type BoostSoundPlan,
+} from './boost-sound';
 
 // ─── Time formatting ──────────────────────────────────────────────────────────
 
@@ -153,6 +158,48 @@ function ensureBoostAudio(): HTMLAudioElement | null {
   return boostAudio;
 }
 
+type AudioSessionish = { type?: string };
+
+/** The document's audio session, when the browser exposes one. */
+function audioSession(): AudioSessionish | null {
+  if (!hasAudioSessionSupport()) return null;
+  return (navigator as Navigator & { audioSession?: AudioSessionish }).audioSession ?? null;
+}
+
+/** How to handle the ping right now, given live playback state. */
+function planFor(appIsPlaying: boolean): BoostSoundPlan {
+  return boostSoundPlan({
+    appIsPlaying,
+    hasAudioSession: hasAudioSessionSupport(),
+    exclusiveAudioPlatform: isExclusiveAudioPlatform(),
+  });
+}
+
+/**
+ * Borrow a mixable `transient` session for the duration of one play(), and
+ * return the restore. No-op for every plan but `'transient'` — `'as-is'` means
+ * "don't touch the document's session", and retyping it while OUR player holds
+ * it would demote our own playback (a transient session is what stops audio on
+ * screen lock).
+ *
+ * The type has to be set BEFORE play(), because the session is created when
+ * the element starts playing — that ordering is the whole point.
+ */
+function borrowTransientSession(plan: BoostSoundPlan): () => void {
+  const noop = () => {};
+  if (plan !== 'transient') return noop;
+  const session = audioSession();
+  const previousType = session?.type;
+  if (!session || previousType === undefined) return noop;
+  try { session.type = 'transient'; } catch { return noop; }
+  let restored = false;
+  return () => {
+    if (restored) return;
+    restored = true;
+    try { session.type = previousType; } catch { /* ignore */ }
+  };
+}
+
 /**
  * Unlock the boost sound within a user gesture so a LATER programmatic
  * play() isn't blocked by mobile autoplay policy. `playBoostSound()` fires
@@ -162,10 +209,27 @@ function ensureBoostAudio(): HTMLAudioElement | null {
  * has already played inside a real gesture, so we do a silent (muted)
  * play+pause here. Call synchronously at the top of a boost click handler,
  * BEFORE any await. Desktop doesn't need this, but priming is harmless there.
+ *
+ * **The muted play still claims an audio session, so it runs under the same
+ * plan as the ping itself.** This was assumed safe when the session handling
+ * shipped ("WebKit doesn't activate a session for silent playback") and the
+ * report that followed says otherwise: the user's music was interrupted at the
+ * TAP as well as at the ding, i.e. twice per boost. A muted element with the
+ * document type left at `'auto'` still resolves to an exclusive `playback`
+ * session. So: `'skip'` primes nothing (that platform never gets the ping
+ * anyway, so the unlock buys nothing and costs the user their music), and
+ * `'transient'` primes under a borrowed transient session, which ducks instead
+ * of seizing.
+ *
+ * `appIsPlaying` is the live value at tap time (`useApp.getState().isPlaying`).
  */
-export function primeBoostSound(): void {
+export function primeBoostSound(opts: { appIsPlaying: boolean }): void {
   const audio = ensureBoostAudio();
   if (!audio || boostAudioPrimed) return;
+  const plan = planFor(opts.appIsPlaying);
+  if (plan === 'skip') return;
+
+  const restore = borrowTransientSession(plan);
   try {
     audio.muted = true;
     void audio
@@ -175,21 +239,18 @@ export function primeBoostSound(): void {
         audio.currentTime = 0;
         audio.muted = false;
         boostAudioPrimed = true;
+        restore();
       })
       .catch(() => {
         audio.muted = false;
+        restore();
       });
+    // Backstop: a play() that never settles must not leave the page retyped.
+    setTimeout(restore, 5000);
   } catch {
     audio.muted = false;
+    restore();
   }
-}
-
-type AudioSessionish = { type?: string };
-
-/** The document's audio session, when the browser exposes one. */
-function audioSession(): AudioSessionish | null {
-  if (!hasAudioSessionSupport()) return null;
-  return (navigator as Navigator & { audioSession?: AudioSessionish }).audioSession ?? null;
 }
 
 /**
@@ -209,26 +270,14 @@ function audioSession(): AudioSessionish | null {
 export function playBoostSound(opts: { appIsPlaying: boolean }): void {
   const audio = ensureBoostAudio();
   if (!audio) return;
-  const plan = boostSoundPlan({
-    appIsPlaying: opts.appIsPlaying,
-    hasAudioSession: hasAudioSessionSupport(),
-    exclusiveAudioPlatform: isExclusiveAudioPlatform(),
-  });
+  const plan = planFor(opts.appIsPlaying);
   if (plan === 'skip') return;
 
-  const session = plan === 'transient' ? audioSession() : null;
-  // Restore whatever the page had, so a podcast started later doesn't inherit
+  // Restores whatever the page had, so a podcast started later doesn't inherit
   // a transient session (which is exactly what stops audio on screen lock).
-  const previousType = session?.type;
-  const restore = () => {
-    if (!session || previousType === undefined) return;
-    try { session.type = previousType; } catch { /* ignore */ }
-  };
+  const restore = borrowTransientSession(plan);
 
   try {
-    if (session) {
-      try { session.type = 'transient'; } catch { /* ignore */ }
-    }
     audio.muted = false;
     audio.currentTime = 0;
     void audio

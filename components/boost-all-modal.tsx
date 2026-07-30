@@ -132,7 +132,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     if (!rail || !splits.length) return;
     // Unlock the success sound NOW, inside the tap — the actual play() fires
     // after the async per-track payments, past the gesture window on mobile.
-    primeBoostSound();
+    // The muted unlock claims an audio session too, so it takes the same live
+    // isPlaying reading as the ping (see primeBoostSound).
+    primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
     if (name) storage.senderName.set(name);
 
     // "Anonymous" must anonymize the PAYMENT too — omit the nostr pubkey so
