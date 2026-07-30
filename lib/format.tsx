@@ -210,18 +210,34 @@ function borrowTransientSession(plan: BoostSoundPlan): () => void {
  * play+pause here. Call synchronously at the top of a boost click handler,
  * BEFORE any await. Desktop doesn't need this, but priming is harmless there.
  *
- * **The muted play still claims an audio session, so it runs under the same
- * plan as the ping itself.** This was assumed safe when the session handling
- * shipped ("WebKit doesn't activate a session for silent playback") and the
- * report that followed says otherwise: the user's music was interrupted at the
- * TAP as well as at the ding, i.e. twice per boost. A muted element with the
- * document type left at `'auto'` still resolves to an exclusive `playback`
- * session. So: `'skip'` primes nothing (that platform never gets the ping
- * anyway, so the unlock buys nothing and costs the user their music), and
- * `'transient'` primes under a borrowed transient session, which ducks instead
- * of seizing.
+ * **The pause is synchronous — the element must never actually reach
+ * "playing".** WebKit grants the element its permanent gesture unlock when
+ * `play()` is *called* inside the activation, not when the returned promise
+ * resolves, so pausing in the same turn keeps the unlock while leaving the
+ * media element at a standstill. Letting it truly start (pausing in `.then()`,
+ * as this did originally) is what put a SECOND live media element on the page
+ * at tap time, and that is audible in three separate ways:
  *
- * `appIsPlaying` is the live value at tap time (`useApp.getState().isPlaying`).
+ *  1. iOS arbitrates concurrent media elements — a second one starting can
+ *     duck or interrupt our own podcast. Reported as a hit "when I clicked the
+ *     button" on a boost sent while listening in-app, where the audio-session
+ *     plan is `'as-is'` and nothing is retyped, so the session was never the
+ *     whole story.
+ *  2. `muted` is not reliably honored for `<audio>` on iOS, so "silent" wasn't
+ *     guaranteed to be silent.
+ *  3. A fast payment races it: `playBoostSound` unmutes and plays, then the
+ *     prime's late `.then()` fires `pause()` + `currentTime = 0` and chops the
+ *     ping it exists to enable.
+ *
+ * The sync `pause()` rejects the play promise with `AbortError`; that rejection
+ * is expected and swallowed. Worst case on a browser that ties the unlock to
+ * actual playback: the later ping is blocked and we lose the sound — strictly
+ * better than interrupting what the user is listening to.
+ *
+ * `appIsPlaying` is the live value at tap time (`useApp.getState().isPlaying`),
+ * and gates the session handling exactly as it does for the ping: `'skip'`
+ * primes nothing (that platform never gets the ping anyway), `'transient'`
+ * primes under a borrowed transient session.
  */
 export function primeBoostSound(opts: { appIsPlaying: boolean }): void {
   const audio = ensureBoostAudio();
@@ -232,23 +248,16 @@ export function primeBoostSound(opts: { appIsPlaying: boolean }): void {
   const restore = borrowTransientSession(plan);
   try {
     audio.muted = true;
-    void audio
-      .play()
-      .then(() => {
-        audio.pause();
-        audio.currentTime = 0;
-        audio.muted = false;
-        boostAudioPrimed = true;
-        restore();
-      })
-      .catch(() => {
-        audio.muted = false;
-        restore();
-      });
-    // Backstop: a play() that never settles must not leave the page retyped.
-    setTimeout(restore, 5000);
+    // Swallow the AbortError the synchronous pause below provokes. Nothing to
+    // clean up in either arm — the pause already ran.
+    void audio.play()?.catch(() => {});
+    audio.pause();
+    audio.currentTime = 0;
+    audio.muted = false;
+    boostAudioPrimed = true;
   } catch {
     audio.muted = false;
+  } finally {
     restore();
   }
 }
