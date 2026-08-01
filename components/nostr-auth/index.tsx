@@ -24,6 +24,9 @@ import { hasSpark, sparkDisconnect, sparkInitFromMnemonic } from '@/lib/v4v/spar
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
+// Direct import, not the barrel: lib/nostr/follows.ts is deliberately
+// store-free to avoid a cycle with lib/store, and it isn't re-exported.
+import { resetFollows } from '@/lib/nostr/follows';
 import { deriveSparkFromLocalKey } from './provision-spark';
 import { AccountMenu } from './account-menu';
 import { SignInModal } from './sign-in-modal';
@@ -400,6 +403,9 @@ export function NostrAuth() {
     setIdentity(null);
     setFavorites({});
     setMutedPubkeys(new Set());
+    // Same reason as the identity-switch path: useFollows resets this when
+    // identity goes null, but not until a FollowButton's effect runs.
+    resetFollows();
     storage.npub.clear();
     storage.signer.clear();
     clearAmberSigner();
@@ -426,6 +432,28 @@ export function NostrAuth() {
       sparkDisconnect();
       clearNwcUri();
       storage.nwcBackup.clear(identity.npub);
+
+      // Wipe in-memory identity state too, not just the wallets. This is
+      // load-bearing beyond the obvious "don't show A's favorites under B":
+      // hydrateFavorites reads `useApp.getState().favorites` — deliberately, so
+      // a signed-OUT user's favorites get adopted when they first sign in — and
+      // when the incoming identity has no kind:30003 yet it PUBLISHES whatever
+      // it finds there as that identity's list. Carrying A's favorites into B
+      // therefore doesn't just display wrong, it writes A's list to relays
+      // under B's key. Clearing here is what keeps that adoption path safe,
+      // because it only ever runs on an identity SWITCH — signed-out → signed-in
+      // leaves `identity` null, skips this block, and still adopts as intended.
+      //
+      // hydrateMutes reads the per-npub cache instead, so it's already correct;
+      // clearing keeps the two consistent and avoids showing A's mutes in the
+      // window before B's hydration lands.
+      setFavorites({});
+      setMutedPubkeys(new Set());
+      // The follow singleton is module state shared by every FollowButton.
+      // ensureFollowsLoaded resets it on an identity change, but only once a
+      // button mounts and its effect runs — until then followsSnapshot() still
+      // reports A's list, and a stale `ok:true` is what gates the publish path.
+      resetFollows();
     }
     startTransition(() => setIdentity(id));
     storage.npub.set(id.npub);
