@@ -24,7 +24,7 @@ const KEYS = {
   nwcUri: 'bmb:nwc_uri',
   nwcMethods: 'bmb:nwc_methods',      // { uri, methods } — NIP-47 capability list for the CURRENT connection; uri-keyed so a switched wallet invalidates it
   relays: 'bmb:relays',
-  senderName: 'bmb:sender_name',
+  senderNamePrefix: 'bmb:sender_name', // + ':<npub>' — the boost modal's "From". Per-npub because it's an identity-linked display name, not a device setting.
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favoritesPrefix: 'bmb:favorites',
@@ -410,9 +410,26 @@ export const storage = {
     isOverridden: () => safeGet(KEYS.relays) !== null,
   },
 
+  /**
+   * The boost modal's "From" name, per-npub (`:guest` signed out).
+   *
+   * It was one global key, and that leaked a real name across identities: a
+   * user who had boosted as themselves, then signed in with a Google-onboarded
+   * account, got their old name pre-filled in the "From" box — and it outranks
+   * the profile name in the modal's fallback chain, so it would have shipped in
+   * the boostagram's `sender_name`. That ties a generated npub straight back to
+   * the identity it was designed not to be linked to.
+   *
+   * **Deliberately no migration from the old global key**, unlike sparkOptOut's
+   * legacy fallback. There's no way to know which identity that name belonged
+   * to, so adopting it into whichever npub reads first would recreate exactly
+   * the leak this fixes. The name is one field and costs nothing to retype; the
+   * orphaned key is a few harmless bytes.
+   */
   senderName: {
-    get: () => safeGet(KEYS.senderName),
-    set: (v: string) => safeSet(KEYS.senderName, v),
+    get: (npub: string | null | undefined) => safeGet(identityKey(KEYS.senderNamePrefix, npub)),
+    set: (npub: string | null | undefined, v: string) =>
+      safeSet(identityKey(KEYS.senderNamePrefix, npub), v),
   },
 
   /**

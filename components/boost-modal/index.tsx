@@ -78,13 +78,19 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     setRail(pickRail());
     setName((current) => {
       if (current) return current;                              // preserve typing
-      const stored = storage.senderName.get();
+      const stored = storage.senderName.get(identity?.npub);
       if (stored) return stored;                                // saved override
       return identity?.profile?.display_name
           || identity?.profile?.name
           || '';
     });
-  }, [identity?.profile?.display_name, identity?.profile?.name]);
+  // npub is a dep so switching accounts re-resolves the "From" name against
+  // the new identity's own per-npub value. The `if (cur) return cur` guard
+  // above still wins for a switch that happens with the modal already open —
+  // it exists to protect in-progress typing — but the field is visible and
+  // editable, and the case that mattered (opening the modal fresh under a new
+  // identity and finding the previous one's real name) is what this fixes.
+  }, [identity?.npub, identity?.profile?.display_name, identity?.profile?.name]);
 
   const isShowBoost = !episode;
   const value = (episode?.value ?? podcast.value)!;
@@ -138,7 +144,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // The muted unlock claims an audio session too, so it takes the same live
     // isPlaying reading as the ping (see primeBoostSound).
     primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
-    if (name) storage.senderName.set(name);
+    if (name) storage.senderName.set(identity?.npub, name);
 
     // "Anonymous" has to anonymize the PAYMENT too, not just the Nostr note:
     // sender_id is the user's nostr pubkey, which recipient aggregators

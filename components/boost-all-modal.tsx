@@ -97,11 +97,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     setRail(pickRail());
     setName((cur) => {
       if (cur) return cur;
-      const stored = storage.senderName.get();
+      const stored = storage.senderName.get(identity?.npub);
       if (stored) return stored;
       return identity?.profile?.display_name || identity?.profile?.name || '';
     });
-  }, [identity?.profile?.display_name, identity?.profile?.name]);
+  // npub is a dep so switching accounts re-resolves the "From" name against
+  // the new identity's own per-npub value. The `if (cur) return cur` guard
+  // above still wins for a switch that happens with the modal already open —
+  // it exists to protect in-progress typing — but the field is visible and
+  // editable, and the case that mattered (opening the modal fresh under a new
+  // identity and finding the previous one's real name) is what this fixes.
+  }, [identity?.npub, identity?.profile?.display_name, identity?.profile?.name]);
 
   // Fetch resolved value splits for this episode.
   useEffect(() => {
@@ -127,7 +133,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // The muted unlock claims an audio session too, so it takes the same live
     // isPlaying reading as the ping (see primeBoostSound).
     primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
-    if (name) storage.senderName.set(name);
+    if (name) storage.senderName.set(identity?.npub, name);
 
     // "Anonymous" must anonymize the PAYMENT too — omit the nostr pubkey so
     // recipient aggregators can't resolve it to the user's profile. Applies to
