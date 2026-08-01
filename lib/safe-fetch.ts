@@ -13,6 +13,12 @@ const PRIVATE_V4 = [
   /^169\.254\./,
   /^192\.168\./,
   /^172\.(1[6-9]|2\d|3[01])\./,
+  // 100.64.0.0/10 — RFC 6598 carrier-grade NAT, and the range Tailscale hands
+  // out for its mesh. A self-hoster running this alongside a tailnet would
+  // otherwise have every node on it reachable through our feed/chapter proxies.
+  /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./,
+  /^(?:22[4-9]|23\d)\./, // 224.0.0.0/4 multicast
+  /^(?:24\d|25[0-5])\./, // 240.0.0.0/4 reserved, incl. 255.255.255.255 broadcast
 ];
 
 /** Throws when `raw` isn't a safe public http(s) URL to fetch server-side. */
@@ -26,7 +32,12 @@ export function assertSafeFetchUrl(raw: string): void {
   if (u.protocol !== 'https:' && u.protocol !== 'http:') {
     throw new Error(`unsafe fetch url (protocol ${u.protocol})`);
   }
-  const host = u.hostname.toLowerCase();
+  // Strip the trailing dot(s) of a fully-qualified name BEFORE any comparison.
+  // DNS treats `metadata.google.internal.` as identical to
+  // `metadata.google.internal`, but `.endsWith('.internal')` is false for it —
+  // so a single extra character defeated every check below, including the one
+  // guarding cloud metadata endpoints. Same trick worked on `localhost.`.
+  const host = u.hostname.toLowerCase().replace(/\.+$/, '');
   if (
     host === 'localhost' ||
     host.endsWith('.localhost') ||

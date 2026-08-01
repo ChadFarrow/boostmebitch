@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "check:spark": "node --experimental-strip-types scripts/check-spark-derivation.mjs",
-    "check:sanitizer": "node --experimental-strip-types scripts/check-sanitizer.mjs"
+    "check:sanitizer": "node --experimental-strip-types scripts/check-sanitizer.mjs",
+    "check:ssrf": "node --experimental-strip-types scripts/check-ssrf-guard.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
