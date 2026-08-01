@@ -23,11 +23,40 @@ export async function fetchLatestEvent(
   filter: Filter,
   maxWait = QUERY_MAX_WAIT_MS,
 ): Promise<Event | null> {
+  return (await fetchLatestEventDetailed(relays, filter, maxWait)).event;
+}
+
+/**
+ * As {@link fetchLatestEvent}, but also reports whether the *absence* of a
+ * result can be trusted.
+ *
+ * A null event has two very different meanings that the plain function can't
+ * distinguish: "every relay answered and none had it" versus "nothing answered
+ * before the timeout". Callers that write a negative cache MUST tell them
+ * apart — `fetchProfile` didn't, and a relay wobble during sign-in
+ * (damus 503, two others refusing connections) negative-cached a kind:0 that
+ * existed on five relays, pinning a bare npub for the full 15-minute miss TTL.
+ * Same discipline `fetchFollowList` applies with its `ok` flag and
+ * `resolveProfilesForNotes` with `firstHealthy`.
+ *
+ * `trustworthy` is true when an event arrived, or when the aggregate EOSE
+ * fired. **It is not a perfect signal** and shouldn't be read as one: a relay
+ * that never connects doesn't hold nostr-tools' aggregate `oneose` open, so an
+ * EOSE means "every *reachable* relay confirmed none", not "every relay". It
+ * is strictly better than the previous behaviour, which treated a total
+ * timeout — zero relays reached — as proof of absence.
+ */
+export async function fetchLatestEventDetailed(
+  relays: string[],
+  filter: Filter,
+  maxWait = QUERY_MAX_WAIT_MS,
+): Promise<{ event: Event | null; trustworthy: boolean }> {
   return withPool(relays, async (pool) => {
     try {
-      return await new Promise<Event | null>((resolve) => {
+      return await new Promise<{ event: Event | null; trustworthy: boolean }>((resolve) => {
         let best: Event | null = null;
         let settled = false;
+        let eosed = false;
         let graceTimer: ReturnType<typeof setTimeout> | null = null;
         // Declared before subscribeMany so finish() can clear the hard timer and
         // close the sub even if subscribeMany throws synchronously (malformed
@@ -41,7 +70,9 @@ export async function fetchLatestEvent(
           clearTimeout(hardTimer);
           if (graceTimer) clearTimeout(graceTimer);
           try { sub?.close(); } catch { /* already closed / never opened */ }
-          resolve(best);
+          // An event in hand is its own proof the query worked. Otherwise only
+          // an EOSE counts — resolving on the hard timer means we heard nothing.
+          resolve({ event: best, trustworthy: best !== null || eosed });
         };
 
         const hardTimer = setTimeout(finish, maxWait);
@@ -52,16 +83,19 @@ export async function fetchLatestEvent(
               if (!graceTimer) graceTimer = setTimeout(finish, FIRST_EVENT_GRACE_MS);
             },
             oneose() {
-              // Fires once all relays have EOSE'd — nothing more is coming.
+              // Fires once all reachable relays have EOSE'd — nothing more is coming.
+              eosed = true;
               finish();
             },
           });
         } catch {
+          // subscribeMany threw before any relay was queried — the opposite of
+          // trustworthy, so leave `eosed` false.
           finish();
         }
       });
     } catch {
-      return null;
+      return { event: null, trustworthy: false };
     }
   });
 }
