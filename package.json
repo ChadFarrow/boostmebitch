@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "check:spark": "node --experimental-strip-types scripts/check-spark-derivation.mjs"
+    "check:spark": "node --experimental-strip-types scripts/check-spark-derivation.mjs",
+    "check:sanitizer": "node --experimental-strip-types scripts/check-sanitizer.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
