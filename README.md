@@ -233,7 +233,7 @@ At rest the key is AES-GCM ciphertext in IndexedDB under a non-extractable `Cryp
 
 New accounts also get a **generated kind:0** — a two-word display name and an identicon, both derived from the pubkey (not from the Google account), so the user is recognizable in every Nostr client rather than a nameless npub.
 
-Gated entirely on `NEXT_PUBLIC_GOOGLE_CLIENT_ID`: unset, the entry point doesn't render and nothing else changes. Enabling it needs a Google Cloud project with the **Drive API enabled** and both `openid` and `drive.appdata` on the consent screen. `drive.appdata` is a *sensitive* scope, so the project needs OAuth verification before it can serve more than 100 users.
+Gated entirely on `NEXT_PUBLIC_GOOGLE_CLIENT_ID`: unset, the entry point doesn't render and nothing else changes. Enabling it needs a Google Cloud project with the **Drive API enabled** and both `openid` and `drive.appdata` on the consent screen. `drive.appdata` is a **non-sensitive** scope, so this needs only brand verification — no demo video, no third-party security assessment. (The 100-user cap comes from the consent screen sitting in *Testing*, not from the scope.) See CLAUDE.md for the settled console state.
 
 ---
 

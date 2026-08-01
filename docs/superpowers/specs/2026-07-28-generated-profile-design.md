@@ -1,7 +1,7 @@
 # Generated profile for Google-onboarded accounts
 
 **Date:** 2026-07-28
-**Status:** Approved, not yet implemented
+**Status:** Implemented on `feature/generated-profile` (PR #142); not yet on `main`
 **Branch context:** builds on `claude/wisp-google-auth-nostr-9h5bzy` (PR #141)
 
 ## Problem

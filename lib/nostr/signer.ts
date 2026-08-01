@@ -141,9 +141,15 @@ export function isLocalActive(): boolean {
   return localInstance !== null;
 }
 
-export function getActiveLocal(): LocalSigner | null {
-  return localInstance;
-}
+// Deliberately NO getActiveLocal() accessor, unlike getActiveAmber /
+// getActiveBunker. Those hand out adapters that talk to a signer living
+// elsewhere; a LocalSigner holds the raw key in-process. `private sk` is erased
+// at runtime, so a general-purpose accessor for the instance is a standing
+// offer of the secret key to anything that imports it — three lines below the
+// comment explaining why activateLocalSigner publishes `nostrApi` and not the
+// instance. loginWithLocalKey uses activateLocalSigner's own return value,
+// which is scoped to that one call. Don't add one back, and don't add a
+// key-export method either (one existed, had zero call sites, and was deleted).
 
 // NIP-04 / NIP-44 capability accessors — see signer-shape comment at top
 // of file. Both AmberSigner and the BunkerAdapter expose nip04 / nip44
