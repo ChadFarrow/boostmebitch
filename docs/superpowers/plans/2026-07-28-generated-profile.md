@@ -36,7 +36,7 @@
   - `buildGeneratedProfile(pubkey: string): { name: string; display_name: string; picture: string }`
   - `ADJECTIVES: readonly string[]`, `NOUNS: readonly string[]` (128 each)
 
-- [ ] **Step 1: Write the verification script**
+- [x] **Step 1: Write the verification script**
 
 Create `<scratchpad>/generated-profile-check.mjs`. It imports the built module via `tsx`-free plain JS by duplicating nothing — instead run it against the TypeScript through `npx tsx`. If `tsx` is unavailable, transpile mentally is NOT acceptable; instead temporarily copy the two files' logic into the script. Prefer: `npx --yes tsx <scratchpad>/generated-profile-check.mjs`.
 
@@ -84,12 +84,12 @@ console.log(fail === 0 ? '\nALL PASS' : `\n${fail} FAILED`);
 process.exit(fail === 0 ? 0 : 1);
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `npx --yes tsx <scratchpad>/generated-profile-check.mjs`
 Expected: FAIL — cannot resolve `lib/nostr/generated-profile.ts` (module does not exist yet).
 
-- [ ] **Step 3: Create the word lists**
+- [x] **Step 3: Create the word lists**
 
 Create `lib/nostr/profile-words.ts`. Exactly 128 entries each, all lowercase, all neutral in isolation *and* in combination — the pairing is uncontrolled, so anything that could read badly next to an arbitrary noun is out.
 
@@ -143,7 +143,7 @@ export const NOUNS: readonly string[] = [
 ];
 ```
 
-- [ ] **Step 4: Create the generator**
+- [x] **Step 4: Create the generator**
 
 Create `lib/nostr/generated-profile.ts`:
 
@@ -228,19 +228,19 @@ export function buildGeneratedProfile(pubkey: string) {
 }
 ```
 
-- [ ] **Step 5: Run the verification script to verify it passes**
+- [x] **Step 5: Run the verification script to verify it passes**
 
 Run: `npx --yes tsx <scratchpad>/generated-profile-check.mjs`
 Expected: every line `PASS`, final line `ALL PASS`, exit 0.
 
 If `names spread out` fails, the modulo indexing is collapsing — check that `slice(0,4)` and `slice(4,8)` are distinct windows.
 
-- [ ] **Step 6: Typecheck and lint**
+- [x] **Step 6: Typecheck and lint**
 
 Run: `npm run typecheck && npm run lint`
 Expected: both clean, no output beyond the npm banner.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add lib/nostr/profile-words.ts lib/nostr/generated-profile.ts
@@ -267,7 +267,7 @@ Confirmed signatures this task relies on (do not re-derive):
 - `storage.profile.set(pubkey: string, v: ProfileMetadata): void` — `lib/storage.ts`.
 - `ProfileMetadata` — `lib/nostr/auth.ts`, re-exported from `lib/nostr`.
 
-- [ ] **Step 1: Create the provisioning module**
+- [x] **Step 1: Create the provisioning module**
 
 Create `components/nostr-auth/provision-profile.ts`:
 
@@ -322,7 +322,7 @@ export async function provisionProfileFromKey(identity: NostrIdentity): Promise<
 }
 ```
 
-- [ ] **Step 2: Wire it into the new-account branch**
+- [x] **Step 2: Wire it into the new-account branch**
 
 In `components/nostr-auth/google-auth-panel.tsx`, add the import alongside the existing `provisionSparkFromKey` import:
 
@@ -342,14 +342,14 @@ Then inside `finish()`, in the existing `if (isNewAccount) { … }` block, immed
 
 `getErrorMessage` is already imported in this file. Do **not** add this to the restore path.
 
-- [ ] **Step 3: Typecheck, lint, build**
+- [x] **Step 3: Typecheck, lint, build**
 
 Stop the dev server first if it is running (`pkill -f "next dev"`), then:
 
 Run: `npm run typecheck && npm run lint && npm run build`
 Expected: all three clean.
 
-- [ ] **Step 4: Manual browser verification**
+- [x] **Step 4: Manual browser verification**
 
 Restart the dev server (`npm run dev`) and hard-reload. Then:
 
@@ -359,7 +359,20 @@ Restart the dev server (`npm run dev`) and hard-reload. Then:
 4. Boost something small, or open the global feed → the same avatar renders on the note card (proves the published `picture` is what other surfaces read).
 5. **Regression check:** sign out, sign back in with Google + PIN on the *same* account. No second kind:0 should be published — verify the existing event's `created_at` is unchanged.
 
-- [ ] **Step 5: Update the docs**
+**Verified 2026-08-01** against a real Google account on `localhost:3000` (Firefox). Test identity:
+`npub13vx3t2hs54c5e2c9tm9q2gqup4kp9uam5430d6v3s8qsksltma5qkfrzht` → **"Crimson Rook"**.
+
+- **4.1–4.3 pass.** Signup completed; header showed the two-word name and a teal identicon, not `◆`/`Anon`; the name persisted across a hard reload with no flash.
+- **4.5 passes.** After sign-out → Google + PIN, the kind:0 `created_at` was still `1785612798` and there was exactly one distinct event across purplepag.es / primal / nos.lol / bitcoiner.social. The kind:30078 Spark backup likewise stayed at a single event. The new-account gate holds.
+- **4.4 NOT exercised** — the avatar was never checked on a note card in the global feed. The published `picture` was confirmed by querying the relays directly and decoding the data URI (1114 chars, 16 cells, valid SVG, hue matching `<DefaultAvatar>`), so the *event* is right; what's unverified is only that `<NoteCard>` renders it.
+- The kind:0 did **not** propagate to relay.damus.io or relay.fountain.fm. Ordinary relay-side pickiness — purplepag.es, the one `PROFILE_RELAYS` exists for, carried it.
+- Additional confidence beyond this plan: a favorite published a correctly signed kind:30003, proving `signEvent` works through the restored local signer, and `Object.keys(window.nostr)` returned exactly `getPublicKey`/`signEvent`/`nip04`/`nip44` — no `sk` leak.
+
+**Not covered by this session at all:** wrong-PIN error copy, restore in a second browser profile (cross-device seed portability), and the ephemeral-key path in a storage-restricted browser.
+
+**One bug found and fixed during this run**, unrelated to the profile itself: a brand-new account could inherit an unrelated identity's Spark opt-out via the legacy global flag. See the `fix(spark)` commit.
+
+- [x] **Step 5: Update the docs**
 
 In `CLAUDE.md`, in the Google onboarding section, after the Spark-wallet paragraph, add:
 
@@ -373,7 +386,7 @@ In `README.md`, in the "Google onboarding" section, after the sentence about the
 New accounts also get a **generated kind:0** — a two-word display name and an identicon, both derived from the pubkey (not from the Google account), so the user is recognizable in every Nostr client rather than a nameless npub.
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add components/nostr-auth/provision-profile.ts components/nostr-auth/google-auth-panel.tsx CLAUDE.md README.md
@@ -386,4 +399,4 @@ git commit -m "feat(profile): publish a generated kind:0 for new Google accounts
 
 - **Spec coverage:** name generation (Task 1), avatar data URI (Task 1), degenerate-grid guard (Task 1, `MIN_CELLS`/`MAX_CELLS`), publish path + relay union (Task 2), new-account-only restriction (Task 2, enforced at the call site *and* documented in the module), local cache seeding (Task 2), best-effort failure handling (Task 2), out-of-scope items (no editing UI, no `nip05`, no `about`) — none are implemented, as intended.
 - **Type consistency:** `buildGeneratedProfile` returns `{ name, display_name, picture }`, structurally assignable to `ProfileMetadata` (all optional string fields), which is what `storage.profile.set` requires. Verified against `lib/nostr/auth.ts:60`.
-- **Known gap:** the identicon is not verified to *look* good, only to be non-degenerate and under budget. Step 4.2 is the human check.
+- **Known gap — closed 2026-08-01.** The identicon was only ever verified to be non-degenerate and under budget, never to *look* good. The real one published by the test account ("Crimson Rook") was pulled back off purplepag.es, decoded, and rendered: a 5×5 mirrored teal grid, 16 cells, 1114 chars, reading as a plausible avatar at header size in the running app.

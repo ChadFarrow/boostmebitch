@@ -93,6 +93,34 @@ export function NostrAuth() {
       }
     }
 
+    // Start the local-signer Spark derive HERE, before the relay phase below.
+    //
+    // It reads nothing off the network: the IndexedDB key, plus `npub` and
+    // `pubkey` — and those two are identical on `id` and the `enriched`
+    // identity built later, since enriching only adds `profile` and
+    // `writeRelays`. So the "fast path" was being gated on a 4s-bounded relay
+    // round trip it had no dependency on, and a Google account's wallet took
+    // seconds to appear on every reload while the local seed sat right there.
+    // The relay-backed half (fetchEncryptedMnemonic) still runs on `enriched`,
+    // where the NIP-65 write relays genuinely matter.
+    //
+    // The condition is captured ONCE, here: after a successful derive
+    // `hasSpark()` flips true, so re-evaluating it below would skip the backup
+    // check that exists to notice a user's own pasted seed differing from the
+    // derived default.
+    const shouldRestoreSpark = !hasSpark() && !storage.sparkOptOut.get(id.npub);
+    const derivedSparkPromise = shouldRestoreSpark
+      ? (async () => {
+          const m = await deriveSparkFromLocalKey(id).catch(() => null);
+          // A failed signer restore (abandonRestoredSession) runs sparkDisconnect(),
+          // but if it fired before this init landed the wallet would outlive the
+          // session it belongs to — and the next account would inherit it. In
+          // practice getKey() fails for both, so this is the belt to that braces.
+          if (m && storage.npub.get() !== id.npub) { sparkDisconnect(); return null; }
+          return m;
+        })()
+      : Promise.resolve(null);
+
     // Fire profile, relay list, favorites, and mutes in parallel. Each has
     // a 4s QUERY_MAX_WAIT_MS bound, so total wall time for this phase is ~4s.
     // Mute/favorites tolerate the bare identity (no writeRelays yet) because
@@ -123,13 +151,12 @@ export function NostrAuth() {
     // them with the bare `id` queries only DEFAULT_RELAYS, silently missing
     // backups published from a session that had custom write relays — the
     // primary reason NWC and Spark failed to auto-restore on mobile.
-    const sparkPromise = !hasSpark() && !storage.sparkOptOut.get(id.npub)
+    const sparkPromise = shouldRestoreSpark
       ? (async () => {
-          // Fast path first: for a local signer the seed derives from the key
-          // we already hold, so the wallet comes up immediately instead of
-          // after an 8s-capped relay query plus a NIP-44 decrypt. Returns null
-          // for every other signer kind, leaving the behaviour below unchanged.
-          const derived = await deriveSparkFromLocalKey(enriched).catch(() => null);
+          // Already in flight since before the relay phase above — for a local
+          // signer the wallet is typically up by now. Null for every other
+          // signer kind, leaving the behaviour below unchanged.
+          const derived = await derivedSparkPromise;
 
           // The backup is still authoritative — a user who pasted their own
           // seed has one that differs from the derived default, and it must
