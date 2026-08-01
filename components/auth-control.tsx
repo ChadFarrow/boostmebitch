@@ -27,6 +27,7 @@ export function AuthControl() {
   const walletOpen = useApp((s) => s.walletOpen);
   const setWalletOpen = useApp((s) => s.setWalletOpen);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
+  const walletRestoring = useApp((s) => s.walletRestoring);
   const [, setTick] = useState(0);
   const [menuOpen, setMenuOpen] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
@@ -164,15 +165,22 @@ export function AuthControl() {
         </>
       )}
 
-      {/* Only the wallet is missing → direct connect button. */}
+      {/* Only the wallet is missing → direct connect button, UNLESS one is
+          already on its way back up. hasAnyWallet() is false for the whole
+          Spark SDK-import + operator-handshake window on a cold load, so
+          without this the header spends those seconds inviting the user to
+          connect a wallet they already have. Still opens the modal on tap —
+          it's a status label, not a lock. */}
       {!walletConnected && !needNostr && (
         <button
           onClick={() => setWalletOpen(true)}
           className="btn-ghost flex items-center gap-2"
-          aria-label="Connect Lightning wallet"
+          aria-label={walletRestoring ? 'Wallet connecting' : 'Connect Lightning wallet'}
         >
-          <span className="text-muted">⚡</span>
-          <span className="hidden sm:inline">Connect wallet</span>
+          <span className={walletRestoring ? 'text-bolt animate-bolt' : 'text-muted'}>⚡</span>
+          <span className="hidden sm:inline">
+            {walletRestoring ? 'connecting…' : 'Connect wallet'}
+          </span>
         </button>
       )}
 

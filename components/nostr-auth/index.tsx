@@ -51,6 +51,7 @@ export function NostrAuth() {
   // open it without leaving the page.
   const modalOpen = useApp((s) => s.signInOpen);
   const setModalOpen = useApp((s) => s.setSignInOpen);
+  const setWalletRestoring = useApp((s) => s.setWalletRestoring);
 
   async function loadProfile(id: NostrIdentity) {
     // Dedupe across remounts (StrictMode runs effects twice in dev; Fast
@@ -109,6 +110,21 @@ export function NostrAuth() {
     // check that exists to notice a user's own pasted seed differing from the
     // derived default.
     const shouldRestoreSpark = !hasSpark() && !storage.sparkOptOut.get(id.npub);
+
+    // Tell the header a wallet is on its way, so it shows "connecting…" rather
+    // than offering "Connect wallet" for one the user already has —
+    // hasAnyWallet() is false for the whole SDK-import + handshake window.
+    //
+    // Gated on positive evidence, deliberately. shouldRestoreSpark alone is
+    // true for anyone without a connected Spark wallet, including people who
+    // have never had one — they'd sit on a false "connecting…" for the length
+    // of the backup query and then be told to connect after all. A local
+    // signer always derives a wallet from the key it holds, and a cached
+    // balance means this npub had one last session; anything else stays quiet.
+    const expectWallet = shouldRestoreSpark
+      && (storage.signer.get() === 'local' || storage.walletBalance.get(id.npub) !== null);
+    if (expectWallet) setWalletRestoring(true);
+
     const derivedSparkPromise = shouldRestoreSpark
       ? (async () => {
           const m = await deriveSparkFromLocalKey(id).catch(() => null);
@@ -140,7 +156,13 @@ export function NostrAuth() {
     // path exists to fix — and the wallet/settings restores below would then
     // run needing a signer that isn't there. The cached npub is the
     // authoritative "still signed in" flag.
-    if (storage.npub.get() !== id.npub) return;
+    if (storage.npub.get() !== id.npub) {
+      // This return is upstream of where sparkPromise's .finally() clears the
+      // flag, so it has to clear it itself — otherwise a session abandoned in
+      // this window leaves the header stuck on "connecting…" forever.
+      if (expectWallet) setWalletRestoring(false);
+      return;
+    }
     const enriched: NostrIdentity = { ...id };
     if (profile) enriched.profile = profile;
     if (relayList?.write?.length) enriched.writeRelays = relayList.write;
@@ -167,7 +189,7 @@ export function NostrAuth() {
           if (mnemonic && mnemonic !== derived) {
             await sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
           }
-        })().catch(() => {})
+        })().catch(() => {}).finally(() => { if (expectWallet) setWalletRestoring(false); })
       : Promise.resolve();
     // Synced settings: apply the last-used boost rail.
     const settingsPromise = fetchSettings(enriched)
@@ -321,6 +343,8 @@ export function NostrAuth() {
     }
     clearNwcUri();
     sparkDisconnect();
+    // Nothing is coming back up, so stop the header promising it is.
+    setWalletRestoring(false);
     // Drop the polyfill too: a half-restored bunker adapter can be left on
     // window.nostr with a live socket, and a queued local restore could
     // otherwise install a signer *after* this ran. Deliberately NOT
@@ -372,6 +396,7 @@ export function NostrAuth() {
       storage.nwcBackup.clear(identity.npub);
     }
     sparkDisconnect();
+    setWalletRestoring(false);
     setIdentity(null);
     setFavorites({});
     setMutedPubkeys(new Set());

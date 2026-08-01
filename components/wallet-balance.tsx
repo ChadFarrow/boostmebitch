@@ -223,11 +223,16 @@ export function WalletBalanceChip() {
   const formatted = balance.toLocaleString();
   const railName = rail === 'nwc' ? 'NWC' : rail === 'webln' ? 'WebLN' : 'Spark';
   return (
+    // No ⚡ here: the only call site (<AuthControl>) already renders one in the
+    // button, and it has to stay there — this component returns null whenever
+    // the balance is unknown (WebLN exposes none, and every rail is null mid-
+    // reconnect), and that lone bolt is what still reads as "connected".
+    // Rendering one in both gave the chip two.
     <span
       className="text-bolt text-[11px] font-mono tabular-nums whitespace-nowrap"
       title={`${formatted} sats (${railName})`}
     >
-      ⚡{formatted}
+      {formatted}
     </span>
   );
 }

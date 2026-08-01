@@ -68,6 +68,15 @@ interface AppState {
   walletOpen: boolean;
   setWalletOpen: (b: boolean) => void;
 
+  // True while a wallet we have positive evidence for is coming back up on
+  // page load. Without it the header reads `hasAnyWallet()`, which is false
+  // during the Spark SDK import + operator handshake, and offers "Connect
+  // wallet" for a wallet the user already has. Set only when a restore is
+  // genuinely expected (see doLoadProfile) — never speculatively, or it just
+  // relabels the button for people who have no wallet at all.
+  walletRestoring: boolean;
+  setWalletRestoring: (b: boolean) => void;
+
   // The podcast currently shown in the detail view. Lifted into the store so
   // surfaces outside `app/page.tsx` (e.g. a podcast-name link in a Nostr note
   // card) can navigate to a show without prop-drilling.
@@ -160,6 +169,9 @@ export const useApp = create<AppState>((set, get) => ({
 
   walletOpen: false,
   setWalletOpen: (b) => set({ walletOpen: b }),
+
+  walletRestoring: false,
+  setWalletRestoring: (b) => set({ walletRestoring: b }),
 
   selectedPodcast: null,
   // Leaving the detail view (or switching shows) also drops any open
