@@ -40,7 +40,10 @@ const KEYS = {
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
   followsPrefix: 'bmb:follows',       // per-npub last-known-good kind:3 follow set (hex[]) — a nuke-guard signal, see lib/nostr/follows.ts
   sparkOptOutPrefix: 'bmb:spark:opted_out', // + ':<npub>' — set when THAT account explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on its next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
-  sparkOptOutLegacy: 'bmb:spark:opted_out', // pre-per-npub global flag; read once and migrated into the per-npub bucket. Do not write.
+  // NOTE: the bare `bmb:spark:opted_out` (no npub suffix) is a DEAD key from
+  // the pre-per-npub code. It is deliberately never read or written — see the
+  // long note in sparkOptOut.get. It still sits in the localStorage of anyone
+  // who used the app before that refactor; leave it there, it is inert.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
 } as const;
 
@@ -292,20 +295,28 @@ export const storage = {
   sparkOptOut: {
     get: (npub: string | null | undefined): boolean => {
       // Tri-state on purpose: '1' = opted out, '0' = explicitly opted IN,
-      // absent = no opinion yet. The '0' matters — if `clear` merely removed
-      // the key, the next read would fall through to the legacy global flag
-      // and resurrect an opt-out this account just overrode, which is the
-      // exact bug the per-npub split exists to fix.
+      // absent = no opinion yet.
+      //
+      // The pre-per-npub GLOBAL `bmb:spark:opted_out` is deliberately NOT read
+      // here any more. Inheriting it looked conservative and was the opposite:
+      // it recorded that *some* identity on this origin once turned Spark off,
+      // under code that couldn't tell identities apart — so applying it to
+      // every future npub reproduced the exact device-vs-identity conflation
+      // the per-npub split exists to end.
+      //
+      // It cost a real user their wallet. A production origin still carried a
+      // stale global '1' from the old code; a returning Google account had no
+      // scoped entry, inherited the '1', and deriveSparkFromLocalKey refused to
+      // bring the wallet up — silently, with no way for them to know why.
+      //
+      // The two failure directions are not symmetric, and that's the whole
+      // argument. Wrongly restoring a wallet is visible and self-correcting:
+      // the user disconnects, which writes a proper per-npub '1'. Wrongly
+      // withholding one is invisible and permanent. This flag only suppresses
+      // an auto-restore — it guards no funds and no privacy — so the mild,
+      // recoverable direction is the right one to fail in.
       const scoped = safeGet(identityKey(KEYS.sparkOptOutPrefix, npub));
-      if (scoped !== null) return scoped === '1';
-      // No opinion: inherit the pre-per-npub global flag once, so an existing
-      // user's deliberate opt-out isn't silently undone by this refactor.
-      // Only a set flag is inherited; absent already means "no".
-      if (safeGet(KEYS.sparkOptOutLegacy) === '1') {
-        safeSet(identityKey(KEYS.sparkOptOutPrefix, npub), '1');
-        return true;
-      }
-      return false;
+      return scoped === '1';
     },
     set: (npub: string | null | undefined) =>
       safeSet(identityKey(KEYS.sparkOptOutPrefix, npub), '1'),
