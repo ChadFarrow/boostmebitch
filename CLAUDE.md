@@ -506,13 +506,16 @@ to submit. The 7-day deadline in Google's docs applies only to clicking *Publish
 approval — already done, and it does not recur.
 
 Two bits of UI exist for that verification, not for their own sake — **don't tidy either away.** They
-shipped ahead of the Google onboarding feature itself (PR #141 / #142, not yet on `main`) so
-verification could run while that branch was in progress. The code those pages describe now lives on
-`feature/generated-profile`; production still serves the policy without the button until that merges.
-Consequence to keep in mind: production currently serves a privacy policy describing a Google sign-in
-button that isn't live yet. That's fine — every claim on it is conditional ("if you sign in with
-Google…") — but it does mean the page went live before the code it documents. **⚠️ Revisit this whole
-paragraph when the branch merges** — the "isn't live yet" framing becomes false the moment it does.
+shipped ahead of the Google onboarding feature itself (PRs #141 / #142) so verification could run
+while that branch was in progress; both merged on 2026-08-01, so the code they document is now on
+`main`.
+
+**Whether the button actually renders is a separate switch: `NEXT_PUBLIC_GOOGLE_CLIENT_ID` in the
+Vercel Production environment.** The entry point is gated on `isGoogleAuthConfigured()`, so with that
+variable unset the merge changes nothing user-visible about Google sign-in — the privacy policy
+describes a flow no one can start. Every claim on the page is conditional ("if you sign in with
+Google…"), so that's honest either way, but don't read "it's merged" as "it's live." Check the Vercel
+env var before concluding the feature is reachable in production.
 
 - **`app/privacy/page.tsx`**, linked from the **layout footer** (`app/layout.tsx`). Google requires the
   policy to be hosted on the same domain as the homepage, linked *from* the homepage, and reachable at
