@@ -91,7 +91,8 @@ lib/
   store.ts       → Zustand: identity, current, player/view state, favorites, mutes
   storage.ts     → typed localStorage accessors for every bmb:* key
   types.ts · util.ts  (isMusicMedium, hasValueRecipients, isHlsUrl, fnvHash, getErrorMessage)
-  format.tsx     → fmt/fmtDuration/fmtClock/fmtLiveTime/timeAgo, linkify, confetti
+  format.tsx     → fmt/fmtDuration/fmtClock/fmtLiveTime/timeAgo, linkify, confetti, boost ping
+  boost-sound.ts → audio-session plan for the boost ping AND its tap-time unlock (don't evict the user's music app)
   nostr/
     auth · signer · amber · bunker        → NIP-07 / NIP-55 / NIP-46 sign-in + window.nostr swap
     local-signer · local-key-store        → in-process signer; key at rest in IndexedDB
@@ -123,7 +124,7 @@ Entry points: **⚡ BOOST in the player** (current episode, `ts` = playback posi
 **Rail.** `pickRail()` honors the user's last-used rail (`storage.railPref`), else priority **NWC > Spark > WebLN**. Per recipient:
 
 - **`type=node`** → keysend with TLV record `7629169` carrying the boostagram JSON. Per-recipient `customKey`/`customValue` (e.g. shared-node sub-account routing for getalby.com) is a separate TLV record. (Spark can't keysend — node legs are rejected on the Spark rail.)
-- **`type=lnaddress`** → LNURL-pay invoice fetch (amount-verified against the BOLT11 before paying), then pay via the chosen rail.
+- **`type=lnaddress`** → probes `.well-known/keysend/<name>` first, via the `/api/keysend` proxy (that endpoint carries no CORS headers, so a direct browser fetch would always fail). When the address publishes one and the rail isn't known to be keysend-incapable, the leg is paid as a real **keysend** so the boostagram rides in TLV `7629169` intact (instead of degrading to a LUD-21 comment) and the endpoint's `customKey`/`customValue` routes to the right sub-account. Wallets that are *provably* keysend-incapable (Spark, or an NWC connection whose advertised methods exclude `pay_keysend`) skip the probe and go straight to LNURL; a wallet that never advertised its methods is attempted anyway, and a NIP-47 `NOT_IMPLEMENTED` refusal — returned instead of a payment, so nothing moved — falls back to LNURL. Otherwise: LNURL-pay invoice fetch (amount-verified against the BOLT11 before paying), then pay via the chosen rail.
 
 Per-recipient progress + errors render live; confetti fires when a leg lands. **When "Share on Nostr" is on and at least one payment landed**, a kind:1 boost note is published — signed by your own key when signed in, or by the site's Nostr identity server-side (`app/api/nostr/site-sign`, `SITE_NOSTR_SK`) when you're not, so signed-out boosts still reach Nostr. The note attributes the sender by their typed "From" name (`"ChadF boosted 100 sats → …"`).
 

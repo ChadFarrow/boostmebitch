@@ -22,6 +22,7 @@ const KEYS = {
   npub: 'bmb:npub',
   signer: 'bmb:signer',               // 'amber' | 'bunker' | 'local' when a polyfill signer is active; absent = NIP-07 extension or none
   nwcUri: 'bmb:nwc_uri',
+  nwcMethods: 'bmb:nwc_methods',      // { uri, methods } — NIP-47 capability list for the CURRENT connection; uri-keyed so a switched wallet invalidates it
   relays: 'bmb:relays',
   senderName: 'bmb:sender_name',
   shareNostr: 'bmb:share_nostr',
@@ -228,6 +229,33 @@ export const storage = {
      *  failed and the user will lose it on reload. Used to show a soft
      *  "won't persist across reloads" hint. */
     isEphemeral: () => memoryFallback.nwcUri !== null && safeGet(KEYS.nwcUri) === null,
+  },
+
+  /**
+   * The connected wallet's NIP-47 method list, captured at connect time so it
+   * survives a reload. Stored WITH the URI it was fetched for: a wallet swap
+   * changes the URI, the recorded one no longer matches, and the stale
+   * capability is ignored rather than misreported for the new wallet.
+   *
+   * Read by `nwcGetMethods()`, which is what decides whether a boost to a
+   * lightning address may take the keysend path — without persistence that
+   * decision would cost a get_info round trip mid-payment on every reload.
+   */
+  nwcMethods: {
+    get: (): { uri: string; methods: string[] } | null => {
+      const raw = safeGet(KEYS.nwcMethods);
+      if (!raw) return null;
+      try {
+        const v = JSON.parse(raw);
+        if (typeof v?.uri !== 'string' || !Array.isArray(v?.methods)) return null;
+        return { uri: v.uri, methods: v.methods.filter((m: unknown) => typeof m === 'string') };
+      } catch {
+        return null;
+      }
+    },
+    set: (v: { uri: string; methods: string[] }) =>
+      safeSet(KEYS.nwcMethods, JSON.stringify(v)),
+    clear: () => safeRemove(KEYS.nwcMethods),
   },
 
   /**
