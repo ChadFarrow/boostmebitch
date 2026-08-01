@@ -71,6 +71,20 @@ export function sparkOwner(): string | null {
   return activePubkey;
 }
 
+/**
+ * True when the connected wallet is the one this seed initialized.
+ *
+ * Deliberately a comparison rather than a `getActiveMnemonic()` accessor — the
+ * seed is spending authority, and nothing outside this module has a reason to
+ * hold it. Exists so a slow background caller can confirm the wallet it
+ * connected is still the active one before doing something destructive (see
+ * provision-spark.ts, which must not overwrite a kind:30078 backup belonging
+ * to a seed the user pasted mid-flight).
+ */
+export function sparkSeedIsActive(mnemonic: string): boolean {
+  return sdk !== null && activeMnemonic === normalizeSeed(mnemonic);
+}
+
 // Bound how long callers wait on SparkWallet.initialize(). The SDK's operator
 // handshake retries challenge-based auth internally and can stay pending for
 // minutes on a degraded connection — without a cap, the wallet modal's
@@ -187,6 +201,14 @@ export async function sparkGenerateMnemonic(): Promise<string> {
   const { wordlist } = await import('@scure/bip39/wordlists/english.js');
   return generateMnemonic(wordlist);
 }
+
+// Derives the wallet mnemonic from a Nostr secret key (see the ⚠️ derivation-
+// contract block in spark-derive.ts). It lives in its own file because this
+// module can't be loaded from plain Node — 'use client' plus the extensionless
+// '../pubsub' import — and that derivation needs a check script able to import
+// and run the real thing. Re-exported here so every call site keeps importing
+// it from `@/lib/v4v/spark`.
+export { sparkMnemonicFromKey } from './spark-derive';
 
 /** Tear down the SDK on sign-out. */
 export async function sparkDisconnect(): Promise<void> {

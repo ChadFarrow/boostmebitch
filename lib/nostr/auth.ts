@@ -7,12 +7,17 @@
 // rest of the app reads window.nostr without caring which backend it is.
 
 import { nip19, type Event, type EventTemplate } from 'nostr-tools';
+import { getPublicKey } from 'nostr-tools/pure';
+import { hexToBytes } from '@noble/hashes/utils.js';
 import {
   activateAmberSigner,
   activateBunkerSigner,
+  activateLocalSigner,
   deactivateAmberSigner,
   deactivateBunkerSigner,
+  deactivateLocalSigner,
 } from './signer';
+import { clearKey, getKey, putKey } from './local-key-store';
 import {
   bunkerUriForRestore,
   clearBunkerStale,
@@ -191,6 +196,67 @@ export async function restoreBunkerSigner(): Promise<boolean> {
 export function clearBunkerSigner() {
   deactivateBunkerSigner();
   storage.bunker.clear();
+}
+
+/**
+ * Sign in with a key this app holds itself (the Google-onboarding path — see
+ * components/nostr-auth/google-auth-panel.tsx). Installs the LocalSigner
+ * polyfill and persists the key behind a non-extractable CryptoKey.
+ *
+ * The multi-step Google UX (PIN entry, account picker) deliberately stays in
+ * the component; this is the thin part, mirroring finalizeBunkerLogin.
+ */
+export async function loginWithLocalKey(skHex: string): Promise<NostrIdentity> {
+  const signer = activateLocalSigner(skHex);
+  try {
+    await putKey(skHex);
+    const pubkey = await signer.getPublicKey();
+    return { pubkey, npub: nip19.npubEncode(pubkey) };
+  } catch (e) {
+    // Roll the polyfill back rather than leaving window.nostr pointing at a
+    // signer whose key we failed to persist.
+    deactivateLocalSigner();
+    throw e;
+  }
+}
+
+/**
+ * Reinstall the LocalSigner on page load. Async, unlike restoreAmberSigner —
+ * the key has to come back out of IndexedDB and be decrypted. Modeled on the
+ * bunker restore: signing calls that race ahead of it throw, but nothing signs
+ * unprompted right after load.
+ *
+ * Returns false when no key is stored (or storage is unreadable), so the
+ * caller can drop the signer-kind sentinel and show sign-in again.
+ */
+export async function restoreLocalSigner(): Promise<boolean> {
+  try {
+    const skHex = await getKey();
+    if (!skHex) return false;
+    // The stored key must match the identity the rest of the app is about to
+    // paint from `bmb:npub`. These CAN disagree: putKey swallows IndexedDB
+    // failures, so signing in as B on a device that already held A's key can
+    // leave A's ciphertext on disk while the session runs off the in-memory
+    // copy. After a reload the app would then sign every event as A while the
+    // header, favorites, mutes and wallet all say B — and the resulting
+    // nip44 failures are swallowed by their callers, so nothing surfaces it.
+    // Refusing here sends the user back through sign-in instead.
+    const stored = storage.npub.get();
+    if (stored) {
+      const pubkey = getPublicKey(hexToBytes(skHex));
+      if (nip19.npubEncode(pubkey) !== stored) return false;
+    }
+    activateLocalSigner(skHex);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Drop the local polyfill and wipe the stored key. */
+export async function clearLocalSigner() {
+  deactivateLocalSigner();
+  await clearKey();
 }
 
 export function shortNpub(npub: string, len = 8) {

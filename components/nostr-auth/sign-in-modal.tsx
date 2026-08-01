@@ -17,8 +17,11 @@ import {
   type NostrIdentity,
 } from '@/lib/nostr';
 import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/amber';
+import { isGoogleAuthConfigured, preloadGis } from '@/lib/nostr/google-auth';
+import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
 import { AmberCompletion } from './login-methods';
+import { GoogleAuthPanel } from './google-auth-panel';
 
 type Tab = 'extension' | 'remote';
 
@@ -38,12 +41,24 @@ export function SignInModal({
   onSuccess,
 }: {
   onClose: () => void;
-  onSuccess: (id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker') => void;
+  onSuccess: (id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker' | 'local') => void;
 }) {
   const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [hasExt] = useState(() => typeof window !== 'undefined' && !!window.nostr);
   const [android] = useState(() => isLikelyAndroid());
   const [tab, setTab] = useState<Tab>(() => (hasExt ? 'extension' : 'remote'));
+  // Google onboarding takes over the modal body while it runs — it's a
+  // multi-step flow (consent, PIN, maybe an account picker), not a button.
+  //
+  // Seeded from the store's opening intent (read once, via the lazy initializer)
+  // so the header's "Continue with Google" lands straight on the panel instead
+  // of the button that opens it. Read-once is deliberate: this is the view the
+  // modal OPENED on, and after that the panel's own back affordance owns it —
+  // subscribing would let a late store write yank the user back mid-flow.
+  const [googleConfigured] = useState(() => isGoogleAuthConfigured());
+  const [googleOpen, setGoogleOpen] = useState(
+    () => googleConfigured && useApp.getState().signInIntent === 'google',
+  );
 
   // Browser-extension flow.
   const [extBusy, setExtBusy] = useState(false);
@@ -64,6 +79,14 @@ export function SignInModal({
   const [copied, setCopied] = useState(false);
 
   useEffect(() => setPortalTarget(document.body), []);
+
+  // Fetch the GIS script the moment the modal is on screen rather than when the
+  // user taps "Continue with Google" — a cold fetch inside the click path burns
+  // its transient activation and the consent popup gets blocked. See
+  // preloadGis().
+  useEffect(() => {
+    if (googleConfigured) preloadGis();
+  }, [googleConfigured]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -220,196 +243,227 @@ export function SignInModal({
           <h3 className="font-display text-2xl leading-tight">Sign in with Nostr</h3>
         </div>
 
-        <div className="flex border-b border-bone/15">
-          <button onClick={() => setTab('extension')} className={tabClass(tab === 'extension')}>
-            Browser Extension
-          </button>
-          <button onClick={() => setTab('remote')} className={tabClass(tab === 'remote')}>
-            Remote Signer
-          </button>
-        </div>
+        {/* Google onboarding sits ABOVE the tab strip, not inside it: it's the
+            path for people who have no key and don't know what a "signer" is,
+            so it can't be hidden behind a tab labelled for people who do. */}
+        {googleConfigured && (
+          <div className="p-5 border-b border-bone/15 flex flex-col gap-2">
+            {googleOpen ? (
+              <GoogleAuthPanel
+                onSuccess={(id) => {
+                  onSuccess(id, 'local');
+                  onClose();
+                }}
+                onCancel={() => setGoogleOpen(false)}
+              />
+            ) : (
+              <>
+                <button onClick={() => setGoogleOpen(true)} className="btn-bolt w-full">
+                  Continue with Google
+                </button>
+                <p className="text-[11px] text-muted">
+                  New to Nostr? This creates a key for you and backs it up to your
+                  own Google Drive, encrypted with a PIN only you know.
+                </p>
+              </>
+            )}
+          </div>
+        )}
 
-        <div className="p-5 flex flex-col gap-4">
-          {tab === 'extension' ? (
-            <>
-              <p className="text-xs text-muted">
-                Connect using a NIP-07 browser extension like Alby, nos2x, or
-                Nostr Connect.
-              </p>
-              {!hasExt && (
-                <div className="border border-nostr/40 bg-nostr/10 p-2 text-[11px] text-bone">
-                  No Nostr extension detected. Install one to use this method,
-                  or use Remote Signer for mobile.
-                </div>
-              )}
-              <button
-                onClick={onExtension}
-                disabled={!hasExt || extBusy}
-                className="btn-bolt w-full disabled:opacity-40"
-              >
-                {extBusy ? 'Connecting…' : 'Connect with Extension'}
+        {!googleOpen && (
+          <>
+            <div className="flex border-b border-bone/15">
+              <button onClick={() => setTab('extension')} className={tabClass(tab === 'extension')}>
+                Browser Extension
               </button>
-              {extErr && <span className="text-[11px] text-nostr/80">{extErr}</span>}
-            </>
-          ) : (
-            <>
-              <p className="text-xs text-muted">
-                Connect using a remote signer like Primal (iOS/Android), Amber
-                (Android), or any NIP-46 compatible app.
-              </p>
+              <button onClick={() => setTab('remote')} className={tabClass(tab === 'remote')}>
+                Remote Signer
+              </button>
+            </div>
 
-              {android && (
-                <div className="border border-bone/15 p-3 flex flex-col gap-2">
+            <div className="p-5 flex flex-col gap-4">
+              {tab === 'extension' ? (
+                <>
+                  <p className="text-xs text-muted">
+                    Connect using a NIP-07 browser extension like Alby, nos2x, or
+                    Nostr Connect.
+                  </p>
+                  {!hasExt && (
+                    <div className="border border-nostr/40 bg-nostr/10 p-2 text-[11px] text-bone">
+                      No Nostr extension detected. Install one to use this method,
+                      or use Remote Signer for mobile.
+                    </div>
+                  )}
                   <button
-                    onClick={onAmber}
-                    disabled={amberBusy}
+                    onClick={onExtension}
+                    disabled={!hasExt || extBusy}
                     className="btn-bolt w-full disabled:opacity-40"
                   >
-                    {amberBusy ? 'Connecting…' : 'Sign in with Amber'}
+                    {extBusy ? 'Connecting…' : 'Connect with Extension'}
                   </button>
-                  {amberBusy && <AmberCompletion onSubmit={submitManualPaste} />}
-                  {amberErr && <span className="text-[11px] text-nostr/80">{amberErr}</span>}
-                </div>
-              )}
+                  {extErr && <span className="text-[11px] text-nostr/80">{extErr}</span>}
+                </>
+              ) : (
+                <>
+                  <p className="text-xs text-muted">
+                    Connect using a remote signer like Primal (iOS/Android), Amber
+                    (Android), or any NIP-46 compatible app.
+                  </p>
 
-              {/* Option 1: generate a nostrconnect:// URI / QR. */}
-              <div className="border border-bone/15 p-3 flex flex-col gap-2">
-                <h4 className="font-display text-sm">Option 1: Scan QR Code</h4>
-                <p className="text-[11px] text-muted">
-                  Generate a connection QR code to scan (or paste) with your
-                  signer app — works with Primal, Clave, nsec.app, Amber.
-                </p>
-                {!genUri && (
-                  <button
-                    onClick={onGenerate}
-                    disabled={genBusy}
-                    className="btn-bolt self-start disabled:opacity-40"
-                  >
-                    {genBusy ? 'Generating…' : 'Generate QR Code'}
-                  </button>
-                )}
-                {genUri && (
-                  <>
-                    <div className="self-stretch flex justify-center bg-bone p-3">
-                      <QRCodeSVG
-                        value={genUri}
-                        size={200}
-                        level="M"
-                        fgColor="#0a0a08"
-                        bgColor="#f5f1e8"
-                      />
-                    </div>
-                    <code className="block w-full bg-ink/40 p-2 text-[10px] leading-snug break-all select-all">
-                      {genUri}
-                    </code>
-                    <div className="flex items-center gap-2">
-                      <button onClick={copyGenUri} className="btn-ghost text-[10px] py-1 px-2">
-                        {copied ? 'Copied' : 'Copy'}
+                  {android && (
+                    <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                      <button
+                        onClick={onAmber}
+                        disabled={amberBusy}
+                        className="btn-bolt w-full disabled:opacity-40"
+                      >
+                        {amberBusy ? 'Connecting…' : 'Sign in with Amber'}
                       </button>
-                      {!genBusy && genErr && (
-                        <button onClick={onGenerate} className="btn-bolt text-[10px] py-1 px-2">
-                          Try again
-                        </button>
-                      )}
-                      <span className="text-[10px] text-muted">
-                        {genBusy ? 'Waiting for signer…' : ''}
-                      </span>
+                      {amberBusy && <AmberCompletion onSubmit={submitManualPaste} />}
+                      {amberErr && <span className="text-[11px] text-nostr/80">{amberErr}</span>}
                     </div>
-                  </>
-                )}
-                {genAuthUrl && (
-                  <div className="flex flex-col items-start gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
-                    <span className="text-[10px] text-bone">
-                      Your signer wants you to approve this connection.
-                    </span>
-                    <a
-                      href={genAuthUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn-bolt text-[11px] py-1 px-3 no-underline"
-                    >
-                      ◆ Approve in signer
-                    </a>
-                    <span className="text-[10px] text-muted">
-                      Keep this open while you approve.
-                    </span>
-                  </div>
-                )}
-                {genErr && (
-                  <span className="text-[10px] text-nostr/80">
-                    {genErr.includes('subscription closed') || genErr.includes('timed out')
-                      ? 'Connection dropped — approve in your signer then tap Try again.'
-                      : genErr}
-                  </span>
-                )}
-              </div>
+                  )}
 
-              <div className="flex items-center gap-2 text-[10px] text-muted">
-                <span className="flex-1 border-t border-bone/15" />
-                <span>OR</span>
-                <span className="flex-1 border-t border-bone/15" />
-              </div>
+                  {/* Option 1: generate a nostrconnect:// URI / QR. */}
+                  <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                    <h4 className="font-display text-sm">Option 1: Scan QR Code</h4>
+                    <p className="text-[11px] text-muted">
+                      Generate a connection QR code to scan (or paste) with your
+                      signer app — works with Primal, Clave, nsec.app, Amber.
+                    </p>
+                    {!genUri && (
+                      <button
+                        onClick={onGenerate}
+                        disabled={genBusy}
+                        className="btn-bolt self-start disabled:opacity-40"
+                      >
+                        {genBusy ? 'Generating…' : 'Generate QR Code'}
+                      </button>
+                    )}
+                    {genUri && (
+                      <>
+                        <div className="self-stretch flex justify-center bg-bone p-3">
+                          <QRCodeSVG
+                            value={genUri}
+                            size={200}
+                            level="M"
+                            fgColor="#0a0a08"
+                            bgColor="#f5f1e8"
+                          />
+                        </div>
+                        <code className="block w-full bg-ink/40 p-2 text-[10px] leading-snug break-all select-all">
+                          {genUri}
+                        </code>
+                        <div className="flex items-center gap-2">
+                          <button onClick={copyGenUri} className="btn-ghost text-[10px] py-1 px-2">
+                            {copied ? 'Copied' : 'Copy'}
+                          </button>
+                          {!genBusy && genErr && (
+                            <button onClick={onGenerate} className="btn-bolt text-[10px] py-1 px-2">
+                              Try again
+                            </button>
+                          )}
+                          <span className="text-[10px] text-muted">
+                            {genBusy ? 'Waiting for signer…' : ''}
+                          </span>
+                        </div>
+                      </>
+                    )}
+                    {genAuthUrl && (
+                      <div className="flex flex-col items-start gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
+                        <span className="text-[10px] text-bone">
+                          Your signer wants you to approve this connection.
+                        </span>
+                        <a
+                          href={genAuthUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn-bolt text-[11px] py-1 px-3 no-underline"
+                        >
+                          ◆ Approve in signer
+                        </a>
+                        <span className="text-[10px] text-muted">
+                          Keep this open while you approve.
+                        </span>
+                      </div>
+                    )}
+                    {genErr && (
+                      <span className="text-[10px] text-nostr/80">
+                        {genErr.includes('subscription closed') || genErr.includes('timed out')
+                          ? 'Connection dropped — approve in your signer then tap Try again.'
+                          : genErr}
+                      </span>
+                    )}
+                  </div>
 
-              {/* Option 2: paste a bunker:// URI the signer generated. */}
-              <div className="border border-bone/15 p-3 flex flex-col gap-2">
-                <h4 className="font-display text-sm">Option 2: Paste Bunker URI</h4>
-                <p className="text-[11px] text-muted">
-                  Paste a <code className="text-[9px]">bunker://</code> URI (or{' '}
-                  <code className="text-[9px]">name@example.com</code>) from your
-                  signer app — e.g. nsec.app or Amber in server mode.
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    value={pasteValue}
-                    onChange={(e) => setPasteValue(e.target.value)}
-                    placeholder="bunker://…"
-                    className="input flex-1 text-[11px] break-all"
-                  />
-                  <button
-                    onClick={onPasteSubmit}
-                    disabled={pasteBusy || !pasteValue.trim()}
-                    className="btn-bolt text-[11px] py-1 px-3 disabled:opacity-40"
-                  >
-                    {pasteBusy ? 'Connecting…' : 'Connect'}
-                  </button>
-                </div>
-                {pasteBusy && (
-                  <span className="text-[10px] text-muted">
-                    Approve in your signer if prompted, then come back here.
-                  </span>
-                )}
-                {pasteAuthUrl && (
-                  <div className="flex flex-col items-start gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
-                    <span className="text-[10px] text-bone">
-                      Your signer wants you to approve this connection.
-                    </span>
-                    <a
-                      href={pasteAuthUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="btn-bolt text-[11px] py-1 px-3 no-underline"
-                    >
-                      ◆ Approve in signer
-                    </a>
-                    <span className="text-[10px] text-muted">
-                      Approve in your signer, then come back here. Keep this
-                      open — closing it cancels the connection.
-                    </span>
+                  <div className="flex items-center gap-2 text-[10px] text-muted">
+                    <span className="flex-1 border-t border-bone/15" />
+                    <span>OR</span>
+                    <span className="flex-1 border-t border-bone/15" />
                   </div>
-                )}
-                {pasteErr && (
-                  <div className="flex flex-col items-start gap-1">
-                    <span className="text-[10px] text-nostr/80">
-                      {pasteErr.includes('timed out') || pasteErr.includes('subscription closed')
-                        ? 'Connection dropped — tap Connect again, then approve in your signer once more.'
-                        : pasteErr}
-                    </span>
+
+                  {/* Option 2: paste a bunker:// URI the signer generated. */}
+                  <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                    <h4 className="font-display text-sm">Option 2: Paste Bunker URI</h4>
+                    <p className="text-[11px] text-muted">
+                      Paste a <code className="text-[9px]">bunker://</code> URI (or{' '}
+                      <code className="text-[9px]">name@example.com</code>) from your
+                      signer app — e.g. nsec.app or Amber in server mode.
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        value={pasteValue}
+                        onChange={(e) => setPasteValue(e.target.value)}
+                        placeholder="bunker://…"
+                        className="input flex-1 text-[11px] break-all"
+                      />
+                      <button
+                        onClick={onPasteSubmit}
+                        disabled={pasteBusy || !pasteValue.trim()}
+                        className="btn-bolt text-[11px] py-1 px-3 disabled:opacity-40"
+                      >
+                        {pasteBusy ? 'Connecting…' : 'Connect'}
+                      </button>
+                    </div>
+                    {pasteBusy && (
+                      <span className="text-[10px] text-muted">
+                        Approve in your signer if prompted, then come back here.
+                      </span>
+                    )}
+                    {pasteAuthUrl && (
+                      <div className="flex flex-col items-start gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
+                        <span className="text-[10px] text-bone">
+                          Your signer wants you to approve this connection.
+                        </span>
+                        <a
+                          href={pasteAuthUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn-bolt text-[11px] py-1 px-3 no-underline"
+                        >
+                          ◆ Approve in signer
+                        </a>
+                        <span className="text-[10px] text-muted">
+                          Approve in your signer, then come back here. Keep this
+                          open — closing it cancels the connection.
+                        </span>
+                      </div>
+                    )}
+                    {pasteErr && (
+                      <div className="flex flex-col items-start gap-1">
+                        <span className="text-[10px] text-nostr/80">
+                          {pasteErr.includes('timed out') || pasteErr.includes('subscription closed')
+                            ? 'Connection dropped — tap Connect again, then approve in your signer once more.'
+                            : pasteErr}
+                        </span>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
-            </>
-          )}
-        </div>
+                </>
+              )}
+            </div>
+          </>
+        )}
 
         <div className="p-4 border-t border-bone/15 flex justify-end">
           <button onClick={handleClose} className="btn-ghost">

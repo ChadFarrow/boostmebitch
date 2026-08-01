@@ -1,7 +1,7 @@
 # Boost Me Bitch — Podcast Boost Station
 
 Search, listen, and **boost** Podcasting 2.0 shows — and **watch + boost Nostr live streams** — over Lightning.
-**Lightning and Nostr are two independent logins:** connect a wallet (**NWC, Spark, WebLN, or Lightning Address**) and boost with no Nostr account, or **sign in with Nostr** (NIP-07, Amber, or a NIP-46 bunker) for the social layer.
+**Lightning and Nostr are two independent logins:** connect a wallet (**NWC, Spark, WebLN, or Lightning Address**) and boost with no Nostr account, or **sign in with Nostr** (NIP-07, Amber, a NIP-46 bunker, or **Continue with Google** — which generates a key for people who don't have one and backs it up, PIN-encrypted, to their own Google Drive) for the social layer.
 **Boosts publish a kind:1 note** to Nostr with NIP-73 podcast refs — signed by your key when signed in, or by the **app's own Nostr identity** (server-side) when you're not, so signed-out boosts still reach Nostr; **live-stream boosts go out as real NIP-57 zaps** so they show up as boosts in Fountain / tunestr / zap.stream.
 Favorite shows and mute accounts sync across any Nostr-aware client via NIP-51. Installable PWA, light + dark.
 
@@ -10,7 +10,7 @@ Live at <https://boostmebitch.vercel.app>.
 ```
 Stack:    Next.js 15 · React 19 · Tailwind · Zustand
 Wallets:  @getalby/sdk (NWC) · @buildonspark/spark-sdk (Spark) · window.webln · LNURL-pay / NIP-57 zaps
-Identity: nostr-tools + window.nostr (NIP-07 / Amber NIP-55 / NIP-46 bunker / NIP-65 / NIP-51)
+Identity: nostr-tools + window.nostr (NIP-07 / Amber NIP-55 / NIP-46 bunker / local key / NIP-65 / NIP-51)
 Video:    hls.js + react-reverse-portal (HLS live streams)
 Data:     Podcast Index API (server-side proxy) + Nostr relays
 Deploy:   Vercel zero-config
@@ -95,6 +95,8 @@ lib/
   boost-sound.ts → audio-session plan for the boost ping AND its tap-time unlock (don't evict the user's music app)
   nostr/
     auth · signer · amber · bunker        → NIP-07 / NIP-55 / NIP-46 sign-in + window.nostr swap
+    local-signer · local-key-store        → in-process signer; key at rest in IndexedDB
+    google-auth · backup-crypto · drive-backup  → Google onboarding: PIN-encrypted key backup
     pool · publish · relays · profile     → SimplePool wrapper, signAndPublish/publishSignedEvent, relay sets, kind:0
     discover · event-queries · use-feed   → feed assembly, queries, stale-while-revalidate hook
     boost-notes · interactions            → kind:1 boost notes (user + site-signed), replies/reposts
@@ -206,13 +208,32 @@ Connected from the header's **`<AuthControl>`** (the combined "Sign in ▾" logi
 
 ## Signers
 
-`window.nostr` is the single interface; three paths feed it (swapped by `lib/nostr/signer.ts`):
+`window.nostr` is the single interface; four paths feed it (swapped by `lib/nostr/signer.ts`):
 
 - **NIP-07** browser extension (Alby, nos2x, nostash on iOS).
 - **Amber** (NIP-55) on Android — `nostrsigner:` URL scheme + clipboard round-trip.
 - **NIP-46 bunker / `nostrconnect://`** remote signer (nsec.app, Clave, Amber-as-bunker, Primal).
+- **Local key** — the only path where *we* hold the key, for users who arrive with no Nostr identity at all. See Google onboarding below.
 
-The header's combined **"Sign in ▾"** control (`<AuthControl>`) opens a two-tab modal (Extension / Remote signer) for the Nostr login. `nostr-tools` is pinned to **exactly `2.19.4`** — `2.20.0+`'s NIP-46 rewrite breaks the `nostrconnect://` handshake on our relays.
+The header's combined **"Sign in ▾"** control (`<AuthControl>`) opens a modal with **Continue with Google** above a two-tab picker (Extension / Remote signer). `nostr-tools` is pinned to **exactly `2.19.4`** — `2.20.0+`'s NIP-46 rewrite breaks the `nostrconnect://` handshake on our relays.
+
+### Google onboarding — a key for users who have none
+
+Ported from [Wisp](https://github.com/barrydeen/wisp). **Google is not an identity provider here — it's a zero-knowledge blob store.** The key is generated locally at random; nothing is derived from the Google account.
+
+```
+salt = HMAC-SHA256(key = "bmb-google-backup", msg = google `sub`)
+key  = Argon2id(pin, salt, m=32MiB, t=3, p=1) -> 32 bytes
+blob = NIP-44 v2 over the hex nsec, with that key as the conversation key
+```
+
+The blob lives in Drive **`appDataFolder`** — app-private, invisible in the user's Drive UI, opaque filename, no metadata. The npub exists only inside the ciphertext, so Google holds something it can't link to a Nostr identity. The **PIN is the only secret**; losing it loses the account, and the setup screen says so.
+
+At rest the key is AES-GCM ciphertext in IndexedDB under a non-extractable `CryptoKey` — never `localStorage`. New accounts also get a **Spark wallet derived from the same key**, so a Google signup arrives with a working boost rail.
+
+New accounts also get a **generated kind:0** — a two-word display name and an identicon, both derived from the pubkey (not from the Google account), so the user is recognizable in every Nostr client rather than a nameless npub.
+
+Gated entirely on `NEXT_PUBLIC_GOOGLE_CLIENT_ID`: unset, the entry point doesn't render and nothing else changes. Enabling it needs a Google Cloud project with the **Drive API enabled** and both `openid` and `drive.appdata` on the consent screen. `drive.appdata` is a **non-sensitive** scope, so this needs only brand verification — no demo video, no third-party security assessment. (The 100-user cap comes from the consent screen sitting in *Testing*, not from the scope.) See CLAUDE.md for the settled console state.
 
 ---
 

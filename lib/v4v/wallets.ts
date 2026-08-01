@@ -33,7 +33,7 @@ export async function clearOtherWallets(
   if (keep !== 'nwc' && hasNwc()) clearNwcUri();
   if (keep !== 'spark' && hasSpark()) {
     await sparkDisconnect();
-    storage.sparkOptOut.set();
+    storage.sparkOptOut.set(npub);
   }
   if (keep !== 'webln') weblnDisable();
   storage.walletBalance.clear(npub);

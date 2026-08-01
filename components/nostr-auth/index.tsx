@@ -5,8 +5,11 @@ import {
   loginWithExtension,
   restoreAmberSigner,
   restoreBunkerSigner,
+  restoreLocalSigner,
   clearAmberSigner,
   clearBunkerSigner,
+  clearLocalSigner,
+  deactivateLocalSigner,
   fetchProfile,
   fetchRelayList,
   fetchEncryptedMnemonic,
@@ -21,6 +24,10 @@ import { hasSpark, sparkDisconnect, sparkInitFromMnemonic } from '@/lib/v4v/spar
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
+// Direct import, not the barrel: lib/nostr/follows.ts is deliberately
+// store-free to avoid a cycle with lib/store, and it isn't re-exported.
+import { resetFollows } from '@/lib/nostr/follows';
+import { deriveSparkFromLocalKey } from './provision-spark';
 import { AccountMenu } from './account-menu';
 import { SignInModal } from './sign-in-modal';
 import { markNwcRestored } from '../nwc-wallet';
@@ -47,6 +54,7 @@ export function NostrAuth() {
   // open it without leaving the page.
   const modalOpen = useApp((s) => s.signInOpen);
   const setModalOpen = useApp((s) => s.setSignInOpen);
+  const setWalletRestoring = useApp((s) => s.setWalletRestoring);
 
   async function loadProfile(id: NostrIdentity) {
     // Dedupe across remounts (StrictMode runs effects twice in dev; Fast
@@ -89,6 +97,49 @@ export function NostrAuth() {
       }
     }
 
+    // Start the local-signer Spark derive HERE, before the relay phase below.
+    //
+    // It reads nothing off the network: the IndexedDB key, plus `npub` and
+    // `pubkey` — and those two are identical on `id` and the `enriched`
+    // identity built later, since enriching only adds `profile` and
+    // `writeRelays`. So the "fast path" was being gated on a 4s-bounded relay
+    // round trip it had no dependency on, and a Google account's wallet took
+    // seconds to appear on every reload while the local seed sat right there.
+    // The relay-backed half (fetchEncryptedMnemonic) still runs on `enriched`,
+    // where the NIP-65 write relays genuinely matter.
+    //
+    // The condition is captured ONCE, here: after a successful derive
+    // `hasSpark()` flips true, so re-evaluating it below would skip the backup
+    // check that exists to notice a user's own pasted seed differing from the
+    // derived default.
+    const shouldRestoreSpark = !hasSpark() && !storage.sparkOptOut.get(id.npub);
+
+    // Tell the header a wallet is on its way, so it shows "connecting…" rather
+    // than offering "Connect wallet" for one the user already has —
+    // hasAnyWallet() is false for the whole SDK-import + handshake window.
+    //
+    // Gated on positive evidence, deliberately. shouldRestoreSpark alone is
+    // true for anyone without a connected Spark wallet, including people who
+    // have never had one — they'd sit on a false "connecting…" for the length
+    // of the backup query and then be told to connect after all. A local
+    // signer always derives a wallet from the key it holds, and a cached
+    // balance means this npub had one last session; anything else stays quiet.
+    const expectWallet = shouldRestoreSpark
+      && (storage.signer.get() === 'local' || storage.walletBalance.get(id.npub) !== null);
+    if (expectWallet) setWalletRestoring(true);
+
+    const derivedSparkPromise = shouldRestoreSpark
+      ? (async () => {
+          const m = await deriveSparkFromLocalKey(id).catch(() => null);
+          // A failed signer restore (abandonRestoredSession) runs sparkDisconnect(),
+          // but if it fired before this init landed the wallet would outlive the
+          // session it belongs to — and the next account would inherit it. In
+          // practice getKey() fails for both, so this is the belt to that braces.
+          if (m && storage.npub.get() !== id.npub) { sparkDisconnect(); return null; }
+          return m;
+        })()
+      : Promise.resolve(null);
+
     // Fire profile, relay list, favorites, and mutes in parallel. Each has
     // a 4s QUERY_MAX_WAIT_MS bound, so total wall time for this phase is ~4s.
     // Mute/favorites tolerate the bare identity (no writeRelays yet) because
@@ -102,6 +153,19 @@ export function NostrAuth() {
     // Apply profile + relay list as soon as both land. Both feed the
     // identity object, so we wait for them together to avoid two re-renders.
     const [profile, relayList] = await Promise.all([profilePromise, relayListPromise]);
+    // A failed signer restore (see abandonRestoredSession) can sign the user
+    // out while these queries are in flight. Re-applying the enriched identity
+    // would resurrect a session with no window.nostr — the exact state that
+    // path exists to fix — and the wallet/settings restores below would then
+    // run needing a signer that isn't there. The cached npub is the
+    // authoritative "still signed in" flag.
+    if (storage.npub.get() !== id.npub) {
+      // This return is upstream of where sparkPromise's .finally() clears the
+      // flag, so it has to clear it itself — otherwise a session abandoned in
+      // this window leaves the header stuck on "connecting…" forever.
+      if (expectWallet) setWalletRestoring(false);
+      return;
+    }
     const enriched: NostrIdentity = { ...id };
     if (profile) enriched.profile = profile;
     if (relayList?.write?.length) enriched.writeRelays = relayList.write;
@@ -112,12 +176,23 @@ export function NostrAuth() {
     // them with the bare `id` queries only DEFAULT_RELAYS, silently missing
     // backups published from a session that had custom write relays — the
     // primary reason NWC and Spark failed to auto-restore on mobile.
-    const sparkPromise = !hasSpark() && !storage.sparkOptOut.get()
-      ? fetchEncryptedMnemonic(enriched)
-          .then((mnemonic) => {
-            if (mnemonic) return sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
-          })
-          .catch(() => {})
+    const sparkPromise = shouldRestoreSpark
+      ? (async () => {
+          // Already in flight since before the relay phase above — for a local
+          // signer the wallet is typically up by now. Null for every other
+          // signer kind, leaving the behaviour below unchanged.
+          const derived = await derivedSparkPromise;
+
+          // The backup is still authoritative — a user who pasted their own
+          // seed has one that differs from the derived default, and it must
+          // win. Only re-init when it actually disagrees, so the common case
+          // (never changed wallets) costs nothing beyond the query we were
+          // already making.
+          const mnemonic = await fetchEncryptedMnemonic(enriched);
+          if (mnemonic && mnemonic !== derived) {
+            await sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
+          }
+        })().catch(() => {}).finally(() => { if (expectWallet) setWalletRestoring(false); })
       : Promise.resolve();
     // Synced settings: apply the last-used boost rail.
     const settingsPromise = fetchSettings(enriched)
@@ -166,10 +241,18 @@ export function NostrAuth() {
       // Bunker reconnect is async (NIP-46 transport handshake). Kick it off
       // in the background; signing operations that race ahead of it will
       // throw, but nothing signs unprompted right after page load. If the
-      // reconnect fails, drop the sentinel so the sign-in UI shows again.
+      // reconnect fails, fall all the way back to signed out.
       restoreBunkerSigner().then((ok) => {
-        if (!ok) storage.signer.clear();
-      }).catch(() => storage.signer.clear());
+        if (!ok) abandonRestoredSession();
+      }).catch(abandonRestoredSession);
+    } else if (signerKindStored === 'local') {
+      // Async like the bunker path, not synchronous like Amber: the key has to
+      // come back out of IndexedDB and be decrypted under the origin's
+      // non-extractable wrap key. Identity still paints immediately from the
+      // cached npub below; only signing waits.
+      restoreLocalSigner().then((ok) => {
+        if (!ok) abandonRestoredSession();
+      }).catch(abandonRestoredSession);
     }
     const bare: NostrIdentity = { pubkey, npub: stored };
     const cachedProfile = storage.profile.get(pubkey);
@@ -238,7 +321,67 @@ export function NostrAuth() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [identity]);
 
+  /**
+   * A signer restore failed after identity already painted from the cached
+   * npub. Clearing only the `bmb:signer` sentinel isn't enough: the user looks
+   * signed in while window.nostr is undefined, and the next thing that signs
+   * dies with a generic error. Fall all the way back to signed out.
+   *
+   * Deliberately does NOT call clearLocalSigner(): a restore failure can be a
+   * transient IndexedDB error, and wiping the wrap key would turn a bad reload
+   * into permanent key loss. Explicit sign-out is the only place that erases.
+   */
+  function abandonRestoredSession() {
+    const npub = storage.npub.get();
+    // Wallet teardown is NOT optional here, and leaving it out was a real leak.
+    // `bmb:nwc_uri` is a single global key and the Spark SDK is a module
+    // singleton, so both survive this function. Worse, setting identity to null
+    // below makes completeSignIn's cross-identity cleanup guard
+    // (`identity && identity.pubkey !== id.pubkey`) false on the NEXT sign-in,
+    // so it doesn't clean up either — and the next account boosts through the
+    // abandoned one's wallet, with its balance in the header chip.
+    if (npub) {
+      storage.walletBalance.clear(npub);
+      storage.nwcBackup.clear(npub);
+    }
+    clearNwcUri();
+    sparkDisconnect();
+    // Nothing is coming back up, so stop the header promising it is.
+    setWalletRestoring(false);
+    // Drop the polyfill too: a half-restored bunker adapter can be left on
+    // window.nostr with a live socket, and a queued local restore could
+    // otherwise install a signer *after* this ran. Deliberately NOT
+    // clearLocalSigner() — that wipes the wrap key, and a transient IndexedDB
+    // error must not become permanent key loss. Explicit sign-out erases.
+    clearAmberSigner();
+    clearBunkerSigner();
+    deactivateLocalSigner();
+    storage.signer.clear();
+    storage.npub.clear();
+    // An in-flight doLoadProfile for this pubkey has already bailed (it
+    // re-checks storage.npub); leaving its settled promise in the dedupe map
+    // would short-circuit a re-sign-in within 25s and skip hydration entirely.
+    pendingProfileLoad.clear();
+    setIdentity(null);
+    setFavorites({});
+    setMutedPubkeys(new Set());
+  }
+
   function signout() {
+    // The local signer is the only kind where signing out destroys something:
+    // clearLocalSigner wipes the ciphertext AND the non-extractable wrap key,
+    // and the only way back in is the same Google account plus the PIN. An
+    // extension or bunker sign-out costs nothing, so it stays one click. Read
+    // the kind before the storage.signer.clear() below.
+    if (storage.signer.get() === 'local') {
+      const ok = window.confirm(
+        "Signing out erases this account's key from this browser.\n\n" +
+        'You can only get back in with the same Google account and the PIN you set. ' +
+        "If you've forgotten the PIN, this account is gone for good.\n\n" +
+        'Sign out anyway?',
+      );
+      if (!ok) return;
+    }
     if (identity) {
       storage.walletBalance.clear(identity.npub);
       // Stash the NWC URI in sessionStorage before clearing it. On same-account
@@ -256,13 +399,20 @@ export function NostrAuth() {
       storage.nwcBackup.clear(identity.npub);
     }
     sparkDisconnect();
+    setWalletRestoring(false);
     setIdentity(null);
     setFavorites({});
     setMutedPubkeys(new Set());
+    // Same reason as the identity-switch path: useFollows resets this when
+    // identity goes null, but not until a FollowButton's effect runs.
+    resetFollows();
     storage.npub.clear();
     storage.signer.clear();
     clearAmberSigner();
     clearBunkerSigner();
+    // Wipes the ciphertext AND the wrap key, so nothing left behind can
+    // decrypt a later blob.
+    clearLocalSigner().catch(() => { /* storage already gone */ });
   }
 
   if (identity) {
@@ -273,7 +423,7 @@ export function NostrAuth() {
   // remote-signer flows. The login function has already
   // installed whichever polyfill it needs and persisted bmb:bunker /
   // amber state; we just propagate identity to the store and hydrate.
-  function completeSignIn(id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker') {
+  function completeSignIn(id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker' | 'local') {
     // Switching to a different npub — disconnect the previous wallets so they
     // don't leak across identities. NWC's global URI is cleared here so the
     // new identity's own backup restores cleanly in loadProfile (!hasNwc()).
@@ -282,11 +432,34 @@ export function NostrAuth() {
       sparkDisconnect();
       clearNwcUri();
       storage.nwcBackup.clear(identity.npub);
+
+      // Wipe in-memory identity state too, not just the wallets. This is
+      // load-bearing beyond the obvious "don't show A's favorites under B":
+      // hydrateFavorites reads `useApp.getState().favorites` — deliberately, so
+      // a signed-OUT user's favorites get adopted when they first sign in — and
+      // when the incoming identity has no kind:30003 yet it PUBLISHES whatever
+      // it finds there as that identity's list. Carrying A's favorites into B
+      // therefore doesn't just display wrong, it writes A's list to relays
+      // under B's key. Clearing here is what keeps that adoption path safe,
+      // because it only ever runs on an identity SWITCH — signed-out → signed-in
+      // leaves `identity` null, skips this block, and still adopts as intended.
+      //
+      // hydrateMutes reads the per-npub cache instead, so it's already correct;
+      // clearing keeps the two consistent and avoids showing A's mutes in the
+      // window before B's hydration lands.
+      setFavorites({});
+      setMutedPubkeys(new Set());
+      // The follow singleton is module state shared by every FollowButton.
+      // ensureFollowsLoaded resets it on an identity change, but only once a
+      // button mounts and its effect runs — until then followsSnapshot() still
+      // reports A's list, and a stale `ok:true` is what gates the publish path.
+      resetFollows();
     }
     startTransition(() => setIdentity(id));
     storage.npub.set(id.npub);
     if (kind === 'amber') storage.signer.set('amber');
     else if (kind === 'bunker') storage.signer.set('bunker');
+    else if (kind === 'local') storage.signer.set('local');
     else storage.signer.clear();
     loadProfile(id);
   }

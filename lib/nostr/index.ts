@@ -7,16 +7,24 @@ export {
   loginWithAmber,
   loginWithBunker,
   loginWithNostrConnect,
+  loginWithLocalKey,
   restoreAmberSigner,
   restoreBunkerSigner,
+  restoreLocalSigner,
   clearAmberSigner,
   clearBunkerSigner,
+  clearLocalSigner,
   shortNpub,
   type NostrIdentity,
   type ProfileMetadata,
 } from './auth';
 
-export { isAmberActive, isBunkerActive, getNip44 } from './signer';
+export { isAmberActive, isBunkerActive, isLocalActive, getNip44 } from './signer';
+// Exported for abandonRestoredSession: dropping the polyfill without wiping
+// the stored key (which is what clearLocalSigner does).
+export { deactivateLocalSigner } from './signer';
+export { isKeyEphemeral } from './local-key-store';
+export { isGoogleAuthConfigured } from './google-auth';
 export { isLikelyAndroid, isLikelyIOS } from './amber';
 export {
   isBunkerStale,

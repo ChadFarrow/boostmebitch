@@ -23,6 +23,28 @@ const nextConfig = {
           // Share button writes via same-origin JS, covered by the default
           // `self` allowlist.
           { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          // Deliberately NOT a script-src CSP. Two hard blockers, both
+          // structural rather than laziness:
+          //   1. The FOUC blocker in app/layout.tsx is an inline <script> that
+          //      must run before first paint, so script-src would need nonce
+          //      plumbing through the App Router — and 'unsafe-inline' instead
+          //      would defeat the point.
+          //   2. connect-src can't be constrained. The app connects to
+          //      arbitrary user-supplied relays (wss://*), arbitrary podcast
+          //      feed/chapter/transcript hosts, and arbitrary LNURL servers by
+          //      design. Without a connect-src allowlist, injected script can
+          //      still exfiltrate, so a script-src alone would read as more
+          //      protection than it delivers.
+          // What IS worth setting are the directives that cost nothing and
+          // close real injection vectors: base-uri stops a <base> tag from
+          // repointing every relative URL, object-src kills plugin embeds, and
+          // frame-ancestors backs up X-Frame-Options for browsers that prefer
+          // CSP. This matters more now that the origin can hold a signing key
+          // (see lib/nostr/local-key-store.ts).
+          {
+            key: 'Content-Security-Policy',
+            value: "base-uri 'self'; object-src 'none'; frame-ancestors 'none'",
+          },
         ],
       },
     ];

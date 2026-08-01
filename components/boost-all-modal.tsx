@@ -4,9 +4,8 @@ import { createPortal } from 'react-dom';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
-import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
-import { hasWebln } from '@/lib/v4v/webln';
+import { subscribeNwc } from '@/lib/v4v/nwc';
+import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage, type ShareNostrAs } from '@/lib/storage';
 import { getErrorMessage, hasValueRecipients } from '@/lib/util';
@@ -18,6 +17,7 @@ import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
+import { RailPicker } from './rail-picker';
 
 interface Props {
   podcast: Podcast;
@@ -97,11 +97,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     setRail(pickRail());
     setName((cur) => {
       if (cur) return cur;
-      const stored = storage.senderName.get();
+      const stored = storage.senderName.get(identity?.npub);
       if (stored) return stored;
       return identity?.profile?.display_name || identity?.profile?.name || '';
     });
-  }, [identity?.profile?.display_name, identity?.profile?.name]);
+  // npub is a dep so switching accounts re-resolves the "From" name against
+  // the new identity's own per-npub value. The `if (cur) return cur` guard
+  // above still wins for a switch that happens with the modal already open —
+  // it exists to protect in-progress typing — but the field is visible and
+  // editable, and the case that mattered (opening the modal fresh under a new
+  // identity and finding the previous one's real name) is what this fixes.
+  }, [identity?.npub, identity?.profile?.display_name, identity?.profile?.name]);
 
   // Fetch resolved value splits for this episode.
   useEffect(() => {
@@ -118,14 +124,6 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       .catch(() => setLoadState('error'));
   }, [episode.feedId, episode.id]);
 
-  // Recomputed every render so newly-connected wallets show up in the picker
-  // without a remount. The subscribeNwc/subscribeSpark useEffect above already
-  // triggers a re-render via setRail(pickRail()) when state changes.
-  const availableRails: Rail[] = [];
-  if (hasNwc()) availableRails.push('nwc');
-  if (hasSpark()) availableRails.push('spark');
-  if (hasWebln()) availableRails.push('webln');
-
   const total = sats * splits.length;
 
   async function go() {
@@ -135,7 +133,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // The muted unlock claims an audio session too, so it takes the same live
     // isPlaying reading as the ping (see primeBoostSound).
     primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
-    if (name) storage.senderName.set(name);
+    if (name) storage.senderName.set(identity?.npub, name);
 
     // "Anonymous" must anonymize the PAYMENT too — omit the nostr pubkey so
     // recipient aggregators can't resolve it to the user's profile. Applies to
@@ -365,8 +363,6 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     }
   }
 
-  const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' };
-
   if (!portalTarget) return null;
 
   return createPortal(
@@ -396,22 +392,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             </div>
           )}
 
-          {availableRails.length >= 2 && (
-            <div>
-              <p className="text-[11px] uppercase tracking-widest text-muted mb-1.5">Pay via</p>
-              <div className="flex gap-2">
-                {availableRails.map((r) => (
-                  <button
-                    key={r}
-                    onClick={() => setRail(r)}
-                    className={`btn-ghost !px-3 text-xs ${rail === r ? '!border-bolt text-bolt' : ''}`}
-                  >
-                    {RAIL_LABELS[r]}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
+          <RailPicker rail={rail} onChange={setRail} />
 
           <AmountInput sats={sats} onChange={setSats} />
 

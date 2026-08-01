@@ -20,11 +20,11 @@ export const subscribeRailPref = railPrefObservable.subscribe;
 
 const KEYS = {
   npub: 'bmb:npub',
-  signer: 'bmb:signer',               // 'amber' | 'bunker' when a polyfill signer is active; absent = NIP-07 extension or none
+  signer: 'bmb:signer',               // 'amber' | 'bunker' | 'local' when a polyfill signer is active; absent = NIP-07 extension or none
   nwcUri: 'bmb:nwc_uri',
   nwcMethods: 'bmb:nwc_methods',      // { uri, methods } — NIP-47 capability list for the CURRENT connection; uri-keyed so a switched wallet invalidates it
   relays: 'bmb:relays',
-  senderName: 'bmb:sender_name',
+  senderNamePrefix: 'bmb:sender_name', // + ':<npub>' — the boost modal's "From". Per-npub because it's an identity-linked display name, not a device setting.
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favoritesPrefix: 'bmb:favorites',
@@ -39,7 +39,8 @@ const KEYS = {
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
   followsPrefix: 'bmb:follows',       // per-npub last-known-good kind:3 follow set (hex[]) — a nuke-guard signal, see lib/nostr/follows.ts
-  sparkOptOut: 'bmb:spark:opted_out', // set when user explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
+  sparkOptOutPrefix: 'bmb:spark:opted_out', // + ':<npub>' — set when THAT account explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on its next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
+  sparkOptOutLegacy: 'bmb:spark:opted_out', // pre-per-npub global flag; read once and migrated into the per-npub bucket. Do not write.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
 } as const;
 
@@ -48,7 +49,7 @@ export type ShareNostrAs = 'self' | 'site';
 export type ThemeMode = 'light' | 'dark';
 export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
 
-export type SignerKind = 'amber' | 'bunker';
+export type SignerKind = 'amber' | 'bunker' | 'local';
 
 const BOOSTS_CAP = 200;
 
@@ -168,13 +169,16 @@ export const storage = {
 
   /** Which signer the user picked. Absent = NIP-07 extension or signed out;
    *  'amber' = Android Amber app via NIP-55 deep links;
-   *  'bunker' = NIP-46 remote signer via the persisted bunker session.
+   *  'bunker' = NIP-46 remote signer via the persisted bunker session;
+   *  'local' = a key this app holds, kept in IndexedDB under a non-extractable
+   *  CryptoKey (see lib/nostr/local-key-store.ts) — NOT in localStorage.
    *  Read on page load to decide which polyfill to install onto window.nostr. */
   signer: {
     get: (): SignerKind | null => {
       const v = safeGet(KEYS.signer);
       if (v === 'amber') return 'amber';
       if (v === 'bunker') return 'bunker';
+      if (v === 'local') return 'local';
       return null;
     },
     set: (v: SignerKind) => safeSet(KEYS.signer, v),
@@ -270,10 +274,44 @@ export const storage = {
     clear: () => { safeRemove(KEYS.railPref); railPrefObservable.notify(); },
   },
 
+  /**
+   * "This account turned Spark off" — **per-npub**, `:guest` when signed out.
+   *
+   * This was a single global key, which conflated device with identity: the
+   * flag answers a per-account question ("does THIS user want Spark?") but was
+   * stored once per browser. Two ways that bit:
+   *   - a Google signup for a brand-new key was suppressed by an opt-out some
+   *     other identity had made, leaving new users with no wallet at all;
+   *   - clearing it on that new account's behalf resurrected Spark for the
+   *     identity that had deliberately turned it off.
+   *
+   * The legacy global value is migrated on first read (below) rather than
+   * dropped, so an existing user's deliberate opt-out isn't silently undone by
+   * this refactor.
+   */
   sparkOptOut: {
-    get: () => safeGet(KEYS.sparkOptOut) === '1',
-    set: () => safeSet(KEYS.sparkOptOut, '1'),
-    clear: () => safeRemove(KEYS.sparkOptOut),
+    get: (npub: string | null | undefined): boolean => {
+      // Tri-state on purpose: '1' = opted out, '0' = explicitly opted IN,
+      // absent = no opinion yet. The '0' matters — if `clear` merely removed
+      // the key, the next read would fall through to the legacy global flag
+      // and resurrect an opt-out this account just overrode, which is the
+      // exact bug the per-npub split exists to fix.
+      const scoped = safeGet(identityKey(KEYS.sparkOptOutPrefix, npub));
+      if (scoped !== null) return scoped === '1';
+      // No opinion: inherit the pre-per-npub global flag once, so an existing
+      // user's deliberate opt-out isn't silently undone by this refactor.
+      // Only a set flag is inherited; absent already means "no".
+      if (safeGet(KEYS.sparkOptOutLegacy) === '1') {
+        safeSet(identityKey(KEYS.sparkOptOutPrefix, npub), '1');
+        return true;
+      }
+      return false;
+    },
+    set: (npub: string | null | undefined) =>
+      safeSet(identityKey(KEYS.sparkOptOutPrefix, npub), '1'),
+    /** Records an explicit "this account wants Spark" — see the tri-state note. */
+    clear: (npub: string | null | undefined) =>
+      safeSet(identityKey(KEYS.sparkOptOutPrefix, npub), '0'),
   },
 
   /** Per-npub opt-in flag: '1' when the user wants their NWC connection
@@ -372,9 +410,26 @@ export const storage = {
     isOverridden: () => safeGet(KEYS.relays) !== null,
   },
 
+  /**
+   * The boost modal's "From" name, per-npub (`:guest` signed out).
+   *
+   * It was one global key, and that leaked a real name across identities: a
+   * user who had boosted as themselves, then signed in with a Google-onboarded
+   * account, got their old name pre-filled in the "From" box — and it outranks
+   * the profile name in the modal's fallback chain, so it would have shipped in
+   * the boostagram's `sender_name`. That ties a generated npub straight back to
+   * the identity it was designed not to be linked to.
+   *
+   * **Deliberately no migration from the old global key**, unlike sparkOptOut's
+   * legacy fallback. There's no way to know which identity that name belonged
+   * to, so adopting it into whichever npub reads first would recreate exactly
+   * the leak this fixes. The name is one field and costs nothing to retype; the
+   * orphaned key is a few harmless bytes.
+   */
   senderName: {
-    get: () => safeGet(KEYS.senderName),
-    set: (v: string) => safeSet(KEYS.senderName, v),
+    get: (npub: string | null | undefined) => safeGet(identityKey(KEYS.senderNamePrefix, npub)),
+    set: (npub: string | null | undefined, v: string) =>
+      safeSet(identityKey(KEYS.senderNamePrefix, npub), v),
   },
 
   /**

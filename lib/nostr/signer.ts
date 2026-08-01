@@ -15,12 +15,17 @@
 //   activateBunkerSigner(adapter)  — install NIP-46 adapter as window.nostr
 //   deactivateBunkerSigner()       — restore the original window.nostr
 //   isBunkerActive()               — true while bunker adapter is active
+//   activateLocalSigner(skHex)     — install LocalSigner as window.nostr
+//   deactivateLocalSigner()        — restore the original window.nostr
+//   isLocalActive()                — true while LocalSigner is active
 
 import { AmberSigner } from './amber';
+import { LocalSigner } from './local-signer';
 import type { BunkerAdapter } from './bunker';
 
 let amberInstance: AmberSigner | null = null;
 let bunkerInstance: BunkerAdapter | null = null;
+let localInstance: LocalSigner | null = null;
 // Captured once on first activation per page. We don't recapture on
 // re-activation because window.nostr would already be one of our polyfills
 // — the "original" we want to restore is the underlying extension, not
@@ -43,6 +48,7 @@ export function activateAmberSigner(pubkey?: string): AmberSigner {
   captureOriginal();
   // Drop any other polyfill first — only one signer at a time.
   bunkerInstance = null;
+  localInstance = null;
   amberInstance = new AmberSigner(pubkey);
   // Cast: AmberSigner satisfies the structural shape declared in auth.ts.
   window.nostr = amberInstance as unknown as Window['nostr'];
@@ -75,6 +81,7 @@ export function activateBunkerSigner(adapter: BunkerAdapter) {
   }
   captureOriginal();
   amberInstance = null;
+  localInstance = null;
   bunkerInstance = adapter;
   window.nostr = adapter.nostrApi;
 }
@@ -100,6 +107,49 @@ export function isBunkerActive(): boolean {
 export function getActiveBunker(): BunkerAdapter | null {
   return bunkerInstance;
 }
+
+/**
+ * Install a LocalSigner (a key this app holds) as window.nostr. Unlike the
+ * other two this signs in-process, so the key's storage is handled separately
+ * — see lib/nostr/local-key-store.ts.
+ */
+export function activateLocalSigner(skHex: string): LocalSigner {
+  if (typeof window === 'undefined') {
+    throw new Error('Local signer requires a browser environment');
+  }
+  captureOriginal();
+  amberInstance = null;
+  bunkerInstance = null;
+  localInstance = new LocalSigner(skHex);
+  // Publish the plain API object, NOT the instance — `private sk` is erased at
+  // runtime, so assigning the instance would put the raw secret key on
+  // window.nostr.sk for any script on this origin. Mirrors the bunker's
+  // adapter.nostrApi above. See the comment on LocalSigner.nostrApi.
+  window.nostr = localInstance.nostrApi as unknown as Window['nostr'];
+  return localInstance;
+}
+
+export function deactivateLocalSigner() {
+  if (typeof window === 'undefined') return;
+  localInstance = null;
+  if (originalCaptured) {
+    window.nostr = originalWindowNostr;
+  }
+}
+
+export function isLocalActive(): boolean {
+  return localInstance !== null;
+}
+
+// Deliberately NO getActiveLocal() accessor, unlike getActiveAmber /
+// getActiveBunker. Those hand out adapters that talk to a signer living
+// elsewhere; a LocalSigner holds the raw key in-process. `private sk` is erased
+// at runtime, so a general-purpose accessor for the instance is a standing
+// offer of the secret key to anything that imports it — three lines below the
+// comment explaining why activateLocalSigner publishes `nostrApi` and not the
+// instance. loginWithLocalKey uses activateLocalSigner's own return value,
+// which is scoped to that one call. Don't add one back, and don't add a
+// key-export method either (one existed, had zero call sites, and was deleted).
 
 // NIP-04 / NIP-44 capability accessors — see signer-shape comment at top
 // of file. Both AmberSigner and the BunkerAdapter expose nip04 / nip44
