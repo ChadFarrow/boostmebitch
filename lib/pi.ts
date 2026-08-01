@@ -442,8 +442,14 @@ const SHOW_NOTES_ALLOWED = new Set([
 ]);
 
 // Allowlist-based HTML sanitizer for RSS <content:encoded> show notes.
-// Safe for dangerouslySetInnerHTML: strips dangerous tags + attributes,
-// forces links to open in a new tab, blocks javascript: and data: URIs.
+// Safe for dangerouslySetInnerHTML: allowlists tags, drops every attribute
+// except href/src/alt, and forces links to open in a new tab.
+//
+// URLs are the sharp edge and are handled by safeUrlAttr (lib/safe-url-attr.ts),
+// which ALLOWLISTS schemes against the browser-resolved value. This used to say
+// it "blocks javascript: and data: URIs" — it did that with a denylist over the
+// raw attribute text, and six entity/control-character vectors walked through
+// it. Read the header of safe-url-attr.ts before touching that path.
 
 // Some feeds entity-escape their WHOLE notes: structural tags arrive as
 // &lt;p&gt; / &lt;a href&gt; and render as literal "<p>" text. Detect that
