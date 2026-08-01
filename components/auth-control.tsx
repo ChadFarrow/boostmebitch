@@ -5,6 +5,7 @@ import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
 import { subscribeWebln } from '@/lib/v4v/webln';
 import { subscribeRailPref } from '@/lib/storage';
+import { isGoogleAuthConfigured } from '@/lib/nostr/google-auth';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
 import { WalletModal } from './wallet-modal';
 import { WalletBalanceChip } from './wallet-balance';
@@ -70,6 +71,9 @@ export function AuthControl() {
 
   const walletConnected = mounted && hasAnyWallet();
   const needNostr = !identity;
+  // Reads an inlined NEXT_PUBLIC_* var, so it's identical on server and client —
+  // no `mounted` gate needed, unlike walletConnected (which reads localStorage).
+  const googleConfigured = isGoogleAuthConfigured();
 
   return (
     <div ref={wrapperRef} className="relative flex items-center gap-2">
@@ -103,26 +107,56 @@ export function AuthControl() {
               role="menu"
               className="absolute right-0 top-full mt-2 w-60 card bg-ink p-2 z-40 shadow-xl"
             >
-              <button
-                role="menuitem"
-                onClick={() => { setMenuOpen(false); setWalletOpen(true); }}
-                className="w-full text-left px-3 py-2 rounded hover:bg-bone/5 transition flex items-center gap-2 text-sm"
-              >
-                <span className="text-bolt">⚡</span>
-                <span className="flex flex-col">
-                  <span>Connect wallet</span>
-                  <span className="text-[11px] text-muted">Boost with Lightning — no Nostr needed</span>
-                </span>
-              </button>
+              {/* Order: the two Nostr-identity options first (Nostr proper, then
+                  Google, which also ends in a Nostr identity — it just mints the
+                  key for you), wallet last since it's a different axis entirely:
+                  Lightning with no identity at all. */}
               <button
                 role="menuitem"
                 onClick={() => { setMenuOpen(false); setSignInOpen(true); }}
-                className="w-full text-left px-3 py-2 rounded hover:bg-bone/5 transition flex items-center gap-2 text-sm"
+                className="w-full text-left px-3 py-2 rounded hover:bg-bone/5 transition flex items-start gap-2 text-sm"
               >
-                <span className="text-nostr">◆</span>
+                {/* Fixed-width, centred glyph column: ◆ / ◉ / ⚡ have different
+                    advance widths (⚡ is an emoji and widest), so without it the
+                    three labels start at three different x positions. leading-5
+                    matches text-sm's line box, so items-start lands the glyph on
+                    the TITLE's line rather than centring it against the whole
+                    two-line block — which is what put it beside the subtitle. */}
+                <span className="text-nostr w-4 shrink-0 text-center leading-5">◆</span>
                 <span className="flex flex-col">
                   <span>Sign in with Nostr</span>
-                  <span className="text-[11px] text-muted">Notes, favorites, cross-device sync</span>
+                  {/* Names the prerequisite rather than the benefit. The benefits
+                      ("notes, favorites, sync") are identical to the Google
+                      option's, so leading with them gave no basis to choose. */}
+                  <span className="text-[11px] text-muted">Already have a key — extension or signer</span>
+                </span>
+              </button>
+              {/* A peer of the option above, not a detail inside it. This used to
+                  live only INSIDE the sign-in modal, which meant the people it
+                  exists for had to first pick "Sign in with Nostr" to reach the
+                  thing that exists precisely because they don't have Nostr. */}
+              {googleConfigured && (
+                <button
+                  role="menuitem"
+                  onClick={() => { setMenuOpen(false); setSignInOpen(true, 'google'); }}
+                  className="w-full text-left px-3 py-2 rounded hover:bg-bone/5 transition flex items-start gap-2 text-sm"
+                >
+                  <span className="text-bone w-4 shrink-0 text-center leading-5">◉</span>
+                  <span className="flex flex-col">
+                    <span>Continue with Google</span>
+                    <span className="text-[11px] text-muted">New here? Creates an account for you</span>
+                  </span>
+                </button>
+              )}
+              <button
+                role="menuitem"
+                onClick={() => { setMenuOpen(false); setWalletOpen(true); }}
+                className="w-full text-left px-3 py-2 rounded hover:bg-bone/5 transition flex items-start gap-2 text-sm"
+              >
+                <span className="text-bolt w-4 shrink-0 text-center leading-5">⚡</span>
+                <span className="flex flex-col">
+                  <span>Connect wallet</span>
+                  <span className="text-[11px] text-muted">Boost with Lightning — no Nostr needed</span>
                 </span>
               </button>
             </div>

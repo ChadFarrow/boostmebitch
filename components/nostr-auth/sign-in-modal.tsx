@@ -18,6 +18,7 @@ import {
 } from '@/lib/nostr';
 import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/amber';
 import { isGoogleAuthConfigured, preloadGis } from '@/lib/nostr/google-auth';
+import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
 import { AmberCompletion } from './login-methods';
 import { GoogleAuthPanel } from './google-auth-panel';
@@ -48,8 +49,16 @@ export function SignInModal({
   const [tab, setTab] = useState<Tab>(() => (hasExt ? 'extension' : 'remote'));
   // Google onboarding takes over the modal body while it runs — it's a
   // multi-step flow (consent, PIN, maybe an account picker), not a button.
-  const [googleOpen, setGoogleOpen] = useState(false);
+  //
+  // Seeded from the store's opening intent (read once, via the lazy initializer)
+  // so the header's "Continue with Google" lands straight on the panel instead
+  // of the button that opens it. Read-once is deliberate: this is the view the
+  // modal OPENED on, and after that the panel's own back affordance owns it —
+  // subscribing would let a late store write yank the user back mid-flow.
   const [googleConfigured] = useState(() => isGoogleAuthConfigured());
+  const [googleOpen, setGoogleOpen] = useState(
+    () => googleConfigured && useApp.getState().signInIntent === 'google',
+  );
 
   // Browser-extension flow.
   const [extBusy, setExtBusy] = useState(false);

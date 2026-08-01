@@ -6,6 +6,9 @@ import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 
+/** Which view the sign-in modal opens on. See `signInIntent` below. */
+export type SignInIntent = 'default' | 'google';
+
 interface AppState {
   identity: NostrIdentity | null;
   setIdentity: (i: NostrIdentity | null) => void;
@@ -46,8 +49,17 @@ interface AppState {
   // Whether the Nostr sign-in modal is open. Lifted into the store so surfaces
   // other than the header (e.g. the fullscreen player / live chat) can open it
   // without leaving the page. <NostrAuth> owns the modal render.
+  //
+  // `signInIntent` lets a caller open the modal straight into the Google
+  // onboarding panel instead of the signer tabs, so the header can offer
+  // "Continue with Google" as a peer of the other logins rather than something
+  // you find only after choosing "Sign in with Nostr" — the people that flow
+  // exists for are exactly the ones who don't know what Nostr is. It's an
+  // opening intent, not modal state: the panel's own back affordance returns to
+  // the default view, and every existing setSignInOpen(true) call is unchanged.
   signInOpen: boolean;
-  setSignInOpen: (b: boolean) => void;
+  signInIntent: SignInIntent;
+  setSignInOpen: (b: boolean, intent?: SignInIntent) => void;
 
   // Whether the Lightning wallet modal is open. Lifted into the store — like
   // signInOpen — so any surface can open the one shared <WalletModal> (owned by
@@ -141,7 +153,10 @@ export const useApp = create<AppState>((set, get) => ({
   setPlayerExpanded: (b) => set({ playerExpanded: b }),
 
   signInOpen: false,
-  setSignInOpen: (b) => set({ signInOpen: b }),
+  signInIntent: 'default',
+  // Reset the intent on close so the next opener that doesn't pass one gets the
+  // default view rather than inheriting the last caller's.
+  setSignInOpen: (b, intent) => set({ signInOpen: b, signInIntent: b ? (intent ?? 'default') : 'default' }),
 
   walletOpen: false,
   setWalletOpen: (b) => set({ walletOpen: b }),
