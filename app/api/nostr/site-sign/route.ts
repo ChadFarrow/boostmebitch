@@ -18,6 +18,14 @@ import { siteSecretKey } from '@/lib/nostr/site-key';
 
 const MAX_CONTENT = 2000;
 const MAX_TAGS = 40;
+// MAX_TAGS bounds the tag COUNT; these bound their size. Without them the
+// oracle would sign an event whose tags carry megabytes of attacker-chosen
+// text under the site's NIP-05-verified identity — the content prefix check
+// below constrains only `content`, so tags were the way around it. Generous
+// next to real boost notes, whose largest tag is an `r` URL.
+const MAX_TAG_ITEMS = 8;
+const MAX_TAG_ITEM_LEN = 512;
+const MAX_TAGS_TOTAL_LEN = 4096;
 const CREATED_AT_SKEW_SECS = 300; // reject notes back/post-dated beyond ±5 min
 // Every genuine boost note — single and boost-all summary alike — is framed by
 // formatContent()/the summary override with this exact prefix. Requiring it
@@ -41,10 +49,18 @@ function validateBoostTemplate(body: unknown): EventTemplate {
   if (!Array.isArray(t.tags) || t.tags.length > MAX_TAGS) throw new Error('invalid tags');
   const tags = t.tags as unknown[];
   const flat = tags.every(
-    (tag) => Array.isArray(tag) && tag.every((x) => typeof x === 'string'),
+    (tag) =>
+      Array.isArray(tag) &&
+      tag.length <= MAX_TAG_ITEMS &&
+      tag.every((x) => typeof x === 'string' && x.length <= MAX_TAG_ITEM_LEN),
   );
   if (!flat) throw new Error('invalid tags');
   const strTags = tags as string[][];
+  const tagsLen = strTags.reduce(
+    (n, tag) => n + tag.reduce((m, x) => m + x.length, 0),
+    0,
+  );
+  if (tagsLen > MAX_TAGS_TOTAL_LEN) throw new Error('invalid tags');
   const hasT = (v: string) => strTags.some((tag) => tag[0] === 't' && tag[1] === v);
   // The two markers publishBoostNote always emits — proves this is a boost note.
   if (!hasT('boostagram') || !hasT('value4value')) {

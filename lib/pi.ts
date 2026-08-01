@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure } from './types';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
+import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
 import { fnvHash } from './util';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -441,8 +442,14 @@ const SHOW_NOTES_ALLOWED = new Set([
 ]);
 
 // Allowlist-based HTML sanitizer for RSS <content:encoded> show notes.
-// Safe for dangerouslySetInnerHTML: strips dangerous tags + attributes,
-// forces links to open in a new tab, blocks javascript: and data: URIs.
+// Safe for dangerouslySetInnerHTML: allowlists tags, drops every attribute
+// except href/src/alt, and forces links to open in a new tab.
+//
+// URLs are the sharp edge and are handled by safeUrlAttr (lib/safe-url-attr.ts),
+// which ALLOWLISTS schemes against the browser-resolved value. This used to say
+// it "blocks javascript: and data: URIs" — it did that with a denylist over the
+// raw attribute text, and six entity/control-character vectors walked through
+// it. Read the header of safe-url-attr.ts before touching that path.
 
 // Some feeds entity-escape their WHOLE notes: structural tags arrive as
 // &lt;p&gt; / &lt;a href&gt; and render as literal "<p>" text. Detect that
@@ -488,17 +495,20 @@ function sanitizeShowNotes(html: string): string {
     if (slash) return `</${tag}>`;
     if (tag === 'br' || tag === 'hr') return `<${tag}>`;
     if (tag === 'a') {
-      const href = readAttr(attrs, 'href');
-      // Block dangerous schemes: javascript: (script), data: (data-URL HTML
-      // phishing), vbscript: (legacy). Mirrors the img src check.
-      if (!href || /^\s*(javascript|data|vbscript):/i.test(href)) return '<a>';
-      return `<a href="${href.replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer">`;
+      // Scheme ALLOWLIST against the browser-resolved value — see
+      // lib/safe-url-attr.ts. The previous denylist tested the raw attribute
+      // and re-emitted it verbatim, so `java&#115;cript:` and `java<TAB>script:`
+      // both reached the DOM as javascript:. An anchor with no usable href is
+      // kept (as a bare <a>) so the link text still renders.
+      const href = safeUrlAttr(readAttr(attrs, 'href'), 'link');
+      if (!href) return '<a>';
+      return `<a href="${escapeHtmlAttr(href)}" target="_blank" rel="noopener noreferrer">`;
     }
     if (tag === 'img') {
-      const src = readAttr(attrs, 'src');
-      if (!src || /^\s*(javascript|data):/i.test(src)) return '';
+      const src = safeUrlAttr(readAttr(attrs, 'src'), 'image');
+      if (!src) return '';
       const alt = readAttr(attrs, 'alt') ?? '';
-      return `<img src="${src.replace(/"/g, '&quot;')}" alt="${alt.replace(/"/g, '&quot;')}" loading="lazy">`;
+      return `<img src="${escapeHtmlAttr(src)}" alt="${escapeHtmlAttr(alt)}" loading="lazy">`;
     }
     return `<${tag}>`;
   });
