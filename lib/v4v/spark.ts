@@ -202,49 +202,13 @@ export async function sparkGenerateMnemonic(): Promise<string> {
   return generateMnemonic(wordlist);
 }
 
-/**
- * Derive a wallet mnemonic deterministically from a Nostr secret key, so a
- * user onboarded via Google lands with a working boost rail instead of an
- * empty wallet modal. Mirrors Wisp's "derive default Spark wallet from user's
- * nsec".
- *
- * Deterministic is the point: the wallet is recoverable from the nsec alone,
- * so it survives even if the kind:30078 backup is ever lost. And because this
- * returns an ordinary 12-word BIP-39 phrase, everything downstream —
- * sparkInitFromMnemonic, publishEncryptedMnemonic, the seed-phrase display —
- * is untouched.
- *
- * The HMAC domain-separates the wallet seed from the signing key: the wallet
- * seed can't be walked back to the nsec.
- *
- * ⚠️ THE LABEL IS A DERIVATION CONTRACT — treat `'bmb-spark-wallet'` as v1 and
- * never edit it in place. Changing the label (or the truncation, or the hash)
- * changes every derived wallet, and every user whose funds live in one loses
- * access to them from the same nsec. There is no graceful failure: they simply
- * land on a different, empty wallet. If the derivation ever has to change, add
- * a NEW label (`bmb-spark-wallet-v2`), try v1 first on restore, and migrate
- * balances deliberately. Wisp — where this is ported from — versions its salt
- * (`wisp-spark-wallet-v1`) for exactly this reason and locks the contract with
- * test vectors; ours is unversioned by history, so this comment is the guard.
- *
- * (Note we are NOT wire-compatible with Wisp and don't try to be: they use
- * HKDF extract+expand with their own salt, we use HMAC-then-truncate with
- * ours. Both are sound; they simply produce different wallets.)
- */
-export async function sparkMnemonicFromKey(skHex: string): Promise<string> {
-  if (!/^[0-9a-fA-F]{64}$/.test(skHex)) {
-    throw new Error('Wallet derivation requires a 32-byte hex secret key');
-  }
-  const { hmac } = await import('@noble/hashes/hmac.js');
-  const { sha256 } = await import('@noble/hashes/sha2.js');
-  const { hexToBytes } = await import('@noble/hashes/utils.js');
-  const { entropyToMnemonic } = await import('@scure/bip39');
-  const { wordlist } = await import('@scure/bip39/wordlists/english.js');
-
-  const full = hmac(sha256, new TextEncoder().encode('bmb-spark-wallet'), hexToBytes(skHex));
-  // 16 bytes -> 12 words, matching what the wallet UI shows users to write down.
-  return entropyToMnemonic(full.slice(0, 16), wordlist);
-}
+// Derives the wallet mnemonic from a Nostr secret key (see the ⚠️ derivation-
+// contract block in spark-derive.ts). It lives in its own file because this
+// module can't be loaded from plain Node — 'use client' plus the extensionless
+// '../pubsub' import — and that derivation needs a check script able to import
+// and run the real thing. Re-exported here so every call site keeps importing
+// it from `@/lib/v4v/spark`.
+export { sparkMnemonicFromKey } from './spark-derive';
 
 /** Tear down the SDK on sign-out. */
 export async function sparkDisconnect(): Promise<void> {
