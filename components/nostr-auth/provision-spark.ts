@@ -76,13 +76,36 @@ export async function provisionSparkFromKey(
   // Something already connected a wallet mid-flow; don't fight it.
   if (hasSpark()) return;
 
+  // Record "this account wants Spark" FIRST, before any await.
+  //
   // The opt-out flag is per-npub, so a brand-new key has no opinion recorded
-  // and this doesn't need to consult it at all — nobody has ever turned Spark
+  // and this function doesn't need to consult it — nobody has ever turned Spark
   // off for THIS account. (When the flag was device-global, this function had
   // to choose between honoring another identity's decision, which left new
   // users with no wallet, and clearing it, which resurrected Spark for the
   // identity that turned it off. Neither was right; scoping the flag dissolved
   // the choice.)
+  //
+  // But NOT consulting it isn't enough, because something else does. We're
+  // called fire-and-forget, and the caller reaches onSuccess -> completeSignIn
+  // -> loadProfile -> deriveSparkFromLocalKey long before the SDK handshake
+  // below resolves. That path DOES read the flag, and `storage.sparkOptOut.get`
+  // falls back to the pre-per-npub global `bmb:spark:opted_out` when an npub
+  // has no scoped value — writing '1' into the new npub's bucket. So on any
+  // device where some earlier identity turned Spark off, a brand-new account
+  // inherits that opt-out: exactly the device-vs-identity conflation the
+  // per-npub split exists to prevent.
+  //
+  // Writing the '0' here closes that window. It used to be written after
+  // sparkInitFromMnemonic, on the reasoning that an SDK failure shouldn't leave
+  // "wants Spark" recorded for a wallet that never came up — but that's the
+  // wrong trade. '0' only means "has not opted out", which for a brand-new
+  // account is simply true, and it's what keeps the legacy flag from leaking
+  // in. It also makes a failed init retryable: the next login's
+  // deriveSparkFromLocalKey tries again instead of finding an inherited '1'
+  // and silently refusing to bring the wallet up forever.
+  storage.sparkOptOut.clear(identity.npub);
+
   const mnemonic = await sparkMnemonicFromKey(skHex);
 
   // Re-check immediately before each side effect. Provisioning is fire-and-
@@ -93,11 +116,6 @@ export async function provisionSparkFromKey(
   // replaceable and therefore unrecoverable.
   if (hasSpark()) return;
   await sparkInitFromMnemonic({ mnemonic, ownerPubkey: identity.pubkey });
-
-  // Record the positive choice only once Spark is genuinely connected. Doing
-  // it up front meant an SDK failure left "this account wants Spark" written
-  // for a wallet that never came up.
-  storage.sparkOptOut.clear(identity.npub);
 
   // Back the seed up the same way every other Spark connect path does, so the
   // wallet restores on the user's other devices. A brand-new npub has no prior
