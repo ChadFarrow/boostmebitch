@@ -235,6 +235,30 @@ export function NostrAuth() {
     // If the user signed in with Amber, reinstall the AmberSigner polyfill on
     // window.nostr before any signing operation runs. Synchronous; no popup.
     const signerKindStored = storage.signer.get();
+    // Abandon ONLY the session this restore was actually for.
+    //
+    // Both restores below are async, and a user can complete a whole sign-in
+    // while one is still in flight — completeSignIn writes a fresh `bmb:npub`
+    // and a new identity. If the stale restore then resolves false, an
+    // unconditional abandonRestoredSession() wipes `bmb:npub`, `bmb:signer`,
+    // the identity, favorites and mutes belonging to the sign-in that JUST
+    // SUCCEEDED. Re-checking the sentinel makes the teardown a no-op once it's
+    // been superseded.
+    //
+    // Found in production, and it only reproduces on an origin with a past:
+    // page load must find a `bmb:npub` + `bmb:signer` to attempt a restore at
+    // all, and the restore must then FAIL — e.g. the IndexedDB key belongs to a
+    // different identity than the cached npub, which restoreLocalSigner
+    // deliberately refuses. On a clean origin the fast path returns before any
+    // of this, which is why local testing never saw it. Symptom was brutal to
+    // read: the header showed the right npub, Spark came up, favorites loaded,
+    // but no avatar and no synced settings ever arrived — because doLoadProfile
+    // bails on that same sentinel — and a reload landed you signed out.
+    const restoringFor = stored;
+    const abandonIfNotSuperseded = () => {
+      if (storage.npub.get() !== restoringFor) return; // a newer sign-in owns the session now
+      abandonRestoredSession();
+    };
     if (signerKindStored === 'amber') {
       restoreAmberSigner(pubkey);
     } else if (signerKindStored === 'bunker') {
@@ -243,16 +267,16 @@ export function NostrAuth() {
       // throw, but nothing signs unprompted right after page load. If the
       // reconnect fails, fall all the way back to signed out.
       restoreBunkerSigner().then((ok) => {
-        if (!ok) abandonRestoredSession();
-      }).catch(abandonRestoredSession);
+        if (!ok) abandonIfNotSuperseded();
+      }).catch(abandonIfNotSuperseded);
     } else if (signerKindStored === 'local') {
       // Async like the bunker path, not synchronous like Amber: the key has to
       // come back out of IndexedDB and be decrypted under the origin's
       // non-extractable wrap key. Identity still paints immediately from the
       // cached npub below; only signing waits.
       restoreLocalSigner().then((ok) => {
-        if (!ok) abandonRestoredSession();
-      }).catch(abandonRestoredSession);
+        if (!ok) abandonIfNotSuperseded();
+      }).catch(abandonIfNotSuperseded);
     }
     const bare: NostrIdentity = { pubkey, npub: stored };
     const cachedProfile = storage.profile.get(pubkey);
