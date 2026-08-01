@@ -13,6 +13,7 @@ import { getErrorMessage } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
+import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
@@ -312,6 +313,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               No wallet connected — connect one with ⚡ Connect wallet (top right).
             </div>
           )}
+          {/* Above the amount deliberately: which wallet pays is the decision
+              the sticky-footer balance is reporting on, so it has to be
+              answerable before the user reads that number. */}
+          <RailPicker rail={rail} onChange={setRail} />
           <AmountInput sats={sats} onChange={setSats} />
           <MessageInput value={msg} onChange={setMsg} />
           <SenderName value={name} onChange={setName} />
