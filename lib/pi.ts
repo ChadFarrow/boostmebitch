@@ -86,6 +86,21 @@ function buildPodcast(f: any): Podcast {
   };
 }
 
+// A PI lookup miss is NOT always an HTTP error. For a feed PI knows about but
+// has never crawled, `/podcasts/byfeedurl` answers **200** with
+// `{"status":"true","feed":[],"description":"This feed has no meta-data yet."}`
+// — and `[]` is truthy, so a bare `data.feed ? …` check treated the empty array
+// as a hit and handed it to `buildPodcast`, which happily produced a Podcast
+// with every field `undefined`. Symptom: pasting such a feed's URL into search
+// rendered one blank result row, and the RSS-preview fallback in
+// `app/api/search/route.ts` (which only runs on a null) never got its turn.
+// Normalize array/object and require an `id` — every real PI feed carries one.
+function podcastFromPiFeed(f: any): Podcast | null {
+  const feed = Array.isArray(f) ? f[0] : f;
+  if (!feed || feed.id == null) return null;
+  return buildPodcast(feed);
+}
+
 export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]> {
   const data = await pi<any>(
     `/search/byterm?q=${encodeURIComponent(query)}&max=${max}&fulltext`,
@@ -95,13 +110,13 @@ export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]
 
 export async function getPodcast(feedId: number): Promise<Podcast | null> {
   const data = await pi<any>(`/podcasts/byfeedid?id=${feedId}`);
-  return data.feed ? buildPodcast(data.feed) : null;
+  return podcastFromPiFeed(data.feed);
 }
 
 export async function getPodcastByFeedUrl(feedUrl: string): Promise<Podcast | null> {
   try {
     const data = await pi<any>(`/podcasts/byfeedurl?url=${encodeURIComponent(feedUrl)}`);
-    return data.feed ? buildPodcast(data.feed) : null;
+    return podcastFromPiFeed(data.feed);
   } catch (e) {
     // PI answers an unknown feed URL with **400** `{"status":"false",
     // "description":"Feed url not found."}` — a normal miss, not an outage.
@@ -118,10 +133,7 @@ export async function getPodcastByFeedUrl(feedUrl: string): Promise<Podcast | nu
 
 export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
   const data = await pi<any>(`/podcasts/byguid?guid=${encodeURIComponent(guid)}`);
-  const f = data.feed;
-  if (!f || (Array.isArray(f) && !f.length)) return null;
-  // PI returns either a feed object or (rarely) an array; normalize.
-  return buildPodcast(Array.isArray(f) ? f[0] : f);
+  return podcastFromPiFeed(data.feed);
 }
 
 // PI exposes valueTimeSplits as a flat top-level `timesplits` array on each
