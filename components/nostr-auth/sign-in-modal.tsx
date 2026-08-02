@@ -47,16 +47,18 @@ export function SignInModal({
   const [hasExt] = useState(() => typeof window !== 'undefined' && !!window.nostr);
   const [android] = useState(() => isLikelyAndroid());
   const [tab, setTab] = useState<Tab>(() => (hasExt ? 'extension' : 'remote'));
-  // Google onboarding takes over the modal body while it runs — it's a
-  // multi-step flow (consent, PIN, maybe an account picker), not a button.
+  // Google onboarding is a SEPARATE path, not a Nostr sign-in method: it mints
+  // a key for someone who has none. So it is reachable ONLY by opening this
+  // modal with signInIntent === 'google' (the header dropdown lists it as a
+  // peer of "Sign in with Nostr"); the Nostr entry point never shows it. When
+  // it's open it owns the whole modal — no tab strip, no extension/bunker
+  // options — and backing out closes the modal rather than dropping the user
+  // into the signer tabs they didn't ask for.
   //
-  // Seeded from the store's opening intent (read once, via the lazy initializer)
-  // so the header's "Continue with Google" lands straight on the panel instead
-  // of the button that opens it. Read-once is deliberate: this is the view the
-  // modal OPENED on, and after that the panel's own back affordance owns it —
-  // subscribing would let a late store write yank the user back mid-flow.
+  // Read once via the lazy initializer: this is the view the modal OPENED on,
+  // and subscribing would let a late store write yank the user out mid-PIN.
   const [googleConfigured] = useState(() => isGoogleAuthConfigured());
-  const [googleOpen, setGoogleOpen] = useState(
+  const [googleOpen] = useState(
     () => googleConfigured && useApp.getState().signInIntent === 'google',
   );
 
@@ -85,8 +87,8 @@ export function SignInModal({
   // its transient activation and the consent popup gets blocked. See
   // preloadGis().
   useEffect(() => {
-    if (googleConfigured) preloadGis();
-  }, [googleConfigured]);
+    if (googleOpen) preloadGis();
+  }, [googleOpen]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -239,34 +241,32 @@ export function SignInModal({
         </button>
 
         <div className="p-5 border-b border-bone/15">
-          <div className="stamp text-nostr border-nostr/60 mb-2">◆ NOSTR</div>
-          <h3 className="font-display text-2xl leading-tight">Sign in with Nostr</h3>
+          {googleOpen ? (
+            <>
+              <div className="stamp text-bolt border-bolt/60 mb-2">◆ GOOGLE</div>
+              <h3 className="font-display text-2xl leading-tight">Continue with Google</h3>
+              <p className="text-[11px] text-muted mt-2">
+                New to Nostr? This creates a key for you and backs it up to your own
+                Google Drive, encrypted with a PIN only you know.
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="stamp text-nostr border-nostr/60 mb-2">◆ NOSTR</div>
+              <h3 className="font-display text-2xl leading-tight">Sign in with Nostr</h3>
+            </>
+          )}
         </div>
 
-        {/* Google onboarding sits ABOVE the tab strip, not inside it: it's the
-            path for people who have no key and don't know what a "signer" is,
-            so it can't be hidden behind a tab labelled for people who do. */}
-        {googleConfigured && (
+        {googleOpen && (
           <div className="p-5 border-b border-bone/15 flex flex-col gap-2">
-            {googleOpen ? (
-              <GoogleAuthPanel
-                onSuccess={(id) => {
-                  onSuccess(id, 'local');
-                  onClose();
-                }}
-                onCancel={() => setGoogleOpen(false)}
-              />
-            ) : (
-              <>
-                <button onClick={() => setGoogleOpen(true)} className="btn-bolt w-full">
-                  Continue with Google
-                </button>
-                <p className="text-[11px] text-muted">
-                  New to Nostr? This creates a key for you and backs it up to your
-                  own Google Drive, encrypted with a PIN only you know.
-                </p>
-              </>
-            )}
+            <GoogleAuthPanel
+              onSuccess={(id) => {
+                onSuccess(id, 'local');
+                onClose();
+              }}
+              onCancel={handleClose}
+            />
           </div>
         )}
 
