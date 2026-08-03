@@ -13,7 +13,7 @@ import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './boost-modal/message-input';
-import { SenderName } from './boost-modal/sender-name';
+import { SenderName, DEFAULT_SENDER_NAME } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
@@ -55,14 +55,19 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // "Anonymous" must anonymize the PAYMENT too, not just who signs the note —
   // and that means the "From" name as well as the pubkey: sender_id resolves to
   // the user's profile in recipient aggregators, and sender_name is displayed
-  // verbatim there and printed into the note body below. Both are withheld on
-  // every leg (per-track, host share, summary). Component scope because
-  // <SenderName> renders off it, and gated on `identity` for the same reason as
-  // BoostModal's — signed out the picker is a bare checkbox and the typed "From"
-  // name is a site-signed note's only attribution, so a stale global
-  // `bmb:share_nostr_as` of 'site' must not silently withhold it there.
+  // verbatim there and printed into the note body below. The pubkey is dropped;
+  // the name is REPLACED by DEFAULT_SENDER_NAME (same as when "From" is just
+  // left empty) so it presents consistently instead of rendering blank in one
+  // aggregator and "Unknown" in the next. Applies to every leg — per-track,
+  // host share, summary.
+  //
+  // Component scope because <SenderName> renders off it, and gated on
+  // `identity` for the same reason as BoostModal's — signed out the picker is a
+  // bare checkbox and the typed "From" name is a site-signed note's only
+  // attribution, so a stale global `bmb:share_nostr_as` of 'site' must not
+  // silently replace it there.
   const anonymous = !!identity && shareNostr && shareAs === 'site';
-  const senderName = anonymous ? undefined : (name || undefined);
+  const senderName = (anonymous ? '' : name.trim()) || DEFAULT_SENDER_NAME;
 
   // Portal to <body> so the overlay escapes the layout's `relative z-0` content
   // wrapper (app/layout.tsx). Inside that wrapper a `fixed` modal's z-index only
@@ -342,11 +347,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
     const lines: string[] = ['⚡ Boost ⚡', ''];
     if (msg.trim()) lines.push(msg.trim(), '');
-    // Same rule as formatContent's: no name in the body on an anonymous boost,
-    // or the site-signed note attributes it right back to the user.
-    const sender = senderName?.trim();
+    // Mirrors formatContent's attribution line, off the same `senderName` the
+    // boostagrams carry — so an anonymous summary note reads as
+    // DEFAULT_SENDER_NAME rather than attributing itself back to the user.
     lines.push(
-      `${sender ? `${sender} boosted` : 'Boosted'} ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats`,
+      `${senderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats`,
     );
     if (trackList.length) {
       lines.push('');

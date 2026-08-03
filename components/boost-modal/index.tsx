@@ -16,7 +16,7 @@ import { BoostModalBalance } from '../wallet-balance';
 import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from './message-input';
-import { SenderName } from './sender-name';
+import { SenderName, DEFAULT_SENDER_NAME } from './sender-name';
 import { SplitsPreview, LightningStatus } from './splits-preview';
 import { PublishStatus, type PublishState } from './publish-status';
 import { ShareNostrPicker } from './share-nostr-picker';
@@ -78,8 +78,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   //  - sender_name is the "From" field, which recipients display verbatim AND
   //    which formatContent turns into "<name> boosted N sats" in the note body,
   //    so a site-signed "anonymous" note still named the sender.
-  // Both are withheld to honor the picker's "not your npub" promise. Computed
-  // at component scope (not inside go()) because <SenderName> renders off it.
+  // The pubkey is dropped outright; the name is REPLACED by DEFAULT_SENDER_NAME
+  // rather than omitted, so an anonymous boost still presents consistently
+  // instead of rendering blank in one aggregator and "Unknown" in the next.
+  // Same substitution when a named user just leaves "From" empty.
+  // Computed at component scope (not inside go()) because <SenderName> renders
+  // off it.
   //
   // Gated on `identity` to match where the picker offers the choice: signed out
   // there's only a checkbox, every note is site-signed, and the typed "From"
@@ -89,7 +93,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // control to turn it back on. `sender_id` is unaffected either way (it's
   // `identity?.pubkey`, already undefined when signed out).
   const anonymous = !!identity && shareNostr && shareAs === 'site';
-  const senderName = anonymous ? undefined : (name || undefined);
+  const senderName = (anonymous ? '' : name.trim()) || DEFAULT_SENDER_NAME;
 
   useEffect(() => {
     // pickRail() honors the stored rail pref when that rail is still
