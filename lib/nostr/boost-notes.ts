@@ -16,21 +16,30 @@ interface PublishArgs {
 
 /**
  * Best public listen-link for what was boosted, in preference order:
- *  1. the EPISODE's own web page (RSS `<link>`) when boosting an episode — a
- *     boost note should land the reader on that episode, not the show's front
- *     door. Feed-supplied, so http(s)-validated before it goes in a public note.
- *  2. pod.link smart-link by Apple iTunes ID — auto-routes the visitor to
+ *  1. the EPISODE's own web page (RSS `<link>`, via PI's `link` or the RSS
+ *     pass) when boosting an episode — a boost note should land the reader on
+ *     that episode, not the show's front door.
+ *  2. the item guid when it's an http(s) URL. RSS defines `<guid>` as a
+ *     permalink unless `isPermaLink="false"` says otherwise, and plenty of
+ *     feeds (Bowl After Bowl among them) use the episode page URL verbatim.
+ *     We don't parse that attribute, so this is a heuristic — but it only runs
+ *     when the feed published no `<link>` at all, where the alternative is
+ *     dropping the reader on the show, and the `?p=123`-style guids that set
+ *     isPermaLink="false" still redirect to the post.
+ *  3. pod.link smart-link by Apple iTunes ID — auto-routes the visitor to
  *     their preferred podcast app on click
- *  3. Podcast Index page — human-readable feed metadata
- *  4. raw RSS feed URL
+ *  4. Podcast Index page — human-readable feed metadata
+ *  5. raw RSS feed URL
  *
- * Levels 2–4 are show-level: pod.link and Podcast Index have no episode URL we
- * can construct (pod.link's episode paths key on an id of their own, not the
- * guid), so a feed with no `<link>` falls back to the show here. The BMB link
- * below stays episode-specific either way.
+ * Both episode sources are feed-supplied, so both are http(s)-validated before
+ * going in a public note. Levels 3–5 are show-level: neither pod.link nor PI
+ * has an episode URL constructible from a guid (pod.link's episode paths key
+ * on an id of their own), so a feed with neither a `<link>` nor a URL guid
+ * falls back to the show here. The BMB link below stays episode-specific
+ * either way.
  */
 function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
-  const episodePage = httpUrl(episode?.link);
+  const episodePage = httpUrl(episode?.link) ?? httpUrl(episode?.guid);
   if (episodePage) return episodePage;
   if (podcast.itunesId) return `https://pod.link/${podcast.itunesId}`;
   if (podcast.id) return `https://podcastindex.org/podcast/${podcast.id}`;
