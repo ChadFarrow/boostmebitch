@@ -72,6 +72,25 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
 
+  // "Anonymous" has to anonymize the PAYMENT too, not just who signs the note:
+  //  - sender_id is the user's nostr pubkey, which recipient aggregators
+  //    (Helipad/Fountain) resolve to their profile — avatar + name.
+  //  - sender_name is the "From" field, which recipients display verbatim AND
+  //    which formatContent turns into "<name> boosted N sats" in the note body,
+  //    so a site-signed "anonymous" note still named the sender.
+  // Both are withheld to honor the picker's "not your npub" promise. Computed
+  // at component scope (not inside go()) because <SenderName> renders off it.
+  //
+  // Gated on `identity` to match where the picker offers the choice: signed out
+  // there's only a checkbox, every note is site-signed, and the typed "From"
+  // name is the ONLY attribution it can carry — but `bmb:share_nostr_as` is a
+  // single global key, so a user who picked Anonymous while signed in would
+  // otherwise have their name silently withheld after signing out, with no
+  // control to turn it back on. `sender_id` is unaffected either way (it's
+  // `identity?.pubkey`, already undefined when signed out).
+  const anonymous = !!identity && shareNostr && shareAs === 'site';
+  const senderName = anonymous ? undefined : (name || undefined);
+
   useEffect(() => {
     // pickRail() honors the stored rail pref when that rail is still
     // connected/enabled, else falls back to NWC > Spark > WebLN priority.
@@ -110,7 +129,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       episodeGuid: episode?.guid,
       sats,
       message: msg || undefined,
-      senderName: name || undefined,
+      senderName,
       legs,
     };
     storage.boosts.add(identity?.npub, stored);
@@ -144,13 +163,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // The muted unlock claims an audio session too, so it takes the same live
     // isPlaying reading as the ping (see primeBoostSound).
     primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
+    // Saved even for an anonymous boost — it's the user's own device-local
+    // "From" default, and withholding it from the wire is what anonymity means
+    // here, not forgetting what they typed.
     if (name) storage.senderName.set(identity?.npub, name);
-
-    // "Anonymous" has to anonymize the PAYMENT too, not just the Nostr note:
-    // sender_id is the user's nostr pubkey, which recipient aggregators
-    // (Helipad/Fountain) resolve to their profile — avatar + name. Omitting it
-    // honors the picker's "not your npub" promise.
-    const anonymous = shareNostr && shareAs === 'site';
 
     const boostagram: Boostagram = {
       app_name: 'BoostMeBitch',
@@ -161,7 +177,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       ts: episode ? Math.floor(positionSec) : 0,
       value_msat_total: sats * 1000,
       message: msg || undefined,
-      sender_name: name || undefined,
+      sender_name: senderName,
       sender_id: anonymous ? undefined : identity?.pubkey,
       action: 'boost',
       uuid: crypto.randomUUID(),
@@ -325,7 +341,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           <RailPicker rail={rail} onChange={setRail} />
           <AmountInput sats={sats} onChange={setSats} />
           <MessageInput value={msg} onChange={setMsg} />
-          <SenderName value={name} onChange={setName} />
+          <SenderName value={name} onChange={setName} anonymous={anonymous} />
           <ShareNostrPicker
             signedIn={!!identity}
             share={shareNostr}
