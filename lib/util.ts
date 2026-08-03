@@ -120,6 +120,29 @@ export function getErrorMessage(e: unknown, fallback: string): string {
   return fallback;
 }
 
+/**
+ * A feed-supplied URL, validated as http(s) — else null. Same allowlist
+ * direction as `safeUrlAttr`: it resolves what a browser would actually see
+ * (the WHATWG parser normalizes entity/whitespace obfuscation and decimal host
+ * forms) and requires the result to BE http/https, rather than enumerating bad
+ * schemes. `<link>` and friends come from arbitrary third-party feeds, so
+ * anything derived from them — an `href` we render, a URL we publish into a
+ * public Nostr note — goes through here first.
+ *
+ * Returns the parser's normalized form, not the raw string, so a value that
+ * only parses because the parser strips tab/CR/LF can't be re-emitted with
+ * those characters intact.
+ */
+export function httpUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url.trim());
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.href : null;
+  } catch {
+    return null;
+  }
+}
+
 // Strip HTML tags and entity-decode. Used by server components (lib/format.tsx
 // is 'use client' so can't be imported on the server side). Pure string regex,
 // no DOM required — isomorphic.

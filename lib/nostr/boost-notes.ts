@@ -1,5 +1,6 @@
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, Podcast, BoostResult } from '../types';
+import { httpUrl } from '../util';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
 
@@ -14,27 +15,52 @@ interface PublishArgs {
 }
 
 /**
- * Best public listen-link for a podcast, in preference order:
- *  1. pod.link smart-link by Apple iTunes ID — auto-routes the visitor to
+ * Best public listen-link for what was boosted, in preference order:
+ *  1. the EPISODE's own web page (RSS `<link>`, via PI's `link` or the RSS
+ *     pass) when boosting an episode — a boost note should land the reader on
+ *     that episode, not the show's front door.
+ *  2. the item guid when it's an http(s) URL. RSS defines `<guid>` as a
+ *     permalink unless `isPermaLink="false"` says otherwise, and plenty of
+ *     feeds (Bowl After Bowl among them) use the episode page URL verbatim.
+ *     We don't parse that attribute, so this is a heuristic — but it only runs
+ *     when the feed published no `<link>` at all, where the alternative is
+ *     dropping the reader on the show, and the `?p=123`-style guids that set
+ *     isPermaLink="false" still redirect to the post.
+ *  3. pod.link smart-link by Apple iTunes ID — auto-routes the visitor to
  *     their preferred podcast app on click
- *  2. Podcast Index page — human-readable feed metadata
- *  3. raw RSS feed URL
+ *  4. Podcast Index page — human-readable feed metadata
+ *  5. raw RSS feed URL
+ *
+ * Both episode sources are feed-supplied, so both are http(s)-validated before
+ * going in a public note. Levels 3–5 are show-level: neither pod.link nor PI
+ * has an episode URL constructible from a guid (pod.link's episode paths key
+ * on an id of their own), so a feed with neither a `<link>` nor a URL guid
+ * falls back to the show here. The BMB link below stays episode-specific
+ * either way.
  */
-function podcastLandingUrl(podcast: Podcast): string | null {
+function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
+  const episodePage = httpUrl(episode?.link) ?? httpUrl(episode?.guid);
+  if (episodePage) return episodePage;
   if (podcast.itunesId) return `https://pod.link/${podcast.itunesId}`;
   if (podcast.id) return `https://podcastindex.org/podcast/${podcast.id}`;
   return podcast.url ?? null;
 }
 
 /**
- * BoostMeBitch in-app deep link for this podcast. Lands the Nostr reader on
- * the show page where they can boost back. Emitted alongside the listen-link
- * (not as a replacement) so readers get both affordances: listen elsewhere
- * via pod.link, boost back here via BMB.
+ * BoostMeBitch in-app deep link. Episode-specific when boosting an episode:
+ * `?podcast=<guid>&episode=<guid>` is a restorable view per the URL contract
+ * (components/home-page.tsx hydrates it), and app/page.tsx emits episode-level
+ * Open Graph tags for it, so the unfurl shows the episode's own title and art.
+ * Emitted alongside the listen-link (not as a replacement) so readers get both
+ * affordances: listen elsewhere, or boost back here.
+ *
+ * The episode guid is encodeURIComponent'd — unlike the podcast guid (a UUID),
+ * it's an arbitrary feed-chosen string and is routinely a URL.
  */
-function bmbLandingUrl(podcast: Podcast): string | null {
+function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
   if (!podcast.podcastGuid) return null;
-  return `https://boostmebitch.com/?podcast=${podcast.podcastGuid}`;
+  const url = `https://boostmebitch.com/?podcast=${podcast.podcastGuid}`;
+  return episode?.guid ? `${url}&episode=${encodeURIComponent(episode.guid)}` : url;
 }
 
 function formatContent(args: PublishArgs): string {
@@ -52,9 +78,9 @@ function formatContent(args: PublishArgs): string {
   const sender = boostagram.sender_name?.trim();
   lines.push(`${sender ? `${sender} boosted` : 'Boosted'} ${totalSats} sats → ${podcast.title}`);
   if (episode?.title) lines.push(`📻 ${episode.title}`);
-  const link = podcastLandingUrl(podcast);
+  const link = podcastLandingUrl(podcast, episode);
   if (link) lines.push('', link);
-  const bmbLink = bmbLandingUrl(podcast);
+  const bmbLink = bmbLandingUrl(podcast, episode);
   if (bmbLink && bmbLink !== link) lines.push(bmbLink);
   return lines.join('\n');
 }
@@ -77,9 +103,9 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
     tags.push(['i', `podcast:item:guid:${episode.guid}`]);
     tags.push(['k', 'podcast:item:guid']);
   }
-  const linkUrl = podcastLandingUrl(podcast);
+  const linkUrl = podcastLandingUrl(podcast, episode);
   if (linkUrl) tags.push(['r', linkUrl]);
-  const bmbUrl = bmbLandingUrl(podcast);
+  const bmbUrl = bmbLandingUrl(podcast, episode);
   if (bmbUrl && bmbUrl !== linkUrl) tags.push(['r', bmbUrl]);
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
   tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);

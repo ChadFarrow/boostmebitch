@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDuration } from '@/lib/format';
-import { hasValueRecipients, stripHtml } from '@/lib/util';
+import { hasValueRecipients, httpUrl, stripHtml } from '@/lib/util';
 import { useChapters, type ChapterEntry } from '@/lib/chapters';
 import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
@@ -220,6 +220,10 @@ export function EpisodeDetailView() {
   // only once it has content; a still-loading chapters/transcript renders its
   // own loading state under the active tab. Mirrors EpisodeInfoPanel.
   const hasShowNotes = !!episode.contentEncoded || !!description;
+  // `link` is raw feed text, and React does NOT block a `javascript:` href —
+  // it only warns in dev. Same allowlist rule the show-notes sanitizer applies
+  // to every other feed-supplied URL that reaches the DOM.
+  const episodePageUrl = httpUrl(episode.link);
   const hasChapters = !!chapters?.length;
   const hasTranscript = !!transcriptCues?.length;
   const hasBoosts = !!episode.guid; // the feed owns its own loading/empty state
@@ -400,9 +404,9 @@ export function EpisodeDetailView() {
                 ) : null}
                 {/* Link out to the episode's own web page (some feeds' pages
                     carry richer content than the feed; PC20's mirrors the feed). */}
-                {episode.link && (
+                {episodePageUrl && (
                   <a
-                    href={episode.link}
+                    href={episodePageUrl}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 mt-4 text-xs font-semibold uppercase tracking-widest text-muted hover:text-bolt transition"
