@@ -13,7 +13,7 @@ import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './boost-modal/message-input';
-import { SenderName } from './boost-modal/sender-name';
+import { SenderName, DEFAULT_SENDER_NAME } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
@@ -51,6 +51,23 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const [shareAs, setShareAs] = useState<ShareNostrAs>(() => storage.shareNostrAs.get());
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
+
+  // "Anonymous" must anonymize the PAYMENT too, not just who signs the note —
+  // and that means the "From" name as well as the pubkey: sender_id resolves to
+  // the user's profile in recipient aggregators, and sender_name is displayed
+  // verbatim there and printed into the note body below. The pubkey is dropped;
+  // the name is REPLACED by DEFAULT_SENDER_NAME (same as when "From" is just
+  // left empty) so it presents consistently instead of rendering blank in one
+  // aggregator and "Unknown" in the next. Applies to every leg — per-track,
+  // host share, summary.
+  //
+  // Component scope because <SenderName> renders off it, and gated on
+  // `identity` for the same reason as BoostModal's — signed out the picker is a
+  // bare checkbox and the typed "From" name is a site-signed note's only
+  // attribution, so a stale global `bmb:share_nostr_as` of 'site' must not
+  // silently replace it there.
+  const anonymous = !!identity && shareNostr && shareAs === 'site';
+  const senderName = (anonymous ? '' : name.trim()) || DEFAULT_SENDER_NAME;
 
   // Portal to <body> so the overlay escapes the layout's `relative z-0` content
   // wrapper (app/layout.tsx). Inside that wrapper a `fixed` modal's z-index only
@@ -133,12 +150,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // The muted unlock claims an audio session too, so it takes the same live
     // isPlaying reading as the ping (see primeBoostSound).
     primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
+    // Saved even for an anonymous boost — it's the user's device-local "From"
+    // default; anonymity is about what leaves the device, not forgetting it.
     if (name) storage.senderName.set(identity?.npub, name);
-
-    // "Anonymous" must anonymize the PAYMENT too — omit the nostr pubkey so
-    // recipient aggregators can't resolve it to the user's profile. Applies to
-    // every leg below (per-track, host share, summary).
-    const anonymous = shareNostr && shareAs === 'site';
 
     setRunning(true);
     setProgress([]);
@@ -177,7 +191,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         ts: 0,
         value_msat_total: trackSats * 1000,
         message: msg || undefined,
-        sender_name: name || undefined,
+        sender_name: senderName,
         sender_id: anonymous ? undefined : identity?.pubkey,
         action: 'boost',
         uuid: crypto.randomUUID(),
@@ -204,7 +218,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               episodeGuid: episode.guid,
               sats: trackSats,
               message: msg || undefined,
-              senderName: name || undefined,
+              senderName,
               legs: results.map((r) => ({
                 recipient: r.recipient.address,
                 recipientName: r.recipient.name,
@@ -247,7 +261,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           ts: 0,
           value_msat_total: showLegSats * 1000,
           message: msg || undefined,
-          sender_name: name || undefined,
+          sender_name: senderName,
           sender_id: anonymous ? undefined : identity?.pubkey,
           action: 'boost',
           uuid: crypto.randomUUID(),
@@ -271,7 +285,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               episodeGuid: episode.guid,
               sats: showLegSats,
               message: msg || undefined,
-              senderName: name || undefined,
+              senderName,
               legs: hostResults.map((r) => ({
                 recipient: r.recipient.address,
                 recipientName: r.recipient.name,
@@ -325,7 +339,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       ts: 0,
       value_msat_total: totalSats * 1000,
       message: msg || undefined,
-      sender_name: name || undefined,
+      sender_name: senderName,
       sender_id: anonymous ? undefined : identity?.pubkey,
       action: 'boost',
       uuid: crypto.randomUUID(),
@@ -333,9 +347,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
     const lines: string[] = ['⚡ Boost ⚡', ''];
     if (msg.trim()) lines.push(msg.trim(), '');
-    const sender = name.trim();
+    // Mirrors formatContent's attribution line, off the same `senderName` the
+    // boostagrams carry — so an anonymous summary note reads as
+    // DEFAULT_SENDER_NAME rather than attributing itself back to the user.
     lines.push(
-      `${sender ? `${sender} boosted` : 'Boosted'} ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats`,
+      `${senderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats`,
     );
     if (trackList.length) {
       lines.push('');
@@ -454,7 +470,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           {loadState === 'ready' && splits.length > 0 && (
             <>
               <MessageInput value={msg} onChange={setMsg} />
-              <SenderName value={name} onChange={setName} />
+              <SenderName value={name} onChange={setName} anonymous={anonymous} />
               <ShareNostrPicker
                 signedIn={!!identity}
                 share={shareNostr}
