@@ -732,11 +732,19 @@ export const storage = {
       try {
         const v = JSON.parse(raw);
         if (!v || typeof v !== 'object') return null;
-        const nums = ['accruedMsat', 'lastTickMs', 'lastPositionSec', 'lastSettleMs'] as const;
+        const nums = ['lastTickMs', 'lastPositionSec', 'lastSettleMs'] as const;
         if (typeof v.key !== 'string' || !v.key) return null;
         if (nums.some((f) => typeof v[f] !== 'number' || !Number.isFinite(v[f]))) return null;
-        if (v.accruedMsat < 0) return null;
-        return v as StreamLedger;
+        if (!v.buckets || typeof v.buckets !== 'object' || Array.isArray(v.buckets)) return null;
+        // Every balance is validated, not just the shape: each one becomes a
+        // payment amount, and a single NaN or negative entry would either
+        // poison the total or read as a credit.
+        const buckets: Record<string, number> = {};
+        for (const [bucket, msat] of Object.entries(v.buckets)) {
+          if (typeof msat !== 'number' || !Number.isFinite(msat) || msat < 0) return null;
+          buckets[bucket] = msat;
+        }
+        return { ...v, buckets } as StreamLedger;
       } catch {
         return null;
       }

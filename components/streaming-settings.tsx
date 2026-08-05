@@ -136,6 +136,10 @@ export function StreamMeter({ className = '' }: { className?: string }) {
       <span className="text-bolt">≋ streaming {status.ratePerMin} sats/min</span>
       {status.active && (
         <span className="text-muted">
+          {/* Naming the track is the visible proof that a music show's
+              per-track value splits are being followed — otherwise "streaming"
+              looks identical whether the artist is being paid or not. */}
+          {status.currentTrack && <> · to <span className="text-bone">{status.currentTrack}</span></>}
           {' · '}
           {status.accruedSats} sat{status.accruedSats === 1 ? '' : 's'} accrued
           {status.settling

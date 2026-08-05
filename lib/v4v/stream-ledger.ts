@@ -14,12 +14,39 @@
 // — it silently drains a wallet, or silently pays nothing, and both look like
 // "working" from the outside.
 
+/**
+ * The bucket every sat lands in when no `<podcast:valueTimeSplit>` is
+ * redirecting it — i.e. the show's own value block. Empty string so it can't
+ * collide with a track key.
+ */
+export const HOST_BUCKET = '';
+
+/**
+ * Where one tick's sats go, as fractions of the tick. Supplied by the caller
+ * because *which* recipient is owed is a Podcasting 2.0 question (which
+ * valueTimeSplit covers the current position, and its `remotePercentage`), not
+ * an arithmetic one.
+ */
+export interface StreamAllocation {
+  bucket: string;
+  /** Share of the tick, 0–1. */
+  fraction: number;
+}
+
 /** Unsent accrual for one item. Serialized into `bmb:stream_pending`. */
 export interface StreamLedger {
   /** Item this accrual belongs to (see streamKey). */
   key: string;
-  /** Unsent balance, in MILLIsats — see the note on accrue(). */
-  accruedMsat: number;
+  /**
+   * Unsent balance per recipient target, in MILLIsats — see accrue().
+   *
+   * Keyed rather than a single number because a music show redirects payment
+   * to a different artist every few minutes, while settlement is batched every
+   * ten. A batch routinely spans three tracks, so one balance would have to be
+   * paid to whichever artist happened to be playing when the timer fired —
+   * wrong for the other two, and biased the same way every time.
+   */
+  buckets: Record<string, number>;
   /** Wall-clock ms at the last accrue() call. */
   lastTickMs: number;
   /** Playback position (seconds) at the last accrue() call. */
@@ -56,7 +83,41 @@ export const STREAM_MAX_TICK_MS = 300_000; // 5 minutes
 export const STREAM_PENDING_MAX_AGE_MS = 86_400_000; // 24 hours
 
 export function createLedger(key: string, nowMs: number): StreamLedger {
-  return { key, accruedMsat: 0, lastTickMs: nowMs, lastPositionSec: 0, lastSettleMs: nowMs };
+  return { key, buckets: {}, lastTickMs: nowMs, lastPositionSec: 0, lastSettleMs: nowMs };
+}
+
+/**
+ * Spread one tick's millisats over the allocation.
+ *
+ * **Conservation is the rule: every accrued msat lands in exactly one bucket.**
+ * An allocation that doesn't add up is a bug in the caller's split handling,
+ * and the tempting response — drop the shortfall — makes the meter lie about
+ * what the listener is being charged. The remainder goes to the host instead,
+ * which is also the correct Podcasting 2.0 default: a valueTimeSplit
+ * *redirects* part of the show's value, so anything not redirected is simply
+ * still the show's.
+ */
+function distribute(
+  buckets: Record<string, number>,
+  msat: number,
+  allocation: StreamAllocation[],
+): Record<string, number> {
+  const next = { ...buckets };
+  const add = (bucket: string, amount: number) => {
+    if (amount > 0) next[bucket] = (next[bucket] ?? 0) + amount;
+  };
+  const usable = allocation.filter((a) => Number.isFinite(a.fraction) && a.fraction > 0);
+  const total = usable.reduce((s, a) => s + a.fraction, 0);
+  if (total <= 0) {
+    add(HOST_BUCKET, msat);
+    return next;
+  }
+  // Over-allocation can only be a caller bug; scaling keeps the tick's total
+  // honest rather than charging more than the rate promised.
+  const scale = total > 1 ? 1 / total : 1;
+  for (const a of usable) add(a.bucket, msat * a.fraction * scale);
+  if (total < 1) add(HOST_BUCKET, msat * (1 - total));
+  return next;
 }
 
 /**
@@ -93,9 +154,16 @@ export function createLedger(key: string, nowMs: number): StreamLedger {
  */
 export function accrue(
   ledger: StreamLedger,
-  args: { nowMs: number; positionSec: number; playing: boolean; ratePerMin: number },
+  args: {
+    nowMs: number;
+    positionSec: number;
+    playing: boolean;
+    ratePerMin: number;
+    /** Where this tick's sats go. Omitted = all to the host's value block. */
+    allocation?: StreamAllocation[];
+  },
 ): StreamLedger {
-  const { nowMs, positionSec, playing, ratePerMin } = args;
+  const { nowMs, positionSec, playing, ratePerMin, allocation } = args;
   const pos = Number.isFinite(positionSec) ? positionSec : ledger.lastPositionSec;
   const stamped: StreamLedger = { ...ledger, lastTickMs: nowMs, lastPositionSec: pos };
   if (!playing || !(ratePerMin > 0)) return stamped;
@@ -106,7 +174,10 @@ export function accrue(
   if (elapsedMs <= 0) return stamped;
 
   const msat = (elapsedMs / 60_000) * ratePerMin * 1000;
-  return { ...stamped, accruedMsat: ledger.accruedMsat + msat };
+  return {
+    ...stamped,
+    buckets: distribute(ledger.buckets, msat, allocation ?? [{ bucket: HOST_BUCKET, fraction: 1 }]),
+  };
 }
 
 /**
@@ -123,24 +194,39 @@ export function accrue(
  */
 export function settlePlan(
   ledger: StreamLedger,
-  args: { nowMs: number; recipientCount: number; force?: boolean },
+  args: { bucket: string; nowMs: number; recipientCount: number; force?: boolean },
 ): { sats: number; nextLedger: StreamLedger } | null {
-  const { nowMs, recipientCount, force = false } = args;
-  const sats = accruedSats(ledger);
+  const { bucket, nowMs, recipientCount, force = false } = args;
+  const sats = accruedSats(ledger, bucket);
   const floor = Math.max(STREAM_MIN_SETTLE_SATS, Math.max(1, recipientCount));
   if (sats < floor) return null;
   if (!force && nowMs - ledger.lastSettleMs < STREAM_SETTLE_INTERVAL_MS) return null;
-  return {
-    sats,
-    nextLedger: {
-      ...ledger,
-      // Clamped at 0: the epsilon in accruedSats can round the last sat up out
-      // of a balance a hair under it, and a negative accrual would be read back
-      // as a corrupt ledger (storage.streamPending rejects one) and dropped.
-      accruedMsat: Math.max(0, ledger.accruedMsat - sats * 1000),
-      lastSettleMs: nowMs,
-    },
-  };
+  // Clamped at 0: the epsilon in accruedSats can round the last sat up out of a
+  // balance a hair under it, and a negative accrual would be read back as a
+  // corrupt ledger (storage.streamPending rejects one) and dropped.
+  const left = Math.max(0, (ledger.buckets[bucket] ?? 0) - sats * 1000);
+  const buckets = { ...ledger.buckets };
+  // Drop the key once it's spent, so a fifty-track show doesn't persist fifty
+  // dead entries for the rest of the episode. The threshold is the flooring
+  // epsilon, not zero: an exactly-drained bucket lands a few parts in 10¹³
+  // above it in binary, and `> 0` would keep that float dust — and its key —
+  // alive forever.
+  if (left > FLOOR_EPSILON_MSAT) buckets[bucket] = left;
+  else delete buckets[bucket];
+  return { sats, nextLedger: { ...ledger, buckets, lastSettleMs: nowMs } };
+}
+
+/**
+ * Buckets currently holding something, host first.
+ *
+ * Host-first matters on a force-settle: it's the one bucket that accumulates
+ * across every track, so it's both the most likely to clear the floor and the
+ * one whose payment the listener would most expect to have gone through.
+ */
+export function fundedBuckets(ledger: StreamLedger): string[] {
+  return Object.keys(ledger.buckets)
+    .filter((b) => (ledger.buckets[b] ?? 0) > 0)
+    .sort((a, b) => (a === HOST_BUCKET ? -1 : b === HOST_BUCKET ? 1 : a.localeCompare(b)));
 }
 
 /**
@@ -157,8 +243,13 @@ export function settlePlan(
  */
 const FLOOR_EPSILON_MSAT = 1e-6;
 
-export function accruedSats(ledger: StreamLedger): number {
-  return Math.floor((ledger.accruedMsat + FLOOR_EPSILON_MSAT) / 1000);
+/** Pass a bucket for one recipient's balance; omit it for the item total. */
+export function accruedSats(ledger: StreamLedger, bucket?: string): number {
+  const msat =
+    bucket === undefined
+      ? Object.values(ledger.buckets).reduce((s, v) => s + v, 0)
+      : ledger.buckets[bucket] ?? 0;
+  return Math.floor((msat + FLOOR_EPSILON_MSAT) / 1000);
 }
 
 /** Ms until the next scheduled settle; 0 once it's due. For the UI readout. */
