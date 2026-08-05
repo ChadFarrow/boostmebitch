@@ -1,5 +1,6 @@
 'use client';
 import type { ValueRecipient, BoostResult } from '@/lib/types';
+import { recipientAddress } from '@/lib/util';
 
 // Format a weight as a percentage of the total weight. Integer when it rounds
 // cleanly (50%, 90%, 1%), one decimal otherwise (33.3%, 16.7%) — most value
@@ -25,17 +26,29 @@ export function SplitsPreview({
   return (
     <div className="card p-3">
       <div className="text-[11px] uppercase tracking-widest text-muted mb-2">Recipients</div>
-      <ul className="text-xs space-y-1 max-h-40 overflow-y-auto pr-2">
+      <ul className="text-xs space-y-1.5 max-h-48 overflow-y-auto pr-2">
         {recipients.map((r, i) => {
           const res = results[i];
+          const name = r.name?.trim();
+          const addr = recipientAddress(r);
           return (
-            <li key={i} className="flex justify-between gap-3 items-center">
-              <span className="truncate">
-                <span className="text-muted mr-1">{r.fee ? 'fee' : '·'}</span>
-                {r.name || r.address.slice(0, 10) + '…'}
-                <span className="text-muted ml-1.5 tabular-nums">{formatPct(r.split ?? 0, totalWeight)}</span>
+            <li key={i} className="flex justify-between gap-3 items-start">
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">
+                  <span className="text-muted mr-1">{r.fee ? 'fee' : '·'}</span>
+                  {name || <span className="text-muted">(unnamed)</span>}
+                  <span className="text-muted ml-1.5 tabular-nums">{formatPct(r.split ?? 0, totalWeight)}</span>
+                </span>
+                {/* The destination the sats actually go to — an lnaddress, or an
+                    elided keysend pubkey. Skipped when the feed used the address
+                    as the name, which would otherwise print it twice. */}
+                {name !== r.address && (
+                  <span className="block pl-3.5 text-[10px] text-muted font-mono truncate" title={r.address}>
+                    {addr}
+                  </span>
+                )}
               </span>
-              <span className="tabular-nums flex items-center gap-2">
+              <span className="tabular-nums flex items-center gap-2 flex-shrink-0">
                 {res?.ok && <span className="text-bolt">✓</span>}
                 {res && !res.ok && <span className="text-nostr">✗</span>}
                 {splits[i]} sat

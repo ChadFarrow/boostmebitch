@@ -1,4 +1,4 @@
-import type { Podcast, ValueBlock, Episode, AlternateEnclosure } from './types';
+import type { Podcast, ValueBlock, ValueRecipient, Episode, AlternateEnclosure } from './types';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
 // Case-insensitive — PI doesn't normalize the tag. Drives album-specific UI
@@ -10,6 +10,16 @@ export function isMusicMedium(podcast: Pick<Podcast, 'medium'>): boolean {
 // True when a value block actually has payees — the gate for showing BOOST.
 export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;
+}
+
+// A recipient's payment destination, shortened for display: an lnaddress verbatim
+// (it's already human-readable and the whole point is that you can read it), a
+// keysend node pubkey elided in the middle (66 hex chars never fits a modal row,
+// and the head/tail is what people actually compare against). Every surface that
+// shows a value split renders this, so the elision stays identical across them.
+export function recipientAddress(r: Pick<ValueRecipient, 'type' | 'address'>): string {
+  if (r.type === 'lnaddress' || r.address.length <= 20) return r.address;
+  return `${r.address.slice(0, 8)}…${r.address.slice(-8)}`;
 }
 
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric

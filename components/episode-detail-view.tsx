@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDuration } from '@/lib/format';
-import { hasValueRecipients, httpUrl, stripHtml } from '@/lib/util';
+import { hasValueRecipients, httpUrl, recipientAddress, stripHtml } from '@/lib/util';
 import { useChapters, type ChapterEntry } from '@/lib/chapters';
 import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
@@ -105,11 +105,7 @@ function ValueSplitSection({ value }: { value: ValueBlock }) {
       </div>
       <ul className="space-y-2">
         {value.recipients.map((r, i) => {
-          const isLnAddr = r.type === 'lnaddress';
-          const addr =
-            isLnAddr || r.address.length <= 20
-              ? r.address
-              : `${r.address.slice(0, 8)}…${r.address.slice(-8)}`;
+          const addr = recipientAddress(r);
           return (
             <li key={i} className="flex items-start gap-3">
               <div className="min-w-0 flex-1">
