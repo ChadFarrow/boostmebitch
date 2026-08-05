@@ -7,6 +7,7 @@
 
 import type { FavoritePodcast, Podcast, StoredBoost } from './types';
 import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
+import type { StreamLedger } from './v4v/stream-ledger';
 import { coerceProfileMetadata } from './nostr/auth';
 import { createObservable } from './pubsub';
 
@@ -17,6 +18,14 @@ import { createObservable } from './pubsub';
 // covers every writer.
 const railPrefObservable = createObservable();
 export const subscribeRailPref = railPrefObservable.subscribe;
+
+// Streaming-rate changes reach three live surfaces that don't share a parent:
+// the wallet modal's global control, the per-show chip in the episode list, and
+// the streaming engine itself (which reads the rate every tick but must react
+// immediately when a user turns streaming off mid-listen). Same one-choke-point
+// reasoning as railPrefObservable — notify from the setter, not the callers.
+const streamRateObservable = createObservable();
+export const subscribeStreamRate = streamRateObservable.subscribe;
 
 const KEYS = {
   npub: 'bmb:npub',
@@ -45,6 +54,9 @@ const KEYS = {
   // long note in sparkOptOut.get. It still sits in the localStorage of anyone
   // who used the app before that refactor; leave it there, it is inert.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
+  streamRate: 'bmb:stream_rate',      // global streaming sats-per-minute; absent = streaming OFF (the default — this spends money unattended, so it must be opted into). Also the prefix for the per-show override `bmb:stream_rate:<podcastGuid|feedId>`, where '0' means "off for THIS show" and outranks the global rate — absent-vs-zero is a real distinction there.
+  streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
+  streamedPrefix: 'bmb:streamed',     // + ':<npub>' — settled-stream log. Deliberately NOT bmb:boosts (see the accessor note).
 } as const;
 
 export type RailPref = 'nwc' | 'spark' | 'webln';
@@ -52,9 +64,20 @@ export type ShareNostrAs = 'self' | 'site';
 export type ThemeMode = 'light' | 'dark';
 export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
 
+/** One settled streaming payment run — the `bmb:streamed:<npub>` log. */
+export interface StreamedEntry {
+  ts: number;                  // unix ms
+  sats: number;                // total sent in that run
+  podcastTitle: string;
+  podcastGuid?: string;
+  episodeTitle?: string;
+  ok: boolean;                 // at least one leg paid
+}
+
 export type SignerKind = 'amber' | 'bunker' | 'local';
 
 const BOOSTS_CAP = 200;
+const STREAMED_CAP = 100;
 
 const isBrowser = () => typeof window !== 'undefined';
 
@@ -86,6 +109,23 @@ const memoryFallback: { nwcUri: string | null } = { nwcUri: null };
 // lives in exactly one place.
 function identityKey(prefix: string, npub: string | null | undefined) {
   return `${prefix}:${npub ?? 'guest'}`;
+}
+
+/**
+ * Upper bound on a streaming rate, in sats per minute. A guard rail, not a
+ * product limit: the rate is multiplied by elapsed time and paid on a timer
+ * with no confirmation, so an implausible stored value has to be treated as
+ * corruption. Anyone who wants to send more than this in a minute wants the
+ * boost button, which asks first.
+ */
+const STREAM_RATE_MAX = 10_000;
+
+/** Parse a stored rate, or null when absent/garbage/out of range. */
+function saneRate(raw: string | null): number | null {
+  if (raw === null) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0 || n > STREAM_RATE_MAX) return null;
+  return Math.floor(n);
 }
 
 // Generic time-bounded cache cell. `t` is the unix-ms write time; `v` is the
@@ -636,6 +676,101 @@ export const storage = {
     },
     set: (npub: string | null | undefined, v: MuteListState) => {
       safeSet(identityKey(KEYS.mutedPrefix, npub), JSON.stringify(v));
+    },
+  },
+
+  /**
+   * Streaming sats-per-minute. Two scopes, resolved by `resolveStreamRate`
+   * in lib/v4v/streaming.ts: a per-show override wins over the global rate.
+   *
+   * **Absent and `0` are different states, and the difference is load-bearing.**
+   * Absent at show scope means "no opinion — follow the global rate"; `0` means
+   * "off for this show" and must survive the global rate being raised later.
+   * Hence `get` is tri-state (`number | null`) rather than defaulting to 0.
+   *
+   * Both scopes read through `sane()`: this number is multiplied by elapsed
+   * time and paid without a confirmation step, so a corrupted key (another
+   * tab, a hand-edited devtools value, a half-written string) must degrade to
+   * "streaming off" rather than to an unbounded spend. The cap is deliberately
+   * low — anyone wanting to move more than that per minute wants a boost.
+   */
+  streamRate: {
+    /** Global default. null = streaming off (the default for a new install). */
+    get: (): number | null => saneRate(safeGet(KEYS.streamRate)),
+    set: (satsPerMin: number) => {
+      if (satsPerMin > 0) safeSet(KEYS.streamRate, String(Math.floor(satsPerMin)));
+      else safeRemove(KEYS.streamRate);
+      streamRateObservable.notify();
+    },
+    /** Per-show override. null = no override; 0 = explicitly off for this show. */
+    getShow: (showKey: string): number | null =>
+      showKey ? saneRate(safeGet(`${KEYS.streamRate}:${showKey}`)) : null,
+    setShow: (showKey: string, satsPerMin: number | null) => {
+      if (!showKey) return;
+      const key = `${KEYS.streamRate}:${showKey}`;
+      if (satsPerMin === null) safeRemove(key);
+      else safeSet(key, String(Math.max(0, Math.floor(satsPerMin))));
+      streamRateObservable.notify();
+    },
+  },
+
+  /**
+   * The unsent accrual, mirrored to disk every tick.
+   *
+   * Without it, closing the tab nine minutes into a ten-minute settle window
+   * silently discards sats the listener already earned the host — invisible to
+   * both sides. The engine restores this on the next play of the same item and
+   * either settles or keeps accruing. Reads reject a ledger that isn't
+   * structurally intact: this value is turned into a payment, so a half-written
+   * or foreign-shaped record must read as "nothing pending", never as a partial
+   * ledger with a plausible-looking balance.
+   */
+  streamPending: {
+    get: (): StreamLedger | null => {
+      const raw = safeGet(KEYS.streamPending);
+      if (!raw) return null;
+      try {
+        const v = JSON.parse(raw);
+        if (!v || typeof v !== 'object') return null;
+        const nums = ['accruedMsat', 'lastTickMs', 'lastPositionSec', 'lastSettleMs'] as const;
+        if (typeof v.key !== 'string' || !v.key) return null;
+        if (nums.some((f) => typeof v[f] !== 'number' || !Number.isFinite(v[f]))) return null;
+        if (v.accruedMsat < 0) return null;
+        return v as StreamLedger;
+      } catch {
+        return null;
+      }
+    },
+    set: (v: StreamLedger) => safeSet(KEYS.streamPending, JSON.stringify(v)),
+    clear: () => safeRemove(KEYS.streamPending),
+  },
+
+  /**
+   * Settled streaming runs, per npub — the user's "what did streaming cost me"
+   * record, newest first.
+   *
+   * **Separate from `boosts` on purpose.** That log is capped at 200 AND is
+   * rendered into the global Nostr feed as the user's own sends; six settlements
+   * an hour would both evict real boosts within a day and bury the feed under
+   * ambient background payments nobody chose to publish.
+   */
+  streamed: {
+    get: (npub: string | null | undefined): StreamedEntry[] => {
+      const raw = safeGet(identityKey(KEYS.streamedPrefix, npub));
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? (parsed as StreamedEntry[]) : [];
+      } catch {
+        return [];
+      }
+    },
+    add: (npub: string | null | undefined, entry: StreamedEntry) => {
+      const list = storage.streamed.get(npub);
+      safeSet(
+        identityKey(KEYS.streamedPrefix, npub),
+        JSON.stringify([entry, ...list].slice(0, STREAMED_CAP)),
+      );
     },
   },
 

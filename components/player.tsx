@@ -11,6 +11,7 @@ import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
+import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import { BoostModal } from './boost-modal';
@@ -232,6 +233,18 @@ export function Player() {
     }
     if (isPlaying) el.play().catch(() => setPlaying(false));
   }, [current?.episode.id, videoMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Streaming sats. The engine is a module singleton driven by its own 1 Hz
+  // timer reading useApp.getState() — mounted from here because <Player> is the
+  // one always-mounted owner of playback, but deliberately NOT subscribed to
+  // via a hook: a store subscription for the accrual would re-render this whole
+  // subtree every tick, which is exactly what the per-field selectors above
+  // exist to prevent. Surfaces that want to SHOW the accrual use <StreamMeter>,
+  // which subscribes to the engine's own observable instead.
+  useEffect(() => {
+    startStreamingEngine();
+    return () => stopStreamingEngine();
+  }, []);
 
   // Play/pause the active element on store toggles. Reads isVideo from a ref so
   // an episode switch (which doesn't change isPlaying) can't re-run this and call

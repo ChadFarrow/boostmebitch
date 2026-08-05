@@ -18,6 +18,7 @@ import { FavHeart } from './fav-heart';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 import { LiveChat } from './live-chat';
+import { StreamMeter } from './streaming-settings';
 
 // About-this-episode text + Podcasting 2.0 chapters + transcript, toggled by a
 // tab strip. Tabs show only for sections with real content (2+); a lone section
@@ -520,6 +521,11 @@ export function FullscreenPlayer({
                 <ShareButton liveStreamId={null} podcast={podcast} />
               </div>
             </div>
+
+            {/* Sits with the value split, which is what streaming pays into.
+                Renders nothing unless streaming is actually running (or has
+                failed), so it costs a signed-out / rate-off user no space. */}
+            <StreamMeter className="-mt-1" />
 
             {hasValue && value && (
               <div className="-mt-1">

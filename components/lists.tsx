@@ -11,6 +11,7 @@ import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
 import { Podroll } from './podroll';
 import { FavHeart } from './fav-heart';
+import { StreamRate } from './streaming-settings';
 
 // Re-exported for the surfaces that have always imported it from here.
 export { FavHeart };
@@ -250,6 +251,7 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
   const [showBoostOpen, setShowBoostOpen] = useState(false);
   const [boostTrack, setBoostTrack] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
+  const [streamOpen, setStreamOpen] = useState(false);
   // Episodes are revealed 10 at a time behind a "Load more" button. The Nostr
   // comments feed sits below this list, so a button (not infinite scroll) keeps
   // it at a stable, reachable position on mobile.
@@ -380,6 +382,16 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
             <SupportButton podcast={data.podcast} />
             {showHasValue && (
               <button
+                onClick={() => setStreamOpen((v) => !v)}
+                className="btn-ghost"
+                aria-expanded={streamOpen}
+                title="Stream sats per minute while this show plays"
+              >
+                ≋ STREAM
+              </button>
+            )}
+            {showHasValue && (
+              <button
                 onClick={() => setShowBoostOpen(true)}
                 className="btn-bolt"
                 title="Boost the show"
@@ -390,6 +402,11 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
           </div>
         </div>
       </header>
+      {streamOpen && data.podcast && (
+        <div className="px-4 sm:px-6 pb-4 border-b border-bone/10">
+          <StreamRate podcast={data.podcast} onDone={() => setStreamOpen(false)} />
+        </div>
+      )}
       {valueOpen && data.podcast.value && (
         <ValueBlockDetails value={data.podcast.value} />
       )}
