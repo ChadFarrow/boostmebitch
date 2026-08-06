@@ -12,6 +12,7 @@ import { storage } from '@/lib/storage';
 import { NwcWallet } from './nwc-wallet';
 import { SparkWallet } from './spark-wallet';
 import { WeblnWallet } from './webln-wallet';
+import { StreamRate, StreamedLog } from './streaming-settings';
 
 type WalletView =
   | { kind: 'picker'; switching: boolean }
@@ -149,6 +150,15 @@ export function WalletModal({ onClose }: Props) {
           {!activeRail && (
             <div className="text-[11px] text-muted">No wallet active.</div>
           )}
+          {/* Streaming lives with the wallet, not in a settings page: it's a
+              standing instruction to spend from THIS wallet without asking
+              again, so the place it's turned on should be the place the user
+              is looking at their balance — and the same place the record of
+              what it has cost them lives. */}
+          <div className="border-t border-bone/15 pt-4 space-y-4">
+            <StreamRate />
+            <StreamedLog npub={identity?.npub} />
+          </div>
           <div className="border-t border-bone/15 pt-3 text-center">
             <button
               onClick={() => setView({ kind: 'picker', switching: true })}

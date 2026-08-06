@@ -11,6 +11,7 @@ import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
 import { Podroll } from './podroll';
 import { FavHeart } from './fav-heart';
+import { useStreamPanel } from './streaming-settings';
 
 // Re-exported for the surfaces that have always imported it from here.
 export { FavHeart };
@@ -289,6 +290,13 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
     }
   }, [feedId, feedUrl, setEpisodeQueue, syncSelectedPodcast]);
 
+  // Above the early returns — hook order has to stay stable, and the hook
+  // itself no-ops (returns nulls) while the podcast is still null.
+  const { button: streamButton, panel: streamPanel } = useStreamPanel(
+    data.podcast,
+    hasValueRecipients(data.podcast?.value),
+  );
+
   if (!feedId) {
     return (
       <div ref={containerRef} className="text-muted text-sm py-12 text-center px-4 border border-dashed border-bone/15">
@@ -378,6 +386,7 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
             <FavHeart podcast={data.podcast} size="md" />
             <ShareButton podcast={data.podcast} />
             <SupportButton podcast={data.podcast} />
+            {streamButton}
             {showHasValue && (
               <button
                 onClick={() => setShowBoostOpen(true)}
@@ -390,6 +399,9 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
           </div>
         </div>
       </header>
+      {streamPanel && (
+        <div className="px-4 sm:px-6 pb-4 border-b border-bone/10">{streamPanel}</div>
+      )}
       {valueOpen && data.podcast.value && (
         <ValueBlockDetails value={data.podcast.value} />
       )}

@@ -11,9 +11,11 @@ import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
+import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import { BoostModal } from './boost-modal';
+import { StreamPulse } from './streaming-settings';
 import { BoltIcon, PipIcon } from './icons';
 import { FullscreenPlayer } from './fullscreen-player';
 import { TransportControls } from './transport-controls';
@@ -232,6 +234,18 @@ export function Player() {
     }
     if (isPlaying) el.play().catch(() => setPlaying(false));
   }, [current?.episode.id, videoMode]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Streaming sats. The engine is a module singleton driven by its own 1 Hz
+  // timer reading useApp.getState() — mounted from here because <Player> is the
+  // one always-mounted owner of playback, but deliberately NOT subscribed to
+  // via a hook: a store subscription for the accrual would re-render this whole
+  // subtree every tick, which is exactly what the per-field selectors above
+  // exist to prevent. Surfaces that want to SHOW the accrual use <StreamMeter>,
+  // which subscribes to the engine's own observable instead.
+  useEffect(() => {
+    startStreamingEngine();
+    return () => stopStreamingEngine();
+  }, []);
 
   // Play/pause the active element on store toggles. Reads isVideo from a ref so
   // an episode switch (which doesn't change isPlaying) can't re-run this and call
@@ -512,7 +526,15 @@ export function Player() {
           ) : null}
           <div className="min-w-0 flex-1">
             <div className="text-sm font-display leading-tight truncate">{episode.title}</div>
-            <div className="text-[11px] text-muted truncate">{podcast.title}</div>
+            {/* The streaming indicator rides on the show line, NOT the controls
+                cluster — that side is already tight on mobile. It's shrink-0
+                (~40px) so the already-truncating title just truncates slightly
+                earlier; nothing else moves. <StreamPulse> subscribes to the
+                engine itself, so this stays off <Player>'s render path. */}
+            <div className="flex items-center gap-2 text-[11px]">
+              <span className="text-muted truncate">{podcast.title}</span>
+              <StreamPulse />
+            </div>
             {/* The error is the one line the user actually needs to read when
                 playback dies — wrap it (break-words), never truncate it. */}
             {audioErr && (

@@ -1,14 +1,11 @@
 'use client';
 
-/**
- * What ships as the boostagram's `sender_name` (and lands in the Nostr note
- * body) when the user has no name to send — either they left "From" empty or
- * they picked "Anonymous". A real default, NOT just the input's ghost text:
- * omitting the field entirely left presentation up to each recipient's
- * aggregator, so the same boost showed as blank in one client and "Unknown" in
- * another. Both modals resolve their `senderName` through this.
- */
-export const DEFAULT_SENDER_NAME = 'boostmebitch.com user';
+import { DEFAULT_SENDER_NAME } from '@/lib/util';
+
+// Re-exported so every existing import site keeps working. The constant itself
+// lives in lib/util.ts because lib/v4v/streaming.ts needs it and must not
+// import from components/ — see the note there.
+export { DEFAULT_SENDER_NAME };
 
 export function SenderName({
   value,

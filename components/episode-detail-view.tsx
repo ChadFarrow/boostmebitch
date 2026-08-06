@@ -12,6 +12,7 @@ import { PodcastCover } from './podcast-cover';
 import { BoostModal } from './boost-modal';
 import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
+import { useStreamPanel } from './streaming-settings';
 import type { Episode, ValueBlock } from '@/lib/types';
 
 // Chapter list. The fetch is lifted to EpisodeDetailView so the tab strip knows
@@ -176,6 +177,11 @@ export function EpisodeDetailView() {
   const [boostFor, setBoostFor] = useState<Episode | null>(null);
   const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
+  // Above the early return below, so hook order stays stable.
+  const { button: streamButton, panel: streamPanel } = useStreamPanel(
+    podcast,
+    hasValueRecipients(episode?.value ?? podcast?.value),
+  );
   const [infoTab, setInfoTab] = useState<InfoTab>('notes');
 
   // Lifted here (not in child components) so the tab strip below knows which
@@ -322,6 +328,13 @@ export function EpisodeDetailView() {
               <CoinIcon /> SUPPORT
             </a>
           ) : null}
+          {/* Streaming is a SHOW-scoped setting, so this edits the same keys as
+              the show header's ≋ STREAM — it's here because this is the page a
+              listener is on when they decide to play something, and sending it
+              back to the show header to turn streaming on for what they're
+              about to hear is a detour with no reason behind it. SUPPORT above
+              is show-scoped from an episode page for the same reason. */}
+          {streamButton}
           {hasValue && (
             <button
               type="button"
@@ -369,6 +382,8 @@ export function EpisodeDetailView() {
             {valueOpen && <div className="mt-3"><ValueSplitSection value={value} /></div>}
           </div>
         )}
+
+        {streamPanel && <div className="border-t border-bone/10 pt-4">{streamPanel}</div>}
 
         {/* Show notes / Chapters / Transcript — tabbed so they don't all stack. */}
         {anyInfo && (

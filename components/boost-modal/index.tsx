@@ -9,14 +9,14 @@ import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage, type ShareNostrAs } from '@/lib/storage';
-import { getErrorMessage } from '@/lib/util';
+import { getErrorMessage, resolveSenderName } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
 import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from './message-input';
-import { SenderName, DEFAULT_SENDER_NAME } from './sender-name';
+import { SenderName } from './sender-name';
 import { SplitsPreview, LightningStatus } from './splits-preview';
 import { PublishStatus, type PublishState } from './publish-status';
 import { ShareNostrPicker } from './share-nostr-picker';
@@ -93,7 +93,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // control to turn it back on. `sender_id` is unaffected either way (it's
   // `identity?.pubkey`, already undefined when signed out).
   const anonymous = !!identity && shareNostr && shareAs === 'site';
-  const senderName = (anonymous ? '' : name.trim()) || DEFAULT_SENDER_NAME;
+  const senderName = resolveSenderName(name, anonymous);
 
   useEffect(() => {
     // pickRail() honors the stored rail pref when that rail is still
