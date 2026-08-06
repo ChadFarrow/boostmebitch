@@ -141,6 +141,16 @@ export interface Episode {
   liveStatus?: 'pending' | 'live' | 'ended';
   /** Scheduled start, unix seconds. */
   liveStartTime?: number;
+  /** A <podcast:remoteItem> published INSIDE this <podcast:liveItem> — the
+   *  "now playing" pointer a live music show rewrites per track. There is no
+   *  live valueTimeSplit tag (a live stream has no absolute time base to sync
+   *  to); updating the live item is the convention that actually ships. */
+  liveRemoteItem?: ValueTimeSplitRemoteItem;
+  /** <podcast:valueTimeSplit> children found inside this live item. Kept
+   *  separate from `valueTimeSplits` because their startTime/duration are
+   *  meaningless for a live stream — only a lone entry is interpretable, as
+   *  "now playing". See resolveLiveSplit. */
+  liveValueTimeSplits?: ValueTimeSplit[];
   /** Nostr live streams only: the actual host's pubkey — the NIP-53 `p` tag
    *  with role "host", falling back to the event author. Platform-published
    *  streams (Shosho, zap.stream) are authored by the PLATFORM's key, so the

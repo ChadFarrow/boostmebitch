@@ -1,6 +1,6 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
-import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure } from './types';
+import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure } from './types';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
@@ -281,16 +281,26 @@ const RSS_FRESH_MS = 60_000;
 const RSS_STALE_MS = 10 * 60_000;
 const rssXmlCache = new Map<string, { xml: string; fetchedAt: number }>();
 
-async function fetchFeedXml(rssUrl: string): Promise<string | null> {
+// `maxAgeMs` shortens the fresh window for ONE caller without shortening it for
+// everyone. The live-value poller needs the current "now playing", which turns
+// over every few minutes; the normal feed path does not, and dropping the
+// shared 60 s window to match would re-fetch every publisher's RSS on every
+// page load. A successful short-TTL fetch still populates the shared cache, so
+// the two paths cooperate rather than duplicating work.
+async function fetchFeedXml(
+  rssUrl: string,
+  opts?: { maxAgeMs?: number },
+): Promise<string | null> {
   const now = Date.now();
+  const freshMs = opts?.maxAgeMs ?? RSS_FRESH_MS;
   const hit = rssXmlCache.get(rssUrl);
-  if (hit && now - hit.fetchedAt < RSS_FRESH_MS) return hit.xml;
+  if (hit && now - hit.fetchedAt < freshMs) return hit.xml;
 
   let xml: string | null = null;
   try {
     const res = await safeFetch(rssUrl, {
       headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
-      next: { revalidate: 60 },
+      next: { revalidate: Math.max(1, Math.floor(freshMs / 1000)) },
       signal: AbortSignal.timeout(8000),
     });
     if (res.ok) xml = await res.text();
@@ -319,8 +329,9 @@ export async function getLiveItemsFromRss(
   rssUrl: string,
   feedId: number,
   podcastGuid?: string,
+  opts?: { maxAgeMs?: number },
 ): Promise<Episode[]> {
-  const xml = await fetchFeedXml(rssUrl);
+  const xml = await fetchFeedXml(rssUrl, opts);
   if (xml == null) return [];
   return parseRssLiveItems(xml).map((r): Episode => ({
     id: -fnvHash(r.guid ?? r.title ?? `${rssUrl}#${r.startTime ?? ''}`),
@@ -336,6 +347,8 @@ export async function getLiveItemsFromRss(
     liveStartTime: r.startTime,
     value: r.value,
     socialInteract: r.socialInteract,
+    liveRemoteItem: r.remoteItem,
+    liveValueTimeSplits: r.valueTimeSplits?.length ? r.valueTimeSplits : undefined,
   }));
 }
 
@@ -350,6 +363,8 @@ interface RawLiveItem {
   image?: string;
   value?: ValueBlock | null;
   socialInteract?: SocialInteract[];
+  remoteItem?: ValueTimeSplitRemoteItem;
+  valueTimeSplits?: ValueTimeSplit[];
 }
 
 function parseRssLiveItems(xml: string): RawLiveItem[] {
@@ -377,6 +392,12 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
       image: itunesImg ? readAttr(itunesImg[1], 'href') : undefined,
       value: parseValueBlock(inner),
       socialInteract: parseSocialInteractsFromRss(inner),
+      // The "now playing" signals. A remoteItem placed directly in the live
+      // item (i.e. not one nested inside a valueTimeSplit) is the explicit
+      // pointer; splits are the fallback. Both are read here so the resolver
+      // can apply precedence in one place.
+      remoteItem: firstRemoteItem(stripValueTimeSplits(inner)),
+      valueTimeSplits: parseValueTimeSplitsFromRss(inner),
     });
   }
   return out;
@@ -392,7 +413,11 @@ function parseValueBlock(xml: string): ValueBlock | null {
   const vMatch = xml.match(/<podcast:value\b([^>]*)>([\s\S]*?)<\/podcast:value>/i);
   if (!vMatch) return null;
   const vAttrs = vMatch[1];
-  const vInner = vMatch[2];
+  // <podcast:valueTimeSplit> is a CHILD of <podcast:value>, and it may carry
+  // its own inline <podcast:valueRecipient> tags. Strip those blocks before
+  // scanning, or a split's recipients get merged into the block's own — the
+  // show would pay a guest's segment splits for the whole episode.
+  const vInner = stripValueTimeSplits(vMatch[2]);
   const recipients: ValueRecipient[] = [];
   const recipRe = /<podcast:valueRecipient\b([^>]*?)\/?>/gi;
   let rm: RegExpExecArray | null;
@@ -417,6 +442,82 @@ function parseValueBlock(xml: string): ValueBlock | null {
     suggested: readAttr(vAttrs, 'suggested'),
     recipients,
   };
+}
+
+const LIVE_ITEM_RE = /<podcast:liveItem\b[^>]*>[\s\S]*?<\/podcast:liveItem>/gi;
+
+/**
+ * The channel header: everything before the first <item>, with any
+ * <podcast:liveItem> blocks removed.
+ *
+ * `/<item\b/` does not match `<podcast:liveItem>` (the `<` is followed by
+ * `podcast:`), so a live item published in the channel header — where the spec
+ * puts it, and where publishers actually put it — lands INSIDE this slice
+ * along with its own <podcast:value>, <podcast:funding> and <title>. Reading
+ * channel fields off that gives the live item's value block as the SHOW's,
+ * which is a money-path answer, not a cosmetic one.
+ */
+function channelSlice(xml: string): string {
+  const firstItem = xml.search(/<item\b/i);
+  return (firstItem === -1 ? xml : xml.slice(0, firstItem)).replace(LIVE_ITEM_RE, '');
+}
+
+const VALUE_TIME_SPLIT_RE = /<podcast:valueTimeSplit\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:valueTimeSplit>)/gi;
+
+function stripValueTimeSplits(xml: string): string {
+  return xml.replace(VALUE_TIME_SPLIT_RE, '');
+}
+
+/** A <podcast:remoteItem> tag's attributes, or null when it names no feed. */
+function parseRemoteItem(tagAttrs: string): ValueTimeSplitRemoteItem | null {
+  const feedGuid = readAttr(tagAttrs, 'feedGuid');
+  if (!feedGuid) return null;
+  return {
+    feedGuid,
+    itemGuid: readAttr(tagAttrs, 'itemGuid'),
+    medium: readAttr(tagAttrs, 'medium') || undefined,
+  };
+}
+
+/** The first <podcast:remoteItem> in a block, if any. */
+function firstRemoteItem(xml: string): ValueTimeSplitRemoteItem | undefined {
+  const m = xml.match(/<podcast:remoteItem\b([^>]*?)\/?>/i);
+  return (m && parseRemoteItem(m[1])) || undefined;
+}
+
+/**
+ * Parse <podcast:valueTimeSplit> children out of raw RSS.
+ *
+ * Podcast Index surfaces splits as its own flat `timesplits` JSON (see
+ * parseRawValueTimeSplits), so this is the only path that reads the actual
+ * tag — needed because PI never indexes a live item's children. The output
+ * shape is deliberately identical to parseRawValueTimeSplits' so downstream
+ * code can't tell where a split came from.
+ */
+function parseValueTimeSplitsFromRss(xml: string): ValueTimeSplit[] {
+  const out: ValueTimeSplit[] = [];
+  const re = new RegExp(VALUE_TIME_SPLIT_RE.source, 'gi');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml))) {
+    const attrs = m[1];
+    const inner = m[2] ?? '';
+    const remotePctStr = readAttr(attrs, 'remotePercentage');
+    const remoteStartStr = readAttr(attrs, 'remoteStartTime');
+    // Inline <podcast:valueRecipient> children are an alternative to a
+    // remoteItem: wrap them so parseValueBlock can read them unchanged.
+    const inlineValue = inner.includes('<podcast:valueRecipient')
+      ? parseValueBlock(`<podcast:value>${inner}</podcast:value>`)
+      : null;
+    out.push({
+      startTime: Number(readAttr(attrs, 'startTime')) || 0,
+      duration: Number(readAttr(attrs, 'duration')) || 0,
+      remoteStartTime: remoteStartStr != null ? Number(remoteStartStr) : undefined,
+      remotePercentage: remotePctStr != null ? Number(remotePctStr) : undefined,
+      remoteItem: firstRemoteItem(inner),
+      value: inlineValue,
+    });
+  }
+  return out;
 }
 
 function extractText(xml: string, tag: string): string | undefined {
@@ -766,8 +867,7 @@ export async function getRssEpisodeEnrichment(
   if (xml == null) return { episodes };
 
   // Channel-level podcast:medium (before first <item>)
-  const firstItem = xml.search(/<item\b/i);
-  const channelXml = firstItem === -1 ? xml : xml.slice(0, firstItem);
+  const channelXml = channelSlice(xml);
   const feedMedium = extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined;
   const feedPodroll = parsePodroll(channelXml);
   const feedFunding = parseFunding(channelXml);
@@ -862,8 +962,7 @@ export async function getFeedFromRss(
   // RSS feed has a <channel> and/or at least one <item>.
   if (!/<channel\b/i.test(xml) && !/<item\b/i.test(xml)) return null;
 
-  const firstItem = xml.search(/<item\b/i);
-  const channelXml = firstItem === -1 ? xml : xml.slice(0, firstItem);
+  const channelXml = channelSlice(xml);
 
   const feedId = -fnvHash(rssUrl);
   const medium = extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined;
@@ -1004,6 +1103,57 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
   } catch {
     return split;
   }
+}
+
+/** Which "now playing" convention a live item turned out to be using. */
+export type LiveValueSignal = 'remote-item' | 'value-time-split' | 'value' | 'none';
+
+export interface LiveValueResult {
+  split: ValueTimeSplit | null;
+  signal: LiveValueSignal;
+}
+
+/**
+ * Resolve what a live item is playing RIGHT NOW into a payable split.
+ *
+ * There is no live valueTimeSplit tag: a split is anchored to startTime and
+ * duration offsets into a finished enclosure, and a live stream has no
+ * absolute time base to sync those to. The convention that ships is that the
+ * publisher REWRITES the live item mid-broadcast, so all we can do is read
+ * whichever of three shapes they chose and re-read it on a timer.
+ *
+ * Precedence is `remoteItem > valueTimeSplit > value`. A remoteItem placed in
+ * the live item is an explicit "now playing" pointer and means exactly one
+ * thing. A rewritten <podcast:value> is the weakest signal because it is
+ * indistinguishable from a show that simply has one value block and never
+ * changes it — which is why it resolves to `null` here and lets the caller
+ * keep using the item's own block, rather than being dressed up as a redirect.
+ *
+ * A live item carrying MORE THAN ONE valueTimeSplit is ignored entirely. With
+ * no time base there is nothing to choose between them, and guessing pays the
+ * wrong artist — the one outcome this feature must never produce.
+ */
+export async function resolveLiveSplit(episode: Episode): Promise<LiveValueResult> {
+  const remote = episode.liveRemoteItem;
+  if (remote?.feedGuid && remote.itemGuid) {
+    const split = await resolveOneSplit({ startTime: 0, duration: 0, remoteItem: remote });
+    return { split: split.value ? split : null, signal: 'remote-item' };
+  }
+
+  const splits = episode.liveValueTimeSplits ?? [];
+  if (splits.length === 1) {
+    const only = splits[0];
+    // An inline-recipient split is already payable; a remoteItem one needs the
+    // same lookup as any other split.
+    if (only.value?.recipients?.length) return { split: only, signal: 'value-time-split' };
+    if (only.remoteItem?.feedGuid && only.remoteItem.itemGuid) {
+      const split = await resolveOneSplit(only);
+      return { split: split.value ? split : null, signal: 'value-time-split' };
+    }
+  }
+
+  if (episode.value?.recipients?.length) return { split: null, signal: 'value' };
+  return { split: null, signal: 'none' };
 }
 
 export async function resolveValueTimeSplits(

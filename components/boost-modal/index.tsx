@@ -18,6 +18,7 @@ import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
 import { SplitsPreview, LightningStatus } from './splits-preview';
+import { LiveNowPlaying } from '../live-now-playing';
 import { PublishStatus, type PublishState } from './publish-status';
 import { ShareNostrPicker } from './share-nostr-picker';
 
@@ -354,6 +355,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             onShareAsChange={handleShareAsChange}
             noteNoun="A public note"
           />
+          <LiveNowPlaying episode={episode} />
           <SplitsPreview recipients={value.recipients} splits={splits} results={results} />
           <LightningStatus results={results} totalRecipients={value.recipients.length} />
           <PublishStatus state={pubState} />

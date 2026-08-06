@@ -12,7 +12,8 @@
     "check:spark": "node --experimental-strip-types scripts/check-spark-derivation.mjs",
     "check:sanitizer": "node --experimental-strip-types scripts/check-sanitizer.mjs",
     "check:ssrf": "node --experimental-strip-types scripts/check-ssrf-guard.mjs",
-    "check:stream": "node --experimental-strip-types scripts/check-stream-ledger.mjs"
+    "check:stream": "node --experimental-strip-types scripts/check-stream-ledger.mjs",
+    "probe:live": "node scripts/probe-live-item.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",

@@ -1,6 +1,6 @@
 'use client';
 import { create } from 'zustand';
-import type { Episode, Podcast, FavoritePodcast } from './types';
+import type { Episode, Podcast, FavoritePodcast, ValueBlock } from './types';
 import type { NostrIdentity } from './nostr';
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
@@ -36,6 +36,11 @@ interface AppState {
   // request a seek through this instead of touching the media element.
   seekReq: { t: number; n: number } | null;
   requestSeek: (t: number) => void;
+  // Swap the CURRENT item's value block without disturbing playback — the live
+  // value switch (lib/v4v/live-value.ts). Every `episode.value` reader follows
+  // for free. A no-op unless `guid` is the item playing now, so a resolve that
+  // lands after the user moved on can't retarget their payment.
+  syncCurrentValue: (guid: string, value: ValueBlock | null) => void;
   setEpisodeQueue: (episodes: Episode[]) => void;
   playNext: () => void;
   playPrev: () => void;
@@ -142,6 +147,15 @@ export const useApp = create<AppState>((set, get) => ({
 
   seekReq: null,
   requestSeek: (t) => set((s) => ({ seekReq: { t, n: (s.seekReq?.n ?? 0) + 1 } })),
+  // Replaces `value` and NOTHING else. Touching episode.id or enclosureUrl
+  // would re-run <Player>'s source effect (deps [episode.id, videoMode]) and
+  // kill playback and the hls.js attachment mid-broadcast.
+  syncCurrentValue: (guid, value) =>
+    set((s) => {
+      if (!s.current || !guid || s.current.episode.guid !== guid) return {};
+      if (s.current.episode.value === value) return {};
+      return { current: { ...s.current, episode: { ...s.current.episode, value } } };
+    }),
   setEpisodeQueue: (episodes) => set({ episodeQueue: episodes }),
   playNext: () => set((s) => {
     if (!s.current) return s;
