@@ -374,9 +374,9 @@ function senderFields(): { sender_name: string; sender_id: string | undefined } 
  *
  * This does NOT make it a boost: 'boost' stays reserved for the button, so
  * the deliberate, one-tap payments a host actually reads stay separable from
- * the ambient ones. Aggregators that only branch on `action === 'boost'` file
- * 'auto' with the streams either way, so the change can't promote unattended
- * sats into someone's boost feed.
+ * the ambient ones. Confirmed against a real Helipad: 'auto' lands in the
+ * Stream tab carrying an AutoBoost marker, so these stay out of the host's
+ * boost feed while still reading as distinct from a per-minute drip.
  */
 function buildBoostagram(
   c: StreamContext,
