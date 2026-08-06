@@ -568,11 +568,15 @@ The mirror image of the above: `chadf@boostmebitch.com` is a recipient other app
 - **`accept-keysend` must stay enabled on the node**, and the node has to stay reachable. A rejected spontaneous payment doesn't degrade gracefully: the sender never retries LNURL after attempting a keysend (that rule exists to prevent double-pays), so the leg just fails.
 - **Known cosmetic mismatch:** LNbits returns `text/identifier` as `chadf@pay.boostmebitch.com`, so a wallet resolving the bare-domain form is handed metadata naming the subdomain. Payment is unaffected — the invoice's `description_hash` is computed over the same metadata string the wallet received — but strict LUD-16 readers may surface the discrepancy. Fixing it means changing the address domain in LNbits, not in this repo.
 
-## Streaming sats (`action: 'stream'`)
+## Streaming sats (`action: 'auto'`)
 
 The third Podcasting 2.0 payment mode, alongside the boost button and boost-all. `lib/v4v/stream-ledger.ts` (pure math) + `lib/v4v/streaming.ts` (the engine). **Off by default** — nothing is spent until the user flips the switch.
 
-It is a ledger and a clock on top of the existing engine, **not a new payment path**: settlement calls the same `sendBoost()`, with `action: 'stream'` on the boostagram (a field `lib/types.ts` and `lib/v4v/boostbox.ts` already carried). Rails, splits, TLV and the lnaddress→keysend upgrade are untouched, so all three rails work — batching at 10 minutes is what keeps Spark (BOLT11-only, an LNURL invoice per leg) affordable.
+It is a ledger and a clock on top of the existing engine, **not a new payment path**: settlement calls the same `sendBoost()`, with `action: 'auto'` on the boostagram (a field `lib/types.ts` and `lib/v4v/boostbox.ts` already carried). Rails, splits, TLV and the lnaddress→keysend upgrade are untouched, so all three rails work — batching at 10 minutes is what keeps Spark (BOLT11-only, an LNURL invoice per leg) affordable.
+
+**`action` is `'auto'`, not `'stream'` — the two describe different cadences.** `'stream'` is the per-minute drip, one payment per minute per recipient; what we actually send is a ten-minute lump for time already listened, which is what `'auto'` names. Tagging it `'stream'` made each batch read as one minute of listening in the receiver's stats. `'boost'` stays reserved for the button, so a host's deliberate one-tap payments remain separable from ambient ones, and aggregators that only branch on `action === 'boost'` file `'auto'` with the streams anyway — so this can't promote unattended sats into someone's boost feed.
+
+**The two wire surfaces disagree on purpose, and `lib/v4v/boostbox.ts` must keep downgrading `'auto'` → `'stream'`.** Keysend legs carry `'auto'` verbatim in the TLV. BoostBox — which is how the *LNURL* legs carry metadata — validates `action` against a strict malli enum, `[:enum "boost" "stream"]` (`src/boostbox/boostbox.clj`), so posting `'auto'` is rejected; the rejection is silent and non-fatal, meaning the leg loses its whole `desc` descriptor and degrades to the bare user message. The action string also lands verbatim in the BOLT11 description BoostBox builds (`rss::payment::<action> <url>`). **Widening that mapping requires widening the enum on the BoostBox side first.**
 
 **Every rule here follows from one property: this spends money unattended, on a timer, with no confirmation step.** A mistake has no screen in front of it to be noticed on.
 

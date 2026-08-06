@@ -47,6 +47,14 @@ function buildPayload(
   splitWeight: number,
   legMsat: number,
 ): BoostBoxPayload {
+  // 'auto' (what streaming settlements carry) MUST be downgraded to 'stream'
+  // here, and this mapping is load-bearing rather than an incidental
+  // fallthrough: BoostBox validates `action` against a strict malli enum,
+  // [:enum "boost" "stream"], so posting "auto" is rejected outright — and a
+  // rejected POST is silent, costing the leg its whole `desc` descriptor and
+  // falling back to the bare user message. The action also lands verbatim in
+  // the BOLT11 description BoostBox builds ("rss::payment::<action> <url>"),
+  // so widening this needs the enum widened on the BoostBox side FIRST.
   const action: 'boost' | 'stream' =
     boostagram.action === 'boost' ? 'boost' : 'stream';
   return {

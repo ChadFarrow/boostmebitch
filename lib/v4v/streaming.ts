@@ -5,9 +5,10 @@
 //
 // This is a ledger + a clock on top of the existing engine, NOT a new payment
 // path: settlement calls the same `sendBoost()` every boost goes through, with
-// `action: 'stream'` on the boostagram (a field lib/types.ts and
+// `action: 'auto'` on the boostagram (a field lib/types.ts and
 // lib/v4v/boostbox.ts already carry). Nothing about rails, splits, TLV or the
-// lnaddress→keysend upgrade changes here.
+// lnaddress→keysend upgrade changes here. See buildBoostagram for why 'auto'
+// and not 'stream'.
 //
 // The arithmetic lives in ./stream-ledger.ts so `npm run check:stream` can pin
 // it from plain Node. What lives HERE is the part that talks to the store, the
@@ -361,6 +362,21 @@ function senderFields(): { sender_name: string; sender_id: string | undefined } 
  * mangled into the podcast field, and the host's Helipad can correlate which
  * track earned the payment. Don't "simplify" it by putting the track in the
  * primary fields.
+ *
+ * `action` is **'auto'**, not 'stream'. Both are Podcasting 2.0 values for an
+ * unattended payment, and the distinction receivers draw is cadence: 'stream'
+ * means the per-minute drip, one payment per minute per recipient. We batch on
+ * a ten-minute timer (SETTLE_INTERVAL_MS) precisely because a per-minute LNURL
+ * invoice per leg is unaffordable on a BOLT11-only rail — so what arrives at
+ * the recipient is a periodic lump for time already listened, which is what
+ * 'auto' describes. Tagging it 'stream' made the ten-minute batch read as one
+ * minute's worth of listening in the receiver's stats.
+ *
+ * This does NOT make it a boost: 'boost' stays reserved for the button, so
+ * the deliberate, one-tap payments a host actually reads stay separable from
+ * the ambient ones. Aggregators that only branch on `action === 'boost'` file
+ * 'auto' with the streams either way, so the change can't promote unattended
+ * sats into someone's boost feed.
  */
 function buildBoostagram(
   c: StreamContext,
@@ -378,7 +394,7 @@ function buildBoostagram(
     url: podcast.url,
     ts: Math.max(0, Math.floor(atPositionSec)),
     value_msat_total: sats * 1000,
-    action: 'stream',
+    action: 'auto',
     uuid: crypto.randomUUID(),
     episode: episode.title,
     itemID: episode.id,
