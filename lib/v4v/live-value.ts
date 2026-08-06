@@ -111,10 +111,28 @@ function valueSig(value: ValueBlock | null | undefined): string {
   return String(fnvHash(parts.join('|')));
 }
 
-function isWatchable(cur: { episode: Episode; podcast: Podcast } | null): boolean {
+/**
+ * Why this item is or isn't being watched.
+ *
+ * Returned as a reason rather than a boolean because every one of these
+ * conditions fails SILENTLY and looks identical from the outside: the target
+ * just never moves. Mid-broadcast, "which of the four is it" is the only
+ * question worth being able to answer instantly — see `window.bmbLive()`.
+ */
+function watchableReason(cur: { episode: Episode; podcast: Podcast } | null): string | null {
+  if (!cur) return 'nothing playing';
   // 'pending' is scheduled, not broadcasting — there is nothing playing to
   // follow, and polling it would be a request per 20s for hours.
-  return !!cur && cur.episode.liveStatus === 'live' && !!cur.episode.guid && cur.episode.feedId > 0;
+  if (cur.episode.liveStatus !== 'live') {
+    return `liveStatus is ${cur.episode.liveStatus ?? 'unset'}, not "live"`;
+  }
+  if (!cur.episode.guid) return 'live item has no <guid>';
+  if (!(cur.episode.feedId > 0)) return `feedId is ${cur.episode.feedId}`;
+  return null;
+}
+
+function isWatchable(cur: { episode: Episode; podcast: Podcast } | null): boolean {
+  return watchableReason(cur) === null;
 }
 
 function setTarget(next: LiveTarget | null) {
@@ -122,6 +140,13 @@ function setTarget(next: LiveTarget | null) {
   const prev = target ? `${target.guid}|${target.signal}|${valueSig(target.split?.value)}` : '';
   if (sig === prev) return;
   target = next;
+  if (process.env.NODE_ENV !== 'production') {
+    const n = next?.split?.value?.recipients?.length ?? 0;
+    console.debug(
+      `[live-value] target → ${next?.split ? next.split.title ?? '(untitled)' : 'the show\'s own block'}`
+      + ` (signal: ${next?.signal ?? 'none'}, ${n} recipient${n === 1 ? '' : 's'})`,
+    );
+  }
   observable.notify();
 }
 
@@ -298,8 +323,51 @@ function onVisibility() {
   if (typeof document !== 'undefined' && !document.hidden) void poll();
 }
 
+/**
+ * Devtools diagnostic: `bmbLive()`.
+ *
+ * Follows the repo's existing `window.bmbCleanFavorites()` convention. It
+ * exists because every way this feature can fail is silent and looks the same
+ * from the outside — the payment target simply never moves. This says which
+ * one it is in one line, which is the difference between fixing a live show
+ * mid-broadcast and guessing at it.
+ */
+function installDiagnostic() {
+  if (typeof window === 'undefined') return;
+  (window as any).bmbLive = () => {
+    const cur = useApp.getState().current;
+    const lv = cur?.episode.liveValue;
+    return {
+      notWatchingBecause: watchableReason(cur),
+      episode: cur ? {
+        title: cur.episode.title,
+        guid: cur.episode.guid,
+        feedId: cur.episode.feedId,
+        liveStatus: cur.episode.liveStatus,
+      } : null,
+      // Absent here means the feed carries no <podcast:liveValue> — or it does
+      // and the uri failed the httpUrl allowlist at parse time.
+      liveValueTag: lv ?? null,
+      socket: watching
+        ? { opened: !!watching.closeSocket, delivering: watching.socketOwns }
+        : null,
+      pollFailures: watching?.failures ?? 0,
+      target: target ? {
+        signal: target.signal,
+        payingTitle: target.split?.title ?? null,
+        recipients: target.split?.value?.recipients?.map((r) => `${r.type} ${r.split} ${r.address}`) ?? null,
+        remotePercentage: target.split?.remotePercentage ?? null,
+        event: target.event ?? null,
+      } : null,
+      // Force a poll now instead of waiting out the interval.
+      poll: () => { void poll(true); },
+    };
+  };
+}
+
 export function startLiveValueWatcher() {
   if (timer) return;
+  installDiagnostic();
   timer = setInterval(() => { void poll(); }, POLL_MS);
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onVisibility);

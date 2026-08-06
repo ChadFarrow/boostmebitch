@@ -118,11 +118,23 @@ export function connectLiveValue(uri: string, onBlock: Handler): () => void {
         reconnectionDelayMax: 30_000,
       });
       socket = s;
+      if (process.env.NODE_ENV !== 'production') {
+        s.on('connect', () => console.debug('[live-value] socket connected:', uri));
+        s.on('disconnect', (r: string) => console.debug('[live-value] socket disconnected:', r));
+      }
       s.on('remoteValue', (data: unknown) => {
         if (disposed) return;
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('[live-value] remoteValue payload:', data);
+        }
         onBlock(parseLiveBlock(data));
       });
-      s.on('connect_error', () => { if (!disposed) onBlock(null); });
+      s.on('connect_error', (e: Error) => {
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('[live-value] socket connect_error:', e?.message ?? e);
+        }
+        if (!disposed) onBlock(null);
+      });
     } catch {
       // Import or connect failed — the RSS fallback owns it from here.
       if (!disposed) onBlock(null);
