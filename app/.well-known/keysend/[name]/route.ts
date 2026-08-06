@@ -30,20 +30,25 @@ interface KeysendName {
   customValue?: string;
 }
 
+// Chad's own LND node (45.33.65.45:9735 — the gossip address is how peers open
+// channels, so it deliberately isn't published here; a keysend is routed to the
+// pubkey, not dialled direct). Self-hosted, so there's no shared-node
+// sub-account to route to and no customKey/customValue pair.
+//
+// Requires `accept-keysend` (LND) to stay enabled: without it the node rejects
+// the spontaneous payment and the leg simply fails, because the sender never
+// retries LNURL after attempting a keysend.
+const CHAD_NODE = '02b32faddac6789150d61d656b7e24335131eacfde91949748acca43738aeeebc4';
+
 // Lowercase keys: lightning addresses are case-insensitive in practice and the
 // lookup path lowercases before probing, so we match on the same normalization.
+//
+// Every name here must have a matching `.well-known/lnurlp` on the LNbits
+// instance. A keysend-only name isn't dangerous, but it is lopsided:
+// keysend-capable rails would pay it while every BOLT11-only wallet (Spark
+// among them) fails, since those can only go through LNURL.
 const NAMES: Record<string, KeysendName> = {
-  chadf: {
-    // Chad's own LND node (45.33.65.45:9735 — the gossip address is how peers
-    // open channels, so it deliberately isn't published here; a keysend is
-    // routed to the pubkey, not dialled direct). Self-hosted, so there's no
-    // shared-node sub-account to route to and no customKey/customValue.
-    //
-    // Requires `accept-keysend` (LND) to stay enabled: without it the node
-    // rejects the spontaneous payment and the leg simply fails, because the
-    // sender never retries LNURL after attempting a keysend.
-    pubkey: '02b32faddac6789150d61d656b7e24335131eacfde91949748acca43738aeeebc4',
-  },
+  chadf: { pubkey: CHAD_NODE },
 };
 
 // Same strict shape the reader enforces (lib/v4v/keysend-lookup.ts). Validating
