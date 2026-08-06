@@ -557,6 +557,16 @@ A valid response makes the leg a real keysend via `payKeysend`, so the boostagra
 
 The endpoint's routing pair **wins** over the feed's (a feed-side `customKey` on an lnaddress recipient is ignored by the LNURL path anyway, while the endpoint's pair selects the sub-account); the feed's is used only when the endpoint supplies none. An upgraded leg **skips BoostBox** — LNURL-only by design, and the TLV now carries the metadata. `BoostResult.recipient` reports the **original lnaddress recipient**, not the resolved pubkey, so per-leg rows and `bmb:boosts:*` stay readable. Lookups are cached module-scope (6 h hit / 15 min miss) so a boost-all over 20 tracks sharing an artist address probes once. **Zaps are untouched:** `lib/v4v/zap.ts` must stay LNURL — a keysend can't make the recipient's LN service publish a kind:9735 receipt.
 
+### Serving our own lightning address
+
+The mirror image of the above: `chadf@boostmebitch.com` is a recipient other apps pay, assembled from two pieces on this domain plus an LNbits instance behind `pay.boostmebitch.com` fronting Chad's LND node.
+
+- **LNURL is a `vercel.json` rewrite**, `/.well-known/lnurlp/:user` → the pay subdomain. An edge rewrite, so the hottest path in a payment costs no lambda invocation. **`next dev` does not apply `vercel.json`**, so this is only observable on a deploy — don't conclude it's broken from a local 404.
+- **Keysend is a route handler**, `app/.well-known/keysend/[name]/route.ts`, holding the node pubkey in a `NAMES` map. **Deliberately not a file in `public/`**: an extensionless static file is served as `application/octet-stream`, and this has to be JSON, CORS-open and cacheable. It validates on the way *out* against the same `/^0[23][0-9a-f]{64}$/` the reader enforces, so a typo fails closed as one 404 here rather than in someone else's payment path — and an unset pubkey serves 404, because publishing a malformed one is worse than publishing nothing (a payer that trusts it sends a keysend that can never arrive).
+- **The two are not independent.** Discovery *starts* at lnurlp — nothing ever looks for the keysend document except a payer already holding the address — and every BOLT11-only wallet (Spark among them) can only pay that way. Drop the rewrite and the keysend doc goes dark with it.
+- **`accept-keysend` must stay enabled on the node**, and the node has to stay reachable. A rejected spontaneous payment doesn't degrade gracefully: the sender never retries LNURL after attempting a keysend (that rule exists to prevent double-pays), so the leg just fails.
+- **Known cosmetic mismatch:** LNbits returns `text/identifier` as `chadf@pay.boostmebitch.com`, so a wallet resolving the bare-domain form is handed metadata naming the subdomain. Payment is unaffected — the invoice's `description_hash` is computed over the same metadata string the wallet received — but strict LUD-16 readers may surface the discrepancy. Fixing it means changing the address domain in LNbits, not in this repo.
+
 ## Nostr publish shape
 
 `publishBoostNote()` in `lib/nostr/boost-notes.ts` builds a kind:1 with:
