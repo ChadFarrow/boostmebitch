@@ -1,3 +1,9 @@
 {
-  "framework": "nextjs"
+  "framework": "nextjs",
+  "rewrites": [
+    {
+      "source": "/.well-known/lnurlp/:user",
+      "destination": "https://pay.boostmebitch.com/.well-known/lnurlp/:user"
+    }
+  ]
 }
