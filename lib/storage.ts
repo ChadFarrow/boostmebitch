@@ -91,33 +91,127 @@ const STREAMED_CAP = 100;
 
 const isBrowser = () => typeof window !== 'undefined';
 
-function safeGet(key: string): string | null {
-  if (!isBrowser()) return null;
-  try { return localStorage.getItem(key); } catch { return null; }
+/**
+ * Values whose localStorage write did NOT land, kept for the rest of the
+ * session so the control the user just touched still works.
+ *
+ * A swallowed write is worse than a visible failure: every setting in this file
+ * is read straight back out of storage, so a UI with no local state of its own
+ * (`<StreamRate>` is exactly that) renders the OLD value and the control looks
+ * broken — tap it, nothing happens, no error anywhere. That is precisely how
+ * "I can't turn on streaming sats on iOS Safari" presents.
+ *
+ * Two causes, both real and both silent: a hostile localStorage (Private
+ * Browsing, "Block All Cookies", content blockers) where `setItem` throws
+ * SecurityError, and a FULL one — iOS Safari's per-origin quota is the
+ * tightest in the wild, and this app caches whole nostr events, so a
+ * long-lived install fills it and then every write throws QuotaExceededError,
+ * down to a one-byte `bmb:stream_on`. Reads keep working, so nothing else on
+ * screen looks wrong.
+ *
+ * Lost on reload — persistence is the user's to fix, and callers surface that
+ * via the `isEphemeral` accessors — but the session is honest either way.
+ * Caches are deliberately NOT mirrored here: they exist to save a refetch, and
+ * holding a megabyte of notes in a Map to work around storage pressure just
+ * moves the problem.
+ */
+const memoryMirror = new Map<string, string>();
+
+/**
+ * Namespaces that may be thrown away to make room for a write that matters,
+ * ordered biggest-payoff-first. Every one is a network-regenerable cache: no
+ * user setting, no identity, no credential, nothing that can't be refetched.
+ *
+ * The two note caches come first because they hold whole nostr events (~1 KB
+ * apiece, unbounded per feed surface and per socialInteract URI) and account
+ * for nearly all of the bytes; the profile and by-guid caches are small but
+ * numerous and cost a visible refetch, so they go last.
+ */
+const EVICTABLE_PREFIXES = [
+  KEYS.socialThreadPrefix,
+  KEYS.feedNotesPrefix,
+  KEYS.profilePrefix,
+  KEYS.podcastMetaPrefix,
+] as const;
+
+const isEvictableKey = (key: string) =>
+  EVICTABLE_PREFIXES.some((p) => key.startsWith(`${p}:`));
+
+function rawKeys(): string[] {
+  try { return Object.keys(localStorage); } catch { return []; }
 }
 
-function safeSet(key: string, value: string) {
-  if (!isBrowser()) return;
-  try { localStorage.setItem(key, value); } catch { /* quota etc — ignore */ }
+/** Drop one cache namespace. Returns false when it held nothing to drop. */
+function evictNamespace(prefix: string): boolean {
+  const doomed = rawKeys().filter((k) => k.startsWith(`${prefix}:`));
+  if (doomed.length === 0) return false;
+  for (const k of doomed) {
+    try { localStorage.removeItem(k); } catch { /* ignore */ }
+  }
+  return true;
+}
+
+function writeThrough(key: string, value: string): boolean {
+  try { localStorage.setItem(key, value); return true; } catch { return false; }
+}
+
+function safeGet(key: string): string | null {
+  if (!isBrowser()) return null;
+  let v: string | null = null;
+  try { v = localStorage.getItem(key); } catch { /* blocked — fall through */ }
+  return v ?? memoryMirror.get(key) ?? null;
+}
+
+/**
+ * Returns whether the value actually reached disk.
+ *
+ * On a full store this evicts caches and retries, one namespace at a time so a
+ * single failed setting doesn't wipe every cache the app has: **a cache never
+ * displaces a setting, and a setting always displaces a cache.** A failing
+ * write of an evictable key is therefore left to fail — dropping other caches
+ * to fit one more cache is thrash, and the cost of skipping it is a refetch.
+ */
+function safeSet(key: string, value: string): boolean {
+  if (!isBrowser()) return false;
+  if (writeThrough(key, value)) {
+    memoryMirror.delete(key);
+    return true;
+  }
+  if (!isEvictableKey(key)) {
+    for (const prefix of EVICTABLE_PREFIXES) {
+      if (!evictNamespace(prefix)) continue;
+      if (writeThrough(key, value)) {
+        memoryMirror.delete(key);
+        return true;
+      }
+    }
+    // Storage is blocked outright, or too full for even a few bytes. Hold the
+    // value for this session rather than discarding what the user just chose.
+    memoryMirror.set(key, value);
+  }
+  return false;
 }
 
 function safeRemove(key: string) {
+  // Mirror first: a removal that only cleared disk would let the in-memory
+  // copy resurrect the value on the next read — a disconnected wallet or a
+  // cleared override coming back to life.
+  memoryMirror.delete(key);
   if (!isBrowser()) return;
   try { localStorage.removeItem(key); } catch { /* ignore */ }
 }
 
 function safeKeys(): string[] {
   if (!isBrowser()) return [];
-  try { return Object.keys(localStorage); } catch { return []; }
+  // Union with the mirror, or a setting held only in memory would be invisible
+  // to the key scans that count them (`showsExplicitlyOn`).
+  return [...new Set([...rawKeys(), ...memoryMirror.keys()])];
 }
 
-// Per-key memory fallback for the few critical writes that need to survive
-// a hostile localStorage (iOS Safari Private Browsing, "Block All Cookies",
-// content blockers — all silently no-op `setItem`). Living next to the
-// safe* helpers so each storage accessor can opt in by mirroring its writes
-// here. Lost on page reload — the storage block is the user's to fix —
-// but at least the wallet works for the current session.
-const memoryFallback: { nwcUri: string | null } = { nwcUri: null };
+/** True when `key`'s current value is only held in memory — i.e. its write
+ *  didn't persist and a reload will lose it. Backs the soft hints that tell
+ *  the user their setting won't survive, instead of letting them find out. */
+const isMemoryOnly = (key: string) => memoryMirror.has(key);
 
 // Per-identity storage keys: signed-out users share a single `:guest` bucket;
 // signed-in users get one bucket per npub. Centralized so the convention
@@ -278,25 +372,18 @@ export const storage = {
   },
 
   nwcUri: {
-    get: () => safeGet(KEYS.nwcUri) ?? memoryFallback.nwcUri,
-    set: (v: string) => {
-      // Memory fallback first so the value is queryable even if the
-      // localStorage write silently fails (iOS Safari Private Browsing /
-      // "Block All Cookies" / aggressive content blockers all silently no-op
-      // setItem). Without this, the URI is "saved" to nowhere and the wallet
-      // modal bounces back to the connect form with no recovery path.
-      memoryFallback.nwcUri = v;
-      safeSet(KEYS.nwcUri, v);
-    },
-    clear: () => {
-      memoryFallback.nwcUri = null;
-      safeRemove(KEYS.nwcUri);
-    },
-    has: () => (safeGet(KEYS.nwcUri) ?? memoryFallback.nwcUri) !== null,
+    // The memory-mirror fallback that used to live here by hand is now in
+    // `safeSet`/`safeGet` for every key: a URI "saved" to nowhere bounced the
+    // wallet modal back to the connect form with no recovery path, and the
+    // same swallowed write breaks every other setting the same way.
+    get: () => safeGet(KEYS.nwcUri),
+    set: (v: string) => { safeSet(KEYS.nwcUri, v); },
+    clear: () => safeRemove(KEYS.nwcUri),
+    has: () => safeGet(KEYS.nwcUri) !== null,
     /** True if the URI is only held in memory — i.e. the localStorage write
      *  failed and the user will lose it on reload. Used to show a soft
      *  "won't persist across reloads" hint. */
-    isEphemeral: () => memoryFallback.nwcUri !== null && safeGet(KEYS.nwcUri) === null,
+    isEphemeral: () => isMemoryOnly(KEYS.nwcUri),
   },
 
   /**
@@ -825,6 +912,15 @@ export const storage = {
       safeSet(`${KEYS.streamRate}:${showKey}`, String(n));
       streamRateObservable.notify();
     },
+    /**
+     * True when this scope's switch is only held in memory, so a reload loses
+     * it. Same soft-hint role as `nwcUri.isEphemeral`, and it matters more
+     * here: the switch reads straight back out of storage with no local state,
+     * so before the memory mirror existed a failed write left the control
+     * visibly inert — the user tapped ON and it stayed OFF, with no error.
+     */
+    isEphemeral: (showKey?: string | null): boolean =>
+      isMemoryOnly(showKey ? `${KEYS.streamOn}:${showKey}` : KEYS.streamOn),
   },
 
   /**

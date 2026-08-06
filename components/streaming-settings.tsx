@@ -131,6 +131,11 @@ export function StreamRate({
     showRate: showKey ? storage.streamRate.getShowRemembered(showKey) : null,
     // Only the global control needs this, and only to avoid lying — see below.
     showsOn: showKey ? 0 : storage.streamRate.showsExplicitlyOn(),
+    // The switch couldn't be written to disk (storage blocked or full). It
+    // still works for this session off the memory mirror, but saying nothing
+    // would let the user discover on their next visit that streaming quietly
+    // turned itself back off.
+    ephemeral: storage.streamRate.isEphemeral(showKey),
   });
   const [s, setS] = useState(read);
 
@@ -214,6 +219,12 @@ export function StreamRate({
         <StreamSwitch on={on} onChange={setOn} dimmed={following} />
         <RateField value={rate} onCommit={setRate} dimmed={following} />
       </div>
+      {s.ephemeral && (
+        <p className="text-[11px] text-bolt/80 mt-2">
+          Storage is restricted or full — this setting works now but won&apos;t
+          survive a reload.
+        </p>
+      )}
       <p className={`text-[11px] mt-2 ${pinnedOff ? 'text-nostr' : 'text-muted'}`}>
         {description}
         {pinnedOff && (
