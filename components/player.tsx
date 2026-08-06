@@ -15,6 +15,7 @@ import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import { BoostModal } from './boost-modal';
+import { StreamPulse } from './streaming-settings';
 import { BoltIcon, PipIcon } from './icons';
 import { FullscreenPlayer } from './fullscreen-player';
 import { TransportControls } from './transport-controls';
@@ -525,7 +526,15 @@ export function Player() {
           ) : null}
           <div className="min-w-0 flex-1">
             <div className="text-sm font-display leading-tight truncate">{episode.title}</div>
-            <div className="text-[11px] text-muted truncate">{podcast.title}</div>
+            {/* The streaming indicator rides on the show line, NOT the controls
+                cluster — that side is already tight on mobile. It's shrink-0
+                (~40px) so the already-truncating title just truncates slightly
+                earlier; nothing else moves. <StreamPulse> subscribes to the
+                engine itself, so this stays off <Player>'s render path. */}
+            <div className="flex items-center gap-2 text-[11px]">
+              <span className="text-muted truncate">{podcast.title}</span>
+              <StreamPulse />
+            </div>
             {/* The error is the one line the user actually needs to read when
                 playback dies — wrap it (break-words), never truncate it. */}
             {audioErr && (

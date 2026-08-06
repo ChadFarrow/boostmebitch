@@ -26,15 +26,20 @@
 import {
   accrue,
   accruedSats,
+  allocationTrackBucket,
   createLedger,
+  DEFAULT_STREAM_RATE_PER_MIN,
   fundedBuckets,
   HOST_BUCKET,
   isStaleLedger,
   msUntilSettle,
+  settleBatch,
   settlePlan,
   STREAM_MAX_TICK_MS,
   STREAM_MIN_SETTLE_SATS,
   STREAM_PENDING_MAX_AGE_MS,
+  STREAM_POS_CARRY_MAX_MS,
+  STREAM_RATE_MAX_PER_MIN,
   STREAM_SETTLE_INTERVAL_MS,
 } from '../lib/v4v/stream-ledger.ts';
 
@@ -82,6 +87,27 @@ function listen(ledger, { seconds, ratePerMin, stepSec = 1, startMs = T0, startP
   return l;
 }
 
+/**
+ * Play `steps.length` one-second wall-clock ticks where the POSITION advances
+ * by a caller-chosen amount each tick.
+ *
+ * This is the real-world shape `listen()` can't produce: position reaches the
+ * store as a floored whole second pushed from `timeupdate`, while the engine
+ * ticks on its own 1 Hz timer, so the two drift and a tick sometimes sees two
+ * position steps and sometimes none. `steps` is that sequence in seconds.
+ */
+function driftListen(ledger, { steps, ratePerMin, startMs = T0, startPos = 0 }) {
+  let l = ledger;
+  let pos = startPos;
+  let ms = startMs;
+  for (const step of steps) {
+    pos += step;
+    ms += 1000;
+    l = accrue(l, { nowMs: ms, positionSec: pos, playing: true, ratePerMin });
+  }
+  return l;
+}
+
 /** Stand-in for the engine's allocationAt over a fixed track list. */
 function tracksAllocator(tracks) {
   return (positionSec) => {
@@ -104,6 +130,13 @@ check('settle interval is 10 min', STREAM_SETTLE_INTERVAL_MS, 600_000);
 check('minimum settle is 10 sats', STREAM_MIN_SETTLE_SATS, 10);
 check('max single tick is 5 min', STREAM_MAX_TICK_MS, 300_000);
 check('pending accrual expires after 24 h', STREAM_PENDING_MAX_AGE_MS, 86_400_000);
+// The rate a user gets by flipping a switch, having typed nothing. It is the
+// only number in this file that spends money without the user ever having seen
+// it, so it is pinned twice — once as itself, once as what it costs per hour.
+check('default rate is 10 sats/min', DEFAULT_STREAM_RATE_PER_MIN, 10);
+check('…which is 600 sats/hour', DEFAULT_STREAM_RATE_PER_MIN * 60, 600);
+check('rate ceiling is 10,000 sats/min', STREAM_RATE_MAX_PER_MIN, 10_000);
+check('position carry is capped at 2 s', STREAM_POS_CARRY_MAX_MS, 2_000);
 
 // --- Accrual ---------------------------------------------------------------
 
@@ -213,6 +246,102 @@ console.log('\naccrue — what must NOT be billed');
   });
   check('NaN position accrues nothing', (nan.buckets[HOST_BUCKET] ?? 0), 0);
   check('…and leaves the last position intact', nan.lastPositionSec, 0);
+}
+
+// --- The position carry ----------------------------------------------------
+// Position reaches the ledger as a floored whole second pushed from
+// `timeupdate`; the engine ticks on its own 1 Hz timer. They drift, so a tick
+// sometimes spans two position steps and the next spans none. min(wall, pos)
+// clips the double and bills nothing for the empty one, and because min() only
+// ever clips upward the error never cancels — it is a permanent, always-under
+// payment. These pin the carry that fixes it, and the bound that keeps it from
+// becoming the "wall clock alone bills sleep" failure it sits next to.
+
+console.log('\naccrue — the position carry');
+{
+  // The pathological sequence: a tick spanning two position steps, then one
+  // spanning none, over four wall seconds. Without a carry this bills 2 s
+  // instead of 4 — a 50% loss in the worst case.
+  const drift = driftListen(createLedger('k', T0), { steps: [2, 0, 2, 0], ratePerMin: 60 });
+  const steady = driftListen(createLedger('k', T0), { steps: [1, 1, 1, 1], ratePerMin: 60 });
+  checkClose(
+    'a tick that sees two position steps banks one for the tick that sees none',
+    (drift.buckets[HOST_BUCKET] ?? 0),
+    4 * 1000,   // 4 s at 60 sats/min = 4 sats = 4000 msat
+  );
+  checkClose(
+    '…billing exactly what the same four seconds bill with no drift at all',
+    (drift.buckets[HOST_BUCKET] ?? 0),
+    (steady.buckets[HOST_BUCKET] ?? 0),
+  );
+}
+{
+  // The carry only reaches FORWARD, so an empty tick with nothing yet banked is
+  // lost — there is no backward carry and adding one would mean billing time
+  // before observing it. That costs ONE step per session, at the head, and is
+  // pinned here so it stays a bounded head loss and never becomes per-tick
+  // again: 60 s of the worst-case alternation bills 59, not 30.
+  const steps = [];
+  for (let i = 0; i < 30; i++) steps.push(0, 2);
+  const l = driftListen(createLedger('k', T0), { steps, ratePerMin: 60 });
+  checkClose('a session-long drift loses one step at the head and nothing after',
+    (l.buckets[HOST_BUCKET] ?? 0), 59 * 1000);
+}
+{
+  // THE bound, and the reason every "must NOT be billed" pin above survives:
+  // the carry is added BEFORE the wall clip, so no run of ticks can ever bill
+  // more time than actually passed. Here five seconds of position arrive in one
+  // wall second — which the tolerance reads as a seek — and four wall seconds
+  // buy at most four seconds of listening no matter what.
+  const l = driftListen(createLedger('k', T0), { steps: [0, 0, 0, 5], ratePerMin: 60 });
+  check('the carry never lets a run of ticks bill more than its wall clock',
+    (l.buckets[HOST_BUCKET] ?? 0) <= 4 * 1000, true);
+  checkClose('…and a 5 s jump in one wall second bills that one second', (l.buckets[HOST_BUCKET] ?? 0), 1000);
+}
+{
+  const carried = driftListen(createLedger('k', T0), { steps: [0, 2], ratePerMin: 60 });
+  check('a carry is left behind for the next tick', carried.posCarryMs > 0, true);
+  // A jump is not drift. Letting a forward seek fund later idle ticks would
+  // reintroduce exactly what min(wall, position) exists to prevent.
+  const seeked = accrue(carried, {
+    nowMs: T0 + 3000, positionSec: 600, playing: true, ratePerMin: 60,
+  });
+  check('a forward seek clears the carry', seeked.posCarryMs, 0);
+  const paused = accrue(carried, {
+    nowMs: T0 + 3000, positionSec: 2, playing: false, ratePerMin: 60,
+  });
+  check('a pause clears the carry', paused.posCarryMs, 0);
+  const nan = accrue(carried, {
+    nowMs: T0 + 3000, positionSec: NaN, playing: true, ratePerMin: 60,
+  });
+  check('a non-finite position clears the carry', nan.posCarryMs, 0);
+}
+{
+  // Ten seconds of position arriving in one tick is a seek by the tolerance
+  // rule, so nothing banks — the cap is belt-and-braces on top of that.
+  const l = driftListen(createLedger('k', T0), { steps: [0, 0, 0, 0, 0, 10], ratePerMin: 60 });
+  check('the carry never exceeds its cap', l.posCarryMs <= STREAM_POS_CARRY_MAX_MS, true);
+}
+{
+  // The ONE semantic the carry genuinely changes, pinned so changing it back is
+  // deliberate: a ledger already holding a carry, that then sleeps, spends the
+  // carry. That is correct — it is time genuinely played and not yet billed —
+  // and it is bounded at 2 s, i.e. a third of a sat at 10 sats/min. Compare
+  // with the "6 h asleep accrues nothing" pin above, which is a FRESH ledger
+  // and still bills exactly zero.
+  const carried = driftListen(createLedger('k', T0), { steps: [0, 2], ratePerMin: 60 });
+  const slept = accrue(carried, {
+    nowMs: T0 + 2000 + 6 * 3600_000,
+    positionSec: 2,
+    playing: true,
+    ratePerMin: 60,
+  });
+  const billed = (slept.buckets[HOST_BUCKET] ?? 0) - (carried.buckets[HOST_BUCKET] ?? 0);
+  check(
+    '6 h asleep holding a carry bills the carry and not one ms more',
+    billed <= 60 * STREAM_POS_CARRY_MAX_MS / 60 && billed >= 0,
+    true,
+  );
 }
 
 // --- Settlement ------------------------------------------------------------
@@ -404,6 +533,129 @@ console.log('\nvalueTimeSplits — gaps, floors and conservation');
   // listener would most expect to have gone out.
   check('funded buckets list the host first', fundedBuckets(l)[0], HOST_BUCKET);
   check('…and include every credited track', fundedBuckets(l).length, 3);
+}
+
+// --- allocationTrackBucket: the track-boundary settle edge ------------------
+// The engine settles when this value CHANGES, so what counts as a change is a
+// money decision, not a labelling one. A track ending into a gap has to read as
+// a boundary (the track is over and its bucket should go out), and a zero-weight
+// entry must not read as a track — a valueTimeSplit at remotePercentage 0 sends
+// everything to the host, and treating it as a track would fire a settle on
+// every such window while naming an artist owed nothing.
+{
+  check(
+    'a covered position names its track',
+    allocationTrackBucket([{ bucket: 't:a:1', fraction: 0.99 }, { bucket: HOST_BUCKET, fraction: 0.01 }]),
+    't:a:1',
+  );
+  check(
+    'a gap between tracks is host-only, so no track',
+    allocationTrackBucket([{ bucket: HOST_BUCKET, fraction: 1 }]),
+    null,
+  );
+  check(
+    'an ordinary podcast never names a track',
+    allocationTrackBucket([]),
+    null,
+  );
+  check(
+    'a zero-weight track is not a track',
+    allocationTrackBucket([{ bucket: 't:a:1', fraction: 0 }, { bucket: HOST_BUCKET, fraction: 1 }]),
+    null,
+  );
+  // Consecutive tracks must differ, or the boundary between them is invisible
+  // and the first one's bucket rides on into the second one's window.
+  const a = allocationTrackBucket([{ bucket: 't:a:1', fraction: 1 }]);
+  const b = allocationTrackBucket([{ bucket: 't:b:2', fraction: 1 }]);
+  check('consecutive tracks are distinguishable', a !== b, true);
+}
+
+// --- settleBatch: the whole batch settles, or none of it does ---------------
+// THIS SECTION EXISTS BECAUSE ITS ABSENCE LET A BUG SHIP. The engine used to
+// loop settlePlan() itself, feeding each result in as the next call's input.
+// settlePlan stamps lastSettleMs on the ledger it returns, so bucket 2 was
+// checked against a stamp bucket 1 had written microseconds earlier and failed
+// the interval gate — as did every bucket after it. A music show with a host
+// bucket plus fifteen tracks drained ONE bucket per ten minutes; in practice
+// nothing settled during the episode and it all bunched into the force-settle
+// at the end. Invisible on an ordinary podcast, which has one bucket.
+//
+// The interval now belongs to the BATCH and the floor belongs to the BUCKET.
+// Keep it that way.
+
+console.log('\nsettleBatch — every funded bucket settles together');
+
+/** Four buckets, each well clear of any floor. */
+function batchLedger() {
+  return listen(createLedger('k', T0), {
+    seconds: 600,
+    ratePerMin: 60,
+    allocate: tracksAllocator([
+      { bucket: 't:a:1', start: 0, duration: 200, remotePct: 90 },
+      { bucket: 't:b:2', start: 200, duration: 200, remotePct: 90 },
+      { bucket: 't:c:3', start: 400, duration: 200, remotePct: 90 },
+    ]),
+  });
+}
+const anyRecipients = () => 2;
+
+{
+  const l = batchLedger();
+  const early = settleBatch(l, { nowMs: T0 + 60_000, recipientCountFor: anyRecipients });
+  check('before the interval nothing settles', early.runs.length, 0);
+  // Reference identity: an untouched batch must not churn the ledger, or the
+  // engine would persist a new object every tick.
+  check('…and the ledger is returned untouched', early.nextLedger, l);
+}
+{
+  const l = batchLedger();
+  const due = settleBatch(l, {
+    nowMs: T0 + STREAM_SETTLE_INTERVAL_MS,
+    recipientCountFor: anyRecipients,
+  });
+  // The pin the bug walked straight past.
+  check('past the interval EVERY funded bucket settles in one batch', due.runs.length, 4);
+  check('…the host is settled first', due.runs[0].bucket, HOST_BUCKET);
+  check(
+    '…and the second bucket is NOT blocked by the first bucket\'s settle stamp',
+    due.runs[1] !== undefined && due.runs[1].sats > 0,
+    true,
+  );
+  check('…the settle clock is stamped once, for the whole batch',
+    due.nextLedger.lastSettleMs, T0 + STREAM_SETTLE_INTERVAL_MS);
+  // Conservation across the batch: nothing paid twice, nothing vanished.
+  const before = Object.values(l.buckets).reduce((s, v) => s + v, 0);
+  const after = Object.values(due.nextLedger.buckets).reduce((s, v) => s + v, 0);
+  const paid = due.runs.reduce((s, r) => s + r.sats, 0) * 1000;
+  checkClose('the batch conserves — paid + remaining === accrued', paid + after, before);
+}
+{
+  // A short track under its floor must be LEFT BEHIND while its siblings pay,
+  // not drag the batch down and not be rounded away. It tops up next time.
+  const l = {
+    ...createLedger('k', T0),
+    buckets: { [HOST_BUCKET]: 90_000, 't:short:1': 4_000 },
+  };
+  const due = settleBatch(l, {
+    nowMs: T0 + STREAM_SETTLE_INTERVAL_MS,
+    recipientCountFor: anyRecipients,
+  });
+  check('a bucket under its floor is left behind while its siblings settle', due.runs.length, 1);
+  check('…and it is the funded one that paid', due.runs[0].bucket, HOST_BUCKET);
+  check('…with the short bucket still carrying its balance',
+    due.nextLedger.buckets['t:short:1'], 4_000);
+}
+{
+  const l = batchLedger();
+  const forced = settleBatch(l, { nowMs: T0 + 1000, force: true, recipientCountFor: anyRecipients });
+  check('force settles every funded bucket regardless of the interval', forced.runs.length, 4);
+}
+{
+  // Force does NOT override the floor: a 2-sat run across five recipients is
+  // strictly worse than carrying it, which bmb:stream_pending exists to allow.
+  const l = { ...createLedger('k', T0), buckets: { [HOST_BUCKET]: 2_000 } };
+  const forced = settleBatch(l, { nowMs: T0 + 1000, force: true, recipientCountFor: () => 5 });
+  check('force still respects the per-bucket floor', forced.runs.length, 0);
 }
 
 console.log('\nreadouts');

@@ -18,7 +18,7 @@ import { FavHeart } from './fav-heart';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 import { LiveChat } from './live-chat';
-import { StreamMeter } from './streaming-settings';
+import { StreamMeter, useStreamPanel } from './streaming-settings';
 
 // About-this-episode text + Podcasting 2.0 chapters + transcript, toggled by a
 // tab strip. Tabs show only for sections with real content (2+); a lone section
@@ -289,6 +289,13 @@ export function FullscreenPlayer({
     };
   }, [open]);
 
+  // Above the `!current` return — hook order has to stay stable, and the hook
+  // no-ops while there's nothing playing.
+  const { button: streamButton, panel: streamPanel } = useStreamPanel(
+    current?.podcast,
+    hasValueRecipients(current?.episode.value ?? current?.podcast.value),
+  );
+
   if (!current) return null;
 
   const { episode, podcast } = current;
@@ -519,8 +526,19 @@ export function FullscreenPlayer({
               <div className="flex items-center gap-2">
                 <FavHeart podcast={podcast} size="md" />
                 <ShareButton liveStreamId={null} podcast={podcast} />
+                {/* The meter below says what streaming is DOING; this is the
+                    only place in the player you can change it. Without it the
+                    reaction to "≋ streaming 10 sats/min" is to go hunting for
+                    the switch, and the player is full-screen — there is nothing
+                    else on screen to hunt through. Show-scoped, same keys as
+                    the show header and episode page. */}
+                {streamButton}
               </div>
             </div>
+
+            {streamPanel && (
+              <div className="-mt-1 border-t border-bone/10 pt-4">{streamPanel}</div>
+            )}
 
             {/* Sits with the value split, which is what streaming pays into.
                 Renders nothing unless streaming is actually running (or has

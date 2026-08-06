@@ -53,6 +53,17 @@ export interface StreamLedger {
   lastPositionSec: number;
   /** Wall-clock ms of the last settle, or of ledger creation. */
   lastSettleMs: number;
+  /**
+   * Playback time (ms) that advanced but hasn't been billed yet — see accrue().
+   *
+   * Position arrives as a floored whole second pushed from `timeupdate`, while
+   * the engine ticks on its own 1 Hz timer. The two drift, so a tick sometimes
+   * spans two position steps and sometimes none. Without this field the
+   * `min(wall, position)` rule discards the surplus from the double step and
+   * bills nothing for the empty one — a permanent, one-directional
+   * under-payment that never self-corrects.
+   */
+  posCarryMs: number;
 }
 
 /** How often accrued sats are actually paid out. */
@@ -82,8 +93,58 @@ export const STREAM_MAX_TICK_MS = 300_000; // 5 minutes
 /** A pending accrual older than this is dropped rather than paid. */
 export const STREAM_PENDING_MAX_AGE_MS = 86_400_000; // 24 hours
 
+/**
+ * The rate a user gets when they flip streaming on without ever having typed a
+ * number. It exists because the control is a switch, not a form: "on" has to
+ * mean something immediately.
+ *
+ * Pinned here rather than left inline in the UI because it is a number the user
+ * never chose and never saw before money started moving — 10 sats/min is
+ * 600 sats an hour, which is roughly what people actually stream. Changing it
+ * silently changes what "on" costs everyone who never touched the field.
+ */
+export const DEFAULT_STREAM_RATE_PER_MIN = 10;
+
+/**
+ * Upper bound on a streaming rate, in sats per minute. A guard rail, not a
+ * product limit: the rate is multiplied by elapsed time and paid on a timer
+ * with no confirmation, so an implausible stored value has to be treated as
+ * corruption rather than as an instruction. Anyone who wants to send more than
+ * this in a minute wants the boost button, which asks first.
+ *
+ * Lives here beside the other money bounds so `check:stream` freezes it —
+ * it used to sit in lib/storage.ts, outside anything that pins it.
+ */
+export const STREAM_RATE_MAX_PER_MIN = 10_000;
+
+/**
+ * Ceiling on the unbilled position surplus a ledger may carry.
+ *
+ * Two seconds is comfortably more than the sub-second phase drift this is meant
+ * to absorb, and small enough that the one case where the carry changes an
+ * outcome — a ledger holding a carry that then sleeps — is bounded at a third
+ * of a sat. Bigger would start to look like the "wall clock alone bills sleep"
+ * failure that `min(wall, position)` exists to prevent.
+ */
+export const STREAM_POS_CARRY_MAX_MS = 2_000;
+
+/**
+ * How far a position delta may exceed its wall-clock delta before it's read as
+ * a seek rather than drift. Anything at or beyond this discards the carry: a
+ * jump is not drift, and letting a forward seek fund later idle ticks would
+ * reintroduce exactly what the min() rule prevents.
+ */
+export const STREAM_SEEK_TOLERANCE_MS = 2_000;
+
 export function createLedger(key: string, nowMs: number): StreamLedger {
-  return { key, buckets: {}, lastTickMs: nowMs, lastPositionSec: 0, lastSettleMs: nowMs };
+  return {
+    key,
+    buckets: {},
+    lastTickMs: nowMs,
+    lastPositionSec: 0,
+    lastSettleMs: nowMs,
+    posCarryMs: 0,
+  };
 }
 
 /**
@@ -148,6 +209,23 @@ function distribute(
  * whichever side the rate happens to round toward. Keeping the fraction means
  * the error is bounded by the sat the ledger is carrying anyway.
  *
+ * **The surplus from a double position step is carried, not discarded**
+ * (`posCarryMs`). Position is a floored whole second pushed by `timeupdate`;
+ * the engine ticks on its own 1 Hz timer. The two drift, so a tick occasionally
+ * spans two position steps and the next spans none. Taking `min()` per tick
+ * clips the double and bills nothing for the empty one, and because `min()`
+ * only ever clips upward, the error never cancels — it is a permanent
+ * one-directional under-payment (0.1–2.5% depending on how jittery `timeupdate`
+ * delivery is). Carrying the surplus lets the empty tick spend what the double
+ * tick genuinely observed.
+ *
+ * **The carry can never make a tick bill more than its own wall clock** — the
+ * `min(wallMs, …)` clip is applied after the carry is added, which is what
+ * keeps every rule above intact. It is discarded outright on a seek, a pause, a
+ * non-finite position, or a delta past the tick cap: a jump is not drift, and a
+ * forward seek funding later idle ticks would reintroduce the exact failure the
+ * min() rule exists to prevent.
+ *
  * Always returns a ledger stamped with the current tick, even when nothing
  * accrued — a paused stretch must not become a giant delta the moment playback
  * resumes.
@@ -164,18 +242,46 @@ export function accrue(
   },
 ): StreamLedger {
   const { nowMs, positionSec, playing, ratePerMin, allocation } = args;
-  const pos = Number.isFinite(positionSec) ? positionSec : ledger.lastPositionSec;
-  const stamped: StreamLedger = { ...ledger, lastTickMs: nowMs, lastPositionSec: pos };
-  if (!playing || !(ratePerMin > 0)) return stamped;
-
+  const finite = Number.isFinite(positionSec);
+  const pos = finite ? positionSec : ledger.lastPositionSec;
   const wallMs = nowMs - ledger.lastTickMs;
   const posMs = (pos - ledger.lastPositionSec) * 1000;
-  const elapsedMs = Math.min(Math.max(0, Math.min(wallMs, posMs)), STREAM_MAX_TICK_MS);
-  if (elapsedMs <= 0) return stamped;
+
+  // A seek (either direction), a non-finite position, or a delta past the tick
+  // cap invalidates the carry. Only sub-second drift is drift.
+  const seeked =
+    !finite
+    || posMs < 0
+    || posMs - wallMs > STREAM_SEEK_TOLERANCE_MS
+    || posMs > STREAM_MAX_TICK_MS;
+  const carryIn = seeked || !playing ? 0 : ledger.posCarryMs;
+
+  // Every non-accruing exit clears the carry: it represents playback time, and
+  // a pause or a stall means there wasn't any.
+  const stamped: StreamLedger = {
+    ...ledger,
+    lastTickMs: nowMs,
+    lastPositionSec: pos,
+    posCarryMs: 0,
+  };
+  if (!playing || !(ratePerMin > 0) || !finite) return stamped;
+
+  // The carry is added BEFORE the wall clip, never after — that ordering is
+  // what guarantees a tick can't bill more time than actually passed.
+  const elapsedMs = Math.min(Math.max(0, Math.min(wallMs, posMs + carryIn)), STREAM_MAX_TICK_MS);
+  // A seek zeroes the carry on the way OUT as well as on the way in. Zeroing
+  // only `carryIn` still banks the seek's own excess — a 10-minute scrub would
+  // leave a full carry behind for the next idle ticks to spend, which is the
+  // precise failure min(wall, position) exists to prevent.
+  const posCarryMs = seeked
+    ? 0
+    : Math.min(Math.max(0, carryIn + posMs - elapsedMs), STREAM_POS_CARRY_MAX_MS);
+  if (elapsedMs <= 0) return { ...stamped, posCarryMs };
 
   const msat = (elapsedMs / 60_000) * ratePerMin * 1000;
   return {
     ...stamped,
+    posCarryMs,
     buckets: distribute(ledger.buckets, msat, allocation ?? [{ bucket: HOST_BUCKET, fraction: 1 }]),
   };
 }
@@ -217,6 +323,33 @@ export function settlePlan(
 }
 
 /**
+ * Which track an allocation is crediting, or null when it's all going to the
+ * host — no valueTimeSplit covers this position, or the show has none.
+ *
+ * Exists so the engine can notice a track BOUNDARY and settle there. Batching
+ * straight through one isn't merely a worse label on the payment: a track that
+ * straddles the ten-minute mark is paid TWICE — a partial run at the mark, the
+ * remainder in a later batch — so on a 111-minute playlist of ~4-minute tracks
+ * the window boundaries cost roughly twice the payments they save. Settling at
+ * the boundary makes it exactly one payment per track, which is cheaper AND the
+ * thing a listener would describe.
+ *
+ * Forcing here is safe because `settleBatch` still applies the per-bucket floor
+ * and returns the ledger UNTOUCHED when nothing clears it — so a boundary that
+ * arrives with dust in the bucket is a genuine no-op and doesn't restamp the
+ * interval the host bucket is still waiting on.
+ *
+ * A host-only allocation returns null rather than HOST_BUCKET, so the gap
+ * between two tracks reads as "the track ended" — which it did.
+ */
+export function allocationTrackBucket(allocation: StreamAllocation[]): string | null {
+  for (const a of allocation) {
+    if (a.bucket !== HOST_BUCKET && a.fraction > 0) return a.bucket;
+  }
+  return null;
+}
+
+/**
  * Buckets currently holding something, host first.
  *
  * Host-first matters on a force-settle: it's the one bucket that accumulates
@@ -227,6 +360,65 @@ export function fundedBuckets(ledger: StreamLedger): string[] {
   return Object.keys(ledger.buckets)
     .filter((b) => (ledger.buckets[b] ?? 0) > 0)
     .sort((a, b) => (a === HOST_BUCKET ? -1 : b === HOST_BUCKET ? 1 : a.localeCompare(b)));
+}
+
+/** One bucket's payment, produced by settleBatch. */
+export interface SettleRun {
+  bucket: string;
+  sats: number;
+}
+
+/**
+ * Decide the whole batch: which buckets pay now, and what the ledger looks like
+ * afterwards.
+ *
+ * **The settle interval is evaluated ONCE, here, for the entire batch — never
+ * per bucket.** That is the entire reason this function exists rather than the
+ * caller looping over `settlePlan`. `settlePlan` stamps `lastSettleMs` on the
+ * ledger it returns, so a loop that adopts each result as the input to the next
+ * checks bucket 2 against a stamp bucket 1 wrote microseconds earlier — and
+ * bucket 2, and every bucket after it, silently fails the gate. It shipped that
+ * way: a music show with a host bucket plus fifteen tracks drained ONE bucket
+ * per ten minutes, so in practice nothing settled during the episode at all and
+ * everything bunched into the force-settle at the end. The bug is invisible on
+ * an ordinary podcast, which only ever has one bucket.
+ *
+ * The per-bucket FLOOR is still enforced, inside `settlePlan` — a bucket under
+ * it carries to the next batch, across tracks and across replays.
+ *
+ * `recipientCountFor` is a callback for the same reason `accrue` takes an
+ * `allocation`: which recipients a bucket pays is a Podcasting 2.0 question,
+ * and this module deliberately imports nothing.
+ */
+export function settleBatch(
+  ledger: StreamLedger,
+  args: {
+    nowMs: number;
+    force?: boolean;
+    recipientCountFor: (bucket: string) => number;
+  },
+): { runs: SettleRun[]; nextLedger: StreamLedger } {
+  const { nowMs, force = false, recipientCountFor } = args;
+  const due = force || nowMs - ledger.lastSettleMs >= STREAM_SETTLE_INTERVAL_MS;
+  if (!due) return { runs: [], nextLedger: ledger };
+
+  let next = ledger;
+  const runs: SettleRun[] = [];
+  // Iterate the SNAPSHOT, not `next`: settlePlan deletes drained keys, and
+  // host-first ordering has to stay stable across the batch.
+  for (const bucket of fundedBuckets(ledger)) {
+    // force: true — the interval was already decided above, for all of them.
+    const plan = settlePlan(next, {
+      bucket,
+      nowMs,
+      recipientCount: recipientCountFor(bucket),
+      force: true,
+    });
+    if (!plan) continue;
+    next = plan.nextLedger;
+    runs.push({ bucket, sats: plan.sats });
+  }
+  return { runs, nextLedger: next };
 }
 
 /**

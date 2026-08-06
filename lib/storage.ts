@@ -8,6 +8,7 @@
 import type { FavoritePodcast, Podcast, StoredBoost } from './types';
 import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
 import type { StreamLedger } from './v4v/stream-ledger';
+import { DEFAULT_STREAM_RATE_PER_MIN, STREAM_RATE_MAX_PER_MIN } from './v4v/stream-ledger';
 import { coerceProfileMetadata } from './nostr/auth';
 import { createObservable } from './pubsub';
 
@@ -54,7 +55,11 @@ const KEYS = {
   // long note in sparkOptOut.get. It still sits in the localStorage of anyone
   // who used the app before that refactor; leave it there, it is inert.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
-  streamRate: 'bmb:stream_rate',      // global streaming sats-per-minute; absent = streaming OFF (the default — this spends money unattended, so it must be opted into). Also the prefix for the per-show override `bmb:stream_rate:<podcastGuid|feedId>`, where '0' means "off for THIS show" and outranks the global rate — absent-vs-zero is a real distinction there.
+  // Streaming rate and streaming on/off are SEPARATE keys, at both scopes, so
+  // switching streaming off doesn't destroy the number the user typed. Also the
+  // prefixes for the per-show overrides `…:<podcastGuid|feedId>`.
+  streamRate: 'bmb:stream_rate',      // remembered sats-per-minute — a positive number or absent; never 0, and never removed by the toggle
+  streamOn: 'bmb:stream_on',          // '1' on | '0' off | absent = no opinion. Absent at global scope means OFF (streaming is opt-in); absent at show scope means "follow the global rate", while an explicit '0' means "never stream this show" and outranks a global rate raised later.
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
   streamedPrefix: 'bmb:streamed',     // + ':<npub>' — settled-stream log. Deliberately NOT bmb:boosts (see the accessor note).
 } as const;
@@ -66,12 +71,17 @@ export interface CachedWalletBalance { rail: RailPref; balance: number; ts: numb
 
 /** One settled streaming payment run — the `bmb:streamed:<npub>` log. */
 export interface StreamedEntry {
-  ts: number;                  // unix ms
-  sats: number;                // total sent in that run
+  /** Unix MILLIseconds — note `timeAgo` in lib/format.tsx takes SECONDS. */
+  ts: number;
+  sats: number;                // total sent in that run; 0 on a failure entry
   podcastTitle: string;
   podcastGuid?: string;
   episodeTitle?: string;
   ok: boolean;                 // at least one leg paid
+  /** Why it failed, on `ok: false` entries. Written once per item when
+   *  streaming gives up, never once per attempt — otherwise a dead wallet
+   *  would fill the capped log with the same line. */
+  error?: string;
 }
 
 export type SignerKind = 'amber' | 'bunker' | 'local';
@@ -96,6 +106,11 @@ function safeRemove(key: string) {
   try { localStorage.removeItem(key); } catch { /* ignore */ }
 }
 
+function safeKeys(): string[] {
+  if (!isBrowser()) return [];
+  try { return Object.keys(localStorage); } catch { return []; }
+}
+
 // Per-key memory fallback for the few critical writes that need to survive
 // a hostile localStorage (iOS Safari Private Browsing, "Block All Cookies",
 // content blockers — all silently no-op `setItem`). Living next to the
@@ -112,20 +127,30 @@ function identityKey(prefix: string, npub: string | null | undefined) {
 }
 
 /**
- * Upper bound on a streaming rate, in sats per minute. A guard rail, not a
- * product limit: the rate is multiplied by elapsed time and paid on a timer
- * with no confirmation, so an implausible stored value has to be treated as
- * corruption. Anyone who wants to send more than this in a minute wants the
- * boost button, which asks first.
+ * Parse a stored streaming rate, or null when absent/garbage/out of range.
+ *
+ * A rate is always a POSITIVE number here: "off" is the separate `bmb:stream_on`
+ * flag's job, never a zero in this field. That separation is what lets the
+ * toggle turn streaming off without destroying the number the user typed.
+ *
+ * The bound and the reject-to-null are the point: this value is multiplied by
+ * elapsed time and paid on a timer with no confirmation step, so a corrupt key
+ * (another tab, a hand-edited devtools value, a half-written string) must
+ * degrade to "off" rather than to an unbounded spend.
  */
-const STREAM_RATE_MAX = 10_000;
-
-/** Parse a stored rate, or null when absent/garbage/out of range. */
 function saneRate(raw: string | null): number | null {
   if (raw === null) return null;
   const n = Number(raw);
-  if (!Number.isFinite(n) || n < 0 || n > STREAM_RATE_MAX) return null;
+  if (!Number.isFinite(n) || n < 1 || n > STREAM_RATE_MAX_PER_MIN) return null;
   return Math.floor(n);
+}
+
+/** Read an on/off flag: true, false, or null for "no opinion recorded". */
+function readOn(key: string): boolean | null {
+  const v = safeGet(key);
+  if (v === '1') return true;
+  if (v === '0') return false;
+  return null;
 }
 
 // Generic time-bounded cache cell. `t` is the unix-ms write time; `v` is the
@@ -680,36 +705,124 @@ export const storage = {
   },
 
   /**
-   * Streaming sats-per-minute. Two scopes, resolved by `resolveStreamRate`
-   * in lib/v4v/streaming.ts: a per-show override wins over the global rate.
+   * Streaming sats-per-minute. Two scopes, resolved by `resolveStreamRate` in
+   * lib/v4v/streaming.ts: a per-show override wins over the global rate.
    *
-   * **Absent and `0` are different states, and the difference is load-bearing.**
-   * Absent at show scope means "no opinion — follow the global rate"; `0` means
-   * "off for this show" and must survive the global rate being raised later.
-   * Hence `get` is tri-state (`number | null`) rather than defaulting to 0.
+   * **The rate and the on/off switch are separate keys.** The control is a
+   * toggle plus a number, and a user who switches streaming off must get their
+   * number back when they switch it on again — so "off" can never be encoded as
+   * a 0 in the rate field, which is what destroyed it. (Encoding off as a
+   * negative rate was the other option and is worse: `saneRate` rejects
+   * negatives as corruption, so overloading the sign fights the rule that a
+   * corrupt value must read as off.)
    *
-   * Both scopes read through `sane()`: this number is multiplied by elapsed
-   * time and paid without a confirmation step, so a corrupted key (another
-   * tab, a hand-edited devtools value, a half-written string) must degrade to
-   * "streaming off" rather than to an unbounded spend. The cap is deliberately
-   * low — anyone wanting to move more than that per minute wants a boost.
+   * **`getShow` stays tri-state, and that is load-bearing.** Absent means "no
+   * opinion — follow the global rate"; `0` means "never stream this show" and
+   * must survive the global rate being raised later. It is now DERIVED from the
+   * per-show on/off flag rather than from a magic zero, so the rule is
+   * structural instead of conventional.
+   *
+   * Both scopes read the number through `saneRate`, so a corrupted key degrades
+   * to off rather than to an unbounded spend. The cap is deliberately low —
+   * anyone wanting to move more than that per minute wants a boost, which asks.
+   *
+   * **No migration from any earlier shape, deliberately.** A rate present with
+   * no on-flag reads as OFF, which is the safe direction for a feature that
+   * spends money unattended and must be opted into.
    */
   streamRate: {
-    /** Global default. null = streaming off (the default for a new install). */
-    get: (): number | null => saneRate(safeGet(KEYS.streamRate)),
-    set: (satsPerMin: number) => {
-      if (satsPerMin > 0) safeSet(KEYS.streamRate, String(Math.floor(satsPerMin)));
-      else safeRemove(KEYS.streamRate);
+    /**
+     * The GLOBAL EFFECTIVE rate. 0 = streaming off, which is the default for a
+     * new install and for any half-written state.
+     */
+    get: (): number | null => (readOn(KEYS.streamOn) === true ? saneRate(safeGet(KEYS.streamRate)) : 0),
+    /** Is the global switch on? */
+    isOn: (): boolean => readOn(KEYS.streamOn) === true,
+    /** The remembered number the input field shows, regardless of on/off. */
+    getRemembered: (): number =>
+      saneRate(safeGet(KEYS.streamRate)) ?? DEFAULT_STREAM_RATE_PER_MIN,
+    /**
+     * How many shows carry an explicit `on` override.
+     *
+     * The global switch cannot promise "nothing is sent" — a per-show override
+     * outranks it by design (that's the whole point of the tri-state), so a
+     * global control reading OFF while a show streams in the background is
+     * telling the user something false about their own money. This is what
+     * lets it say so instead. Counts only explicit `'1'`; a show following the
+     * global rate is already covered by the switch itself.
+     */
+    showsExplicitlyOn: (): number => {
+      const prefix = `${KEYS.streamOn}:`;
+      return safeKeys().filter((k) => k.startsWith(prefix) && safeGet(k) === '1').length;
+    },
+    /**
+     * Flip the global switch. Turning it on with nothing remembered seeds the
+     * default, so `get()` can never answer "on but no rate" — which would read
+     * as off and make the switch lie about what it just did.
+     */
+    setOn: (on: boolean) => {
+      if (on && saneRate(safeGet(KEYS.streamRate)) === null) {
+        safeSet(KEYS.streamRate, String(DEFAULT_STREAM_RATE_PER_MIN));
+      }
+      safeSet(KEYS.streamOn, on ? '1' : '0');
       streamRateObservable.notify();
     },
-    /** Per-show override. null = no override; 0 = explicitly off for this show. */
-    getShow: (showKey: string): number | null =>
+    /** Set the remembered rate. Never touches the on/off switch. */
+    setRate: (satsPerMin: number) => {
+      const n = Math.min(STREAM_RATE_MAX_PER_MIN, Math.max(1, Math.floor(satsPerMin)));
+      safeSet(KEYS.streamRate, String(n));
+      streamRateObservable.notify();
+    },
+
+    /**
+     * The SHOW EFFECTIVE rate. null = no override, follow the global rate;
+     * 0 = never stream this show, outranking the global rate.
+     */
+    getShow: (showKey: string): number | null => {
+      if (!showKey) return null;
+      const on = readOn(`${KEYS.streamOn}:${showKey}`);
+      if (on === null) return null;
+      if (on === false) return 0;
+      // Explicitly on with no number of its own falls back to the remembered
+      // global rate — "on" must never silently mean "off". setShowOn seeds a
+      // number when the user flips a show on, so this only catches a
+      // hand-edited or half-written key, but the UI resolves the same way and
+      // the two must not be able to disagree about what is being spent.
+      return saneRate(safeGet(`${KEYS.streamRate}:${showKey}`))
+        ?? saneRate(safeGet(KEYS.streamRate))
+        ?? DEFAULT_STREAM_RATE_PER_MIN;
+    },
+    /** null = this show has no opinion. */
+    getShowOn: (showKey: string): boolean | null =>
+      showKey ? readOn(`${KEYS.streamOn}:${showKey}`) : null,
+    /** null = nothing remembered for this show. */
+    getShowRemembered: (showKey: string): number | null =>
       showKey ? saneRate(safeGet(`${KEYS.streamRate}:${showKey}`)) : null,
-    setShow: (showKey: string, satsPerMin: number | null) => {
+    /**
+     * `true`/`false` write an explicit per-show opinion; `null` clears BOTH show
+     * keys so the show goes back to following the global rate. Clearing both
+     * matters — leaving an invisible per-show number behind would ambush the
+     * user the next time they flipped that show on.
+     */
+    setShowOn: (showKey: string, on: boolean | null) => {
       if (!showKey) return;
-      const key = `${KEYS.streamRate}:${showKey}`;
-      if (satsPerMin === null) safeRemove(key);
-      else safeSet(key, String(Math.max(0, Math.floor(satsPerMin))));
+      const onKey = `${KEYS.streamOn}:${showKey}`;
+      const rateKey = `${KEYS.streamRate}:${showKey}`;
+      if (on === null) {
+        safeRemove(onKey);
+        safeRemove(rateKey);
+      } else {
+        if (on && saneRate(safeGet(rateKey)) === null) {
+          safeSet(rateKey, String(storage.streamRate.getRemembered()));
+        }
+        safeSet(onKey, on ? '1' : '0');
+      }
+      streamRateObservable.notify();
+    },
+    setShowRate: (showKey: string, satsPerMin: number) => {
+      if (!showKey) return;
+      const n = Math.min(STREAM_RATE_MAX_PER_MIN, Math.max(1, Math.floor(satsPerMin)));
+      safeSet(`${KEYS.streamRate}:${showKey}`, String(n));
       streamRateObservable.notify();
     },
   },
@@ -744,7 +857,15 @@ export const storage = {
           if (typeof msat !== 'number' || !Number.isFinite(msat) || msat < 0) return null;
           buckets[bucket] = msat;
         }
-        return { ...v, buckets } as StreamLedger;
+        // posCarryMs is normalized rather than rejected: it's sub-second
+        // billing dust, not a balance, so a record written before the field
+        // existed (or with junk in it) should start fresh rather than throw
+        // away real accrued sats sitting in `buckets`.
+        const posCarryMs =
+          typeof v.posCarryMs === 'number' && Number.isFinite(v.posCarryMs) && v.posCarryMs >= 0
+            ? v.posCarryMs
+            : 0;
+        return { ...v, buckets, posCarryMs } as StreamLedger;
       } catch {
         return null;
       }

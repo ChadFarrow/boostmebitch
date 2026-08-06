@@ -17,33 +17,48 @@
 //
 //   - Settlement is SERIALIZED and the ledger is debited BEFORE the await.
 //   - Two consecutive failures stop the engine for that item rather than
-//     accruing a debt against a wallet that plainly can't pay it.
+//     accruing a debt against a wallet that plainly can't pay it — and a rail
+//     that provably CANNOT pay this value block stops after one, because a
+//     retry is guaranteed to fail the same way. Connecting a wallet or changing
+//     the rate is the way back; both clear the give-up state.
+//   - Teardown does NOT settle. <Player>'s cleanup runs on every Fast Refresh,
+//     and a payment fired from a teardown can't be observed — see
+//     releaseContext.
+//   - The observable notifies only when something the UI renders changed, not
+//     once a second. <FullscreenPlayer> is always mounted, so an unconditional
+//     notify re-rendered the meter 60×/min for people who never opened it.
 //   - Nothing is published to Nostr and nothing plays a sound. Streaming is
 //     ambient; a note per settle would spam the user's feed and a ping every
 //     ten minutes would be hostile.
 //
-// Not covered (deliberate, v1): `valueTimeSplits`. Streaming targets
-// `episode.value ?? podcast.value`, so a music album streams to the feed's
-// block rather than to each track's own artists. Boost-all remains the way to
-// pay per-track.
+// `valueTimeSplits` ARE covered: the ledger accrues into per-track buckets that
+// settle independently against their own value blocks, so a music show pays the
+// artist whose track is playing rather than paying a whole ten-minute batch to
+// whoever happened to be on when the timer fired. Boost-all remains the way to
+// pay every track at once, on purpose.
 
 import type { Episode, Podcast, Boostagram, ValueBlock, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { storage, subscribeStreamRate as onStoredRateChange } from '@/lib/storage';
 import { createObservable } from '@/lib/pubsub';
-import { getErrorMessage, hasValueRecipients } from '@/lib/util';
+// DEFAULT_SENDER_NAME lives in lib/util.ts, NOT in the boost modal that owns
+// the "From" field — importing it from `components/` here would invert the v4v
+// swap-out boundary and pull a 'use client' React module into the engine.
+import { getErrorMessage, hasValueRecipients, DEFAULT_SENDER_NAME } from '@/lib/util';
 import { isLiveStreamId } from '@/lib/nostr/live-streams';
-import { DEFAULT_SENDER_NAME } from '@/components/boost-modal/sender-name';
 import { sendBoost, pickRail, paidAny } from './boost';
+import { subscribeNwc } from './nwc';
+import { subscribeSpark } from './spark';
+import { subscribeWebln } from './webln';
 import {
   accrue,
   accruedSats,
+  allocationTrackBucket,
   createLedger,
-  fundedBuckets,
   HOST_BUCKET,
   isStaleLedger,
   msUntilSettle,
-  settlePlan,
+  settleBatch,
   type StreamAllocation,
   type StreamLedger,
 } from './stream-ledger';
@@ -68,14 +83,28 @@ interface StreamContext {
    * whose payment target changes track by track.
    */
   splits: Map<string, ValueTimeSplit>;
+  /**
+   * Track being credited as of the last tick — `undefined` until the first one,
+   * so opening a context can't read as a boundary. `null` means the host.
+   */
+  lastTrack?: string | null;
 }
 
 /**
- * Resolved splits per episode id, so an episode replayed (or resumed after a
- * skip away and back) doesn't re-fetch. `null` records "asked, nothing usable"
- * so a show without splits doesn't re-ask every time it starts.
+ * Resolved splits per episode, so an episode replayed (or resumed after a skip
+ * away and back) doesn't re-fetch. `null` records "asked, nothing usable" so a
+ * show without splits doesn't re-ask every time it starts.
+ *
+ * Keyed on `feedId:episodeId`, not the bare episode id: RSS-derived episodes
+ * get `-fnvHash(guid)` ids, and fnvHash is 31-bit, so two episodes from
+ * different feeds can collide. A collision here doesn't render wrong — it pays
+ * ANOTHER SHOW'S ARTISTS. One extra field on a money path.
  */
-const splitCache = new Map<number, Map<string, ValueTimeSplit> | null>();
+const splitCache = new Map<string, Map<string, ValueTimeSplit> | null>();
+
+function splitCacheKey(episode: Episode): string {
+  return `${episode.feedId}:${episode.id}`;
+}
 
 /** Stable key for a track across replays. */
 function trackBucket(split: ValueTimeSplit): string {
@@ -94,10 +123,11 @@ function trackBucket(split: ValueTimeSplit): string {
  * for a window, so anything that can't be redirected is still the show's.
  */
 async function loadSplits(episode: Episode): Promise<Map<string, ValueTimeSplit>> {
-  const cached = splitCache.get(episode.id);
+  const cacheKey = splitCacheKey(episode);
+  const cached = splitCache.get(cacheKey);
   if (cached !== undefined) return cached ?? new Map();
   if (!episode.valueTimeSplits?.length) {
-    splitCache.set(episode.id, null);
+    splitCache.set(cacheKey, null);
     return new Map();
   }
   try {
@@ -107,7 +137,7 @@ async function loadSplits(episode: Episode): Promise<Map<string, ValueTimeSplit>
     for (const s of (data.splits as ValueTimeSplit[]) ?? []) {
       if (hasValueRecipients(s.value)) map.set(trackBucket(s), s);
     }
-    splitCache.set(episode.id, map.size ? map : null);
+    splitCache.set(cacheKey, map.size ? map : null);
     return map;
   } catch {
     // Not cached as a miss: a network blip must not pin the whole episode to
@@ -163,11 +193,28 @@ let chain: Promise<void> = Promise.resolve();
  *  one finishing would otherwise clear the meter's "sending…" while the second
  *  is still moving money. */
 let pendingSettles = 0;
+/** Failures in a row FOR THE CURRENT ITEM — reset on every item change, or a
+ *  single failure on item A plus a single failure on item B would give up on B
+ *  after one. */
 let consecutiveFailures = 0;
-/** Item key streaming has given up on after repeated failures. */
+/** Item key streaming has given up on. */
 let disabledKey: string | null = null;
+let stoppedReason: StreamStoppedReason = null;
 let lastError: string | null = null;
+/** Item `lastError` belongs to. Without it a failure on one episode paints its
+ *  warning on every episode after it for the rest of the page session. */
+let lastErrorKey: string | null = null;
 let sessionSentSats = 0;
+
+/**
+ * Why streaming gave up — which decides what the UI can honestly offer as a fix.
+ *
+ * `'failures'` is a wallet that couldn't pay right now, so retrying is
+ * meaningful. `'rail-cannot-pay'` is a capability gap (Spark can't keysend, and
+ * this show pays node pubkeys) — retrying is guaranteed to fail identically, so
+ * telling the user to change the rate just loops them.
+ */
+export type StreamStoppedReason = 'failures' | 'rail-cannot-pay' | null;
 
 export interface StreamingStatus {
   /** Streaming is on and accruing for whatever is playing right now. */
@@ -177,10 +224,11 @@ export interface StreamingStatus {
   accruedSats: number;
   msUntilSettle: number;
   settling: boolean;
-  /** Last settle failure, cleared by the next success. */
+  /** Last settle failure for the item now playing, cleared by the next success. */
   lastError: string | null;
-  /** True once streaming gave up on this item — needs a rate change to resume. */
+  /** True once streaming gave up on this item. See stoppedReason for the way back. */
   stopped: boolean;
+  stoppedReason: StreamStoppedReason;
   /** Title of the `<podcast:valueTimeSplit>` track currently being credited,
    *  or null when the show's own value block is. */
   currentTrack: string | null;
@@ -190,19 +238,45 @@ export interface StreamingStatus {
 
 export function streamingStatus(): StreamingStatus {
   const now = Date.now();
+  const currentKey = itemKeyOfCurrent();
+  const isStopped = !!disabledKey && disabledKey === currentKey;
   return {
     active: !!ctx && !!ledger,
     ratePerMin: ctx?.ratePerMin ?? 0,
     accruedSats: ledger ? accruedSats(ledger) : 0,
     msUntilSettle: ledger ? msUntilSettle(ledger, now) : 0,
     settling: pendingSettles > 0,
-    lastError,
-    stopped: !!disabledKey && disabledKey === itemKeyOfCurrent(),
+    // Scoped to the item it happened on, exactly like `stopped` below.
+    lastError: lastErrorKey && lastErrorKey === currentKey ? lastError : null,
+    stopped: isStopped,
+    stoppedReason: isStopped ? stoppedReason : null,
     currentTrack: ctx?.splits.size
       ? splitAt(ctx.splits, useApp.getState().positionSec)?.title ?? null
       : null,
     sessionSentSats,
   };
+}
+
+/**
+ * Notify the UI only when something it renders actually changed.
+ *
+ * The engine ticks at 1 Hz and `streamingStatus()` returns a fresh object every
+ * time, so an unconditional notify re-rendered every subscriber 60×/min. That
+ * is not theoretical: `<FullscreenPlayer>` is ALWAYS mounted (translated
+ * off-screen when collapsed), so `<StreamMeter>` re-rendered a minute at a time
+ * for users who never opened it. The countdown is compared in whole minutes
+ * because that is the resolution the meter displays.
+ */
+let lastSig = '';
+function notifyIfChanged() {
+  const s = streamingStatus();
+  const sig = [
+    s.active, s.ratePerMin, s.accruedSats, s.settling, s.stopped, s.stoppedReason,
+    s.lastError, s.currentTrack, s.sessionSentSats, Math.ceil(s.msUntilSettle / 60_000),
+  ].join('|');
+  if (sig === lastSig) return;
+  lastSig = sig;
+  observable.notify();
 }
 
 /** Key a per-show rate override is stored under. */
@@ -220,6 +294,24 @@ export function resolveStreamRate(podcast: Podcast | null | undefined): number {
   const show = storage.streamRate.getShow(streamShowKey(podcast));
   if (show !== null) return show;
   return storage.streamRate.get() ?? 0;
+}
+
+/**
+ * Same answer as resolveStreamRate, memoized for the 1 Hz tick.
+ *
+ * Invalidated from `onRateChange`, which every setter in `storage.streamRate`
+ * notifies — so this is exact, not merely fresh-enough. (Known, pre-existing:
+ * nothing in the app listens for cross-tab `storage` events, so a rate changed
+ * in another tab isn't seen live here either way.)
+ */
+let rateCache: { showKey: string; rate: number } | null = null;
+
+function cachedStreamRate(podcast: Podcast): number {
+  const showKey = streamShowKey(podcast);
+  if (rateCache && rateCache.showKey === showKey) return rateCache.rate;
+  const rate = resolveStreamRate(podcast);
+  rateCache = { showKey, rate };
+  return rate;
 }
 
 function itemKey(episode: Episode, podcast: Podcast): string {
@@ -314,22 +406,56 @@ function targetFor(c: StreamContext, bucket: string): { value: ValueBlock; label
 }
 
 /**
- * Give unsent sats back to the live ledger after a failed run.
+ * Give unsent sats back after a failed run.
  *
- * Only when the failure belongs to the item still playing — a refund into an
- * item the user has left has nowhere to go, and inventing a cross-item debt
- * that surfaces during some unrelated show later is worse than dropping it.
- * Dropping errs toward not spending the user's money, which is the correct
- * direction for the mistake we can't avoid making here.
+ * The live ledger when the item is still playing; otherwise straight back to
+ * `bmb:stream_pending` under the item's own key. The second path matters: a
+ * settle can still be in flight when the context is torn down (engine stop,
+ * Fast Refresh), and the earlier version — which only ever credited the live
+ * ledger — silently dropped those sats.
+ *
+ * What does NOT change: a refund never lands in a DIFFERENT item's accrual.
+ * That would invent a cross-item debt surfacing during some unrelated show
+ * later, which is worse than dropping. Dropping errs toward not spending the
+ * user's money, the correct direction for a mistake we can't fully avoid.
  */
 function refund(c: StreamContext, bucket: string, sats: number) {
+  const credit = (l: StreamLedger): StreamLedger => ({
+    ...l,
+    buckets: { ...l.buckets, [bucket]: (l.buckets[bucket] ?? 0) + sats * 1000 },
+  });
   if (ctx?.key === c.key && ledger) {
-    ledger = {
-      ...ledger,
-      buckets: { ...ledger.buckets, [bucket]: (ledger.buckets[bucket] ?? 0) + sats * 1000 },
-    };
+    ledger = credit(ledger);
     persist(ledger);
+    return;
   }
+  const pending = storage.streamPending.get();
+  if (pending && pending.key === c.key) storage.streamPending.set(credit(pending));
+}
+
+/** Record a failed settle against the item it happened on. */
+function noteFailure(c: StreamContext, message: string, reason: StreamStoppedReason) {
+  lastError = message;
+  lastErrorKey = c.key;
+  consecutiveFailures++;
+  // 'rail-cannot-pay' gives up immediately: it's a capability gap, not a bad
+  // moment, so a second attempt is guaranteed to fail identically.
+  const giveUp =
+    reason === 'rail-cannot-pay' || consecutiveFailures >= MAX_CONSECUTIVE_FAILURES;
+  if (!giveUp) return;
+  disabledKey = c.key;
+  stoppedReason = reason;
+  // One entry per item, not per attempt — a broken wallet must not fill a
+  // capped log with noise, but "why did nothing send?" has to be answerable.
+  storage.streamed.add(useApp.getState().identity?.npub, {
+    ts: Date.now(),
+    sats: 0,
+    podcastTitle: c.podcast.title,
+    podcastGuid: c.podcast.podcastGuid,
+    episodeTitle: c.episode.title,
+    ok: false,
+    error: message,
+  });
 }
 
 async function runSettle(
@@ -341,12 +467,22 @@ async function runSettle(
   const rail = pickRail();
   if (!rail) {
     refund(c, bucket, sats);
-    lastError = 'no wallet connected';
-    consecutiveFailures++;
-    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) disabledKey = c.key;
+    noteFailure(c, 'no wallet connected', 'failures');
     return;
   }
   const { value, label } = targetFor(c, bucket);
+  // Spark is BOLT11-only, so a value block of nothing but node pubkeys can
+  // never be paid from it — no amount of retrying changes that, and telling the
+  // user to change the rate just loops them through the same failure.
+  if (rail === 'spark' && value.recipients.every((r) => r.type === 'node')) {
+    refund(c, bucket, sats);
+    noteFailure(
+      c,
+      "this show pays Lightning nodes directly, which the Spark wallet can't send",
+      'rail-cannot-pay',
+    );
+    return;
+  }
   try {
     const results = await sendBoost({
       value,
@@ -359,6 +495,7 @@ async function runSettle(
     }
     consecutiveFailures = 0;
     lastError = null;
+    lastErrorKey = null;
     sessionSentSats += sats;
     storage.streamed.add(useApp.getState().identity?.npub, {
       ts: Date.now(),
@@ -375,9 +512,7 @@ async function runSettle(
     // re-sending the whole batch to recover one failed leg would pay the
     // others twice.
     refund(c, bucket, sats);
-    lastError = getErrorMessage(e, 'streaming payment failed');
-    consecutiveFailures++;
-    if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) disabledKey = c.key;
+    noteFailure(c, getErrorMessage(e, 'streaming payment failed'), 'failures');
   }
 }
 
@@ -393,45 +528,65 @@ async function runSettle(
  * them twice from someone's wallet is not.
  */
 function maybeSettle(c: StreamContext, l: StreamLedger, force: boolean): StreamLedger {
-  let next = l;
-  // Each recipient clears its own floor independently. A track that only got
-  // 40 seconds of play stays below it and CARRIES — across the rest of the
-  // episode and across replays, since the bucket key is the track's guid — so
-  // a short track eventually gets paid instead of being rounded away every
-  // time, and no artist is paid dust at a full routing fee.
-  for (const bucket of fundedBuckets(next)) {
-    const { value } = targetFor(c, bucket);
-    const plan = settlePlan(next, {
-      bucket,
-      nowMs: Date.now(),
-      recipientCount: value.recipients.length,
-      force,
-    });
-    if (!plan) continue;
-    next = plan.nextLedger;
-    persist(next);
+  // The settle interval belongs to the BATCH and each bucket's floor belongs to
+  // the BUCKET — settleBatch enforces both, and the split is deliberate. This
+  // used to be a loop over settlePlan here, which failed the interval gate for
+  // every bucket after the first; see the note on settleBatch.
+  //
+  // A track that only got 40 seconds of play stays under its floor and CARRIES,
+  // across the rest of the episode and across replays (the bucket key is the
+  // track's guid), so a short track eventually gets paid rather than being
+  // rounded away every batch — and no artist is paid dust at a full routing fee.
+  const { runs, nextLedger } = settleBatch(l, {
+    nowMs: Date.now(),
+    force,
+    recipientCountFor: (bucket) => targetFor(c, bucket).value.recipients.length,
+  });
+  if (!runs.length) return l;
+  // Debited and persisted synchronously, BEFORE any payment is awaited. The
+  // chain callbacks below can only run on a later microtask, so there is no
+  // window in which the same sats are both owed and in flight.
+  persist(nextLedger);
+  const atPositionSec = nextLedger.lastPositionSec;
+  for (const { bucket, sats } of runs) {
     pendingSettles++;
-    const atPositionSec = next.lastPositionSec;
     chain = chain
-      .then(() => runSettle(c, bucket, plan.sats, atPositionSec))
+      .then(() => runSettle(c, bucket, sats, atPositionSec))
       .finally(() => {
         pendingSettles--;
-        observable.notify();
+        notifyIfChanged();
       });
   }
-  return next;
+  return nextLedger;
 }
 
-/** Tear down the current item, settling whatever it owes first. */
-function releaseContext() {
-  if (ctx && ledger) ledger = maybeSettle(ctx, ledger, true);
+/**
+ * Tear down the current item.
+ *
+ * `settle: true` for the real edges — item change, streaming turned off,
+ * playback no longer eligible — where the listener has finished with this item
+ * and what they owe should go out under its own metadata.
+ *
+ * `settle: false` for engine shutdown, and that is not a detail. `<Player>`'s
+ * cleanup runs on every Fast Refresh, so a settling teardown means editing a
+ * comment fires a real Lightning payment. It is the same argument onPageHide
+ * already makes: a payment started while we're being torn down can't be
+ * observed, and one sent without its deduction recorded is the double-spend
+ * this whole file is ordered to prevent. Nothing is lost — the accrual persists
+ * to bmb:stream_pending and is re-adopted next time the item plays.
+ */
+function releaseContext(settle: boolean) {
+  if (settle && ctx && ledger) ledger = maybeSettle(ctx, ledger, true);
   if (ledger) persist(ledger);
   ctx = null;
   ledger = null;
+  // Per-item state dies with the item: a single failure here plus a single
+  // failure on the next item must not add up to a give-up on the next item.
+  consecutiveFailures = 0;
   // The meter subscribes to this observable and tick() only notifies while a
   // context is live — without this, going inactive would leave the last
   // accrual painted on screen forever.
-  observable.notify();
+  notifyIfChanged();
 }
 
 /**
@@ -475,7 +630,7 @@ function tick() {
   let next: StreamContext | null = null;
   if (cur && key && key !== disabledKey) {
     const value = cur.episode.value ?? cur.podcast.value;
-    const rate = resolveStreamRate(cur.podcast);
+    const rate = cachedStreamRate(cur.podcast);
     // Live streams are the NIP-57 zap path (see the boost modal's live branch);
     // they have no finite position to meter against and their value block is
     // synthesized per-viewer.
@@ -491,14 +646,14 @@ function tick() {
         // Populated asynchronously below. Until it lands, ticks accrue to the
         // host — correct rather than merely convenient: with no resolved
         // redirect, the show's own value block IS the target.
-        splits: splitCache.get(cur.episode.id) ?? new Map(),
+        splits: splitCache.get(splitCacheKey(cur.episode)) ?? new Map(),
       };
     }
   }
 
   // Item changed, streaming was turned off, or playback stopped — settle the
   // old item under its OWN metadata before anything else happens.
-  if (ctx && (!next || next.key !== ctx.key)) releaseContext();
+  if (ctx && (!next || next.key !== ctx.key)) releaseContext(true);
   if (!next) {
     lastPlaying = st.isPlaying;
     return;
@@ -510,13 +665,23 @@ function tick() {
   if (!ctx || !ledger) return;
 
   const now = Date.now();
+  const allocation = allocationAt(ctx, st.positionSec);
   ledger = accrue(ledger, {
     nowMs: now,
     positionSec: st.positionSec,
     playing: st.isPlaying,
     ratePerMin: ctx.ratePerMin,
-    allocation: allocationAt(ctx, st.positionSec),
+    allocation,
   });
+
+  // A valueTimeSplit boundary is a settle edge too: the track the money was
+  // accruing for has ended, and holding its bucket until an unrelated ten-minute
+  // mark is what splits one track's payment into two. Evaluated AFTER accrue, so
+  // the straddling tick lands on the incoming track first (the pinned boundary
+  // rule) and the outgoing bucket is complete when it pays.
+  const track = allocationTrackBucket(allocation);
+  const trackChanged = ctx.lastTrack !== undefined && ctx.lastTrack !== track;
+  ctx.lastTrack = track;
 
   // Pause is a settle edge: the listener has stopped, so pay for what they
   // heard instead of holding it until they come back. Below the minimum this
@@ -524,10 +689,10 @@ function tick() {
   const pausedNow = lastPlaying && !st.isPlaying;
   lastPlaying = st.isPlaying;
 
-  ledger = maybeSettle(ctx, ledger, pausedNow);
+  ledger = maybeSettle(ctx, ledger, pausedNow || trackChanged);
 
   if (pausedNow || now - lastPersistMs >= PERSIST_EVERY_MS) persist(ledger);
-  observable.notify();
+  notifyIfChanged();
 }
 
 /**
@@ -540,29 +705,69 @@ function onPageHide() {
   if (ledger) persist(ledger);
 }
 
-/** Rate change is also the user's "try again" — clear the give-up state. */
-function onRateChange() {
+/** Drop the give-up state so the current item can be attempted again. */
+function clearGiveUp() {
   disabledKey = null;
+  stoppedReason = null;
   consecutiveFailures = 0;
   lastError = null;
-  observable.notify();
+  lastErrorKey = null;
+  notifyIfChanged();
+}
+
+/** A rate change is one of the user's two "try again" gestures. */
+function onRateChange() {
+  rateCache = null;
+  clearGiveUp();
+}
+
+/**
+ * Connecting a wallet is the OTHER one, and the more important of the two.
+ *
+ * The commonest first failure by far is 'no wallet connected', so the natural
+ * fix — go and connect one — left streaming disabled for that item with no
+ * visible way back. Gated on pickRail() so a DISCONNECT notification doesn't
+ * pointlessly re-arm an engine that still has nothing to pay with.
+ */
+function onWalletChange() {
+  if (pickRail()) clearGiveUp();
 }
 
 let unsubRate: (() => void) | null = null;
+let unsubWallets: Array<() => void> = [];
 
 /** Started once from <Player>'s mount effect. Idempotent. */
 export function startStreamingEngine() {
   if (timer || typeof window === 'undefined') return;
   lastPlaying = useApp.getState().isPlaying;
+  rateCache = null;
   timer = setInterval(tick, TICK_MS);
   unsubRate = onStoredRateChange(onRateChange);
+  unsubWallets = [
+    subscribeNwc(onWalletChange),
+    subscribeSpark(onWalletChange),
+    subscribeWebln(onWalletChange),
+  ];
   window.addEventListener('pagehide', onPageHide);
 }
 
+/**
+ * Stop the clock and drop the current item WITHOUT settling — see
+ * releaseContext. Module state that outlives this (`chain`, `pendingSettles`,
+ * `disabledKey`, `sessionSentSats`) is deliberate: `chain` is what keeps
+ * settles serialized across a remount, and `pendingSettles` is what keeps the
+ * meter honest about money still in flight. Only a true HMR swap of this module
+ * resets them, which is dev-only.
+ */
 export function stopStreamingEngine() {
   if (timer) { clearInterval(timer); timer = null; }
   if (unsubRate) { unsubRate(); unsubRate = null; }
+  for (const un of unsubWallets) un();
+  unsubWallets = [];
   if (typeof window !== 'undefined') window.removeEventListener('pagehide', onPageHide);
-  releaseContext();
+  releaseContext(false);
+  // Force: releaseContext already notified through the signature check, but a
+  // stop must always reach subscribers so a mounted meter can clear itself.
+  lastSig = '';
   observable.notify();
 }

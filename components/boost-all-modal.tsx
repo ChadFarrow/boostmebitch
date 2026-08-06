@@ -8,12 +8,12 @@ import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage, type ShareNostrAs } from '@/lib/storage';
-import { getErrorMessage, hasValueRecipients } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, resolveSenderName } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './boost-modal/message-input';
-import { SenderName, DEFAULT_SENDER_NAME } from './boost-modal/sender-name';
+import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
@@ -67,7 +67,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // attribution, so a stale global `bmb:share_nostr_as` of 'site' must not
   // silently replace it there.
   const anonymous = !!identity && shareNostr && shareAs === 'site';
-  const senderName = (anonymous ? '' : name.trim()) || DEFAULT_SENDER_NAME;
+  const senderName = resolveSenderName(name, anonymous);
 
   // Portal to <body> so the overlay escapes the layout's `relative z-0` content
   // wrapper (app/layout.tsx). Inside that wrapper a `fixed` modal's z-index only
