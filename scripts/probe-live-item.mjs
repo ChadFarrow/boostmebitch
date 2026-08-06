@@ -26,10 +26,18 @@
 // lib/pi.ts and tell you something the app doesn't actually do. What the app
 // makes of the feed is a separate question, answered by /api/live-value.
 //
-// Read-only: fetches and prints. It writes nothing and pays nothing. Plain
-// fetch rather than lib/safe-fetch.ts because the URL comes from the operator's
-// own command line, not from third-party feed data — the SSRF guard exists for
-// the server paths where it doesn't.
+// When the feed publishes <podcast:liveValue>, the probe ALSO connects to that
+// socket and dumps every pushed block verbatim, then runs the real
+// parseLiveBlock over it and prints exactly who BoostMeBitch would pay. That is
+// the check that matters during a broadcast: not "did we parse something" but
+// "is the artist we resolved the artist on stage".
+//
+// Read-only: fetches, listens and prints. It writes nothing and pays nothing.
+// Plain fetch rather than lib/safe-fetch.ts because the URL comes from the
+// operator's own command line, not from third-party feed data — the SSRF guard
+// exists for the server paths where it doesn't.
+
+import { parseLiveBlock } from '../lib/v4v/live-block.ts';
 
 const args = process.argv.slice(2);
 const feedUrl = args.find((a) => !a.startsWith('--'));
@@ -46,6 +54,73 @@ if (!feedUrl) {
 }
 
 const LIVE_ITEM_RE = /<podcast:liveItem\b([^>]*)>([\s\S]*?)<\/podcast:liveItem>/gi;
+
+/** guid → socket disposer, so one connection per live item. */
+const sockets = new Map();
+let pushes = 0;
+
+function liveValueAttrs(inner) {
+  const m = inner.match(/<podcast:liveValue\b([^>]*?)\/?>/i);
+  if (!m) return null;
+  const attr = (n) => {
+    const a = m[1].match(new RegExp(`\\b${n}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i'));
+    return a ? (a[1] ?? a[2]) : undefined;
+  };
+  const uri = attr('uri');
+  return uri ? { uri, protocol: (attr('protocol') || '').toLowerCase() } : null;
+}
+
+/**
+ * Listen to a show's live-value channel and report what the app would do with
+ * each push. Uses the SHIPPING parseLiveBlock, so a mapping bug shows up here
+ * rather than during a boost.
+ */
+async function listenLiveValue(guid, lv) {
+  if (sockets.has(guid)) return;
+  sockets.set(guid, () => {});
+  if (lv.protocol !== 'socket.io') {
+    console.log(`${clock()}  ⚠ liveValue protocol="${lv.protocol}" is not socket.io — the app ignores this`);
+    return;
+  }
+  let io;
+  try {
+    ({ io } = await import('socket.io-client'));
+  } catch {
+    console.log('  ✗ socket.io-client not installed — run `npm install` first');
+    return;
+  }
+  console.log(`${clock()}  ⇢ connecting to liveValue socket: ${lv.uri}`);
+  const socket = io(lv.uri, { transports: ['websocket', 'polling'] });
+  sockets.set(guid, () => { try { socket.disconnect(); } catch { /* gone */ } });
+
+  socket.on('connect', () => console.log(`${clock()}  ✓ liveValue socket connected`));
+  socket.on('connect_error', (e) => console.log(`${clock()}  ✗ liveValue connect_error: ${e?.message ?? e}`));
+  socket.on('disconnect', (r) => console.log(`${clock()}  · liveValue disconnected (${r})`));
+  socket.on('playerPause', () => console.log(`${clock()}  · playerPause`));
+
+  socket.on('remoteValue', (data) => {
+    pushes += 1;
+    console.log(`\n${clock()}  ★ remoteValue #${pushes} — RAW PAYLOAD`);
+    console.log(JSON.stringify(data, null, 2));
+    const block = parseLiveBlock(data);
+    if (!block) {
+      const empty = !data || (typeof data === 'object' && !Object.keys(data).length);
+      console.log('  → parseLiveBlock: null — app falls back to the show\'s own block');
+      console.log(empty
+        ? '    Payload is empty, which is Split Kit\'s "back to the default block". Expected between sets.'
+        : '    Payload is NOT empty, so this one did not map. If a track is playing right now,'
+          + '\n    that is a bug in parseLiveBlock — send the payload above.');
+      return;
+    }
+    console.log(`  → would pay: ${block.title ?? '(untitled)'}`);
+    console.log(`    remote guids: ${block.feedGuid ?? '(none)'} / ${block.itemGuid ?? '(none)'}`);
+    console.log(`    remotePercentage: ${block.remotePercentage ?? '(none — defaults to 100)'}`);
+    for (const r of block.value.recipients) {
+      console.log(`      ${r.type.padEnd(9)} split=${String(r.split).padStart(3)}${r.fee ? ' (fee)' : ''}  ${r.name ?? ''} ${r.address}`);
+    }
+    console.log('    ↑ compare against who is actually on stage right now.');
+  });
+}
 
 /** Pull one signal's raw text out of a live item's inner XML. */
 function signals(inner) {
@@ -110,6 +185,8 @@ async function poll() {
         console.log(`            ${v ? '●' : '○'} ${k.padEnd(18)} ${v ? short(v) : '(absent)'}`);
       }
       seen.set(guid, { signals: now, changes: {}, lastChangeMs: Date.now() });
+      const lv = liveValueAttrs(inner);
+      if (lv) void listenLiveValue(guid, lv);
       continue;
     }
 
@@ -135,7 +212,8 @@ async function poll() {
 
 function summary() {
   console.log('\n──── summary ────');
-  console.log(`polls: ${polls}`);
+  console.log(`polls: ${polls}   liveValue pushes: ${pushes}`);
+  for (const close of sockets.values()) close();
   for (const [guid, s] of seen) {
     const counts = Object.entries(s.changes);
     console.log(`\nlive item ${guid}`);

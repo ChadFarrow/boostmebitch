@@ -14,7 +14,7 @@
     "check:ssrf": "node --experimental-strip-types scripts/check-ssrf-guard.mjs",
     "check:stream": "node --experimental-strip-types scripts/check-stream-ledger.mjs",
     "check:liveblock": "node --experimental-strip-types scripts/check-live-block.mjs",
-    "probe:live": "node scripts/probe-live-item.mjs"
+    "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
