@@ -15,6 +15,17 @@ import { STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
  * bespoke segmented control, <ThemeToggle> is an icon button, and the pickers
  * are pill rows — so a small bespoke switch is both necessary and consistent.
  * Tokens only, no new colors, no new globals.css class for a single use.
+ *
+ * **`min-h-[44px]` is the tap target, not decoration — don't collapse it back
+ * to the pill's own height.** The switch graphic is 20px tall, and a 20px
+ * target is under half Apple's 44pt minimum: a mouse hits it every time and a
+ * thumb does not, so the control read as completely dead on a phone while
+ * working perfectly on a desktop. Reported exactly that way, from both
+ * surfaces at once, which is the tell that it's the shared control and not
+ * either screen. The padding grows the hit area without touching the graphic;
+ * it deliberately does NOT use a negative margin to claw the space back,
+ * because the reclaimed strip would sit over the "Follow my default instead"
+ * button directly below and start stealing ITS taps.
  */
 function StreamSwitch({
   on,
@@ -32,7 +43,7 @@ function StreamSwitch({
       role="switch"
       aria-checked={on}
       onClick={() => onChange(!on)}
-      className={`inline-flex items-center gap-2 ${dimmed ? 'opacity-60' : ''}`}
+      className={`inline-flex items-center gap-2 min-h-[44px] py-2 ${dimmed ? 'opacity-60' : ''}`}
     >
       <span
         className={`relative w-9 h-5 rounded-full border transition-colors ${
@@ -54,7 +65,16 @@ function StreamSwitch({
   );
 }
 
-/** The sats/min field. Commits on blur and Enter; never touches the switch. */
+/**
+ * The sats/min field. Commits on blur and Enter; never touches the switch.
+ *
+ * **The 16px font floor on mobile is required, not a style choice.** iOS Safari
+ * zooms the whole viewport when an input smaller than 16px takes focus, and
+ * this app sets no `maximumScale` (deliberately — that would kill pinch-zoom
+ * for everyone). At `text-xs` the page lurched on every tap of this field and
+ * scrolled the switch out of view mid-edit, which reads as the control
+ * fighting you. Desktop keeps the compact size from `sm:` up.
+ */
 function RateField({
   value,
   onCommit,
@@ -90,7 +110,7 @@ function RateField({
         inputMode="numeric"
         pattern="[0-9]*"
         aria-label="Sats per minute"
-        className="input !py-1 !px-2 !w-16 text-xs text-right tabular-nums"
+        className="input !py-1 !px-2 !w-20 sm:!w-16 min-h-[44px] sm:min-h-0 text-[16px] sm:text-xs text-right tabular-nums"
         value={draft}
         onChange={(e) => setDraft(e.target.value.replace(/\D/g, ''))}
         onBlur={commit}
@@ -209,7 +229,7 @@ export function StreamRate({
             type="button"
             onClick={() => storage.streamRate.setShowOn(showKey, null)}
             aria-pressed={following}
-            className={`btn-ghost !px-2.5 !py-1 text-[11px] ${
+            className={`btn-ghost !px-2.5 !py-1 min-h-[44px] sm:min-h-0 text-[11px] ${
               following ? '!border-bolt text-bolt' : ''
             }`}
           >
