@@ -141,6 +141,22 @@ export interface Episode {
   liveStatus?: 'pending' | 'live' | 'ended';
   /** Scheduled start, unix seconds. */
   liveStartTime?: number;
+  /** `<podcast:liveValue uri protocol>` inside the live item — a push channel
+   *  the show broadcasts its current payment target on. This is what The Split
+   *  Kit publishes, and it is how the live V4V music shows actually switch
+   *  wallets; the RSS-rewriting signals below are the fallback. `uri` has
+   *  already been through `httpUrl`. */
+  liveValue?: { uri: string; protocol: string };
+  /** A <podcast:remoteItem> published INSIDE this <podcast:liveItem> — the
+   *  "now playing" pointer a live music show rewrites per track. There is no
+   *  live valueTimeSplit tag (a live stream has no absolute time base to sync
+   *  to); updating the live item is the convention that actually ships. */
+  liveRemoteItem?: ValueTimeSplitRemoteItem;
+  /** <podcast:valueTimeSplit> children found inside this live item. Kept
+   *  separate from `valueTimeSplits` because their startTime/duration are
+   *  meaningless for a live stream — only a lone entry is interpretable, as
+   *  "now playing". See resolveLiveSplit. */
+  liveValueTimeSplits?: ValueTimeSplit[];
   /** Nostr live streams only: the actual host's pubkey — the NIP-53 `p` tag
    *  with role "host", falling back to the event author. Platform-published
    *  streams (Shosho, zap.stream) are authored by the PLATFORM's key, so the
@@ -169,6 +185,14 @@ export interface Boostagram {
   remote_feed_guid?: string; // RSS <podcast:guid> (NIP-73)
   episode_guid?: string;     // RSS item <guid>
   remote_item_guid?: string; // duplicate of episode_guid for aggregator compat
+  /** The Split Kit's own correlation ids, echoed back when a live show's
+   *  payment target came off its `<podcast:liveValue>` channel. Split Kit ties
+   *  a payment to the block that earned it through these; the standard
+   *  `remote_*_guid` fields above still carry the track, so nothing here
+   *  replaces them. */
+  eventGuid?: string;
+  blockGuid?: string;
+  eventAPI?: string;
 }
 
 export interface BoostResult {

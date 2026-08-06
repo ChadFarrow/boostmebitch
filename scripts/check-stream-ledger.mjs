@@ -344,6 +344,56 @@ console.log('\naccrue — the position carry');
   );
 }
 
+// --- Live shows: metering against a live clock -----------------------------
+//
+// A live item is metered by the SAME accrue() as an on-demand episode — there
+// is no live mode, deliberately. What makes that safe is that a live source's
+// currentTime is a monotonically growing clock, so `min(wall, position)` reads
+// the same as wall time. These pin the two shapes a live stream actually
+// produces, because the failure they'd hide is silent in both directions: a
+// live path that bills nothing looks identical to one that's working, and one
+// that bills wall-clock unchecked would charge a sleeping laptop.
+console.log('\naccrue — a live stream\'s clock');
+{
+  // 1. The ordinary case: an icecast/HLS clock ticking in step with the wall.
+  const l = listen(createLedger('live', T0), { seconds: 600, ratePerMin: 10 });
+  check('a live clock in step with the wall bills the wall', accruedSats(l), 100);
+}
+{
+  // 2. hls.js catching up to the live edge after a background: position jumps
+  //    far past the wall. This must bill the WALL, never the jump — the same
+  //    protection a forward scrub gets, arriving by a different route.
+  let l = createLedger('live', T0);
+  l = accrue(l, { nowMs: T0 + 1_000, positionSec: 1, playing: true, ratePerMin: 60 });
+  const before = l.buckets[HOST_BUCKET] ?? 0;
+  l = accrue(l, { nowMs: T0 + 2_000, positionSec: 61, playing: true, ratePerMin: 60 });
+  const billed = (l.buckets[HOST_BUCKET] ?? 0) - before;
+  check('a 60 s jump to the live edge bills one tick, not sixty', billed, 1000);
+  check('…and clears the carry, so the jump cannot fund later idle ticks', l.posCarryMs, 0);
+}
+{
+  // 3. A source that re-sources and resets its clock to 0. Bills nothing for
+  //    that tick rather than going negative or wrapping.
+  let l = createLedger('live', T0);
+  l = accrue(l, { nowMs: T0 + 1_000, positionSec: 30, playing: true, ratePerMin: 60 });
+  const before = l.buckets[HOST_BUCKET] ?? 0;
+  l = accrue(l, { nowMs: T0 + 2_000, positionSec: 0, playing: true, ratePerMin: 60 });
+  check('a live re-source resetting to 0 bills nothing', (l.buckets[HOST_BUCKET] ?? 0), before);
+  check('…and stamps the new position, so the next tick is not a giant delta',
+    l.lastPositionSec, 0);
+}
+{
+  // 4. The one that would be silent: a source whose clock never advances at
+  //    all. This bills NOTHING, and that is the documented behaviour — pinned
+  //    so it's a known limitation rather than a surprise. <StreamMeter> showing
+  //    a stuck 0 is the tell.
+  let l = createLedger('live', T0);
+  for (let s = 1; s <= 60; s += 1) {
+    l = accrue(l, { nowMs: T0 + s * 1000, positionSec: 0, playing: true, ratePerMin: 60 });
+  }
+  check('a live clock pinned at 0 bills nothing (known limitation)', accruedSats(l), 0);
+}
+
 // --- Settlement ------------------------------------------------------------
 
 console.log('\nsettlePlan — thresholds');

@@ -18,8 +18,28 @@ import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
 import { SplitsPreview, LightningStatus } from './splits-preview';
+import { LiveNowPlaying } from '../live-now-playing';
+import { liveTargetSnapshot } from '@/lib/v4v/live-value';
 import { PublishStatus, type PublishState } from './publish-status';
 import { ShareNostrPicker } from './share-nostr-picker';
+
+/**
+ * Boostagram fields for a live show whose payment target has been redirected.
+ *
+ * Returns {} when there is no live redirect, and JSON.stringify drops undefined
+ * keys, so an ordinary boost's wire bytes are unchanged. The `event*` ids are
+ * The Split Kit's own correlation channel, echoed back so the host's tooling
+ * can tie the payment to the block that earned it.
+ */
+function liveBoostFields(episodeGuid?: string) {
+  const t = liveTargetSnapshot();
+  if (!episodeGuid || t?.guid !== episodeGuid || !t.split?.value?.recipients?.length) return {};
+  return {
+    remote_feed_guid: t.split.remoteItem?.feedGuid,
+    remote_item_guid: t.split.remoteItem?.itemGuid,
+    ...(t.event ?? {}),
+  };
+}
 
 interface Props {
   podcast: Podcast;
@@ -192,6 +212,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         episode_guid: episode.guid,
         remote_item_guid: episode.guid,
       }),
+      // A live show redirects payment to whoever is on stage. The primary
+      // fields stay the SHOW — the broadcast the listener chose — while the
+      // remote guids name the track, so the artist sees real context and the
+      // host can correlate. Same shape as a valueTimeSplit leg.
+      ...liveBoostFields(episode?.guid),
     };
 
     setRunning(true);
@@ -354,6 +379,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             onShareAsChange={handleShareAsChange}
             noteNoun="A public note"
           />
+          <LiveNowPlaying episode={episode} />
           <SplitsPreview recipients={value.recipients} splits={splits} results={results} />
           <LightningStatus results={results} totalRecipients={value.recipients.length} />
           <PublishStatus state={pubState} />
