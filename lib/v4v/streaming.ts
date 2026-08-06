@@ -61,6 +61,7 @@ import {
   isStaleLedger,
   msUntilSettle,
   settleBatch,
+  trackBucket,
   type StreamAllocation,
   type StreamLedger,
 } from './stream-ledger';
@@ -99,7 +100,22 @@ interface StreamContext {
    * shape are all the valueTimeSplit ones, unchanged.
    */
   liveBucket?: string | null;
+  /**
+   * Split Kit correlation ids, PER BUCKET, captured when that bucket was
+   * adopted.
+   *
+   * Not read from the watcher's live snapshot at settle time, which is what it
+   * looked like it could be: a track boundary is a settle edge, and the boundary
+   * is detected AFTER `adoptLiveTarget` has already moved `liveBucket` to the
+   * incoming track — so a snapshot read would attach the incoming block's ids to
+   * the outgoing track's payment, or (with a `liveBucket === bucket` guard)
+   * attach none at all to the one settle these ids exist for.
+   */
+  liveEvents?: Map<string, LiveEventIds>;
 }
+
+/** The ids Split Kit uses to tie a payment back to the block that earned it. */
+type LiveEventIds = NonNullable<LiveTarget['event']>;
 
 /**
  * Resolved splits per episode, so an episode replayed (or resumed after a skip
@@ -115,11 +131,6 @@ const splitCache = new Map<string, Map<string, ValueTimeSplit> | null>();
 
 function splitCacheKey(episode: Episode): string {
   return `${episode.feedId}:${episode.id}`;
-}
-
-/** Stable key for a track across replays. */
-function trackBucket(split: ValueTimeSplit): string {
-  return `t:${split.remoteItem?.feedGuid ?? ''}:${split.remoteItem?.itemGuid ?? ''}`;
 }
 
 /**
@@ -174,8 +185,17 @@ function adoptLiveTarget(c: StreamContext, t: LiveTarget | null) {
     c.liveBucket = null;
     return;
   }
-  const bucket = trackBucket(t.split);
+  // The watcher's own key, not trackBucket(t.split) — a Split Kit block that
+  // names no feed has no remoteItem to derive one from, and inventing a guid to
+  // put there would ship it as `remote_feed_guid`. See LiveTarget.bucketKey.
+  const bucket = t.bucketKey || trackBucket(t.split);
   c.splits.set(bucket, t.split);
+  // Recorded against the bucket while we still know which block it was. The
+  // settle that pays this track happens at the NEXT track's boundary, by which
+  // time the watcher's snapshot names a different block.
+  if (t.event && (t.event.eventGuid || t.event.blockGuid || t.event.eventAPI)) {
+    (c.liveEvents ??= new Map()).set(bucket, t.event);
+  }
   c.liveBucket = bucket;
 }
 
@@ -430,14 +450,6 @@ function senderFields(): { sender_name: string; sender_id: string | undefined } 
  * Stream tab carrying an AutoBoost marker, so these stay out of the host's
  * boost feed while still reading as distinct from a per-minute drip.
  */
-/** The Split Kit ids for the block now broadcasting, if that's where the
- *  target came from. Omitted entirely otherwise — JSON.stringify drops
- *  undefined keys, so a non-Split-Kit boostagram is byte-identical to before. */
-function liveEventFields(): { eventGuid?: string; blockGuid?: string; eventAPI?: string } {
-  const t = liveTargetSnapshot();
-  return t?.event ? { ...t.event } : {};
-}
-
 function buildBoostagram(
   c: StreamContext,
   bucket: string,
@@ -468,8 +480,11 @@ function buildBoostagram(
           remote_feed_guid: podcast.podcastGuid,
           remote_item_guid: episode.guid,
         }),
-    // Split Kit correlation, when this bucket came off a liveValue socket.
-    ...(bucket !== HOST_BUCKET && c.liveBucket === bucket ? liveEventFields() : {}),
+    // Split Kit correlation for THIS bucket's block — recorded when the bucket
+    // was adopted, because by the time a track's sats settle the watcher has
+    // usually moved on. Absent for every other kind of payment, and
+    // JSON.stringify drops undefined keys, so those stay byte-identical.
+    ...(bucket !== HOST_BUCKET ? c.liveEvents?.get(bucket) ?? {} : {}),
     ...senderFields(),
   };
 }

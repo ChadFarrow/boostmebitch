@@ -27,6 +27,7 @@ import {
   accrue,
   accruedSats,
   allocationTrackBucket,
+  trackBucket,
   createLedger,
   DEFAULT_STREAM_RATE_PER_MIN,
   fundedBuckets,
@@ -618,6 +619,58 @@ console.log('\nvalueTimeSplits — gaps, floors and conservation');
   const a = allocationTrackBucket([{ bucket: 't:a:1', fraction: 1 }]);
   const b = allocationTrackBucket([{ bucket: 't:b:2', fraction: 1 }]);
   check('consecutive tracks are distinguishable', a !== b, true);
+}
+
+// --- trackBucket: which bucket a track's sats land in -----------------------
+// One definition, two callers — the streaming engine and the live-value watcher
+// (which is imported BY the engine, so it can't reach back into it). If those
+// two ever disagree about a key, sats accrue into one bucket and settle out of
+// another.
+//
+// `fallbackId` exists for a live target that names no remote item: a Split Kit
+// block for a track that is in no feed. It must NOT be smuggled in as a fake
+// remoteItem.feedGuid — both boostagram builders copy that field onto the wire
+// as `remote_feed_guid`, which is specified as an RSS <podcast:guid>.
+console.log('\ntrackBucket — a track\'s identity');
+{
+  check(
+    'a real remote item keys on feed + item guid',
+    trackBucket({ remoteItem: { feedGuid: 'feed-1', itemGuid: 'item-9' } }),
+    't:feed-1:item-9',
+  );
+  check(
+    'the historical format is unchanged when only a feed guid is named',
+    trackBucket({ remoteItem: { feedGuid: 'feed-1' } }),
+    't:feed-1:',
+  );
+  check(
+    'a real remote item IGNORES the fallback, so existing keys never move',
+    trackBucket({ remoteItem: { feedGuid: 'feed-1', itemGuid: 'item-9' } }, 'sk:block-a'),
+    't:feed-1:item-9',
+  );
+  check(
+    'with no remote item the fallback carries the identity',
+    trackBucket({}, 'sk:block-a'),
+    't:sk:block-a',
+  );
+  // THE ONE THAT MATTERS ON A LIVE SHOW. An artist playing two tracks back to
+  // back pushes two blocks with IDENTICAL payees. Keyed on the payees alone the
+  // second reads as "no change": no settle edge fires, both tracks accrue into
+  // one bucket, and the payment credits the first track's guid. The blockGuid is
+  // what tells them apart.
+  check(
+    'two blocks with the same payees but different ids are different buckets',
+    trackBucket({}, 'sk:block-a') !== trackBucket({}, 'sk:block-b'),
+    true,
+  );
+  check(
+    'a live bucket is never the host bucket',
+    trackBucket({}, 'sk:block-a') === HOST_BUCKET,
+    false,
+  );
+  // No remote item AND no fallback is the degenerate case: it must still be a
+  // stable string rather than throwing mid-broadcast.
+  check('no remote item and no fallback is still a key', trackBucket({}), 't::');
 }
 
 // --- settleBatch: the whole batch settles, or none of it does ---------------

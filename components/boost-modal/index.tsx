@@ -26,17 +26,25 @@ import { ShareNostrPicker } from './share-nostr-picker';
 /**
  * Boostagram fields for a live show whose payment target has been redirected.
  *
- * Returns {} when there is no live redirect, and JSON.stringify drops undefined
- * keys, so an ordinary boost's wire bytes are unchanged. The `event*` ids are
- * The Split Kit's own correlation channel, echoed back so the host's tooling
- * can tie the payment to the block that earned it.
+ * Returns {} when there is no live redirect, so an ordinary boost's wire bytes
+ * are unchanged. The `event*` ids are The Split Kit's own correlation channel,
+ * echoed back so the host's tooling can tie the payment to the block that
+ * earned it.
+ *
+ * The remote guids are only included when the block actually names a feed. Two
+ * reasons, and both are about not putting a lie on the wire: an invented bucket
+ * key must never ship as `remote_feed_guid` (see LiveTarget.bucketKey), and
+ * because this object is SPREAD OVER the episode branch, emitting the keys as
+ * `undefined` would not "fall through" — it would overwrite the episode's real
+ * `remote_item_guid` with nothing.
  */
 function liveBoostFields(episodeGuid?: string) {
   const t = liveTargetSnapshot();
   if (!episodeGuid || t?.guid !== episodeGuid || !t.split?.value?.recipients?.length) return {};
+  const remote = t.split.remoteItem;
   return {
-    remote_feed_guid: t.split.remoteItem?.feedGuid,
-    remote_item_guid: t.split.remoteItem?.itemGuid,
+    ...(remote?.feedGuid ? { remote_feed_guid: remote.feedGuid } : {}),
+    ...(remote?.itemGuid ? { remote_item_guid: remote.itemGuid } : {}),
     ...(t.event ?? {}),
   };
 }

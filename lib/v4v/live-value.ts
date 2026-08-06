@@ -28,6 +28,7 @@ import type { Episode, Podcast, ValueBlock, ValueTimeSplit } from '../types';
 import { useApp } from '../store';
 import { createObservable } from '../pubsub';
 import { hasValueRecipients, fnvHash } from '../util';
+import { trackBucket } from './stream-ledger';
 import { connectLiveValue, type LiveBlock } from './live-block';
 
 const POLL_MS = 20_000;
@@ -53,6 +54,19 @@ export interface LiveTarget {
    * valueTimeSplit track as the same kind of thing — see trackBucket().
    */
   split: ValueTimeSplit | null;
+  /**
+   * The ledger bucket this target's sats accrue into — computed HERE, so the
+   * identity of a track never has to be reconstructed from the wire fields.
+   *
+   * A Split Kit block often names no feed at all, and a rewritten
+   * `<podcast:value>` never does, so both need an invented key. That key must
+   * NOT be smuggled into `split.remoteItem.feedGuid` to get it here: both
+   * boostagram builders copy that field straight into `remote_feed_guid`, which
+   * is specified as an RSS `<podcast:guid>` — a recipient's aggregator would be
+   * handed `sk:ed6adf33-…` in a UUID field. A guid we invented never leaves the
+   * device; it lives on this field instead. Empty when `split` is null.
+   */
+  bucketKey: string;
   signal: 'live-value' | 'remote-item' | 'value-time-split' | 'value' | 'none';
   /** Split Kit correlation ids, when the target came off a liveValue socket.
    *  Passed through onto the boostagram so the host's own tooling can tie a
@@ -135,9 +149,25 @@ function isWatchable(cur: { episode: Episode; podcast: Podcast } | null): boolea
   return watchableReason(cur) === null;
 }
 
+/**
+ * What makes one target DIFFERENT from another.
+ *
+ * The payees alone are not enough, and the gap is not theoretical on a live
+ * music show: an artist playing two tracks back to back pushes two blocks with
+ * identical destinations. Keyed on payees only, the second block reads as "no
+ * change", `setTarget` returns early and the OLD split stays current — so the
+ * meter and the boost modal name the previous track, `trackBucket` doesn't move
+ * so there is no settle edge, and the settled boostagram credits the wrong
+ * item guid. The bucket key and the title are what tell the two apart.
+ */
+function targetSig(t: LiveTarget | null): string {
+  if (!t) return '';
+  return `${t.guid}|${t.signal}|${t.bucketKey}|${t.split?.title ?? ''}|${valueSig(t.split?.value)}`;
+}
+
 function setTarget(next: LiveTarget | null) {
-  const sig = next ? `${next.guid}|${next.signal}|${valueSig(next.split?.value)}` : '';
-  const prev = target ? `${target.guid}|${target.signal}|${valueSig(target.split?.value)}` : '';
+  const sig = targetSig(next);
+  const prev = targetSig(target);
   if (sig === prev) return;
   target = next;
   if (process.env.NODE_ENV !== 'production') {
@@ -177,10 +207,14 @@ function detach() {
  *
  * Shaped into the same synthetic ValueTimeSplit as every other signal, so the
  * streaming engine's bucket, settle edge and boostagram all treat a Split Kit
- * block exactly like a valueTimeSplit track. The bucket key prefers the
- * block's own feed/item guids and falls back to its blockGuid — a Split Kit
- * block for a track that isn't in any feed still needs a stable identity, or
- * every push would mint a new bucket and strand the last one's accrual.
+ * block exactly like a valueTimeSplit track.
+ *
+ * `remoteItem` is set ONLY when the block names a real feed — it is what both
+ * boostagram builders emit as `remote_feed_guid`, so an invented identity must
+ * never be parked there. The bucket identity goes on `bucketKey` instead, and
+ * falls back to the blockGuid (then to a fingerprint of title + payees): a
+ * Split Kit block for a track that isn't in any feed still needs a stable key,
+ * or every push mints a new bucket and strands the last one's accrual.
  */
 function onLiveBlock(w: NonNullable<typeof watching>, block: LiveBlock | null) {
   if (watching !== w) return;
@@ -192,24 +226,47 @@ function onLiveBlock(w: NonNullable<typeof watching>, block: LiveBlock | null) {
     return;
   }
   w.socketOwns = true;
+  const split: ValueTimeSplit = {
+    startTime: 0,
+    duration: 0,
+    value: block.value,
+    title: block.title,
+    image: block.image,
+    remotePercentage: block.remotePercentage,
+    ...(block.feedGuid
+      ? { remoteItem: { feedGuid: block.feedGuid, itemGuid: block.itemGuid } }
+      : {}),
+  };
   setTarget({
     guid: w.guid,
     signal: 'live-value',
     hostValue: w.baseValue,
     event: { eventGuid: block.eventGuid, blockGuid: block.blockGuid, eventAPI: block.eventAPI },
-    split: {
-      startTime: 0,
-      duration: 0,
-      value: block.value,
-      title: block.title,
-      image: block.image,
-      remotePercentage: block.remotePercentage,
-      remoteItem: block.feedGuid
-        ? { feedGuid: block.feedGuid, itemGuid: block.itemGuid }
-        : { feedGuid: `sk:${block.blockGuid ?? fnvHash(JSON.stringify(block.value))}` },
-    },
+    split,
+    // The title is in the fingerprint on purpose: two tracks by one artist push
+    // identical payees, and a key derived from the payees alone would hold them
+    // in a single bucket under the first track's name.
+    bucketKey: trackBucket(
+      split,
+      `sk:${block.blockGuid ?? fnvHash(`${block.title ?? ''}|${valueSig(block.value)}`)}`,
+    ),
   });
   applyToStore(w.guid, block.value);
+}
+
+/**
+ * Open the show's push channel, if it publishes one and we don't already hold it.
+ *
+ * Idempotent and called on every poll rather than only when the watched item
+ * changes, because `stopLiveValueWatcher` closes the socket while KEEPING
+ * `watching` (it must — see there). Attaching only on an item change would
+ * leave the reattached session permanently on the RSS fallback.
+ */
+function attachSocket(w: NonNullable<typeof watching>, episode: Episode) {
+  if (w.closeSocket) return;
+  const lv = episode.liveValue;
+  if (!lv || lv.protocol !== 'socket.io') return;
+  w.closeSocket = connectLiveValue(lv.uri, (block) => onLiveBlock(w, block));
 }
 
 async function poll(force = false) {
@@ -237,14 +294,9 @@ async function poll(force = false) {
       failures: 0,
       socketOwns: false,
     };
-    // The push channel, when the show publishes one. Opened once per item.
-    const lv = episode.liveValue;
-    if (lv && lv.protocol === 'socket.io') {
-      const w0 = watching;
-      w0.closeSocket = connectLiveValue(lv.uri, (block) => onLiveBlock(w0, block));
-    }
   }
   const w = watching;
+  attachSocket(w, episode);
 
   lastPollMs = now;
   inFlight = true;
@@ -266,7 +318,15 @@ async function poll(force = false) {
     if (w.socketOwns) return;
 
     if (data.split && hasValueRecipients(data.split.value)) {
-      setTarget({ guid, split: data.split, signal: data.signal, hostValue: w.baseValue });
+      // A resolved RSS signal always names a real remote item, so the fallback
+      // id is only ever a belt-and-braces guard against a malformed one.
+      setTarget({
+        guid,
+        split: data.split,
+        signal: data.signal,
+        hostValue: w.baseValue,
+        bucketKey: trackBucket(data.split, `live:${valueSig(data.split.value)}`),
+      });
       applyToStore(guid, data.split.value!);
       return;
     }
@@ -289,28 +349,25 @@ async function poll(force = false) {
         guid,
         signal: 'value',
         hostValue: w.baseValue,
-        split: {
-          startTime: 0,
-          duration: 0,
-          value: data.value,
-          // No remote item to name, so the bucket is derived from the payees
-          // themselves — it changes exactly when they do, which is the settle
-          // edge we need, and is stable across a replay of the same set.
-          remoteItem: { feedGuid: `live:${sig}` },
-        },
+        split: { startTime: 0, duration: 0, value: data.value },
+        // No remote item to name — and none is invented, because that field
+        // ships as `remote_feed_guid`. The bucket is derived from the payees
+        // themselves: it turns over exactly when they do, which is the settle
+        // edge we need, and is stable across a replay of the same set.
+        bucketKey: `live:${sig}`,
       });
       applyToStore(guid, data.value);
       return;
     }
 
-    setTarget({ guid, split: null, signal: data.signal, hostValue: w.baseValue });
+    setTarget({ guid, split: null, signal: data.signal, hostValue: w.baseValue, bucketKey: '' });
     applyToStore(guid, data.value ?? w.baseValue);
   } catch {
     if (watching !== w) return;
     w.failures += 1;
     // Keep paying the last known artist until we've genuinely lost the feed.
     if (w.failures >= MAX_FAILURES && !w.socketOwns) {
-      setTarget({ guid, split: null, signal: 'none', hostValue: w.baseValue });
+      setTarget({ guid, split: null, signal: 'none', hostValue: w.baseValue, bucketKey: '' });
       applyToStore(guid, w.baseValue);
     }
   } finally {
@@ -355,6 +412,10 @@ function installDiagnostic() {
       target: target ? {
         signal: target.signal,
         payingTitle: target.split?.title ?? null,
+        // The ledger bucket these sats land in. If this does NOT change when
+        // the DJ changes track, the settle edge won't fire and both tracks pay
+        // into one bucket — the first thing to check if a track looks skipped.
+        bucketKey: target.bucketKey,
         recipients: target.split?.value?.recipients?.map((r) => `${r.type} ${r.split} ${r.address}`) ?? null,
         remotePercentage: target.split?.remotePercentage ?? null,
         event: target.event ?? null,
@@ -383,7 +444,24 @@ export function stopLiveValueWatcher() {
     document.removeEventListener('visibilitychange', onVisibility);
     window.removeEventListener('focus', onVisibility);
   }
-  // Deliberately does NOT restore the base value: <Player>'s cleanup effect
-  // runs on every Fast Refresh, and rewriting the store there would fight the
-  // watcher that the next mount immediately starts.
+  // Close the socket, but KEEP `watching`.
+  //
+  // Two halves, and they pull in opposite directions. The socket must close:
+  // <Player>'s cleanup runs on every Fast Refresh, and leaving it open orphans
+  // a connection the next poll would never reopen, since `watching.guid` still
+  // matches. But `watching` must survive, because `baseValue` is the show's own
+  // block captured BEFORE the first swap — rebuilding it from `episode.value`
+  // after a restart would read back whatever artist was playing and pay the
+  // host's share to them for the rest of the broadcast. `attachSocket` is what
+  // reconnects on the next poll.
+  //
+  // For the same reason this does NOT restore the base value into the store:
+  // rewriting it here would fight the watcher the next mount immediately starts.
+  if (watching?.closeSocket) {
+    watching.closeSocket();
+    watching.closeSocket = undefined;
+    // Ownership went with the socket. Leaving this set would keep the RSS
+    // fallback muted for an item that no longer has a push channel.
+    watching.socketOwns = false;
+  }
 }
