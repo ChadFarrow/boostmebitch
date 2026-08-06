@@ -69,12 +69,31 @@ export function Player() {
       ? videoAlt.source
       : undefined;
   const isVideo = !!videoUrl;
-  // isHlsRef gates the live-stream-only foreground-resume nudge; isVideoRef
-  // selects the active media element (video vs audio) in the other effects.
+  // A live item has no meaningful resume position: pausing doesn't hold the
+  // broadcast, it just falls behind a window that keeps rolling. Covers both
+  // live shapes — a Nostr/HLS stream, and an RSS <podcast:liveItem> whose
+  // enclosure is a plain icecast-style audio stream on the native <audio>.
+  // Deliberately NOT the same value as the `isLive` used for the LIVE badge
+  // below: this one also catches an HLS enclosure that never carried a
+  // liveStatus, because the resume behaviour follows the transport, not the tag.
+  const isLiveMedia = isHls || current?.episode.liveStatus === 'live';
+  // isHlsRef gates the HLS-only foreground-resume nudge; isLiveRef gates the
+  // resume-from-pause reconnect; isVideoRef selects the active media element
+  // (video vs audio) in the other effects.
   const isHlsRef = useRef(isHls);
   isHlsRef.current = isHls;
+  const isLiveRef = useRef(isLiveMedia);
+  isLiveRef.current = isLiveMedia;
   const isVideoRef = useRef(isVideo);
   isVideoRef.current = isVideo;
+  // Bumped to re-run the source effect against the same item — the one way to
+  // reconnect a live stream at the live edge without duplicating the whole
+  // attach/hls.js/recovery setup that effect already owns.
+  const [reloadNonce, setReloadNonce] = useState(0);
+  // Set when the user pauses a live item; the signal that the next resume must
+  // reconnect rather than continue. Cleared by the source effect, so the FIRST
+  // play of an item takes the normal path (that effect owns that play).
+  const pausedLive = useRef(false);
   // Created lazily on the client only — createHtmlPortalNode() touches
   // document, which would crash Next's server render. Player renders null until
   // there's a `current` (client-only state), so the server never needs it and
@@ -97,6 +116,7 @@ export function Player() {
   // error. HLS attaches via hls.js (or native Safari on canPlayType).
   useEffect(() => {
     lastTick.current = -1;
+    pausedLive.current = false;
     setAudioErr(null);
 
     if (isVideo) {
@@ -111,8 +131,11 @@ export function Player() {
 
       // Start position: preserved when toggling audio→video mid-play (positionSec
       // holds the live position), and set by play(ep, pod, startSec). Applied on
-      // loadedmetadata; 0 (a fresh play, or a live stream) → no seek.
-      const startAt = useApp.getState().positionSec;
+      // loadedmetadata; 0 (a fresh play) → no seek. Forced to 0 for a live item:
+      // positionSec keeps ticking while a stream plays, so a resume-driven
+      // re-source would seek straight back to the stale offset it exists to
+      // escape. Live means live — there is nothing else to resume to.
+      const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
       const seekOnLoad = () => { if (startAt > 0) el.currentTime = startAt; };
 
       // A plain progressive video (mp4/webm) — an alternateEnclosure rendition —
@@ -226,14 +249,15 @@ export function Player() {
     // Start position: play(episode, podcast, startSec) sets positionSec before
     // this effect runs, so an episode launched from a transcript line / chapter
     // begins there. Applied once metadata is ready (currentTime isn't settable
-    // before). positionSec 0 (a normal play) → no seek.
-    const startAt = useApp.getState().positionSec;
+    // before). positionSec 0 (a normal play) → no seek. Live items force 0 for
+    // the same reason as the video branch above.
+    const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
     if (startAt > 0) {
       const seekOnLoad = () => { el.currentTime = startAt; };
       el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
     }
     if (isPlaying) el.play().catch(() => setPlaying(false));
-  }, [current?.episode.id, videoMode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [current?.episode.id, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Streaming sats. The engine is a module singleton driven by its own 1 Hz
   // timer reading useApp.getState() — mounted from here because <Player> is the
@@ -253,8 +277,28 @@ export function Player() {
   useEffect(() => {
     const el = isVideoRef.current ? video.current : audio.current;
     if (!el) return;
-    if (isPlaying) el.play().catch(() => setPlaying(false));
-    else el.pause();
+    if (!isPlaying) {
+      el.pause();
+      if (isLiveRef.current) pausedLive.current = true;
+      return;
+    }
+    // Resuming a LIVE item can't be a plain play(). Nothing held the broadcast
+    // while we were paused: the live window rolled on, so the element's stale
+    // currentTime now points outside it, and whatever sits in the buffer is
+    // content the server has already dropped from the playlist. hls.js stalls
+    // on the dead position, native HLS and a plain icecast <audio> resume onto
+    // a connection the browser closed underneath them — all three read to the
+    // user as a play button that does nothing until they reload the page,
+    // which is exactly the report this branch exists to answer. Re-running the
+    // source effect IS that reload, scoped to the media element: it tears down
+    // hls.js, re-fetches the manifest (or reopens the stream connection) and
+    // starts at the live edge, then plays because isPlayingRef is already true.
+    if (pausedLive.current) {
+      pausedLive.current = false;
+      setReloadNonce((n) => n + 1);
+      return;
+    }
+    el.play().catch(() => setPlaying(false));
   }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Honor a seek request for the current episode (from a transcript line /
