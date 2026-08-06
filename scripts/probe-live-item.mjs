@@ -5,12 +5,17 @@
 //
 // Why this exists: there is no "live valueTimeSplit" tag. A <podcast:valueTimeSplit>
 // is anchored to startTime/duration offsets into a finished enclosure, and a
-// live stream has no absolute time base to sync those to — so the convention
-// that ships is that the publisher REWRITES the live item mid-broadcast. Which
-// PART they rewrite is not standardised, and differs per publishing tool. This
-// script answers that question empirically for a given show instead of us
-// guessing: run it during a real broadcast and watch which row moves.
+// live stream has no absolute time base to sync those to. Shows switch wallets
+// either by publishing a PUSH channel (<podcast:liveValue>, what The Split Kit
+// emits) or by REWRITING part of the live item per track — and which part is
+// not standardised. This script answers that empirically for a given show
+// instead of us guessing: run it during a real broadcast and watch which row
+// moves.
 //
+//   L  <podcast:liveValue>    — a PUSH channel (The Split Kit). If this is
+//                               present, the feed itself never changes: the
+//                               target arrives over a socket. Run the app and
+//                               watch the network tab instead.
 //   A  <podcast:remoteItem>   — an explicit "now playing" pointer
 //   B  <podcast:value>        — the value block rewritten in place
 //   C  <podcast:valueTimeSplit>
@@ -46,6 +51,7 @@ const LIVE_ITEM_RE = /<podcast:liveItem\b([^>]*)>([\s\S]*?)<\/podcast:liveItem>/
 function signals(inner) {
   const all = (re) => (inner.match(re) ?? []).join('\n').replace(/\s+/g, ' ').trim();
   return {
+    L_liveValue: all(/<podcast:liveValue\b[^>]*?\/?>/gi),
     A_remoteItem: all(/<podcast:remoteItem\b[^>]*?\/?>/gi),
     B_value: all(/<podcast:value\b[^>]*>[\s\S]*?<\/podcast:value>|<podcast:value\b[^>]*\/>/gi),
     C_valueTimeSplit: all(/<podcast:valueTimeSplit\b[^>]*>[\s\S]*?<\/podcast:valueTimeSplit>|<podcast:valueTimeSplit\b[^>]*\/>/gi),
@@ -151,9 +157,16 @@ function summary() {
       console.log('  20s poller will miss tracks on this feed.');
     }
   }
-  console.log('\nWhichever row above changes is the signal this feed uses.');
-  console.log('A/C are handled by resolveLiveSplit; B needs two polls to be');
-  console.log('distinguishable from a show that simply has one value block.');
+  const anyLiveValue = [...seen.values()].some((s) => s.signals.L_liveValue);
+  if (anyLiveValue) {
+    console.log('\nThis feed publishes <podcast:liveValue> — a PUSH channel.');
+    console.log('The target arrives over a socket, so the feed bytes staying');
+    console.log('still is EXPECTED and does not mean the show is not switching.');
+  } else {
+    console.log('\nWhichever row above changes is the signal this feed uses.');
+    console.log('A/C are handled by resolveLiveSplit; B needs two polls to be');
+    console.log('distinguishable from a show that simply has one value block.');
+  }
 }
 
 console.log(`probing ${feedUrl} every ${intervalSec}s for ${minutes}m — ctrl-c to stop`);

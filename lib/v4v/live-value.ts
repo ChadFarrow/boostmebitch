@@ -3,22 +3,32 @@
 // Live value switching — following the artist during a live music show.
 //
 // A live V4V show plays a different artist every few minutes and the payment
-// target is meant to follow. There is no tag for this: <podcast:valueTimeSplit>
-// is anchored to startTime/duration offsets into a finished enclosure, and a
-// live stream has no absolute time base to sync those to. The convention that
-// ships is that the publisher REWRITES the live item mid-broadcast, so the only
-// thing an app can do is re-read it on a timer. See resolveLiveSplit in
-// lib/pi.ts for how the three RSS shapes are told apart.
+// target is meant to follow. `<podcast:valueTimeSplit>` cannot express that —
+// it is anchored to startTime/duration offsets into a finished enclosure, and a
+// live stream has no absolute time base to sync those to.
 //
-// This module is the timer. It owns no payment logic: it resolves "who is
-// playing right now" and publishes it, and the two payment paths pick it up —
-// boosts through `episode.value` in the store, streaming sats through a ledger
-// bucket in streaming.ts.
+// Two mechanisms exist, and this module runs both:
+//
+//   PUSH (what the shows actually use) — `<podcast:liveValue uri protocol>`
+//   inside the live item names a socket the show broadcasts its current target
+//   on. The Split Kit publishes this; see live-block.ts. Sub-second, and the
+//   only signal that carries the host's own track metadata.
+//
+//   POLL (the fallback) — the publisher rewrites the live item per track and
+//   we re-read it. See resolveLiveSplit in lib/pi.ts for how the three RSS
+//   shapes are told apart.
+//
+// The push channel wins whenever it is delivering: it is what the host is
+// actively driving, where re-reading XML is inference. This module owns no
+// payment logic — it resolves "who is playing right now" and publishes it, and
+// the two payment paths pick it up: boosts through `episode.value` in the
+// store, streaming sats through a ledger bucket in streaming.ts.
 
 import type { Episode, Podcast, ValueBlock, ValueTimeSplit } from '../types';
 import { useApp } from '../store';
 import { createObservable } from '../pubsub';
 import { hasValueRecipients, fnvHash } from '../util';
+import { connectLiveValue, type LiveBlock } from './live-block';
 
 const POLL_MS = 20_000;
 /** Overlapping triggers (interval + focus + visibilitychange) debounce to this. */
@@ -43,7 +53,11 @@ export interface LiveTarget {
    * valueTimeSplit track as the same kind of thing — see trackBucket().
    */
   split: ValueTimeSplit | null;
-  signal: 'remote-item' | 'value-time-split' | 'value' | 'none';
+  signal: 'live-value' | 'remote-item' | 'value-time-split' | 'value' | 'none';
+  /** Split Kit correlation ids, when the target came off a liveValue socket.
+   *  Passed through onto the boostagram so the host's own tooling can tie a
+   *  payment to the block that earned it. */
+  event?: { eventGuid?: string; blockGuid?: string; eventAPI?: string };
   /**
    * The show's OWN block, as it was before any swap.
    *
@@ -75,6 +89,13 @@ let watching: {
   /** Set once that block has been seen to CHANGE. See the comment below. */
   valueIsLive: boolean;
   failures: number;
+  /** Disposer for a <podcast:liveValue> socket, when the show publishes one. */
+  closeSocket?: () => void;
+  /** True once the socket has delivered a block. The RSS poll stops writing a
+   *  target while this holds: a push channel the show is actively driving is
+   *  strictly better evidence than anything we can infer from re-reading XML,
+   *  and letting a poll land on top would flip the target back and forth. */
+  socketOwns: boolean;
 } | null = null;
 
 export function liveTargetSnapshot(): LiveTarget | null {
@@ -118,9 +139,52 @@ function applyToStore(guid: string, value: ValueBlock | null) {
 }
 
 function detach() {
-  if (watching) applyToStore(watching.guid, watching.baseValue);
+  if (watching) {
+    watching.closeSocket?.();
+    applyToStore(watching.guid, watching.baseValue);
+  }
   watching = null;
   setTarget(null);
+}
+
+/**
+ * A block pushed over the show's <podcast:liveValue> channel.
+ *
+ * Shaped into the same synthetic ValueTimeSplit as every other signal, so the
+ * streaming engine's bucket, settle edge and boostagram all treat a Split Kit
+ * block exactly like a valueTimeSplit track. The bucket key prefers the
+ * block's own feed/item guids and falls back to its blockGuid — a Split Kit
+ * block for a track that isn't in any feed still needs a stable identity, or
+ * every push would mint a new bucket and strand the last one's accrual.
+ */
+function onLiveBlock(w: NonNullable<typeof watching>, block: LiveBlock | null) {
+  if (watching !== w) return;
+  if (!block) {
+    // Not "pay the host": a dropped socket is not evidence the set ended. Let
+    // the RSS fallback and the failure counter decide, exactly as for a failed
+    // poll — so hand ownership back rather than clearing the target.
+    w.socketOwns = false;
+    return;
+  }
+  w.socketOwns = true;
+  setTarget({
+    guid: w.guid,
+    signal: 'live-value',
+    hostValue: w.baseValue,
+    event: { eventGuid: block.eventGuid, blockGuid: block.blockGuid, eventAPI: block.eventAPI },
+    split: {
+      startTime: 0,
+      duration: 0,
+      value: block.value,
+      title: block.title,
+      image: block.image,
+      remotePercentage: block.remotePercentage,
+      remoteItem: block.feedGuid
+        ? { feedGuid: block.feedGuid, itemGuid: block.itemGuid }
+        : { feedGuid: `sk:${block.blockGuid ?? fnvHash(JSON.stringify(block.value))}` },
+    },
+  });
+  applyToStore(w.guid, block.value);
 }
 
 async function poll(force = false) {
@@ -146,7 +210,14 @@ async function poll(force = false) {
       baselineSig: null,
       valueIsLive: false,
       failures: 0,
+      socketOwns: false,
     };
+    // The push channel, when the show publishes one. Opened once per item.
+    const lv = episode.liveValue;
+    if (lv && lv.protocol === 'socket.io') {
+      const w0 = watching;
+      w0.closeSocket = connectLiveValue(lv.uri, (block) => onLiveBlock(w0, block));
+    }
   }
   const w = watching;
 
@@ -165,6 +236,9 @@ async function poll(force = false) {
     // The user may have moved on during the round trip.
     if (watching !== w || useApp.getState().current?.episode.guid !== guid) return;
     w.failures = 0;
+    // A live socket outranks anything re-reading the feed can tell us. Keep
+    // polling (it is how we notice the broadcast ending) but don't write.
+    if (w.socketOwns) return;
 
     if (data.split && hasValueRecipients(data.split.value)) {
       setTarget({ guid, split: data.split, signal: data.signal, hostValue: w.baseValue });
@@ -210,7 +284,7 @@ async function poll(force = false) {
     if (watching !== w) return;
     w.failures += 1;
     // Keep paying the last known artist until we've genuinely lost the feed.
-    if (w.failures >= MAX_FAILURES) {
+    if (w.failures >= MAX_FAILURES && !w.socketOwns) {
       setTarget({ guid, split: null, signal: 'none', hostValue: w.baseValue });
       applyToStore(guid, w.baseValue);
     }

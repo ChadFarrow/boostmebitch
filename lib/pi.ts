@@ -4,7 +4,7 @@ import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, Valu
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash } from './util';
+import { fnvHash, httpUrl } from './util';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -347,6 +347,7 @@ export async function getLiveItemsFromRss(
     liveStartTime: r.startTime,
     value: r.value,
     socialInteract: r.socialInteract,
+    liveValue: r.liveValue,
     liveRemoteItem: r.remoteItem,
     liveValueTimeSplits: r.valueTimeSplits?.length ? r.valueTimeSplits : undefined,
   }));
@@ -365,6 +366,28 @@ interface RawLiveItem {
   socialInteract?: SocialInteract[];
   remoteItem?: ValueTimeSplitRemoteItem;
   valueTimeSplits?: ValueTimeSplit[];
+  liveValue?: { uri: string; protocol: string };
+}
+
+/**
+ * `<podcast:liveValue uri="…" protocol="socket.io"/>`
+ *
+ * The push channel a live show broadcasts its current payment target on — what
+ * The Split Kit emits ("copy the tag below and paste into the
+ * <podcast:liveItem> of your podcast feed"), and what Sovereign Feeds calls the
+ * Live Value Link. This is the signal the live V4V music shows actually use;
+ * rewriting the feed per track is the fallback for shows that don't.
+ *
+ * The uri goes through `httpUrl` because it arrives from a third-party feed and
+ * ends up as a socket connection opened from the browser — same fail-closed
+ * allowlist direction as safeUrlAttr, for the same reason.
+ */
+function parseLiveValue(xml: string): { uri: string; protocol: string } | undefined {
+  const m = xml.match(/<podcast:liveValue\b([^>]*?)\/?>/i);
+  if (!m) return undefined;
+  const uri = httpUrl(readAttr(m[1], 'uri'));
+  if (!uri) return undefined;
+  return { uri, protocol: (readAttr(m[1], 'protocol') || '').toLowerCase() };
 }
 
 function parseRssLiveItems(xml: string): RawLiveItem[] {
@@ -398,6 +421,7 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
       // can apply precedence in one place.
       remoteItem: firstRemoteItem(stripValueTimeSplits(inner)),
       valueTimeSplits: parseValueTimeSplitsFromRss(inner),
+      liveValue: parseLiveValue(inner),
     });
   }
   return out;

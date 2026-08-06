@@ -414,6 +414,14 @@ function senderFields(): { sender_name: string; sender_id: string | undefined } 
  * track earned the payment. Don't "simplify" it by putting the track in the
  * primary fields.
  */
+/** The Split Kit ids for the block now broadcasting, if that's where the
+ *  target came from. Omitted entirely otherwise — JSON.stringify drops
+ *  undefined keys, so a non-Split-Kit boostagram is byte-identical to before. */
+function liveEventFields(): { eventGuid?: string; blockGuid?: string; eventAPI?: string } {
+  const t = liveTargetSnapshot();
+  return t?.event ? { ...t.event } : {};
+}
+
 function buildBoostagram(
   c: StreamContext,
   bucket: string,
@@ -444,6 +452,8 @@ function buildBoostagram(
           remote_feed_guid: podcast.podcastGuid,
           remote_item_guid: episode.guid,
         }),
+    // Split Kit correlation, when this bucket came off a liveValue socket.
+    ...(bucket !== HOST_BUCKET && c.liveBucket === bucket ? liveEventFields() : {}),
     ...senderFields(),
   };
 }
