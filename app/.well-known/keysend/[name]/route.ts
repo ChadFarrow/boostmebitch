@@ -34,11 +34,15 @@ interface KeysendName {
 // lookup path lowercases before probing, so we match on the same normalization.
 const NAMES: Record<string, KeysendName> = {
   chadf: {
-    // FIXME(chad): fill in the node pubkey. While this is empty the route
-    // answers 404 for every name, exactly as it did before this file existed —
-    // publishing a malformed pubkey is worse than publishing nothing, since a
-    // payer that trusts it sends a keysend that can never arrive.
-    pubkey: '',
+    // Chad's own LND node (45.33.65.45:9735 — the gossip address is how peers
+    // open channels, so it deliberately isn't published here; a keysend is
+    // routed to the pubkey, not dialled direct). Self-hosted, so there's no
+    // shared-node sub-account to route to and no customKey/customValue.
+    //
+    // Requires `accept-keysend` (LND) to stay enabled: without it the node
+    // rejects the spontaneous payment and the leg simply fails, because the
+    // sender never retries LNURL after attempting a keysend.
+    pubkey: '02b32faddac6789150d61d656b7e24335131eacfde91949748acca43738aeeebc4',
   },
 };
 
