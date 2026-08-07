@@ -233,6 +233,10 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
   // it at a stable, reachable position on mobile.
   const [visibleCount, setVisibleCount] = useState(10);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  // Consecutive-miss counters for the two-misses-before-ended rule in
+  // applyLiveStatuses — keyed per feedId so a stale count from the previous
+  // show can't end an item on this one's very first poll.
+  const liveMissesRef = useRef<Record<string, number>>({});
   const play = useApp((s) => s.play);
   const togglePlay = useApp((s) => s.togglePlay);
   const isPlaying = useApp((s) => s.isPlaying);
@@ -244,6 +248,7 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
   useEffect(() => {
     setValueOpen(false);
     setVisibleCount(10);
+    liveMissesRef.current = {};
     if (!feedId) { setData({ podcast: null, episodes: [] }); return; }
     setLoading(true);
     // Preview (not-in-PI) feeds load by URL — the synthetic id can't be
@@ -281,10 +286,14 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
   // playback is undisturbed.
   const hasLiveItem = data.episodes.some((e) => !!e.liveStatus && e.liveStatus !== 'ended');
   useLiveStatusPoll(feedId, hasLiveItem, (items) => {
-    setData((prev) => {
-      const episodes = applyLiveStatuses(prev.episodes, items);
-      return episodes === prev.episodes ? prev : { ...prev, episodes };
-    });
+    // Plain read of `data` (not a setData updater): useLiveStatusPoll refreshes
+    // its callback ref on every render, so this closure is always the latest by
+    // the time a poll actually fires — and computing the ref mutation outside
+    // setState avoids double-counting misses under React 18 Strict Mode's
+    // double-invoke of updater functions.
+    const { episodes, misses } = applyLiveStatuses(data.episodes, items, liveMissesRef.current);
+    liveMissesRef.current = misses;
+    if (episodes !== data.episodes) setData((prev) => ({ ...prev, episodes }));
   });
 
   if (!feedId) {
