@@ -12,6 +12,7 @@ import { fmt } from '@/lib/format';
 import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
+import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import { BoostModal } from './boost-modal';
@@ -266,9 +267,15 @@ export function Player() {
   // subtree every tick, which is exactly what the per-field selectors above
   // exist to prevent. Surfaces that want to SHOW the accrual use <StreamMeter>,
   // which subscribes to the engine's own observable instead.
+  // The live-value watcher rides along for the same reasons — its own timer,
+  // no store subscription. It only polls while a live item is playing.
   useEffect(() => {
     startStreamingEngine();
-    return () => stopStreamingEngine();
+    startLiveValueWatcher();
+    return () => {
+      stopStreamingEngine();
+      stopLiveValueWatcher();
+    };
   }, []);
 
   // Play/pause the active element on store toggles. Reads isVideo from a ref so

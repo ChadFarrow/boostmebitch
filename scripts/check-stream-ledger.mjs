@@ -27,6 +27,7 @@ import {
   accrue,
   accruedSats,
   allocationTrackBucket,
+  trackBucket,
   createLedger,
   DEFAULT_STREAM_RATE_PER_MIN,
   fundedBuckets,
@@ -344,6 +345,56 @@ console.log('\naccrue — the position carry');
   );
 }
 
+// --- Live shows: metering against a live clock -----------------------------
+//
+// A live item is metered by the SAME accrue() as an on-demand episode — there
+// is no live mode, deliberately. What makes that safe is that a live source's
+// currentTime is a monotonically growing clock, so `min(wall, position)` reads
+// the same as wall time. These pin the two shapes a live stream actually
+// produces, because the failure they'd hide is silent in both directions: a
+// live path that bills nothing looks identical to one that's working, and one
+// that bills wall-clock unchecked would charge a sleeping laptop.
+console.log('\naccrue — a live stream\'s clock');
+{
+  // 1. The ordinary case: an icecast/HLS clock ticking in step with the wall.
+  const l = listen(createLedger('live', T0), { seconds: 600, ratePerMin: 10 });
+  check('a live clock in step with the wall bills the wall', accruedSats(l), 100);
+}
+{
+  // 2. hls.js catching up to the live edge after a background: position jumps
+  //    far past the wall. This must bill the WALL, never the jump — the same
+  //    protection a forward scrub gets, arriving by a different route.
+  let l = createLedger('live', T0);
+  l = accrue(l, { nowMs: T0 + 1_000, positionSec: 1, playing: true, ratePerMin: 60 });
+  const before = l.buckets[HOST_BUCKET] ?? 0;
+  l = accrue(l, { nowMs: T0 + 2_000, positionSec: 61, playing: true, ratePerMin: 60 });
+  const billed = (l.buckets[HOST_BUCKET] ?? 0) - before;
+  check('a 60 s jump to the live edge bills one tick, not sixty', billed, 1000);
+  check('…and clears the carry, so the jump cannot fund later idle ticks', l.posCarryMs, 0);
+}
+{
+  // 3. A source that re-sources and resets its clock to 0. Bills nothing for
+  //    that tick rather than going negative or wrapping.
+  let l = createLedger('live', T0);
+  l = accrue(l, { nowMs: T0 + 1_000, positionSec: 30, playing: true, ratePerMin: 60 });
+  const before = l.buckets[HOST_BUCKET] ?? 0;
+  l = accrue(l, { nowMs: T0 + 2_000, positionSec: 0, playing: true, ratePerMin: 60 });
+  check('a live re-source resetting to 0 bills nothing', (l.buckets[HOST_BUCKET] ?? 0), before);
+  check('…and stamps the new position, so the next tick is not a giant delta',
+    l.lastPositionSec, 0);
+}
+{
+  // 4. The one that would be silent: a source whose clock never advances at
+  //    all. This bills NOTHING, and that is the documented behaviour — pinned
+  //    so it's a known limitation rather than a surprise. <StreamMeter> showing
+  //    a stuck 0 is the tell.
+  let l = createLedger('live', T0);
+  for (let s = 1; s <= 60; s += 1) {
+    l = accrue(l, { nowMs: T0 + s * 1000, positionSec: 0, playing: true, ratePerMin: 60 });
+  }
+  check('a live clock pinned at 0 bills nothing (known limitation)', accruedSats(l), 0);
+}
+
 // --- Settlement ------------------------------------------------------------
 
 console.log('\nsettlePlan — thresholds');
@@ -568,6 +619,58 @@ console.log('\nvalueTimeSplits — gaps, floors and conservation');
   const a = allocationTrackBucket([{ bucket: 't:a:1', fraction: 1 }]);
   const b = allocationTrackBucket([{ bucket: 't:b:2', fraction: 1 }]);
   check('consecutive tracks are distinguishable', a !== b, true);
+}
+
+// --- trackBucket: which bucket a track's sats land in -----------------------
+// One definition, two callers — the streaming engine and the live-value watcher
+// (which is imported BY the engine, so it can't reach back into it). If those
+// two ever disagree about a key, sats accrue into one bucket and settle out of
+// another.
+//
+// `fallbackId` exists for a live target that names no remote item: a Split Kit
+// block for a track that is in no feed. It must NOT be smuggled in as a fake
+// remoteItem.feedGuid — both boostagram builders copy that field onto the wire
+// as `remote_feed_guid`, which is specified as an RSS <podcast:guid>.
+console.log('\ntrackBucket — a track\'s identity');
+{
+  check(
+    'a real remote item keys on feed + item guid',
+    trackBucket({ remoteItem: { feedGuid: 'feed-1', itemGuid: 'item-9' } }),
+    't:feed-1:item-9',
+  );
+  check(
+    'the historical format is unchanged when only a feed guid is named',
+    trackBucket({ remoteItem: { feedGuid: 'feed-1' } }),
+    't:feed-1:',
+  );
+  check(
+    'a real remote item IGNORES the fallback, so existing keys never move',
+    trackBucket({ remoteItem: { feedGuid: 'feed-1', itemGuid: 'item-9' } }, 'sk:block-a'),
+    't:feed-1:item-9',
+  );
+  check(
+    'with no remote item the fallback carries the identity',
+    trackBucket({}, 'sk:block-a'),
+    't:sk:block-a',
+  );
+  // THE ONE THAT MATTERS ON A LIVE SHOW. An artist playing two tracks back to
+  // back pushes two blocks with IDENTICAL payees. Keyed on the payees alone the
+  // second reads as "no change": no settle edge fires, both tracks accrue into
+  // one bucket, and the payment credits the first track's guid. The blockGuid is
+  // what tells them apart.
+  check(
+    'two blocks with the same payees but different ids are different buckets',
+    trackBucket({}, 'sk:block-a') !== trackBucket({}, 'sk:block-b'),
+    true,
+  );
+  check(
+    'a live bucket is never the host bucket',
+    trackBucket({}, 'sk:block-a') === HOST_BUCKET,
+    false,
+  );
+  // No remote item AND no fallback is the degenerate case: it must still be a
+  // stable string rather than throwing mid-broadcast.
+  check('no remote item and no fallback is still a key', trackBucket({}), 't::');
 }
 
 // --- settleBatch: the whole batch settles, or none of it does ---------------

@@ -350,6 +350,33 @@ export function allocationTrackBucket(allocation: StreamAllocation[]): string | 
 }
 
 /**
+ * Stable key for a track across replays.
+ *
+ * Lives here rather than in streaming.ts because a live target needs the same
+ * key and `lib/v4v/live-value.ts` is imported BY streaming.ts — a second copy
+ * of the format string is how two callers silently stop agreeing on which
+ * bucket a track's sats are in.
+ *
+ * `fallbackId` is for a target that names no remote item at all: a Split Kit
+ * block for a track that isn't in any feed still needs a stable identity, or
+ * every push mints a new bucket and strands the last one's accrual. It is used
+ * ONLY when there is no remote item, so a real one produces a byte-identical
+ * key to before. The `t:` prefix is shared, so `fundedBuckets`' host-first sort
+ * and every `bucket !== HOST_BUCKET` test are unaffected.
+ */
+export function trackBucket(
+  // Structural, not `ValueTimeSplit`, so this file keeps its no-imports rule and
+  // stays loadable by `node --experimental-strip-types` (see the header).
+  split: { remoteItem?: { feedGuid?: string; itemGuid?: string } },
+  fallbackId?: string,
+): string {
+  const feedGuid = split.remoteItem?.feedGuid;
+  const itemGuid = split.remoteItem?.itemGuid;
+  if (!feedGuid && !itemGuid && fallbackId) return `t:${fallbackId}`;
+  return `t:${feedGuid ?? ''}:${itemGuid ?? ''}`;
+}
+
+/**
  * Buckets currently holding something, host first.
  *
  * Host-first matters on a force-settle: it's the one bucket that accumulates

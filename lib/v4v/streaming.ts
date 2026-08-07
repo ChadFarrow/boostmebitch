@@ -51,6 +51,7 @@ import { sendBoost, pickRail, paidAny } from './boost';
 import { subscribeNwc } from './nwc';
 import { subscribeSpark } from './spark';
 import { subscribeWebln } from './webln';
+import { liveTargetSnapshot, subscribeLiveTarget, type LiveTarget } from './live-value';
 import {
   accrue,
   accruedSats,
@@ -60,6 +61,7 @@ import {
   isStaleLedger,
   msUntilSettle,
   settleBatch,
+  trackBucket,
   type StreamAllocation,
   type StreamLedger,
 } from './stream-ledger';
@@ -89,7 +91,31 @@ interface StreamContext {
    * so opening a context can't read as a boundary. `null` means the host.
    */
   lastTrack?: string | null;
+  /**
+   * Live shows only: the bucket the live-value watcher says is playing right
+   * now, or null for the show's own block. A live stream has no position to
+   * meter a `<podcast:valueTimeSplit>` window against, so the target is pushed
+   * in rather than looked up — but it lands in the SAME `splits` map under the
+   * same kind of bucket key, so the ledger, the settle edge and the boostagram
+   * shape are all the valueTimeSplit ones, unchanged.
+   */
+  liveBucket?: string | null;
+  /**
+   * Split Kit correlation ids, PER BUCKET, captured when that bucket was
+   * adopted.
+   *
+   * Not read from the watcher's live snapshot at settle time, which is what it
+   * looked like it could be: a track boundary is a settle edge, and the boundary
+   * is detected AFTER `adoptLiveTarget` has already moved `liveBucket` to the
+   * incoming track — so a snapshot read would attach the incoming block's ids to
+   * the outgoing track's payment, or (with a `liveBucket === bucket` guard)
+   * attach none at all to the one settle these ids exist for.
+   */
+  liveEvents?: Map<string, LiveEventIds>;
 }
+
+/** The ids Split Kit uses to tie a payment back to the block that earned it. */
+type LiveEventIds = NonNullable<LiveTarget['event']>;
 
 /**
  * Resolved splits per episode, so an episode replayed (or resumed after a skip
@@ -105,11 +131,6 @@ const splitCache = new Map<string, Map<string, ValueTimeSplit> | null>();
 
 function splitCacheKey(episode: Episode): string {
   return `${episode.feedId}:${episode.id}`;
-}
-
-/** Stable key for a track across replays. */
-function trackBucket(split: ValueTimeSplit): string {
-  return `t:${split.remoteItem?.feedGuid ?? ''}:${split.remoteItem?.itemGuid ?? ''}`;
 }
 
 /**
@@ -147,6 +168,37 @@ async function loadSplits(episode: Episode): Promise<Map<string, ValueTimeSplit>
   }
 }
 
+/**
+ * Adopt a live "now playing" target into a context.
+ *
+ * `splits` is APPEND-ONLY here — the outgoing track's entry stays. A bucket
+ * that carried under the per-bucket floor still has to resolve to its OWN
+ * artist whenever it finally clears, and deleting it would route that artist's
+ * dust to the host through targetFor's fallback.
+ */
+function adoptLiveTarget(c: StreamContext, t: LiveTarget | null) {
+  if (!t || t.guid !== c.episode.guid) {
+    c.liveBucket = null;
+    return;
+  }
+  if (!t.split || !hasValueRecipients(t.split.value)) {
+    c.liveBucket = null;
+    return;
+  }
+  // The watcher's own key, not trackBucket(t.split) — a Split Kit block that
+  // names no feed has no remoteItem to derive one from, and inventing a guid to
+  // put there would ship it as `remote_feed_guid`. See LiveTarget.bucketKey.
+  const bucket = t.bucketKey || trackBucket(t.split);
+  c.splits.set(bucket, t.split);
+  // Recorded against the bucket while we still know which block it was. The
+  // settle that pays this track happens at the NEXT track's boundary, by which
+  // time the watcher's snapshot names a different block.
+  if (t.event && (t.event.eventGuid || t.event.blockGuid || t.event.eventAPI)) {
+    (c.liveEvents ??= new Map()).set(bucket, t.event);
+  }
+  c.liveBucket = bucket;
+}
+
 /** The split covering a playback position, if any. */
 function splitAt(splits: Map<string, ValueTimeSplit>, positionSec: number): ValueTimeSplit | null {
   for (const s of splits.values()) {
@@ -167,6 +219,20 @@ function splitAt(splits: Map<string, ValueTimeSplit>, positionSec: number): Valu
  * difference between one Lightning payment and a dozen.
  */
 function allocationAt(c: StreamContext, positionSec: number): StreamAllocation[] {
+  // Live shows resolve their target by polling the feed, not by position, so
+  // this branch sits ABOVE splitAt — a live split carries duration 0 and would
+  // never match a window. An unresolvable live bucket falls back to the host
+  // block rather than to nothing: those sats have already been accrued from the
+  // listener, and an unresolved redirect is still the show's value.
+  if (c.liveBucket) {
+    const live = c.splits.get(c.liveBucket);
+    if (!live || !hasValueRecipients(live.value)) return [{ bucket: HOST_BUCKET, fraction: 1 }];
+    const livePct = Math.min(100, Math.max(0, live.remotePercentage ?? 100));
+    return [
+      { bucket: c.liveBucket, fraction: livePct / 100 },
+      { bucket: HOST_BUCKET, fraction: 1 - livePct / 100 },
+    ];
+  }
   const split = c.splits.size ? splitAt(c.splits, positionSec) : null;
   if (!split) return [{ bucket: HOST_BUCKET, fraction: 1 }];
   const pct = Math.min(100, Math.max(0, split.remotePercentage ?? 100));
@@ -251,9 +317,15 @@ export function streamingStatus(): StreamingStatus {
     lastError: lastErrorKey && lastErrorKey === currentKey ? lastError : null,
     stopped: isStopped,
     stoppedReason: isStopped ? stoppedReason : null,
-    currentTrack: ctx?.splits.size
-      ? splitAt(ctx.splits, useApp.getState().positionSec)?.title ?? null
-      : null,
+    // A live show's target comes from the watcher, not from a position window.
+    // This line is the only visible proof the redirect is being followed at
+    // all — without it, streaming looks identical whether the artist is being
+    // paid or not.
+    currentTrack: ctx?.liveBucket
+      ? ctx.splits.get(ctx.liveBucket)?.title ?? null
+      : ctx?.splits.size
+        ? splitAt(ctx.splits, useApp.getState().positionSec)?.title ?? null
+        : null,
     sessionSentSats,
   };
 }
@@ -408,6 +480,11 @@ function buildBoostagram(
           remote_feed_guid: podcast.podcastGuid,
           remote_item_guid: episode.guid,
         }),
+    // Split Kit correlation for THIS bucket's block — recorded when the bucket
+    // was adopted, because by the time a track's sats settle the watcher has
+    // usually moved on. Absent for every other kind of payment, and
+    // JSON.stringify drops undefined keys, so those stay byte-identical.
+    ...(bucket !== HOST_BUCKET ? c.liveEvents?.get(bucket) ?? {} : {}),
     ...senderFields(),
   };
 }
@@ -644,14 +721,26 @@ function tick() {
 
   // Whatever the current item is, decide whether it's streamable at all.
   let next: StreamContext | null = null;
+  const liveTarget = liveTargetSnapshot();
   if (cur && key && key !== disabledKey) {
-    const value = cur.episode.value ?? cur.podcast.value;
+    // On a live show the watcher has overwritten `episode.value` with the
+    // artist's block so boosts follow it — so the HOST bucket's own target has
+    // to come from the pre-swap block it kept, or the show's share would be
+    // paid to whichever artist was on when the context opened.
+    const value = liveTarget && liveTarget.guid === cur.episode.guid
+      ? liveTarget.hostValue ?? cur.podcast.value
+      : cur.episode.value ?? cur.podcast.value;
     const rate = cachedStreamRate(cur.podcast);
     // Live streams are the NIP-57 zap path (see the boost modal's live branch);
     // they have no finite position to meter against and their value block is
     // synthesized per-viewer.
+    // A 'pending' live item is scheduled, not broadcasting — there is nothing
+    // playing, so metering it would bill wall-clock against silence.
     const eligible =
-      rate > 0 && !isLiveStreamId(cur.episode.guid) && hasValueRecipients(value);
+      rate > 0
+      && !isLiveStreamId(cur.episode.guid)
+      && cur.episode.liveStatus !== 'pending'
+      && hasValueRecipients(value);
     if (eligible) {
       next = {
         key,
@@ -679,6 +768,11 @@ function tick() {
   if (ctx) ctx.ratePerMin = next.ratePerMin;
   else openContext(next);
   if (!ctx || !ledger) return;
+
+  // Adopted per tick rather than on the watcher's callback: the context may not
+  // exist when a target lands, and re-reading here is what makes the two
+  // independent timers agree without either owning the other.
+  adoptLiveTarget(ctx, liveTarget);
 
   const now = Date.now();
   const allocation = allocationAt(ctx, st.positionSec);
@@ -751,6 +845,7 @@ function onWalletChange() {
 
 let unsubRate: (() => void) | null = null;
 let unsubWallets: Array<() => void> = [];
+let unsubLive: (() => void) | null = null;
 
 /** Started once from <Player>'s mount effect. Idempotent. */
 export function startStreamingEngine() {
@@ -758,6 +853,10 @@ export function startStreamingEngine() {
   lastPlaying = useApp.getState().isPlaying;
   rateCache = null;
   timer = setInterval(tick, TICK_MS);
+  // A live switch repaints the meter's track line on the watcher's schedule
+  // rather than waiting up to a second for the next tick. The tick is still
+  // what adopts it — this only notifies.
+  unsubLive = subscribeLiveTarget(notifyIfChanged);
   unsubRate = onStoredRateChange(onRateChange);
   unsubWallets = [
     subscribeNwc(onWalletChange),
@@ -778,6 +877,7 @@ export function startStreamingEngine() {
 export function stopStreamingEngine() {
   if (timer) { clearInterval(timer); timer = null; }
   if (unsubRate) { unsubRate(); unsubRate = null; }
+  if (unsubLive) { unsubLive(); unsubLive = null; }
   for (const un of unsubWallets) un();
   unsubWallets = [];
   if (typeof window !== 'undefined') window.removeEventListener('pagehide', onPageHide);
