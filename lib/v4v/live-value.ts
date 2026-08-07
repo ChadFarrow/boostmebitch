@@ -94,6 +94,8 @@ const observable = createObservable();
 export const subscribeLiveTarget = observable.subscribe;
 
 let timer: ReturnType<typeof setInterval> | null = null;
+/** Disposer for the vanilla store subscription — see onCurrentItemChange. */
+let unsubStore: (() => void) | null = null;
 let lastPollMs = 0;
 let inFlight = false;
 let target: LiveTarget | null = null;
@@ -388,6 +390,31 @@ function onVisibility() {
 }
 
 /**
+ * Poll the moment a different item starts playing.
+ *
+ * Without this the watcher's only triggers are its own 20 s timer, `focus` and
+ * `visibilitychange` — and **pressing play is none of those**. So hitting play
+ * on a live show left the Split Kit socket unopened for up to a full poll
+ * interval, during which the RSS fallback answered "the show's own block" and
+ * payment went to the host while an artist was on. Visible in the console as
+ * `target → the show's own block` landing well before `socket connected`.
+ *
+ * A VANILLA store subscription, not a hook: this runs outside React and renders
+ * nothing, so it doesn't touch `<Player>`'s render path — the same reason the
+ * watcher isn't a hook in the first place. The listener fires on every store
+ * write (including the 1 Hz position tick), so its body must stay a guid
+ * comparison and nothing more.
+ */
+function onCurrentItemChange(
+  s: { current: { episode: Episode } | null },
+  prev: { current: { episode: Episode } | null },
+) {
+  if (s.current?.episode.guid === prev.current?.episode.guid) return;
+  // Forced: the whole point is not to wait out the interval.
+  void poll(true);
+}
+
+/**
  * Devtools diagnostic: `bmbLive()`.
  *
  * Follows the repo's existing `window.bmbCleanFavorites()` convention. It
@@ -441,6 +468,7 @@ export function startLiveValueWatcher() {
   if (timer) return;
   installDiagnostic();
   timer = setInterval(() => { void poll(); }, POLL_MS);
+  unsubStore = useApp.subscribe(onCurrentItemChange);
   if (typeof document !== 'undefined') {
     document.addEventListener('visibilitychange', onVisibility);
     window.addEventListener('focus', onVisibility);
@@ -451,6 +479,7 @@ export function startLiveValueWatcher() {
 export function stopLiveValueWatcher() {
   if (timer) clearInterval(timer);
   timer = null;
+  if (unsubStore) { unsubStore(); unsubStore = null; }
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', onVisibility);
     window.removeEventListener('focus', onVisibility);
