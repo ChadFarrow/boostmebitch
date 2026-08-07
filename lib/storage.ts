@@ -817,7 +817,8 @@ export const storage = {
   },
 
   /**
-   * Streaming sats-per-minute. Two scopes, resolved by `resolveStreamRate` in
+   * Streaming settings — on/off, the per-minute rate, the unit, and the per-track
+   * amount. Two scopes, resolved by `resolveStreamPlan` in
    * lib/v4v/streaming.ts: a per-show override wins over the global rate.
    *
    * **The rate and the on/off switch are separate keys.** The control is a
@@ -842,7 +843,7 @@ export const storage = {
    * no on-flag reads as OFF, which is the safe direction for a feature that
    * spends money unattended and must be opted into.
    */
-  streamRate: {
+  streaming: {
     /**
      * The GLOBAL EFFECTIVE rate. 0 = streaming off, which is the default for a
      * new install and for any half-written state.
@@ -929,7 +930,7 @@ export const storage = {
         safeRemove(`${KEYS.streamAmount}:${showKey}`);
       } else {
         if (on && saneRate(safeGet(rateKey)) === null) {
-          safeSet(rateKey, String(storage.streamRate.getRemembered()));
+          safeSet(rateKey, String(storage.streaming.getRemembered()));
         }
         safeSet(onKey, on ? '1' : '0');
       }

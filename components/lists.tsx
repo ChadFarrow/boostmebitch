@@ -3,7 +3,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { fmtDuration, fmtLiveTime } from '@/lib/format';
-import { hasValueRecipients, isMusicMedium, recipientOrder } from '@/lib/util';
+import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, ShareIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
@@ -11,6 +11,7 @@ import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
 import { Podroll } from './podroll';
 import { FavHeart } from './fav-heart';
+import { ValueSplitRows } from './value-split-rows';
 import { useStreamPanel } from './streaming-settings';
 
 // Re-exported for the surfaces that have always imported it from here.
@@ -212,34 +213,7 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
           <span className="text-bolt">suggested: {suggestedSats} sats / min</span>
         )}
       </div>
-      <ul className="space-y-2">
-        {recipientOrder(value.recipients).map((i) => {
-          const r = value.recipients[i];
-          const isLnAddr = r.type === 'lnaddress';
-          const addr =
-            isLnAddr || r.address.length <= 20
-              ? r.address
-              : `${r.address.slice(0, 8)}…${r.address.slice(-8)}`;
-          return (
-            <li key={i} className="flex items-start gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 flex-wrap text-sm">
-                  <span className="font-display">
-                    {r.name?.trim() || <span className="text-muted">(unnamed)</span>}
-                  </span>
-                  {r.fee && <span className="stamp text-muted border-bone/30">fee</span>}
-                </div>
-                <div className="text-[11px] text-muted font-mono break-all">
-                  {addr}
-                </div>
-              </div>
-              <div className="text-right flex-shrink-0">
-                <div className="font-display text-sm text-bolt">{r.split}</div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+      <ValueSplitRows value={value} />
     </div>
   );
 }

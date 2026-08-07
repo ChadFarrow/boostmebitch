@@ -2,7 +2,8 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDuration } from '@/lib/format';
-import { hasValueRecipients, httpUrl, recipientAddress, recipientOrder, stripHtml } from '@/lib/util';
+import { hasValueRecipients, httpUrl, stripHtml } from '@/lib/util';
+import { ValueSplitRows } from './value-split-rows';
 import { useChapters, type ChapterEntry } from '@/lib/chapters';
 import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
@@ -104,28 +105,7 @@ function ValueSplitSection({ value }: { value: ValueBlock }) {
           <span className="text-bolt ml-3">suggested: {suggestedSats} sats/min</span>
         )}
       </div>
-      <ul className="space-y-2">
-        {recipientOrder(value.recipients).map((i) => {
-          const r = value.recipients[i];
-          const addr = recipientAddress(r);
-          return (
-            <li key={i} className="flex items-start gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2 flex-wrap text-sm">
-                  <span className="font-display">
-                    {r.name?.trim() || <span className="text-muted">(unnamed)</span>}
-                  </span>
-                  {r.fee && <span className="stamp text-muted border-bone/30">fee</span>}
-                </div>
-                <div className="text-[11px] text-muted font-mono break-all">{addr}</div>
-              </div>
-              <div className="text-right flex-shrink-0">
-                <div className="font-display text-sm text-bolt">{r.split}</div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+      <ValueSplitRows value={value} />
     </div>
   );
 }

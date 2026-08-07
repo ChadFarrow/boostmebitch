@@ -152,6 +152,85 @@ function RateField({
   );
 }
 
+/** Everything the sentence under the control depends on. */
+interface StreamRateView {
+  /** Show scope (an override) rather than the global default. */
+  perShow: boolean;
+  /** Show scope with no opinion of its own — inheriting the global setting. */
+  following: boolean;
+  on: boolean;
+  mode: StreamMode;
+  rate: number;
+  amount: number;
+  globalOn: boolean;
+  globalRate: number;
+  /** Shows with an explicit per-show ON override. Global scope only. */
+  showsOn: number;
+}
+
+/**
+ * The sentence under the switch.
+ *
+ * A pure function rather than an IIFE inside the component, because every branch
+ * here is a PROMISE ABOUT SPENDING and the rules it encodes are the subtle ones
+ * in `lib/storage.ts` — the tri-state, and the fact that a per-show override
+ * outranks the global switch. Pulling it out means the copy rules can be read
+ * without reading JSX, and exercised directly if they keep growing.
+ *
+ * Two of these strings exist because the earlier wording was wrong in the
+ * expensive direction; see the notes on each.
+ */
+function streamRateDescription(v: StreamRateView): string {
+  // Per-track pays when the payment TARGET changes, so a show that never
+  // switches target has nothing to trigger on and streams nothing at all.
+  // Saying so is the same obligation the global switch carries: a settings
+  // screen must never let a user believe money is moving when it isn't.
+  const trackCaveat =
+    ' Only pays on shows that switch payment target (live V4V shows, music albums) — an ordinary podcast streams nothing in this mode.';
+
+  if (v.following) {
+    if (!v.globalOn) return 'Follows your default: streaming off.';
+    return v.mode === 'track'
+      ? `Follows your default: ${v.amount.toLocaleString()} sats per target change, after 30 seconds.${trackCaveat}`
+      : `Follows your default: ${v.globalRate.toLocaleString()} sats/min.`;
+  }
+  if (v.perShow && !v.on) {
+    // The ONLY place the "explicitly off outranks the global rate" rule becomes
+    // legible to a human. It has to be here. (Coloured too — see `pinnedOff`.)
+    return 'Never streams this show, even if your default is on.';
+  }
+  if (!v.on) {
+    // A per-show override outranks this switch, so "nothing is sent" is a
+    // promise the global control is not able to keep. Saying it anyway while a
+    // show streams in the mini-bar is the worst kind of wrong: the one screen
+    // the user checks to find out whether they're spending money tells them
+    // they aren't.
+    if (v.showsOn > 0) {
+      return v.showsOn === 1
+        ? 'Off by default — but 1 show you turned on individually still streams.'
+        : `Off by default — but ${v.showsOn} shows you turned on individually still stream.`;
+    }
+    return 'Off — nothing is sent while you listen. Boosts are unaffected.';
+  }
+  if (v.mode === 'track') {
+    // "each track" was wrong, and wrong in the expensive direction: what
+    // triggers a payment is the payment TARGET changing, and on a live show the
+    // host's segments between songs are targets of their own, so an interstitial
+    // earns the full amount exactly like a song. A line implying otherwise
+    // understates the hourly cost.
+    const per = `${v.amount.toLocaleString()} sats each time the paid target changes, once it has run 30 seconds`;
+    return v.perShow
+      ? `Sends ${per} on this show, overriding your default.${trackCaveat}`
+      : `Sends ${per} — every track, plus any host segment between them on a live show. Length doesn't matter beyond that: a two-minute song and a six-minute one earn the same, and anything the host flicks past earns nothing.${trackCaveat}`;
+  }
+  if (v.perShow) {
+    return `Streams ${v.rate.toLocaleString()} sats/min for this show, overriding your default.`;
+  }
+  return `Pays the value split while you listen — batched about every 10 minutes. ~${(
+    v.rate * 60
+  ).toLocaleString()} sats/hour.`;
+}
+
 /**
  * "Streaming sats — [on/off] [N] sats/min."
  *
@@ -174,21 +253,21 @@ export function StreamRate({
   const showKey = podcast ? streamShowKey(podcast) : null;
 
   const read = () => ({
-    globalOn: storage.streamRate.isOn(),
-    globalRate: storage.streamRate.getRemembered(),
-    showOn: showKey ? storage.streamRate.getShowOn(showKey) : null,
-    showRate: showKey ? storage.streamRate.getShowRemembered(showKey) : null,
+    globalOn: storage.streaming.isOn(),
+    globalRate: storage.streaming.getRemembered(),
+    showOn: showKey ? storage.streaming.getShowOn(showKey) : null,
+    showRate: showKey ? storage.streaming.getShowRemembered(showKey) : null,
     // The unit and the per-track amount resolve show → global → default, the
     // same chain as the rate, so the control and the engine can't disagree.
-    mode: storage.streamRate.getEffectiveMode(showKey),
-    amount: storage.streamRate.getEffectiveAmount(showKey),
+    mode: storage.streaming.getEffectiveMode(showKey),
+    amount: storage.streaming.getEffectiveAmount(showKey),
     // Only the global control needs this, and only to avoid lying — see below.
-    showsOn: showKey ? 0 : storage.streamRate.showsExplicitlyOn(),
+    showsOn: showKey ? 0 : storage.streaming.showsExplicitlyOn(),
     // The switch couldn't be written to disk (storage blocked or full). It
     // still works for this session off the memory mirror, but saying nothing
     // would let the user discover on their next visit that streaming quietly
     // turned itself back off.
-    ephemeral: storage.streamRate.isEphemeral(showKey),
+    ephemeral: storage.streaming.isEphemeral(showKey),
   });
   const [s, setS] = useState(read);
 
@@ -203,77 +282,37 @@ export function StreamRate({
   const rate = showKey ? (following ? s.globalRate : s.showRate ?? s.globalRate) : s.globalRate;
 
   function setOn(v: boolean) {
-    if (showKey) storage.streamRate.setShowOn(showKey, v);
-    else storage.streamRate.setOn(v);
+    if (showKey) storage.streaming.setShowOn(showKey, v);
+    else storage.streaming.setOn(v);
   }
   function setRate(n: number) {
     if (s.mode === 'track') {
-      if (showKey) storage.streamRate.setShowAmount(showKey, n);
-      else storage.streamRate.setAmount(n);
+      if (showKey) storage.streaming.setShowAmount(showKey, n);
+      else storage.streaming.setAmount(n);
       return;
     }
-    if (showKey) storage.streamRate.setShowRate(showKey, n);
-    else storage.streamRate.setRate(n);
+    if (showKey) storage.streaming.setShowRate(showKey, n);
+    else storage.streaming.setRate(n);
   }
   function setMode(m: StreamMode) {
-    if (showKey) storage.streamRate.setShowMode(showKey, m);
-    else storage.streamRate.setMode(m);
+    if (showKey) storage.streaming.setShowMode(showKey, m);
+    else storage.streaming.setMode(m);
   }
   // The number the field shows follows the unit — two separate remembered
   // values, so flipping back and forth never loses either.
   const amount = s.mode === 'track' ? s.amount : rate;
 
-  // Per-track mode pays when the playing TRACK changes, so a show with no
-  // per-track splits has nothing to trigger on and streams nothing at all.
-  // Saying so is the same obligation the global switch carries: a settings
-  // screen must never let a user believe money is moving when it isn't.
-  const trackCaveat =
-    ' Only pays on shows that switch payment target (live V4V shows, music albums) — an ordinary podcast streams nothing in this mode.';
-
-  const description = (() => {
-    if (following) {
-      if (!s.globalOn) return 'Follows your default: streaming off.';
-      return s.mode === 'track'
-        ? `Follows your default: ${s.amount.toLocaleString()} sats per target change, after 30 seconds.${trackCaveat}`
-        : `Follows your default: ${s.globalRate.toLocaleString()} sats/min.`;
-    }
-    if (showKey && !on) {
-      // The ONLY place the "explicitly off outranks the global rate" rule
-      // becomes legible to a human. It has to be here.
-      return 'Never streams this show, even if your default is on.';
-    }
-    // (see `overriding` below — this state is coloured, not just worded)
-    if (!on) {
-      // A per-show override outranks this switch, so "nothing is sent" is a
-      // promise the global control is not able to keep. Saying it anyway while
-      // a show streams in the mini-bar is the worst kind of wrong: the one
-      // screen the user checks to find out whether they're spending money
-      // tells them they aren't.
-      if (s.showsOn > 0) {
-        return s.showsOn === 1
-          ? 'Off by default — but 1 show you turned on individually still streams.'
-          : `Off by default — but ${s.showsOn} shows you turned on individually still stream.`;
-      }
-      return 'Off — nothing is sent while you listen. Boosts are unaffected.';
-    }
-    if (s.mode === 'track') {
-      // "each track" was wrong, and wrong in the expensive direction. What
-      // triggers a payment is the payment TARGET changing, and on a live show
-      // the host's segments between songs are targets of their own — so an
-      // interstitial earns the full amount exactly like a song does. A settings
-      // line that implies otherwise understates the hourly cost.
-      const per = `${s.amount.toLocaleString()} sats each time the paid target changes, once it has run 30 seconds`;
-      return showKey
-        ? `Sends ${per} on this show, overriding your default.${trackCaveat}`
-        : `Sends ${per} — every track, plus any host segment between them on a live show. Length doesn't matter beyond that: a two-minute song and a six-minute one earn the same, and anything the host flicks past earns nothing.${trackCaveat}`;
-    }
-    if (showKey) {
-      return `Streams ${rate.toLocaleString()} sats/min for this show, overriding your default.`;
-    }
-    return `Pays the value split while you listen — batched about every 10 minutes. ~${(
-      rate * 60
-    ).toLocaleString()} sats/hour.`;
-  })();
+  const description = streamRateDescription({
+    perShow: !!showKey,
+    following,
+    on,
+    mode: s.mode,
+    rate,
+    amount: s.amount,
+    globalOn: s.globalOn,
+    globalRate: s.globalRate,
+    showsOn: s.showsOn,
+  });
 
   // A show that is explicitly OFF looks identical to one that is merely off,
   // yet it is the one state the global switch cannot undo — so it reads as
@@ -291,7 +330,7 @@ export function StreamRate({
         {showKey && (
           <button
             type="button"
-            onClick={() => storage.streamRate.setShowOn(showKey, null)}
+            onClick={() => storage.streaming.setShowOn(showKey, null)}
             aria-pressed={following}
             className={`btn-ghost !px-2.5 !py-1 min-h-[44px] sm:min-h-0 text-[11px] ${
               following ? '!border-bolt text-bolt' : ''
@@ -322,7 +361,7 @@ export function StreamRate({
             {' '}
             <button
               type="button"
-              onClick={() => storage.streamRate.setShowOn(showKey!, null)}
+              onClick={() => storage.streaming.setShowOn(showKey!, null)}
               className="underline underline-offset-2 hover:text-bone"
             >
               Follow my default instead

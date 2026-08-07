@@ -11,10 +11,11 @@ import type { Podcast } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
 import { BoltIcon, ShareIcon, PipIcon } from './icons';
-import { hasValueRecipients, isMusicMedium, recipientAddress, recipientOrder, stripHtml } from '@/lib/util';
+import { hasValueRecipients, isMusicMedium, stripHtml } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
 import { FavHeart } from './fav-heart';
+import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 import { LiveChat } from './live-chat';
@@ -565,26 +566,7 @@ export function FullscreenPlayer({
                   <span aria-hidden>{valueOpen ? '▾' : '▸'}</span>
                 </button>
                 {valueOpen && (
-                  <ul className="space-y-2 mt-3">
-                    {recipientOrder(value.recipients).map((i) => {
-                      const r = value.recipients[i];
-                      const addr = recipientAddress(r);
-                      return (
-                        <li key={i} className="flex items-start gap-3 text-sm">
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-display">
-                                {r.name?.trim() || <span className="text-muted">(unnamed)</span>}
-                              </span>
-                              {r.fee && <span className="stamp text-muted border-bone/30">fee</span>}
-                            </div>
-                            <div className="text-[11px] text-muted font-mono break-all">{addr}</div>
-                          </div>
-                          <div className="font-display text-sm text-bolt flex-shrink-0">{r.split}</div>
-                        </li>
-                      );
-                    })}
-                  </ul>
+                  <ValueSplitRows value={value} className="space-y-2 mt-3" />
                 )}
               </div>
             )}

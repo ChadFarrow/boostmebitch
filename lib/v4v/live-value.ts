@@ -68,9 +68,16 @@ export interface LiveTarget {
    */
   bucketKey: string;
   /**
-   * Split Kit's block kind — `'music'`, `'chapter'`, `'podcast'`. Undefined for
-   * every other signal, which per-track streaming reads as "eligible" (see
-   * `perTrackEligibleType`); only an explicit non-music kind is refused.
+   * Split Kit's block kind — `'music'` for a song, `'chapter'` for a host
+   * segment (a promo, a photo, a phone number), `'podcast'` for the show's
+   * default block. Undefined for every other signal.
+   *
+   * **Diagnostics only — it does NOT gate payment.** Per-track streaming credits
+   * every kind of block, because the listener chose an amount for the show and a
+   * promo is the show. A music-only filter was built and removed; see
+   * `STREAM_TRACK_MIN_PLAY_MS` in `stream-ledger.ts` for what actually stops a
+   * target nobody spent time on. Surfaced as `bmbLive().target.blockType`, which
+   * is how "why did that block earn?" gets answered in one line.
    */
   blockType?: string;
   signal: 'live-value' | 'remote-item' | 'value-time-split' | 'value' | 'none';

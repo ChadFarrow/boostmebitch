@@ -216,6 +216,79 @@ function adoptLiveTarget(c: StreamContext, t: LiveTarget | null) {
   c.liveBucket = bucket;
 }
 
+/**
+ * Per-track mode: the current target earns the fixed amount, once, after it has
+ * actually been on for `STREAM_TRACK_MIN_PLAY_MS`.
+ *
+ * **Every kind of block earns** — songs and the host's own segments alike. The
+ * listener chose an amount for this show, and a promo or a shoutout is the show.
+ * (A filter on Split Kit's `type` was built and removed; the kind is still
+ * carried for diagnostics but does not gate payment.) What the minimum stops is
+ * a target nobody spent any time on: a real broadcast flicked through two shared
+ * photos 16 seconds apart and fired two full payments.
+ *
+ * Because the credit fires MID-RUN rather than on the change, "has this already
+ * paid?" needs an explicit per-run marker — a time window alone would let a
+ * five-minute song clear it and be credited twice. There are two markers and
+ * they do different jobs:
+ *
+ * - `ledger.creditedRun` — paid for the run in progress. Cleared the moment a
+ *   different target is current, so a genuine replay later earns again.
+ * - `ledger.creditedAt` — when each bucket last paid, across runs. Catches a
+ *   *slow* socket flap, which legitimately ends the run.
+ *
+ * **Both live on the LEDGER, not this context**, because the ledger is what
+ * survives a reload. They started here, and a refresh mid-song therefore wiped
+ * "already paid" while the balance was restored — charging the same track again
+ * thirty seconds later.
+ *
+ * A no-op outside track mode, so `tick()` calls it unconditionally.
+ */
+function applyTrackCredit(
+  c: StreamContext,
+  l: StreamLedger,
+  args: { track: string | null; allocation: StreamAllocation[]; nowMs: number; playing: boolean },
+): StreamLedger {
+  const { track, allocation, nowMs, playing } = args;
+  if (c.mode !== 'track') return l;
+
+  // Drop the credited marker as soon as a different target is current.
+  let ledgerNext = clearCreditedRun(l, track);
+
+  if (!track) {
+    // Back to the host block with nothing current — end the run rather than
+    // letting it resume its clock if the same bucket returns later.
+    c.run = undefined;
+    return ledgerNext;
+  }
+  if (!playing) return ledgerNext;
+
+  if (c.run?.bucket !== track) c.run = { bucket: track, sinceMs: nowMs, credited: false };
+  const run = c.run;
+  const lastPaidMs = ledgerNext.creditedAt?.[track] ?? -Infinity;
+  const due =
+    !run.credited
+    && ledgerNext.creditedRun !== track
+    && nowMs - run.sinceMs >= STREAM_TRACK_MIN_PLAY_MS
+    && nowMs - lastPaidMs >= STREAM_TRACK_CREDIT_DEBOUNCE_MS;
+  if (!due) return ledgerNext;
+
+  run.credited = true;
+  // Through the same allocation a tick uses, so a block with remotePercentage
+  // below 100 splits the fixed sum between track and host on exactly the rate
+  // path's rule.
+  ledgerNext = creditFixed(ledgerNext, {
+    msat: c.amountPerTrack * 1000,
+    allocation,
+    bucket: track,
+    nowMs,
+  });
+  // The credit is money; don't wait for the 10 s persist cadence to record that
+  // it happened, or a reload inside that gap pays it twice.
+  persist(ledgerNext);
+  return ledgerNext;
+}
+
 /** The split covering a playback position, if any. */
 function splitAt(splits: Map<string, ValueTimeSplit>, positionSec: number): ValueTimeSplit | null {
   for (const s of splits.values()) {
@@ -424,12 +497,15 @@ export function streamShowKey(podcast: Podcast): string {
  * The rate that applies to a show: the per-show override when one exists —
  * INCLUDING an explicit 0, which means "never stream this show" and has to
  * outrank the global rate — otherwise the global rate, otherwise off.
+ *
+ * Module-local: `resolveStreamPlan` supersedes it as the public answer, since
+ * the rate alone no longer describes what a show is streaming.
  */
-export function resolveStreamRate(podcast: Podcast | null | undefined): number {
+function resolveStreamRate(podcast: Podcast | null | undefined): number {
   if (!podcast) return 0;
-  const show = storage.streamRate.getShow(streamShowKey(podcast));
+  const show = storage.streaming.getShow(streamShowKey(podcast));
   if (show !== null) return show;
-  return storage.streamRate.get() ?? 0;
+  return storage.streaming.get() ?? 0;
 }
 
 /**
@@ -457,15 +533,15 @@ export function resolveStreamPlan(podcast: Podcast | null | undefined): StreamPl
   const showKey = podcast ? streamShowKey(podcast) : null;
   return {
     ratePerMin,
-    mode: storage.streamRate.getEffectiveMode(showKey),
-    amountPerTrack: storage.streamRate.getEffectiveAmount(showKey),
+    mode: storage.streaming.getEffectiveMode(showKey),
+    amountPerTrack: storage.streaming.getEffectiveAmount(showKey),
   };
 }
 
 /**
  * Same answer as resolveStreamRate, memoized for the 1 Hz tick.
  *
- * Invalidated from `onRateChange`, which every setter in `storage.streamRate`
+ * Invalidated from `onRateChange`, which every setter in `storage.streaming`
  * notifies — so this is exact, not merely fresh-enough. (Known, pre-existing:
  * nothing in the app listens for cross-tab `storage` events, so a rate changed
  * in another tab isn't seen live here either way.)
@@ -896,57 +972,12 @@ function tick() {
   const track = allocationTrackBucket(allocation);
   const trackChanged = ctx.lastTrack !== undefined && ctx.lastTrack !== track;
 
-  // Per-track mode: the current target earns the fixed amount, once, after it
-  // has actually been on for `STREAM_TRACK_MIN_PLAY_MS`.
-  //
-  // EVERY kind of block earns — songs and the host's own segments alike. The
-  // listener chose an amount for this show, and a promo or a shoutout is the
-  // show. What the minimum stops is a target nobody spent any time on: a real
-  // broadcast flicked through two shared photos 16 seconds apart and fired two
-  // full payments. (A filter on Split Kit's `type` was built and removed; the
-  // kind is still carried for diagnostics but does not gate payment.)
-  //
-  // The credit fires mid-run rather than on the change, so "already paid?" is an
-  // explicit per-run flag — a time window would let a five-minute song clear it
-  // and be credited twice.
-  if (ctx.mode === 'track') {
-    // Drop the credited marker as soon as a different target is current, so the
-    // same track earns again when it genuinely comes round later.
-    ledger = clearCreditedRun(ledger, track);
-    if (st.isPlaying && track) {
-      if (ctx.run?.bucket !== track) ctx.run = { bucket: track, sinceMs: now, credited: false };
-      const run = ctx.run;
-      // Both markers are read off the LEDGER, which survives a reload — the
-      // context does not, and a guard that dies with it charged the same song
-      // again thirty seconds after every refresh.
-      const paidThisRun = ledger.creditedRun === track;
-      const lastPaidMs = ledger.creditedAt?.[track] ?? -Infinity;
-      if (
-        !run.credited
-        && !paidThisRun
-        && now - run.sinceMs >= STREAM_TRACK_MIN_PLAY_MS
-        && now - lastPaidMs >= STREAM_TRACK_CREDIT_DEBOUNCE_MS
-      ) {
-        run.credited = true;
-        // Through the same allocation a tick uses, so a block with
-        // remotePercentage < 100 splits the fixed sum between track and host on
-        // exactly the rate path's rule.
-        ledger = creditFixed(ledger, {
-          msat: ctx.amountPerTrack * 1000,
-          allocation,
-          bucket: track,
-          nowMs: now,
-        });
-        // The credit is money; don't wait for the 10 s persist cadence to
-        // record that it happened, or a reload in the gap pays it twice.
-        persist(ledger);
-      }
-    } else if (!track) {
-      // Back to the host block with no track current — end the run rather than
-      // letting it resume its clock if the same bucket returns later.
-      ctx.run = undefined;
-    }
-  }
+  ledger = applyTrackCredit(ctx, ledger, {
+    track,
+    allocation,
+    nowMs: now,
+    playing: st.isPlaying,
+  });
   ctx.lastTrack = track;
 
   // Pause is a settle edge: the listener has stopped, so pay for what they
