@@ -228,13 +228,13 @@ export function StreamRate({
   // Saying so is the same obligation the global switch carries: a settings
   // screen must never let a user believe money is moving when it isn't.
   const trackCaveat =
-    ' Only pays on shows with per-track splits (live V4V shows, music albums) — an ordinary podcast streams nothing in this mode.';
+    ' Only pays on shows that switch payment target (live V4V shows, music albums) — an ordinary podcast streams nothing in this mode.';
 
   const description = (() => {
     if (following) {
       if (!s.globalOn) return 'Follows your default: streaming off.';
       return s.mode === 'track'
-        ? `Follows your default: ${s.amount.toLocaleString()} sats per track.${trackCaveat}`
+        ? `Follows your default: ${s.amount.toLocaleString()} sats each time the paid target changes.${trackCaveat}`
         : `Follows your default: ${s.globalRate.toLocaleString()} sats/min.`;
     }
     if (showKey && !on) {
@@ -257,10 +257,15 @@ export function StreamRate({
       return 'Off — nothing is sent while you listen. Boosts are unaffected.';
     }
     if (s.mode === 'track') {
-      const per = `${s.amount.toLocaleString()} sats to each track as it starts`;
+      // "each track" was wrong, and wrong in the expensive direction. What
+      // triggers a payment is the payment TARGET changing, and on a live show
+      // the host's segments between songs are targets of their own — so an
+      // interstitial earns the full amount exactly like a song does. A settings
+      // line that implies otherwise understates the hourly cost.
+      const per = `${s.amount.toLocaleString()} sats each time the paid target changes`;
       return showKey
         ? `Sends ${per} on this show, overriding your default.${trackCaveat}`
-        : `Sends ${per}, however long it runs — a two-minute song and a six-minute one earn the same.${trackCaveat}`;
+        : `Sends ${per} — every track, plus any host segment between them on a live show. Length doesn't matter: a two-minute song and a six-minute one earn the same.${trackCaveat}`;
     }
     if (showKey) {
       return `Streams ${rate.toLocaleString()} sats/min for this show, overriding your default.`;
