@@ -33,6 +33,7 @@ import {
   STREAM_TRACK_MIN_PLAY_MS,
   trackBucket,
   createLedger,
+  DEFAULT_STREAM_AMOUNT_PER_TRACK,
   DEFAULT_STREAM_RATE_PER_MIN,
   fundedBuckets,
   HOST_BUCKET,
@@ -40,6 +41,7 @@ import {
   msUntilSettle,
   settleBatch,
   settlePlan,
+  STREAM_AMOUNT_MAX_SATS,
   STREAM_MAX_TICK_MS,
   STREAM_MIN_SETTLE_SATS,
   STREAM_PENDING_MAX_AGE_MS,
@@ -141,6 +143,14 @@ check('pending accrual expires after 24 h', STREAM_PENDING_MAX_AGE_MS, 86_400_00
 check('default rate is 10 sats/min', DEFAULT_STREAM_RATE_PER_MIN, 10);
 check('…which is 600 sats/hour', DEFAULT_STREAM_RATE_PER_MIN * 60, 600);
 check('rate ceiling is 10,000 sats/min', STREAM_RATE_MAX_PER_MIN, 10_000);
+// The per-track pair is the same promise in the other unit, and it is the one
+// that shipped unpinned: the amount a user gets by switching the unit to
+// "track" having typed nothing. Its hourly cost depends on how fast the show
+// changes target, which is exactly why the number itself has to be deliberate —
+// on a Split Kit broadcast every promo and shared photo is a target of its own.
+check('default is 100 sats/track', DEFAULT_STREAM_AMOUNT_PER_TRACK, 100);
+check('…so a 12-track hour costs 1,200 sats', DEFAULT_STREAM_AMOUNT_PER_TRACK * 12, 1_200);
+check('per-track ceiling is 100,000 sats', STREAM_AMOUNT_MAX_SATS, 100_000);
 check('position carry is capped at 2 s', STREAM_POS_CARRY_MAX_MS, 2_000);
 
 // --- Accrual ---------------------------------------------------------------

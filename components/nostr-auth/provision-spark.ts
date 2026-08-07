@@ -86,24 +86,23 @@ export async function provisionSparkFromKey(
   // identity that turned it off. Neither was right; scoping the flag dissolved
   // the choice.)
   //
-  // But NOT consulting it isn't enough, because something else does. We're
-  // called fire-and-forget, and the caller reaches onSuccess -> completeSignIn
-  // -> loadProfile -> deriveSparkFromLocalKey long before the SDK handshake
-  // below resolves. That path DOES read the flag, and `storage.sparkOptOut.get`
-  // falls back to the pre-per-npub global `bmb:spark:opted_out` when an npub
-  // has no scoped value — writing '1' into the new npub's bucket. So on any
-  // device where some earlier identity turned Spark off, a brand-new account
-  // inherits that opt-out: exactly the device-vs-identity conflation the
-  // per-npub split exists to prevent.
+  // Historically that wasn't enough on its own. We're called fire-and-forget,
+  // and the caller reaches onSuccess -> completeSignIn -> loadProfile ->
+  // deriveSparkFromLocalKey long before the SDK handshake below resolves. That
+  // path DOES read the flag, and `storage.sparkOptOut.get` used to fall back to
+  // the pre-per-npub global `bmb:spark:opted_out` when an npub had no scoped
+  // value — so on any device where some earlier identity turned Spark off, a
+  // brand-new account inherited that opt-out. THAT FALLBACK IS GONE: `get`
+  // reads the scoped key only, and the bare global is dead and never read.
   //
-  // Writing the '0' here closes that window. It used to be written after
+  // Writing the '0' here early still earns its keep on the remaining reason: it
+  // makes a failed init retryable. It used to be written after
   // sparkInitFromMnemonic, on the reasoning that an SDK failure shouldn't leave
   // "wants Spark" recorded for a wallet that never came up — but that's the
   // wrong trade. '0' only means "has not opted out", which for a brand-new
-  // account is simply true, and it's what keeps the legacy flag from leaking
-  // in. It also makes a failed init retryable: the next login's
-  // deriveSparkFromLocalKey tries again instead of finding an inherited '1'
-  // and silently refusing to bring the wallet up forever.
+  // account is simply true, and recording it means the next login's
+  // deriveSparkFromLocalKey tries again instead of finding a stale '1' and
+  // silently refusing to bring the wallet up forever.
   storage.sparkOptOut.clear(identity.npub);
 
   const mnemonic = await sparkMnemonicFromKey(skHex);
