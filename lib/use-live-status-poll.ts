@@ -37,6 +37,14 @@ export function useLiveStatusPoll(
     // Doubles as the generation guard: switching shows tears this effect down,
     // so a poll still in flight for the previous feed can't paint onto the new
     // one. Same hazard <Podroll>'s genRef exists for.
+    //
+    // It does NOT cover the caller's own state timing: EpisodeList only clears
+    // `data` when feedId goes to null, so a same-tick switch from show A to
+    // show B re-keys this effect to B (and, with the immediate poll below, can
+    // resolve) while `data` still holds A's episodes — merging B's live items
+    // onto A's list for a moment. Invisible (the component is rendering
+    // "loading episodes…" at that point) and overwritten the instant B's own
+    // /api/feed fetch lands.
     let cancelled = false;
     let lastPollMs = 0;
 
@@ -54,6 +62,13 @@ export function useLiveStatusPoll(
         .catch(() => {});
     };
 
+    // Poll once on activation, not just on the next interval tick — /api/feed
+    // can be up to ~5 min stale (its own s-maxage=300 plus the 60 s RSS cache),
+    // so without this a freshly-loaded pending/stale badge (and the disabled
+    // play button that comes with 'pending') would sit for up to another 45 s
+    // for no reason. The POLL_MIN_MS floor already stops this from stacking
+    // with a focus/visibilitychange landing moments later.
+    maybePoll();
     const timer = setInterval(maybePoll, POLL_MS);
     document.addEventListener('visibilitychange', maybePoll);
     window.addEventListener('focus', maybePoll);
