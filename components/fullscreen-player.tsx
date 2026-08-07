@@ -19,6 +19,7 @@ import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 import { LiveChat } from './live-chat';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
+import { useLiveBlockImage } from './live-now-playing';
 
 // About-this-episode text + Podcasting 2.0 chapters + transcript, toggled by a
 // tab strip. Tabs show only for sections with real content (2+); a lone section
@@ -296,6 +297,10 @@ export function FullscreenPlayer({
     hasValueRecipients(current?.episode.value ?? current?.podcast.value),
   );
 
+  // Above the early return, like useStreamPanel — it takes an optional guid and
+  // returns null for anything that isn't a live block, so hoisting costs nothing.
+  const liveBlockImage = useLiveBlockImage(current?.episode.guid);
+
   if (!current) return null;
 
   const { episode, podcast } = current;
@@ -409,11 +414,14 @@ export function FullscreenPlayer({
             </div>
           ) : (
             <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
-              {/* Prefer the active chapter's artwork (Podcasting 2.0 chapters
-                  `img`); PodcastCover falls back image→artwork→initial-tile, so
-                  a broken/missing chapter img degrades to the episode/podcast art. */}
+              {/* Prefer the LIVE BLOCK's art — on a Split Kit show that's the
+                  cover of the record actually playing, and it's the one thing
+                  on screen that makes a redirected payment self-evident. Then
+                  the active chapter's artwork (Podcasting 2.0 chapters `img`);
+                  PodcastCover falls back image→artwork→initial-tile, so a
+                  broken/missing image degrades to the episode/podcast art. */}
               <PodcastCover
-                image={activeChapter?.img ?? episode.image ?? podcast.image}
+                image={liveBlockImage ?? activeChapter?.img ?? episode.image ?? podcast.image}
                 artwork={podcast.artwork}
                 title={podcast.title}
                 seed={podcast.id?.toString()}

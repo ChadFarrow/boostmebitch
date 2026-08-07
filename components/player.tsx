@@ -13,6 +13,7 @@ import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipSup
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
+import { useLiveBlockImage } from './live-now-playing';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import { BoostModal } from './boost-modal';
@@ -467,6 +468,10 @@ export function Player() {
     transcriptSrc.type,
   );
 
+  // Above the early return (hook rules); returns null unless a live block with
+  // art is being credited, so ordinary playback is untouched.
+  const liveBlockImage = useLiveBlockImage(current?.episode.guid);
+
   if (!current) return null;
   const { episode, podcast } = current;
   const hasValue = hasValueRecipients(episode.value);
@@ -561,12 +566,14 @@ export function Player() {
             <div className="w-12 h-12 flex-shrink-0 bg-black overflow-hidden border border-bone/20">
               {videoNode && !playerExpanded && <OutPortal node={videoNode} />}
             </div>
-          ) : (activeChapter?.img || episode.image) ? (
-            // Prefer the active chapter's artwork (Podcasting 2.0 chapters `img`),
-            // falling back to the episode cover on a missing/broken chapter image.
+          ) : (liveBlockImage || activeChapter?.img || episode.image) ? (
+            // Prefer the live block's art (the record actually playing on a
+            // Split Kit show), then the active chapter's artwork (Podcasting 2.0
+            // chapters `img`), falling back to the episode cover on a
+            // missing/broken image.
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={activeChapter?.img || episode.image}
+              src={liveBlockImage || activeChapter?.img || episode.image}
               alt=""
               onError={(e) => {
                 if (episode.image && e.currentTarget.src !== episode.image)

@@ -299,6 +299,22 @@ export interface StreamingStatus {
   /** Title of the `<podcast:valueTimeSplit>` track currently being credited,
    *  or null when the show's own value block is. */
   currentTrack: string | null;
+  /**
+   * True when what's accruing settles at the next BLOCK CHANGE rather than on
+   * `msUntilSettle`.
+   *
+   * A live Split Kit show pays out when the host moves to the next track — the
+   * boundary force-settles — which on a music show is minutes sooner than the
+   * ten-minute interval. The countdown is still technically running underneath,
+   * but showing it is a readout answering "when does my money move?" with a
+   * number that is almost never the answer. Same obligation as the global
+   * streaming switch: a settings surface must not state a confident wrong
+   * figure about spending.
+   */
+  settlesOnBlockChange: boolean;
+  /** Cover art for the live block being credited, when it ships one. Null for
+   *  everything else, so no other surface changes. */
+  blockImage: string | null;
   /** Sats settled this session, across items. */
   sessionSentSats: number;
 }
@@ -326,6 +342,8 @@ export function streamingStatus(): StreamingStatus {
       : ctx?.splits.size
         ? splitAt(ctx.splits, useApp.getState().positionSec)?.title ?? null
         : null,
+    settlesOnBlockChange: !!ctx?.liveBucket,
+    blockImage: (ctx?.liveBucket && ctx.splits.get(ctx.liveBucket)?.image) || null,
     sessionSentSats,
   };
 }
@@ -346,6 +364,10 @@ function notifyIfChanged() {
   const sig = [
     s.active, s.ratePerMin, s.accruedSats, s.settling, s.stopped, s.stoppedReason,
     s.lastError, s.currentTrack, s.sessionSentSats, Math.ceil(s.msUntilSettle / 60_000),
+    // Both are rendered, so both have to be able to wake a subscriber. Art in
+    // particular changes on its own schedule: two blocks can share a title
+    // (a re-run interstitial) while carrying different covers.
+    s.settlesOnBlockChange, s.blockImage,
   ].join('|');
   if (sig === lastSig) return;
   lastSig = sig;

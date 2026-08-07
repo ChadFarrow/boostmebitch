@@ -332,15 +332,32 @@ export function StreamMeter({ className = '' }: { className?: string }) {
         <span className="text-muted">
           {/* Naming the track is the visible proof that a music show's
               per-track value splits are being followed — otherwise "streaming"
-              looks identical whether the artist is being paid or not. */}
+              looks identical whether the artist is being paid or not. The art
+              is the same argument in one glance: it's the artist's own cover,
+              pushed with the block, so a wrong target is obvious immediately.
+              <img> not next/image — the host is whatever the block names. */}
+          {status.blockImage && (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={status.blockImage}
+              alt=""
+              className="inline-block w-4 h-4 rounded-sm object-cover align-text-bottom mr-1 ml-1"
+            />
+          )}
           {status.currentTrack && <> · to <span className="text-bone">{status.currentTrack}</span></>}
           {' · '}
           {status.accruedSats} sat{status.accruedSats === 1 ? '' : 's'} accrued
           {status.settling
             ? ' · sending…'
-            : status.msUntilSettle > 0
-              ? ` · next in ${mins}m`
-              : ' · due'}
+            /* A live block settles when the host moves on, which is minutes
+               sooner than the interval — so showing the interval countdown
+               answers "when does my money move?" with a number that is almost
+               never the answer. Name the edge instead. */
+            : status.settlesOnBlockChange
+              ? ' · sends when the block changes'
+              : status.msUntilSettle > 0
+                ? ` · next in ${mins}m`
+                : ' · due'}
         </span>
       )}
       {status.lastError && (
