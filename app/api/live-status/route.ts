@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getPodcast, getLiveItemsFromRssDetailed } from '@/lib/pi';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
+import type { LiveStatusItem } from '@/lib/live-status';
 
 // How stale the feed XML may be when answering. Mirrors /api/live-value: the
 // override applies to THIS call only (see fetchFeedXml), so /api/feed keeps its
@@ -46,9 +47,24 @@ export async function GET(req: Request) {
       {
         ok: true,
         // Matching is by guid, so an item without one is unusable to the client.
+        // The type predicate narrows Episode['liveStatus'] ('pending' | 'live' |
+        // 'ended' | undefined) down to LiveStatusItem['status'] ('pending' |
+        // 'live') — today that narrowing is a no-op because parseRssLiveItems
+        // can only ever emit the narrow pair, but the compiler now enforces
+        // that fact instead of it being an unchecked assumption; the mapped
+        // array's LiveStatusItem[] annotation makes the whole thing a
+        // compile-time contract with lib/live-status.ts (isomorphic and
+        // type-only, so importing its type here costs nothing at runtime).
         items: items
-          .filter((e) => e.guid)
-          .map((e) => ({ guid: e.guid, status: e.liveStatus, startTime: e.liveStartTime })),
+          .filter(
+            (e): e is typeof e & { guid: string; liveStatus: 'pending' | 'live' } =>
+              !!e.guid && (e.liveStatus === 'pending' || e.liveStatus === 'live'),
+          )
+          .map((e): LiveStatusItem => ({
+            guid: e.guid,
+            status: e.liveStatus,
+            startTime: e.liveStartTime,
+          })),
       },
       { headers: { 'Cache-Control': 'public, max-age=10, s-maxage=10' } },
     );
