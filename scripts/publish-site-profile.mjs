@@ -17,8 +17,13 @@ const PROFILE = {
   display_name: 'Boost Me Bitch',
   about:
     '⚡ Boost notes from listeners on boostmebitch.com — search. listen. boost. Podcasting 2.0 + Value4Value.',
-  picture: 'https://boostmebitch.com/icons/icon-512.png',
-  website: 'https://boostmebitch.com',
+  // `www` on the two URLs, apex on the nip05. The apex 307-redirects to www,
+  // and `picture` is FETCHED by every client rendering this profile — a client
+  // that doesn't follow the redirect shows no avatar. The nip05 identifier is
+  // not a URL: it's the identity clients display as the bare domain, and
+  // app/.well-known/nostr.json serves it on both hosts.
+  picture: 'https://www.boostmebitch.com/icons/icon-512.png',
+  website: 'https://www.boostmebitch.com',
   nip05: '_@boostmebitch.com',
   lud16: 'chadf@getalby.com',
 };

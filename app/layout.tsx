@@ -5,7 +5,13 @@ import { ServiceWorkerRegister } from '@/components/sw-register';
 import { Player } from '@/components/player';
 
 export const metadata: Metadata = {
-  metadataBase: new URL('https://boostmebitch.vercel.app'),
+  // The canonical origin, and it must be the `www` form: the apex 307-redirects
+  // to it, and metadataBase is what turns the relative asset paths below (OG
+  // image, icons) into the absolute URLs an unfurler fetches. Pointing it at
+  // the vercel.app host — as it did — meant every Nostr/social card pulled its
+  // artwork from a domain the app doesn't otherwise use, while the boost-note
+  // deep links, NIP-05 and the OAuth origins all say boostmebitch.com.
+  metadataBase: new URL('https://www.boostmebitch.com'),
   title: 'Boost Me Bitch — Podcast Boost Station',
   description: 'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
   manifest: '/manifest.json',

@@ -56,10 +56,15 @@ function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  *
  * The episode guid is encodeURIComponent'd — unlike the podcast guid (a UUID),
  * it's an arbitrary feed-chosen string and is routinely a URL.
+ *
+ * The `www` host is deliberate and must match app/layout.tsx's metadataBase:
+ * the apex 307-redirects here, and this URL is written into a signed, immutable
+ * kind:1 — an unfurler that doesn't follow the redirect gets no card at all,
+ * and every note already published carries whichever host we chose forever.
  */
 function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
   if (!podcast.podcastGuid) return null;
-  const url = `https://boostmebitch.com/?podcast=${podcast.podcastGuid}`;
+  const url = `https://www.boostmebitch.com/?podcast=${podcast.podcastGuid}`;
   return episode?.guid ? `${url}&episode=${encodeURIComponent(episode.guid)}` : url;
 }
 
