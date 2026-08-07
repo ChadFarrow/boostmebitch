@@ -9,7 +9,7 @@ import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage, type ShareNostrAs } from '@/lib/storage';
-import { getErrorMessage, resolveSenderName } from '@/lib/util';
+import { getErrorMessage, resolveSenderName, storedBoostLegs } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
@@ -64,7 +64,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const [name, setName] = useState('');
   const [rail, setRail] = useState<Rail | null>(null);
 
-  const [results, setResults] = useState<BoostResult[]>([]);
+  // Sparse while a send is in flight — legs settle biggest-share-first, not in
+  // array order, so a hole is "this recipient hasn't been paid yet". The
+  // `undefined` in the type is load-bearing: this repo doesn't enable
+  // `noUncheckedIndexedAccess`, so a bare BoostResult[] would type-check while
+  // lying about the holes.
+  const [results, setResults] = useState<(BoostResult | undefined)[]>([]);
   const [running, setRunning] = useState(false);
   const [paymentDone, setPaymentDone] = useState(false);
 
@@ -228,7 +233,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     };
 
     setRunning(true);
-    setResults([]);
+    // Pre-sized so an out-of-order leg can be written at its own index without
+    // leaving a length gap — sendBoost pays biggest share first, so the first
+    // leg to settle is rarely recipients[0].
+    setResults(new Array(value.recipients.length));
 
     // ── Live-stream zap path ────────────────────────────────────────────────
     // Boosting a Nostr live stream while signed in, when the host's Lightning
@@ -279,7 +287,15 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         totalSats: sats,
         boostagram,
         rail,
-        onProgress: (res) => setResults((prev) => [...prev, res]),
+        // By index, never appended: legs settle biggest-share-first, so append
+        // order is not recipient order and every ✓/✗ would land on the wrong
+        // row. `.slice()` preserves the holes and hands React a fresh ref.
+        onProgress: (res, index) =>
+          setResults((prev) => {
+            const next = prev.slice();
+            next[index] = res;
+            return next;
+          }),
       });
       setResults(collected);
       if (paidAny(collected)) {
@@ -322,17 +338,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // on at least one successful leg — failed-only boosts shouldn't pollute the
     // network.
     if (anyPaid) {
-      logStoredBoost(
-        boostagram,
-        collected.map((r) => ({
-          recipient: r.recipient.address,
-          recipientName: r.recipient.name,
-          sats: r.sats,
-          ok: r.ok,
-          error: r.error,
-          boostboxUrl: r.boostboxUrl,
-        })),
-      );
+      logStoredBoost(boostagram, storedBoostLegs(collected));
       await maybePublishNote(boostagram, collected);
     }
   }

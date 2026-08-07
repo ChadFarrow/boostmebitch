@@ -1,4 +1,7 @@
-import type { Podcast, ValueBlock, ValueRecipient, Episode, AlternateEnclosure } from './types';
+import type {
+  Podcast, ValueBlock, ValueRecipient, Episode, AlternateEnclosure,
+  BoostResult, StoredBoostLeg,
+} from './types';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
 // Case-insensitive — PI doesn't normalize the tag. Drives album-specific UI
@@ -35,10 +38,44 @@ export function recipientAddress(r: Pick<ValueRecipient, 'type' | 'address'>): s
  * would silently pair each row with someone else's sats and someone else's
  * ✓/✗. Ties keep feed order (the sort is stable), so equal-weight payees don't
  * shuffle between renders.
+ *
+ * This is no longer display-only: `sendBoost` traverses by it, so it decides
+ * which artist is paid before a rail has a chance to die, and `storedBoostLegs`
+ * below writes the permanent history record by it. The stability guarantee is
+ * therefore a payment-determinism guarantee too.
  */
 export function recipientOrder(recipients: readonly Pick<ValueRecipient, 'split'>[]): number[] {
   const weight = (i: number) => Math.max(0, recipients[i]?.split ?? 0);
   return recipients.map((_, i) => i).sort((a, b) => weight(b) - weight(a));
+}
+
+/**
+ * A sent boost's per-recipient legs for the local log, biggest share first.
+ *
+ * Ordered rather than feed-ordered because `<BoostCard>` renders `legs`
+ * verbatim and a stored leg carries no `split` weight — whatever order is
+ * written here is the order that boost is remembered in, permanently, with no
+ * way to re-sort at render time. Feed order meant the history card listed a
+ * payment differently from the modal that sent it: the same "the screen
+ * disagrees with the wallet" complaint, one screen removed.
+ *
+ * Derives its order from `results` alone. `sendBoost` guarantees
+ * `results[i].recipient` IS `value.recipients[i]` on every path (including the
+ * keysend upgrade, which re-stamps the feed's recipient), so there's no second
+ * array for a caller to pass out of sync.
+ */
+export function storedBoostLegs(results: BoostResult[]): StoredBoostLeg[] {
+  return recipientOrder(results.map((r) => r.recipient)).map((i) => {
+    const r = results[i];
+    return {
+      recipient: r.recipient.address,
+      recipientName: r.recipient.name,
+      sats: r.sats,
+      ok: r.ok,
+      error: r.error,
+      boostboxUrl: r.boostboxUrl,
+    };
+  });
 }
 
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric

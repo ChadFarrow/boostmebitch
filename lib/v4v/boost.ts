@@ -19,6 +19,7 @@ import { fetchLnInvoice } from './lnaddr';
 import { lookupKeysendTarget } from './keysend-lookup';
 import { storeBoostMetadata } from './boostbox';
 import { storage } from '@/lib/storage';
+import { recipientOrder } from '@/lib/util';
 
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
@@ -365,6 +366,10 @@ export async function sendBoost(args: {
   totalSats: number;
   boostagram: Boostagram;
   rail?: Rail;
+  // `index` is the recipient's position in `value.recipients` — NOT the order
+  // the legs settle in (see the traversal below). Callers tracking progress
+  // must write `results[index]`, never push, or every ✓/✗ lands on the wrong
+  // recipient mid-send.
   onProgress?: (r: BoostResult, index: number, total: number) => void;
 }): Promise<BoostResult[]> {
   const rail = args.rail ?? pickRail();
@@ -372,7 +377,12 @@ export async function sendBoost(args: {
 
   const recipients = args.value.recipients;
   const splits = splitSats(args.totalSats, recipients);
-  const results: BoostResult[] = [];
+  // Pre-sized, not pushed: every slot is written by the index it belongs to, so
+  // results[i], recipients[i] and splits[i] stay the same payee no matter what
+  // order the loop visits them in — which is what lets it visit them out of
+  // order below. Do NOT "simplify" this back to results.push(r); it type-checks,
+  // lints and builds while pairing every leg with the wrong recipient.
+  const results: BoostResult[] = new Array(recipients.length);
 
   // Resolved once per boost, not per leg, and only when there's actually an
   // lnaddress recipient to upgrade. Both halves matter: a node-only value
@@ -384,9 +394,24 @@ export async function sendBoost(args: {
     ? await railCanKeysend(rail)
     : 'no';
 
-  for (let i = 0; i < recipients.length; i++) {
+  // Biggest share first — the same order <SplitsPreview> and <ValueSplitRows>
+  // list. Feed order is AUTHORING order: a real block buried a 94.1% artist
+  // under four 1-sat housekeeping payees, so all four settled with a ✓ while
+  // the artist was still pending. The modal said one thing and the wallet did
+  // another. Legs are sequential and a rail can die mid-boost, so paying
+  // descending by weight also means a partial failure drops the dust rather
+  // than the leg that mattered.
+  //
+  // This reorders the TRAVERSAL, never the array — `recipientOrder` returns
+  // indices for exactly this reason. Sorting `recipients` instead would perturb
+  // splitSats' largest-remainder tie-breaking by a sat per payee and repoint
+  // every positional read downstream.
+  //
+  // Still strictly sequential: NWC is one relay connection, WebLN prompts per
+  // payment, and streaming.ts settles serially by design. Never parallelize.
+  for (const i of recipientOrder(recipients)) {
     const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend);
-    results.push(r);
+    results[i] = r;
     args.onProgress?.(r, i, recipients.length);
   }
   return results;

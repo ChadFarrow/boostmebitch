@@ -20,15 +20,20 @@ export function SplitsPreview({
 }: {
   recipients: ValueRecipient[];
   splits: number[];
-  results: BoostResult[];
+  // Sparse mid-send — a hole is a recipient whose leg hasn't settled yet.
+  results: (BoostResult | undefined)[];
 }) {
   const totalWeight = recipients.reduce((sum, r) => sum + (r.split ?? 0), 0);
   return (
     <div className="card p-3">
       <div className="text-[11px] uppercase tracking-widest text-muted mb-2">Recipients</div>
       <ul className="text-xs space-y-1.5 max-h-48 overflow-y-auto pr-2">
-        {/* Biggest share first. `i` stays the ORIGINAL index throughout, so
-            splits[i] and results[i] still belong to this recipient. */}
+        {/* Biggest share first — and since sendBoost traverses this same order,
+            it's also the order the sats actually go out in. `i` stays the
+            ORIGINAL index throughout, so splits[i] and results[i] still belong
+            to this recipient. A missing results[i] renders no glyph: that's the
+            pending state, and mid-send the holes are scattered rather than
+            trailing, because legs settle top-to-bottom of this list. */}
         {recipientOrder(recipients).map((i) => {
           const r = recipients[i];
           const res = results[i];
@@ -68,12 +73,16 @@ export function LightningStatus({
   results,
   totalRecipients,
 }: {
-  results: BoostResult[];
+  results: (BoostResult | undefined)[];
   totalRecipients: number;
 }) {
-  if (results.length === 0) return null;
-  const okCount = results.filter((r) => r.ok).length;
-  const errors = results.filter((r) => !r.ok);
+  // `results` is pre-sized the moment a send starts, so its LENGTH is the
+  // recipient count, not the settled count — reading it would render
+  // "0/5 sent" before a single leg had gone out. Count what's actually there.
+  const settled = results.filter((r): r is BoostResult => !!r);
+  if (settled.length === 0) return null;
+  const okCount = settled.filter((r) => r.ok).length;
+  const errors = settled.filter((r) => !r.ok);
   return (
     <div className="text-xs text-muted">
       ⚡ Lightning: {okCount}/{totalRecipients} sent

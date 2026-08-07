@@ -8,7 +8,7 @@ import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage, type ShareNostrAs } from '@/lib/storage';
-import { getErrorMessage, hasValueRecipients, resolveSenderName } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, resolveSenderName, storedBoostLegs } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
@@ -219,14 +219,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               sats: trackSats,
               message: msg || undefined,
               senderName,
-              legs: results.map((r) => ({
-                recipient: r.recipient.address,
-                recipientName: r.recipient.name,
-                sats: r.sats,
-                ok: r.ok,
-                error: r.error,
-                boostboxUrl: r.boostboxUrl,
-              })),
+              legs: storedBoostLegs(results),
             };
             storage.boosts.add(identity?.npub, stored);
             bumpBoosts();
@@ -286,14 +279,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               sats: showLegSats,
               message: msg || undefined,
               senderName,
-              legs: hostResults.map((r) => ({
-                recipient: r.recipient.address,
-                recipientName: r.recipient.name,
-                sats: r.sats,
-                ok: r.ok,
-                error: r.error,
-                boostboxUrl: r.boostboxUrl,
-              })),
+              legs: storedBoostLegs(hostResults),
             };
             storage.boosts.add(identity?.npub, stored);
             bumpBoosts();
