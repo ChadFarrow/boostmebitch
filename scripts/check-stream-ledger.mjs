@@ -27,6 +27,7 @@ import {
   accrue,
   accruedSats,
   allocationTrackBucket,
+  creditFixed,
   trackBucket,
   createLedger,
   DEFAULT_STREAM_RATE_PER_MIN,
@@ -619,6 +620,89 @@ console.log('\nvalueTimeSplits — gaps, floors and conservation');
   const a = allocationTrackBucket([{ bucket: 't:a:1', fraction: 1 }]);
   const b = allocationTrackBucket([{ bucket: 't:b:2', fraction: 1 }]);
   check('consecutive tracks are distinguishable', a !== b, true);
+}
+
+// --- creditFixed: the per-track payment mode --------------------------------
+// The rate path pays `rate × time`, so a six-minute song earns three times what
+// a two-minute one does. Per-track pays both the same. It shares `distribute`
+// with accrue() on purpose, so the conservation guarantee and the host remainder
+// have to behave identically — a divergence here would pay a different set of
+// people than the rate path does for the same block.
+console.log('\ncreditFixed — a fixed sum per track');
+{
+  const l0 = createLedger('ep', T0);
+  const l = creditFixed(l0, { msat: 500_000, allocation: [{ bucket: 't:a:1', fraction: 1 }] });
+  check('the whole amount lands in the track bucket', l.buckets['t:a:1'], 500_000);
+  check('…and nothing leaks to the host', l.buckets[HOST_BUCKET] ?? 0, 0);
+  check('500 sats credited reads as 500 sats owed', accruedSats(l), 500);
+}
+{
+  // remotePercentage 90: the block redirects 90% and the show keeps the rest.
+  // Same rule the rate path applies, because it is the same `distribute`.
+  const l = creditFixed(createLedger('ep', T0), {
+    msat: 500_000,
+    allocation: [{ bucket: 't:a:1', fraction: 0.9 }, { bucket: HOST_BUCKET, fraction: 0.1 }],
+  });
+  check('a partial redirect splits the fixed sum', l.buckets['t:a:1'], 450_000);
+  check('…and the host keeps the remainder', l.buckets[HOST_BUCKET], 50_000);
+  check('the split conserves the whole amount',
+    l.buckets['t:a:1'] + l.buckets[HOST_BUCKET], 500_000);
+}
+{
+  // An allocation that doesn't add to 1 sends the shortfall to the host rather
+  // than dropping it — dropping would make the meter overstate what was charged.
+  const l = creditFixed(createLedger('ep', T0), {
+    msat: 100_000,
+    allocation: [{ bucket: 't:a:1', fraction: 0.25 }],
+  });
+  check('an under-allocation gives the shortfall to the host',
+    l.buckets[HOST_BUCKET], 75_000);
+  check('…conserving the total', l.buckets['t:a:1'] + l.buckets[HOST_BUCKET], 100_000);
+}
+{
+  const l0 = createLedger('ep', T0);
+  check('no allocation credits the host', creditFixed(l0, { msat: 1000 }).buckets[HOST_BUCKET], 1000);
+  // A NaN or negative amount must leave the ledger ALONE. A poisoned bucket can
+  // never be settled and never cleared — it would sit in bmb:stream_pending
+  // forever, blocking every later settle for that item.
+  check('NaN is refused outright', creditFixed(l0, { msat: NaN }), l0);
+  check('Infinity is refused outright', creditFixed(l0, { msat: Infinity }), l0);
+  check('a negative amount is refused', creditFixed(l0, { msat: -5000 }), l0);
+  check('zero is refused', creditFixed(l0, { msat: 0 }), l0);
+}
+{
+  // Time bookkeeping is accrue()'s job, not this one's. The engine still runs
+  // accrue with ratePerMin 0 every tick in this mode precisely because these
+  // fields have to keep advancing — otherwise switching the unit back to
+  // per-minute mid-show bills one enormous catch-up tick.
+  const l0 = createLedger('ep', T0);
+  const l = creditFixed(l0, { msat: 1000 });
+  check('the tick clock is untouched', l.lastTickMs, l0.lastTickMs);
+  check('the position stamp is untouched', l.lastPositionSec, l0.lastPositionSec);
+  check('the settle clock is untouched', l.lastSettleMs, l0.lastSettleMs);
+}
+{
+  // Two tracks in one batch accumulate independently, exactly as the rate path's
+  // buckets do — this is what lets settleBatch pay each artist their own sum.
+  let l = createLedger('ep', T0);
+  l = creditFixed(l, { msat: 100_000, allocation: [{ bucket: 't:a:1', fraction: 1 }] });
+  l = creditFixed(l, { msat: 100_000, allocation: [{ bucket: 't:b:2', fraction: 1 }] });
+  l = creditFixed(l, { msat: 100_000, allocation: [{ bucket: 't:a:1', fraction: 1 }] });
+  check('a repeated track tops up its own bucket', l.buckets['t:a:1'], 200_000);
+  check('…without touching the other one', l.buckets['t:b:2'], 100_000);
+}
+
+// --- accrue in track mode: rate 0 must stamp but not charge ------------------
+// The engine calls accrue with ratePerMin 0 on every tick in per-track mode.
+// If that ever started accruing, a track-mode listener would be paying BOTH the
+// fixed amount and a per-minute rate.
+console.log('\naccrue — rate 0 is the per-track mode\'s clock');
+{
+  let l = createLedger('ep', T0);
+  l = accrue(l, { nowMs: T0 + 60_000, positionSec: 60, playing: true, ratePerMin: 0 });
+  check('a rate of 0 charges nothing', accruedSats(l), 0);
+  check('…but still stamps the wall clock', l.lastTickMs, T0 + 60_000);
+  check('…and still stamps the position', l.lastPositionSec, 60);
 }
 
 // --- trackBucket: which bucket a track's sats land in -----------------------

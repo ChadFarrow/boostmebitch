@@ -118,6 +118,31 @@ export const DEFAULT_STREAM_RATE_PER_MIN = 10;
 export const STREAM_RATE_MAX_PER_MIN = 10_000;
 
 /**
+ * The per-track amount a user gets when they switch the unit to "track" without
+ * ever having typed a number — the `DEFAULT_STREAM_RATE_PER_MIN` of that mode,
+ * and pinned for the same reason: money moves on a number the user never chose.
+ *
+ * 100 sats is roughly what one track earned under the default rate, so flipping
+ * the unit doesn't silently change the order of magnitude of a session. It is a
+ * starting point, not a recommendation — the whole point of per-track is that
+ * the listener picks what a song is worth to them.
+ */
+export const DEFAULT_STREAM_AMOUNT_PER_TRACK = 100;
+
+/**
+ * Upper bound on a per-track amount, in sats. Same argument as
+ * `STREAM_RATE_MAX_PER_MIN`: corruption protection, not a product limit, because
+ * this number is paid on a track change with no confirmation step.
+ *
+ * Deliberately generous relative to the rate ceiling rather than tighter — at
+ * 10,000 sats/min a four-minute track already clears 40,000, so a per-track
+ * ceiling below that would reject amounts the rate path permits for the same
+ * song. Anyone wanting to send more than this to one artist wants the boost
+ * button, which asks first.
+ */
+export const STREAM_AMOUNT_MAX_SATS = 100_000;
+
+/**
  * Ceiling on the unbilled position surplus a ledger may carry.
  *
  * Two seconds is comfortably more than the sub-second phase drift this is meant
@@ -282,6 +307,46 @@ export function accrue(
   return {
     ...stamped,
     posCarryMs,
+    buckets: distribute(ledger.buckets, msat, allocation ?? [{ bucket: HOST_BUCKET, fraction: 1 }]),
+  };
+}
+
+/**
+ * Credit a FIXED sum, independent of elapsed time — the per-track payment mode.
+ *
+ * The rate path pays `rate × time`, so a six-minute song earns three times what
+ * a two-minute one does for the same attention. Per-track mode pays the same
+ * amount for either, which is how a listener actually thinks about what a song
+ * is worth. This is a different payment *policy*, not a different payment path:
+ * the sum lands in the ordinary per-bucket ledger and settles through the same
+ * `settleBatch`, boundary edge and boostagram as everything else.
+ *
+ * It shares `distribute` with `accrue` deliberately, so a block with a
+ * `remotePercentage` below 100 splits the fixed amount between track and host
+ * on exactly the same rule — and the conservation guarantee (every msat lands
+ * in exactly one bucket, shortfall to the host) holds identically.
+ *
+ * **Time bookkeeping is NOT touched here.** The engine still runs `accrue` with
+ * `ratePerMin: 0` on every tick in this mode, which stamps `lastTickMs` /
+ * `lastPositionSec` and clears the carry without accruing. Skipping that would
+ * leave the clock fields stale, and switching the unit back to per-minute
+ * mid-show would then bill one enormous catch-up tick.
+ *
+ * A non-finite or non-positive `msat` returns the ledger untouched rather than
+ * poisoning a bucket with NaN — a bucket that can never be settled or cleared.
+ */
+export function creditFixed(
+  ledger: StreamLedger,
+  args: {
+    msat: number;
+    /** Where the fixed sum goes. Omitted = all to the host's value block. */
+    allocation?: StreamAllocation[];
+  },
+): StreamLedger {
+  const { msat, allocation } = args;
+  if (!Number.isFinite(msat) || msat <= 0) return ledger;
+  return {
+    ...ledger,
     buckets: distribute(ledger.buckets, msat, allocation ?? [{ bucket: HOST_BUCKET, fraction: 1 }]),
   };
 }

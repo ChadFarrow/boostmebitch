@@ -40,7 +40,7 @@
 
 import type { Episode, Podcast, Boostagram, ValueBlock, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { storage, subscribeStreamRate as onStoredRateChange } from '@/lib/storage';
+import { storage, subscribeStreamRate as onStoredRateChange, type StreamMode } from '@/lib/storage';
 import { createObservable } from '@/lib/pubsub';
 // DEFAULT_SENDER_NAME lives in lib/util.ts, NOT in the boost modal that owns
 // the "From" field — importing it from `components/` here would invert the v4v
@@ -60,6 +60,7 @@ import {
   HOST_BUCKET,
   isStaleLedger,
   msUntilSettle,
+  creditFixed,
   settleBatch,
   trackBucket,
   type StreamAllocation,
@@ -72,6 +73,16 @@ const TICK_MS = 1_000;
 const PERSIST_EVERY_MS = 10_000;
 /** Consecutive failed settles before streaming stops for the current item. */
 const MAX_CONSECUTIVE_FAILURES = 2;
+/**
+ * How long a bucket is immune from a second per-track credit.
+ *
+ * Not a listen threshold — a two-second track still earns in full. This exists
+ * because the live target can oscillate without the music changing (a dropped
+ * socket hands ownership to the RSS poller and the reconnect hands it back), and
+ * without it an A→B→A→B flap bills four tracks for one song. A genuine replay
+ * later in the show is well past the window and earns again.
+ */
+const TRACK_CREDIT_DEBOUNCE_MS = 60_000;
 
 /** Everything the current item is being streamed against. */
 interface StreamContext {
@@ -112,6 +123,24 @@ interface StreamContext {
    * attach none at all to the one settle these ids exist for.
    */
   liveEvents?: Map<string, LiveEventIds>;
+  /** What the number means: sats per minute, or a fixed sum per track. */
+  mode: StreamMode;
+  /** Sats credited per track when `mode === 'track'`. */
+  amountPerTrack: number;
+  /**
+   * When each bucket last received a per-track credit.
+   *
+   * The target can oscillate without the music changing: a dropped socket hands
+   * ownership back to the RSS poller, which writes a different target, and the
+   * reconnect writes the block back. Crediting on every change would bill an
+   * A→B→A→B flap as four tracks for one song. A bucket is therefore credited at
+   * most once per `TRACK_CREDIT_DEBOUNCE_MS`.
+   *
+   * This is a guard against OUR OWN signal instability, not a listen threshold:
+   * a track that genuinely plays again later in the show is past the window and
+   * earns again, and a track that plays for two seconds still earns in full.
+   */
+  creditedAt?: Map<string, number>;
 }
 
 /** The ids Split Kit uses to tie a payment back to the block that earned it. */
@@ -286,8 +315,24 @@ export type StreamStoppedReason = 'failures' | 'rail-cannot-pay' | null;
 export interface StreamingStatus {
   /** Streaming is on and accruing for whatever is playing right now. */
   active: boolean;
-  /** Resolved rate for the current item, sats/min. 0 = off / not eligible. */
+  /** Resolved rate for the current item, sats/min. 0 = off / not eligible.
+   *  Still the ON signal in track mode — see resolveStreamPlan. */
   ratePerMin: number;
+  /** What the number means. */
+  mode: StreamMode;
+  /** Sats per track, meaningful only when `mode === 'track'`. */
+  amountPerTrack: number;
+  /**
+   * True when this item is in track mode but has no tracks to pay for, so
+   * nothing will ever be sent.
+   *
+   * Surfaced rather than left implicit because it is the same obligation the
+   * global streaming switch carries: a readout that lets a user believe money
+   * is moving when it isn't is the failure this area keeps producing. An
+   * ordinary podcast has no `valueTimeSplit` windows and no live blocks, so
+   * per-track mode has nothing to trigger on.
+   */
+  trackModeIdle: boolean;
   accruedSats: number;
   msUntilSettle: number;
   settling: boolean;
@@ -326,6 +371,11 @@ export function streamingStatus(): StreamingStatus {
   return {
     active: !!ctx && !!ledger,
     ratePerMin: ctx?.ratePerMin ?? 0,
+    mode: ctx?.mode ?? 'rate',
+    amountPerTrack: ctx?.amountPerTrack ?? 0,
+    // No live block and no resolved valueTimeSplits means no track will ever
+    // become current, so the fixed amount has nothing to attach to.
+    trackModeIdle: ctx?.mode === 'track' && !ctx.liveBucket && ctx.splits.size === 0,
     accruedSats: ledger ? accruedSats(ledger) : 0,
     msUntilSettle: ledger ? msUntilSettle(ledger, now) : 0,
     settling: pendingSettles > 0,
@@ -368,6 +418,9 @@ function notifyIfChanged() {
     // particular changes on its own schedule: two blocks can share a title
     // (a re-run interstitial) while carrying different covers.
     s.settlesOnBlockChange, s.blockImage,
+    // The unit and the amount are both rendered, and `trackModeIdle` is the
+    // "nothing will ever be sent" warning — none of them may go stale.
+    s.mode, s.amountPerTrack, s.trackModeIdle,
   ].join('|');
   if (sig === lastSig) return;
   lastSig = sig;
@@ -392,6 +445,36 @@ export function resolveStreamRate(podcast: Podcast | null | undefined): number {
 }
 
 /**
+ * What a show is streaming, and in which unit.
+ *
+ * `ratePerMin` keeps its existing meaning throughout — including as the ON
+ * signal (`> 0` means streaming is enabled for this show, `0` means off, and an
+ * explicit per-show 0 still outranks a global rate). That stays true in track
+ * mode: the rate is seeded and remembered independently of the unit, so it is
+ * still a valid non-zero number, it just isn't what gets charged.
+ *
+ * Keeping one on/off signal rather than a per-mode one is deliberate — two
+ * switches that could disagree about whether a show is streaming is precisely
+ * the ambiguity the tri-state rules in `lib/storage.ts` exist to prevent.
+ */
+export interface StreamPlan {
+  ratePerMin: number;
+  mode: StreamMode;
+  /** Sats per track, meaningful only when `mode === 'track'`. */
+  amountPerTrack: number;
+}
+
+export function resolveStreamPlan(podcast: Podcast | null | undefined): StreamPlan {
+  const ratePerMin = resolveStreamRate(podcast);
+  const showKey = podcast ? streamShowKey(podcast) : null;
+  return {
+    ratePerMin,
+    mode: storage.streamRate.getEffectiveMode(showKey),
+    amountPerTrack: storage.streamRate.getEffectiveAmount(showKey),
+  };
+}
+
+/**
  * Same answer as resolveStreamRate, memoized for the 1 Hz tick.
  *
  * Invalidated from `onRateChange`, which every setter in `storage.streamRate`
@@ -399,14 +482,14 @@ export function resolveStreamRate(podcast: Podcast | null | undefined): number {
  * nothing in the app listens for cross-tab `storage` events, so a rate changed
  * in another tab isn't seen live here either way.)
  */
-let rateCache: { showKey: string; rate: number } | null = null;
+let rateCache: { showKey: string; plan: StreamPlan } | null = null;
 
-function cachedStreamRate(podcast: Podcast): number {
+function cachedStreamPlan(podcast: Podcast): StreamPlan {
   const showKey = streamShowKey(podcast);
-  if (rateCache && rateCache.showKey === showKey) return rateCache.rate;
-  const rate = resolveStreamRate(podcast);
-  rateCache = { showKey, rate };
-  return rate;
+  if (rateCache && rateCache.showKey === showKey) return rateCache.plan;
+  const plan = resolveStreamPlan(podcast);
+  rateCache = { showKey, plan };
+  return plan;
 }
 
 function itemKey(episode: Episode, podcast: Podcast): string {
@@ -752,7 +835,8 @@ function tick() {
     const value = liveTarget && liveTarget.guid === cur.episode.guid
       ? liveTarget.hostValue ?? cur.podcast.value
       : cur.episode.value ?? cur.podcast.value;
-    const rate = cachedStreamRate(cur.podcast);
+    const plan = cachedStreamPlan(cur.podcast);
+    const rate = plan.ratePerMin;
     // Live streams are the NIP-57 zap path (see the boost modal's live branch);
     // they have no finite position to meter against and their value block is
     // synthesized per-viewer.
@@ -770,6 +854,8 @@ function tick() {
         podcast: cur.podcast,
         value: value!,
         ratePerMin: rate,
+        mode: plan.mode,
+        amountPerTrack: plan.amountPerTrack,
         // Populated asynchronously below. Until it lands, ticks accrue to the
         // host — correct rather than merely convenient: with no resolved
         // redirect, the show's own value block IS the target.
@@ -785,10 +871,13 @@ function tick() {
     lastPlaying = st.isPlaying;
     return;
   }
-  // Rate can change mid-listen; keep the context's copy live so the meter and
-  // the accrual agree.
-  if (ctx) ctx.ratePerMin = next.ratePerMin;
-  else openContext(next);
+  // Rate, unit and amount can all change mid-listen; keep the context's copies
+  // live so the meter and the accrual agree.
+  if (ctx) {
+    ctx.ratePerMin = next.ratePerMin;
+    ctx.mode = next.mode;
+    ctx.amountPerTrack = next.amountPerTrack;
+  } else openContext(next);
   if (!ctx || !ledger) return;
 
   // Adopted per tick rather than on the watcher's callback: the context may not
@@ -798,11 +887,16 @@ function tick() {
 
   const now = Date.now();
   const allocation = allocationAt(ctx, st.positionSec);
+  // In per-track mode nothing accrues by time — but `accrue` still runs, with a
+  // rate of 0, because it is what stamps `lastTickMs`/`lastPositionSec` and
+  // clears the carry. Skipping it would leave the clock fields stale, and
+  // switching the unit back to per-minute mid-show would bill one enormous
+  // catch-up tick for every minute spent in track mode.
   ledger = accrue(ledger, {
     nowMs: now,
     positionSec: st.positionSec,
     playing: st.isPlaying,
-    ratePerMin: ctx.ratePerMin,
+    ratePerMin: ctx.mode === 'track' ? 0 : ctx.ratePerMin,
     allocation,
   });
 
@@ -813,6 +907,28 @@ function tick() {
   // rule) and the outgoing bucket is complete when it pays.
   const track = allocationTrackBucket(allocation);
   const trackChanged = ctx.lastTrack !== undefined && ctx.lastTrack !== track;
+
+  // Per-track mode: the INCOMING track earns the fixed amount.
+  //
+  // Incoming rather than outgoing, for two reasons. The last track of every
+  // session would otherwise never be credited — there is no change after it.
+  // And because a track boundary force-settles, crediting the incoming bucket
+  // means the payment goes out while that block is still the current one, so
+  // `liveEvents` names the block that actually earned it.
+  //
+  // `ctx.lastTrack === undefined` on the first tick, so the opening track is a
+  // change and earns — unlike `trackChanged` above, which deliberately treats
+  // an opening context as NOT a settle edge.
+  if (ctx.mode === 'track' && track && track !== ctx.lastTrack && st.isPlaying) {
+    const creditedAt = (ctx.creditedAt ??= new Map());
+    if (now - (creditedAt.get(track) ?? -Infinity) >= TRACK_CREDIT_DEBOUNCE_MS) {
+      creditedAt.set(track, now);
+      // Through the same allocation a tick uses, so a block with
+      // remotePercentage < 100 splits the fixed sum between track and host on
+      // exactly the rate path's rule.
+      ledger = creditFixed(ledger, { msat: ctx.amountPerTrack * 1000, allocation });
+    }
+  }
   ctx.lastTrack = track;
 
   // Pause is a settle edge: the listener has stopped, so pay for what they

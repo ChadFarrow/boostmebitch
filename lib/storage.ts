@@ -8,7 +8,12 @@
 import type { FavoritePodcast, Podcast, StoredBoost } from './types';
 import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
 import type { StreamLedger } from './v4v/stream-ledger';
-import { DEFAULT_STREAM_RATE_PER_MIN, STREAM_RATE_MAX_PER_MIN } from './v4v/stream-ledger';
+import {
+  DEFAULT_STREAM_AMOUNT_PER_TRACK,
+  DEFAULT_STREAM_RATE_PER_MIN,
+  STREAM_AMOUNT_MAX_SATS,
+  STREAM_RATE_MAX_PER_MIN,
+} from './v4v/stream-ledger';
 import { coerceProfileMetadata } from './nostr/auth';
 import { createObservable } from './pubsub';
 
@@ -59,12 +64,16 @@ const KEYS = {
   // switching streaming off doesn't destroy the number the user typed. Also the
   // prefixes for the per-show overrides `…:<podcastGuid|feedId>`.
   streamRate: 'bmb:stream_rate',      // remembered sats-per-minute — a positive number or absent; never 0, and never removed by the toggle
+  streamMode: 'bmb:stream_mode',      // 'track' when the unit picker is on "per track"; absent/'rate' = per minute. Show-scope entry overrides the global one, same precedence as the rate.
+  streamAmount: 'bmb:stream_amount',  // remembered sats-per-TRACK, kept separate from streamRate so flipping the unit never destroys the other number
   streamOn: 'bmb:stream_on',          // '1' on | '0' off | absent = no opinion. Absent at global scope means OFF (streaming is opt-in); absent at show scope means "follow the global rate", while an explicit '0' means "never stream this show" and outranks a global rate raised later.
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
   streamedPrefix: 'bmb:streamed',     // + ':<npub>' — settled-stream log. Deliberately NOT bmb:boosts (see the accessor note).
 } as const;
 
 export type RailPref = 'nwc' | 'spark' | 'webln';
+/** What the streaming number means: sats per minute, or sats per track. */
+export type StreamMode = 'rate' | 'track';
 export type ShareNostrAs = 'self' | 'site';
 export type ThemeMode = 'light' | 'dark';
 export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
@@ -237,6 +246,22 @@ function saneRate(raw: string | null): number | null {
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 1 || n > STREAM_RATE_MAX_PER_MIN) return null;
   return Math.floor(n);
+}
+
+/** `saneRate` for the per-track amount — same corrupt-reads-as-absent rule. */
+function saneAmount(raw: string | null): number | null {
+  if (raw === null) return null;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1 || n > STREAM_AMOUNT_MAX_SATS) return null;
+  return Math.floor(n);
+}
+
+/** Anything that isn't an explicit `'track'` reads as per-minute — the mode that
+ *  existed before this key, so an absent or corrupt value keeps old behaviour. */
+function readMode(key: string): StreamMode | null {
+  const raw = safeGet(key);
+  if (raw === null) return null;
+  return raw === 'track' ? 'track' : 'rate';
 }
 
 /** Read an on/off flag: true, false, or null for "no opinion recorded". */
@@ -886,10 +911,12 @@ export const storage = {
     getShowRemembered: (showKey: string): number | null =>
       showKey ? saneRate(safeGet(`${KEYS.streamRate}:${showKey}`)) : null,
     /**
-     * `true`/`false` write an explicit per-show opinion; `null` clears BOTH show
-     * keys so the show goes back to following the global rate. Clearing both
-     * matters — leaving an invisible per-show number behind would ambush the
-     * user the next time they flipped that show on.
+     * `true`/`false` write an explicit per-show opinion; `null` clears EVERY
+     * show key so the show goes back to following the global settings. Clearing
+     * all of them matters — an invisible per-show number or unit left behind
+     * would ambush the user the next time they flipped that show on, and the
+     * unit is the worse of the two: 100 means something very different per
+     * minute than it does per track.
      */
     setShowOn: (showKey: string, on: boolean | null) => {
       if (!showKey) return;
@@ -898,6 +925,8 @@ export const storage = {
       if (on === null) {
         safeRemove(onKey);
         safeRemove(rateKey);
+        safeRemove(`${KEYS.streamMode}:${showKey}`);
+        safeRemove(`${KEYS.streamAmount}:${showKey}`);
       } else {
         if (on && saneRate(safeGet(rateKey)) === null) {
           safeSet(rateKey, String(storage.streamRate.getRemembered()));
@@ -921,6 +950,67 @@ export const storage = {
      */
     isEphemeral: (showKey?: string | null): boolean =>
       isMemoryOnly(showKey ? `${KEYS.streamOn}:${showKey}` : KEYS.streamOn),
+
+    // --- Unit: per minute, or a fixed amount per track ---------------------
+    //
+    // The rate path pays `rate × time`, so a six-minute song earns three times
+    // what a two-minute one does. Per-track pays both the same, which is how a
+    // listener thinks about what a song is worth.
+    //
+    // Mode and amount are their own keys, and the amount is deliberately NOT
+    // stored in `streamRate`: the two numbers mean different things and both
+    // have to survive switching the unit back and forth, exactly as the rate
+    // survives the on/off switch. Precedence mirrors the rate's — a per-show
+    // value overrides the global one, absent means "follow the default".
+
+    /** The global unit. Absent reads as 'rate', the behaviour before this key. */
+    getMode: (): StreamMode => readMode(KEYS.streamMode) ?? 'rate',
+    /** null = this show has no opinion, follow the global unit. */
+    getShowMode: (showKey: string): StreamMode | null =>
+      showKey ? readMode(`${KEYS.streamMode}:${showKey}`) : null,
+    /** The unit actually in force for a scope. */
+    getEffectiveMode: (showKey?: string | null): StreamMode =>
+      (showKey ? readMode(`${KEYS.streamMode}:${showKey}`) : null)
+      ?? readMode(KEYS.streamMode)
+      ?? 'rate',
+    setMode: (mode: StreamMode) => {
+      safeSet(KEYS.streamMode, mode);
+      streamRateObservable.notify();
+    },
+    setShowMode: (showKey: string, mode: StreamMode | null) => {
+      if (!showKey) return;
+      const key = `${KEYS.streamMode}:${showKey}`;
+      if (mode === null) safeRemove(key);
+      else safeSet(key, mode);
+      streamRateObservable.notify();
+    },
+
+    /** The remembered per-track amount the input shows, regardless of unit. */
+    getAmountRemembered: (): number =>
+      saneAmount(safeGet(KEYS.streamAmount)) ?? DEFAULT_STREAM_AMOUNT_PER_TRACK,
+    /** null = nothing remembered for this show. */
+    getShowAmountRemembered: (showKey: string): number | null =>
+      showKey ? saneAmount(safeGet(`${KEYS.streamAmount}:${showKey}`)) : null,
+    /**
+     * The amount actually in force. Falls back show → global → default, the
+     * same chain `getShow` uses for the rate, so "on" can never resolve to an
+     * amount of zero and make the control lie about what it is spending.
+     */
+    getEffectiveAmount: (showKey?: string | null): number =>
+      (showKey ? saneAmount(safeGet(`${KEYS.streamAmount}:${showKey}`)) : null)
+      ?? saneAmount(safeGet(KEYS.streamAmount))
+      ?? DEFAULT_STREAM_AMOUNT_PER_TRACK,
+    setAmount: (sats: number) => {
+      const n = Math.min(STREAM_AMOUNT_MAX_SATS, Math.max(1, Math.floor(sats)));
+      safeSet(KEYS.streamAmount, String(n));
+      streamRateObservable.notify();
+    },
+    setShowAmount: (showKey: string, sats: number) => {
+      if (!showKey) return;
+      const n = Math.min(STREAM_AMOUNT_MAX_SATS, Math.max(1, Math.floor(sats)));
+      safeSet(`${KEYS.streamAmount}:${showKey}`, String(n));
+      streamRateObservable.notify();
+    },
   },
 
   /**

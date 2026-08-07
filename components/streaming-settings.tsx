@@ -1,10 +1,10 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import type { Podcast } from '@/lib/types';
-import { storage, subscribeStreamRate, type StreamedEntry } from '@/lib/storage';
+import { storage, subscribeStreamRate, type StreamedEntry, type StreamMode } from '@/lib/storage';
 import { timeAgo } from '@/lib/format';
 import { streamShowKey, streamingStatus, subscribeStreaming } from '@/lib/v4v/streaming';
-import { STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
+import { STREAM_AMOUNT_MAX_SATS, STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
 
 /**
  * On/off switch.
@@ -66,39 +66,59 @@ function StreamSwitch({
 }
 
 /**
- * The sats/min field. Commits on blur and Enter; never touches the switch.
+ * The amount and its unit, as one control. Commits on blur and Enter; never
+ * touches the switch.
+ *
+ * The unit is a picker where the static "sats / min" text used to be, rather
+ * than a second toggle beside the on/off switch. An amount and its unit read as
+ * one setting; two switches read as two settings that might disagree — and this
+ * panel already carries an on/off switch plus, at show scope, a "use default"
+ * escape.
+ *
+ * The two numbers are stored SEPARATELY (`bmb:stream_rate`, `bmb:stream_amount`)
+ * and this component is handed whichever is in force, so switching the unit
+ * never destroys the other one — the same discipline that keeps the on/off
+ * switch from wiping the rate. The ceiling follows the unit too, since a
+ * per-track amount is bounded differently from a per-minute rate.
  *
  * **The 16px font floor on mobile is required, not a style choice.** iOS Safari
  * zooms the whole viewport when an input smaller than 16px takes focus, and
  * this app sets no `maximumScale` (deliberately — that would kill pinch-zoom
  * for everyone). At `text-xs` the page lurched on every tap of this field and
  * scrolled the switch out of view mid-edit, which reads as the control
- * fighting you. Desktop keeps the compact size from `sm:` up.
+ * fighting you. Desktop keeps the compact size from `sm:` up. **The `<select>`
+ * carries the same floor for the same reason.**
  */
 function RateField({
   value,
+  mode,
   onCommit,
+  onModeChange,
   dimmed = false,
 }: {
   value: number;
+  mode: StreamMode;
   onCommit: (n: number) => void;
+  onModeChange: (m: StreamMode) => void;
   dimmed?: boolean;
 }) {
   const [draft, setDraft] = useState(String(value));
+  const max = mode === 'track' ? STREAM_AMOUNT_MAX_SATS : STREAM_RATE_MAX_PER_MIN;
 
   // Another surface (the other scope's control, a second wallet-modal open) can
-  // change this underneath us; re-sync when it does.
-  useEffect(() => setDraft(String(value)), [value]);
+  // change this underneath us; re-sync when it does. `mode` is a dep because
+  // flipping the unit swaps in an entirely different remembered number.
+  useEffect(() => setDraft(String(value)), [value, mode]);
 
   function commit() {
     const n = Number(draft);
-    // An empty or junk field reverts rather than being read as a rate — this
-    // number is multiplied by time and paid with no prompt.
+    // An empty or junk field reverts rather than being read as an amount — this
+    // number is paid with no prompt.
     if (!draft || !Number.isFinite(n) || n < 1) {
       setDraft(String(value));
       return;
     }
-    const clamped = Math.min(STREAM_RATE_MAX_PER_MIN, Math.floor(n));
+    const clamped = Math.min(max, Math.floor(n));
     setDraft(String(clamped));
     onCommit(clamped);
   }
@@ -109,7 +129,7 @@ function RateField({
         type="text"
         inputMode="numeric"
         pattern="[0-9]*"
-        aria-label="Sats per minute"
+        aria-label={mode === 'track' ? 'Sats per track' : 'Sats per minute'}
         className="input !py-1 !px-2 !w-20 sm:!w-16 min-h-[44px] sm:min-h-0 text-[16px] sm:text-xs text-right tabular-nums"
         value={draft}
         onChange={(e) => setDraft(e.target.value.replace(/\D/g, ''))}
@@ -118,7 +138,16 @@ function RateField({
           if (e.key === 'Enter') e.currentTarget.blur();
         }}
       />
-      <span className="text-[11px] text-muted">sats / min</span>
+      <span className="text-[11px] text-muted">sats /</span>
+      <select
+        aria-label="Streaming unit"
+        className="input !py-1 !pl-2 !pr-6 !w-auto min-h-[44px] sm:min-h-0 text-[16px] sm:text-xs"
+        value={mode}
+        onChange={(e) => onModeChange(e.target.value as StreamMode)}
+      >
+        <option value="rate">minute</option>
+        <option value="track">track</option>
+      </select>
     </span>
   );
 }
@@ -149,6 +178,10 @@ export function StreamRate({
     globalRate: storage.streamRate.getRemembered(),
     showOn: showKey ? storage.streamRate.getShowOn(showKey) : null,
     showRate: showKey ? storage.streamRate.getShowRemembered(showKey) : null,
+    // The unit and the per-track amount resolve show → global → default, the
+    // same chain as the rate, so the control and the engine can't disagree.
+    mode: storage.streamRate.getEffectiveMode(showKey),
+    amount: storage.streamRate.getEffectiveAmount(showKey),
     // Only the global control needs this, and only to avoid lying — see below.
     showsOn: showKey ? 0 : storage.streamRate.showsExplicitlyOn(),
     // The switch couldn't be written to disk (storage blocked or full). It
@@ -174,15 +207,35 @@ export function StreamRate({
     else storage.streamRate.setOn(v);
   }
   function setRate(n: number) {
+    if (s.mode === 'track') {
+      if (showKey) storage.streamRate.setShowAmount(showKey, n);
+      else storage.streamRate.setAmount(n);
+      return;
+    }
     if (showKey) storage.streamRate.setShowRate(showKey, n);
     else storage.streamRate.setRate(n);
   }
+  function setMode(m: StreamMode) {
+    if (showKey) storage.streamRate.setShowMode(showKey, m);
+    else storage.streamRate.setMode(m);
+  }
+  // The number the field shows follows the unit — two separate remembered
+  // values, so flipping back and forth never loses either.
+  const amount = s.mode === 'track' ? s.amount : rate;
+
+  // Per-track mode pays when the playing TRACK changes, so a show with no
+  // per-track splits has nothing to trigger on and streams nothing at all.
+  // Saying so is the same obligation the global switch carries: a settings
+  // screen must never let a user believe money is moving when it isn't.
+  const trackCaveat =
+    ' Only pays on shows with per-track splits (live V4V shows, music albums) — an ordinary podcast streams nothing in this mode.';
 
   const description = (() => {
     if (following) {
-      return s.globalOn
-        ? `Follows your default: ${s.globalRate.toLocaleString()} sats/min.`
-        : 'Follows your default: streaming off.';
+      if (!s.globalOn) return 'Follows your default: streaming off.';
+      return s.mode === 'track'
+        ? `Follows your default: ${s.amount.toLocaleString()} sats per track.${trackCaveat}`
+        : `Follows your default: ${s.globalRate.toLocaleString()} sats/min.`;
     }
     if (showKey && !on) {
       // The ONLY place the "explicitly off outranks the global rate" rule
@@ -202,6 +255,12 @@ export function StreamRate({
           : `Off by default — but ${s.showsOn} shows you turned on individually still stream.`;
       }
       return 'Off — nothing is sent while you listen. Boosts are unaffected.';
+    }
+    if (s.mode === 'track') {
+      const per = `${s.amount.toLocaleString()} sats to each track as it starts`;
+      return showKey
+        ? `Sends ${per} on this show, overriding your default.${trackCaveat}`
+        : `Sends ${per}, however long it runs — a two-minute song and a six-minute one earn the same.${trackCaveat}`;
     }
     if (showKey) {
       return `Streams ${rate.toLocaleString()} sats/min for this show, overriding your default.`;
@@ -237,7 +296,13 @@ export function StreamRate({
           </button>
         )}
         <StreamSwitch on={on} onChange={setOn} dimmed={following} />
-        <RateField value={rate} onCommit={setRate} dimmed={following} />
+        <RateField
+          value={amount}
+          mode={s.mode}
+          onCommit={setRate}
+          onModeChange={setMode}
+          dimmed={following}
+        />
       </div>
       {s.ephemeral && (
         <p className="text-[11px] text-bolt/80 mt-2">
@@ -327,8 +392,20 @@ export function StreamMeter({ className = '' }: { className?: string }) {
   const mins = Math.ceil(status.msUntilSettle / 60_000);
   return (
     <div className={`text-[11px] ${className}`}>
-      <span className="text-bolt">≋ streaming {status.ratePerMin} sats/min</span>
-      {status.active && (
+      <span className="text-bolt">
+        ≋ streaming{' '}
+        {status.mode === 'track'
+          ? `${status.amountPerTrack.toLocaleString()} sats/track`
+          : `${status.ratePerMin} sats/min`}
+      </span>
+      {/* Track mode with nothing to pay for. The rate path always accrues, so a
+          rising number is its own proof it's working; this mode can sit at zero
+          forever on a show with no per-track splits, and silence there reads as
+          "working" too. */}
+      {status.trackModeIdle && (
+        <span className="text-muted"> · no per-track splits on this show — nothing is sent</span>
+      )}
+      {status.active && !status.trackModeIdle && (
         <span className="text-muted">
           {/* Naming the track is the visible proof that a music show's
               per-track value splits are being followed — otherwise "streaming"
