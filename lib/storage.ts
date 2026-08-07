@@ -1051,7 +1051,18 @@ export const storage = {
           typeof v.posCarryMs === 'number' && Number.isFinite(v.posCarryMs) && v.posCarryMs >= 0
             ? v.posCarryMs
             : 0;
-        return { ...v, buckets, posCarryMs } as StreamLedger;
+        // The per-track double-pay guards. Normalized like posCarryMs rather
+        // than rejected — a record predating them must not throw away real sats
+        // in `buckets`. Losing them errs toward paying a track twice, so they
+        // are read defensively but never treated as a reason to drop the ledger.
+        const creditedRun = typeof v.creditedRun === 'string' ? v.creditedRun : undefined;
+        const creditedAt: Record<string, number> = {};
+        if (v.creditedAt && typeof v.creditedAt === 'object' && !Array.isArray(v.creditedAt)) {
+          for (const [bucket, ms] of Object.entries(v.creditedAt)) {
+            if (typeof ms === 'number' && Number.isFinite(ms)) creditedAt[bucket] = ms;
+          }
+        }
+        return { ...v, buckets, posCarryMs, creditedRun, creditedAt } as StreamLedger;
       } catch {
         return null;
       }

@@ -60,6 +60,7 @@ import {
   HOST_BUCKET,
   isStaleLedger,
   msUntilSettle,
+  clearCreditedRun,
   creditFixed,
   settleBatch,
   STREAM_TRACK_CREDIT_DEBOUNCE_MS,
@@ -128,15 +129,6 @@ interface StreamContext {
    * once-per-run flag, which is what `credited` is.
    */
   run?: { bucket: string; sinceMs: number; credited: boolean };
-  /**
-   * When each bucket last received a per-track credit, across runs.
-   *
-   * Still needed alongside `run`: the minimum-play guard defeats FAST flapping
-   * (each flap restarts the run before it reaches the threshold), but a socket
-   * that drops and recovers slowly would start a fresh run on the same song and
-   * pay it twice. A genuine replay later in the show is past the window.
-   */
-  creditedAt?: Map<string, number>;
 }
 
 /** The ids Split Kit uses to tie a payment back to the block that earned it. */
@@ -917,26 +909,43 @@ function tick() {
   // The credit fires mid-run rather than on the change, so "already paid?" is an
   // explicit per-run flag — a time window would let a five-minute song clear it
   // and be credited twice.
-  if (ctx.mode === 'track' && st.isPlaying && track) {
-    if (ctx.run?.bucket !== track) ctx.run = { bucket: track, sinceMs: now, credited: false };
-    const run = ctx.run;
-    const creditedAt = (ctx.creditedAt ??= new Map());
-    if (
-      !run.credited
-      && now - run.sinceMs >= STREAM_TRACK_MIN_PLAY_MS
-      && now - (creditedAt.get(track) ?? -Infinity) >= STREAM_TRACK_CREDIT_DEBOUNCE_MS
-    ) {
-      run.credited = true;
-      creditedAt.set(track, now);
-      // Through the same allocation a tick uses, so a block with
-      // remotePercentage < 100 splits the fixed sum between track and host on
-      // exactly the rate path's rule.
-      ledger = creditFixed(ledger, { msat: ctx.amountPerTrack * 1000, allocation });
+  if (ctx.mode === 'track') {
+    // Drop the credited marker as soon as a different target is current, so the
+    // same track earns again when it genuinely comes round later.
+    ledger = clearCreditedRun(ledger, track);
+    if (st.isPlaying && track) {
+      if (ctx.run?.bucket !== track) ctx.run = { bucket: track, sinceMs: now, credited: false };
+      const run = ctx.run;
+      // Both markers are read off the LEDGER, which survives a reload — the
+      // context does not, and a guard that dies with it charged the same song
+      // again thirty seconds after every refresh.
+      const paidThisRun = ledger.creditedRun === track;
+      const lastPaidMs = ledger.creditedAt?.[track] ?? -Infinity;
+      if (
+        !run.credited
+        && !paidThisRun
+        && now - run.sinceMs >= STREAM_TRACK_MIN_PLAY_MS
+        && now - lastPaidMs >= STREAM_TRACK_CREDIT_DEBOUNCE_MS
+      ) {
+        run.credited = true;
+        // Through the same allocation a tick uses, so a block with
+        // remotePercentage < 100 splits the fixed sum between track and host on
+        // exactly the rate path's rule.
+        ledger = creditFixed(ledger, {
+          msat: ctx.amountPerTrack * 1000,
+          allocation,
+          bucket: track,
+          nowMs: now,
+        });
+        // The credit is money; don't wait for the 10 s persist cadence to
+        // record that it happened, or a reload in the gap pays it twice.
+        persist(ledger);
+      }
+    } else if (!track) {
+      // Back to the host block with no track current — end the run rather than
+      // letting it resume its clock if the same bucket returns later.
+      ctx.run = undefined;
     }
-  } else if (ctx.mode === 'track' && !track) {
-    // Back to the host block with no track current — end the run rather than
-    // letting it resume its clock if the same bucket returns later.
-    ctx.run = undefined;
   }
   ctx.lastTrack = track;
 

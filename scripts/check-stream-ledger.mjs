@@ -27,6 +27,7 @@ import {
   accrue,
   accruedSats,
   allocationTrackBucket,
+  clearCreditedRun,
   creditFixed,
   STREAM_TRACK_CREDIT_DEBOUNCE_MS,
   STREAM_TRACK_MIN_PLAY_MS,
@@ -711,6 +712,56 @@ console.log('\nper-track guard constants');
   // twice. Assert the relationship rather than just the two numbers.
   check('the debounce outlasts the minimum, so a flap cannot double-pay',
     STREAM_TRACK_CREDIT_DEBOUNCE_MS > STREAM_TRACK_MIN_PLAY_MS, true);
+}
+
+// --- the double-pay guards live on the LEDGER ------------------------------
+// THIS SECTION EXISTS BECAUSE ITS ABSENCE LET A BUG SHIP. The guards started on
+// the StreamContext, which is rebuilt on every reload, Fast Refresh and item
+// change — while the balance is restored from bmb:stream_pending. So refreshing
+// mid-song wiped "already paid" and charged the same track again 30 s later.
+// Observed as an accrual that emptied on settle and climbed straight back.
+console.log('\ncreditFixed — the markers that survive a reload');
+{
+  const l0 = createLedger('ep', T0);
+  const l = creditFixed(l0, {
+    msat: 200_000,
+    allocation: [{ bucket: 't:a:1', fraction: 1 }],
+    bucket: 't:a:1',
+    nowMs: T0,
+  });
+  check('the paid bucket is marked for its run', l.creditedRun, 't:a:1');
+  check('…and stamped with when it paid', l.creditedAt['t:a:1'], T0);
+  // Simulate a reload: the ledger is what persists, so this is exactly what the
+  // engine gets back. It must still read as paid however long ago that was.
+  const reloaded = { ...l, lastTickMs: T0 + 120_000, lastSettleMs: T0 + 120_000 };
+  check('two minutes later it is STILL marked paid for this run',
+    reloaded.creditedRun === 't:a:1', true);
+  // A settle empties the bucket but must not forget that it paid, or the very
+  // next tick credits it again.
+  const settled = settlePlan(l, { bucket: 't:a:1', nowMs: T0 + 1000, recipientCount: 3, force: true });
+  check('a settle empties the bucket', (settled.nextLedger.buckets['t:a:1'] ?? 0), 0);
+  check('…but the run marker survives it', settled.nextLedger.creditedRun, 't:a:1');
+}
+{
+  // Without a bucket the markers are untouched — the host-only credit path.
+  const l = creditFixed(createLedger('ep', T0), { msat: 1000 });
+  check('a credit with no bucket sets no run marker', l.creditedRun, undefined);
+}
+console.log('\nclearCreditedRun — the same song must earn again later');
+{
+  const paid = creditFixed(createLedger('ep', T0), {
+    msat: 200_000, allocation: [{ bucket: 't:a:1', fraction: 1 }], bucket: 't:a:1', nowMs: T0,
+  });
+  check('while the same track is current the marker stays',
+    clearCreditedRun(paid, 't:a:1').creditedRun, 't:a:1');
+  check('…and the ledger object is returned untouched',
+    clearCreditedRun(paid, 't:a:1') === paid, true);
+  check('a different track clears it', clearCreditedRun(paid, 't:b:2').creditedRun, undefined);
+  check('back to the host clears it', clearCreditedRun(paid, null).creditedRun, undefined);
+  // The time stamp OUTLIVES the run marker: that is what stops a slow socket
+  // flap (A→B→A over more than the minimum play) paying one song twice.
+  check('…but the timestamp survives, for the flap guard',
+    clearCreditedRun(paid, 't:b:2').creditedAt['t:a:1'], T0);
 }
 
 // --- accrue in track mode: rate 0 must stamp but not charge ------------------

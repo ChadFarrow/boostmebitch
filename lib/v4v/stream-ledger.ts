@@ -54,6 +54,30 @@ export interface StreamLedger {
   /** Wall-clock ms of the last settle, or of ledger creation. */
   lastSettleMs: number;
   /**
+   * Per-track mode: the bucket already paid for the run currently in progress,
+   * cleared by the engine as soon as a different target becomes current.
+   *
+   * **On the LEDGER, not the context, because the money is on the ledger.** The
+   * context is rebuilt on every reload, Fast Refresh and item change while the
+   * balance is restored from `bmb:stream_pending` — so a guard living there
+   * meant a refresh mid-song wiped "already paid" and charged the same track
+   * again thirty seconds later. Reported as an accrual that emptied on settle
+   * and then climbed straight back.
+   *
+   * Exact rather than time-based: a reload two minutes into a five-minute song
+   * is still the same run, and any time window short enough to allow a genuine
+   * replay is short enough to let that through.
+   */
+  creditedRun?: string;
+  /**
+   * Per-track mode: when each bucket was last credited, across runs.
+   *
+   * Does the job `creditedRun` can't — a *slow* socket flap (A→B→A over more
+   * than the minimum-play window) ends the run legitimately and would otherwise
+   * pay the same song twice. Persisted for the same reason as `creditedRun`.
+   */
+  creditedAt?: Record<string, number>;
+  /**
    * Playback time (ms) that advanced but hasn't been billed yet — see accrue().
    *
    * Position arrives as a floored whole second pushed from `timeupdate`, while
@@ -377,14 +401,38 @@ export function creditFixed(
     msat: number;
     /** Where the fixed sum goes. Omitted = all to the host's value block. */
     allocation?: StreamAllocation[];
+    /** The track bucket being paid. Recorded on the ledger so the guards
+     *  against paying it twice survive a reload — see `creditedRun`. */
+    bucket?: string;
+    nowMs?: number;
   },
 ): StreamLedger {
-  const { msat, allocation } = args;
+  const { msat, allocation, bucket, nowMs } = args;
   if (!Number.isFinite(msat) || msat <= 0) return ledger;
-  return {
+  const next: StreamLedger = {
     ...ledger,
     buckets: distribute(ledger.buckets, msat, allocation ?? [{ bucket: HOST_BUCKET, fraction: 1 }]),
   };
+  if (bucket && typeof nowMs === 'number' && Number.isFinite(nowMs)) {
+    next.creditedRun = bucket;
+    next.creditedAt = { ...ledger.creditedAt, [bucket]: nowMs };
+  }
+  return next;
+}
+
+/**
+ * Forget the credited-run marker once a different target is current.
+ *
+ * Called every tick with whatever is playing now. Returns the ledger UNTOUCHED
+ * when there is nothing to clear, so it can't churn object identity 60 times a
+ * minute — the ledger is persisted to localStorage on a schedule and compared
+ * by the UI's change signature.
+ */
+export function clearCreditedRun(ledger: StreamLedger, currentBucket: string | null): StreamLedger {
+  if (!ledger.creditedRun || ledger.creditedRun === currentBucket) return ledger;
+  const next = { ...ledger };
+  delete next.creditedRun;
+  return next;
 }
 
 /**
