@@ -28,6 +28,8 @@ import {
   accruedSats,
   allocationTrackBucket,
   creditFixed,
+  STREAM_TRACK_CREDIT_DEBOUNCE_MS,
+  STREAM_TRACK_MIN_PLAY_MS,
   trackBucket,
   createLedger,
   DEFAULT_STREAM_RATE_PER_MIN,
@@ -690,6 +692,25 @@ console.log('\ncreditFixed — a fixed sum per track');
   l = creditFixed(l, { msat: 100_000, allocation: [{ bucket: 't:a:1', fraction: 1 }] });
   check('a repeated track tops up its own bucket', l.buckets['t:a:1'], 200_000);
   check('…without touching the other one', l.buckets['t:b:2'], 100_000);
+}
+
+// --- per-track guards -------------------------------------------------------
+// From a real 71-minute Homegrown Hits broadcast: 17 payment-target changes, and
+// two of them were shared photos that landed 16 SECONDS apart, firing two full
+// payments. EVERY kind of block earns — songs and the host's own segments alike,
+// because the listener chose an amount for the show and a promo is the show.
+// What must not earn is a target nobody spent any time on, and that is entirely
+// what these two numbers do.
+console.log('\nper-track guard constants');
+{
+  check('minimum play before a track earns is 30 s', STREAM_TRACK_MIN_PLAY_MS, 30_000);
+  check('a bucket is immune from a second credit for 60 s',
+    STREAM_TRACK_CREDIT_DEBOUNCE_MS, 60_000);
+  // The ordering is the contract: the debounce must outlast the minimum, or a
+  // socket flap could restart a run AND clear the debounce, paying one song
+  // twice. Assert the relationship rather than just the two numbers.
+  check('the debounce outlasts the minimum, so a flap cannot double-pay',
+    STREAM_TRACK_CREDIT_DEBOUNCE_MS > STREAM_TRACK_MIN_PLAY_MS, true);
 }
 
 // --- accrue in track mode: rate 0 must stamp but not charge ------------------

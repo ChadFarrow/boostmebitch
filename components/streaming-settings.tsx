@@ -234,7 +234,7 @@ export function StreamRate({
     if (following) {
       if (!s.globalOn) return 'Follows your default: streaming off.';
       return s.mode === 'track'
-        ? `Follows your default: ${s.amount.toLocaleString()} sats each time the paid target changes.${trackCaveat}`
+        ? `Follows your default: ${s.amount.toLocaleString()} sats per target change, after 30 seconds.${trackCaveat}`
         : `Follows your default: ${s.globalRate.toLocaleString()} sats/min.`;
     }
     if (showKey && !on) {
@@ -262,10 +262,10 @@ export function StreamRate({
       // the host's segments between songs are targets of their own — so an
       // interstitial earns the full amount exactly like a song does. A settings
       // line that implies otherwise understates the hourly cost.
-      const per = `${s.amount.toLocaleString()} sats each time the paid target changes`;
+      const per = `${s.amount.toLocaleString()} sats each time the paid target changes, once it has run 30 seconds`;
       return showKey
         ? `Sends ${per} on this show, overriding your default.${trackCaveat}`
-        : `Sends ${per} — every track, plus any host segment between them on a live show. Length doesn't matter: a two-minute song and a six-minute one earn the same.${trackCaveat}`;
+        : `Sends ${per} — every track, plus any host segment between them on a live show. Length doesn't matter beyond that: a two-minute song and a six-minute one earn the same, and anything the host flicks past earns nothing.${trackCaveat}`;
     }
     if (showKey) {
       return `Streams ${rate.toLocaleString()} sats/min for this show, overriding your default.`;

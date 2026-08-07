@@ -36,6 +36,18 @@ export interface LiveBlock {
   value: ValueBlock;
   /** The share redirected to this block; the remainder stays with the show. */
   remotePercentage?: number;
+  /**
+   * What KIND of block this is — Split Kit stamps every one.
+   *
+   * Observed live: `'music'` for songs, `'chapter'` for the host's own segments
+   * (promos, a PayPal link, a phone number, shared photos), `'podcast'` for the
+   * show's default block. Load-bearing for per-track streaming, which pays a
+   * fixed amount per target change: on one 71-minute broadcast 10 of 17 changes
+   * were `chapter`, so paying them a song's worth sent two thirds of the money
+   * to pictures. Absent on every non-Split-Kit source, and absent must stay
+   * ELIGIBLE — album valueTimeSplits carry no type and are all genuine tracks.
+   */
+  type?: string;
 }
 
 type Handler = (block: LiveBlock | null) => void;
@@ -97,6 +109,8 @@ export function parseLiveBlock(data: unknown): LiveBlock | null {
     feedGuid: typeof d.feedGuid === 'string' ? d.feedGuid : undefined,
     itemGuid: typeof d.itemGuid === 'string' ? d.itemGuid : undefined,
     remotePercentage: Number.isFinite(pct) ? pct : undefined,
+    // The BLOCK's kind, not `value.type` (which is 'lightning' on every block).
+    type: typeof d.type === 'string' ? d.type : undefined,
     value: {
       type: typeof d.value?.type === 'string' ? d.value.type : 'lightning',
       method: typeof d.value?.method === 'string' ? d.value.method : 'keysend',

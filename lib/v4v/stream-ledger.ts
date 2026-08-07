@@ -143,6 +143,42 @@ export const DEFAULT_STREAM_AMOUNT_PER_TRACK = 100;
 export const STREAM_AMOUNT_MAX_SATS = 100_000;
 
 /**
+ * How long a target must be the current one before it earns a per-track credit.
+ *
+ * A live show's payment target changes for things that are not songs — the host
+ * shares a photo, puts a phone number on screen, flips to a promo — and each is
+ * its own block. Those SHOULD earn: they are the show, and the host is who the
+ * listener chose. What must not earn is a target nobody actually spent any time
+ * on. Two photos landed 16 seconds apart on a real broadcast and fired two full
+ * payments; this is the line between "the host moved on" and "the host flicked
+ * past".
+ *
+ * Thirty seconds is short enough that nothing real misses out and long enough
+ * that paging through images costs nothing. It is a floor on ATTENTION, not a
+ * spending cap: a block that clears it earns the full amount however long it
+ * then runs, which is the whole point of the mode.
+ *
+ * **Deliberately NOT a filter on Split Kit's block `type`.** Refusing
+ * `chapter`/`podcast` blocks was built and then removed: it would have cut a
+ * show's own segments out of a mode whose amount the listener chose for the
+ * show. The kind is still carried for diagnostics (`bmbLive().target.blockType`)
+ * — it just doesn't gate payment.
+ */
+export const STREAM_TRACK_MIN_PLAY_MS = 30_000;
+
+/**
+ * How long a bucket is immune from a SECOND per-track credit.
+ *
+ * Distinct from the minimum above, and both are needed. The minimum stops a
+ * target that never really settled; this stops one that settled twice. The live
+ * target can oscillate without the music changing — a dropped socket hands
+ * ownership back to the RSS poller and the reconnect hands it back again — and
+ * a flap slower than the minimum would otherwise re-credit the same song.
+ */
+export const STREAM_TRACK_CREDIT_DEBOUNCE_MS = 60_000;
+
+
+/**
  * Ceiling on the unbilled position surplus a ledger may carry.
  *
  * Two seconds is comfortably more than the sub-second phase drift this is meant

@@ -62,6 +62,8 @@ import {
   msUntilSettle,
   creditFixed,
   settleBatch,
+  STREAM_TRACK_CREDIT_DEBOUNCE_MS,
+  STREAM_TRACK_MIN_PLAY_MS,
   trackBucket,
   type StreamAllocation,
   type StreamLedger,
@@ -73,16 +75,6 @@ const TICK_MS = 1_000;
 const PERSIST_EVERY_MS = 10_000;
 /** Consecutive failed settles before streaming stops for the current item. */
 const MAX_CONSECUTIVE_FAILURES = 2;
-/**
- * How long a bucket is immune from a second per-track credit.
- *
- * Not a listen threshold — a two-second track still earns in full. This exists
- * because the live target can oscillate without the music changing (a dropped
- * socket hands ownership to the RSS poller and the reconnect hands it back), and
- * without it an A→B→A→B flap bills four tracks for one song. A genuine replay
- * later in the show is well past the window and earns again.
- */
-const TRACK_CREDIT_DEBOUNCE_MS = 60_000;
 
 /** Everything the current item is being streamed against. */
 interface StreamContext {
@@ -128,17 +120,21 @@ interface StreamContext {
   /** Sats credited per track when `mode === 'track'`. */
   amountPerTrack: number;
   /**
-   * When each bucket last received a per-track credit.
+   * The current uninterrupted run of one bucket being the credited target.
    *
-   * The target can oscillate without the music changing: a dropped socket hands
-   * ownership back to the RSS poller, which writes a different target, and the
-   * reconnect writes the block back. Crediting on every change would bill an
-   * A→B→A→B flap as four tracks for one song. A bucket is therefore credited at
-   * most once per `TRACK_CREDIT_DEBOUNCE_MS`.
+   * Per-track mode fires 30 s in, not on the change itself, so "has this run
+   * already paid?" cannot be answered by a time window — a five-minute song
+   * would clear any window and be credited again. It needs an explicit
+   * once-per-run flag, which is what `credited` is.
+   */
+  run?: { bucket: string; sinceMs: number; credited: boolean };
+  /**
+   * When each bucket last received a per-track credit, across runs.
    *
-   * This is a guard against OUR OWN signal instability, not a listen threshold:
-   * a track that genuinely plays again later in the show is past the window and
-   * earns again, and a track that plays for two seconds still earns in full.
+   * Still needed alongside `run`: the minimum-play guard defeats FAST flapping
+   * (each flap restarts the run before it reaches the threshold), but a socket
+   * that drops and recovers slowly would start a fresh run on the same song and
+   * pay it twice. A genuine replay later in the show is past the window.
    */
   creditedAt?: Map<string, number>;
 }
@@ -908,26 +904,39 @@ function tick() {
   const track = allocationTrackBucket(allocation);
   const trackChanged = ctx.lastTrack !== undefined && ctx.lastTrack !== track;
 
-  // Per-track mode: the INCOMING track earns the fixed amount.
+  // Per-track mode: the current target earns the fixed amount, once, after it
+  // has actually been on for `STREAM_TRACK_MIN_PLAY_MS`.
   //
-  // Incoming rather than outgoing, for two reasons. The last track of every
-  // session would otherwise never be credited — there is no change after it.
-  // And because a track boundary force-settles, crediting the incoming bucket
-  // means the payment goes out while that block is still the current one, so
-  // `liveEvents` names the block that actually earned it.
+  // EVERY kind of block earns — songs and the host's own segments alike. The
+  // listener chose an amount for this show, and a promo or a shoutout is the
+  // show. What the minimum stops is a target nobody spent any time on: a real
+  // broadcast flicked through two shared photos 16 seconds apart and fired two
+  // full payments. (A filter on Split Kit's `type` was built and removed; the
+  // kind is still carried for diagnostics but does not gate payment.)
   //
-  // `ctx.lastTrack === undefined` on the first tick, so the opening track is a
-  // change and earns — unlike `trackChanged` above, which deliberately treats
-  // an opening context as NOT a settle edge.
-  if (ctx.mode === 'track' && track && track !== ctx.lastTrack && st.isPlaying) {
+  // The credit fires mid-run rather than on the change, so "already paid?" is an
+  // explicit per-run flag — a time window would let a five-minute song clear it
+  // and be credited twice.
+  if (ctx.mode === 'track' && st.isPlaying && track) {
+    if (ctx.run?.bucket !== track) ctx.run = { bucket: track, sinceMs: now, credited: false };
+    const run = ctx.run;
     const creditedAt = (ctx.creditedAt ??= new Map());
-    if (now - (creditedAt.get(track) ?? -Infinity) >= TRACK_CREDIT_DEBOUNCE_MS) {
+    if (
+      !run.credited
+      && now - run.sinceMs >= STREAM_TRACK_MIN_PLAY_MS
+      && now - (creditedAt.get(track) ?? -Infinity) >= STREAM_TRACK_CREDIT_DEBOUNCE_MS
+    ) {
+      run.credited = true;
       creditedAt.set(track, now);
       // Through the same allocation a tick uses, so a block with
       // remotePercentage < 100 splits the fixed sum between track and host on
       // exactly the rate path's rule.
       ledger = creditFixed(ledger, { msat: ctx.amountPerTrack * 1000, allocation });
     }
+  } else if (ctx.mode === 'track' && !track) {
+    // Back to the host block with no track current — end the run rather than
+    // letting it resume its clock if the same bucket returns later.
+    ctx.run = undefined;
   }
   ctx.lastTrack = track;
 

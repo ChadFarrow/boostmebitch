@@ -67,6 +67,12 @@ export interface LiveTarget {
    * device; it lives on this field instead. Empty when `split` is null.
    */
   bucketKey: string;
+  /**
+   * Split Kit's block kind — `'music'`, `'chapter'`, `'podcast'`. Undefined for
+   * every other signal, which per-track streaming reads as "eligible" (see
+   * `perTrackEligibleType`); only an explicit non-music kind is refused.
+   */
+  blockType?: string;
   signal: 'live-value' | 'remote-item' | 'value-time-split' | 'value' | 'none';
   /** Split Kit correlation ids, when the target came off a liveValue socket.
    *  Passed through onto the boostagram so the host's own tooling can tie a
@@ -162,7 +168,7 @@ function isWatchable(cur: { episode: Episode; podcast: Podcast } | null): boolea
  */
 function targetSig(t: LiveTarget | null): string {
   if (!t) return '';
-  return `${t.guid}|${t.signal}|${t.bucketKey}|${t.split?.title ?? ''}|${valueSig(t.split?.value)}`;
+  return `${t.guid}|${t.signal}|${t.bucketKey}|${t.blockType ?? ''}|${t.split?.title ?? ''}|${valueSig(t.split?.value)}`;
 }
 
 function setTarget(next: LiveTarget | null) {
@@ -241,6 +247,7 @@ function onLiveBlock(w: NonNullable<typeof watching>, block: LiveBlock | null) {
     guid: w.guid,
     signal: 'live-value',
     hostValue: w.baseValue,
+    blockType: block.type,
     event: { eventGuid: block.eventGuid, blockGuid: block.blockGuid, eventAPI: block.eventAPI },
     split,
     // The title is in the fingerprint on purpose: two tracks by one artist push
@@ -416,6 +423,10 @@ function installDiagnostic() {
         // the DJ changes track, the settle edge won't fire and both tracks pay
         // into one bucket — the first thing to check if a track looks skipped.
         bucketKey: target.bucketKey,
+        // Why a block did or didn't earn a per-track credit: only 'music' (or
+        // no type at all) does. 'chapter' is a host segment — a promo, a photo,
+        // a phone number — and earns nothing in per-track mode.
+        blockType: target.blockType ?? null,
         recipients: target.split?.value?.recipients?.map((r) => `${r.type} ${r.split} ${r.address}`) ?? null,
         remotePercentage: target.split?.remotePercentage ?? null,
         event: target.event ?? null,
