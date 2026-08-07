@@ -13,6 +13,8 @@ import { Podroll } from './podroll';
 import { FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
 import { useStreamPanel } from './streaming-settings';
+import { applyLiveStatuses } from '@/lib/live-status';
+import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
 
 // Re-exported for the surfaces that have always imported it from here.
 export { FavHeart };
@@ -271,6 +273,19 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
     data.podcast,
     hasValueRecipients(data.podcast?.value),
   );
+
+  // A live item's status is fixed at load time otherwise: /api/feed is fetched
+  // once per feedId and nothing asks again. Polls only while this feed has a
+  // live item on screen, and patches liveStatus/liveStartTime in place —
+  // setEpisodeQueue and syncSelectedPodcast are deliberately NOT re-fired, so
+  // playback is undisturbed.
+  const hasLiveItem = data.episodes.some((e) => !!e.liveStatus && e.liveStatus !== 'ended');
+  useLiveStatusPoll(feedId, hasLiveItem, (items) => {
+    setData((prev) => {
+      const episodes = applyLiveStatuses(prev.episodes, items);
+      return episodes === prev.episodes ? prev : { ...prev, episodes };
+    });
+  });
 
   if (!feedId) {
     return (
