@@ -1,0 +1,88 @@
+# Boosts — boost-all, celebration, keysend upgrade, our LN address
+
+Read before touching `lib/v4v/boost.ts`, `components/boost-modal/`, `boost-all-modal.tsx`, `lib/v4v/keysend-lookup.ts`, `lib/boost-sound.ts`, or `app/.well-known/keysend/`. The numbered boost-flow invariants stay in the core.
+
+Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning.
+
+## Show-level boost
+
+`BoostModal` accepts `episode` as optional. When omitted (`isShowBoost = !episode`): headlines the podcast title, skips the timestamp line, reads value from `podcast.value`, and the boostagram includes `podcast`/`feedID`/`url`/`remote_feed_guid` while skipping `episode`/`itemID`/`episode_guid`/`remote_item_guid` with `ts: 0`. The note body skips the `📻 <episode>` line and the `podcast:item:guid:` `i`-tag.
+
+The `⚡ BOOST` button on the `EpisodeList` header opens this mode (gated on `showHasValue`). The per-episode path in `Player` is unchanged.
+
+**Per-track BOOST on each row.** Every `EpisodeList` row carries a far-right `⚡ BOOST` (`boostTrack` state → `<BoostModal episode={boostTrack}>`) when `hasValueRecipients(e.value)`. `ev.stopPropagation()` keeps it off the row's play/open handler. Not music-only — any feed whose tracks carry a value block gets it.
+
+
+## Boost-all tracks (valueTimeSplits)
+
+Music podcasts tag each track in their RSS with a `<podcast:valueTimeSplit>` — a startTime/duration window plus a `<podcast:remoteItem feedGuid itemGuid>` pointing at the track's own album feed. **PI surfaces these as `e.timesplits[]`** — a flat top-level array on the episode, NOT nested under `e.value.valueTimeSplits` despite the field name. Each entry carries `feedGuid`/`itemGuid`/`medium` directly; `parseRawValueTimeSplits` maps that to the consumer-facing nested `ValueTimeSplit.remoteItem`.
+
+The `⚡ BOOST N TRACKS` button on each episode row (`components/lists.tsx`) opens `<BoostAllModal>` (`components/boost-all-modal.tsx`). Sequential per-track sends, not parallel.
+
+**Resolution pipeline** (`/api/value-splits` → `lib/pi.ts:resolveValueTimeSplits`):
+
+1. **Probe-first-then-batch.** Try the first resolvable split synchronously; if it throws, return the whole batch unresolved rather than hammering a degraded PI. The rest fan out in parallel with per-call try/catch.
+2. **PI's `/episodes/byguid` requires `podcastguid`** — lowercase. `feedGuid`/`feedid` are silently rejected with "This call requires either a valid feedid, feedurl or podcastguid argument".
+3. **Fallback to RSS chain** (`lib/musicl-resolver.ts:resolveRemoteItemFromRss`) when PI returns "Episode not found". Server-side, two cases: an album feed → find the `<item>` with matching `<guid>`, extract `<podcast:value>` (or channel-level); a publisher feed (`<podcast:medium>publisher`) → walk `<podcast:remoteItem feedUrl>` entries, fetch each album feed in parallel, return the first match. 5-min in-memory cache keyed on feed URL, 5 s `AbortSignal.timeout` per fetch. **Without this fallback ~50% of music-podcast tracks fail to resolve**, because PI doesn't index every album feed.
+
+**Modal-side filtering.** Splits whose remote items didn't resolve to a value block are dropped; the header reads `Tracks (N of M — K unresolved)` when there's a gap. Remaining gaps are host-RSS authoring problems (stale feedGuid, no feedUrl hint, feed not in PI) and are unrecoverable from the client.
+
+**Per-track payment loop (`BoostAllModal.go()`):**
+
+1. **Two legs per track.** Each track sends `floor(sats × remotePercentage / 100)` to its own recipients (the artists). The remainder fires as a SEPARATE host-share leg to `episode.value` (or `podcast.value`) immediately after, **per-track, not aggregated**. Both legs carry the same `remote_feed_guid`/`remote_item_guid` so the host's Helipad can correlate which track triggered each share. Default `remotePercentage` = 100 (no host leg).
+2. **Boostagram shape.** Primary fields (`podcast`, `feedID`, `episode`, `episode_guid`) = HOST episode; `remote_feed_guid`/`remote_item_guid` = the TRACK. Mirrors `BoostModal` so recipient artists see the listener's host context, not mangled track-as-podcast metadata.
+3. **Each successful leg logs its own `StoredBoost`** to `bmb:boosts:<npub>`.
+4. **StrictMode guard.** `cancelled.current` is **reset to `false` on mount AND set to `true` on unmount**. Without the mount-side reset, dev StrictMode's mount → unmount → mount leaves it stuck at `true` and the loop bails on the first iteration with no Lightning traffic at all.
+5. **Confetti on success** when at least one track pays.
+6. **Single Nostr summary note.** When `shareNostr` is on and ≥1 track paid, ONE kind:1 via `publishBoostNote` with `contentOverride` listing every successful track title (no truncation). NOT one note per track.
+
+Rail picker: see [`wallets.md`](wallets.md) — `components/rail-picker.tsx` is shared with `BoostModal`. Computed inline (no `useMemo`) so the existing `subscribeNwc`/`subscribeSpark` re-render path surfaces newly-connected wallets without remount.
+
+
+### Success celebration (confetti + sound)
+
+`fireConfetti()` + `playBoostSound({ appIsPlaying })` (both in `lib/format.tsx`) fire together at every boost-success point: `BoostModal`'s zap path and boostagram path, plus `BoostAllModal.go()`. `playBoostSound()` plays a lazily-created singleton `Audio('/boost.mp3')` — SSR-guarded, resets `currentTime`, swallows play/decode errors so a missing or blocked asset is a silent no-op. No user-facing toggle (add one by mirroring the `shareNostr` boolean in `lib/storage.ts` and gating both). Three rules, each from a real regression:
+
+**1. Prime synchronously in the click handler, before any `await`.** The sound plays seconds *after* the async payment, past the button's transient user-activation, so iOS Safari blocks the unprimed `play()` (worked on desktop, silent on mobile). `primeBoostSound({ appIsPlaying })` unlocks the singleton inside the real gesture. **If you add a new boost entry point, call it in its click handler before the first await.** One-shot per page (`boostAudioPrimed`); both helpers go through `ensureBoostAudio()`.
+
+**2. The prime must pause synchronously, in the same turn as `play()` — don't await.** Pausing in the `.then()` puts a **second live media element** on the page for a frame or more: iOS arbitrates concurrent elements, so a second one starting can duck or interrupt our own podcast; `muted` isn't reliably honored for `<audio>` on iOS; and a fast payment races it, the late `pause()` + `currentTime = 0` chopping the very ping it exists to enable. WebKit grants the unlock when `play()` is *called* inside the activation, not when its promise resolves, so a synchronous pause keeps the element at a standstill and still unlocked. The sync pause rejects the play promise with `AbortError` — expected and swallowed. Worst case elsewhere is a lost ping, which beats interrupting what the user is listening to. **Don't "clean this up" by awaiting `play()`.**
+
+**3. Route through `boostSoundPlan()` (`lib/boost-sound.ts`) — the ping used to permanently kill the user's music app.** An unmuted `play()` on an otherwise-silent page gets `navigator.audioSession.type = 'auto'`, which the UA resolves to **`playback`**, and per the Audio Session spec a playback session "should not mix with other playback audio." So a two-second ping took an **exclusive** session, iOS interrupted Apple Music/Spotify, and resumption is the *other* app's decision — in practice it never came back. The spec describes `transient` as this feature verbatim. Three plans:
+
+- **`appIsPlaying` → `'as-is'`.** We already hold the session. **We must NOT retype it here** — it's **document-scoped, not per-element**, so setting `transient` mid-podcast demotes our own playback (transient sessions are what stop audio on screen lock).
+- **Idle + API → `'transient'`.** Ducks instead of seizing, restoring the previous type on `ended` with a 5 s backstop so a stalled decode can't leave it retyped.
+- **Idle, no API → `'as-is'` on desktop, `'skip'` on mobile.** The API is **Safari/iOS 16.4+ only**, so skipping unconditionally would silence the ping for most desktop users to fix a problem desktop OSes don't have. Mobile without the API has no good move, so we drop the ping rather than kill the user's music.
+
+Priming routes through the same plan (`'skip'` primes nothing, `'transient'` primes under a borrowed session); both helpers borrow/restore via one `borrowTransientSession(plan)`, and the type must be set **before** `play()`, since the session is created when the element starts playing.
+
+**`appIsPlaying` must be read live at call time** (`useApp.getState().isPlaying`), never captured during render — the ping fires seconds after the tap, and a stale `false` would retype the session out from under a podcast that started in the meantime.
+
+### lnaddress → keysend upgrade
+
+**`type="lnaddress"` recipients upgrade to keysend when the address publishes one.** `lookupKeysendTarget` (`lib/v4v/keysend-lookup.ts`) probes `.well-known/keysend/<name>` **through `app/api/keysend/route.ts`, never directly** — `.well-known/lnurlp` is browser-facing so it always sends CORS headers, but the keysend well-known is a server-to-server convention with none, so a direct browser fetch is blocked and the client's catch turns *every* address into "LNURL-only" silently. (Same reason `/api/chapters` exists; this shipped broken once for exactly this.)
+
+A valid response makes the leg a real keysend via `payKeysend`, so the boostagram rides inline in TLV `7629169` — `sender_id`, the `remote_feed_guid`/`remote_item_guid` correlation, and the endpoint's sub-account routing all intact — instead of degrading to a LUD-21 `comment` only BoostBox-aware tooling reads.
+
+**Parsing is loose on the envelope, strict on the pubkey.** `pubkey` / `destination` / `nodeId` are all accepted and `tag: "keysend"` is *not* required (self-hosted endpoints are looser than Alby's), but the pubkey must match `/^0[23][0-9a-f]{64}$/`. `customKey`/`customValue` are only ever taken **together from the same object** (spec `customData: [...]` or top-level) and the key must be numeric — pairing a key from one source with a value from another misroutes to the wrong sub-account on a shared node.
+
+**These guards keep it strictly non-regressive** — LNURL works on every rail, keysend doesn't, so an upgrade must never make a leg *less* likely to pay:
+
+- **The probe never throws.** Missing endpoint, timeout, non-2xx, junk JSON, bad pubkey → `null` → LNURL as before. The route answers **404 `no keysend endpoint`** for a non-2xx *and* for a 200 whose body won't parse as JSON — SPA-hosted domains serve their app shell with a 200 for unknown paths (primal.net does), and letting `res.json()` throw dressed an absent endpoint up as a 500.
+- **`railCanKeysend(rail)` is a tri-state — `'yes' | 'no' | 'unknown'`, not a boolean.** `'no'` (Spark always, BOLT11-only; NWC with a **non-empty** method list lacking `pay_keysend`; WebLN without `window.webln.keysend`, readable without an `enable()` prompt) skips the probe entirely, so the feature costs those users nothing. `'unknown'` (NWC that never reported a method list, or reported an empty one) **attempts the keysend anyway**, safe because of the `NOT_IMPLEMENTED` arm below. It shipped folding `'unknown'` into `'no'`, which is why it **never once fired in production** — plenty of NWC wallets omit `methods` from `get_info`, or grant `get_balance` but not `get_info`.
+- **An empty method list means "don't know," never "can do nothing."** `[]` is truthy, so `nwcGetMethods()` returning it read as settled — and since `setNwcMethods` persisted it and `saveNwcUri`'s `if (!nwcGetMethods())` prefetch guard then skipped re-probing, one empty `get_info` **latched the upgrade off permanently for that URI**. `nwcGetMethods()` now returns `null` for an empty list and `setNwcMethods` refuses to persist one. Two accepted knock-ons: a wallet that keeps reporting empty is re-asked `get_info` **once per boost** (never per leg), and `<NwcWallet>`'s "does not support sending payments" warning (gated on `methods !== null`) correctly stops firing for it.
+- **The capability is settled at connect, not at boost.** `nwcValidate` records the method list on the paste path; `saveNwcUri` prefetches it fire-and-forget on the paths that don't validate (backup auto-restore, manual restore, login-time restore), persisted to `bmb:nwc_methods`. Resolved **once per `sendBoost`**, not per leg, and only when the value block contains an lnaddress recipient — `nwcFetchCapabilities` doesn't cache when `get_info` fails, so a per-leg call would re-fire a relay round trip per recipient against an unreachable wallet.
+- **No LNURL retry after a keysend attempt — with exactly one exception.** A keysend that errors *after* the payment left the wallet (the Zeus no-preimage case) would double-pay; a failed leg is the cheaper wrong answer. The exception is a NIP-47 **`NOT_IMPLEMENTED`**, returned *instead of* executing the payment — nothing moved, so LNURL can't double-pay, and that single code is what makes the `'unknown'` arm safe. It rides on a **typed** `NwcMethodUnsupportedError`; flattening it into a plain `Error` makes "can't keysend" indistinguishable from "the route failed and may already have paid," and retrying *that* is a double-pay. Don't collapse it back into a message check.
+
+The endpoint's routing pair **wins** over the feed's (a feed-side `customKey` on an lnaddress recipient is ignored by the LNURL path anyway, while the endpoint's pair selects the sub-account); the feed's is used only when the endpoint supplies none. An upgraded leg **skips BoostBox** — LNURL-only by design, and the TLV now carries the metadata. `BoostResult.recipient` reports the **original lnaddress recipient**, not the resolved pubkey, so per-leg rows and `bmb:boosts:*` stay readable. Lookups are cached module-scope (6 h hit / 15 min miss) so a boost-all over 20 tracks sharing an artist address probes once. **Zaps are untouched:** `lib/v4v/zap.ts` must stay LNURL — a keysend can't make the recipient's LN service publish a kind:9735 receipt.
+
+### Serving our own lightning address
+
+The mirror image of the above: `chadf@boostmebitch.com` is a recipient other apps pay, assembled from two pieces on this domain plus an LNbits instance behind `pay.boostmebitch.com` fronting Chad's LND node.
+
+- **LNURL is a `vercel.json` rewrite**, `/.well-known/lnurlp/:user` → the pay subdomain. An edge rewrite, so the hottest path in a payment costs no lambda invocation. **`next dev` does not apply `vercel.json`**, so this is only observable on a deploy — don't conclude it's broken from a local 404.
+- **Keysend is a route handler**, `app/.well-known/keysend/[name]/route.ts`, holding the node pubkey in a `NAMES` map. **Deliberately not a file in `public/`**: an extensionless static file is served as `application/octet-stream`, and this has to be JSON, CORS-open and cacheable. It validates on the way *out* against the same `/^0[23][0-9a-f]{64}$/` the reader enforces, so a typo fails closed as one 404 here rather than in someone else's payment path — and an unset pubkey serves 404, because publishing a malformed one is worse than publishing nothing (a payer that trusts it sends a keysend that can never arrive).
+- **The two are not independent.** Discovery *starts* at lnurlp — nothing ever looks for the keysend document except a payer already holding the address — and every BOLT11-only wallet (Spark among them) can only pay that way. Drop the rewrite and the keysend doc goes dark with it.
+- **`accept-keysend` must stay enabled on the node**, and the node has to stay reachable. A rejected spontaneous payment doesn't degrade gracefully: the sender never retries LNURL after attempting a keysend (that rule exists to prevent double-pays), so the leg just fails.
+- **Known cosmetic mismatch:** LNbits returns `text/identifier` as `chadf@pay.boostmebitch.com`, so a wallet resolving the bare-domain form is handed metadata naming the subdomain. Payment is unaffected — the invoice's `description_hash` is computed over the same metadata string the wallet received — but strict LUD-16 readers may surface the discrepancy. Fixing it means changing the address domain in LNbits, not in this repo.
+
+
