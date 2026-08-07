@@ -325,15 +325,22 @@ async function fetchFeedXml(
 // Hand-rolled regex parser instead of pulling in fast-xml-parser etc — the
 // shape we care about (top-level <podcast:liveItem> blocks plus a few
 // well-known children) is narrow and stable.
-export async function getLiveItemsFromRss(
+//
+// `ok` separates "this feed has no live items" from "we could not read the
+// feed", which the bare [] cannot. /api/live-status needs the distinction:
+// a client told every item ended would strip a LIVE badge mid-broadcast, and
+// on a `pending` item it would enable the play button for a stream that has
+// not started. Callers that only want the items keep using
+// getLiveItemsFromRss below.
+export async function getLiveItemsFromRssDetailed(
   rssUrl: string,
   feedId: number,
   podcastGuid?: string,
   opts?: { maxAgeMs?: number },
-): Promise<Episode[]> {
+): Promise<{ ok: boolean; items: Episode[] }> {
   const xml = await fetchFeedXml(rssUrl, opts);
-  if (xml == null) return [];
-  return parseRssLiveItems(xml).map((r): Episode => ({
+  if (xml == null) return { ok: false, items: [] };
+  const items = parseRssLiveItems(xml).map((r): Episode => ({
     id: -fnvHash(r.guid ?? r.title ?? `${rssUrl}#${r.startTime ?? ''}`),
     guid: r.guid,
     title: r.title ?? 'Untitled live item',
@@ -351,6 +358,17 @@ export async function getLiveItemsFromRss(
     liveRemoteItem: r.remoteItem,
     liveValueTimeSplits: r.valueTimeSplits?.length ? r.valueTimeSplits : undefined,
   }));
+  return { ok: true, items };
+}
+
+export async function getLiveItemsFromRss(
+  rssUrl: string,
+  feedId: number,
+  podcastGuid?: string,
+  opts?: { maxAgeMs?: number },
+): Promise<Episode[]> {
+  const { items } = await getLiveItemsFromRssDetailed(rssUrl, feedId, podcastGuid, opts);
+  return items;
 }
 
 interface RawLiveItem {
