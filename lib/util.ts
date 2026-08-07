@@ -22,6 +22,25 @@ export function recipientAddress(r: Pick<ValueRecipient, 'type' | 'address'>): s
   return `${r.address.slice(0, 8)}…${r.address.slice(-8)}`;
 }
 
+/**
+ * Display order for a value split: biggest share first.
+ *
+ * Feed order is authoring order, which buries the lede — a block can list three
+ * 0.5% housekeeping payees above the artist taking 98%, so the row that answers
+ * "who is this actually paying?" is the one you have to hunt for. Sorting by
+ * weight puts it first everywhere a split is shown.
+ *
+ * Returns INDICES, not recipients, because `<SplitsPreview>` reads `splits[i]`
+ * and `results[i]` positionally — handing back a reordered array of recipients
+ * would silently pair each row with someone else's sats and someone else's
+ * ✓/✗. Ties keep feed order (the sort is stable), so equal-weight payees don't
+ * shuffle between renders.
+ */
+export function recipientOrder(recipients: readonly Pick<ValueRecipient, 'split'>[]): number[] {
+  const weight = (i: number) => Math.max(0, recipients[i]?.split ?? 0);
+  return recipients.map((_, i) => i).sort((a, b) => weight(b) - weight(a));
+}
+
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
 // IDs (e.g. synthesizing an Episode.id from a guid) that survive reloads.
 export function fnvHash(s: string): number {

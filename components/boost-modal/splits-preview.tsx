@@ -1,6 +1,6 @@
 'use client';
 import type { ValueRecipient, BoostResult } from '@/lib/types';
-import { recipientAddress } from '@/lib/util';
+import { recipientAddress, recipientOrder } from '@/lib/util';
 
 // Format a weight as a percentage of the total weight. Integer when it rounds
 // cleanly (50%, 90%, 1%), one decimal otherwise (33.3%, 16.7%) — most value
@@ -27,7 +27,10 @@ export function SplitsPreview({
     <div className="card p-3">
       <div className="text-[11px] uppercase tracking-widest text-muted mb-2">Recipients</div>
       <ul className="text-xs space-y-1.5 max-h-48 overflow-y-auto pr-2">
-        {recipients.map((r, i) => {
+        {/* Biggest share first. `i` stays the ORIGINAL index throughout, so
+            splits[i] and results[i] still belong to this recipient. */}
+        {recipientOrder(recipients).map((i) => {
+          const r = recipients[i];
           const res = results[i];
           const name = r.name?.trim();
           const addr = recipientAddress(r);

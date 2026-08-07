@@ -11,7 +11,7 @@ import type { Podcast } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
 import { BoltIcon, ShareIcon, PipIcon } from './icons';
-import { hasValueRecipients, isMusicMedium, recipientAddress, stripHtml } from '@/lib/util';
+import { hasValueRecipients, isMusicMedium, recipientAddress, recipientOrder, stripHtml } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
 import { FavHeart } from './fav-heart';
@@ -566,7 +566,8 @@ export function FullscreenPlayer({
                 </button>
                 {valueOpen && (
                   <ul className="space-y-2 mt-3">
-                    {value.recipients.map((r, i) => {
+                    {recipientOrder(value.recipients).map((i) => {
+                      const r = value.recipients[i];
                       const addr = recipientAddress(r);
                       return (
                         <li key={i} className="flex items-start gap-3 text-sm">

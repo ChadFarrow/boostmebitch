@@ -3,7 +3,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { fmtDuration, fmtLiveTime } from '@/lib/format';
-import { hasValueRecipients, isMusicMedium } from '@/lib/util';
+import { hasValueRecipients, isMusicMedium, recipientOrder } from '@/lib/util';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, ShareIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
@@ -213,7 +213,8 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
         )}
       </div>
       <ul className="space-y-2">
-        {value.recipients.map((r, i) => {
+        {recipientOrder(value.recipients).map((i) => {
+          const r = value.recipients[i];
           const isLnAddr = r.type === 'lnaddress';
           const addr =
             isLnAddr || r.address.length <= 20
