@@ -46,6 +46,13 @@ type Handler = (block: LiveBlock | null) => void;
  * to 100 the two are identical, and `splitSats` uses the total as denominator
  * either way — so the number carries across unchanged.
  */
+/** A present-but-empty routing field is absent. Numbers survive (`696969`). */
+function blank(v: unknown): string | undefined {
+  if (v == null) return undefined;
+  const s = String(v).trim();
+  return s === '' ? undefined : s;
+}
+
 function toRecipients(destinations: unknown): ValueRecipient[] {
   if (!Array.isArray(destinations)) return [];
   const out: ValueRecipient[] = [];
@@ -58,8 +65,15 @@ function toRecipients(destinations: unknown): ValueRecipient[] {
       // is a Lightning address whatever the stored type says.
       type: address.includes('@') ? 'lnaddress' : (d?.type === 'lnaddress' ? 'lnaddress' : 'node'),
       address,
-      customKey: d?.customKey != null ? String(d.customKey) : undefined,
-      customValue: d?.customValue != null ? String(d.customValue) : undefined,
+      // Empty strings are dropped, not carried. Split Kit really does send
+      // `customKey: "", customValue: ""` for a destination with no sub-account
+      // (seen live on Homegrown Hits), and `String("")` would store a present
+      // -but-blank pair. Every wire site guards with `customKey && customValue`
+      // so a blank is inert today — but "inert because every reader happens to
+      // use a truthy check" is one `!= null` away from a TLV record with an
+      // empty key, on a shared node, where the key IS the routing.
+      customKey: blank(d?.customKey),
+      customValue: blank(d?.customValue),
       split: Number(d?.split) || 0,
       fee: !!d?.fee,
     });
