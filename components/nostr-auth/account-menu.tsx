@@ -4,6 +4,8 @@ import { subscribeBunkerHealth, restoreBunkerSigner, isKeyEphemeral, shortNpub, 
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { MutedAccountsSection } from './muted-accounts';
+import { ExportKeySection } from './export-key';
+import { ProfileEditor } from '../profile-editor';
 
 // Surfaced inside AccountMenu when the NIP-46 bunker subscription has
 // gone stale (typically because iOS suspended the PWA's WebSocket while
@@ -75,6 +77,7 @@ export function AccountMenu({
   onSignOut: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Dismiss on click-outside / Escape so the menu doesn't trap focus.
@@ -134,12 +137,20 @@ export function AccountMenu({
           <div className="border-b border-bone/15 pb-3 mb-3">
             <div className="text-sm">{name || 'Anon'}</div>
             <div className="text-[10px] text-muted truncate">{shortNpub(identity.npub, 8)}</div>
+            <button
+              onClick={() => { setEditing(true); setOpen(false); }}
+              className="btn-ghost text-[10px] py-1 px-2 mt-2"
+            >
+              edit profile
+            </button>
           </div>
 
           <BunkerHealthBanner />
           <LocalKeyEphemeralBanner />
 
           <MutedAccountsSection />
+
+          <ExportKeySection />
 
           <div className="border-t border-bone/15 mt-4 pt-3">
             <button
@@ -151,6 +162,10 @@ export function AccountMenu({
           </div>
         </div>
       )}
+
+      {/* Outside the `open &&` block: the editor portals to <body> and must
+          survive the menu closing behind it. */}
+      {editing && <ProfileEditor identity={identity} onClose={() => setEditing(false)} />}
     </div>
   );
 }

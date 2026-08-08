@@ -15,6 +15,7 @@ export {
   clearBunkerSigner,
   clearLocalSigner,
   shortNpub,
+  coerceProfileMetadata,
   type NostrIdentity,
   type ProfileMetadata,
 } from './auth';
@@ -32,7 +33,7 @@ export {
   clearPendingBunkerAttempts,
 } from './bunker';
 
-export { fetchProfile } from './profile';
+export { fetchProfile, fetchRawProfile, publishProfile, type RawProfile } from './profile';
 
 export {
   DEFAULT_RELAYS,

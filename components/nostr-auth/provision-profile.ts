@@ -1,7 +1,6 @@
 'use client';
 
-import { signAndPublish } from '@/lib/nostr/publish';
-import { PROFILE_RELAYS, resolvePublishRelays, sanitizeRelays } from '@/lib/nostr/relays';
+import { publishProfile } from '@/lib/nostr/profile';
 import { buildGeneratedProfile } from '@/lib/nostr/generated-profile';
 import { storage } from '@/lib/storage';
 import type { NostrIdentity } from '@/lib/nostr';
@@ -31,30 +30,12 @@ export async function provisionProfileFromKey(identity: NostrIdentity): Promise<
   // is still slow when the tab closes.
   storage.profile.set(identity.pubkey, profile);
 
-  // PROFILE_RELAYS is load-bearing, not belt-and-braces: purplepag.es is the
-  // de facto profile outbox that Damus and Amethyst read. Publishing only to
-  // the user's write relays means most clients never find this profile.
-  const relays = sanitizeRelays([
-    ...resolvePublishRelays(identity),
-    ...PROFILE_RELAYS,
-  ]).slice(0, 20);
-
-  await signAndPublish(
-    {
-      kind: 0,
-      content: JSON.stringify(profile),
-      tags: [],
-      created_at: Math.floor(Date.now() / 1000),
-    },
-    relays,
-  );
-
-  // loadProfile's fetchProfile(pubkey) races this publish — it fires its
-  // kind:0 REQ synchronously while this call is still suspended on the
-  // signEvent round-trip, so the relay usually sees REQ before EVENT. If
-  // EOSE arrives first, fetchProfile calls storage.profile.setMiss(pubkey),
-  // clobbering the seed above with a negative-cache entry for the miss TTL.
-  // Re-seed now that the event has actually been signed and sent, so a miss
-  // written mid-race gets overwritten instead of poisoning the next reload.
-  storage.profile.set(identity.pubkey, profile);
+  // No merge-with-existing here, and that's safe by construction rather than
+  // by luck: this only ever runs on the new-account branch, and a freshly
+  // generated random key cannot already have a kind:0 to preserve. The editor
+  // (components/profile-editor.tsx) is the path that must merge, because it
+  // runs against a profile other clients may have written. publishProfile
+  // re-seeds the cache after signing, which is what beats loadProfile's
+  // racing fetchProfile writing a negative-cache entry over the seed above.
+  await publishProfile(identity, profile);
 }
