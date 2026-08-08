@@ -135,8 +135,17 @@ export async function publishProfile(
   // so if EOSE lands first, fetchProfile writes a negative-cache entry that
   // pins a bare npub for the full miss TTL. Editor: nothing races, but the
   // cache should reflect the edit immediately rather than after a refetch.
-  const parsed = coerceProfileMetadata(content);
-  if (parsed) storage.profile.set(identity.pubkey, parsed);
+  //
+  // Only when a relay actually took it. The cache is a claim about what the
+  // network holds, so writing it after a publish every relay refused caches a
+  // profile that exists nowhere — the user sees their new name, believes it
+  // saved, and it survives reloads until the miss TTL expires and a refetch
+  // contradicts it. Failing loudly and leaving the cache alone is what lets the
+  // editor's `acceptedRelays.length === 0` error mean something.
+  if (result.acceptedRelays.length > 0) {
+    const parsed = coerceProfileMetadata(content);
+    if (parsed) storage.profile.set(identity.pubkey, parsed);
+  }
 
   return result;
 }
