@@ -23,7 +23,10 @@ import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
 
 /** The keys this editor manages. Everything else in the fetched content is
- *  passed through untouched — that's the whole contract. */
+ *  passed through untouched — that's the whole contract, and it's why dropping
+ *  a field from this list does NOT delete it from the user's profile. `about`
+ *  was here and was removed: nothing in this app renders a bio, but a user who
+ *  wrote one in another client keeps it, because we merge rather than rebuild. */
 const FIELDS = [
   {
     key: 'display_name',
@@ -36,13 +39,6 @@ const FIELDS = [
     label: 'Handle',
     placeholder: 'shortname',
     hint: 'No spaces, lowercase. Some clients show this as @handle instead of your name.',
-  },
-  {
-    key: 'about',
-    label: 'About',
-    placeholder: 'A line or two about you',
-    hint: null,
-    multiline: true,
   },
   {
     key: 'picture',
@@ -61,7 +57,7 @@ const FIELDS = [
 type FieldKey = (typeof FIELDS)[number]['key'];
 type Draft = Record<FieldKey, string>;
 
-const EMPTY_DRAFT: Draft = { display_name: '', name: '', about: '', picture: '', lud16: '' };
+const EMPTY_DRAFT: Draft = { display_name: '', name: '', picture: '', lud16: '' };
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -120,7 +116,6 @@ export function ProfileEditor({
         // doesn't open an empty box and think their profile is blank.
         display_name: dn || nm,
         name: nm,
-        about: str(c.about),
         picture: str(c.picture),
         lud16: str(c.lud16),
       });
@@ -244,23 +239,13 @@ export function ProfileEditor({
             {FIELDS.filter((f) => f.key !== 'name' || showHandle).map((f) => (
               <label key={f.key} className="flex flex-col gap-1">
                 <span className="text-[11px] uppercase tracking-wide text-muted">{f.label}</span>
-                {'multiline' in f && f.multiline ? (
-                  <textarea
-                    className="input min-h-[72px] resize-y"
-                    value={draft[f.key]}
-                    placeholder={f.placeholder}
-                    disabled={busy}
-                    onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
-                  />
-                ) : (
-                  <input
-                    className="input"
-                    value={draft[f.key]}
-                    placeholder={f.placeholder}
-                    disabled={busy}
-                    onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
-                  />
-                )}
+                <input
+                  className="input"
+                  value={draft[f.key]}
+                  placeholder={f.placeholder}
+                  disabled={busy}
+                  onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
+                />
                 {f.key === 'picture' && picInvalid ? (
                   <span className="text-[10px] text-nostr">Must start with http:// or https://</span>
                 ) : f.key === 'lud16' && ludOdd ? (

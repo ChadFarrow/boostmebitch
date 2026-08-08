@@ -74,7 +74,7 @@ Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-l
 
 ## Editing the user's own profile (kind:0)
 
-`<ProfileEditor>` (`components/profile-editor.tsx`), opened from the account menu. Fields: `display_name`, `name`, `about`, `picture`, `lud16`. Every signer type can use it — nothing here needs the raw key.
+`<ProfileEditor>` (`components/profile-editor.tsx`), opened from the account menu. Fields: `display_name`, `name`, `picture`, `lud16`. Every signer type can use it — nothing here needs the raw key. **A field absent from that list is preserved, not deleted** — `about` was dropped because nothing in this app renders a bio, and a user who wrote one elsewhere still has it, because the editor merges rather than rebuilds.
 
 **One name box, not two.** `display_name` is what renders (every client here and in the wild resolves `display_name || name`); `name` is the older handle some clients show as `@name`, and onboarding sets both to the same string, so for most users the second box is noise. The `name` field appears only when the profile already carries a genuinely different handle — both non-empty and unequal — or when the user opts in. **Hidden means synced, not ignored:** with the box off screen, save writes `name = display_name`. Leaving `name` at its old value is the tempting version and it strands the profile — the merge preserves keys it doesn't manage, so a `name` the editor stopped showing would be unreachable and permanently disagree with the display name wherever a handle is rendered.
 
