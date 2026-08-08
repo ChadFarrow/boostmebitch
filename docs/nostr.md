@@ -74,7 +74,7 @@ Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-l
 
 ## Editing the user's own profile (kind:0)
 
-`<ProfileEditor>` (`components/profile-editor.tsx`), opened from the account menu. Fields: `display_name`, `name`, `picture`, `lud16`. Every signer type can use it — nothing here needs the raw key. **A field absent from that list is preserved, not deleted** — `about` was dropped because nothing in this app renders a bio, and a user who wrote one elsewhere still has it, because the editor merges rather than rebuilds.
+`<ProfileEditor>` (`components/profile-editor.tsx`), opened from the account menu. Fields: `display_name`, `name`, `picture`. Every signer type can use it — nothing here needs the raw key. **A field absent from that list is preserved, not deleted** — `about` and `lud16` were both dropped, and a user who set either elsewhere still has it, because the editor merges rather than rebuilds.
 
 **One name box, not two.** `display_name` is what renders (every client here and in the wild resolves `display_name || name`); `name` is the older handle some clients show as `@name`, and onboarding sets both to the same string, so for most users the second box is noise. The `name` field appears only when the profile already carries a genuinely different handle — both non-empty and unequal — or when the user opts in. **Hidden means synced, not ignored:** with the box off screen, save writes `name = display_name`. Leaving `name` at its old value is the tempting version and it strands the profile — the merge preserves keys it doesn't manage, so a `name` the editor stopped showing would be unreachable and permanently disagree with the display name wherever a handle is rendered.
 
@@ -85,7 +85,7 @@ Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-l
 
 **`publishProfile` (`lib/nostr/profile.ts`) is the single kind:0 write path**, shared with onboarding's `provision-profile.ts`, so the relay set (`resolvePublishRelays ∪ PROFILE_RELAYS`, capped 20 — purplepag.es is the outbox Damus and Amethyst read) and the post-publish `storage.profile` reseed can't drift. It publishes `content` verbatim and deliberately does **not** merge for the caller: that would need its own fetch, and a second fetch is a second chance to get an untrustworthy null and wipe the profile. Onboarding skips the merge safely by construction — a key generated seconds ago has no kind:0 to preserve.
 
-**`lud16` is a plain text field, not derived.** `@buildonspark/spark-sdk` ships no lightning-address registration API, so the Spark wallet we provision at signup cannot advertise itself; without a pasted address the user is unzappable outside this app.
+**Nothing writes `lud16`, so a Google-onboarded user is unzappable outside this app.** `@buildonspark/spark-sdk` ships no lightning-address registration API, so the Spark wallet provisioned at signup cannot advertise itself, and the editor no longer offers the field. Other clients read `lud16` to decide whether to show a zap button, so until something writes one, that button never appears for these users. The gap is deliberate, not forgotten — closing it needs either an address the user already owns or a lightning address we host for them.
 
 ## Nostr live streams (NIP-53 kind:30311)
 

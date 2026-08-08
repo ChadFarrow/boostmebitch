@@ -25,8 +25,13 @@ import { getErrorMessage } from '@/lib/util';
 /** The keys this editor manages. Everything else in the fetched content is
  *  passed through untouched — that's the whole contract, and it's why dropping
  *  a field from this list does NOT delete it from the user's profile. `about`
- *  was here and was removed: nothing in this app renders a bio, but a user who
- *  wrote one in another client keeps it, because we merge rather than rebuild. */
+ *  and `lud16` were both here and were removed: a user who set either in
+ *  another client keeps it, because we merge rather than rebuild.
+ *
+ *  Note what dropping `lud16` costs, since it isn't visible from here: it's the
+ *  field other clients read to decide whether to show a zap button. Nobody who
+ *  onboards through Google gets one, so they remain unzappable outside this app
+ *  until something else writes it. */
 const FIELDS = [
   {
     key: 'display_name',
@@ -46,18 +51,12 @@ const FIELDS = [
     placeholder: 'https://…',
     hint: 'A direct link to an image. There is no upload — paste a URL.',
   },
-  {
-    key: 'lud16',
-    label: 'Lightning address',
-    placeholder: 'you@example.com',
-    hint: 'Lets other Nostr clients zap you. Your Spark wallet does not provide one — paste an address you already have.',
-  },
 ] as const;
 
 type FieldKey = (typeof FIELDS)[number]['key'];
 type Draft = Record<FieldKey, string>;
 
-const EMPTY_DRAFT: Draft = { display_name: '', name: '', picture: '', lud16: '' };
+const EMPTY_DRAFT: Draft = { display_name: '', name: '', picture: '' };
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -117,7 +116,6 @@ export function ProfileEditor({
         display_name: dn || nm,
         name: nm,
         picture: str(c.picture),
-        lud16: str(c.lud16),
       });
       // Only surface the handle when it's genuinely a second, different name.
       // One of them being absent isn't a disagreement — it's a profile that
@@ -145,8 +143,6 @@ export function ProfileEditor({
 
   const pic = draft.picture.trim();
   const picInvalid = pic !== '' && !/^https?:\/\//i.test(pic);
-  const lud = draft.lud16.trim();
-  const ludOdd = lud !== '' && !lud.includes('@');
 
   async function save() {
     if (base === null || picInvalid) return;
@@ -248,10 +244,6 @@ export function ProfileEditor({
                 />
                 {f.key === 'picture' && picInvalid ? (
                   <span className="text-[10px] text-nostr">Must start with http:// or https://</span>
-                ) : f.key === 'lud16' && ludOdd ? (
-                  <span className="text-[10px] text-bolt/80">
-                    That doesn&apos;t look like an address — expected something@somewhere.
-                  </span>
                 ) : (
                   f.hint && <span className="text-[10px] text-muted">{f.hint}</span>
                 )}
