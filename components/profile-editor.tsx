@@ -80,15 +80,18 @@ export function ProfileEditor({
    * kind:0 carries two name fields and almost nobody wants both. `display_name`
    * is what actually renders — every client here and in the wild resolves
    * `display_name || name` — while `name` is the older handle some clients show
-   * as `@name`. Onboarding sets both to the same string, so for most users the
-   * distinction is noise.
+   * as `@name`. Onboarding sets both to the same string, so for practically
+   * everyone the distinction is noise: there is one Name box, and saving keeps
+   * `name` equal to it (see save()).
    *
-   * So: one box, and this second one appears only for someone who already has a
-   * genuinely different handle (or asks for one). Deleting the field outright
-   * was the tempting version and it's wrong — the merge preserves keys it
-   * doesn't manage, so a `name` we stopped showing would be stuck forever,
-   * invisibly disagreeing with the display name in every client that renders a
-   * handle. Hidden here means SYNCED, not ignored; see save().
+   * **There is no opt-in.** This flips true only for a profile that ALREADY
+   * carries two different names, set in some other client. That case can't be
+   * collapsed silently — reading their display name and overwriting their
+   * handle with it destroys a field they deliberately set, and they'd never see
+   * it happen. Nor can the field just be dropped: the merge preserves keys this
+   * editor doesn't manage, so a hidden `name` would freeze at its old value and
+   * disagree with the display name forever, unreachable from here. So when the
+   * two genuinely differ, both boxes appear and the user stays in control.
    */
   const [showHandle, setShowHandle] = useState(false);
 
@@ -249,23 +252,6 @@ export function ProfileEditor({
                 )}
               </label>
             ))}
-
-            {!showHandle && (
-              <button
-                type="button"
-                onClick={() => {
-                  // Seed it from the visible name so turning this on doesn't
-                  // read as "your handle is empty" — it isn't, it's just been
-                  // tracking the name until now.
-                  setDraft((d) => ({ ...d, name: d.name.trim() || d.display_name.trim() }));
-                  setShowHandle(true);
-                }}
-                disabled={busy}
-                className="text-[10px] text-muted hover:text-bone self-start -mt-2"
-              >
-                + use a separate handle
-              </button>
-            )}
 
             {err && <div className="text-[11px] text-nostr">{err}</div>}
 
