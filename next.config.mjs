@@ -8,9 +8,29 @@ const nextConfig = {
   // Pin the workspace root so Next doesn't pick up an unrelated lockfile elsewhere
   // on disk (the parent dir has a bun.lock that's nothing to do with this app).
   outputFileTracingRoot: __dirname,
-  images: {
-    remotePatterns: [{ protocol: 'https', hostname: '**' }],
-  },
+  // NO `images.remotePatterns`. It held `{ protocol: 'https', hostname: '**' }`,
+  // which turned `/_next/image` into an open image proxy for the entire web:
+  // anyone could call `/_next/image?url=https://any-host/...` and have this
+  // server fetch it, optimize it, and serve it back from this domain, cached on
+  // our CDN and billed to us.
+  //
+  // Three reasons it had to go, and none of them cost anything:
+  //   1. It's a server-side fetch to an attacker-chosen host that bypasses
+  //      `safeFetch` entirely — the guard every other outbound fetch of a
+  //      remote URL goes through, precisely to re-validate each redirect hop.
+  //   2. It feeds attacker-supplied bytes into sharp/libvips, which currently
+  //      carries four high-severity CVEs (`npm audit`). Without the wildcard,
+  //      the only thing that decoder ever sees is our own `public/hero.jpg`,
+  //      so the advisory stops being reachable.
+  //   3. It was never used. The app has exactly ONE <Image>, in app/layout.tsx,
+  //      with `src="/hero.jpg"` — a local file. Local images under /public need
+  //      no remotePatterns. Every REMOTE image in this app (podcast artwork,
+  //      profile avatars, live-block covers) deliberately renders through a
+  //      bare <img> because the host is arbitrary, which is exactly why the
+  //      allowlist was empty of real consumers.
+  //
+  // If a remote host ever genuinely needs optimizing, add that ONE hostname
+  // here. Never restore the `**` wildcard.
   async headers() {
     return [
       {

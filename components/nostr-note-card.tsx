@@ -419,7 +419,13 @@ function ZapDialog({
       <div className="card p-4 max-w-sm w-full">
         <header className="flex items-center justify-between mb-3">
           <h3 className="font-display text-lg">⚡ Zap {note.author?.display_name || note.author?.name || shortNpub(note.npub, 6)}</h3>
-          <button onClick={onClose} className="text-muted hover:text-bone text-xl leading-none">×</button>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            className="text-muted hover:text-bone text-xl leading-none"
+          >
+            ×
+          </button>
         </header>
         {!canZap && (
           <p className="text-sm text-red-400">

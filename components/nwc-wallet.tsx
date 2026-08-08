@@ -120,6 +120,24 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     return () => { restoredFromBackupNpub = null; };
   }, [showRestoredNotice]);
 
+  // Lazily fetch capabilities on first card render so we can warn the user if
+  // their wallet doesn't advertise payment methods via get_info.
+  //
+  // Guarded on `mode` here rather than living inside the `mode === 'card'`
+  // branch below, matching the auto-restore effect above. It was written as a
+  // conditional hook with a `rules-of-hooks` suppression, which happens to be
+  // safe today only because the card and form elements sit at different child
+  // positions in <WalletModal>, so React remounts instead of reusing the
+  // instance. Nothing states that invariant at either site: align those
+  // positions in a future refactor, or pass a `mode` that flips on a live
+  // instance, and the hook count changes between renders — React throws
+  // "Rendered fewer hooks than expected" and takes the whole wallet modal down.
+  useEffect(() => {
+    if (mode !== 'card' || !hasNwc()) return;
+    if (nwcGetMethods() !== null) return; // already fetched this session
+    nwcFetchCapabilities().catch(() => {});
+  }, [mode]);
+
   async function restoreFromNostr() {
     if (!identity || !canBackup) return;
     setBusy(true);
@@ -251,14 +269,6 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     const ephemeral = storage.nwcUri.isEphemeral();
     // Authoritative, live backup state for the connected account.
     const cardBackup = !!identity && storage.nwcBackup.get(identity.npub);
-
-    // Lazily fetch capabilities on first card mount so we can warn the user if
-    // their wallet doesn't advertise payment methods via get_info.
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useEffect(() => {
-      if (nwcGetMethods() !== null) return; // already fetched this session
-      nwcFetchCapabilities().catch(() => {});
-    }, []);
 
     const methods = nwcGetMethods();
     const canPayInvoice = methods === null || methods.includes('pay_invoice');
