@@ -145,7 +145,21 @@ export function ProfileEditor({
   }, [onClose]);
 
   const pic = draft.picture.trim();
-  const picInvalid = pic !== '' && !/^https?:\/\//i.test(pic);
+  // `data:image/` is not a nicety — it's what THIS APP writes. Every account
+  // onboarded through Google gets a generated identicon as an inline
+  // `data:image/svg+xml;base64,…` (lib/nostr/generated-profile.ts), so an
+  // http(s)-only rule rejected the value the editor had just loaded: Publish
+  // disabled and save() early-returning on open, locking every unmodified
+  // account out of its own profile until it cleared the avatar. It only looked
+  // fine in testing because the test account had already replaced the identicon
+  // with an https URL.
+  //
+  // Kept as an allowlist of two shapes rather than "not javascript:", matching
+  // safeUrlAttr's posture. `data:image/` specifically, so `data:text/html` is
+  // still rejected — these render through <img> where neither executes, but the
+  // narrow form costs nothing and survives the field being rendered somewhere
+  // else one day.
+  const picInvalid = pic !== '' && !/^https?:\/\//i.test(pic) && !/^data:image\//i.test(pic);
 
   async function save() {
     if (base === null || picInvalid) return;
@@ -265,7 +279,9 @@ export function ProfileEditor({
                   onChange={(e) => setDraft((d) => ({ ...d, [f.key]: e.target.value }))}
                 />
                 {f.key === 'picture' && picInvalid ? (
-                  <span className="text-[10px] text-nostr">Must start with http:// or https://</span>
+                  <span className="text-[10px] text-nostr">
+                    Must be an image link starting with https://
+                  </span>
                 ) : (
                   f.hint && <span className="text-[10px] text-muted">{f.hint}</span>
                 )}
