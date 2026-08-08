@@ -1,6 +1,6 @@
 # Security — SSRF guard and show-notes sanitizer
 
-Read before touching `lib/safe-fetch.ts`, `lib/safe-url-attr.ts`, `sanitizeShowNotes` in `lib/pi.ts`, `app/api/transcript`, or `app/api/nostr/site-sign`.
+Read before touching `lib/safe-fetch.ts`, `lib/safe-url-attr.ts`, `sanitizeShowNotes` in `lib/pi.ts`, `app/api/transcript`, `app/api/nostr/site-sign`, or `next.config.mjs`.
 
 Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning.
 
@@ -14,6 +14,21 @@ Every server-side fetch of a feed/chapter/transcript URL goes through **`safeFet
 - Pinned by `npm run check:ssrf`. Its **ALLOWED half is as load-bearing as the BLOCKED half** — it holds boundary addresses just outside each blocked range (`100.63.255.255`, `172.32.0.1`, `223.255.255.255`) so a bypass fix can't start rejecting real podcast hosts.
 
 **Rate-limit key:** `rateLimit` buckets on the platform-trusted `x-real-ip` / **rightmost** `x-forwarded-for` hop, never the spoofable leftmost entry.
+
+**`safeFetch` is not the only way this server makes an outbound request, and the exception was the framework's.** `next.config.mjs` carried `images.remotePatterns: [{ protocol: 'https', hostname: '**' }]`, which makes `/_next/image?url=…` an open image proxy: any caller could have this server fetch an arbitrary https URL, optimize it, and serve it back from our own domain and CDN. That is a server-side fetch to an attacker-chosen host that never touches `assertSafeFetchUrl` or the redirect re-validation above — the guard's whole point — and it also fed attacker-chosen bytes into `sharp`/libvips, which carries unpatched high-severity CVEs (transitive under `next`, so patching means bumping Next, which `CLAUDE.md` warns has previously dragged a `nostr-tools` upgrade that breaks `nostrconnect://` login).
+
+The wildcard had **no consumers**: the app contains exactly one `<Image>`, `src="/hero.jpg"` in `app/layout.tsx`, and local files under `/public` need no `remotePatterns`. Every *remote* image here — podcast artwork, avatars, live-block covers — renders through a bare `<img>` precisely because the host is arbitrary. Removing it returns 400 `"url" parameter is not allowed` for any external host while the hero still optimizes.
+
+**If a remote host ever genuinely needs optimizing, add that one hostname. Never restore the `**` wildcard** — and note the general lesson: when auditing outbound requests, grep the framework config, not just `fetch(`.
+
+
+### Response headers and CSP (`next.config.mjs`)
+
+`X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin`, `Permissions-Policy: camera=(), microphone=(), geolocation=()`, and a deliberately partial CSP: `base-uri 'self'; object-src 'none'; frame-ancestors 'none'`.
+
+**The missing `script-src` is a decision, not an omission** — the reasoning is inline in the config and worth not re-litigating: the FOUC blocker in `app/layout.tsx` is an inline `<script>` that must run before first paint (so `script-src` needs nonce plumbing through the App Router, and `'unsafe-inline'` would defeat the point), and `connect-src` cannot be constrained because the app connects to arbitrary user-supplied relays, arbitrary feed/chapter/transcript hosts, and arbitrary LNURL servers by design. With no `connect-src` allowlist, injected script can still exfiltrate — so a `script-src` alone would read as more protection than it delivers. Clipboard is intentionally left at the default `self` allowlist: the Amber signer reads it and Share writes it, both same-origin.
+
+This matters more than it used to: since Google onboarding shipped, this origin can hold a **signing key** (`lib/nostr/local-key-store.ts`) alongside the NWC spending credential.
 
 
 ### Show notes (`sanitizeShowNotes` in `lib/pi.ts`)

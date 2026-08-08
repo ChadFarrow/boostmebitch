@@ -15,12 +15,12 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/money-boosts.md`](docs/money-boosts.md) | `lib/v4v/boost.ts`, `components/boost-modal/`, `boost-all-modal.tsx`, `lib/v4v/keysend-lookup.ts`, `lib/boost-sound.ts`, `app/.well-known/keysend/` |
 | [`docs/streaming.md`](docs/streaming.md) | `lib/v4v/streaming.ts`, `stream-ledger.ts`, `live-value.ts`, `live-block.ts`, `components/streaming-settings.tsx` |
 | [`docs/signers.md`](docs/signers.md) | `lib/nostr/signer.ts`, `amber.ts`, `bunker.ts`, `local-signer.ts`, `google-auth.ts`, `drive-backup.ts`, `backup-crypto.ts`, `components/nostr-auth/` |
-| [`docs/nostr.md`](docs/nostr.md) | `lib/nostr/*` (non-signer), `components/*note*`, `components/*feed*`, `live-chat.tsx` |
+| [`docs/nostr.md`](docs/nostr.md) | `lib/nostr/*` (non-signer), `components/*note*`, `components/*feed*`, `live-chat.tsx`, `components/profile-editor.tsx` |
 | [`docs/wallets.md`](docs/wallets.md) | `components/wallet-modal.tsx`, `*-wallet.tsx`, `wallet-balance.tsx`, `lib/v4v/nwc.ts`, `spark.ts`, `webln.ts` |
 | [`docs/feeds.md`](docs/feeds.md) | `app/api/*`, `lib/pi.ts`, `lib/podcast-meta.ts`, `lib/live-status.ts`, `components/podroll.tsx` |
 | [`docs/ui.md`](docs/ui.md) | `components/player.tsx`, `lists.tsx`, `chapter*`, `transcript*`, `home-page.tsx`, `episode-detail-view.tsx`, theme/PWA |
 | [`docs/storage.md`](docs/storage.md) | Adding or changing any `bmb:*` key |
-| [`docs/security.md`](docs/security.md) | `lib/safe-fetch.ts`, `safe-url-attr.ts`, `sanitizeShowNotes`, `app/api/transcript`, `app/api/nostr/site-sign` |
+| [`docs/security.md`](docs/security.md) | `lib/safe-fetch.ts`, `safe-url-attr.ts`, `sanitizeShowNotes`, `app/api/transcript`, `app/api/nostr/site-sign`, `next.config.mjs` |
 | [`docs/ops.md`](docs/ops.md) | Google Cloud console, DNS, OAuth consent screen |
 
 ## Names
