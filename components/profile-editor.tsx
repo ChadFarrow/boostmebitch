@@ -174,6 +174,25 @@ export function ProfileEditor({
         else delete merged.name;
       }
 
+      // `displayName` is the pre-NIP-24 camelCase spelling of `display_name`.
+      // It's deprecated, but clients still write it (Jumble does) and some read
+      // it in preference, so an untouched copy doesn't stay harmless — it holds
+      // the OLD name and the profile starts disagreeing with itself, showing a
+      // stale name in whichever client happens to favour that key. Preserving
+      // it verbatim is the correct default for a field we don't manage; this is
+      // the one exception, because it isn't a separate field, it's the same
+      // field spelled differently.
+      //
+      // Updated ONLY when already present. Adding it would spread a deprecated
+      // convention to every profile we touch, and deleting it would break the
+      // clients still reading it — so we neither create nor remove, just keep
+      // it honest.
+      if ('displayName' in merged) {
+        const dn = draft.display_name.trim();
+        if (dn) merged.displayName = dn;
+        else delete merged.displayName;
+      }
+
       const res = await publishProfile(identity, merged);
       if (res.acceptedRelays.length === 0) {
         throw new Error('No relay accepted the update. Check your connection and try again.');
