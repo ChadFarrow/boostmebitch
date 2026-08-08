@@ -2,7 +2,8 @@
 
 // Crypto for the Google-hosted key backup. Ported from Wisp's
 // auth/BackupCrypto.kt so the construction is one a second implementation has
-// already reviewed:
+// already reviewed, and now published as docs/google-key-backup-spec.md so
+// other apps can restore the same blobs:
 //
 //   salt = HMAC-SHA256(key = BACKUP_LABEL, msg = google `sub`)
 //   key  = Argon2id(pin, salt, m=32MiB, t=3, p=1) -> 32 bytes
@@ -46,19 +47,42 @@
 import { nip44 } from 'nostr-tools';
 import { argon2idAsync } from '@noble/hashes/argon2.js';
 
-const BACKUP_LABEL = 'bmb-google-backup';
+// ---------------------------------------------------------------------------
+// EVERY CONSTANT BELOW IS A PUBLISHED WIRE CONSTANT, not an app-local setting.
+// docs/google-key-backup-spec.md describes this format for other apps to
+// implement, so these values now have readers outside this repository and a
+// rename here breaks them too. They are exported so the spec, the code and
+// scripts/check-spark-derivation.mjs all quote one source.
+//
+// The `bmb-` prefix is historical and MUST NOT be normalized to something
+// neutral: it is baked into every key ever derived. See §8 of the spec for how
+// to version a derivation if one ever genuinely has to change.
+// ---------------------------------------------------------------------------
+
+/** Bump only alongside a NEW label — never for an in-place edit. */
+export const BACKUP_FORMAT_VERSION = 1;
+
+export const BACKUP_LABEL = 'bmb-google-backup';
 
 // OWASP-class Argon2id parameters, picked against measured cost rather than
 // taste: 32 MiB / t=3 is ~0.6s on a laptop and a few seconds on a phone. 64 MiB
 // doubled that and risks the allocation on mobile Safari for one extra bit of
 // margin; 19 MiB (the OWASP floor) was cheap enough to be worth trading up
 // from. p=1 because there is no thread pool to exploit here anyway.
-const ARGON2_MEMORY_KIB = 32 * 1024;
-const ARGON2_TIME_COST = 3;
-const ARGON2_PARALLELISM = 1;
+export const ARGON2_MEMORY_KIB = 32 * 1024;
+export const ARGON2_TIME_COST = 3;
+export const ARGON2_PARALLELISM = 1;
+/** NIP-44 v2 wants exactly 32 bytes where it would normally put the ECDH
+ *  conversation key, so this is fixed by the payload format, not a taste knob. */
+export const BACKUP_KEY_BYTES = 32;
 
 // 6, not 4. Four digits is 10,000 candidates — small enough that no KDF saves
 // it. Raising the floor is the single highest-leverage knob in this file.
+//
+// BOTH bounds are part of the published format, and the max is the surprising
+// one: an app that validates a shorter maximum refuses a PIN another app
+// legitimately accepted, locking that user out of their own backup behind an
+// input-validation error rather than a crypto failure.
 export const PIN_MIN_LENGTH = 6;
 export const PIN_MAX_LENGTH = 8;
 
@@ -99,7 +123,7 @@ export async function deriveBackupKey(sub: string, pin: string): Promise<Uint8Ar
     m: ARGON2_MEMORY_KIB,
     t: ARGON2_TIME_COST,
     p: ARGON2_PARALLELISM,
-    dkLen: 32,
+    dkLen: BACKUP_KEY_BYTES,
     asyncTick: 16,
   });
 }

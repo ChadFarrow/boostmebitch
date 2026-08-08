@@ -23,6 +23,8 @@ One polyfill active at a time. `captureOriginal()` snapshots the underlying NIP-
 
 ### Google onboarding — a key for users who have none
 
+> **This format is published as [`google-key-backup-spec.md`](google-key-backup-spec.md)** so other apps (onlyboosts, potentially stablekraft.app) can restore the same blobs. Every constant below now has readers outside this repo: `bmb-google-backup`, `bmb-spark-wallet`, `bmb_bk_`, the Argon2 parameters and **both** PIN bounds. They are exported from `backup-crypto.ts`/`drive-backup.ts` and pinned by `npm run check:spark` for that reason — a rename is a breaking change to other people's users, not a cleanup. Cross-app restore additionally requires a **shared OAuth client**; see [`ops.md`](ops.md).
+
 Ported from **Wisp** (github.com/barrydeen/wisp, `v1.1.0`). The central insight, because the obvious version is wrong: **Google is not an identity provider here — it's a zero-knowledge blob store.** The key is generated locally at random (`generateSecretKey()`); nothing derives from the Google account. Wisp shipped deterministic `sub`-derived nsecs once and reverted.
 
 Construction (`lib/nostr/backup-crypto.ts`, mirroring Wisp's `BackupCrypto.kt`):

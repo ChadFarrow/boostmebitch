@@ -3,10 +3,16 @@
 // The user's encrypted key blob, stored in their own Google Drive appdata
 // folder. Ported from Wisp's auth/DriveBackupService.kt.
 //
-// appDataFolder is a per-app hidden space: invisible in the normal Drive UI,
-// unreadable by other apps, and it costs the user no visible storage. Combined
-// with an opaque filename and no identifying metadata, Google holds a blob it
-// cannot link to a Nostr identity — the npub exists only inside the ciphertext.
+// appDataFolder is a hidden space scoped to the OAuth client — invisible in the
+// normal Drive UI, unreadable by apps authenticating under a different client,
+// and costing the user no visible storage. Combined with an opaque filename and
+// no identifying metadata, Google holds a blob it cannot link to a Nostr
+// identity — the npub exists only inside the ciphertext.
+//
+// "Per OAuth client", not "per app", is the load-bearing detail: it is why
+// sharing one client across apps is the ONLY way to make a backup portable
+// between them (docs/google-key-backup-spec.md §0), and equally why this file
+// must not assume it is the only writer. See listBackups.
 //
 // This talks to Google's REST API directly from the browser with a bearer
 // token; there is no server component and nothing about this ever reaches our
@@ -14,6 +20,14 @@
 
 const FILES_URL = 'https://www.googleapis.com/drive/v3/files';
 const UPLOAD_URL = 'https://www.googleapis.com/upload/drive/v3/files';
+
+/**
+ * Filename prefix for every blob this format writes. Part of the published
+ * format (docs/google-key-backup-spec.md §5) — it is what lets a shared
+ * appDataFolder hold other apps' files without them being mistaken for
+ * backups. Renaming it orphans every existing blob from `listBackups`.
+ */
+export const BACKUP_FILENAME_PREFIX = 'bmb_bk_';
 
 /** Thrown on a 401 so the caller can re-request a token instead of treating an
  *  expired credential as "no backups exist" — which would walk a returning
@@ -68,13 +82,30 @@ const BACKUP_PAGE_SIZE = 100;
 // is unspecified.
 const MAX_BACKUP_PAGES = 10;
 
-/** Every backup blob this app has written for this Google account. */
+/**
+ * Every backup blob written for this Google account, by this app or any other
+ * app sharing its OAuth client.
+ *
+ * **Filtered to BACKUP_FILENAME_PREFIX, and that filter is load-bearing.**
+ * appDataFolder is per-OAuth-client, not per-app, so the moment a second app
+ * shares this client its own files (settings, caches) land in this listing —
+ * and the caller reads a non-empty listing as "this Google account already has
+ * an identity". A brand-new user then can't reach account creation at all: at
+ * best they're asked for a PIN that will never match and told it's incorrect,
+ * at worst that foreign file fails to download and they hit the orphan-rule
+ * hard stop. Every blob this format has ever written carries the prefix, so
+ * filtering costs nothing and needs no migration.
+ */
 export async function listBackups(token: string): Promise<DriveFile[]> {
   const files: DriveFile[] = [];
   let pageToken: string | undefined;
   for (let page = 0; page < MAX_BACKUP_PAGES; page++) {
     const params = new URLSearchParams({
       spaces: 'appDataFolder',
+      // Drive's `contains` is prefix-matching for `name` specifically, which is
+      // exactly what's wanted — but that's a surprising enough special case to
+      // not lean on alone, hence the startsWith below.
+      q: `name contains '${BACKUP_FILENAME_PREFIX}'`,
       pageSize: String(BACKUP_PAGE_SIZE),
       orderBy: 'createdTime desc',
       // nextPageToken has to be named explicitly: a fields mask that omits it
@@ -84,7 +115,9 @@ export async function listBackups(token: string): Promise<DriveFile[]> {
     if (pageToken) params.set('pageToken', pageToken);
     const res = await driveFetch(`${FILES_URL}?${params}`, token);
     const json = (await res.json()) as { files?: DriveFile[]; nextPageToken?: string };
-    if (json.files?.length) files.push(...json.files);
+    for (const f of json.files ?? []) {
+      if (f.name?.startsWith(BACKUP_FILENAME_PREFIX)) files.push(f);
+    }
     pageToken = json.nextPageToken;
     if (!pageToken) break;
   }
@@ -110,7 +143,7 @@ export async function downloadBackup(token: string, fileId: string): Promise<str
  * is a separate feature, not a cleanup.
  */
 export async function uploadBackup(token: string, payload: string): Promise<string> {
-  const name = `bmb_bk_${crypto.randomUUID()}.bin`;
+  const name = `${BACKUP_FILENAME_PREFIX}${crypto.randomUUID()}.bin`;
   const boundary = `bmb${crypto.randomUUID().replace(/-/g, '')}`;
   const body =
     `--${boundary}\r\n` +

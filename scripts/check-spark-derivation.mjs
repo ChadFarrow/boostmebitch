@@ -15,6 +15,11 @@
 //   deriveBackupKey       — locks every user out of their Drive backup blob.
 //                           There is no reset path; the PIN is the only secret.
 //
+// It also pins the constants those two are built from, because they are now
+// published as docs/google-key-backup-spec.md for other apps to implement. A
+// derivation can also break by having a *name* tidied rather than a formula
+// changed, and that edit looks completely harmless in review.
+//
 // `--experimental-strip-types` lets this .mjs import the real .ts modules, so
 // the pin executes production code rather than a copy of it. A copy would pass
 // green while the shipping label changed, which is the exact failure being
@@ -27,7 +32,19 @@
 // postcss.config.js / tailwind.config.js and can break the build.
 
 import { sparkMnemonicFromKey } from '../lib/v4v/spark-derive.ts';
-import { deriveBackupKey, encryptNsec, decryptNsec } from '../lib/nostr/backup-crypto.ts';
+import {
+  deriveBackupKey,
+  encryptNsec,
+  decryptNsec,
+  ARGON2_MEMORY_KIB,
+  ARGON2_PARALLELISM,
+  ARGON2_TIME_COST,
+  BACKUP_KEY_BYTES,
+  BACKUP_LABEL,
+  PIN_MAX_LENGTH,
+  PIN_MIN_LENGTH,
+} from '../lib/nostr/backup-crypto.ts';
+import { BACKUP_FILENAME_PREFIX } from '../lib/nostr/drive-backup.ts';
 import { validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { bytesToHex } from '@noble/hashes/utils.js';
@@ -127,17 +144,42 @@ console.log('encryptNsec / decryptNsec — round-trip');
   check('throws under the wrong key', threw, true);
 }
 
+// --- Published wire constants ----------------------------------------------
+// These are quoted verbatim by docs/google-key-backup-spec.md, which exists so
+// other apps can restore the same blobs. A vector above catches a derivation
+// that MOVED; these catch the rename that looks like tidying — dropping a `bmb-`
+// prefix, "rounding" 32 MiB, tightening the PIN maximum — each of which changes
+// the format while every derivation still agrees with itself.
+
+console.log('published wire constants — frozen values');
+for (const [label, actual, expected] of [
+  ['BACKUP_LABEL', BACKUP_LABEL, 'bmb-google-backup'],
+  ['BACKUP_FILENAME_PREFIX', BACKUP_FILENAME_PREFIX, 'bmb_bk_'],
+  ['ARGON2_MEMORY_KIB', ARGON2_MEMORY_KIB, 32768],
+  ['ARGON2_TIME_COST', ARGON2_TIME_COST, 3],
+  ['ARGON2_PARALLELISM', ARGON2_PARALLELISM, 1],
+  ['BACKUP_KEY_BYTES', BACKUP_KEY_BYTES, 32],
+  ['PIN_MIN_LENGTH', PIN_MIN_LENGTH, 6],
+  ['PIN_MAX_LENGTH', PIN_MAX_LENGTH, 8],
+]) {
+  check(label, actual, expected);
+}
+
 if (failures > 0) {
   console.error(
-    `\n${failures} check(s) FAILED — A DERIVATION CHANGED.\n\n` +
+    `\n${failures} check(s) FAILED — A DERIVATION OR A PUBLISHED CONSTANT CHANGED.\n\n` +
       'If sparkMnemonicFromKey moved: every user with funds in a derived Spark\n' +
       'wallet has just lost access to them from the same nsec. They land on a\n' +
       'different, empty wallet with no error.\n\n' +
       'If deriveBackupKey moved: every user is locked out of their Drive backup.\n' +
       'The PIN is the only secret and there is no reset path.\n\n' +
+      'If a wire constant moved: the same, plus every OTHER app implementing\n' +
+      'docs/google-key-backup-spec.md is now incompatible with this one. Those\n' +
+      'names are not app-local settings — the `bmb-` prefix is historical and\n' +
+      'renaming it is a breaking change, not a cleanup.\n\n' +
       'Do not update the vectors to match. Revert the change, or version the\n' +
       'derivation (a NEW label, try v1 first on restore) and migrate deliberately.\n' +
-      'See the ⚠️ block in lib/v4v/spark-derive.ts.',
+      'See the ⚠️ block in lib/v4v/spark-derive.ts and §8 of the spec.',
   );
   process.exitCode = 1;
 } else {
