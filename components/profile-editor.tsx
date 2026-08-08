@@ -27,15 +27,15 @@ import { getErrorMessage } from '@/lib/util';
 const FIELDS = [
   {
     key: 'display_name',
-    label: 'Display name',
-    placeholder: 'How your name appears',
+    label: 'Name',
+    placeholder: 'How you want to be known',
     hint: null,
   },
   {
     key: 'name',
-    label: 'Username',
+    label: 'Handle',
     placeholder: 'shortname',
-    hint: 'No spaces, lowercase — some clients show this as @username.',
+    hint: 'No spaces, lowercase. Some clients show this as @handle instead of your name.',
   },
   {
     key: 'about',
@@ -81,6 +81,21 @@ export function ProfileEditor({
   const [base, setBase] = useState<Record<string, unknown> | null>(null);
   const [phase, setPhase] = useState<'loading' | 'ready' | 'blocked' | 'saving' | 'saved'>('loading');
   const [err, setErr] = useState<string | null>(null);
+  /**
+   * kind:0 carries two name fields and almost nobody wants both. `display_name`
+   * is what actually renders — every client here and in the wild resolves
+   * `display_name || name` — while `name` is the older handle some clients show
+   * as `@name`. Onboarding sets both to the same string, so for most users the
+   * distinction is noise.
+   *
+   * So: one box, and this second one appears only for someone who already has a
+   * genuinely different handle (or asks for one). Deleting the field outright
+   * was the tempting version and it's wrong — the merge preserves keys it
+   * doesn't manage, so a `name` we stopped showing would be stuck forever,
+   * invisibly disagreeing with the display name in every client that renders a
+   * handle. Hidden here means SYNCED, not ignored; see save().
+   */
+  const [showHandle, setShowHandle] = useState(false);
 
   const load = useCallback(async () => {
     setPhase('loading');
@@ -98,13 +113,21 @@ export function ProfileEditor({
       }
       const c = content ?? {};
       setBase(c);
+      const dn = str(c.display_name).trim();
+      const nm = str(c.name).trim();
       setDraft({
-        display_name: str(c.display_name),
-        name: str(c.name),
+        // Fall back to `name` so someone whose only name field is the old one
+        // doesn't open an empty box and think their profile is blank.
+        display_name: dn || nm,
+        name: nm,
         about: str(c.about),
         picture: str(c.picture),
         lud16: str(c.lud16),
       });
+      // Only surface the handle when it's genuinely a second, different name.
+      // One of them being absent isn't a disagreement — it's a profile that
+      // never set it, and save() will fill it in.
+      setShowHandle(dn !== '' && nm !== '' && dn !== nm);
       setPhase('ready');
     } catch (e) {
       setErr(getErrorMessage(e, 'could not read your profile'));
@@ -141,9 +164,20 @@ export function ProfileEditor({
       // empty string they then render.
       const merged: Record<string, unknown> = { ...base };
       for (const { key } of FIELDS) {
+        if (key === 'name' && !showHandle) continue; // handled below
         const v = draft[key].trim();
         if (v) merged[key] = v;
         else delete merged[key];
+      }
+      if (!showHandle) {
+        // With no handle box on screen, `name` tracks the one name the user can
+        // see. Leaving it at its old value instead is what would strand a
+        // profile reading "Chad Farrow" as @amber-otter in every client that
+        // shows a handle — the field would be unreachable from this editor and
+        // wrong forever.
+        const n = draft.display_name.trim();
+        if (n) merged.name = n;
+        else delete merged.name;
       }
 
       const res = await publishProfile(identity, merged);
@@ -207,7 +241,7 @@ export function ProfileEditor({
 
         {(phase === 'ready' || busy || phase === 'saved') && (
           <div className="p-5 flex flex-col gap-4">
-            {FIELDS.map((f) => (
+            {FIELDS.filter((f) => f.key !== 'name' || showHandle).map((f) => (
               <label key={f.key} className="flex flex-col gap-1">
                 <span className="text-[11px] uppercase tracking-wide text-muted">{f.label}</span>
                 {'multiline' in f && f.multiline ? (
@@ -238,6 +272,23 @@ export function ProfileEditor({
                 )}
               </label>
             ))}
+
+            {!showHandle && (
+              <button
+                type="button"
+                onClick={() => {
+                  // Seed it from the visible name so turning this on doesn't
+                  // read as "your handle is empty" — it isn't, it's just been
+                  // tracking the name until now.
+                  setDraft((d) => ({ ...d, name: d.name.trim() || d.display_name.trim() }));
+                  setShowHandle(true);
+                }}
+                disabled={busy}
+                className="text-[10px] text-muted hover:text-bone self-start -mt-2"
+              >
+                + use a separate handle
+              </button>
+            )}
 
             {err && <div className="text-[11px] text-nostr">{err}</div>}
 
