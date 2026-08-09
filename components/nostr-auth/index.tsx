@@ -12,7 +12,8 @@ import {
   deactivateLocalSigner,
   fetchProfile,
   fetchRelayList,
-  fetchEncryptedMnemonic,
+  fetchEncryptedMnemonicDetailed,
+  publishEncryptedMnemonic,
   fetchEncryptedNwc,
   fetchSettings,
   hydrateFavorites,
@@ -20,7 +21,7 @@ import {
   unionMutedPubkeys,
   type NostrIdentity,
 } from '@/lib/nostr';
-import { hasSpark, sparkDisconnect, sparkInitFromMnemonic } from '@/lib/v4v/spark';
+import { hasSpark, sparkDisconnect, sparkInitFromMnemonic, sparkSeedIsActive } from '@/lib/v4v/spark';
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
@@ -105,7 +106,7 @@ export function NostrAuth() {
     // `writeRelays`. So the "fast path" was being gated on a 4s-bounded relay
     // round trip it had no dependency on, and a Google account's wallet took
     // seconds to appear on every reload while the local seed sat right there.
-    // The relay-backed half (fetchEncryptedMnemonic) still runs on `enriched`,
+    // The relay-backed half (fetchEncryptedMnemonicDetailed) still runs on `enriched`,
     // where the NIP-65 write relays genuinely matter.
     //
     // The condition is captured ONCE, here: after a successful derive
@@ -188,9 +189,48 @@ export function NostrAuth() {
           // win. Only re-init when it actually disagrees, so the common case
           // (never changed wallets) costs nothing beyond the query we were
           // already making.
-          const mnemonic = await fetchEncryptedMnemonic(enriched);
+          const { mnemonic, trustworthy } = await fetchEncryptedMnemonicDetailed(enriched);
           if (mnemonic && mnemonic !== derived) {
             await sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
+            return;
+          }
+          if (mnemonic) return;
+
+          // No backup on the relays, and we derived this wallet from a key we
+          // hold: publish one. `provisionSparkFromKey` does this on the
+          // new-account branch, but nothing ever did it again — so an account
+          // whose signup publish failed, or that predates that publish, kept a
+          // working derived wallet with no Nostr copy of it forever. "Restore
+          // from Nostr" on a second device found nothing, and the seed was
+          // reachable only through OUR derivation label, which no other client
+          // reproduces. This is the self-heal; it retries on each sign-in.
+          //
+          // Four guards, none redundant, because the publish target is a
+          // REPLACEABLE event and a wrong one destroys a real backup for good:
+          //
+          //  - `derived` — only ever publish a seed we derived ourselves this
+          //    session. It's null for every non-local signer, so Amber, bunker
+          //    and NIP-07 users are untouched; a seed we merely READ is never a
+          //    candidate to write back.
+          //  - `trustworthy` — the load-bearing one. A bare null means "nobody
+          //    had it" OR "nothing answered", and acting on the second would
+          //    overwrite the backup of a user whose funded Primal/Blitz seed the
+          //    query simply missed.
+          //  - `sparkSeedIsActive(derived)` — the query above is capped at 8s and
+          //    the wallet modal is reachable throughout. If the user pasted their
+          //    own seed in that window, theirs is the live wallet and publishing
+          //    the derived one would replace their real backup. Same guard, same
+          //    reason, as provisionSparkFromKey.
+          //  - the npub re-check — a failed signer restore runs
+          //    abandonRestoredSession(); don't publish under a session that has
+          //    already been torn down.
+          if (!trustworthy || !derived) return;
+          if (!sparkSeedIsActive(derived) || storage.npub.get() !== id.npub) return;
+          const res = await publishEncryptedMnemonic(enriched, derived);
+          if (res.acceptedRelays.length === 0) {
+            // Message only, never the error/seed — same rule as the provisioning
+            // path. Nothing to do beyond saying so: the next sign-in retries.
+            console.warn('[spark] wallet backup backfill reached no relays');
           }
         })().catch(() => {}).finally(() => { if (expectWallet) setWalletRestoring(false); })
       : Promise.resolve();

@@ -18,7 +18,7 @@
 
 import { FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish, type PublishedNote } from './publish';
-import { fetchLatestEvent } from './event-queries';
+import { fetchLatestEvent, fetchLatestEventDetailed } from './event-queries';
 import { DEFAULT_RELAYS, resolvePublishRelays } from './relays';
 import { requireNip44 } from './signer';
 import type { NostrIdentity } from './auth';
@@ -68,15 +68,51 @@ export const WALLET_BACKUP_D_TAG = 'boostmebitch:wallet:spark';
 export async function fetchEncryptedMnemonic(
   identity: NostrIdentity,
 ): Promise<string | null> {
-  const relays = readRelays(identity);
-  const event = await fetchLatestEvent(
-    relays,
+  return (await fetchEncryptedMnemonicDetailed(identity)).mnemonic;
+}
+
+/**
+ * As {@link fetchEncryptedMnemonic}, but also reports whether the *absence* of
+ * a backup can be trusted.
+ *
+ * Only one caller needs this, and it needs it badly: the login-time backfill in
+ * `<NostrAuth>`'s doLoadProfile, which publishes a local signer's derived seed
+ * when no backup exists. kind:30078 is REPLACEABLE — publishing at this
+ * coordinate destroys whatever was there before, permanently. A plain null from
+ * the relay query means "nobody had it" OR "nothing answered in time", and
+ * acting on the second one would overwrite the backup of a user who pasted
+ * their own (funded) Primal/Blitz seed with our derived default. That's the
+ * general "never record an absence you didn't reliably observe" rule with money
+ * attached, so the flag is mandatory rather than advisory.
+ *
+ * `trustworthy` comes straight from `fetchLatestEventDetailed`: true when an
+ * event arrived or the aggregate EOSE fired. Its documented weakness (a relay
+ * that never connects doesn't hold the aggregate EOSE open) applies here too —
+ * it rules out the total-blackout case, not every partial one. `sparkSeedIsActive`
+ * at the call site is the second half of the guard.
+ *
+ * Note what is deliberately NOT caught: a decrypt failure or timeout on an event
+ * that exists propagates as a rejection, exactly as the plain function has
+ * always done. Folding it into `{ mnemonic: null, trustworthy: true }` would
+ * feed the backfill the worst possible input — a backup demonstrably present
+ * and unread — so the rejection is the safe answer.
+ */
+export async function fetchEncryptedMnemonicDetailed(
+  identity: NostrIdentity,
+): Promise<{ mnemonic: string | null; trustworthy: boolean }> {
+  const { event, trustworthy } = await fetchLatestEventDetailed(
+    readRelays(identity),
     { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_BACKUP_D_TAG], limit: 1 },
     FEED_QUERY_MAX_WAIT_MS,
   );
-  if (!event || !event.content) return null;
+  // An event with empty content is a tombstone (the shape `deleteEncryptedNwc`
+  // writes at the NWC coordinate; nothing writes one here today). It's the
+  // user's own latest word on this coordinate, so it's a *reliable* absence —
+  // trustworthy stays whatever the query reported, which is true by definition
+  // once an event is in hand.
+  if (!event || !event.content) return { mnemonic: null, trustworthy };
 
-  return decryptWithTimeout(identity.pubkey, event.content);
+  return { mnemonic: await decryptWithTimeout(identity.pubkey, event.content), trustworthy };
 }
 
 /** Encrypt-to-self and publish a new wallet backup event. */
