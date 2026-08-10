@@ -53,6 +53,17 @@ export interface PodrollItem {
   feedUrl?: string;
 }
 
+// A Nostr identity a feed declares for itself via
+// <podcast:txt purpose="nostr">npub1…</podcast:txt> — the show/artist at channel
+// level, a specific track's artist at item level. Both forms are carried so
+// consumers never have to re-decode: `npub` is what a note body mentions,
+// `pubkey` is the hex a NIP-01 `p` tag needs. Validated at parse time in
+// lib/pi.ts (nip19.decode), so a value that reaches here is a real npub.
+export interface FeedNpub {
+  npub: string;
+  pubkey: string;
+}
+
 export interface Podcast {
   id: number;
   podcastGuid?: string;   // namespace UUID for NIP-73 podcast:guid:
@@ -71,6 +82,7 @@ export interface Podcast {
   value?: ValueBlock | null;
   podroll?: PodrollItem[]; // <podcast:podroll> — host-recommended shows (from RSS)
   funding?: FundingLink[]; // <podcast:funding> — non-Lightning support links
+  nostrNpubs?: FeedNpub[]; // <podcast:txt purpose="nostr"> — the show's own npub(s), from RSS
   /** Synthetic feed parsed directly from raw RSS because it isn't in Podcast
    *  Index — a preview so a publisher can see how a test feed displays before
    *  submitting it to PI. Carries a negative `id` (`-fnvHash(url)`) and no
@@ -163,6 +175,10 @@ export interface Episode {
    *  `/live/<npub>` share link must be built from this, not from the stream
    *  id's author half. */
   liveHostPubkey?: string;
+  /** <podcast:txt purpose="nostr"> published inside this <item> — the track's
+   *  or episode's own artist, distinct from the channel-level show npub. Both
+   *  are tagged on a boost note; see lib/nostr/boost-notes.ts. */
+  nostrNpubs?: FeedNpub[];
 }
 
 export interface Boostagram {

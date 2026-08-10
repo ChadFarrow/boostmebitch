@@ -1,6 +1,7 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
-import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure } from './types';
+import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
+import { readAttr, decodeXmlText, parseNostrTxtNpubs } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
@@ -445,12 +446,6 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
   return out;
 }
 
-function readAttr(attrs: string, name: string): string | undefined {
-  const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
-  const m = attrs.match(re);
-  return m ? (m[1] ?? m[2]) : undefined;
-}
-
 function parseValueBlock(xml: string): ValueBlock | null {
   const vMatch = xml.match(/<podcast:value\b([^>]*)>([\s\S]*?)<\/podcast:value>/i);
   if (!vMatch) return null;
@@ -700,6 +695,7 @@ function linkifyNostrRefs(html: string): string {
 }
 
 interface RssEpisodeEnrichment {
+  nostrNpubs?: FeedNpub[];
   socialInteract?: SocialInteract[];
   contentEncoded?: string;
   season?: number | null;
@@ -715,21 +711,7 @@ export interface RssFeedEnrichment {
   feedMedium?: string;
   feedPodroll?: PodrollItem[];
   feedFunding?: FundingLink[];
-}
-
-// Decode the handful of XML entities that show up in short text nodes
-// (funding labels). Mirrors the entity pass inside extractText.
-function decodeXmlText(raw: string): string {
-  return raw
-    .replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1')
-    .trim()
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
+  feedNostrNpubs?: FeedNpub[];
 }
 
 // --- <podcast:transcript> selection ---------------------------------------
@@ -913,6 +895,10 @@ export async function getRssEpisodeEnrichment(
   const feedMedium = extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined;
   const feedPodroll = parsePodroll(channelXml);
   const feedFunding = parseFunding(channelXml);
+  // channelXml, never the raw feed: channelSlice strips <podcast:liveItem>
+  // blocks, and a live item carries its own <podcast:txt> — reading that as the
+  // show's npub would tag the guest of one broadcast on every boost forever.
+  const feedNostrNpubs = parseNostrTxtNpubs(channelXml);
 
   const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
   let m: RegExpExecArray | null;
@@ -942,11 +928,13 @@ export async function getRssEpisodeEnrichment(
     const link = extractText(inner, 'link') || undefined;
     // <podcast:alternateEnclosure> — alternate renditions (e.g. a video version).
     const alternateEnclosures = parseAlternateEnclosures(inner);
-    if (socialInteract || contentEncoded || season != null || episode != null || transcriptUrl || link || alternateEnclosures) {
-      episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures });
+    // <podcast:txt purpose="nostr"> — this track's/episode's own artist.
+    const nostrNpubs = parseNostrTxtNpubs(inner);
+    if (socialInteract || contentEncoded || season != null || episode != null || transcriptUrl || link || alternateEnclosures || nostrNpubs) {
+      episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs });
     }
   }
-  return { episodes, feedMedium, feedPodroll, feedFunding };
+  return { episodes, feedMedium, feedPodroll, feedFunding, feedNostrNpubs };
 }
 
 // --- Non-PI feed preview ---------------------------------------------------
@@ -1025,6 +1013,7 @@ export async function getFeedFromRss(
     value: parseValueBlock(channelXml),
     funding: parseFunding(channelXml),
     podroll: parsePodroll(channelXml),
+    nostrNpubs: parseNostrTxtNpubs(channelXml),
     isPreview: true,
   };
 
@@ -1077,6 +1066,7 @@ export async function getFeedFromRss(
       // Episode value block, else the channel's (matches /api/feed's fallback).
       value: itemValue ?? podcast.value,
       socialInteract: parseSocialInteractsFromRss(inner),
+      nostrNpubs: parseNostrTxtNpubs(inner),
     });
     idx++;
   }
