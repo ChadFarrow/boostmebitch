@@ -56,6 +56,24 @@ export function channelSlice(xml: string): string {
 const MAX_FEED_NPUBS = 4;
 
 /**
+ * `purpose` values that mean "this is our Nostr identity".
+ *
+ * There is no registered vocabulary for <podcast:txt purpose> — the spec leaves
+ * it free-form — so hosts picked their own spelling and both are in the wild.
+ * **Podhome writes `purpose="npub"`**, which is what the Chad and Reeds feed
+ * publishes; `nostr` is the other spelling. Filtering on only one of them looks
+ * identical to a feed with no tag at all, which is exactly how this shipped and
+ * why the first live boost tagged nobody.
+ *
+ * Widening this list is safe ONLY because the value is still checksum-validated
+ * below: the allowlist decides which tags we *look* at, nip19.decode decides
+ * what we accept. Don't collapse it into "any purpose whose value happens to
+ * decode" — a verification token that parses as bech32 is not an identity
+ * claim. Add a third spelling here when one is observed, with the host named.
+ */
+const NOSTR_TXT_PURPOSES = new Set(['nostr', 'npub']);
+
+/**
  * Parse <podcast:txt purpose="nostr">npub1…</podcast:txt> into validated npubs.
  *
  * Works on either a channel slice (the show's own npub) or an <item> inner (a
@@ -64,10 +82,11 @@ const MAX_FEED_NPUBS = 4;
  *
  * Three things this must keep doing:
  *
- *  - **Filter on `purpose`.** <podcast:txt> is a general-purpose container —
- *    the same feed routinely carries `verify`, `applepodcastsverify` and
- *    free-text entries. Accepting an unqualified <podcast:txt> would p-tag
- *    whatever a domain-verification token happens to be.
+ *  - **Filter on `purpose`, against NOSTR_TXT_PURPOSES.** <podcast:txt> is a
+ *    general-purpose container — the same feed routinely carries `verify`,
+ *    `applepodcastsverify` and free-text entries. Accepting an unqualified
+ *    <podcast:txt> would p-tag whatever a domain-verification token happens to
+ *    be. Hosts disagree on the spelling, hence a set rather than one string.
  *  - **Validate, don't shape-check.** The text is arbitrary publisher input and
  *    ends up in a *signed* event's tags, so it goes through nip19.decode (which
  *    throws — hence the try/catch) rather than a bech32 regex. That rejects a
@@ -84,7 +103,8 @@ export function parseNostrTxtNpubs(xml: string): FeedNpub[] | undefined {
   const re = /<podcast:txt\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:txt>)/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(xml))) {
-    if (readAttr(m[1], 'purpose')?.toLowerCase() !== 'nostr') continue;
+    const purpose = readAttr(m[1], 'purpose')?.toLowerCase();
+    if (!purpose || !NOSTR_TXT_PURPOSES.has(purpose)) continue;
     if (m[2] == null) continue;
     const raw = decodeXmlText(m[2]).replace(/^nostr:/i, '');
     if (!raw) continue;

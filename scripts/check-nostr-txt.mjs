@@ -72,6 +72,27 @@ console.log('parseNostrTxtNpubs — what a feed declares becomes a p tag');
     parseNostrTxtNpubs(`<podcast:txt xmlns:podcast="x" PURPOSE="Nostr" foo="bar">${JACK}</podcast:txt>`),
     [{ npub: JACK, pubkey: JACK_HEX }],
   );
+  // Podhome writes purpose="npub", not "nostr". Shipping with only the "nostr"
+  // spelling made a feed that DOES declare an npub indistinguishable from one
+  // that doesn't — the first live boost tagged nobody. Verbatim from the Chad
+  // and Reeds feed (serve.podhome.fm/rss/7c6f7875-…).
+  check(
+    'purpose="npub" — the spelling Podhome actually publishes',
+    parseNostrTxtNpubs(
+      '<podcast:txt purpose="npub">npub1tjmdpxuwjp4p3p6jjete9lkx6tnu9ytgtjhagsk8df372kdz2trqtdjv95</podcast:txt>',
+    ),
+    [{
+      npub: 'npub1tjmdpxuwjp4p3p6jjete9lkx6tnu9ytgtjhagsk8df372kdz2trqtdjv95',
+      pubkey: '5cb6d09b8e906a188752965792fec6d2e7c291685cafd442c76a63e559a252c6',
+    }],
+  );
+  check(
+    'the two spellings of the same identity collapse to one tag',
+    parseNostrTxtNpubs(
+      `<podcast:txt purpose="npub">${JACK}</podcast:txt><podcast:txt purpose="nostr">${JACK}</podcast:txt>`,
+    ),
+    [{ npub: JACK, pubkey: JACK_HEX }],
+  );
 }
 
 console.log('\nparseNostrTxtNpubs — everything that must NOT become a p tag');
@@ -84,6 +105,11 @@ console.log('\nparseNostrTxtNpubs — everything that must NOT become a p tag');
   check(
     'purpose="verify" carries a platform token, not an npub',
     parseNostrTxtNpubs('<podcast:txt purpose="verify">sdfsdfsdfsfsfsd</podcast:txt>'),
+    undefined,
+  );
+  check(
+    'an unrecognised purpose is skipped even when the value IS a real npub',
+    parseNostrTxtNpubs(`<podcast:txt purpose="somethingelse">${JACK}</podcast:txt>`),
     undefined,
   );
   check(
