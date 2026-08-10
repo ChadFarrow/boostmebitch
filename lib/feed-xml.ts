@@ -74,11 +74,9 @@ const MAX_FEED_NPUBS = 4;
 const NOSTR_TXT_PURPOSES = new Set(['nostr', 'npub']);
 
 /**
- * Parse <podcast:txt purpose="nostr">npub1…</podcast:txt> into validated npubs.
- *
- * Works on either a channel slice (the show's own npub) or an <item> inner (a
- * track's artist). Same paired-or-self-closing shape as parseFunding, which is
- * the tag this most resembles: attributes plus a text node.
+ * Parse <podcast:txt purpose="nostr|npub">npub1…</podcast:txt> into validated
+ * npubs. Same paired-or-self-closing shape as parseFunding, which is the tag
+ * this most resembles: attributes plus a text node.
  *
  * Three things this must keep doing:
  *
@@ -97,28 +95,76 @@ const NOSTR_TXT_PURPOSES = new Set(['nostr', 'npub']);
  *    on an event the site may sign; the site-sign route caps tags for the same
  *    reason. Four is far above any real feed.
  */
-export function parseNostrTxtNpubs(xml: string): FeedNpub[] | undefined {
+function decodeNpub(raw: string): FeedNpub | null {
+  const npub = raw.trim().replace(/^nostr:/i, '');
+  if (!npub) return null;
+  try {
+    const decoded = nip19.decode(npub);
+    if (decoded.type !== 'npub') return null;
+    return { npub, pubkey: decoded.data as string };
+  } catch {
+    // Not a decodable npub — a typo'd or truncated value is dropped, not tagged.
+    return null;
+  }
+}
+
+function txtNpubs(xml: string): FeedNpub[] {
   const out: FeedNpub[] = [];
-  const seen = new Set<string>();
   const re = /<podcast:txt\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:txt>)/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(xml))) {
     const purpose = readAttr(m[1], 'purpose')?.toLowerCase();
     if (!purpose || !NOSTR_TXT_PURPOSES.has(purpose)) continue;
     if (m[2] == null) continue;
-    const raw = decodeXmlText(m[2]).replace(/^nostr:/i, '');
+    const n = decodeNpub(decodeXmlText(m[2]));
+    if (n) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * `<podcast:person npub="npub1…">Name</podcast:person>` — the OTHER place a
+ * feed names a real person's key, and the only one that scales past a single
+ * identity: <podcast:txt> is one claim for the whole feed level, while
+ * <podcast:person> is per-person and legal per-<item>, so it's where a guest,
+ * a featured artist or a second co-host gets named.
+ *
+ * Not in the spec's attribute list (which is href/img/role/group) but written
+ * in the wild — MSP 2.0 emits it on music feeds, alongside a matching
+ * <podcast:txt>. That overlap is why this is worth having and also why it's
+ * cheap: dedupe by pubkey means a feed carrying the same key in both places
+ * still produces exactly one `p` tag.
+ */
+function personNpubs(xml: string): FeedNpub[] {
+  const out: FeedNpub[] = [];
+  const re = /<podcast:person\b([^>]*?)(?:\/>|>[\s\S]*?<\/podcast:person>)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(xml))) {
+    const raw = readAttr(m[1], 'npub');
     if (!raw) continue;
-    try {
-      const decoded = nip19.decode(raw);
-      if (decoded.type !== 'npub') continue;
-      const pubkey = decoded.data as string;
-      if (seen.has(pubkey)) continue;
-      seen.add(pubkey);
-      out.push({ npub: raw, pubkey });
-      if (out.length >= MAX_FEED_NPUBS) break;
-    } catch {
-      // Not a decodable npub — a typo'd or truncated value is dropped, not tagged.
-    }
+    const n = decodeNpub(raw);
+    if (n) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Every Nostr identity this slice of feed declares, from both conventions,
+ * deduped by pubkey and capped.
+ *
+ * <podcast:txt> comes first because it's the feed's claim about *itself*; a
+ * <podcast:person> npub is a claim about a participant, which is the better
+ * match only when it's someone the txt tag doesn't already name. Order matters
+ * because the cap truncates.
+ */
+export function parseFeedNpubs(xml: string): FeedNpub[] | undefined {
+  const out: FeedNpub[] = [];
+  const seen = new Set<string>();
+  for (const n of [...txtNpubs(xml), ...personNpubs(xml)]) {
+    if (seen.has(n.pubkey)) continue;
+    seen.add(n.pubkey);
+    out.push(n);
+    if (out.length >= MAX_FEED_NPUBS) break;
   }
   return out.length ? out : undefined;
 }
