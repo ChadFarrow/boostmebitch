@@ -16,7 +16,7 @@
 // the reason is always one of: purpose isn't "nostr", the value isn't a
 // decodable npub, or it's an nprofile/note rather than an npub.
 //
-// Runs the REAL channelSlice + parseNostrTxtNpubs from lib/feed-xml.ts, so what
+// Runs the REAL channelSlice + parseFeedNpubs from lib/feed-xml.ts, so what
 // it prints is what the app does. The one thing it re-states rather than
 // imports is the <item> scanning regex, which lives inside two loops in
 // lib/pi.ts; it's a scanner, not a parser, and the parse itself is the real one.
@@ -26,7 +26,7 @@
 // own command line, not from third-party feed data — the SSRF guard exists for
 // the server paths where it doesn't.
 
-import { channelSlice, parseNostrTxtNpubs } from '../lib/feed-xml.ts';
+import { channelSlice, parseFeedNpubs } from '../lib/feed-xml.ts';
 
 const feedUrl = process.argv.slice(2).find((a) => !a.startsWith('--'));
 if (!feedUrl) {
@@ -44,12 +44,17 @@ const xml = await res.text();
 const channel = channelSlice(xml);
 const ITEM_RE = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
 const TXT_RE = /<podcast:txt\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:txt>)/gi;
+// <podcast:person> is listed only when it carries an npub — a cast list with
+// no keys is noise here, not a near-miss worth reporting.
+const PERSON_RE = /<podcast:person\b[^>]*?\bnpub\s*=[^>]*?(?:\/>|>[\s\S]*?<\/podcast:person>)/gi;
 
-function rawTxtTags(scope) {
+function rawTags(scope) {
   const out = [];
-  let m;
-  const re = new RegExp(TXT_RE.source, 'gi');
-  while ((m = re.exec(scope))) out.push(m[0]);
+  for (const src of [TXT_RE, PERSON_RE]) {
+    const re = new RegExp(src.source, 'gi');
+    let m;
+    while ((m = re.exec(scope))) out.push(m[0]);
+  }
   return out;
 }
 
@@ -62,10 +67,10 @@ console.log(`feed: ${feedUrl}`);
 console.log(`${(xml.length / 1024).toFixed(0)} KB\n`);
 
 console.log('=== CHANNEL (the show / album artist) ===');
-const channelRaw = rawTxtTags(channel);
-if (!channelRaw.length) console.log('  RAW      (no <podcast:txt> in the channel header)');
+const channelRaw = rawTags(channel);
+if (!channelRaw.length) console.log('  RAW      (no npub-bearing <podcast:txt> or <podcast:person> in the channel header)');
 for (const t of channelRaw) console.log(`  RAW      ${t.replace(/\s+/g, ' ').trim()}`);
-const channelNpubs = parseNostrTxtNpubs(channel);
+const channelNpubs = parseFeedNpubs(channel);
 if (!channelNpubs) {
   console.log('  RESOLVED (none — no boost note will p-tag a show-level npub)');
 } else {
@@ -79,8 +84,8 @@ let itemCount = 0;
 while ((m = ITEM_RE.exec(xml))) {
   itemCount += 1;
   const inner = m[1];
-  const raw = rawTxtTags(inner);
-  const npubs = parseNostrTxtNpubs(inner);
+  const raw = rawTags(inner);
+  const npubs = parseFeedNpubs(inner);
   if (!raw.length && !npubs) continue;
   itemsWithTags += 1;
   console.log(`\n  ${titleOf(inner)}`);
@@ -88,7 +93,7 @@ while ((m = ITEM_RE.exec(xml))) {
   if (!npubs) console.log('    RESOLVED (none)');
   else for (const n of npubs) console.log(`    RESOLVED ${n.npub}\n             p → ${n.pubkey}`);
 }
-if (!itemsWithTags) console.log(`  (no <podcast:txt> in any of the ${itemCount} items)`);
+if (!itemsWithTags) console.log(`  (no npub tags in any of the ${itemCount} items)`);
 
 console.log('\n=== WHAT A BOOST NOTE WOULD TAG ===');
 if (!channelNpubs && !itemsWithTags) {

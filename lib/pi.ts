@@ -1,7 +1,7 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
-import { readAttr, decodeXmlText, channelSlice, parseNostrTxtNpubs } from './feed-xml';
+import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
@@ -880,7 +880,7 @@ export async function getRssEpisodeEnrichment(
   // channelXml, never the raw feed: channelSlice strips <podcast:liveItem>
   // blocks, and a live item carries its own <podcast:txt> — reading that as the
   // show's npub would tag the guest of one broadcast on every boost forever.
-  const feedNostrNpubs = parseNostrTxtNpubs(channelXml);
+  const feedNostrNpubs = parseFeedNpubs(channelXml);
 
   const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
   let m: RegExpExecArray | null;
@@ -911,7 +911,7 @@ export async function getRssEpisodeEnrichment(
     // <podcast:alternateEnclosure> — alternate renditions (e.g. a video version).
     const alternateEnclosures = parseAlternateEnclosures(inner);
     // <podcast:txt purpose="nostr"> — this track's/episode's own artist.
-    const nostrNpubs = parseNostrTxtNpubs(inner);
+    const nostrNpubs = parseFeedNpubs(inner);
     if (socialInteract || contentEncoded || season != null || episode != null || transcriptUrl || link || alternateEnclosures || nostrNpubs) {
       episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs });
     }
@@ -995,7 +995,7 @@ export async function getFeedFromRss(
     value: parseValueBlock(channelXml),
     funding: parseFunding(channelXml),
     podroll: parsePodroll(channelXml),
-    nostrNpubs: parseNostrTxtNpubs(channelXml),
+    nostrNpubs: parseFeedNpubs(channelXml),
     isPreview: true,
   };
 
@@ -1048,7 +1048,7 @@ export async function getFeedFromRss(
       // Episode value block, else the channel's (matches /api/feed's fallback).
       value: itemValue ?? podcast.value,
       socialInteract: parseSocialInteractsFromRss(inner),
-      nostrNpubs: parseNostrTxtNpubs(inner),
+      nostrNpubs: parseFeedNpubs(inner),
     });
     idx++;
   }

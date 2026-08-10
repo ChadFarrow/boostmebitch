@@ -32,7 +32,7 @@
 // in its own module).
 
 import { npubEncode } from 'nostr-tools/nip19';
-import { parseNostrTxtNpubs } from '../lib/feed-xml.ts';
+import { parseFeedNpubs } from '../lib/feed-xml.ts';
 
 let failures = 0;
 
@@ -50,86 +50,157 @@ const FIATJAF_HEX = '3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaef
 const SNOWDEN = 'npub1sn0wdenkukak0d9dfczzeacvhkrgz92ak56egt7vdgzn8pv2wfqqhrjdv9';
 const SNOWDEN_HEX = '84dee6e676e5bb67b4ad4e042cf70cbd8681155db535942fcc6a0533858a7240';
 
-console.log('parseNostrTxtNpubs — what a feed declares becomes a p tag');
+console.log('parseFeedNpubs — what a feed declares becomes a p tag');
 {
   check(
     'a plain channel-level nostr txt tag yields npub + hex',
-    parseNostrTxtNpubs(`<podcast:txt purpose="nostr">${JACK}</podcast:txt>`),
+    parseFeedNpubs(`<podcast:txt purpose="nostr">${JACK}</podcast:txt>`),
     [{ npub: JACK, pubkey: JACK_HEX }],
   );
   check(
     'a nostr: URI prefix is stripped',
-    parseNostrTxtNpubs(`<podcast:txt purpose="nostr">nostr:${FIATJAF}</podcast:txt>`),
+    parseFeedNpubs(`<podcast:txt purpose="nostr">nostr:${FIATJAF}</podcast:txt>`),
     [{ npub: FIATJAF, pubkey: FIATJAF_HEX }],
   );
   check(
     'CDATA, surrounding whitespace and single-quoted attrs all read',
-    parseNostrTxtNpubs(`<podcast:txt purpose='nostr'>\n  <![CDATA[${SNOWDEN}]]>\n</podcast:txt>`),
+    parseFeedNpubs(`<podcast:txt purpose='nostr'>\n  <![CDATA[${SNOWDEN}]]>\n</podcast:txt>`),
     [{ npub: SNOWDEN, pubkey: SNOWDEN_HEX }],
   );
   check(
     'purpose matching is case-insensitive and survives extra attributes',
-    parseNostrTxtNpubs(`<podcast:txt xmlns:podcast="x" PURPOSE="Nostr" foo="bar">${JACK}</podcast:txt>`),
+    parseFeedNpubs(`<podcast:txt xmlns:podcast="x" PURPOSE="Nostr" foo="bar">${JACK}</podcast:txt>`),
+    [{ npub: JACK, pubkey: JACK_HEX }],
+  );
+  // Podhome writes purpose="npub", not "nostr". Shipping with only the "nostr"
+  // spelling made a feed that DOES declare an npub indistinguishable from one
+  // that doesn't — the first live boost tagged nobody. Verbatim from the Chad
+  // and Reeds feed (serve.podhome.fm/rss/7c6f7875-…).
+  check(
+    'purpose="npub" — the spelling Podhome actually publishes',
+    parseFeedNpubs(
+      '<podcast:txt purpose="npub">npub1tjmdpxuwjp4p3p6jjete9lkx6tnu9ytgtjhagsk8df372kdz2trqtdjv95</podcast:txt>',
+    ),
+    [{
+      npub: 'npub1tjmdpxuwjp4p3p6jjete9lkx6tnu9ytgtjhagsk8df372kdz2trqtdjv95',
+      pubkey: '5cb6d09b8e906a188752965792fec6d2e7c291685cafd442c76a63e559a252c6',
+    }],
+  );
+  check(
+    'the two spellings of the same identity collapse to one tag',
+    parseFeedNpubs(
+      `<podcast:txt purpose="npub">${JACK}</podcast:txt><podcast:txt purpose="nostr">${JACK}</podcast:txt>`,
+    ),
     [{ npub: JACK, pubkey: JACK_HEX }],
   );
 }
 
-console.log('\nparseNostrTxtNpubs — everything that must NOT become a p tag');
+console.log('\nparseFeedNpubs — <podcast:person npub="…">, the other convention');
+{
+  // Verbatim from the Kulture Collection feed (phafe.com, generator MSP 2.0).
+  const MATT = 'npub12znrejs4k94kp5efhyhk9rzr9jxpy6ymgrlf6py4awpkkhed7cmshs6yg6';
+  const MATT_HEX = '50a63cca15b16b60d329b92f628c432c8c12689b40fe9d0495eb836b5f2df637';
+  check(
+    'an npub attribute on <podcast:person> is read',
+    parseFeedNpubs(
+      `<podcast:person href="https://phafe.com/mattfinlay" img="https://phafe.com/x.png" npub="${MATT}" group="music" role="band">Matt Finlay</podcast:person>`,
+    ),
+    [{ npub: MATT, pubkey: MATT_HEX }],
+  );
+  check(
+    'a self-closing <podcast:person> works too',
+    parseFeedNpubs(`<podcast:person npub="${MATT}" role="host"/>`),
+    [{ npub: MATT, pubkey: MATT_HEX }],
+  );
+  check(
+    'a <podcast:person> with no npub attribute contributes nothing',
+    parseFeedNpubs('<podcast:person role="Co-host" group="Cast" href="https://x">ChadF</podcast:person>'),
+    undefined,
+  );
+  check(
+    'an unparseable npub attribute is dropped, not tagged',
+    parseFeedNpubs('<podcast:person npub="npub1notarealkey" role="host"/>'),
+    undefined,
+  );
+  // The real feed carries the SAME key in both places. If that produced two
+  // p tags the artist would be notified twice per boost.
+  check(
+    'txt and person naming the same key collapse to ONE tag',
+    parseFeedNpubs(
+      `<podcast:txt purpose="npub">${MATT}</podcast:txt><podcast:person npub="${MATT}" role="band">Matt Finlay</podcast:person>`,
+    ),
+    [{ npub: MATT, pubkey: MATT_HEX }],
+  );
+  check(
+    'txt comes first, then a person naming someone else',
+    parseFeedNpubs(
+      `<podcast:person npub="${JACK}" role="guest">Guest</podcast:person><podcast:txt purpose="npub">${MATT}</podcast:txt>`,
+    ),
+    [{ npub: MATT, pubkey: MATT_HEX }, { npub: JACK, pubkey: JACK_HEX }],
+  );
+}
+
+console.log('\nparseFeedNpubs — everything that must NOT become a p tag');
 {
   check(
     'a <podcast:txt> with no purpose is not an identity claim',
-    parseNostrTxtNpubs(`<podcast:txt>${JACK}</podcast:txt>`),
+    parseFeedNpubs(`<podcast:txt>${JACK}</podcast:txt>`),
     undefined,
   );
   check(
     'purpose="verify" carries a platform token, not an npub',
-    parseNostrTxtNpubs('<podcast:txt purpose="verify">sdfsdfsdfsfsfsd</podcast:txt>'),
+    parseFeedNpubs('<podcast:txt purpose="verify">sdfsdfsdfsfsfsd</podcast:txt>'),
+    undefined,
+  );
+  check(
+    'an unrecognised purpose is skipped even when the value IS a real npub',
+    parseFeedNpubs(`<podcast:txt purpose="somethingelse">${JACK}</podcast:txt>`),
     undefined,
   );
   check(
     'a purpose="verify" tag is skipped even when it holds a real npub',
-    parseNostrTxtNpubs(`<podcast:txt purpose="verify">${JACK}</podcast:txt>`),
+    parseFeedNpubs(`<podcast:txt purpose="verify">${JACK}</podcast:txt>`),
     undefined,
   );
   check(
     'a truncated npub is dropped, not tagged',
-    parseNostrTxtNpubs(`<podcast:txt purpose="nostr">${JACK.slice(0, -6)}</podcast:txt>`),
+    parseFeedNpubs(`<podcast:txt purpose="nostr">${JACK.slice(0, -6)}</podcast:txt>`),
     undefined,
   );
   check(
     'a one-character typo fails the bech32 checksum and is dropped',
-    parseNostrTxtNpubs(`<podcast:txt purpose="nostr">npub1zg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m</podcast:txt>`),
+    parseFeedNpubs(`<podcast:txt purpose="nostr">npub1zg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m</podcast:txt>`),
     undefined,
   );
   check(
     'an nprofile names a person-with-relays, but only npub is accepted here',
-    parseNostrTxtNpubs('<podcast:txt purpose="nostr">nprofile1qqsrhuxx8l9ex335q7he0f09aej04zpazpl0ne2cgukyawd24mayt8gpp4mhxue69uhhytnc9e3k7mgpz4mhxue69uhkg6nzv9ejuumpv34kytnrdaksjlyr9p</podcast:txt>',
+    parseFeedNpubs('<podcast:txt purpose="nostr">nprofile1qqsrhuxx8l9ex335q7he0f09aej04zpazpl0ne2cgukyawd24mayt8gpp4mhxue69uhhytnc9e3k7mgpz4mhxue69uhkg6nzv9ejuumpv34kytnrdaksjlyr9p</podcast:txt>',
     ),
     undefined,
   );
   check(
     'a note id is not a person',
-    parseNostrTxtNpubs('<podcast:txt purpose="nostr">note1fntxtkcy9pjwucqwa9mddn7v03wwwsu9j330jj350nvhpky2tuaspk6nqc</podcast:txt>'),
+    parseFeedNpubs('<podcast:txt purpose="nostr">note1fntxtkcy9pjwucqwa9mddn7v03wwwsu9j330jj350nvhpky2tuaspk6nqc</podcast:txt>'),
     undefined,
   );
   check(
     'an empty nostr tag yields nothing',
-    parseNostrTxtNpubs('<podcast:txt purpose="nostr"></podcast:txt>'),
+    parseFeedNpubs('<podcast:txt purpose="nostr"></podcast:txt>'),
     undefined,
   );
   check(
     'a self-closing tag has no text node to read',
-    parseNostrTxtNpubs('<podcast:txt purpose="nostr"/>'),
+    parseFeedNpubs('<podcast:txt purpose="nostr"/>'),
     undefined,
   );
   check(
     'a feed with no podcast:txt at all yields nothing',
-    parseNostrTxtNpubs('<title>A Show</title><podcast:medium>music</podcast:medium>'),
+    parseFeedNpubs('<title>A Show</title><podcast:medium>music</podcast:medium>'),
     undefined,
   );
 }
 
-console.log('\nparseNostrTxtNpubs — a realistic mixed channel block');
+console.log('\nparseFeedNpubs — a realistic mixed channel block');
 {
   // What a real feed's channel header looks like: several <podcast:txt> tags,
   // only one of which is an identity claim.
@@ -142,21 +213,21 @@ console.log('\nparseNostrTxtNpubs — a realistic mixed channel block');
   `;
   check(
     'exactly the nostr entry is picked out of a mixed block',
-    parseNostrTxtNpubs(channel),
+    parseFeedNpubs(channel),
     [{ npub: FIATJAF, pubkey: FIATJAF_HEX }],
   );
 }
 {
   check(
     'the same npub twice is deduped by pubkey',
-    parseNostrTxtNpubs(
+    parseFeedNpubs(
       `<podcast:txt purpose="nostr">${JACK}</podcast:txt><podcast:txt purpose="nostr">nostr:${JACK}</podcast:txt>`,
     ),
     [{ npub: JACK, pubkey: JACK_HEX }],
   );
   check(
     'several distinct artists are all kept, in feed order',
-    parseNostrTxtNpubs(
+    parseFeedNpubs(
       `<podcast:txt purpose="nostr">${JACK}</podcast:txt>
        <podcast:txt purpose="nostr">${FIATJAF}</podcast:txt>
        <podcast:txt purpose="nostr">${SNOWDEN}</podcast:txt>`,
@@ -169,7 +240,7 @@ console.log('\nparseNostrTxtNpubs — a realistic mixed channel block');
   );
   check(
     'repeating three artists many times still yields just those three',
-    parseNostrTxtNpubs(
+    parseFeedNpubs(
       Array.from(
         { length: 20 },
         () => `<podcast:txt purpose="nostr">${JACK}</podcast:txt><podcast:txt purpose="nostr">${FIATJAF}</podcast:txt><podcast:txt purpose="nostr">${SNOWDEN}</podcast:txt>`,
@@ -186,7 +257,7 @@ console.log('\nparseNostrTxtNpubs — a realistic mixed channel block');
   );
   check(
     'a stuffed feed is capped at 4 distinct entries',
-    parseNostrTxtNpubs(distinct.map((n) => `<podcast:txt purpose="nostr">${n}</podcast:txt>`).join(''))?.length,
+    parseFeedNpubs(distinct.map((n) => `<podcast:txt purpose="nostr">${n}</podcast:txt>`).join(''))?.length,
     4,
   );
 }
