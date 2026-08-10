@@ -43,9 +43,9 @@ export async function GET(req: Request) {
     // notes, so we fetch the RSS and parse both in one pass. Best-effort:
     // failure leaves episodes without socialInteract/contentEncoded rather
     // than breaking the whole feed.
-    const { episodes: enrichMap, feedMedium, feedPodroll, feedFunding } = podcast?.url
-      ? await getRssEpisodeEnrichment(podcast.url).catch(() => ({ episodes: new Map(), feedMedium: undefined, feedPodroll: undefined, feedFunding: undefined }))
-      : { episodes: new Map(), feedMedium: undefined, feedPodroll: undefined, feedFunding: undefined };
+    const { episodes: enrichMap, feedMedium, feedPodroll, feedFunding, feedNostrNpubs } = podcast?.url
+      ? await getRssEpisodeEnrichment(podcast.url).catch(() => ({ episodes: new Map(), feedMedium: undefined, feedPodroll: undefined, feedFunding: undefined, feedNostrNpubs: undefined }))
+      : { episodes: new Map(), feedMedium: undefined, feedPodroll: undefined, feedFunding: undefined, feedNostrNpubs: undefined };
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
     // PI's /episodes/live only returns currently-broadcasting items; pending
     // liveItems live in the RSS itself, so we additionally parse the feed XML.
@@ -104,6 +104,10 @@ export async function GET(req: Request) {
         // <podcast:alternateEnclosure> — alternate renditions (e.g. video). PI
         // doesn't index the tag, so it only comes from the RSS pass.
         alternateEnclosures: e.alternateEnclosures ?? rss?.alternateEnclosures,
+        // <podcast:txt purpose="nostr"> — this track's/episode's own artist.
+        // RSS-only (PI indexes no <podcast:txt>), so there's no PI value to
+        // prefer, same as contentEncoded.
+        nostrNpubs: rss?.nostrNpubs,
       };
     });
     // Live first (live > pending), then regular by datePublished desc.
@@ -139,6 +143,9 @@ export async function GET(req: Request) {
     // <podcast:funding> — non-Lightning support links. Prefer PI's value, fall
     // back to the RSS channel parse (same backfill pattern as podroll/medium).
     if (!podcast.funding?.length && feedFunding) podcast.funding = feedFunding;
+    // <podcast:txt purpose="nostr"> — the show's own npub, p-tagged on boost
+    // notes. RSS-only like podroll, so it's an unconditional attach.
+    if (feedNostrNpubs) podcast.nostrNpubs = feedNostrNpubs;
     return NextResponse.json(
       { podcast, episodes: merged },
       { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },

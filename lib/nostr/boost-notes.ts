@@ -1,5 +1,5 @@
 import type { Event, EventTemplate } from 'nostr-tools';
-import type { Boostagram, Episode, Podcast, BoostResult } from '../types';
+import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
 import { httpUrl } from '../util';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
@@ -68,6 +68,45 @@ function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
   return episode?.guid ? `${url}&episode=${encodeURIComponent(episode.guid)}` : url;
 }
 
+/** Cap on how many people one boost note tags. */
+const MAX_NOTE_NPUBS = 4;
+
+/**
+ * The people this boost note tags — the npubs the feed declared for itself via
+ * <podcast:txt purpose="nostr">, episode's first (the track's own artist is the
+ * closer match) then the show's, deduped by pubkey.
+ *
+ * lib/feed-xml.ts already validated and hex-decoded these, and capped each
+ * list; the cap is re-applied here because this merges two of them.
+ */
+function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
+  const out: FeedNpub[] = [];
+  const seen = new Set<string>();
+  for (const n of [...(episode?.nostrNpubs ?? []), ...(podcast.nostrNpubs ?? [])]) {
+    if (seen.has(n.pubkey)) continue;
+    seen.add(n.pubkey);
+    out.push(n);
+    if (out.length >= MAX_NOTE_NPUBS) break;
+  }
+  return out;
+}
+
+/**
+ * Append `nostr:npub…` mentions to a note body.
+ *
+ * Applied to the FINAL content, after contentOverride has had its say —
+ * boost-all-modal hand-builds its summary body and passes it as an override, so
+ * a mention added inside formatContent would be silently missing from every
+ * boost-all note. Appending here is the one place both paths converge.
+ *
+ * Append-only, so the '⚡ Boost ⚡' prefix the site-sign route validates on is
+ * untouched. Mirrors publishQuoteRepost's tag-plus-trailing-`nostr:`-URI shape.
+ */
+function withMentions(content: string, npubs: FeedNpub[]): string {
+  if (!npubs.length) return content;
+  return `${content}\n\n${npubs.map((n) => `nostr:${n.npub}`).join(' ')}`;
+}
+
 function formatContent(args: PublishArgs): string {
   const { podcast, episode, boostagram } = args;
   const totalSats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
@@ -112,6 +151,15 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
   if (linkUrl) tags.push(['r', linkUrl]);
   const bmbUrl = bmbLandingUrl(podcast, episode);
   if (bmbUrl && bmbUrl !== linkUrl) tags.push(['r', bmbUrl]);
+  // <podcast:txt purpose="nostr"> — tag the show/track artist so the boost
+  // lands in their mentions instead of being a post about them they never see.
+  //
+  // Deliberately NOT gated on the share picker's "Anonymous": that setting
+  // exists to stop the SENDER leaking (it drops sender_id and replaces
+  // sender_name), and a `p` tag names the RECIPIENT. An anonymous boost should
+  // still reach the artist.
+  const npubs = noteNpubs(podcast, episode);
+  for (const n of npubs) tags.push(['p', n.pubkey]);
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
   tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);
   tags.push(['t', 'boostagram']);
@@ -121,7 +169,7 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
     kind: 1,
     created_at: Math.floor(Date.now() / 1000),
     tags,
-    content: args.contentOverride ?? formatContent(args),
+    content: withMentions(args.contentOverride ?? formatContent(args), npubs),
   };
 }
 
