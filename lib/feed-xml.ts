@@ -33,6 +33,25 @@ export function decodeXmlText(raw: string): string {
     .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
 }
 
+const LIVE_ITEM_RE = /<podcast:liveItem\b[^>]*>[\s\S]*?<\/podcast:liveItem>/gi;
+
+/**
+ * The channel header: everything before the first <item>, with any
+ * <podcast:liveItem> blocks removed.
+ *
+ * `/<item\b/` does not match `<podcast:liveItem>` (the `<` is followed by
+ * `podcast:`), so a live item published in the channel header — where the spec
+ * puts it, and where publishers actually put it — lands INSIDE this slice
+ * along with its own <podcast:value>, <podcast:funding> and <title>. Reading
+ * channel fields off that gives the live item's value block as the SHOW's,
+ * which is a money-path answer, not a cosmetic one. Same trap for
+ * <podcast:txt>: it would make one broadcast's guest the show's npub forever.
+ */
+export function channelSlice(xml: string): string {
+  const firstItem = xml.search(/<item\b/i);
+  return (firstItem === -1 ? xml : xml.slice(0, firstItem)).replace(LIVE_ITEM_RE, '');
+}
+
 /** Cap on how many npubs one feed level contributes. */
 const MAX_FEED_NPUBS = 4;
 

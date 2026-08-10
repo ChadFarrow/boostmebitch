@@ -1,7 +1,7 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
-import { readAttr, decodeXmlText, parseNostrTxtNpubs } from './feed-xml';
+import { readAttr, decodeXmlText, channelSlice, parseNostrTxtNpubs } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
@@ -479,24 +479,6 @@ function parseValueBlock(xml: string): ValueBlock | null {
     suggested: readAttr(vAttrs, 'suggested'),
     recipients,
   };
-}
-
-const LIVE_ITEM_RE = /<podcast:liveItem\b[^>]*>[\s\S]*?<\/podcast:liveItem>/gi;
-
-/**
- * The channel header: everything before the first <item>, with any
- * <podcast:liveItem> blocks removed.
- *
- * `/<item\b/` does not match `<podcast:liveItem>` (the `<` is followed by
- * `podcast:`), so a live item published in the channel header — where the spec
- * puts it, and where publishers actually put it — lands INSIDE this slice
- * along with its own <podcast:value>, <podcast:funding> and <title>. Reading
- * channel fields off that gives the live item's value block as the SHOW's,
- * which is a money-path answer, not a cosmetic one.
- */
-function channelSlice(xml: string): string {
-  const firstItem = xml.search(/<item\b/i);
-  return (firstItem === -1 ? xml : xml.slice(0, firstItem)).replace(LIVE_ITEM_RE, '');
 }
 
 const VALUE_TIME_SPLIT_RE = /<podcast:valueTimeSplit\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:valueTimeSplit>)/gi;
