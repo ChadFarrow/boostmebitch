@@ -65,12 +65,31 @@ export {
 } from './publish';
 
 export {
-  FAVORITES_D_TAG,
-  fetchFavoriteGuids,
-  publishFavorites,
-  schedulePublishFavorites,
-  type FavoritesEvent,
+  SHARED_D_TAG,
+  LEGACY_D_TAG,
+  showId,
+  itemId,
+  parseShowGuid,
+  parseItemGuid,
+  fetchSharedFavorites,
+  fetchLegacyFavorites,
+  interpretShows,
+  interpretItems,
+  mergeSharedFavorites,
+  publishSharedFavorites,
+  syncFavorites,
+  scheduleSyncFavorites,
+  type SharedFavoriteItem,
+  type SharedFavorites,
+  type SyncOptions,
 } from './favorites';
+
+export {
+  localFavoriteItems,
+  requestFavoritesSync,
+  syncFavoritesNow,
+  syncOptionsFor,
+} from './favorites-sync';
 
 export {
   WALLET_BACKUP_KIND,

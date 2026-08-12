@@ -20,7 +20,7 @@
 // collide with a guid in either cache.
 
 import { storage } from './storage';
-import type { Podcast } from './types';
+import type { Episode, Podcast } from './types';
 
 const PI_BREAKER_KEY = 'bmb:pi:dead';
 
@@ -96,4 +96,59 @@ export function resolvePodcastByGuid(guid: string): Promise<Podcast | null> {
  */
 export function resolvePodcastByFeedUrl(feedUrl: string): Promise<Podcast | null> {
   return resolveVia(`url:${feedUrl}`, `url=${encodeURIComponent(feedUrl)}`);
+}
+
+// --- episodes --------------------------------------------------------------
+//
+// Same four guards for `/api/episode-by-guid`, sharing the breaker with the
+// podcast path: a 5xx from either means PI is down for both, and favorites
+// hydration fans out over shows and episodes in the same burst.
+
+const episodeMem = new Map<string, Episode | null>();
+
+/**
+ * Resolve a favorited episode from its NIP-73 identifier pair. BOTH guids are
+ * required — PI can't look an item up without its podcast — so an entry whose
+ * parent feed is unknown resolves to null rather than firing a doomed request.
+ */
+export async function resolveEpisodeByGuid(
+  feedGuid: string,
+  itemGuid: string,
+): Promise<Episode | null> {
+  const cacheKey = `${feedGuid}:${itemGuid}`;
+  if (episodeMem.has(cacheKey)) return episodeMem.get(cacheKey) ?? null;
+  const cached = storage.episodeMeta.get(cacheKey);
+  if (cached) {
+    episodeMem.set(cacheKey, cached);
+    return cached;
+  }
+  if (!piMaybeUp()) {
+    episodeMem.set(cacheKey, null);
+    return null;
+  }
+  try {
+    const r = await fetch(
+      `/api/episode-by-guid?feedGuid=${encodeURIComponent(feedGuid)}&itemGuid=${encodeURIComponent(itemGuid)}`,
+    );
+    if (r.status >= 500) {
+      tripPiBreaker();
+      episodeMem.set(cacheKey, null);
+      return null;
+    }
+    if (!r.ok) {
+      episodeMem.set(cacheKey, null);
+      return null;
+    }
+    const { episode } = (await r.json()) as { episode: Episode };
+    if (!episode) {
+      episodeMem.set(cacheKey, null);
+      return null;
+    }
+    episodeMem.set(cacheKey, episode);
+    storage.episodeMeta.set(cacheKey, episode);
+    return episode;
+  } catch {
+    episodeMem.set(cacheKey, null);
+    return null;
+  }
 }
