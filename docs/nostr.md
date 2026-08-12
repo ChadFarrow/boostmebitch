@@ -10,7 +10,7 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 
 - **kind:0 profile** — `name`, `display_name`, `picture`, `nip05`, `about` → header avatar, boost-modal "From" auto-fill.
 - **NIP-65 relay list (kind:10002)** — unmarked + `write` entries → publish target.
-- **NIP-51 favorites (kind:30003, `d:boostmebitch:favorites`)** — see Favorites.
+- **Favorites (NIP-78 kind:30078, `d:podcast:favorites`)** — shared cross-app list, see Favorites and [`docs/pc20-favorites.md`](pc20-favorites.md). The legacy kind:30003 `d:boostmebitch:favorites` list is read-only, for migration.
 - **NIP-51 mutes (kind:10000)** — public + NIP-04 private p-tags. See Mutes.
 - **Spark backup (kind:30078, `d:boostmebitch:wallet:spark`)** — NIP-44 v2 encrypted-to-self mnemonic; best-effort silent restore, failures swallowed.
 - **Settings (kind:30078, `d:boostmebitch:settings`)** — NIP-44 encrypted-to-self JSON, currently just `railPref` → `storage.railPref`. `lib/nostr/settings-backup.ts`.
@@ -38,15 +38,31 @@ NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (
 A corrupt entry (a NIP-65 `r`-tag of `"avatar wss://purplerelay.com"`, or spam stuffed into one) otherwise reaches nostr-tools' `normalizeURL`, which **throws `Invalid URL` synchronously inside `pool.querySync`/`subscribeMany`**; that rejection escapes per-call try/catch and aborts the whole flow. **A `startsWith('wss://')` check does not catch this** — only `new URL()` does, because a comma in the host is what throws. Defense in depth: `collectEventsByAuthors` wraps its `subscribeMany` so a survivor resolves empty rather than aborting.
 
 
-## Favorites (NIP-51 kind:30003)
+## Favorites (NIP-78 kind:30078) — SHARED with other apps
 
-♡ on a podcast row toggles a favorite. Authoritative event: kind:30003 with `d:boostmebitch:favorites`, one `i: podcast:guid:<guid>` + `k: podcast:guid` per favorite. Cache `bmb:favorites:<npub>` (or `:guest`) holds the full `FavoritePodcast[]` for instant render. Toggles are optimistic; publish is **debounced 1.5 s** via `schedulePublishFavorites`. Hydration does last-write-wins on `event.created_at` vs newest local `addedAt`, then resolves unknown guids via `/api/by-guid`.
+♡ toggles a favorite on a podcast row (`<FavHeart>`) or an episode row (`<FavEpisodeHeart>`), both in `components/fav-heart.tsx`. Both go into **one** kind:30078 event at `d:podcast:favorites` — an app-neutral address shared with StableKraft and any other app that implements [`docs/pc20-favorites.md`](pc20-favorites.md). **That document, not this code, is the spec**; keep them in step.
 
-**UUID filter at parse.** `lib/nostr/favorites.ts` enforces a UUID shape on every `i: podcast:guid:<value>` tag — older versions and other clients reusing the d-tag wrote feed IDs and arbitrary strings. Bad values return as `droppedGuids`; when > 0, `lib/nostr/favorites-hydrator.ts` registers `window.bmbCleanFavorites()` so the user can republish a cleaned event from devtools.
+**Kind 30078 (NIP-78 app data), deliberately not 30003 (NIP-51 bookmark sets).** Kind 30003 is user-named bookmark collections — saved links. Podcast favorites belong in neither that category nor that write-space: a generic bookmark client that lets someone edit a set would rewrite this list with none of the merge discipline below, and it would be doing nothing wrong. The trade is that favorites are no longer visible in generic NIP-51 list clients, which is intended. `content` stays empty and public, unlike `settings-backup.ts`/`wallet-backup.ts` which NIP-44 encrypt their 30078 payloads — a second app has to be able to read this one.
 
-Sign-out clears in-memory favorites; the per-npub cache is left so re-signing in is fast. No episode-level favorites, no categories, no share UI.
+Items are NIP-73 identifiers: `i: podcast:guid:<feedGuid>` for a show, `i: podcast:item:guid:<itemGuid>` for an episode. Position 2 is the feed's RSS URL (NIP-73's URL hint); position 3 on an item is `podcast:guid:<feedGuid>` of its parent — an additive extension, because `getEpisodeByGuid` needs `podcastguid` and an item guid alone won't resolve. Caches `bmb:favorites:<npub>` and `bmb:favepisodes:<npub>` (or `:guest`) render instantly; toggles are optimistic and publish is **debounced 1.5 s**.
 
-**Switching identities must wipe in-memory state — for favorites that's correctness, not tidiness.** `hydrateFavorites` reads `useApp.getState().favorites` rather than the per-npub cache (deliberately — that's how a signed-**out** user's favorites get adopted on first sign-in), and when the incoming identity has no kind:30003 it **publishes whatever it finds there as that identity's list**. So carrying account A's favorites across a switch writes A's list to relays under B's key. `completeSignIn`'s `identity && identity.pubkey !== id.pubkey` branch therefore clears `favorites`, `mutedPubkeys` and `resetFollows()` alongside the wallet teardown — signed-out → signed-in leaves `identity` null, skips the block, and still adopts as intended. (`hydrateMutes` reads the per-npub cache and was already correct; cleared for consistency. `resetFollows()` is explicit because `useFollows` only resets the singleton once a `<FollowButton>` effect runs, and a stale `ok: true` gates the kind:3 publish path.)
+**The module split is load-bearing.** `lib/nostr/favorites-merge.ts` is the wire format and the merge, and has **zero imports** so `npm run check:favsync` can load the real thing under plain Node — a reimplemented copy in the check script would stay green while the shipping merge drifted, the exact failure being guarded. `lib/nostr/favorites.ts` holds the I/O and re-exports it. Don't add an import to the merge module.
+
+**There is deliberately no "publish my favorites" function.** A shared replaceable event has no partial update, so a blind publish deletes whatever the other app added, silently, with no undo. `syncFavorites` reads → merges → publishes as one step, and the exported surface gives a caller no way to skip the read. Three rules follow:
+
+- **The delta is against a BASELINE, not against the local set.** `storage.favSynced.<npub>` holds the id list this device last agreed with the relay on. `next = (latest ∪ (local − baseline)) − (baseline − local)`. Publishing the local set alone erases every entry another app added; publishing the union alone makes unfavoriting impossible, permanently. An empty local set with an empty baseline must delete nothing — a device that hasn't hydrated is not making a claim — while an empty local set with a full baseline is a real clear-all.
+- **A degraded read publishes nothing.** `fetchSharedFavorites` reports `trustworthy` (from `fetchLatestEventDetailed`), and both `syncFavorites` and `hydrateFavorites` bail on false. A null from a relay means "nobody had it" *or* "nothing answered", and acting on the second wipes favorites across every app the user owns. Same rule as kind:3 and kind:0.
+- **Identifiers we can't read still ride along.** The merge never looks inside an `i` tag; `interpretShows`/`interpretItems` run at render time only. A third app's `podcast:publisher:guid:`, or StableKraft's track favorites viewed from here, survive our republish untouched — as do unrecognized top-level tags and `k` tags naming kinds we don't generate (stripping those would remove another app's `#k` filter from the event).
+
+**`k` tags come from a known-kind table, never from string-scanning.** `podcast:guid`, `podcast:item:guid`, `podcast:publisher:guid`. Item guids are routinely permalink URLs, so "everything before the last colon" yields `podcast:item:guid:https` — a tag no relay filter matches, breaking discovery with nothing visibly wrong. `check:favsync` pins this.
+
+**Malformed guids are separated at read, not dropped at write.** `interpretShows` splits non-UUID `podcast:guid:` values out as `malformed` — older versions of this app wrote feed IDs and live-episode strings there. They stay on the wire regardless; `window.bmbCleanFavorites()` is an explicit, user-invoked purge. "This app can't read it" is not the same claim as "this is junk".
+
+**Migration off kind:30003 `boostmebitch:favorites`.** `migrateLegacyList` unions the old list into the shared one, and runs on **every** hydrate — a no-op once absorbed, but a user signing in on a new device months later still finds their pre-sync history there. It requires **both** reads to be trustworthy, and merges with an **empty baseline**: passing the legacy ids as a baseline would read anything already on the shared list as a removal. The old event is left intact as the rollback path.
+
+Sign-out clears in-memory favorites; the per-npub caches are left so re-signing in is fast. `bmb:favsynced:<npub>` is deliberately **not** cleared on an identity switch — it's per-npub, so switching back to A must find A's baseline where A left it.
+
+**Switching identities must wipe in-memory state — for favorites that's correctness, not tidiness.** `hydrateFavorites` reads the store rather than the per-npub cache (deliberately — that's how a signed-**out** user's favorites get adopted on first sign-in), and adoption publishes whatever it finds there under the incoming key. So carrying account A's favorites across a switch writes A's list to relays under B's key. `completeSignIn`'s `identity && identity.pubkey !== id.pubkey` branch therefore clears `favorites`, `favoriteEpisodes`, `mutedPubkeys` and `resetFollows()` alongside the wallet teardown — signed-out → signed-in leaves `identity` null, skips the block, and still adopts as intended. (`hydrateMutes` reads the per-npub cache and was already correct; cleared for consistency. `resetFollows()` is explicit because `useFollows` only resets the singleton once a `<FollowButton>` effect runs, and a stale `ok: true` gates the kind:3 publish path.)
 
 ## Mutes (NIP-51 kind:10000)
 
@@ -176,7 +192,7 @@ Publish target is `resolvePublishRelays(identity)`. Body lives in `formatContent
 [nostr:npub… mentions, when the feed declared any]
 ```
 
-`signAndPublish` handles both kind:1 boost notes and kind:30003 favorites — a third event kind is ~10 lines.
+`signAndPublish` handles both kind:1 boost notes and kind:30078 favorites — a third event kind is ~10 lines.
 
 ## Site Nostr identity (boost notes for signed-out users)
 

@@ -5,7 +5,7 @@
 // raw key strings live in exactly one file and SSR/quota guards aren't
 // duplicated across components.
 
-import type { FavoritePodcast, Podcast, StoredBoost } from './types';
+import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, StoredBoost } from './types';
 import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
@@ -43,7 +43,10 @@ const KEYS = {
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favoritesPrefix: 'bmb:favorites',
+  favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
+  favSyncedPrefix: 'bmb:favsynced',   // + ':<npub>' — the NIP-73 id list this device last agreed with the relay on. NOT a cache: without it the shared kind:30078 list can't tell "another app added this" from "I removed this". See lib/nostr/favorites.ts.
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
+  episodeMetaPrefix: 'bmb:epmeta',    // /api/episode-by-guid result, keyed by '<feedGuid>:<itemGuid>'
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
   socialThreadPrefix: 'bmb:social',   // last DiscoveredNote[] per podcast:socialInteract URI
   boostsPrefix: 'bmb:boosts',         // sent-boost log, keyed by npub or 'guest'
@@ -141,6 +144,7 @@ const EVICTABLE_PREFIXES = [
   KEYS.feedNotesPrefix,
   KEYS.profilePrefix,
   KEYS.podcastMetaPrefix,
+  KEYS.episodeMetaPrefix,
 ] as const;
 
 const isEvictableKey = (key: string) =>
@@ -653,6 +657,15 @@ export const storage = {
       setTimed(`${KEYS.podcastMetaPrefix}:${guid}`, v),
   },
 
+  /** /api/episode-by-guid result, keyed '<feedGuid>:<itemGuid>'. Same TTL and
+   *  eviction class as podcastMeta — a network-regenerable display cache. */
+  episodeMeta: {
+    get: (key: string): Episode | null =>
+      getTimed<Episode>(`${KEYS.episodeMetaPrefix}:${key}`, PODCAST_META_TTL_MS),
+    set: (key: string, v: Episode) =>
+      setTimed(`${KEYS.episodeMetaPrefix}:${key}`, v),
+  },
+
   /**
    * Last DiscoveredNote[] per feed surface. Used by `useNostrFeed` for the
    * stale-while-revalidate paint: returned regardless of age (no TTL) since
@@ -1117,6 +1130,48 @@ export const storage = {
     },
     set: (npub: string | null | undefined, v: Record<string, FavoritePodcast>) => {
       safeSet(identityKey(KEYS.favoritesPrefix, npub), JSON.stringify(v));
+    },
+  },
+
+  /** Favorited episodes, keyed by item guid. Same npub namespacing as favorites. */
+  favoriteEpisodes: {
+    get: (npub: string | null | undefined): Record<string, FavoriteEpisode> => {
+      const raw = safeGet(identityKey(KEYS.favoriteEpisodesPrefix, npub));
+      if (!raw) return {};
+      try {
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object'
+          ? (parsed as Record<string, FavoriteEpisode>)
+          : {};
+      } catch {
+        return {};
+      }
+    },
+    set: (npub: string | null | undefined, v: Record<string, FavoriteEpisode>) => {
+      safeSet(identityKey(KEYS.favoriteEpisodesPrefix, npub), JSON.stringify(v));
+    },
+  },
+
+  /**
+   * The NIP-73 identifier list this device last agreed with the relay on — the
+   * baseline the shared favorites list is diffed against. Losing it is not
+   * fatal (an empty baseline yields no removals, so the next publish is a pure
+   * union) but it does mean one unfavorite fails to propagate, so it is a
+   * setting rather than a cache and never appears in EVICTABLE_PREFIXES.
+   */
+  favSynced: {
+    get: (npub: string | null | undefined): string[] => {
+      const raw = safeGet(identityKey(KEYS.favSyncedPrefix, npub));
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : [];
+      } catch {
+        return [];
+      }
+    },
+    set: (npub: string | null | undefined, ids: string[]) => {
+      safeSet(identityKey(KEYS.favSyncedPrefix, npub), JSON.stringify(ids));
     },
   },
 };
