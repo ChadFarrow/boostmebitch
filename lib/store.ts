@@ -9,6 +9,9 @@ import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from '
 /** Which view the sign-in modal opens on. See `signInIntent` below. */
 export type SignInIntent = 'default' | 'google';
 
+/** See `favoritesSync` below. */
+export type FavoritesSyncStatus = 'idle' | 'loading' | 'ok' | 'degraded';
+
 interface AppState {
   identity: NostrIdentity | null;
   setIdentity: (i: NostrIdentity | null) => void;
@@ -121,6 +124,25 @@ interface AppState {
   addFavoriteEpisode: (e: FavoriteEpisode) => void;
   removeFavoriteEpisode: (itemGuid: string) => void;
   setFavoriteEpisodes: (next: Record<string, FavoriteEpisode>) => void;
+
+  // Whether the favorites relay round-trip is working, so the UI can tell
+  // "we couldn't ask" apart from "your list is empty". Those two render
+  // identically otherwise, and on a device with no cache the second one reads
+  // as "your favorites are gone" — which is what made the degraded-read guard
+  // look like the bug it was actually preventing.
+  //
+  //   'idle'     no read attempted this session (signed out, or pre-hydration)
+  //   'loading'  a read is in flight
+  //   'ok'       a trustworthy read landed, so an empty list is really empty
+  //   'degraded' nothing answered — whatever is on screen is this device's copy
+  //
+  // In-memory only, deliberately: a persisted "the relays were down" is a lie
+  // by the next page load. Written by hydrateFavorites and by syncFavorites'
+  // callbacks (see favorites-sync.ts), cleared to 'idle' wherever nostr-auth
+  // tears an identity down. NOT reset inside setIdentity — that runs
+  // mid-hydration with the enriched identity and would clobber a fresh 'ok'.
+  favoritesSync: FavoritesSyncStatus;
+  setFavoritesSync: (s: FavoritesSyncStatus) => void;
 
   // NIP-51 kind:10000 mute list, hydrated on login from the user's relay
   // event. Filter is applied at render time in NoteCard and feed surfaces.
@@ -256,6 +278,9 @@ export const useApp = create<AppState>((set, get) => ({
     storage.favoriteEpisodes.set(s.identity?.npub, next);
     return { favoriteEpisodes: next };
   }),
+
+  favoritesSync: 'idle',
+  setFavoritesSync: (s) => set({ favoritesSync: s }),
 
   // Hydrate from the guest cache; once the user signs in, hydrateMutes
   // replaces this with their NIP-51 set reconciled against the relay event.

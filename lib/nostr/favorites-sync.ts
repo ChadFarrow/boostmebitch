@@ -49,7 +49,16 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // heart-taps publishes once with the final set.
     local: localFavoriteItems,
     lastSynced: () => storage.favSynced.get(identity.npub),
-    onSynced: (ids) => storage.favSynced.set(identity.npub, ids),
+    // Both callbacks also move `favoritesSync`, so the whole feature reports
+    // its relay health from one place: hydration routes its own success
+    // through this same `onSynced` (see favorites-hydrator.ts), and a publish
+    // that lands is proof the relays are answering again — it clears a notice
+    // an earlier degraded read put up.
+    onSynced: (ids) => {
+      storage.favSynced.set(identity.npub, ids);
+      useApp.getState().setFavoritesSync('ok');
+    },
+    onDegraded: () => useApp.getState().setFavoritesSync('degraded'),
   };
 }
 

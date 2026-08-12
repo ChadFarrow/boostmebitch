@@ -129,6 +129,14 @@ export interface SyncOptions {
   lastSynced: () => string[];
   /** Called with the published id list once the event lands. */
   onSynced: (ids: string[]) => void;
+  /**
+   * Called instead of publishing when the read came back untrustworthy. The
+   * skip is correct (see below) but invisible, and a heart-tap that never
+   * propagates looks exactly like one that did — so the caller gets told.
+   * Injected like `onSynced` rather than reaching for the store here, which
+   * keeps this module free of React and browser globals.
+   */
+  onDegraded?: () => void;
 }
 
 /**
@@ -143,6 +151,7 @@ export interface SyncOptions {
 export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | null> {
   const latest = await fetchSharedFavorites(opts.pubkey, opts.relays);
   if (!latest.trustworthy) {
+    opts.onDegraded?.();
     // eslint-disable-next-line no-console
     console.warn('[favorites] skipping publish — could not read the current list');
     return null;

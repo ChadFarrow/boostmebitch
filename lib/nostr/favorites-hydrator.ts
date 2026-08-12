@@ -14,6 +14,9 @@
 //   2. What we can't render, we still carry. Interpretation is lossy on
 //      purpose — identifiers from apps we don't know about survive untouched
 //      because `mergeSharedFavorites` never looks inside them.
+//   3. A degraded read is announced. Rule 1 keeps the data safe and says
+//      nothing, which on a device with no cache is a blank list that reads as
+//      "your favorites are gone" — see `favoritesSync` in lib/store.ts.
 
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
@@ -146,22 +149,58 @@ async function migrateLegacyList(
 /**
  * Reconcile local favorites with the shared kind:30078 list, then resolve any
  * identifiers this device hasn't seen before via Podcast Index.
+ *
+ * Single-flight: a second call while one is in progress joins the first rather
+ * than starting its own read-merge-publish cycle. Sign-in used to be the only
+ * caller and was already deduped upstream by `pendingProfileLoad`; the retry
+ * button in `<FavoritesSyncNotice>` makes a concurrent hydrate reachable for
+ * the first time, and a double-tap must not publish twice. Keyed by npub so an
+ * account switch is never handed the previous account's in-flight run.
  */
-export async function hydrateFavorites(identity: NostrIdentity): Promise<void> {
-  const { setFavorites, setFavoriteEpisodes } = useApp.getState();
+let inFlight: { npub: string; promise: Promise<void> } | null = null;
+
+export function hydrateFavorites(identity: NostrIdentity): Promise<void> {
+  if (inFlight?.npub === identity.npub) return inFlight.promise;
+  const promise = runHydrate(identity).finally(() => {
+    if (inFlight?.promise === promise) inFlight = null;
+  });
+  inFlight = { npub: identity.npub, promise };
+  return promise;
+}
+
+async function runHydrate(identity: NostrIdentity): Promise<void> {
+  const { setFavorites, setFavoriteEpisodes, setFavoritesSync } = useApp.getState();
   const cached = storage.favorites.get(identity.npub);
   const cachedEpisodes = storage.favoriteEpisodes.get(identity.npub);
 
-  const shared = await fetchSharedFavorites(identity.pubkey);
+  setFavoritesSync('loading');
+
+  // The read, and only the read, decides the status. A throw anywhere in here
+  // means we never got an answer we could trust, and the caller in nostr-auth
+  // swallows it (`.catch(() => {})`) — without this the status would sit on
+  // 'loading' forever and the notice would never appear.
+  let shared: Awaited<ReturnType<typeof fetchSharedFavorites>>;
+  try {
+    shared = await fetchSharedFavorites(identity.pubkey);
+  } catch (e) {
+    setFavoritesSync('degraded');
+    throw e;
+  }
 
   if (!shared.trustworthy) {
     // Nothing answered. Keep whatever is on screen and publish nothing — the
     // next toggle or page load retries. Silently adopting the empty result
     // here is how a relay wobble turns into a wiped favorites list.
+    setFavoritesSync('degraded');
     // eslint-disable-next-line no-console
     console.warn('[favorites] relay read was degraded — keeping local favorites as-is');
     return;
   }
+
+  // Set here rather than at the end of the function: everything below is
+  // Podcast Index resolution, which fails for its own unrelated reasons and
+  // must not be reported as "couldn't reach the relays".
+  setFavoritesSync('ok');
 
   // Runs on every hydrate, not just the first: it is a no-op once the legacy
   // list is empty or fully absorbed, and a user who signs in on a second

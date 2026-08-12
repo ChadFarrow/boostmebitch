@@ -213,6 +213,37 @@ otherwise only an aggregate EOSE counts, and resolving on a timeout means you
 heard nothing. **If the read was degraded, publish nothing.** Losing a republish
 is recoverable — the next toggle retries it — and the alternative is not.
 
+### And say so
+
+The guard above is silent by construction: it keeps local state, publishes
+nothing, and returns. That is correct and it is not enough, because **a degraded
+read and an empty list render identically**. On a device with no cache — a new
+browser, a private tab, a second device — the result is a blank library with no
+explanation, and "we couldn't reach the relays" is visually indistinguishable
+from "your favorites are gone".
+
+The failure mode is not the user's confusion, it's yours. When the reference
+implementation hit this, production looked broken, the correct code was
+suspected twice, and a revert of the safety guard was nearly shipped to fix a
+bug that didn't exist. **The guard is most likely to be doubted on the exact
+occasion it works.**
+
+So: surface it. A non-blocking notice on the favorites surface — *"Couldn't
+reach the relays — showing what's on this device"* — with a retry. Distinguish
+the three states a favorites view otherwise collapses into one:
+
+| | |
+|---|---|
+| **read failed** | say so, offer a retry, show the local copy if you have one |
+| **read succeeded, list is empty** | your ordinary empty state |
+| **not signed in** | never claim a relay failure — there is nothing to sync |
+
+Two details worth copying. The write path is silent in the same way one screen
+removed — a favorite toggled while the relays are unreachable skips its publish
+and looks exactly like one that succeeded — so report both through **one** flag.
+And a retry makes concurrent reads reachable for the first time, so make the
+read single-flight; a double-tap must not run two read-merge-publish cycles.
+
 ### Carry what you can't read
 
 The merge operates on **raw identifier strings**. Never interpret an entry
@@ -290,7 +321,6 @@ anything:
    baseline would read anything already on the shared list as a removal.
 3. Publish the shared list. Leave the old event in place; it costs nothing and
    is the rollback path.
-
 Run it on every hydration rather than once. It is a no-op after the first time,
 and a user signing in on a second device months later still has their pre-sync
 history waiting at the old address.
@@ -301,8 +331,9 @@ history waiting at the old address.
 
 - **Boost Me Bitch** — `lib/nostr/favorites-merge.ts` (wire format + merge,
   deliberately import-free), `lib/nostr/favorites.ts` (I/O),
-  `lib/nostr/favorites-hydrator.ts` (hydration + migration). The merge is pinned
-  by `npm run check:favsync`.
+  `lib/nostr/favorites-hydrator.ts` (hydration + migration),
+  `components/favorites-sync-notice.tsx` (the degraded-read notice). The merge
+  is pinned by `npm run check:favsync`.
 - **StableKraft** — `lib/nostr/shared-favorites.ts`, tested by
   `npx tsx --test lib/nostr/shared-favorites.test.ts`.
 

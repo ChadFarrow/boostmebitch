@@ -48,6 +48,7 @@ export function NostrAuth() {
   const setIdentity = useApp((s) => s.setIdentity);
   const setFavorites = useApp((s) => s.setFavorites);
   const setFavoriteEpisodes = useApp((s) => s.setFavoriteEpisodes);
+  const setFavoritesSync = useApp((s) => s.setFavoritesSync);
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
   // One button opens the sign-in modal, which owns the per-method (extension
   // / remote-signer / Amber) flows and their own busy/error state. Open-state
@@ -392,6 +393,7 @@ export function NostrAuth() {
     setIdentity(null);
     setFavorites({});
     setFavoriteEpisodes({});
+    setFavoritesSync('idle');
     setMutedPubkeys(new Set());
   }
 
@@ -431,6 +433,7 @@ export function NostrAuth() {
     setIdentity(null);
     setFavorites({});
     setFavoriteEpisodes({});
+    setFavoritesSync('idle');
     setMutedPubkeys(new Set());
     // Same reason as the identity-switch path: useFollows resets this when
     // identity goes null, but not until a FollowButton's effect runs.
@@ -478,6 +481,9 @@ export function NostrAuth() {
       // window before B's hydration lands.
       setFavorites({});
       setFavoriteEpisodes({});
+      // The relay-health flag is per-account too: without this, B inherits A's
+      // "couldn't reach the relays" notice over B's own freshly-hydrated list.
+      setFavoritesSync('idle');
       setMutedPubkeys(new Set());
       // The follow singleton is module state shared by every FollowButton.
       // ensureFollowsLoaded resets it on an identity change, but only once a

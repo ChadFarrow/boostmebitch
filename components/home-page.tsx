@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
 import { PodcastResults, EpisodeList, FavoritesList, FavoriteEpisodesList } from '@/components/lists';
+import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { NostrLiveStreams } from '@/components/nostr-live-streams';
@@ -209,7 +210,16 @@ export function HomePage() {
   const hasFavorites =
     Object.keys(favorites).length > 0 || Object.keys(favoriteEpisodes).length > 0;
 
-  const showFavoritesPanel = !query && hasFavorites;
+  // A degraded relay read opens the panel even with nothing to put in it —
+  // otherwise the notice has nowhere to render, and a device with no cached
+  // favorites (new browser, private tab, second device) is exactly the case
+  // where "we couldn't ask" is indistinguishable from "your favorites are
+  // gone". The genuinely-empty case is left alone: <EmptyState>'s onboarding
+  // cards are already the right "you have nothing saved yet" affordance, and
+  // because degraded now always opens the panel, seeing them positively means
+  // the read worked.
+  const favoritesDegraded = useApp((s) => !!s.identity && s.favoritesSync === 'degraded');
+  const showFavoritesPanel = !query && (hasFavorites || favoritesDegraded);
   const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel || !!publisherSource;
   const inDetailView = !!selected;
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
@@ -301,6 +311,10 @@ export function HomePage() {
           // (`inDetailView` branch above) so this layer never needs to host
           // an episode pane.
           <aside className="card p-3 max-h-[70vh] overflow-y-auto">
+            {/* Above the collapse toggle, not inside it — collapsing the list
+                must not hide the reason the list might be short. Self-hiding
+                unless signed in AND degraded. */}
+            {!publisherSource && <FavoritesSyncNotice />}
             {publisherSource ? (
               <>
                 <button
