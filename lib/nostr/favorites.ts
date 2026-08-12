@@ -1,78 +1,169 @@
 import type { EventTemplate } from 'nostr-tools';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, type PublishedNote } from './publish';
-import { fetchLatestEvent } from './event-queries';
+import { fetchLatestEventDetailed } from './event-queries';
 import { createScheduledPublish } from './debounced-publish';
+import {
+  baselineFrom,
+  itemsFromTags,
+  otherTagsFrom,
+  mergeSharedFavorites,
+  tagsForSharedFavorites,
+  LEGACY_D_TAG,
+  LEGACY_FAVORITES_KIND,
+  type SharedFavoriteItem,
+} from './favorites-merge';
+import { favoritesAddressFor } from './favorites-gate';
 
-// NIP-51 favorites — kind:30003 bookmark set, identified by our `d` tag.
+// ---------------------------------------------------------------------------
+// Cross-app favorites — the I/O half. The wire format and the merge live in
+// `favorites-merge.ts`, which is import-free so scripts/check-favsync.mjs can
+// load the real thing; everything there is re-exported below so callers only
+// import this module.
+//
+// This event is SHARED with other podcast apps (StableKraft first). It is a
+// replaceable event at a well-known address, so every writer can destroy every
+// other writer's data with one blind publish. That is why there is no exported
+// "publish my favorites" — only `syncFavorites`, which reads first.
+//
+// It lives at NIP-78 kind 30078, deliberately NOT NIP-51 kind 30003 — see the
+// note on SHARED_FAVORITES_KIND in favorites-merge.ts. The legacy read is the
+// one place 30003 still appears.
+// ---------------------------------------------------------------------------
 
-export const FAVORITES_D_TAG = 'boostmebitch:favorites';
+export * from './favorites-merge';
 
-// Podcasting 2.0 podcast:guid is a UUID (v5 in spec, but tolerate any version).
-// Older versions of this app (and some other clients) wrote feed IDs or
-// live-episode strings into the i-tag — drop those on read so we don't ship
-// junk to /api/by-guid.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export interface FavoritesEvent {
-  guids: string[];
-  updatedAt: number; // unix seconds, from event.created_at
-  /** Guids the relay event had that didn't match UUID shape — exposed so
-   *  callers can offer the user a one-shot "clean up favorites" republish. */
-  droppedGuids: string[];
+export interface SharedFavorites {
+  /** Every `i` tag, in event order, including kinds this app can't read. */
+  items: SharedFavoriteItem[];
+  /** Tags belonging to other writers, preserved verbatim on republish. */
+  otherTags: string[][];
+  /** unix seconds, from event.created_at. 0 when no event exists. */
+  updatedAt: number;
+  /** An event was found. */
+  exists: boolean;
+  /**
+   * The read can be trusted. False means "nothing answered", NOT "the list is
+   * empty" — never merge or publish on top of a false here, or a relay wobble
+   * silently wipes favorites this device never saw.
+   */
+  trustworthy: boolean;
 }
 
-export async function fetchFavoriteGuids(
+async function fetchList(
   pubkey: string,
-  queryRelays?: string[],
-): Promise<FavoritesEvent | null> {
-  const useRelays = queryRelays ?? DEFAULT_RELAYS;
-  const newest = await fetchLatestEvent(useRelays, {
-    kinds: [30003],
+  kind: number,
+  dTag: string,
+  relays: string[],
+): Promise<SharedFavorites> {
+  const { event, trustworthy } = await fetchLatestEventDetailed(relays, {
+    kinds: [kind],
     authors: [pubkey],
-    '#d': [FAVORITES_D_TAG],
+    '#d': [dTag],
     limit: 1,
   });
-  if (!newest) return null;
-  const guids: string[] = [];
-  const droppedGuids: string[] = [];
-  for (const tag of newest.tags) {
-    if (tag[0] !== 'i' || !tag[1]) continue;
-    const m = /^podcast:guid:(.+)$/.exec(tag[1]);
-    if (!m) continue;
-    if (UUID_RE.test(m[1])) guids.push(m[1]);
-    else droppedGuids.push(m[1]);
+  if (!event) {
+    return { items: [], otherTags: [], updatedAt: 0, exists: false, trustworthy };
   }
-  return { guids, updatedAt: newest.created_at, droppedGuids };
+  return {
+    items: itemsFromTags(event.tags),
+    otherTags: otherTagsFrom(event.tags),
+    updatedAt: event.created_at,
+    exists: true,
+    trustworthy: true, // an event in hand is its own proof the query worked
+  };
 }
 
-export async function publishFavorites(
-  guids: string[],
+/**
+ * Read this account's favorites list.
+ *
+ * The address depends on the account: allowlisted accounts use the shared
+ * cross-app list, everyone else keeps reading the address their favorites have
+ * always been at. See `favorites-gate.ts` for why that beats an on/off switch.
+ */
+export function fetchSharedFavorites(
+  pubkey: string,
+  queryRelays?: string[],
+): Promise<SharedFavorites> {
+  const { kind, dTag } = favoritesAddressFor(pubkey);
+  return fetchList(pubkey, kind, dTag, queryRelays ?? DEFAULT_RELAYS);
+}
+
+/** Read this app's pre-sync list. Migration only — never republished here. */
+export function fetchLegacyFavorites(
+  pubkey: string,
+  queryRelays?: string[],
+): Promise<SharedFavorites> {
+  return fetchList(pubkey, LEGACY_FAVORITES_KIND, LEGACY_D_TAG, queryRelays ?? DEFAULT_RELAYS);
+}
+
+/**
+ * Publish the merged list back to whichever address this account reads from.
+ *
+ * `pubkey` is required rather than optional on purpose: a default would mean a
+ * caller could publish the shared list for an account that reads the legacy
+ * one, which puts a user's favorites at an address their own app never checks.
+ */
+export async function publishSharedFavorites(
+  items: SharedFavoriteItem[],
+  otherTags: string[][],
   relays: string[],
+  pubkey: string,
 ): Promise<PublishedNote> {
-  const tags: string[][] = [
-    ['d', FAVORITES_D_TAG],
-    ['title', 'Favorite Podcasts'],
-  ];
-  for (const guid of guids) {
-    tags.push(['i', `podcast:guid:${guid}`]);
-    tags.push(['k', 'podcast:guid']);
-  }
+  const address = favoritesAddressFor(pubkey);
   const template: EventTemplate = {
-    kind: 30003,
+    kind: address.kind,
     created_at: Math.floor(Date.now() / 1000),
-    tags,
+    tags: tagsForSharedFavorites(items, otherTags, address.dTag),
     content: '',
   };
   return signAndPublish(template, relays);
 }
 
-// Debounced wrapper — collapses rapid heart-toggles into a single signing prompt.
+export interface SyncOptions {
+  pubkey: string;
+  relays: string[];
+  /** This device's current favorites, as wire items. */
+  local: () => SharedFavoriteItem[];
+  /** The id list this device last agreed with the relay on. */
+  lastSynced: () => string[];
+  /** Called with the published id list once the event lands. */
+  onSynced: (ids: string[]) => void;
+}
+
+/**
+ * Read → merge → publish, in one step. The read is what makes the write safe,
+ * so they are never separated: a caller that could publish without reading is
+ * a caller that can wipe another app's favorites.
+ *
+ * Returns null without publishing when the read was degraded. Losing a
+ * republish is recoverable — the next toggle or page load retries it — whereas
+ * publishing over a list we couldn't read is not.
+ */
+export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | null> {
+  const latest = await fetchSharedFavorites(opts.pubkey, opts.relays);
+  if (!latest.trustworthy) {
+    // eslint-disable-next-line no-console
+    console.warn('[favorites] skipping publish — could not read the current list');
+    return null;
+  }
+  const local = opts.local();
+  const next = mergeSharedFavorites({
+    latest: latest.items,
+    lastSynced: opts.lastSynced(),
+    local,
+  });
+  const published = await publishSharedFavorites(next, latest.otherTags, opts.relays, opts.pubkey);
+  // Only our own contribution goes into the baseline — see `baselineFrom`.
+  opts.onSynced(baselineFrom(next, local));
+  return published;
+}
+
+// Debounced wrapper — collapses rapid heart-toggles into a single read-merge-
+// publish cycle, and so a single signing prompt. The getters are re-read at
+// fire time, so a burst publishes once with the final set.
 const _schedulePublish = createScheduledPublish('favorites');
-export function schedulePublishFavorites(
-  getGuids: () => string[],
-  relays: string[],
-  delayMs = 1500,
-) {
-  _schedulePublish(() => publishFavorites(getGuids(), relays), delayMs);
+
+export function scheduleSyncFavorites(opts: SyncOptions, delayMs = 1500) {
+  _schedulePublish(() => syncFavorites(opts), delayMs);
 }
