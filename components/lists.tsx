@@ -4,20 +4,21 @@ import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
+import { resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, ShareIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
 import { Podroll } from './podroll';
-import { FavHeart } from './fav-heart';
+import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
 import { useStreamPanel } from './streaming-settings';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
 
 // Re-exported for the surfaces that have always imported it from here.
-export { FavHeart };
+export { FavEpisodeHeart, FavHeart };
 
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   if (status === 'live') {
@@ -198,6 +199,67 @@ export function FavoritesList({
         );
       })}
     </ul>
+  );
+}
+
+/**
+ * Favorited episodes. Selecting one opens its parent SHOW rather than playing
+ * inline: a FavoriteEpisode is a display cache, not an Episode — it carries no
+ * value block, chapters or transcript — so fabricating one to hand to the
+ * player would push a half-formed object into the boost modal and the
+ * streaming engine. The show page resolves the real episode for free.
+ */
+export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => void }) {
+  const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
+  const list = useMemo(
+    () => Object.values(favoriteEpisodes).sort((a, b) => b.addedAt - a.addedAt),
+    [favoriteEpisodes],
+  );
+
+  if (!list.length) return null;
+
+  return (
+    <>
+      <div className="text-[11px] uppercase tracking-widest text-muted mt-4 mb-2 px-1">
+        {list.length} favorite {list.length === 1 ? 'episode' : 'episodes'}
+      </div>
+      <ul className="divide-y divide-bone/10">
+        {list.map((ep) => (
+          <li
+            key={ep.itemGuid}
+            className="flex gap-3 py-3 px-1 cursor-pointer group transition hover:bg-bone/5"
+            onClick={async () => {
+              // feedId is present for anything this device resolved through PI.
+              // An entry synced from another app before its backfill ran has
+              // only the guid, so fall back to resolving it on demand.
+              if (ep.feedId) {
+                onSelect({
+                  id: ep.feedId,
+                  podcastGuid: ep.feedGuid,
+                  title: ep.podcastTitle ?? ep.title,
+                  image: ep.image,
+                  url: ep.feedUrl,
+                });
+                return;
+              }
+              const podcast = await resolvePodcastByGuid(ep.feedGuid);
+              if (podcast) onSelect(podcast);
+            }}
+          >
+            <PodcastCover
+              image={ep.image}
+              title={ep.title}
+              seed={ep.itemGuid}
+              className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="font-display text-base leading-tight truncate">{ep.title}</div>
+              <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
+            </div>
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }
 
@@ -502,6 +564,9 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
                   <BoltIcon /> BOOST
                 </button>
               )}
+              <div className="self-center flex-shrink-0">
+                <FavEpisodeHeart episode={e} podcast={data.podcast} />
+              </div>
               </div>
             </li>
             </Fragment>

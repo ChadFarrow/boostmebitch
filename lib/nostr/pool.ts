@@ -5,7 +5,7 @@ import { SimplePool } from 'nostr-tools';
 // and the browser tab keeps showing the loading spinner.
 //
 // QUERY_MAX_WAIT_MS — single-author / single-event / replaceable-event
-// lookups (kind:0, kind:10000, kind:10002, kind:30003, NIP-78 backup, viewer
+// lookups (kind:0, kind:10000, kind:10002, NIP-78 app data (favorites + backups), viewer
 // reposts). These EOSE quickly because the relay scans by `authors` index;
 // 4s is comfortably above the typical sub-second response.
 //
@@ -40,7 +40,7 @@ function getSharedPool(): SimplePool {
   return sharedPool;
 }
 
-// Runs `fn` against the shared pool. Used for every kind:0 / 10002 / 30003
+// Runs `fn` against the shared pool. Used for every kind:0 / 10002 / 30078
 // query and every publish. Deliberately does NOT close the pool's relays
 // afterwards — that's what the old create-per-query version did, throwing away
 // every warm connection on each call. The only sockets still torn down are the
