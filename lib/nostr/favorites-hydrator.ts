@@ -130,10 +130,30 @@ async function migrateLegacyList(
   if (merged.length === shared.items.length) return shared.items; // nothing new
   try {
     await publishSharedFavorites(merged, shared.otherTags, resolvePublishRelays(identity), identity.pubkey);
-    // Baseline is our own contribution only — the legacy entries we just moved
-    // across. Recording the whole merged list would put another app's entries
-    // in it, and the next publish would read them as our removals.
-    storage.favSynced.set(identity.npub, baselineFrom(merged, legacy.items));
+    // Baseline is `merged ∩ what this DEVICE currently holds` — deliberately
+    // NOT `merged ∩ legacy.items`, which is the obvious reading of "our own
+    // contribution" and is wrong in a way that undoes the migration it just
+    // performed.
+    //
+    // The baseline is not a record of authorship, it's a promise: every id in
+    // it must be one `local` will keep asserting, because the next merge
+    // computes `removes = baseline − local`. The store is empty of these shows
+    // at this point in the hydrate — `setFavorites` doesn't run until ~35
+    // lines below, after the merge — so a baseline naming the legacy ids makes
+    // the very next `mergeSharedFavorites` in this same function read all of
+    // them as local removals and publish them straight back out.
+    //
+    // That shipped: `[favorites] migrated 17 entries` logged on every single
+    // page load, adding 17 and deleting 17 twice per load, and 0 of the 17 ever
+    // reached the shared list. Nothing was lost — the legacy event is never
+    // touched, which is exactly the rollback path the spec prescribes — but the
+    // migration could never complete.
+    //
+    // Passing `local` instead leaves the migrated ids out of the baseline, so
+    // the merge treats them as foreign and CARRIES them, which is the safe
+    // direction. They're adopted into the baseline on a later hydrate, once
+    // they've resolved into the store and `local` can honour the promise.
+    storage.favSynced.set(identity.npub, baselineFrom(merged, localFavoriteItems()));
     // eslint-disable-next-line no-console
     console.info(
       `[favorites] migrated ${merged.length - shared.items.length} entries from the legacy list`,

@@ -321,6 +321,31 @@ anything:
    baseline would read anything already on the shared list as a removal.
 3. Publish the shared list. Leave the old event in place; it costs nothing and
    is the rollback path.
+4. **Record the baseline from your local set, not from the old list.** This is
+   the step that looks like a detail and isn't.
+
+Step 4 is worth spelling out, because "the entries I just moved across" is the
+obvious definition of your contribution and it undoes the migration one line
+later. The baseline is not a record of authorship — it is a promise that `local`
+will keep asserting every id in it, since the next merge computes
+`removes = baseline − local`. If your migration runs before those entries have
+landed in the store you reconcile against (and it usually does — you migrate
+early, you populate late), then a baseline naming the old ids makes your very
+next merge read all of them as local removals and publish them straight back
+out.
+
+The symptom is a migration that reports success forever and never completes:
+"migrated N entries" on every page load, N added and N deleted per load, and
+nothing ever accumulating on the shared list. It is easy to miss precisely
+because it is safe — the old event is untouched, so nothing is lost, and the
+rollback path that protects you is also what hides the bug.
+
+Leaving the migrated ids **out** of the baseline is the correct, conservative
+answer: your merge then treats them as another app's entries and carries them
+verbatim, which is what the format asks for anyway. They join your baseline on
+a later pass, once they have resolved into your store and the promise can be
+kept.
+
 Run it on every hydration rather than once. It is a no-op after the first time,
 and a user signing in on a second device months later still has their pre-sync
 history waiting at the old address.

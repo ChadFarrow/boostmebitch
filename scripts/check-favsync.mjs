@@ -213,6 +213,60 @@ console.log('\nbaselineFrom — what this app is allowed to delete later');
   );
 }
 
+console.log('\nthe migration round trip — a migrated entry must survive the hydrate that added it');
+{
+  // `migrateLegacyList` publishes legacy ∪ shared, then the SAME hydrate runs
+  // `mergeSharedFavorites` again before the store has been populated with the
+  // migrated shows. So the second merge sees `local` WITHOUT them, and whatever
+  // baseline the migration recorded decides whether they live.
+  //
+  // The trap is that "the entries we just moved across" reads like the obvious
+  // definition of this app's contribution, and it type-checks. It also deletes
+  // them one line later, because the baseline is not a record of authorship —
+  // it's a promise that `local` will keep asserting every id in it.
+  //
+  // This shipped: 17 legacy entries added and removed twice per page load,
+  // forever, with 0 of them ever reaching the shared list. Vectors below pin
+  // the composed behaviour, since the ordering bug lives in the hydrator (which
+  // imports the store and can't be loaded here) rather than in the merge.
+  const shared = [{ id: X }];          // a foreign entry already on the list
+  const legacy = [{ id: A }, { id: B }]; // this app's pre-sync history
+  const merged = mergeSharedFavorites({ latest: shared, lastSynced: [], local: legacy });
+  check('migration adds the legacy entries without touching the foreign one', ids(merged), [X, A, B]);
+
+  // The store has not been populated yet at this point in the hydrate.
+  const localDuringHydrate = [];
+
+  check(
+    'the baseline recorded at migration time is empty, NOT the legacy ids',
+    baselineFrom(merged, localDuringHydrate),
+    [],
+  );
+  check(
+    'so the very next merge in the same hydrate carries them instead of deleting them',
+    ids(mergeSharedFavorites({
+      latest: merged,
+      lastSynced: baselineFrom(merged, localDuringHydrate),
+      local: localDuringHydrate,
+    })),
+    [X, A, B],
+  );
+  check(
+    'the buggy baseline (built from the legacy list) is what wipes them — pinned so the fix cannot silently revert',
+    ids(mergeSharedFavorites({
+      latest: merged,
+      lastSynced: baselineFrom(merged, legacy), // ← what shipped
+      local: localDuringHydrate,
+    })),
+    [X],
+  );
+  check(
+    'once the shows resolve into the store, the baseline adopts them',
+    baselineFrom(merged, [{ id: A }, { id: B }]),
+    [A, B],
+  );
+}
+
 console.log('\ntagsForSharedFavorites / itemsFromTags — the wire round trip');
 {
   const items = [
