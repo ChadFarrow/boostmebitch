@@ -287,9 +287,14 @@ export function baselineFrom(
 export function tagsForSharedFavorites(
   items: SharedFavoriteItem[],
   otherTags: string[][] = [],
+  // The address is a parameter because, during the trial, accounts that aren't
+  // allowlisted keep publishing to this app's own legacy d-tag rather than the
+  // shared one. Defaults to the shared address so every existing caller and
+  // every pinned vector is unchanged. See `favorites-gate.ts`.
+  dTag: string = SHARED_D_TAG,
 ): string[][] {
   const tags: string[][] = [
-    ['d', SHARED_D_TAG],
+    ['d', dTag],
     ['title', LIST_TITLE],
     ...otherTags,
   ];

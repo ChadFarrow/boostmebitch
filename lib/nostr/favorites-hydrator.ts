@@ -31,6 +31,7 @@ import {
   type SharedFavoriteItem,
 } from './favorites';
 import { localFavoriteItems, requestFavoritesSync, syncOptionsFor } from './favorites-sync';
+import { sharedFavoritesEnabledFor } from './favorites-gate';
 import { resolvePublishRelays } from './relays';
 import type { NostrIdentity } from './auth';
 
@@ -105,6 +106,13 @@ async function migrateLegacyList(
   identity: NostrIdentity,
   shared: Awaited<ReturnType<typeof fetchSharedFavorites>>,
 ): Promise<SharedFavoriteItem[]> {
+  // Only accounts on the shared list have anything to migrate TO. For everyone
+  // else the legacy address is still where their favorites live and are
+  // published, so `shared` here already IS the legacy list — merging it into
+  // itself would be a wasted relay round trip on every hydrate, and a publish
+  // whenever the two reads raced.
+  if (!sharedFavoritesEnabledFor(identity.pubkey)) return shared.items;
+
   const legacy = await fetchLegacyFavorites(identity.pubkey);
   if (!legacy.trustworthy || !legacy.exists || legacy.items.length === 0) {
     return shared.items;
@@ -118,7 +126,7 @@ async function migrateLegacyList(
   });
   if (merged.length === shared.items.length) return shared.items; // nothing new
   try {
-    await publishSharedFavorites(merged, shared.otherTags, resolvePublishRelays(identity));
+    await publishSharedFavorites(merged, shared.otherTags, resolvePublishRelays(identity), identity.pubkey);
     // Baseline is our own contribution only — the legacy entries we just moved
     // across. Recording the whole merged list would put another app's entries
     // in it, and the next publish would read them as our removals.
@@ -256,7 +264,7 @@ function installCleanupHook(identity: NostrIdentity, malformed: string[]) {
       if (!shared.trustworthy) return 'could not read the current list — try again';
       const doomed = new Set(malformed.map((g) => showId(g)));
       const kept = shared.items.filter((i) => !doomed.has(i.id));
-      await publishSharedFavorites(kept, shared.otherTags, resolvePublishRelays(identity));
+      await publishSharedFavorites(kept, shared.otherTags, resolvePublishRelays(identity), identity.pubkey);
       storage.favSynced.set(identity.npub, baselineFrom(kept, localFavoriteItems()));
       return `removed ${shared.items.length - kept.length} malformed entries`;
     };

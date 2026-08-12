@@ -42,6 +42,7 @@ import {
   otherTagsFrom,
   showId,
   tagsForSharedFavorites,
+  LEGACY_D_TAG,
   SHARED_D_TAG,
 } from '../lib/nostr/favorites-merge.ts';
 
@@ -317,6 +318,40 @@ console.log('\ninterpretShows / interpretItems — reading is lossy, the wire is
     [],
   );
 }
+
+// ---------------------------------------------------------------------------
+console.log('\nthe published d tag — which list a user\'s favorites land on');
+{
+  const dOf = (tags) => tags.find((t) => t[0] === 'd')?.[1];
+
+  // The default is the shared address, so every existing caller is unchanged.
+  check(
+    'defaults to the shared cross-app address',
+    dOf(tagsForSharedFavorites([{ id: A }])),
+    SHARED_D_TAG,
+  );
+
+  // While the feature is gated, accounts that are NOT allowlisted keep
+  // publishing to this app's own list. If this parameter is ever "simplified"
+  // away, every one of them starts writing to the shared address instead —
+  // silently, on a list other apps read and write. See favorites-gate.ts.
+  check(
+    'honors an explicit address (the trial gate depends on this)',
+    dOf(tagsForSharedFavorites([{ id: A }], [], LEGACY_D_TAG)),
+    LEGACY_D_TAG,
+  );
+
+  // The d tag is the ONLY thing that changes with the address: same items,
+  // same k tags, same carried-through foreign tags.
+  const shared = tagsForSharedFavorites([{ id: A }], [['alt', 'x']]);
+  const legacy = tagsForSharedFavorites([{ id: A }], [['alt', 'x']], LEGACY_D_TAG);
+  check(
+    'nothing but the d tag differs between the two addresses',
+    JSON.stringify(shared.filter((t) => t[0] !== 'd')),
+    JSON.stringify(legacy.filter((t) => t[0] !== 'd')),
+  );
+}
+
 
 if (failures) {
   console.error(`\n${failures} favorites-sync check(s) FAILED.`);

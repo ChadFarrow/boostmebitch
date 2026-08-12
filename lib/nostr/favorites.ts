@@ -11,10 +11,9 @@ import {
   tagsForSharedFavorites,
   LEGACY_D_TAG,
   LEGACY_FAVORITES_KIND,
-  SHARED_D_TAG,
-  SHARED_FAVORITES_KIND,
   type SharedFavoriteItem,
 } from './favorites-merge';
+import { favoritesAddressFor } from './favorites-gate';
 
 // ---------------------------------------------------------------------------
 // Cross-app favorites — the I/O half. The wire format and the merge live in
@@ -75,12 +74,19 @@ async function fetchList(
   };
 }
 
-/** Read the shared cross-app list. */
+/**
+ * Read this account's favorites list.
+ *
+ * The address depends on the account: allowlisted accounts use the shared
+ * cross-app list, everyone else keeps reading the address their favorites have
+ * always been at. See `favorites-gate.ts` for why that beats an on/off switch.
+ */
 export function fetchSharedFavorites(
   pubkey: string,
   queryRelays?: string[],
 ): Promise<SharedFavorites> {
-  return fetchList(pubkey, SHARED_FAVORITES_KIND, SHARED_D_TAG, queryRelays ?? DEFAULT_RELAYS);
+  const { kind, dTag } = favoritesAddressFor(pubkey);
+  return fetchList(pubkey, kind, dTag, queryRelays ?? DEFAULT_RELAYS);
 }
 
 /** Read this app's pre-sync list. Migration only — never republished here. */
@@ -91,15 +97,24 @@ export function fetchLegacyFavorites(
   return fetchList(pubkey, LEGACY_FAVORITES_KIND, LEGACY_D_TAG, queryRelays ?? DEFAULT_RELAYS);
 }
 
+/**
+ * Publish the merged list back to whichever address this account reads from.
+ *
+ * `pubkey` is required rather than optional on purpose: a default would mean a
+ * caller could publish the shared list for an account that reads the legacy
+ * one, which puts a user's favorites at an address their own app never checks.
+ */
 export async function publishSharedFavorites(
   items: SharedFavoriteItem[],
   otherTags: string[][],
   relays: string[],
+  pubkey: string,
 ): Promise<PublishedNote> {
+  const address = favoritesAddressFor(pubkey);
   const template: EventTemplate = {
-    kind: SHARED_FAVORITES_KIND,
+    kind: address.kind,
     created_at: Math.floor(Date.now() / 1000),
-    tags: tagsForSharedFavorites(items, otherTags),
+    tags: tagsForSharedFavorites(items, otherTags, address.dTag),
     content: '',
   };
   return signAndPublish(template, relays);
@@ -138,7 +153,7 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     lastSynced: opts.lastSynced(),
     local,
   });
-  const published = await publishSharedFavorites(next, latest.otherTags, opts.relays);
+  const published = await publishSharedFavorites(next, latest.otherTags, opts.relays, opts.pubkey);
   // Only our own contribution goes into the baseline — see `baselineFrom`.
   opts.onSynced(baselineFrom(next, local));
   return published;
