@@ -10,7 +10,6 @@ import { TranscriptPanel } from './transcript-ui';
 import { useNotesFollows } from './notes-follows';
 import { BoltIcon, ShareIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
-import { FavEpisodeHeart } from './fav-heart';
 import { BoostModal } from './boost-modal';
 import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
@@ -296,7 +295,6 @@ export function EpisodeDetailView() {
           >
             {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : '▶ PLAY'}
           </button>
-          <FavEpisodeHeart episode={episode} podcast={podcast} size="md" />
           <EpisodeShareButton episode={episode} podcast={podcast} />
           {/* SUPPORT before BOOST to match the show page's cluster order
               (FAVORITE · SHARE · SUPPORT · BOOST). */}
