@@ -44,7 +44,7 @@ const KEYS = {
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
-  favSyncedPrefix: 'bmb:favsynced',   // + ':<npub>' — the NIP-73 id list this device last agreed with the relay on. NOT a cache: without it the shared kind:30003 list can't tell "another app added this" from "I removed this". See lib/nostr/favorites.ts.
+  favSyncedPrefix: 'bmb:favsynced',   // + ':<npub>' — the NIP-73 id list this device last agreed with the relay on. NOT a cache: without it the shared kind:30078 list can't tell "another app added this" from "I removed this". See lib/nostr/favorites.ts.
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   episodeMetaPrefix: 'bmb:epmeta',    // /api/episode-by-guid result, keyed by '<feedGuid>:<itemGuid>'
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface

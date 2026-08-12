@@ -1,6 +1,6 @@
 'use client';
 
-// Reconcile this device's local favorites with the SHARED cross-app kind:30003
+// Reconcile this device's local favorites with the SHARED cross-app kind:30078
 // list on Nostr. Extracted from `components/nostr-auth.tsx` so the
 // circuit-breaker probe-first pattern is reusable and the auth component
 // stays focused on UI concerns.
@@ -136,7 +136,7 @@ async function migrateLegacyList(
 }
 
 /**
- * Reconcile local favorites with the shared kind:30003 list, then resolve any
+ * Reconcile local favorites with the shared kind:30078 list, then resolve any
  * identifiers this device hasn't seen before via Podcast Index.
  */
 export async function hydrateFavorites(identity: NostrIdentity): Promise<void> {

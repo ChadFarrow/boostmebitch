@@ -10,7 +10,7 @@ export interface PublishedNote {
 }
 
 // Sign + publish a single event template across the given relays. Used by
-// both publishBoostNote (kind:1) and publishFavorites (kind:30003).
+// both publishBoostNote (kind:1) and the shared favorites list (kind:30078).
 export async function signAndPublish(
   template: EventTemplate,
   relays: string[],

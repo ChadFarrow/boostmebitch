@@ -6,7 +6,7 @@
 //
 // Run it after ANY edit to lib/nostr/favorites-merge.ts.
 //
-// Why this earns a check script: the shared list is ONE kind:30003 replaceable
+// Why this earns a check script: the shared list is ONE kind:30078 replaceable
 // event at a well-known address (docs/pc20-favorites.md). A replaceable event
 // has no partial update — every publish replaces the whole thing — so a merge
 // bug doesn't degrade, it DELETES, silently, on someone else's device, with no
@@ -31,6 +31,8 @@
 
 import {
   baselineFrom,
+  LEGACY_FAVORITES_KIND,
+  SHARED_FAVORITES_KIND,
   identifierKind,
   interpretItems,
   interpretShows,
@@ -61,7 +63,22 @@ const X = 'podcast:publisher:guid:0e8f6a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b';
 
 const ids = (items) => items.map((i) => i.id);
 
-console.log('mergeSharedFavorites — a shared list several apps write to');
+console.log('the address — where the shared list actually lives');
+{
+  // Pinned because a drift here has no visible symptom other than "my
+  // favorites didn't sync", which is the least diagnosable failure in the
+  // feature: both apps keep working, they just stop seeing each other.
+  //
+  // 30078 is NIP-78 app data, NOT NIP-51's kind 30003 (bookmark sets). Podcast
+  // favorites are not bookmarks, and a generic bookmark client editing a set
+  // would rewrite this list without any of the merge discipline below.
+  check('the shared list is NIP-78 app data', SHARED_FAVORITES_KIND, 30078);
+  check('it is NOT a NIP-51 bookmark set', SHARED_FAVORITES_KIND === 30003, false);
+  // The pre-sync list stays where its data already is. Read-only forever.
+  check('the legacy list is still read at kind 30003', LEGACY_FAVORITES_KIND, 30003);
+}
+
+console.log('\nmergeSharedFavorites — a shared list several apps write to');
 {
   check(
     'a first publish from a device with no baseline is a pure union',

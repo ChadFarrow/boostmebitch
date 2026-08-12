@@ -1,6 +1,6 @@
 'use client';
 
-// The glue between the store's two favorite maps and the one shared kind:30003
+// The glue between the store's two favorite maps and the one shared kind:30078
 // list on Nostr. Kept apart from `favorites.ts` so that module stays pure wire
 // format + merge (and stays pinnable by scripts/check-favsync.mjs), and apart
 // from `favorites-hydrator.ts` so <FavHeart> doesn't have to import the

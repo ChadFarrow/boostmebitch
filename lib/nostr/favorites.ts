@@ -10,7 +10,9 @@ import {
   mergeSharedFavorites,
   tagsForSharedFavorites,
   LEGACY_D_TAG,
+  LEGACY_FAVORITES_KIND,
   SHARED_D_TAG,
+  SHARED_FAVORITES_KIND,
   type SharedFavoriteItem,
 } from './favorites-merge';
 
@@ -24,6 +26,10 @@ import {
 // replaceable event at a well-known address, so every writer can destroy every
 // other writer's data with one blind publish. That is why there is no exported
 // "publish my favorites" — only `syncFavorites`, which reads first.
+//
+// It lives at NIP-78 kind 30078, deliberately NOT NIP-51 kind 30003 — see the
+// note on SHARED_FAVORITES_KIND in favorites-merge.ts. The legacy read is the
+// one place 30003 still appears.
 // ---------------------------------------------------------------------------
 
 export * from './favorites-merge';
@@ -47,11 +53,12 @@ export interface SharedFavorites {
 
 async function fetchList(
   pubkey: string,
+  kind: number,
   dTag: string,
   relays: string[],
 ): Promise<SharedFavorites> {
   const { event, trustworthy } = await fetchLatestEventDetailed(relays, {
-    kinds: [30003],
+    kinds: [kind],
     authors: [pubkey],
     '#d': [dTag],
     limit: 1,
@@ -73,7 +80,7 @@ export function fetchSharedFavorites(
   pubkey: string,
   queryRelays?: string[],
 ): Promise<SharedFavorites> {
-  return fetchList(pubkey, SHARED_D_TAG, queryRelays ?? DEFAULT_RELAYS);
+  return fetchList(pubkey, SHARED_FAVORITES_KIND, SHARED_D_TAG, queryRelays ?? DEFAULT_RELAYS);
 }
 
 /** Read this app's pre-sync list. Migration only — never republished here. */
@@ -81,7 +88,7 @@ export function fetchLegacyFavorites(
   pubkey: string,
   queryRelays?: string[],
 ): Promise<SharedFavorites> {
-  return fetchList(pubkey, LEGACY_D_TAG, queryRelays ?? DEFAULT_RELAYS);
+  return fetchList(pubkey, LEGACY_FAVORITES_KIND, LEGACY_D_TAG, queryRelays ?? DEFAULT_RELAYS);
 }
 
 export async function publishSharedFavorites(
@@ -90,7 +97,7 @@ export async function publishSharedFavorites(
   relays: string[],
 ): Promise<PublishedNote> {
   const template: EventTemplate = {
-    kind: 30003,
+    kind: SHARED_FAVORITES_KIND,
     created_at: Math.floor(Date.now() / 1000),
     tags: tagsForSharedFavorites(items, otherTags),
     content: '',

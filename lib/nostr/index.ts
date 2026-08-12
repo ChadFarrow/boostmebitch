@@ -66,7 +66,9 @@ export {
 
 export {
   SHARED_D_TAG,
+  SHARED_FAVORITES_KIND,
   LEGACY_D_TAG,
+  LEGACY_FAVORITES_KIND,
   showId,
   itemId,
   parseShowGuid,

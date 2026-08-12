@@ -466,7 +466,7 @@ export function NostrAuth() {
       // load-bearing beyond the obvious "don't show A's favorites under B":
       // hydrateFavorites reads `useApp.getState().favorites` — deliberately, so
       // a signed-OUT user's favorites get adopted when they first sign in — and
-      // when the incoming identity has no kind:30003 yet it PUBLISHES whatever
+      // when the incoming identity has no shared list yet it PUBLISHES whatever
       // it finds there as that identity's list. Carrying A's favorites into B
       // therefore doesn't just display wrong, it writes A's list to relays
       // under B's key. Clearing here is what keeps that adoption path safe,

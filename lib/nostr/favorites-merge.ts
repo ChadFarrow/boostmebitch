@@ -14,10 +14,38 @@
 // that doc, not this file, is what a third app implements against.
 // ---------------------------------------------------------------------------
 
-/** The shared, app-neutral list address. */
+/**
+ * The shared, app-neutral list address.
+ *
+ * **Kind 30078 (NIP-78 application data), NOT 30003 (NIP-51 bookmark sets)** —
+ * and the difference is the whole reason this moved. Kind 30003 is *user-named
+ * bookmark collections*: saved links and articles. Two things follow from
+ * putting podcast favorites there, and both are bad:
+ *
+ *   - A generic Nostr client lists someone's podcast favorites among their
+ *     bookmarks, which is the wrong category.
+ *   - Any bookmark client that lets them EDIT a set will clobber this list. It
+ *     has no baseline discipline and no reason to have one — 30003 is its to
+ *     write, and its author is doing nothing wrong.
+ *
+ * 30078 is app-defined data at a `d`-addressed slot. No generic client renders
+ * or rewrites it, which is exactly the property this needs.
+ *
+ * `content` stays empty and PUBLIC, unlike most 30078 events (settings-backup.ts
+ * and wallet-backup.ts both NIP-44 encrypt to self). A second app has to be able
+ * to read this one.
+ */
+export const SHARED_FAVORITES_KIND = 30078;
 export const SHARED_D_TAG = 'podcast:favorites';
 
-/** This app's pre-sync private list. Read once for migration, never written. */
+/**
+ * This app's pre-sync private list. Read once for migration, never written.
+ *
+ * Still at kind 30003 because that is where the data already is — this app
+ * published podcast favorites into bookmark-set space before the shared format
+ * existed. The migration reads it; nothing writes it again.
+ */
+export const LEGACY_FAVORITES_KIND = 30003;
 export const LEGACY_D_TAG = 'boostmebitch:favorites';
 
 export const SHOW_PREFIX = 'podcast:guid:';
