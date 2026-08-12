@@ -4,6 +4,7 @@ import { signAndPublish, type PublishedNote } from './publish';
 import { fetchLatestEventDetailed } from './event-queries';
 import { createScheduledPublish } from './debounced-publish';
 import {
+  baselineFrom,
   itemsFromTags,
   otherTagsFrom,
   mergeSharedFavorites,
@@ -124,13 +125,15 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     console.warn('[favorites] skipping publish — could not read the current list');
     return null;
   }
+  const local = opts.local();
   const next = mergeSharedFavorites({
     latest: latest.items,
     lastSynced: opts.lastSynced(),
-    local: opts.local(),
+    local,
   });
   const published = await publishSharedFavorites(next, latest.otherTags, opts.relays);
-  opts.onSynced(next.map((i) => i.id));
+  // Only our own contribution goes into the baseline — see `baselineFrom`.
+  opts.onSynced(baselineFrom(next, local));
   return published;
 }
 

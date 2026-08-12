@@ -20,6 +20,7 @@ import { storage } from '@/lib/storage';
 import { piMaybeUp, resolveEpisodeByGuid, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
 import {
+  baselineFrom,
   fetchLegacyFavorites,
   fetchSharedFavorites,
   interpretItems,
@@ -118,7 +119,10 @@ async function migrateLegacyList(
   if (merged.length === shared.items.length) return shared.items; // nothing new
   try {
     await publishSharedFavorites(merged, shared.otherTags, resolvePublishRelays(identity));
-    storage.favSynced.set(identity.npub, merged.map((i) => i.id));
+    // Baseline is our own contribution only — the legacy entries we just moved
+    // across. Recording the whole merged list would put another app's entries
+    // in it, and the next publish would read them as our removals.
+    storage.favSynced.set(identity.npub, baselineFrom(merged, legacy.items));
     // eslint-disable-next-line no-console
     console.info(
       `[favorites] migrated ${merged.length - shared.items.length} entries from the legacy list`,
@@ -233,7 +237,8 @@ export async function hydrateFavorites(identity: NostrIdentity): Promise<void> {
   } else {
     // Still record the baseline: without it the first unfavorite on this
     // device has nothing to diff against and silently fails to propagate.
-    syncOptionsFor(identity).onSynced(target.map((i) => i.id));
+    // Scoped to what this app contributed — see `baselineFrom`.
+    syncOptionsFor(identity).onSynced(baselineFrom(target, local));
   }
 }
 
@@ -252,7 +257,7 @@ function installCleanupHook(identity: NostrIdentity, malformed: string[]) {
       const doomed = new Set(malformed.map((g) => showId(g)));
       const kept = shared.items.filter((i) => !doomed.has(i.id));
       await publishSharedFavorites(kept, shared.otherTags, resolvePublishRelays(identity));
-      storage.favSynced.set(identity.npub, kept.map((i) => i.id));
+      storage.favSynced.set(identity.npub, baselineFrom(kept, localFavoriteItems()));
       return `removed ${shared.items.length - kept.length} malformed entries`;
     };
   }

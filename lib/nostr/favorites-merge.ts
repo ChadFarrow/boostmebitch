@@ -198,6 +198,7 @@ export function mergeSharedFavorites(args: {
 }): SharedFavoriteItem[] {
   const { latest, lastSynced, local } = args;
   const localById = new Map(local.map((i) => [i.id, i]));
+  const baseline = new Set(lastSynced);
   const removed = new Set(lastSynced.filter((id) => !localById.has(id)));
 
   const out: SharedFavoriteItem[] = [];
@@ -221,10 +222,35 @@ export function mergeSharedFavorites(args: {
   }
   for (const item of local) {
     if (kept.has(item.id)) continue;
+    // In the baseline, but absent from `latest`: another app removed it while
+    // this device still had it. Re-appending is the resurrection bug — the
+    // user unfavorites in app A, opens app B, and B puts it straight back.
+    // Only a genuine local ADD (not in the baseline) may be appended here.
+    if (baseline.has(item.id)) continue;
     kept.add(item.id);
     out.push(item);
   }
   return out;
+}
+
+/**
+ * The baseline to record after publishing — the ids THIS app contributed, not
+ * the whole published list.
+ *
+ * That distinction is load-bearing and was wrong first time. `removes` is
+ * computed as `baseline − local`, and `local` only ever contains entries this
+ * app can represent. So a baseline holding the full list puts every foreign
+ * identifier — a third app's `podcast:publisher:guid:`, an episode we couldn't
+ * resolve — into `removes` on the very next publish, and the app deletes them.
+ * That is the exact opposite of the "carry what you can't read" rule the whole
+ * format rests on, and it would have fired on the second toggle.
+ */
+export function baselineFrom(
+  published: SharedFavoriteItem[],
+  local: SharedFavoriteItem[],
+): string[] {
+  const localIds = new Set(local.map((i) => i.id));
+  return published.filter((i) => localIds.has(i.id)).map((i) => i.id);
 }
 
 // --- writing ---------------------------------------------------------------

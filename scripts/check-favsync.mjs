@@ -30,6 +30,7 @@
 // pure half lives in its own module).
 
 import {
+  baselineFrom,
   identifierKind,
   interpretItems,
   interpretShows,
@@ -117,15 +118,22 @@ console.log('mergeSharedFavorites — a shared list several apps write to');
     [X, A],
   );
 
-  // A removal this device makes must not reach an identifier it can't read —
-  // it was never in this device's local set, so it must never be in its
-  // baseline either. Pinned because the baseline is written from the MERGED
-  // list (which includes foreign ids), so "in lastSynced but not local" would
-  // delete X on the very next publish if the baseline were built from `local`.
+  // THE RESURRECTION CASE. Another app unfavorited A and published without it.
+  // This device still has A locally (it hasn't hydrated yet) and A is in its
+  // baseline. Appending every local item — the obvious way to write the second
+  // loop — puts A straight back, so the user unfavorites in app A, opens app B,
+  // and it returns. Only a genuine local ADD may be appended.
   check(
-    'a foreign id in the baseline but absent locally IS a removal (baseline is the contract)',
-    ids(mergeSharedFavorites({ latest: [{ id: X }], lastSynced: [X], local: [] })),
-    [],
+    'an entry another app removed is NOT resurrected by this device',
+    ids(mergeSharedFavorites({ latest: [{ id: B }], lastSynced: [A, B], local: [{ id: A }, { id: B }] })),
+    [B],
+  );
+  // ...while an entry this device added and has never published (not in the
+  // baseline) still goes up, which is what distinguishes the two.
+  check(
+    'a never-published local add still goes up',
+    ids(mergeSharedFavorites({ latest: [{ id: B }], lastSynced: [B], local: [{ id: A }, { id: B }] })),
+    [B, A],
   );
 
   check(
@@ -156,6 +164,34 @@ console.log('mergeSharedFavorites — a shared list several apps write to');
       local: [{ id: A }],
     }),
     [{ id: A, feedUrl: 'https://example.com/feed.xml', feedRef: undefined }],
+  );
+}
+
+console.log('\nbaselineFrom — what this app is allowed to delete later');
+{
+  // The baseline feeds `removes = baseline − local`, and `local` can only ever
+  // hold what this app can represent. So a baseline built from the whole
+  // published list makes every foreign identifier a removal on the NEXT
+  // publish — the app deletes a third app's entries one toggle later, which is
+  // the exact opposite of the rule the format rests on.
+  check(
+    'a foreign id is never written into the baseline',
+    baselineFrom([{ id: B }, { id: X }, { id: A }], [{ id: A }]),
+    [A],
+  );
+  check(
+    'so it survives the SECOND publish too, not just the first',
+    ids(mergeSharedFavorites({
+      latest: [{ id: X }, { id: A }],
+      lastSynced: baselineFrom([{ id: X }, { id: A }], [{ id: A }]),
+      local: [{ id: A }],
+    })),
+    [X, A],
+  );
+  check(
+    'an entry this device dropped locally leaves the baseline',
+    baselineFrom([{ id: A }, { id: B }], [{ id: B }]),
+    [B],
   );
 }
 
