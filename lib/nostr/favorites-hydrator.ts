@@ -5,7 +5,8 @@
 // circuit-breaker probe-first pattern is reusable and the auth component
 // stays focused on UI concerns.
 //
-// The list is shared with other podcast apps (see docs/pc20-favorites.md), so
+// The list is shared with other podcast apps — see the spec at
+// github.com/ChadFarrow/PC20-Nostr/specs/pc20-favorites.md — so
 // two rules run through everything here:
 //
 //   1. A degraded read is never treated as data. It means "we couldn't ask",

@@ -7,7 +7,8 @@
 // Run it after ANY edit to lib/nostr/favorites-merge.ts.
 //
 // Why this earns a check script: the shared list is ONE kind:30078 replaceable
-// event at a well-known address (docs/pc20-favorites.md). A replaceable event
+// event at a well-known address, specified by an external app-neutral spec
+// (github.com/ChadFarrow/PC20-Nostr/specs/pc20-favorites.md). A replaceable event
 // has no partial update — every publish replaces the whole thing — so a merge
 // bug doesn't degrade, it DELETES, silently, on someone else's device, with no
 // undo and no error anywhere. The three ways to get it wrong all type-check:

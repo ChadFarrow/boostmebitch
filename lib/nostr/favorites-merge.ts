@@ -10,8 +10,11 @@
 // The I/O half (fetch / publish / debounce) is `favorites.ts`, which re-exports
 // everything below so callers only ever import one module.
 //
-// Wire format is specified in docs/pc20-favorites.md. Keep the two in step —
-// that doc, not this file, is what a third app implements against.
+// Wire format is specified by an external, app-neutral spec:
+// github.com/ChadFarrow/PC20-Nostr/specs/pc20-favorites.md
+// That doc, not this file, is what a third app implements against, and it is
+// not ours to change unilaterally — a format change is a PR there first, then
+// here. This file follows it.
 // ---------------------------------------------------------------------------
 
 /**

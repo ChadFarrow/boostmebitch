@@ -9,7 +9,7 @@ import { rateLimit } from '@/lib/rate-limit';
  * BOTH guids are required — PI's /episodes/byguid wants `podcastguid` to
  * disambiguate, and an item guid alone is not a reliable lookup key. That's
  * why the shared favorites list carries the parent feed alongside every item
- * (see docs/pc20-favorites.md).
+ * (see github.com/ChadFarrow/PC20-Nostr/specs/pc20-favorites.md).
  */
 export async function GET(req: Request) {
   // Same allowance as /api/by-guid: favorites hydration fans out across a

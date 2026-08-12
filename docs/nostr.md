@@ -10,7 +10,7 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 
 - **kind:0 profile** — `name`, `display_name`, `picture`, `nip05`, `about` → header avatar, boost-modal "From" auto-fill.
 - **NIP-65 relay list (kind:10002)** — unmarked + `write` entries → publish target.
-- **Favorites (NIP-78 kind:30078, `d:podcast:favorites`)** — shared cross-app list, see Favorites and [`docs/pc20-favorites.md`](pc20-favorites.md). The legacy kind:30003 `d:boostmebitch:favorites` list is read-only, for migration.
+- **Favorites (NIP-78 kind:30078, `d:podcast:favorites`)** — shared cross-app list, see Favorites and [the `podcast:favorites` spec](https://github.com/ChadFarrow/PC20-Nostr/blob/main/specs/pc20-favorites.md). The legacy kind:30003 `d:boostmebitch:favorites` list is read-only, for migration.
 - **NIP-51 mutes (kind:10000)** — public + NIP-04 private p-tags. See Mutes.
 - **Spark backup (kind:30078, `d:boostmebitch:wallet:spark`)** — NIP-44 v2 encrypted-to-self mnemonic; best-effort silent restore, failures swallowed.
 - **Settings (kind:30078, `d:boostmebitch:settings`)** — NIP-44 encrypted-to-self JSON, currently just `railPref` → `storage.railPref`. `lib/nostr/settings-backup.ts`.
@@ -40,7 +40,7 @@ A corrupt entry (a NIP-65 `r`-tag of `"avatar wss://purplerelay.com"`, or spam s
 
 ## Favorites (NIP-78 kind:30078) — SHARED with other apps
 
-♡ toggles a favorite on a podcast row (`<FavHeart>`) or an episode row (`<FavEpisodeHeart>`), both in `components/fav-heart.tsx`. Both go into **one** kind:30078 event at `d:podcast:favorites` — an app-neutral address shared with StableKraft and any other app that implements [`docs/pc20-favorites.md`](pc20-favorites.md). **That document, not this code, is the spec**; keep them in step.
+♡ toggles a favorite on a podcast row (`<FavHeart>`) or an episode row (`<FavEpisodeHeart>`), both in `components/fav-heart.tsx`. Both go into **one** kind:30078 event at `d:podcast:favorites` — an app-neutral address shared with StableKraft and any other app that implements [the `podcast:favorites` spec](https://github.com/ChadFarrow/PC20-Nostr/blob/main/specs/pc20-favorites.md). **That document, not this code, is the spec, and it is no longer ours to change** — it lives in its own app-neutral repo precisely so neither implementation owns it. This app follows it. A change to the format is a PR there first; `docs/pc20-favorites.md` is now only a stub pointing at it.
 
 **Kind 30078 (NIP-78 app data), deliberately not 30003 (NIP-51 bookmark sets).** Kind 30003 is user-named bookmark collections — saved links. Podcast favorites belong in neither that category nor that write-space: a generic bookmark client that lets someone edit a set would rewrite this list with none of the merge discipline below, and it would be doing nothing wrong. The trade is that favorites are no longer visible in generic NIP-51 list clients, which is intended. `content` stays empty and public, unlike `settings-backup.ts`/`wallet-backup.ts` which NIP-44 encrypt their 30078 payloads — a second app has to be able to read this one.
 
