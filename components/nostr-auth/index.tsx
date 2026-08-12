@@ -47,7 +47,6 @@ export function NostrAuth() {
   const identity = useApp((s) => s.identity);
   const setIdentity = useApp((s) => s.setIdentity);
   const setFavorites = useApp((s) => s.setFavorites);
-  const setFavoriteEpisodes = useApp((s) => s.setFavoriteEpisodes);
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
   // One button opens the sign-in modal, which owns the per-method (extension
   // / remote-signer / Amber) flows and their own busy/error state. Open-state
@@ -285,8 +284,6 @@ export function NostrAuth() {
     setIdentity(bare);
     const cachedFavorites = storage.favorites.get(stored);
     if (Object.keys(cachedFavorites).length > 0) setFavorites(cachedFavorites);
-    const cachedFavEpisodes = storage.favoriteEpisodes.get(stored);
-    if (Object.keys(cachedFavEpisodes).length > 0) setFavoriteEpisodes(cachedFavEpisodes);
     const cachedMutes = storage.muted.get(stored);
     if (cachedMutes.publicPubkeys.length || cachedMutes.privatePubkeys.length) {
       setMutedPubkeys(unionMutedPubkeys(cachedMutes));
@@ -294,7 +291,7 @@ export function NostrAuth() {
     loadProfile(bare);
     // loadProfile is re-created each render; the effect self-guards on
     // `identity` so listing it would only add no-op re-runs.
-  }, [identity, setIdentity, setFavorites, setFavoriteEpisodes, setMutedPubkeys]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [identity, setIdentity, setFavorites, setMutedPubkeys]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Account-change detector for multi-identity NIP-07 extensions
   // (Alby and nos2x both let the user switch active accounts in their
@@ -391,7 +388,6 @@ export function NostrAuth() {
     pendingProfileLoad.clear();
     setIdentity(null);
     setFavorites({});
-    setFavoriteEpisodes({});
     setMutedPubkeys(new Set());
   }
 
@@ -430,7 +426,6 @@ export function NostrAuth() {
     setWalletRestoring(false);
     setIdentity(null);
     setFavorites({});
-    setFavoriteEpisodes({});
     setMutedPubkeys(new Set());
     // Same reason as the identity-switch path: useFollows resets this when
     // identity goes null, but not until a FollowButton's effect runs.
@@ -466,7 +461,7 @@ export function NostrAuth() {
       // load-bearing beyond the obvious "don't show A's favorites under B":
       // hydrateFavorites reads `useApp.getState().favorites` — deliberately, so
       // a signed-OUT user's favorites get adopted when they first sign in — and
-      // when the incoming identity has no shared list yet it PUBLISHES whatever
+      // when the incoming identity has no kind:30003 yet it PUBLISHES whatever
       // it finds there as that identity's list. Carrying A's favorites into B
       // therefore doesn't just display wrong, it writes A's list to relays
       // under B's key. Clearing here is what keeps that adoption path safe,
@@ -477,7 +472,6 @@ export function NostrAuth() {
       // clearing keeps the two consistent and avoids showing A's mutes in the
       // window before B's hydration lands.
       setFavorites({});
-      setFavoriteEpisodes({});
       setMutedPubkeys(new Set());
       // The follow singleton is module state shared by every FollowButton.
       // ensureFollowsLoaded resets it on an identity change, but only once a

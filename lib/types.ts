@@ -263,22 +263,3 @@ export interface FavoritePodcast {
   url?: string;           // RSS feed URL
   addedAt: number;        // unix ms — used for sort + last-write-wins merge
 }
-
-/**
- * A favorited episode. Keyed by `itemGuid` (NIP-73 `podcast:item:guid:`), with
- * `feedGuid` carried alongside because PI's /episodes/byguid wants
- * `podcastguid` — an item guid on its own is not enough to resolve one.
- * Everything after those two is display cache, refreshed on hydration.
- */
-export interface FavoriteEpisode {
-  itemGuid: string;       // <guid> of the RSS item — the key
-  feedGuid: string;       // parent <podcast:guid>, required to resolve the item
-  feedId?: number;        // Podcast Index feed ID, when known
-  feedUrl?: string;       // parent RSS feed URL — the NIP-73 hint we publish
-  title: string;
-  podcastTitle?: string;
-  image?: string;
-  enclosureUrl?: string;
-  datePublished?: number;
-  addedAt: number;        // unix ms
-}

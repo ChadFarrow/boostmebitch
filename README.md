@@ -76,7 +76,7 @@ Podcast Index credentials live only in API routes (`app/api/*`) so they never re
 - **Nostr live streams** — a "Live on Nostr" row of kind:30311 streams; watch HLS video in-app; **live chat** (kind:1311) and **boosts/zaps** (kind:9735) rendered together; shareable `/stream/<naddr>` and permanent per-host `/live/<npub>` pages.
 - **Chapters + transcripts** (`<podcast:chapters>` / `<podcast:transcript>`) — seek-bar ticks, chapter-stepping transport, a follow-along transcript with in-panel search.
 - **Podroll** (`<podcast:podroll>`) and **funding** (`<podcast:funding>` → `⊙ SUPPORT`).
-- **Favorites** (NIP-78 kind:30078, shared cross-app), **mutes** (NIP-51 kind:10000) and **follows** (NIP-02 kind:3) that sync across Nostr clients.
+- **Favorites** (NIP-51 kind:30003), **mutes** (kind:10000) and **follows** (NIP-02 kind:3) that sync across Nostr clients.
 - **Discussion threads** (`podcast:socialInteract`) and global / per-podcast / per-episode **Nostr feeds**.
 - **Music albums** render as albums (play overlay, tracklist, track order).
 - **We serve a Lightning address too** — `chadf@boostmebitch.com`, LNURL + keysend.
@@ -141,7 +141,7 @@ lib/
     discover · event-queries · use-feed   → feed assembly, queries, stale-while-revalidate hook
     boost-notes · interactions            → kind:1 boost notes (user + site-signed), replies/reposts
     site-key                              → server-only SITE_NOSTR_SK resolver (sign route + NIP-05)
-    favorites · mutes · follows · *-hydrator    → NIP-78 kind:30078, NIP-51 kind:10000, NIP-02 kind:3
+    favorites · mutes · follows · *-hydrator    → NIP-51 kind:30003 / 10000, NIP-02 kind:3
     live-streams · live-chat              → kind:30311 streams, kind:1311 chat + kind:9735 zaps
     wallet-backup · settings-backup       → NIP-44 encrypted-to-self (Spark seed, NWC, settings)
   v4v/
@@ -349,7 +349,7 @@ Gated entirely on `NEXT_PUBLIC_GOOGLE_CLIENT_ID`: unset, the entry point doesn't
 
 ## Favorites, mutes, follows
 
-- **Favorites** (NIP-78 kind:30078, `d:podcast:favorites`) — ♡ on a podcast row or an episode row. A list **shared with other podcast apps** (see [`docs/pc20-favorites.md`](docs/pc20-favorites.md)), one `i: podcast:guid:<guid>` / `podcast:item:guid:<guid>` per favorite. Deliberately **not** a NIP-51 bookmark set: podcast favorites aren't bookmarks, and a generic bookmark client editing that set would rewrite this list. So it is *not* visible in NIP-51 clients — that's the point. Optimistic + debounced publish; a per-npub localStorage cache renders the Favorites panel instantly. The pre-sync list at kind:30003 `d:boostmebitch:favorites` is read once for migration and never written again.
+- **Favorites** (NIP-51 kind:30003, `d:boostmebitch:favorites`) — ♡ on a podcast row. One `i: podcast:guid:<guid>` per favorite; visible in any NIP-51 client. Optimistic + debounced publish; a per-npub localStorage cache renders the Favorites panel instantly.
 - **Mutes** (kind:10000) — 🚫 on a note card. Interoperates with Damus/Amethyst; new mutes go to the private (NIP-04-encrypted) list, and an unreadable private blob from another client is preserved verbatim. Filtered at render time across all feeds.
 - **Follows** (NIP-02 kind:3) — `+ Follow` on note cards and on npubs in show notes, through one shared singleton (a 20-card feed does **one** kind:3 fetch, and toggles are serialized). Publishing preserves the existing content and every existing tag, changing exactly one `p`. **The invariant: never publish a list you didn't reliably fetch** — buttons stay disabled until the load is trustworthy, and an empty-base publish is re-confirmed against relays and a last-known-good cache first. A blind republish is the classic way clients nuke someone's follow list.
 

@@ -14,7 +14,7 @@ import { BoltIcon, ShareIcon, PipIcon } from './icons';
 import { hasValueRecipients, isMusicMedium, stripHtml } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
-import { FavEpisodeHeart, FavHeart } from './fav-heart';
+import { FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
@@ -532,9 +532,8 @@ export function FullscreenPlayer({
                   <BoltIcon /> BOOST
                 </button>
               </div>
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex items-center gap-2">
                 <FavHeart podcast={podcast} size="md" />
-                <FavEpisodeHeart episode={episode} podcast={podcast} size="md" />
                 <ShareButton liveStreamId={null} podcast={podcast} />
                 {/* The meter below says what streaming is DOING; this is the
                     only place in the player you can change it. Without it the

@@ -1,64 +1,15 @@
 'use client';
-import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast } from '@/lib/types';
+import type { Podcast, FavoritePodcast } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { requestFavoritesSync } from '@/lib/nostr';
+import { resolvePublishRelays, schedulePublishFavorites } from '@/lib/nostr';
 
 // The ♡ / ♥ favorite toggle. Lives in its own module (rather than lists.tsx)
-// because several unrelated surfaces render it — the podcast rows + show header
-// in lists.tsx, the episode list and detail view, the fullscreen player, and the
-// podroll row — and having podroll reach into lists.tsx for it while lists.tsx
-// imports <Podroll> made a module cycle. `size`: 'sm' is the slim chip used in
-// list rows; 'md' matches .btn-ghost dimensions so it reads as a peer to SHARE
-// and BOOST in the header.
-//
-// Both shows and episodes go into ONE Nostr list, so both toggles schedule the
-// same `requestFavoritesSync`. See lib/nostr/favorites.ts.
-
-type Size = 'sm' | 'md';
-
-function heartClasses(isFav: boolean, size: Size) {
-  return `inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 ${
-    size === 'md' ? 'gap-2 px-4 py-2 text-sm' : 'gap-1.5 px-3 text-xs leading-none'
-  } ${
-    isFav
-      ? 'border-nostr text-nostr hover:bg-nostr/10'
-      : 'border-bone/40 text-bone/70 hover:border-nostr/70 hover:text-nostr'
-  }`;
-}
-
-function HeartButton({
-  isFav,
-  size,
-  synced,
-  onToggle,
-  label,
-}: {
-  isFav: boolean;
-  size: Size;
-  synced: boolean;
-  onToggle: (e: React.MouseEvent) => void;
-  label: string;
-}) {
-  return (
-    <button
-      onClick={onToggle}
-      aria-label={isFav ? `Unfavorite ${label}` : `Favorite ${label}`}
-      title={
-        synced
-          ? (isFav ? 'Unfavorite (synced to Nostr)' : 'Favorite (syncs to Nostr)')
-          : (isFav ? 'Unfavorite' : 'Favorite (sign in with Nostr to sync)')
-      }
-      className={heartClasses(isFav, size)}
-    >
-      <span className={size === 'md' ? 'text-lg leading-none' : 'text-base leading-none'}>
-        {isFav ? '♥' : '♡'}
-      </span>
-      {isFav ? 'FAVORITED' : 'FAVORITE'}
-    </button>
-  );
-}
-
-export function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: Size }) {
+// because three unrelated surfaces render it — the podcast rows + show header
+// in lists.tsx, the fullscreen player, and the podroll row — and having podroll
+// reach into lists.tsx for it while lists.tsx imports <Podroll> made a module
+// cycle. `size`: 'sm' is the slim chip used in list rows; 'md' matches
+// .btn-ghost dimensions so it reads as a peer to SHARE and BOOST in the header.
+export function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: 'sm' | 'md' }) {
   const guid = podcast.podcastGuid;
   const isFav = useApp((s) => s.isFavorite(guid));
   const addFavorite = useApp((s) => s.addFavorite);
@@ -87,76 +38,37 @@ export function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: Si
       };
       addFavorite(fav);
     }
-    requestFavoritesSync(identity);
-  }
-
-  return (
-    <HeartButton
-      isFav={isFav}
-      size={size}
-      synced={!!identity}
-      onToggle={toggle}
-      label="podcast"
-    />
-  );
-}
-
-/**
- * The same toggle for a single episode. `podcast` supplies the parent feed's
- * guid and URL, which the episode itself often doesn't carry — PI's
- * /episodes/byguid needs `podcastguid`, so an episode favorite with no parent
- * feed is unresolvable on any other device and is not offered at all.
- */
-export function FavEpisodeHeart({
-  episode,
-  podcast,
-  size = 'sm',
-}: {
-  episode: Episode;
-  podcast?: Podcast | null;
-  size?: Size;
-}) {
-  const itemGuid = episode.guid;
-  const feedGuid = episode.podcastGuid || podcast?.podcastGuid;
-  const isFav = useApp((s) => s.isFavoriteEpisode(itemGuid));
-  const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
-  const removeFavoriteEpisode = useApp((s) => s.removeFavoriteEpisode);
-  const identity = useApp((s) => s.identity);
-
-  // Same rule as <FavHeart>: no canonical identifier, no heart. An episode
-  // needs both halves — the item guid to name it and the feed guid to find it.
-  if (!itemGuid || !feedGuid) return null;
-
-  function toggle(e: React.MouseEvent) {
-    e.stopPropagation();
-    e.preventDefault();
-    if (isFav) {
-      removeFavoriteEpisode(itemGuid!);
-    } else {
-      const fav: FavoriteEpisode = {
-        itemGuid: itemGuid!,
-        feedGuid: feedGuid!,
-        feedId: episode.feedId,
-        feedUrl: podcast?.url,
-        title: episode.title,
-        podcastTitle: episode.feedTitle || podcast?.title,
-        image: episode.image || episode.feedImage || podcast?.image,
-        enclosureUrl: episode.enclosureUrl,
-        datePublished: episode.datePublished,
-        addedAt: Date.now(),
-      };
-      addFavoriteEpisode(fav);
+    if (identity) {
+      schedulePublishFavorites(
+        () => Object.keys(useApp.getState().favorites),
+        resolvePublishRelays(identity),
+      );
     }
-    requestFavoritesSync(identity);
   }
 
   return (
-    <HeartButton
-      isFav={isFav}
-      size={size}
-      synced={!!identity}
-      onToggle={toggle}
-      label="episode"
-    />
+    <button
+      onClick={toggle}
+      aria-label={isFav ? 'Unfavorite' : 'Favorite'}
+      title={
+        identity
+          ? (isFav ? 'Unfavorite (synced to Nostr)' : 'Favorite (syncs to Nostr)')
+          : (isFav ? 'Unfavorite' : 'Favorite (sign in with Nostr to sync)')
+      }
+      className={`inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 ${
+        size === 'md'
+          ? 'gap-2 px-4 py-2 text-sm'
+          : 'gap-1.5 px-3 text-xs leading-none'
+      } ${
+        isFav
+          ? 'border-nostr text-nostr hover:bg-nostr/10'
+          : 'border-bone/40 text-bone/70 hover:border-nostr/70 hover:text-nostr'
+      }`}
+    >
+      <span className={size === 'md' ? 'text-lg leading-none' : 'text-base leading-none'}>
+        {isFav ? '♥' : '♡'}
+      </span>
+      {isFav ? 'FAVORITED' : 'FAVORITE'}
+    </button>
   );
 }

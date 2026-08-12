@@ -1,6 +1,6 @@
 'use client';
 import { create } from 'zustand';
-import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, ValueBlock } from './types';
+import type { Episode, Podcast, FavoritePodcast, ValueBlock } from './types';
 import type { NostrIdentity } from './nostr';
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
@@ -112,15 +112,6 @@ interface AppState {
   addFavorite: (p: FavoritePodcast) => void;
   removeFavorite: (guid: string) => void;
   setFavorites: (next: Record<string, FavoritePodcast>) => void;
-
-  // Episode favorites, keyed by item guid. Separate map from `favorites`
-  // because the two carry different shapes and resolve through different PI
-  // endpoints; they share one Nostr list (see lib/nostr/favorites.ts).
-  favoriteEpisodes: Record<string, FavoriteEpisode>;
-  isFavoriteEpisode: (itemGuid: string | undefined) => boolean;
-  addFavoriteEpisode: (e: FavoriteEpisode) => void;
-  removeFavoriteEpisode: (itemGuid: string) => void;
-  setFavoriteEpisodes: (next: Record<string, FavoriteEpisode>) => void;
 
   // NIP-51 kind:10000 mute list, hydrated on login from the user's relay
   // event. Filter is applied at render time in NoteCard and feed surfaces.
@@ -236,25 +227,6 @@ export const useApp = create<AppState>((set, get) => ({
   setFavorites: (next) => set((s) => {
     storage.favorites.set(s.identity?.npub, next);
     return { favorites: next };
-  }),
-
-  favoriteEpisodes: storage.favoriteEpisodes.get(null),
-  isFavoriteEpisode: (itemGuid) => !!itemGuid && !!get().favoriteEpisodes[itemGuid],
-  addFavoriteEpisode: (e) => set((s) => {
-    const next = { ...s.favoriteEpisodes, [e.itemGuid]: e };
-    storage.favoriteEpisodes.set(s.identity?.npub, next);
-    return { favoriteEpisodes: next };
-  }),
-  removeFavoriteEpisode: (itemGuid) => set((s) => {
-    if (!s.favoriteEpisodes[itemGuid]) return s;
-    const next = { ...s.favoriteEpisodes };
-    delete next[itemGuid];
-    storage.favoriteEpisodes.set(s.identity?.npub, next);
-    return { favoriteEpisodes: next };
-  }),
-  setFavoriteEpisodes: (next) => set((s) => {
-    storage.favoriteEpisodes.set(s.identity?.npub, next);
-    return { favoriteEpisodes: next };
   }),
 
   // Hydrate from the guest cache; once the user signs in, hydrateMutes

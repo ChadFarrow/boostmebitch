@@ -15,7 +15,6 @@
     "check:stream": "node --experimental-strip-types scripts/check-stream-ledger.mjs",
     "check:liveblock": "node --experimental-strip-types scripts/check-live-block.mjs",
     "check:npub": "node --experimental-strip-types scripts/check-nostr-txt.mjs",
-    "check:favsync": "node --experimental-strip-types scripts/check-favsync.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs"
   },

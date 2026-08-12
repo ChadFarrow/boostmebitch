@@ -1,7 +1,7 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
-import { PodcastResults, EpisodeList, FavoritesList, FavoriteEpisodesList } from '@/components/lists';
+import { PodcastResults, EpisodeList, FavoritesList } from '@/components/lists';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { NostrLiveStreams } from '@/components/nostr-live-streams';
@@ -205,9 +205,7 @@ export function HomePage() {
     if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
   }
   const favorites = useApp((s) => s.favorites);
-  const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
-  const hasFavorites =
-    Object.keys(favorites).length > 0 || Object.keys(favoriteEpisodes).length > 0;
+  const hasFavorites = Object.keys(favorites).length > 0;
 
   const showFavoritesPanel = !query && hasFavorites;
   const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel || !!publisherSource;
@@ -326,11 +324,7 @@ export function HomePage() {
                 aria-expanded={!favoritesCollapsed}
                 className="w-full text-[11px] uppercase tracking-widest text-muted mb-2 px-1 flex items-center justify-between gap-2 hover:text-bone"
               >
-                {/* Total across both maps — with only episodes favorited, a
-                    show-only count reads "0 favorites" above a populated list. */}
-                <span>
-                  {Object.keys(favorites).length + Object.keys(favoriteEpisodes).length} favorites
-                </span>
+                <span>{Object.keys(favorites).length} favorites</span>
                 <span aria-hidden className="text-bone/60">
                   {favoritesCollapsed ? '▸' : '▾'}
                 </span>
@@ -347,13 +341,10 @@ export function HomePage() {
                 onSelect={handleSelect}
               />
             ) : !publisherSource && !query && !loading && !favoritesCollapsed ? (
-              <>
-                <FavoritesList
-                  selected={null}
-                  onSelect={setSelected}
-                />
-                <FavoriteEpisodesList onSelect={setSelected} />
-              </>
+              <FavoritesList
+                selected={null}
+                onSelect={setSelected}
+              />
             ) : null}
           </aside>
         ) : (
