@@ -1075,10 +1075,25 @@ export async function getEpisodeByGuid(
   // PI's /episodes/byguid wants `podcastguid` (lowercase, no camelCase) for
   // the feed identifier. The variable here is named feedGuid because that's
   // what the RSS spec calls it on <podcast:remoteItem feedGuid="...">.
-  const data = await pi<any>(
-    `/episodes/byguid?guid=${encodeURIComponent(itemGuid)}&podcastguid=${encodeURIComponent(feedGuid)}`,
-  );
-  return data.episode ? buildEpisode(data.episode) : null;
+  try {
+    const data = await pi<any>(
+      `/episodes/byguid?guid=${encodeURIComponent(itemGuid)}&podcastguid=${encodeURIComponent(feedGuid)}`,
+    );
+    return data.episode ? buildEpisode(data.episode) : null;
+  } catch (e) {
+    // Same miss-is-not-an-outage rule as getPodcastByFeedUrl above, and it
+    // matters more here. PI answers an unindexed pair with **400**
+    // `{"status":"false","description":"The parameters given did not resolve
+    // to a feed we have in our system."}`. Letting that throw made
+    // /api/episode-by-guid return 500, which trips the client-side PI breaker
+    // — and favorites hydration resolves episodes probe-first-then-batch, so
+    // ONE unindexed track killed the remaining N−1 before they were tried.
+    // Observed against a real shared list: 227 episode favorites, 0 rendered,
+    // because the first entry was a music feed PI has never crawled.
+    // Auth (401/403) and 5xx still throw — those are genuinely breaker-worthy.
+    if (e instanceof PiHttpError && (e.status === 400 || e.status === 404)) return null;
+    throw e;
+  }
 }
 
 async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
