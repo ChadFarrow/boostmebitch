@@ -4,7 +4,7 @@ import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
-import { resolvePodcastByGuid } from '@/lib/podcast-meta';
+import { resolveEpisodeByFeedUrl, resolvePodcastByFeedUrl, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, ShareIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
@@ -216,6 +216,60 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
     [favoriteEpisodes],
   );
 
+  // Fill in the entries Podcast Index couldn't describe, from their own feeds.
+  //
+  // This runs HERE rather than in the hydrator on purpose: each one costs a
+  // feed fetch and parse, and a real 227-track list spans 159 distinct feeds,
+  // so doing it at sign-in would be a fetch storm. Rendering the list is the
+  // first moment the metadata is actually needed. Results are cached per
+  // episode (`storage.episodeMeta`), so this is a one-time cost per device.
+  //
+  // Sequential, not Promise.all: 159 parallel fetches to small self-hosted
+  // feed hosts is a burst those servers should not have to absorb, and there
+  // is no deadline here — rows fill in as they arrive.
+  const pendingKey = useMemo(
+    () => list.filter((ep) => ep.unresolved && ep.feedUrl).map((ep) => ep.itemGuid).join(','),
+    [list],
+  );
+  useEffect(() => {
+    if (!pendingKey) return;
+    let cancelled = false;
+    (async () => {
+      for (const itemGuid of pendingKey.split(',')) {
+        if (cancelled) return;
+        const entry = useApp.getState().favoriteEpisodes[itemGuid];
+        // Re-read from the store each iteration: an earlier pass (or another
+        // mount of this list) may already have resolved it.
+        if (!entry?.unresolved || !entry.feedUrl) continue;
+        const episode = await resolveEpisodeByFeedUrl(entry.feedUrl, itemGuid);
+        if (cancelled || !episode) continue;
+        const { favoriteEpisodes: current, setFavoriteEpisodes } = useApp.getState();
+        const prev = current[itemGuid];
+        if (!prev) continue; // unfavorited while we were fetching
+        setFavoriteEpisodes({
+          ...current,
+          [itemGuid]: {
+            ...prev,
+            feedId: episode.feedId,
+            feedGuid: episode.podcastGuid || prev.feedGuid,
+            title: episode.title,
+            podcastTitle: episode.feedTitle,
+            image: episode.image || episode.feedImage,
+            enclosureUrl: episode.enclosureUrl,
+            datePublished: episode.datePublished,
+            // Keep the ORIGINAL addedAt: this is a backfill, not a new
+            // favorite, and stamping now would bubble it to the top of the list.
+            addedAt: prev.addedAt,
+            unresolved: false,
+          },
+        });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pendingKey]);
+
   if (!list.length) return null;
 
   return (
@@ -242,7 +296,13 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
                 });
                 return;
               }
-              const podcast = await resolvePodcastByGuid(ep.feedGuid);
+              // A placeholder from a feed PI doesn't index has no usable
+              // feedGuid — the URL hint is the only handle on its show.
+              const podcast = ep.feedGuid
+                ? await resolvePodcastByGuid(ep.feedGuid)
+                : ep.feedUrl
+                  ? await resolvePodcastByFeedUrl(ep.feedUrl)
+                  : null;
               if (podcast) onSelect(podcast);
             }}
           >
@@ -253,7 +313,11 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
               className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
             />
             <div className="min-w-0 flex-1">
-              <div className="font-display text-base leading-tight truncate">{ep.title}</div>
+              <div className="font-display text-base leading-tight truncate">
+                {/* An unresolved entry is a real favorite whose metadata hasn't
+                    arrived yet — never render it as an empty row. */}
+                {ep.title || (ep.unresolved ? <span className="text-muted">Loading…</span> : '')}
+              </div>
               <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
             </div>
           </li>

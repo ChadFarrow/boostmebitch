@@ -107,9 +107,66 @@ export function resolvePodcastByFeedUrl(feedUrl: string): Promise<Podcast | null
 const episodeMem = new Map<string, Episode | null>();
 
 /**
+ * Resolve a favorited episode from the feed's RSS, using the shared list's
+ * position-2 URL hint. The fallback for everything `resolveEpisodeByGuid`
+ * can't answer — which, for self-hosted music feeds, is nearly all of it:
+ * measured against a real shared list, PI resolved 0 of 227 track favorites
+ * while their feeds' RSS resolved 223.
+ *
+ * Deliberately NOT called during hydration. One call costs a full feed fetch
+ * and parse, and a 227-track list spans 159 distinct feeds — doing that at
+ * sign-in would be a fetch storm on the slowest, least-cached path a user has.
+ * It is called when a favorite is actually rendered (see `FavoriteEpisodesList`)
+ * and the result is cached in `storage.episodeMeta`, so it happens once per
+ * episode per device.
+ *
+ * Keyed `url:<feedUrl>:<itemGuid>` so it can't collide with the guid-pair
+ * entries written by `resolveEpisodeByGuid` — the two resolve the same episode
+ * by different routes and must not overwrite one another's cache slots.
+ */
+export async function resolveEpisodeByFeedUrl(
+  feedUrl: string,
+  itemGuid: string,
+): Promise<Episode | null> {
+  const cacheKey = `url:${feedUrl}:${itemGuid}`;
+  if (episodeMem.has(cacheKey)) return episodeMem.get(cacheKey) ?? null;
+  const cached = storage.episodeMeta.get(cacheKey);
+  if (cached) {
+    episodeMem.set(cacheKey, cached);
+    return cached;
+  }
+  // NOTE: no `piMaybeUp()` guard, unlike the PI paths. This route never touches
+  // Podcast Index, so a tripped PI breaker must not disable it — that would
+  // switch off the fallback at exactly the moment it is needed most.
+  try {
+    const r = await fetch(
+      `/api/episode-by-feed-url?feedUrl=${encodeURIComponent(feedUrl)}&itemGuid=${encodeURIComponent(itemGuid)}`,
+    );
+    if (!r.ok) {
+      // Cache the miss: a feed that 404s or no longer carries the guid will do
+      // the same on every render, and the list re-resolves on each mount.
+      episodeMem.set(cacheKey, null);
+      return null;
+    }
+    const { episode } = (await r.json()) as { episode: Episode };
+    if (!episode) {
+      episodeMem.set(cacheKey, null);
+      return null;
+    }
+    episodeMem.set(cacheKey, episode);
+    storage.episodeMeta.set(cacheKey, episode);
+    return episode;
+  } catch {
+    episodeMem.set(cacheKey, null);
+    return null;
+  }
+}
+
+/**
  * Resolve a favorited episode from its NIP-73 identifier pair. BOTH guids are
  * required — PI can't look an item up without its podcast — so an entry whose
- * parent feed is unknown resolves to null rather than firing a doomed request.
+ * parent feed is unknown resolves to null here. It is not unresolvable, though:
+ * `resolveEpisodeByFeedUrl` above answers from the feed's own RSS.
  */
 export async function resolveEpisodeByGuid(
   feedGuid: string,

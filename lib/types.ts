@@ -281,4 +281,16 @@ export interface FavoriteEpisode {
   enclosureUrl?: string;
   datePublished?: number;
   addedAt: number;        // unix ms
+  /**
+   * Placeholder: this favorite is on the shared list and carries a `feedUrl`,
+   * but Podcast Index doesn't know it, so it has no real metadata yet. The
+   * favorites list resolves these from the feed's own RSS as it renders them
+   * (`resolveEpisodeByFeedUrl`); hydration deliberately doesn't, because a
+   * 227-track list spans 159 distinct feeds.
+   *
+   * While this is set, `title` is empty — treat the entry as loading, never as
+   * data. Without placeholders these favorites render as nothing at all, which
+   * is what PI-only resolution did to every track synced from a music app.
+   */
+  unresolved?: boolean;
 }

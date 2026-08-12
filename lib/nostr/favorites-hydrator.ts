@@ -79,6 +79,33 @@ function favoriteFromEpisode(
 }
 
 /**
+ * A favorite we know exists but can't describe yet.
+ *
+ * Requires a `feedUrl`: without the position-2 hint there is nothing left to
+ * try, and a placeholder that can never resolve is a permanent blank row. With
+ * one, `FavoriteEpisodesList` fills it in from the feed's RSS on render.
+ *
+ * `feedGuid` falls back to '' rather than being dropped — the field is required
+ * by the type but is not what resolves this entry, and the item guid is the key
+ * either way.
+ */
+function pendingEpisode(ep: {
+  itemGuid: string;
+  feedGuid?: string;
+  feedUrl?: string;
+}): FavoriteEpisode | null {
+  if (!ep.feedUrl) return null;
+  return {
+    itemGuid: ep.itemGuid,
+    feedGuid: ep.feedGuid ?? '',
+    feedUrl: ep.feedUrl,
+    title: '',
+    addedAt: Date.now(),
+    unresolved: true,
+  };
+}
+
+/**
  * Resolve a list of unknown identifiers through PI, probe-first-then-batch.
  *
  * The probe is sequential and deliberate: if PI is dead (or the breaker already
@@ -260,8 +287,15 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   for (const ep of episodes) {
     if (cachedEpisodes[ep.itemGuid]) nextEpisodes[ep.itemGuid] = cachedEpisodes[ep.itemGuid];
     else if (ep.feedGuid) unresolvedEpisodes.push(ep);
-    // An item with no parent feed is unresolvable through PI. It stays on the
-    // wire (the merge never drops it) but this device can't render it.
+    else {
+      // No parent feed guid, so PI has nothing to look up — but the position-2
+      // URL hint is enough to find the item in the feed itself. This branch
+      // used to drop the entry outright: it stayed on the wire (the merge never
+      // drops it) and rendered as nothing, so a favorite could exist, sync, and
+      // survive every republish while being invisible on this device.
+      const pending = pendingEpisode(ep);
+      if (pending) nextEpisodes[ep.itemGuid] = pending;
+    }
   }
 
   setFavorites(nextShows);
@@ -284,12 +318,22 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   if (unresolvedEpisodes.length > 0) {
     const resolved = await resolveBatch(unresolvedEpisodes, async (ep) => {
       const episode = await resolveEpisodeByGuid(ep.feedGuid!, ep.itemGuid);
-      return episode ? favoriteFromEpisode(episode, ep.feedGuid!, ep.feedUrl) : null;
+      return episode
+        ? favoriteFromEpisode(episode, ep.feedGuid!, ep.feedUrl)
+        : // PI didn't have it. For self-hosted music feeds that is the norm, not
+          // the exception — PI resolved 0 of 227 track favorites on a real
+          // shared list — so fall through to a placeholder the list resolves
+          // from the feed's RSS rather than losing the favorite here.
+          pendingEpisode(ep);
     });
     const merged = { ...useApp.getState().favoriteEpisodes };
     for (const fav of resolved) {
       if (!fav) continue;
       const prev = merged[fav.itemGuid];
+      // Never let a placeholder overwrite an entry that already has real
+      // metadata: `resolveBatch` skips the rest of the list once the PI breaker
+      // trips, so a whole batch can come back pending on a bad afternoon.
+      if (fav.unresolved && prev && !prev.unresolved) continue;
       merged[fav.itemGuid] = prev ? { ...fav, addedAt: prev.addedAt } : fav;
     }
     setFavoriteEpisodes(merged);

@@ -16,6 +16,7 @@
     "check:liveblock": "node --experimental-strip-types scripts/check-live-block.mjs",
     "check:npub": "node --experimental-strip-types scripts/check-nostr-txt.mjs",
     "check:favsync": "node --experimental-strip-types scripts/check-favsync.mjs",
+    "check:relaytrust": "node --experimental-strip-types --import ./scripts/ts-register.mjs scripts/check-relay-trust.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs"
   },

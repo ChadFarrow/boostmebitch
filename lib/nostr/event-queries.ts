@@ -8,6 +8,12 @@ import { withPool, QUERY_MAX_WAIT_MS, FEED_QUERY_MAX_WAIT_MS } from './pool';
 // paying for the slowest relay in the set.
 const FIRST_EVENT_GRACE_MS = 1500;
 
+// Per-relay connect budget, deliberately well under any caller's maxWait: a
+// dead relay must not be able to spend the whole window failing before the
+// live ones are even asked. Dead entries in default relay lists are common and
+// long-lived, because nothing surfaces them.
+const CONNECT_TIMEOUT_MS = 2000;
+
 /**
  * Fetch the single newest Nostr event matching the given filter.
  * Returns null when no events are found or the query throws.
@@ -39,12 +45,38 @@ export async function fetchLatestEvent(
  * Same discipline `fetchFollowList` applies with its `ok` flag and
  * `resolveProfilesForNotes` with `firstHealthy`.
  *
- * `trustworthy` is true when an event arrived, or when the aggregate EOSE
- * fired. **It is not a perfect signal** and shouldn't be read as one: a relay
- * that never connects doesn't hold nostr-tools' aggregate `oneose` open, so an
- * EOSE means "every *reachable* relay confirmed none", not "every relay". It
- * is strictly better than the previous behaviour, which treated a total
- * timeout — zero relays reached — as proof of absence.
+ * `trustworthy` is true when an event arrived, or when every relay we actually
+ * REACHED sent a real EOSE and there was at least one of them.
+ *
+ * It used to be `best !== null || aggregate oneose fired`, and that aggregate
+ * cannot carry the weight — two different non-answers are folded into it and
+ * both report as an answered query:
+ *
+ *   - nostr-tools SYNTHESIZES an eose on a timer (`AbstractRelay`'s
+ *     `baseEoseTimeout`, 4400ms) when a relay never sends one. This function's
+ *     4000ms default happens to sit just under that, so it escaped — by 400ms,
+ *     and by accident. Any caller passing a longer `maxWait` did not.
+ *   - A failed connection also counts toward the aggregate, so with nothing
+ *     reachable it fires immediately and vacuously: measured at 19ms with no
+ *     network in the sibling implementation. The old note above — "an EOSE
+ *     means every *reachable* relay confirmed none" — is true and is not
+ *     enough, because it is vacuously true when the reachable set is EMPTY.
+ *     Offline therefore read as proof of absence, which is exactly what this
+ *     flag exists to prevent.
+ *
+ * That mattered most for the two callers that write on the strength of it:
+ * `fetchProfile`'s negative cache (the incident described above), and
+ * `fetchRawProfile`, whose result decides whether an editor may safely publish
+ * over the user's existing kind:0 — a falsely-trustworthy empty read there is
+ * how profile fields get silently dropped.
+ *
+ * So relays are subscribed to individually and counted. A relay that never
+ * connects drops out of the denominator rather than blocking the read (a
+ * permanently dead default would otherwise degrade every read forever); a
+ * relay that connects and then hangs is a genuine unknown and degrades it.
+ *
+ * See github.com/ChadFarrow/PC20-Nostr/specs/pc20-favorites.md
+ * ("An aggregate EOSE is not automatically an answer").
  */
 export async function fetchLatestEventDetailed(
   relays: string[],
@@ -52,51 +84,80 @@ export async function fetchLatestEventDetailed(
   maxWait = QUERY_MAX_WAIT_MS,
 ): Promise<{ event: Event | null; trustworthy: boolean }> {
   return withPool(relays, async (pool) => {
+    const deadline = Date.now() + maxWait;
+    let best: Event | null = null;
+    let reached = 0; // relays that accepted a connection
+    let answered = 0; // ...of those, the ones that sent a REAL eose in time
+    // Set once the first matching event arrives, so the remaining relays get a
+    // short grace window to offer a newer version rather than the full maxWait.
+    let graceDeadline = Infinity;
+
     try {
-      return await new Promise<{ event: Event | null; trustworthy: boolean }>((resolve) => {
-        let best: Event | null = null;
-        let settled = false;
-        let eosed = false;
-        let graceTimer: ReturnType<typeof setTimeout> | null = null;
-        // Declared before subscribeMany so finish() can clear the hard timer and
-        // close the sub even if subscribeMany throws synchronously (malformed
-        // relay URL) — otherwise the timer kept running to maxWait. Mirrors the
-        // sub-first pattern in collectEventsByAuthors.
-        let sub: { close: () => void } | null = null;
+      await Promise.all(
+        relays.map(async (url) => {
+          let relay: Awaited<ReturnType<typeof pool.ensureRelay>>;
+          try {
+            relay = await pool.ensureRelay(url, {
+              // Capped below the overall deadline: sized to the whole remaining
+              // budget, one dead relay spends the entire window failing.
+              connectionTimeout: Math.min(CONNECT_TIMEOUT_MS, Math.max(0, deadline - Date.now())),
+            });
+          } catch {
+            // Never connected. NOT an answer — counting it as one is what made
+            // an offline device look trustworthy.
+            return;
+          }
+          reached += 1;
 
-        const finish = () => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(hardTimer);
-          if (graceTimer) clearTimeout(graceTimer);
-          try { sub?.close(); } catch { /* already closed / never opened */ }
-          // An event in hand is its own proof the query worked. Otherwise only
-          // an EOSE counts — resolving on the hard timer means we heard nothing.
-          resolve({ event: best, trustworthy: best !== null || eosed });
-        };
-
-        const hardTimer = setTimeout(finish, maxWait);
-        try {
-          sub = pool.subscribeMany(relays, filter, {
-            onevent(e: Event) {
-              if (!best || e.created_at > best.created_at) best = e;
-              if (!graceTimer) graceTimer = setTimeout(finish, FIRST_EVENT_GRACE_MS);
-            },
-            oneose() {
-              // Fires once all reachable relays have EOSE'd — nothing more is coming.
-              eosed = true;
+          await new Promise<void>((resolveOne) => {
+            let done = false;
+            let sub: { close: () => void } | null = null;
+            const finish = () => {
+              if (done) return;
+              done = true;
+              clearInterval(ticker);
+              try { sub?.close(); } catch { /* already closed / never opened */ }
+              resolveOne();
+            };
+            // Polled rather than a single timer because `graceDeadline` is set
+            // by whichever relay answers first, which may not be this one.
+            const ticker = setInterval(() => {
+              if (Date.now() >= Math.min(deadline, graceDeadline)) finish();
+            }, 50);
+            try {
+              sub = relay.subscribe([filter], {
+                // Past our own deadline so the library's synthetic eose can
+                // never fire inside the window and pose as an answer. Kept
+                // small: closing a subscription does not clear this timer, so a
+                // large value leaves it pending long after we've returned.
+                eoseTimeout: maxWait + 1_000,
+                onevent(e: Event) {
+                  if (e.pubkey && filter.authors && !filter.authors.includes(e.pubkey)) return;
+                  if (!best || e.created_at > best.created_at) best = e;
+                  if (graceDeadline === Infinity) {
+                    graceDeadline = Date.now() + FIRST_EVENT_GRACE_MS;
+                  }
+                },
+                oneose() {
+                  answered += 1;
+                  finish();
+                },
+              });
+            } catch {
               finish();
-            },
+            }
           });
-        } catch {
-          // subscribeMany threw before any relay was queried — the opposite of
-          // trustworthy, so leave `eosed` false.
-          finish();
-        }
-      });
+        }),
+      );
     } catch {
       return { event: null, trustworthy: false };
     }
+
+    // An event in hand is its own proof the query worked. Otherwise every relay
+    // we could reach must have said "I have none", and there must have been at
+    // least one — a bare timeout, a hung relay, or no connectivity is not
+    // evidence of anything.
+    return { event: best, trustworthy: best !== null || (reached > 0 && answered === reached) };
   });
 }
 
