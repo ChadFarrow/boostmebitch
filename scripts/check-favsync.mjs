@@ -428,6 +428,14 @@ console.log('\ntagsForSharedFavorites / itemsFromTags — the wire round trip');
     tags.find((t) => t[1] === A),
     ['i', A],
   );
+  // SPEC VECTOR 10, writer half. An app whose local type column defaults to
+  // "album" publishes that default as fact, and no other app will ever correct
+  // it. Absent must stay absent.
+  check(
+    'a medium is never invented for an entry this app was not told about',
+    itemFrom({ id: A }).tag,
+    ['i', A],
+  );
   check(
     'an episode carries its parent feed in position 3, with position 2 held open',
     tags.find((t) => t[1] === C),

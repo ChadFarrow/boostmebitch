@@ -156,6 +156,56 @@ export function PodcastResults({
   );
 }
 
+/**
+ * Group order for the favorites lists. Anything not named here sorts
+ * alphabetically after these, and **medium-unknown is last and is its own
+ * bucket** — never folded into `podcast`.
+ *
+ * That last part is the whole point of the position-4 hint. The list carries
+ * podcasts and music at once by design, so whichever way you default you are
+ * wrong about half of it, and an entry with no medium is one nobody has told us
+ * about — which is not the same claim as "it's a podcast".
+ */
+const MEDIUM_ORDER = ['music', 'podcast', 'audiobook', 'film', 'video', 'newsletter', 'blog', 'publisher'];
+
+/**
+ * Split rows into medium buckets, in {@link MEDIUM_ORDER}, unknown last.
+ *
+ * Case is folded for BUCKETING only. The wire value is never normalized — the
+ * medium vocabulary is open, so a value we don't recognize is one a newer app
+ * does, and it gets its own bucket under its own label rather than being
+ * dropped or coerced.
+ */
+function groupByMedium<T>(rows: T[], mediumOf: (row: T) => string | undefined) {
+  const buckets = new Map<string, { label: string; rows: T[] }>();
+  const unknown: T[] = [];
+  for (const row of rows) {
+    const raw = mediumOf(row);
+    if (!raw) { unknown.push(row); continue; }
+    const key = raw.toLowerCase();
+    const bucket = buckets.get(key) ?? { label: raw, rows: [] };
+    bucket.rows.push(row);
+    buckets.set(key, bucket);
+  }
+  const rank = (key: string) => {
+    const i = MEDIUM_ORDER.indexOf(key);
+    return i === -1 ? MEDIUM_ORDER.length : i;
+  };
+  const groups = [...buckets.entries()]
+    .sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b))
+    .map(([key, b]) => ({ key, label: b.label, rows: b.rows }));
+  if (unknown.length) groups.push({ key: '~unknown', label: 'medium unknown', rows: unknown });
+  return groups;
+}
+
+/** A group heading, shown only when there is more than one group — a lone
+ *  "PODCAST" banner over an undivided list is noise, not information. */
+function MediumHeading({ label }: { label: string }) {
+  return (
+    <div className="text-[11px] uppercase tracking-widest text-muted mt-3 mb-1 px-1">{label}</div>
+  );
+}
+
 export function FavoritesList({
   selected,
   onSelect,
@@ -175,39 +225,51 @@ export function FavoritesList({
     [favorites],
   );
 
+  const groups = useMemo(() => groupByMedium(list, (p) => p.medium), [list]);
+
   if (!list.length) return null;
 
   return (
-    <ul className="divide-y divide-bone/10">
-      {list.map((p) => {
-        const title = p.title;
-        // No title means Podcast Index hasn't answered for this guid — a feed
-        // that was never indexed, or has since been delisted. Render it rather
-        // than hiding it: it is still the user's favorite and is still
-        // republished, and a row they can see is a row they can clean up.
-        if (!title) return <UnresolvedFavoriteRow key={p.podcastGuid} id={p.podcastGuid} kind="show" />;
-        // FavoritePodcast → Podcast: the cache doesn't carry the value block,
-        // so the value-aware stamp is hidden via showV4VStamp={false}.
-        const minimal: Podcast = {
-          id: p.id,
-          podcastGuid: p.podcastGuid,
-          title,
-          author: p.author,
-          image: p.image,
-          artwork: p.artwork,
-          url: p.url,
-        };
-        return (
-          <PodcastRow
-            key={p.podcastGuid}
-            podcast={minimal}
-            selected={selected === p.id}
-            onSelect={onSelect}
-            showV4VStamp={false}
-          />
-        );
-      })}
-    </ul>
+    <>
+      {groups.map((g) => (
+        <div key={g.key}>
+          {groups.length > 1 && <MediumHeading label={g.label} />}
+          <ul className="divide-y divide-bone/10">
+            {g.rows.map((p) => {
+              const title = p.title;
+              // No title means Podcast Index hasn't answered for this guid — a
+              // feed that was never indexed, or has since been delisted. Render
+              // it rather than hiding it: it is still the user's favorite and is
+              // still republished, and a row they can see is one they can clean
+              // up.
+              if (!title) {
+                return <UnresolvedFavoriteRow key={p.podcastGuid} id={p.podcastGuid} kind="show" />;
+              }
+              // FavoritePodcast → Podcast: the cache doesn't carry the value
+              // block, so the value-aware stamp is hidden via showV4VStamp.
+              const minimal: Podcast = {
+                id: p.id,
+                podcastGuid: p.podcastGuid,
+                title,
+                author: p.author,
+                image: p.image,
+                artwork: p.artwork,
+                url: p.url,
+              };
+              return (
+                <PodcastRow
+                  key={p.podcastGuid}
+                  podcast={minimal}
+                  selected={selected === p.id}
+                  onSelect={onSelect}
+                  showV4VStamp={false}
+                />
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+    </>
   );
 }
 
@@ -248,6 +310,8 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
     [favoriteEpisodes],
   );
 
+  const groups = useMemo(() => groupByMedium(list, (ep) => ep.medium), [list]);
+
   if (!list.length) return null;
 
   return (
@@ -255,50 +319,55 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
       <div className="text-[11px] uppercase tracking-widest text-muted mt-4 mb-2 px-1">
         {list.length} favorite {list.length === 1 ? 'episode' : 'episodes'}
       </div>
-      <ul className="divide-y divide-bone/10">
-        {list.map((ep) => {
-          const { title, feedGuid } = ep;
-          // Unresolved: no parent feed guid to look up, or PI had nothing for
-          // it. Still the user's favorite, still republished — see
-          // <UnresolvedFavoriteRow>.
-          if (!title) return <UnresolvedFavoriteRow key={ep.itemGuid} id={ep.itemGuid} kind="episode" />;
-          return (
-            <li
-              key={ep.itemGuid}
-              className="flex gap-3 py-3 px-1 cursor-pointer group transition hover:bg-bone/5"
-              onClick={async () => {
-                // feedId is present for anything this device resolved through
-                // PI. An entry synced from another app before its backfill ran
-                // has only the guid, so fall back to resolving it on demand.
-                if (!feedGuid) return;
-                if (ep.feedId) {
-                  onSelect({
-                    id: ep.feedId,
-                    podcastGuid: feedGuid,
-                    title: ep.podcastTitle ?? title,
-                    image: ep.image,
-                    url: ep.feedUrl,
-                  });
-                  return;
-                }
-                const podcast = await resolvePodcastByGuid(feedGuid);
-                if (podcast) onSelect(podcast);
-              }}
-            >
-              <PodcastCover
-                image={ep.image}
-                title={title}
-                seed={ep.itemGuid}
-                className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
-              />
-              <div className="min-w-0 flex-1">
-                <div className="font-display text-base leading-tight truncate">{title}</div>
-                <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
+      {groups.map((g) => (
+        <div key={g.key}>
+          {groups.length > 1 && <MediumHeading label={g.label} />}
+          <ul className="divide-y divide-bone/10">
+            {g.rows.map((ep) => {
+              const { title, feedGuid } = ep;
+              // Unresolved: no parent feed guid to look up, or PI had nothing for
+              // it. Still the user's favorite, still republished — see
+              // <UnresolvedFavoriteRow>.
+              if (!title) return <UnresolvedFavoriteRow key={ep.itemGuid} id={ep.itemGuid} kind="episode" />;
+              return (
+                <li
+                  key={ep.itemGuid}
+                  className="flex gap-3 py-3 px-1 cursor-pointer group transition hover:bg-bone/5"
+                  onClick={async () => {
+                    // feedId is present for anything this device resolved through
+                    // PI. An entry synced from another app before its backfill ran
+                    // has only the guid, so fall back to resolving it on demand.
+                    if (!feedGuid) return;
+                    if (ep.feedId) {
+                      onSelect({
+                        id: ep.feedId,
+                        podcastGuid: feedGuid,
+                        title: ep.podcastTitle ?? title,
+                        image: ep.image,
+                        url: ep.feedUrl,
+                      });
+                      return;
+                    }
+                    const podcast = await resolvePodcastByGuid(feedGuid);
+                    if (podcast) onSelect(podcast);
+                  }}
+                >
+                  <PodcastCover
+                    image={ep.image}
+                    title={title}
+                    seed={ep.itemGuid}
+                    className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-display text-base leading-tight truncate">{title}</div>
+                    <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
     </>
   );
 }

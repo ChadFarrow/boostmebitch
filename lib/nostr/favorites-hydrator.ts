@@ -29,7 +29,9 @@ import {
   fetchSharedFavorites,
   interpretItems,
   interpretShows,
+  itemId,
   looksLikeFeedGuid,
+  mediumOf,
   mergeSharedFavorites,
   publishSharedFavorites,
   showId,
@@ -55,6 +57,9 @@ function favoriteFromPodcast(p: Podcast): FavoritePodcast | null {
     image: p.image,
     artwork: p.artwork,
     url: p.url,
+    // What the FEED declared, as Podcast Index reports it — never a default and
+    // never this app's own category for the show.
+    medium: p.medium,
     addedAt: Date.now(),
   };
 }
@@ -271,13 +276,25 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // failed to resolve and published the deletion to a list other apps read.
   // One outage plus one reload. A placeholder row costs a line; that cost a
   // user's library.
+  // The position-4 medium hint, by identifier. It is what lets the favorites
+  // list separate music from podcasts on FIRST PAINT: resolution is one
+  // Podcast Index request per entry, so a three-hundred-entry library is three
+  // hundred round trips before anything can be sorted, with the view
+  // reshuffling as they land. It is also the only answer that exists for an
+  // entry that no longer resolves at all.
+  const wireMedium = new Map(target.map((i) => [i.id, mediumOf(i)]));
+
   const nextShows: Record<string, FavoritePodcast> = {};
   const unresolvedShows: string[] = [];
   for (const guid of guids) {
     const hit = cached[guid];
+    const hint = wireMedium.get(showId(guid));
     // addedAt 0 = "not known yet", so the first real resolve stamps its own
     // rather than inheriting a placeholder's — see the merges below.
-    nextShows[guid] = hit ?? { id: 0, podcastGuid: guid, addedAt: 0 };
+    // A resolved medium always wins over the hint; the hint only fills a gap.
+    nextShows[guid] = hit
+      ? (hit.medium ? hit : { ...hit, medium: hint })
+      : { id: 0, podcastGuid: guid, medium: hint, addedAt: 0 };
     if (!hit || !hit.artwork) unresolvedShows.push(guid);
   }
 
@@ -285,12 +302,21 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   const unresolvedEpisodes: Array<{ itemGuid: string; feedGuid?: string; feedUrl?: string }> = [];
   for (const ep of episodes) {
     const hit = cachedEpisodes[ep.itemGuid];
-    nextEpisodes[ep.itemGuid] = hit ?? {
-      itemGuid: ep.itemGuid,
-      feedGuid: ep.feedGuid,
-      feedUrl: ep.feedUrl,
-      addedAt: 0,
-    };
+    // An item's medium is its PARENT FEED's — Podcasting 2.0 has no per-item
+    // one. If that feed is also favorited under its own podcast:guid, its
+    // entry wins: never derive a feed's medium from one of its items.
+    const hint =
+      (ep.feedGuid ? nextShows[ep.feedGuid]?.medium : undefined)
+      ?? wireMedium.get(itemId(ep.itemGuid));
+    nextEpisodes[ep.itemGuid] = hit
+      ? (hit.medium ? hit : { ...hit, medium: hint })
+      : {
+          itemGuid: ep.itemGuid,
+          feedGuid: ep.feedGuid,
+          feedUrl: ep.feedUrl,
+          medium: hint,
+          addedAt: 0,
+        };
     // PI's /episodes/byguid wants a parent guid, so an entry without one can't
     // be resolved. Nor can one whose parent ref isn't guid-shaped — that gate
     // decides only whether to spend a request, never whether the favorite is
@@ -313,7 +339,13 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
       // always present (placeholders included), so test the timestamp rather
       // than the row — a placeholder's 0 must not be inherited as a real one.
       const prev = merged[fav.podcastGuid];
-      merged[fav.podcastGuid] = prev?.addedAt ? { ...fav, addedAt: prev.addedAt } : fav;
+      // A resolved medium wins, but PI not reporting one must not blank the
+      // hint another app put on the wire — that hint is the only answer that
+      // exists for a feed PI has delisted.
+      const withMedium = fav.medium ? fav : { ...fav, medium: prev?.medium };
+      merged[fav.podcastGuid] = prev?.addedAt
+        ? { ...withMedium, addedAt: prev.addedAt }
+        : withMedium;
     }
     setFavorites(merged);
   }
@@ -327,7 +359,15 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     for (const fav of resolved) {
       if (!fav) continue;
       const prev = merged[fav.itemGuid];
-      merged[fav.itemGuid] = prev?.addedAt ? { ...fav, addedAt: prev.addedAt } : fav;
+      // /episodes/byguid returns an Episode, which has no medium — so the only
+      // sources are the parent feed's entry and the wire hint, both already in
+      // `prev`. Deliberately NOT a per-parent /podcasts/byguid fan-out: a
+      // request per entry whose sole purpose is a hint is exactly the cost the
+      // hint exists to avoid.
+      const withMedium = fav.medium ? fav : { ...fav, medium: prev?.medium };
+      merged[fav.itemGuid] = prev?.addedAt
+        ? { ...withMedium, addedAt: prev.addedAt }
+        : withMedium;
     }
     setFavoriteEpisodes(merged);
   }

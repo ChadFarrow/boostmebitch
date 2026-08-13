@@ -279,6 +279,17 @@ export interface FavoritePodcast {
   /** Mirror of Podcast.artwork — second-chance source when `image` 404s. */
   artwork?: string;
   url?: string;           // RSS feed URL
+  /**
+   * `<podcast:medium>` — what the FEED declared, never what this app's UI
+   * concluded. Resolved from Podcast Index where we have it, otherwise the
+   * position-4 hint another app left on the wire.
+   *
+   * **Absent means "not known", which is not the same as `podcast`.** The list
+   * carries podcasts and music at once by design, so whichever way you default
+   * you are wrong about half of it — unknown is its own bucket everywhere it
+   * is rendered.
+   */
+  medium?: string;
   /** unix ms — used for sort + last-write-wins merge. 0 means "not known yet",
    *  so a first real resolve stamps its own rather than inheriting a
    *  placeholder's; see the resolve merge in favorites-hydrator.ts. */
@@ -308,5 +319,8 @@ export interface FavoriteEpisode {
   image?: string;
   enclosureUrl?: string;
   datePublished?: number;
+  /** The PARENT FEED's `<podcast:medium>` — Podcasting 2.0 has no per-item
+   *  medium. Same "absent means unknown" rule as {@link FavoritePodcast}. */
+  medium?: string;
   addedAt: number;        // unix ms — 0 means "not known yet"
 }
