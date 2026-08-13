@@ -50,8 +50,11 @@
 
 import {
   baselineFrom,
+  ITEMS_D_TAG,
   LEGACY_FAVORITES_KIND,
   SHARED_FAVORITES_KIND,
+  placementFor,
+  titleFor,
   feedRefOf,
   feedUrlOf,
   identifierKind,
@@ -571,6 +574,49 @@ console.log('\ninterpretShows / interpretItems — reading is lossy, the wire is
     'a show identifier is never read as an episode',
     interpretItems([wire(A), wire(X)]),
     [],
+  );
+}
+
+console.log('\nplacement — which of the two lists an entry belongs to');
+{
+  // SPEC VECTOR 5, mapping half. Placement is DERIVED from the identifier and
+  // never chosen: an entry two apps could place differently is one that gets
+  // added to one list, removed from the other, and comes back forever.
+  //
+  // The publish-level half of this vector — that a combined local set fans out
+  // to the right address, asserted over publish() rather than over this
+  // function — belongs with the two-address publish and is not pinnable until
+  // there is one. A test on the mapping table alone is exactly the vacuity
+  // vectors 3 and 4 warn about, so this block is deliberately labelled as only
+  // half the assertion.
+  check('a show goes to the feeds list', placementFor(A), 'feeds');
+  check('an episode goes to the items list', placementFor(C), 'items');
+  check('a publisher goes to the feeds list', placementFor(X), 'feeds');
+  // An unrecognized kind has no derivation, so it gets the default home rather
+  // than a guess. Two apps guessing differently is the bounce this prevents.
+  check(
+    'an unrecognized kind defaults to the feeds list',
+    placementFor('podcast:season:guid:whatever'),
+    'feeds',
+  );
+  // A URL-shaped item guid must not be scanned for a colon — see the k-tag
+  // rule. `podcast:item:guid:https` is not a recognized kind, so a scanning
+  // implementation would silently place every permalink-guid track on the
+  // FEEDS list, which is the list the split exists to keep small.
+  check(
+    'a URL-shaped item guid still places as an item',
+    placementFor(itemId('https://example.com/ep/42')),
+    'items',
+  );
+
+  check('the items list has its own title', titleFor(ITEMS_D_TAG), 'Podcast Favorite Items');
+  check('the feeds list keeps the original', titleFor(SHARED_D_TAG), 'Podcast Favorites');
+  // Changing the legacy event's title would churn it for nothing.
+  check('the legacy list keeps it too', titleFor(LEGACY_D_TAG), 'Podcast Favorites');
+  check(
+    'the title tag follows the address it is published to',
+    tagsForSharedFavorites([mine({ id: C })], [], ITEMS_D_TAG).slice(0, 2),
+    [['d', ITEMS_D_TAG], ['title', 'Podcast Favorite Items']],
   );
 }
 

@@ -31,6 +31,7 @@
 import { nip19 } from 'nostr-tools';
 
 import {
+  ITEMS_D_TAG,
   LEGACY_D_TAG,
   LEGACY_FAVORITES_KIND,
   SHARED_D_TAG,
@@ -73,16 +74,31 @@ export function sharedFavoritesEnabledFor(pubkey: string | null | undefined): bo
   return allowed.includes(pubkey.toLowerCase());
 }
 
-export interface FavoritesAddress {
+export interface FavoritesAddresses {
   kind: number;
-  dTag: string;
-  /** True when this is the shared cross-app address. */
+  /** Shows, albums and publishers. Also the default home for any identifier
+   *  kind the spec's table doesn't recognize. */
+  feeds: string;
+  /**
+   * Episodes and tracks — or **null in legacy single-list mode**, where there
+   * is exactly one list and everything shares it.
+   *
+   * `null` rather than a boolean on purpose: `if (addr.items)` is a branch the
+   * compiler makes every caller handle, where a `shared` flag beside a second
+   * d-tag constant is only a convention someone has to remember. The
+   * non-allowlisted path is everyone, so forgetting it is not a corner case.
+   */
+  items: string | null;
+  /** True when these are the shared cross-app addresses. */
   shared: boolean;
 }
 
-/** The address this account's favorites are read from and published to. */
-export function favoritesAddressFor(pubkey: string | null | undefined): FavoritesAddress {
+/** The addresses this account's favorites are read from and published to. */
+export function favoritesAddressFor(pubkey: string | null | undefined): FavoritesAddresses {
   return sharedFavoritesEnabledFor(pubkey)
-    ? { kind: SHARED_FAVORITES_KIND, dTag: SHARED_D_TAG, shared: true }
-    : { kind: LEGACY_FAVORITES_KIND, dTag: LEGACY_D_TAG, shared: false };
+    ? { kind: SHARED_FAVORITES_KIND, feeds: SHARED_D_TAG, items: ITEMS_D_TAG, shared: true }
+    // The legacy list predates the split and is single-writer, so there is
+    // nothing to split it FOR: the size pressure the two addresses exist to
+    // isolate is a property of a shared list many apps append to.
+    : { kind: LEGACY_FAVORITES_KIND, feeds: LEGACY_D_TAG, items: null, shared: false };
 }

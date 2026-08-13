@@ -100,8 +100,31 @@ export function fetchSharedFavorites(
   pubkey: string,
   queryRelays: string[],
 ): Promise<SharedFavorites> {
-  const { kind, dTag } = favoritesAddressFor(pubkey);
-  return fetchList(pubkey, kind, dTag, queryRelays);
+  const { kind, feeds } = favoritesAddressFor(pubkey);
+  return fetchList(pubkey, kind, feeds, queryRelays);
+}
+
+/**
+ * Read the items list — episodes and tracks — or resolve to an explicitly
+ * ABSENT result in legacy single-list mode, where no such address exists.
+ *
+ * `trustworthy: false` would be wrong for the legacy case and actively
+ * dangerous: it is the flag that blocks publishing, and a permanent false would
+ * wedge the feature for everyone not on the allowlist. `exists: false` with
+ * `trustworthy: true` is the honest answer — there is nothing at that address
+ * and we are sure of it, because there is no such address.
+ */
+export function fetchSharedFavoriteItems(
+  pubkey: string,
+  queryRelays: string[],
+): Promise<SharedFavorites> {
+  const { kind, items } = favoritesAddressFor(pubkey);
+  if (!items) {
+    return Promise.resolve({
+      items: [], otherTags: [], updatedAt: 0, exists: false, trustworthy: true,
+    });
+  }
+  return fetchList(pubkey, kind, items, queryRelays);
 }
 
 /** Read this app's pre-sync list. Migration only — never republished here. */
@@ -136,7 +159,7 @@ export async function publishSharedFavorites(
   const template: EventTemplate = {
     kind: address.kind,
     created_at: Math.floor(Date.now() / 1000),
-    tags: tagsForSharedFavorites(items, otherTags, address.dTag),
+    tags: tagsForSharedFavorites(items, otherTags, address.feeds),
     content: '',
   };
   return assertPublished(await signAndPublish(template, relays), 'favorites');

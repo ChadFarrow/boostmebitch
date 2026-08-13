@@ -42,6 +42,20 @@ export const SHARED_FAVORITES_KIND = 30078;
 export const SHARED_D_TAG = 'podcast:favorites';
 
 /**
+ * The second shared address: episodes and tracks.
+ *
+ * **Why two events.** Item favorites accumulate an order of magnitude faster
+ * than feed favorites — someone saving individual music tracks passes a
+ * thousand without trying, where the same person follows perhaps forty shows.
+ * Every publish replaces the whole event and relays cap event size (nos.lol at
+ * 131,072 bytes is the smallest in the default set, and you publish to all of
+ * them so the smallest binds), so one list means the tracks eventually make the
+ * publish fail and take the user's podcast subscriptions down with them. Two
+ * events mean the volume-heavy list can only break itself.
+ */
+export const ITEMS_D_TAG = 'podcast:favorites:items';
+
+/**
  * This app's pre-sync private list. Read once for migration, never written.
  *
  * Still at kind 30003 because that is where the data already is — this app
@@ -55,6 +69,32 @@ export const SHOW_PREFIX = 'podcast:guid:';
 export const ITEM_PREFIX = 'podcast:item:guid:';
 
 export const LIST_TITLE = 'Podcast Favorites';
+export const ITEMS_LIST_TITLE = 'Podcast Favorite Items';
+
+/** The `title` tag for a list address. Nothing renders it; it keeps the event
+ *  self-describing for anyone reading raw relay output. The legacy address
+ *  keeps the original title — changing it would churn the event for nothing. */
+export const titleFor = (dTag: string): string =>
+  dTag === ITEMS_D_TAG ? ITEMS_LIST_TITLE : LIST_TITLE;
+
+/**
+ * Which list an entry belongs to. **Derived from the identifier, never chosen.**
+ *
+ * This is the property that makes splitting safe. If an entry could plausibly
+ * land on either list, two apps would disagree — and an entry added to one list
+ * and removed from the other is an entry that comes back, forever. Deriving
+ * placement removes the choice, so there is nothing to disagree about.
+ *
+ * An identifier kind not in the recognized table has no derivation, so it goes
+ * to the feeds list, which is the default home. **A new kind must be added to
+ * the spec's table before anyone writes it**, or two apps will place it
+ * differently and it will bounce between the lists forever.
+ */
+export type FavoritesPlacement = 'feeds' | 'items';
+
+export function placementFor(id: string): FavoritesPlacement {
+  return identifierKind(id) === 'podcast:item:guid' ? 'items' : 'feeds';
+}
 
 // Tags we rebuild from the item set on every publish. Anything else on the
 // event belongs to another writer and is preserved verbatim. `k` is only
@@ -436,7 +476,7 @@ export function tagsForSharedFavorites(
 ): string[][] {
   const tags: string[][] = [
     ['d', dTag],
-    ['title', LIST_TITLE],
+    ['title', titleFor(dTag)],
     ...otherTags,
   ];
   const kinds = new Set<string>();

@@ -305,9 +305,16 @@ function UnresolvedFavoriteRow({ id, kind }: { id: string; kind: 'show' | 'episo
  */
 export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => void }) {
   const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
+  // Item favorites another app left on the FEEDS list are displayed exactly
+  // like our own — they are the user's favorites and this app can resolve and
+  // play them. What they must never do is enter the publishable map, which is
+  // why they arrive from a separate store slot rather than a flag. Ours win a
+  // key collision.
+  const foreignEpisodes = useApp((s) => s.foreignFavoriteEpisodes);
   const list = useMemo(
-    () => Object.values(favoriteEpisodes).sort((a, b) => b.addedAt - a.addedAt),
-    [favoriteEpisodes],
+    () => Object.values({ ...foreignEpisodes, ...favoriteEpisodes })
+      .sort((a, b) => b.addedAt - a.addedAt),
+    [favoriteEpisodes, foreignEpisodes],
   );
 
   const groups = useMemo(() => groupByMedium(list, (ep) => ep.medium), [list]);

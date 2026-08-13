@@ -26,6 +26,7 @@ import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/t
 import {
   baselineFrom,
   fetchLegacyFavorites,
+  fetchSharedFavoriteItems,
   fetchSharedFavorites,
   interpretItems,
   interpretShows,
@@ -33,6 +34,7 @@ import {
   looksLikeFeedGuid,
   mediumOf,
   mergeSharedFavorites,
+  placementFor,
   publishSharedFavorites,
   showId,
   type SharedFavoriteItem,
@@ -211,29 +213,51 @@ export function hydrateFavorites(identity: NostrIdentity): Promise<void> {
 }
 
 async function runHydrate(identity: NostrIdentity): Promise<void> {
-  const { setFavorites, setFavoriteEpisodes, setFavoritesSync } = useApp.getState();
+  const {
+    setFavorites, setFavoriteEpisodes, setFavoritesSync, setForeignFavoriteEpisodes,
+  } = useApp.getState();
   const cached = storage.favorites.get(identity.npub);
   const cachedEpisodes = storage.favoriteEpisodes.get(identity.npub);
+  const relays = resolvePublishRelays(identity);
 
-  setFavoritesSync('loading');
+  setFavoritesSync('feeds', 'loading');
+  setFavoritesSync('items', 'loading');
 
   // The read, and only the read, decides the status. A throw anywhere in here
   // means we never got an answer we could trust, and the caller in nostr-auth
   // swallows it (`.catch(() => {})`) — without this the status would sit on
   // 'loading' forever and the notice would never appear.
+  //
+  // TWO reads, and their trust is evaluated SEPARATELY. Batching both `d` tags
+  // into one subscription is the obvious efficient thing to do and it is how
+  // this goes wrong: the feeds event arrives, the read is declared good, the
+  // items event never came, and the next publish computes from an empty list
+  // and replaces the user's entire track library with whatever this one device
+  // holds. An event arriving at one address is no evidence about the other.
   let shared: Awaited<ReturnType<typeof fetchSharedFavorites>>;
+  let sharedItems: Awaited<ReturnType<typeof fetchSharedFavoriteItems>>;
   try {
-    shared = await fetchSharedFavorites(identity.pubkey, resolvePublishRelays(identity));
+    [shared, sharedItems] = await Promise.all([
+      fetchSharedFavorites(identity.pubkey, relays),
+      fetchSharedFavoriteItems(identity.pubkey, relays),
+    ]);
   } catch (e) {
-    setFavoritesSync('degraded');
+    setFavoritesSync('feeds', 'degraded');
+    setFavoritesSync('items', 'degraded');
     throw e;
+  }
+
+  setFavoritesSync('items', sharedItems.trustworthy ? 'ok' : 'degraded');
+  if (!sharedItems.trustworthy) {
+    // eslint-disable-next-line no-console
+    console.warn('[favorites] items list read was degraded — showing what this device holds');
   }
 
   if (!shared.trustworthy) {
     // Nothing answered. Keep whatever is on screen and publish nothing — the
     // next toggle or page load retries. Silently adopting the empty result
     // here is how a relay wobble turns into a wiped favorites list.
-    setFavoritesSync('degraded');
+    setFavoritesSync('feeds', 'degraded');
     // eslint-disable-next-line no-console
     console.warn('[favorites] relay read was degraded — keeping local favorites as-is');
     return;
@@ -242,7 +266,7 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // Set here rather than at the end of the function: everything below is
   // Podcast Index resolution, which fails for its own unrelated reasons and
   // must not be reported as "couldn't reach the relays".
-  setFavoritesSync('ok');
+  setFavoritesSync('feeds', 'ok');
 
   // Runs on every hydrate, not just the first: it is a no-op once the legacy
   // list is empty or fully absorbed, and a user who signs in on a second
@@ -256,8 +280,36 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   const lastSynced = storage.favSynced.get(identity.npub);
   const target = mergeSharedFavorites({ latest: items, lastSynced, local });
 
+  // Item entries sitting on the FEEDS list. Every event written before the
+  // two-address split puts them there, correctly, against the spec as it stood
+  // — they are the user's favorites, not junk. They split three ways:
+  //
+  //   ours     in our own baseline for the feeds list. Relocatable, and it is
+  //            ours to relocate; ordinary store row.
+  //   foreign  someone else's. Display it, resolve it, let the user play it —
+  //            but NEVER copy it to the items list. Publishing it there means:
+  //            user unfavorites it, it comes off the items list, it is still on
+  //            the feeds list where the merge rightly forbids us removing it,
+  //            and the next hydration puts it back. The favorite returns on
+  //            every page load, forever, on every device. It goes in a separate
+  //            store slot that `localFavoriteItems()` doesn't read, so that is
+  //            a property of where it lives rather than a rule to remember.
+  const baseline = new Set(lastSynced);
+  const onFeeds = target.filter((i) => placementFor(i.id) === 'items');
+  const oursOnFeeds = onFeeds.filter((i) => baseline.has(i.id));
+  const foreignOnFeeds = onFeeds.filter((i) => !baseline.has(i.id));
+
   const { guids, malformed } = interpretShows(target);
-  const episodes = interpretItems(target);
+  // The items list is READ here but not yet written — nothing publishes to it
+  // until the next step. Reading it now is what stops a user whose other app
+  // has adopted the split from seeing an empty track library while their whole
+  // history sits one address away. An entry another app wrote on the ITEMS
+  // list does go in the ordinary store: it is at the address we publish to, so
+  // it enters our baseline on the next publish and can be unfavorited here.
+  const episodes = interpretItems([...sharedItems.items, ...oursOnFeeds]);
+  const claimed = new Set(episodes.map((e) => e.itemGuid));
+  const foreignEpisodes = interpretItems(foreignOnFeeds)
+    .filter((e) => !claimed.has(e.itemGuid));
 
   if (malformed.length > 0) installCleanupHook(identity, malformed);
 
@@ -281,8 +333,11 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // Podcast Index request per entry, so a three-hundred-entry library is three
   // hundred round trips before anything can be sorted, with the view
   // reshuffling as they land. It is also the only answer that exists for an
-  // entry that no longer resolves at all.
-  const wireMedium = new Map(target.map((i) => [i.id, mediumOf(i)]));
+  // entry that no longer resolves at all. Spans BOTH lists — an item's hint
+  // lives wherever that item does.
+  const wireMedium = new Map(
+    [...target, ...sharedItems.items].map((i) => [i.id, mediumOf(i)]),
+  );
 
   const nextShows: Record<string, FavoritePodcast> = {};
   const unresolvedShows: string[] = [];
@@ -298,35 +353,51 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     if (!hit || !hit.artwork) unresolvedShows.push(guid);
   }
 
-  const nextEpisodes: Record<string, FavoriteEpisode> = {};
   const unresolvedEpisodes: Array<{ itemGuid: string; feedGuid?: string; feedUrl?: string }> = [];
-  for (const ep of episodes) {
-    const hit = cachedEpisodes[ep.itemGuid];
-    // An item's medium is its PARENT FEED's — Podcasting 2.0 has no per-item
-    // one. If that feed is also favorited under its own podcast:guid, its
-    // entry wins: never derive a feed's medium from one of its items.
-    const hint =
-      (ep.feedGuid ? nextShows[ep.feedGuid]?.medium : undefined)
-      ?? wireMedium.get(itemId(ep.itemGuid));
-    nextEpisodes[ep.itemGuid] = hit
-      ? (hit.medium ? hit : { ...hit, medium: hint })
-      : {
-          itemGuid: ep.itemGuid,
-          feedGuid: ep.feedGuid,
-          feedUrl: ep.feedUrl,
-          medium: hint,
-          addedAt: 0,
-        };
-    // PI's /episodes/byguid wants a parent guid, so an entry without one can't
-    // be resolved. Nor can one whose parent ref isn't guid-shaped — that gate
-    // decides only whether to spend a request, never whether the favorite is
-    // kept. Either way it still gets a row above, still rides through every
-    // republish, and renders unresolved: it is the user's favorite regardless.
-    if (!hit && ep.feedGuid && looksLikeFeedGuid(ep.feedGuid)) unresolvedEpisodes.push(ep);
-  }
+  const episodeRows = (from: typeof episodes) => {
+    const rows: Record<string, FavoriteEpisode> = {};
+    for (const ep of from) {
+      const hit = cachedEpisodes[ep.itemGuid];
+      // An item's medium is its PARENT FEED's — Podcasting 2.0 has no per-item
+      // one. If that feed is also favorited under its own podcast:guid, its
+      // entry wins: never derive a feed's medium from one of its items.
+      const hint =
+        (ep.feedGuid ? nextShows[ep.feedGuid]?.medium : undefined)
+        ?? wireMedium.get(itemId(ep.itemGuid));
+      rows[ep.itemGuid] = hit
+        ? (hit.medium ? hit : { ...hit, medium: hint })
+        : {
+            itemGuid: ep.itemGuid,
+            feedGuid: ep.feedGuid,
+            feedUrl: ep.feedUrl,
+            medium: hint,
+            addedAt: 0,
+          };
+      // PI's /episodes/byguid wants a parent guid, so an entry without one
+      // can't be resolved. Nor can one whose parent ref isn't guid-shaped —
+      // that gate decides only whether to spend a request, never whether the
+      // favorite is kept. Either way it still gets a row, still rides through
+      // every republish, and renders unresolved: it is the user's favorite
+      // regardless.
+      if (!hit && ep.feedGuid && looksLikeFeedGuid(ep.feedGuid)) unresolvedEpisodes.push(ep);
+    }
+    return rows;
+  };
+
+  const nextEpisodes = episodeRows(episodes);
+  const nextForeign = episodeRows(foreignEpisodes);
 
   setFavorites(nextShows);
-  setFavoriteEpisodes(nextEpisodes);
+  // A degraded items read tells us nothing about that list, so it must not
+  // prune the store — the same rule as the feeds guard above, one list over.
+  // Union rather than replace: whatever this device already had stays, and the
+  // next successful read reconciles it.
+  setFavoriteEpisodes(
+    sharedItems.trustworthy
+      ? nextEpisodes
+      : { ...useApp.getState().favoriteEpisodes, ...nextEpisodes },
+  );
+  setForeignFavoriteEpisodes(nextForeign);
 
   if (unresolvedShows.length > 0) {
     const resolved = await resolveBatch(unresolvedShows, resolveGuidToFavorite);
@@ -355,21 +426,31 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
       const episode = await resolveEpisodeByGuid(ep.feedGuid!, ep.itemGuid);
       return episode ? favoriteFromEpisode(episode, ep.feedGuid!, ep.feedUrl) : null;
     });
+    // Resolution is shared, but the RESULTS must go back to the map they came
+    // from. Writing a resolved foreign entry into `favoriteEpisodes` would put
+    // it straight into `localFavoriteItems()` and publish it to the items list
+    // — the quarantine defeated by the very step that makes the entry
+    // renderable, which is exactly the kind of leak a separate slot exists to
+    // make structurally impossible rather than merely remembered.
+    const isForeign = new Set(foreignEpisodes.map((e) => e.itemGuid));
     const merged = { ...useApp.getState().favoriteEpisodes };
+    const mergedForeign = { ...useApp.getState().foreignFavoriteEpisodes };
     for (const fav of resolved) {
       if (!fav) continue;
-      const prev = merged[fav.itemGuid];
+      const into = isForeign.has(fav.itemGuid) ? mergedForeign : merged;
+      const prev = into[fav.itemGuid];
       // /episodes/byguid returns an Episode, which has no medium — so the only
       // sources are the parent feed's entry and the wire hint, both already in
       // `prev`. Deliberately NOT a per-parent /podcasts/byguid fan-out: a
       // request per entry whose sole purpose is a hint is exactly the cost the
       // hint exists to avoid.
       const withMedium = fav.medium ? fav : { ...fav, medium: prev?.medium };
-      merged[fav.itemGuid] = prev?.addedAt
+      into[fav.itemGuid] = prev?.addedAt
         ? { ...withMedium, addedAt: prev.addedAt }
         : withMedium;
     }
     setFavoriteEpisodes(merged);
+    setForeignFavoriteEpisodes(mergedForeign);
   }
 
   // The merged set is what everyone should now agree on. Publish only when it

@@ -59,11 +59,15 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // through this same `onSynced` (see favorites-hydrator.ts), and a publish
     // that lands is proof the relays are answering again — it clears a notice
     // an earlier degraded read put up.
+    // Scoped to 'feeds' because that is still the only address this app
+    // publishes to. When the items publish lands (step 8b) each list reports
+    // its own health — one flag across both is worse than none, since a good
+    // feeds publish would clear a notice a failed items read raised.
     onSynced: (ids) => {
       storage.favSynced.set(identity.npub, ids);
-      useApp.getState().setFavoritesSync('ok');
+      useApp.getState().setFavoritesSync('feeds', 'ok');
     },
-    onDegraded: () => useApp.getState().setFavoritesSync('degraded'),
+    onDegraded: () => useApp.getState().setFavoritesSync('feeds', 'degraded'),
   };
 }
 
