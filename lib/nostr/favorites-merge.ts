@@ -272,11 +272,20 @@ export const mediumOf = (item: SharedFavoriteItem): string | undefined => item.t
  *     entry, remove one, or change its identifier.
  */
 export function overlayTag(latest: string[] | null, mine: string[] | null): string[] {
-  if (!latest) return trimTag(mine ?? []);
-  if (!mine) return trimTag(latest);
-  const out = ['i', latest[1] ?? mine[1] ?? ''];
-  for (let p = 2; p <= 4; p += 1) out.push(latest[p] || mine[p] || '');
-  for (let p = 5; p < latest.length; p += 1) out.push(latest[p] ?? '');
+  const base = latest ?? mine;
+  if (!base) return [];
+  const id = base[1] ?? '';
+
+  let out: string[];
+  if (latest && mine) {
+    out = ['i', id];
+    for (let p = 2; p <= 4; p += 1) out.push(latest[p] || mine[p] || '');
+    for (let p = 5; p < latest.length; p += 1) out.push(latest[p] ?? '');
+  } else {
+    // A foreign entry, or a genuine local add: carried whole.
+    out = base.slice();
+  }
+
   return trimTag(out);
 }
 
@@ -460,6 +469,138 @@ export function baselineFrom(
 ): string[] {
   const localIds = new Set(local.map((i) => i.id));
   return published.filter((i) => localIds.has(i.id)).map((i) => i.id);
+}
+
+// --- planning a two-address publish ----------------------------------------
+
+export interface FavoritesPublishInput {
+  latestFeeds: SharedFavoriteItem[];
+  latestItems: SharedFavoriteItem[];
+  /** Whether each read can be believed. A list we couldn't read gets no plan —
+   *  publishing over it is the failure this whole module exists to prevent —
+   *  and the two are INDEPENDENT: a degraded items read must not block the
+   *  feeds publish, or the volume-heavy list hands its failure rate straight to
+   *  the list the split exists to protect. */
+  feedsTrustworthy: boolean;
+  itemsTrustworthy: boolean;
+  baselineFeeds: string[];
+  baselineItems: string[];
+  /** This device's whole favorites set, unpartitioned. Must NOT include entries
+   *  this app didn't put on the wire — see `foreignFavoriteEpisodes`. */
+  local: SharedFavoriteItem[];
+  /** False for the legacy single-list address, where everything shares one
+   *  event and there is nothing to split. */
+  split: boolean;
+}
+
+export interface FavoritesListPlan {
+  list: FavoritesPlacement;
+  next: SharedFavoriteItem[];
+  /** The baseline to record — only once this list's publish has landed. */
+  baseline: string[];
+  /**
+   * Membership differs from what the relay holds, so there is something to
+   * publish. Compared on IDS ONLY, deliberately: that makes it blind to hint
+   * changes, which is exactly the point. "Never publish solely to upgrade a
+   * hint" — a bulk backfill of position 4 across a replaceable multi-writer
+   * event, run by two apps at once, is the shape of every failure this format
+   * guards against. Hints ride along on a publish you were making anyway.
+   *
+   * It also keeps a signing prompt off the screen for a no-op republish, which
+   * matters more now: two lists mean two events and two signatures.
+   */
+  changed: boolean;
+}
+
+const sameMembership = (a: SharedFavoriteItem[], b: SharedFavoriteItem[]) =>
+  a.map((i) => i.id).join('\n') === b.map((i) => i.id).join('\n');
+
+/**
+ * Work out what to publish to each list. **Pure, so it can be pinned.**
+ *
+ * The spec is explicit that the placement assertion has to run over the publish
+ * path rather than over `placementFor`: a unit test on the mapping table passes
+ * while the publish ignores placement entirely, which is the failure being
+ * pinned. That is only possible if this decision is a function rather than
+ * something smeared across the I/O — which is also why `syncFavorites` and
+ * `runHydrate` both route through it instead of each rolling their own merge
+ * and baseline write, as they used to. Two copies across two lists is four
+ * chances to get `baseline = next ∩ local` wrong.
+ *
+ * **`local` must be partitioned, not reused.** Running the merge for one list
+ * against the whole local set makes `adds = local − baseline` sweep every track
+ * onto the feeds list and every show onto the items list: both end up holding
+ * everything, the size pressure the split isolates is back, and you have
+ * manufactured exactly the added-to-one-removed-from-the-other churn that
+ * deriving placement was meant to prevent.
+ *
+ * **Relocation is add-first.** Moving this app's own legacy item entry off the
+ * feeds list is an add plus a remove across two independent events, and it is
+ * safe in one order only: publish to the items list, confirm by READING IT BACK
+ * (`relocated`), and only then let it fall out of `local_feeds` so it becomes a
+ * removal there. Remove-first loses the entry outright — the feeds publish
+ * succeeds, the items publish is blocked by a degraded read exactly as
+ * instructed, and the entry now exists on neither list.
+ */
+export function planFavoritesPublish(input: FavoritesPublishInput): FavoritesListPlan[] {
+  const {
+    latestFeeds, latestItems, feedsTrustworthy, itemsTrustworthy,
+    baselineFeeds, baselineItems, local, split,
+  } = input;
+
+  // Legacy single-list mode: one event, everything on it, exactly as before.
+  if (!split) {
+    if (!feedsTrustworthy) return [];
+    const next = mergeSharedFavorites({ latest: latestFeeds, lastSynced: baselineFeeds, local });
+    return [{
+      list: 'feeds',
+      next,
+      baseline: baselineFrom(next, local),
+      changed: !sameMembership(next, latestFeeds),
+    }];
+  }
+
+  // Only a trustworthy items read may be treated as evidence that a relocation
+  // landed. On a degraded read this is empty, which keeps the entry in
+  // `localFeeds` and withholds one removal — the safe direction, and stated
+  // rather than left to fall out of `latestItems` happening to be empty.
+  const relocated = itemsTrustworthy ? new Set(latestItems.map((i) => i.id)) : new Set<string>();
+  const inBaselineFeeds = new Set(baselineFeeds);
+
+  const localItems = local.filter((i) => placementFor(i.id) === 'items');
+  const localFeeds = [
+    ...local.filter((i) => placementFor(i.id) === 'feeds'),
+    // Our own not-yet-relocated item entries keep asserting themselves on the
+    // feeds list. Intersecting with the CURRENT local set is load-bearing: an
+    // entry the user just unfavorited is in `baselineFeeds` but no longer in
+    // `local`, and re-adding it here would mean the unfavorite never propagates.
+    ...localItems.filter((i) => inBaselineFeeds.has(i.id) && !relocated.has(i.id)),
+  ];
+
+  const plans: FavoritesListPlan[] = [];
+  if (feedsTrustworthy) {
+    const next = mergeSharedFavorites({
+      latest: latestFeeds, lastSynced: baselineFeeds, local: localFeeds,
+    });
+    plans.push({
+      list: 'feeds',
+      next,
+      baseline: baselineFrom(next, localFeeds),
+      changed: !sameMembership(next, latestFeeds),
+    });
+  }
+  if (itemsTrustworthy) {
+    const next = mergeSharedFavorites({
+      latest: latestItems, lastSynced: baselineItems, local: localItems,
+    });
+    plans.push({
+      list: 'items',
+      next,
+      baseline: baselineFrom(next, localItems),
+      changed: !sameMembership(next, latestItems),
+    });
+  }
+  return plans;
 }
 
 // --- writing ---------------------------------------------------------------

@@ -8,13 +8,13 @@ import {
 import { fetchLatestEventDetailed } from './event-queries';
 import { QUERY_MAX_WAIT_MS } from './pool';
 import {
-  baselineFrom,
   itemsFromTags,
   otherTagsFrom,
-  mergeSharedFavorites,
+  planFavoritesPublish,
   tagsForSharedFavorites,
   LEGACY_D_TAG,
   LEGACY_FAVORITES_KIND,
+  type FavoritesPlacement,
   type SharedFavoriteItem,
 } from './favorites-merge';
 import { favoritesAddressFor } from './favorites-gate';
@@ -154,26 +154,32 @@ export async function publishSharedFavorites(
   otherTags: string[][],
   relays: string[],
   pubkey: string,
+  list: FavoritesPlacement = 'feeds',
 ): Promise<PublishedNote> {
   const address = favoritesAddressFor(pubkey);
+  // `items` is null in legacy single-list mode, where 'items' is not a valid
+  // destination — everything lives on the one address.
+  const dTag = list === 'items' ? address.items : address.feeds;
+  if (!dTag) throw new Error('favorites: no items address for this account');
   const template: EventTemplate = {
     kind: address.kind,
     created_at: Math.floor(Date.now() / 1000),
-    tags: tagsForSharedFavorites(items, otherTags, address.feeds),
+    tags: tagsForSharedFavorites(items, otherTags, dTag),
     content: '',
   };
-  return assertPublished(await signAndPublish(template, relays), 'favorites');
+  return assertPublished(await signAndPublish(template, relays), `favorites:${list}`);
 }
 
 export interface SyncOptions {
   pubkey: string;
   relays: string[];
-  /** This device's current favorites, as wire items. */
+  /** This device's current favorites, as wire items. Must NOT include foreign
+   *  legacy item entries — see `foreignFavoriteEpisodes` in lib/store.ts. */
   local: () => SharedFavoriteItem[];
-  /** The id list this device last agreed with the relay on. */
-  lastSynced: () => string[];
-  /** Called with the published id list once the event lands. */
-  onSynced: (ids: string[]) => void;
+  /** The id list this device last agreed with the given list on. */
+  lastSynced: (list: FavoritesPlacement) => string[];
+  /** Called with the published id list once that list's event lands. */
+  onSynced: (list: FavoritesPlacement, ids: string[]) => void;
   /**
    * Called instead of publishing when the read came back untrustworthy. The
    * skip is correct (see below) but invisible, and a heart-tap that never
@@ -181,7 +187,7 @@ export interface SyncOptions {
    * Injected like `onSynced` rather than reaching for the store here, which
    * keeps this module free of React and browser globals.
    */
-  onDegraded?: () => void;
+  onDegraded?: (list: FavoritesPlacement) => void;
 }
 
 /**
@@ -196,37 +202,72 @@ export interface SyncOptions {
  * stops the retry from ever happening.
  */
 export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | null> {
-  const latest = await fetchSharedFavorites(opts.pubkey, opts.relays);
-  if (!latest.trustworthy) {
-    opts.onDegraded?.();
+  // Both reads, evaluated separately. An event arriving at one address is no
+  // evidence whatever about the other.
+  const [latestFeeds, latestItems] = await Promise.all([
+    fetchSharedFavorites(opts.pubkey, opts.relays),
+    fetchSharedFavoriteItems(opts.pubkey, opts.relays),
+  ]);
+  const split = !!favoritesAddressFor(opts.pubkey).items;
+
+  if (!latestFeeds.trustworthy) {
+    opts.onDegraded?.('feeds');
     // eslint-disable-next-line no-console
-    console.warn('[favorites] skipping publish — could not read the current list');
-    return null;
+    console.warn('[favorites] skipping feeds publish — could not read the current list');
   }
-  const local = opts.local();
-  const next = mergeSharedFavorites({
-    latest: latest.items,
-    lastSynced: opts.lastSynced(),
-    local,
+  if (split && !latestItems.trustworthy) {
+    opts.onDegraded?.('items');
+    // eslint-disable-next-line no-console
+    console.warn('[favorites] skipping items publish — could not read the current list');
+  }
+
+  const plans = planFavoritesPublish({
+    latestFeeds: latestFeeds.items,
+    latestItems: latestItems.items,
+    feedsTrustworthy: latestFeeds.trustworthy,
+    itemsTrustworthy: latestItems.trustworthy,
+    baselineFeeds: opts.lastSynced('feeds'),
+    baselineItems: opts.lastSynced('items'),
+    local: opts.local(),
+    split,
   });
-  let published: PublishedNote;
-  try {
-    published = await publishSharedFavorites(next, latest.otherTags, opts.relays, opts.pubkey);
-  } catch (e) {
-    // Only the reached-nobody case is a relay problem. A signing rejection is
-    // the user saying no, and reporting that as "couldn't reach the relays"
-    // would be a lie — it rethrows to the debounce's own warn instead.
-    if (!(e instanceof NoRelayAcceptedError)) throw e;
-    opts.onDegraded?.();
-    // eslint-disable-next-line no-console
-    console.warn('[favorites] publish reached no relay — baseline unchanged, next toggle retries');
-    return null;
+
+  let first: PublishedNote | null = null;
+  for (const plan of plans) {
+    // Nothing to say: membership already matches the relay. Still record the
+    // baseline — without it the first unfavorite on this device has nothing to
+    // diff against and silently fails to propagate.
+    if (!plan.changed) {
+      opts.onSynced(plan.list, plan.baseline);
+      continue;
+    }
+    const otherTags = plan.list === 'feeds' ? latestFeeds.otherTags : latestItems.otherTags;
+    try {
+      const published = await publishSharedFavorites(
+        plan.next, otherTags, opts.relays, opts.pubkey, plan.list,
+      );
+      // Only our own contribution goes into the baseline — see `baselineFrom`.
+      // This line is why `assertPublished` exists: the baseline is a promise
+      // that `local` will keep asserting these ids, and it may only be made
+      // about an event that actually landed.
+      opts.onSynced(plan.list, plan.baseline);
+      first ??= published;
+    } catch (e) {
+      // Only the reached-nobody case is a relay problem. A signing rejection is
+      // the user saying no, and reporting that as "couldn't reach the relays"
+      // would be a lie — it rethrows to the debounce's own warn instead.
+      if (!(e instanceof NoRelayAcceptedError)) throw e;
+      opts.onDegraded?.(plan.list);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[favorites] ${plan.list} publish reached no relay — baseline unchanged, next toggle retries`,
+      );
+      // Deliberately no rethrow and no break: the two lists' failures stay
+      // independent, or the volume-heavy list hands its failure rate straight
+      // to the list the split exists to protect.
+    }
   }
-  // Only our own contribution goes into the baseline — see `baselineFrom`. This
-  // line is why the assert above exists: it is a promise that `local` will keep
-  // asserting these ids, and it may only be made about an event that landed.
-  opts.onSynced(baselineFrom(next, local));
-  return published;
+  return first;
 }
 
 // The debounce that used to live here now sits in `favorites-sync.ts`, next to

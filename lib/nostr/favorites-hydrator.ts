@@ -35,6 +35,7 @@ import {
   mediumOf,
   mergeSharedFavorites,
   placementFor,
+  planFavoritesPublish,
   publishSharedFavorites,
   showId,
   type SharedFavoriteItem,
@@ -45,7 +46,7 @@ import {
   serializeFavoritesCycle,
   syncOptionsFor,
 } from './favorites-sync';
-import { sharedFavoritesEnabledFor } from './favorites-gate';
+import { favoritesAddressFor, sharedFavoritesEnabledFor } from './favorites-gate';
 import { resolvePublishRelays } from './relays';
 import type { NostrIdentity } from './auth';
 
@@ -453,18 +454,35 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     setForeignFavoriteEpisodes(mergedForeign);
   }
 
-  // The merged set is what everyone should now agree on. Publish only when it
-  // actually differs from what the relay holds — a no-op republish on every
-  // page load would bump created_at for nothing and race other devices.
-  const relayIds = items.map((i) => i.id).join('\n');
-  const targetIds = target.map((i) => i.id).join('\n');
-  if (relayIds !== targetIds) {
+  // What everyone should now agree on, per list — through the SAME pure
+  // planner the publish path uses. Deriving it a second time here is how the
+  // merge and the baseline write drifted between two call sites before; across
+  // two lists that would be four chances to get `baseline = next ∩ local`
+  // wrong.
+  //
+  // Publish only when membership actually differs from what the relay holds. A
+  // no-op republish on every page load would bump created_at for nothing, race
+  // other devices, and — now that there are two events — put two signing
+  // prompts on screen for a load that changed nothing.
+  const plans = planFavoritesPublish({
+    latestFeeds: items,
+    latestItems: sharedItems.items,
+    feedsTrustworthy: true, // the untrustworthy case returned above
+    itemsTrustworthy: sharedItems.trustworthy,
+    baselineFeeds: lastSynced,
+    baselineItems: storage.favSyncedItems.get(identity.npub),
+    local,
+    split: !!favoritesAddressFor(identity.pubkey).items,
+  });
+
+  if (plans.some((p) => p.changed)) {
     requestFavoritesSync(identity);
   } else {
-    // Still record the baseline: without it the first unfavorite on this
+    // Still record the baselines: without them the first unfavorite on this
     // device has nothing to diff against and silently fails to propagate.
     // Scoped to what this app contributed — see `baselineFrom`.
-    syncOptionsFor(identity).onSynced(baselineFrom(target, local));
+    const opts = syncOptionsFor(identity);
+    for (const plan of plans) opts.onSynced(plan.list, plan.baseline);
   }
 }
 

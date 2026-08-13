@@ -53,21 +53,24 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // Getters, not values: the debounce re-reads at fire time, so a burst of
     // heart-taps publishes once with the final set.
     local: localFavoriteItems,
-    lastSynced: () => storage.favSynced.get(identity.npub),
+    lastSynced: (list) =>
+      list === 'items'
+        ? storage.favSyncedItems.get(identity.npub)
+        : storage.favSynced.get(identity.npub),
     // Both callbacks also move `favoritesSync`, so the whole feature reports
     // its relay health from one place: hydration routes its own success
     // through this same `onSynced` (see favorites-hydrator.ts), and a publish
     // that lands is proof the relays are answering again — it clears a notice
     // an earlier degraded read put up.
-    // Scoped to 'feeds' because that is still the only address this app
-    // publishes to. When the items publish lands (step 8b) each list reports
-    // its own health — one flag across both is worse than none, since a good
-    // feeds publish would clear a notice a failed items read raised.
-    onSynced: (ids) => {
-      storage.favSynced.set(identity.npub, ids);
-      useApp.getState().setFavoritesSync('feeds', 'ok');
+    // Per list, both directions. One flag across both would let a good feeds
+    // publish clear a notice a failed items read raised — the user gets a
+    // confident empty state for their entire track library.
+    onSynced: (list, ids) => {
+      if (list === 'items') storage.favSyncedItems.set(identity.npub, ids);
+      else storage.favSynced.set(identity.npub, ids);
+      useApp.getState().setFavoritesSync(list, 'ok');
     },
-    onDegraded: () => useApp.getState().setFavoritesSync('feeds', 'degraded'),
+    onDegraded: (list) => useApp.getState().setFavoritesSync(list, 'degraded'),
   };
 }
 

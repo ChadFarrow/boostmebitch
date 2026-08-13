@@ -54,6 +54,7 @@ import {
   LEGACY_FAVORITES_KIND,
   SHARED_FAVORITES_KIND,
   placementFor,
+  planFavoritesPublish,
   titleFor,
   feedRefOf,
   feedUrlOf,
@@ -226,6 +227,7 @@ console.log('\noverlayTag — fill what is empty, never touch what is not');
     })),
     [['i', C, '', A]],
   );
+
 
   // Position 2 is reserved. An existing value is carried forever...
   check(
@@ -618,6 +620,157 @@ console.log('\nplacement — which of the two lists an entry belongs to');
     tagsForSharedFavorites([mine({ id: C })], [], ITEMS_D_TAG).slice(0, 2),
     [['d', ITEMS_D_TAG], ['title', 'Podcast Favorite Items']],
   );
+}
+
+console.log('\nplanFavoritesPublish — asserted over publish(), not over placementFor');
+{
+  const D = itemId('https://example.com/ep/99');
+  // Defaults are a quiet, fully-trustworthy, empty cycle; each vector overrides
+  // only what it is about.
+  const plan = (over) => planFavoritesPublish({
+    latestFeeds: [], latestItems: [],
+    feedsTrustworthy: true, itemsTrustworthy: true,
+    baselineFeeds: [], baselineItems: [],
+    local: [], split: true,
+    ...over,
+  });
+  const on = (plans, list) => plans.find((p) => p.list === list);
+  const idsOn = (plans, list) => on(plans, list)?.next.map((i) => i.id);
+
+  // SPEC VECTOR 5, the half that matters. A unit test on the mapping table
+  // passes while the publish path ignores placement entirely — which is the
+  // failure being pinned. Feed a COMBINED local set through a full plan.
+  const fanOut = plan({ local: [mine({ id: A }), mine({ id: C }), mine({ id: X })] });
+  check('the feeds list gets no item guids', idsOn(fanOut, 'feeds'), [A, X]);
+  check('the items list gets no feed guids', idsOn(fanOut, 'items'), [C]);
+
+  // Running one list's merge against the WHOLE local set is the failure this
+  // guards: `adds = local − baseline` would sweep every track onto the feeds
+  // list and every show onto the items list in a single publish.
+  check(
+    'neither list ends up holding everything',
+    [idsOn(fanOut, 'feeds').length, idsOn(fanOut, 'items').length],
+    [2, 1],
+  );
+
+  // Spec vector 5 as literally written says next_feeds contains no
+  // podcast:item:guid. That is FALSE here and correctly so: a foreign legacy
+  // item entry stays on the feeds list, because removing another app's data is
+  // what the merge exists to prevent. Assert on the deltas instead.
+  const withForeign = plan({
+    latestFeeds: [wire(A), wire(D)], // D was put there by another app
+    baselineFeeds: [A],              // not ours
+    local: [mine({ id: A })],        // and quarantined out of `local`
+  });
+  check('a foreign legacy item is carried on the feeds list', idsOn(withForeign, 'feeds'), [A, D]);
+  check('...and never copied to the items list', idsOn(withForeign, 'items'), []);
+
+  console.log('\n  relocation — add first, confirm, only then remove');
+  // Cycle 1: our own item C is on the feeds list; the items list is empty.
+  const c1 = plan({
+    latestFeeds: [wire(A), wire(C)], latestItems: [],
+    baselineFeeds: [A, C], baselineItems: [],
+    local: [mine({ id: A }), mine({ id: C })],
+  });
+  check('cycle 1 — added to the items list', idsOn(c1, 'items'), [C]);
+  check('cycle 1 — NOT yet removed from the feeds list', idsOn(c1, 'feeds'), [A, C]);
+
+  // Cycle 2: it has been read back from the items list, so the add is confirmed.
+  const c2 = plan({
+    latestFeeds: [wire(A), wire(C)], latestItems: [wire(C)],
+    baselineFeeds: [A, C], baselineItems: [C],
+    local: [mine({ id: A }), mine({ id: C })],
+  });
+  check('cycle 2 — only now does it leave the feeds list', idsOn(c2, 'feeds'), [A]);
+  check('cycle 2 — and it stays on the items list', idsOn(c2, 'items'), [C]);
+
+  // Cycle 3: settled, and nothing left to say.
+  const c3 = plan({
+    latestFeeds: [wire(A)], latestItems: [wire(C)],
+    baselineFeeds: [A], baselineItems: [C],
+    local: [mine({ id: A }), mine({ id: C })],
+  });
+  check('cycle 3 — converged, no further publish', c3.map((p) => p.changed), [false, false]);
+
+  // THE vector for the formula. `local_feeds` keeps our not-yet-relocated item
+  // entries — but only those still in the local set. Without that
+  // intersection an unfavorited entry is put back into local_feeds, never
+  // enters `removes`, and the unfavorite never propagates.
+  check(
+    'unfavoriting a not-yet-relocated item still propagates off the feeds list',
+    idsOn(plan({
+      latestFeeds: [wire(A), wire(C)], latestItems: [],
+      baselineFeeds: [A, C], baselineItems: [],
+      local: [mine({ id: A })], // C unfavorited
+    }), 'feeds'),
+    [A],
+  );
+
+  console.log('\n  independence — one list\'s failure is not the other\'s');
+  const itemsDown = plan({
+    latestFeeds: [wire(A)], itemsTrustworthy: false,
+    baselineFeeds: [A], local: [mine({ id: A }), mine({ id: C })],
+  });
+  check('a degraded items read publishes nothing to that list', itemsDown.map((p) => p.list), ['feeds']);
+  check('...but does not block the feeds publish', !!on(itemsDown, 'feeds'), true);
+
+  const feedsDown = plan({
+    latestItems: [wire(C)], feedsTrustworthy: false,
+    baselineItems: [C], local: [mine({ id: A }), mine({ id: C })],
+  });
+  check('a degraded feeds read publishes nothing to that list', feedsDown.map((p) => p.list), ['items']);
+
+  // The trust FLAG decides, not whether the array happens to be empty. A
+  // refactor that populated `latestItems` from a cache would otherwise read a
+  // failed read as proof the relocation landed and drop the entry off the
+  // feeds list while it exists nowhere else.
+  check(
+    'an untrustworthy items read is never evidence a relocation landed',
+    idsOn(plan({
+      latestFeeds: [wire(A), wire(C)], latestItems: [wire(C)], itemsTrustworthy: false,
+      baselineFeeds: [A, C], baselineItems: [],
+      local: [mine({ id: A }), mine({ id: C })],
+    }), 'feeds'),
+    [A, C],
+  );
+
+  console.log('\n  the baseline at the split — and the version that deletes');
+  // Correct: everything you ever published went to the feeds list, whatever
+  // kind it was, so baselineFeeds is the whole existing baseline and
+  // baselineItems starts empty.
+  check(
+    'with baselineItems empty, the item moves across',
+    idsOn(plan({
+      latestFeeds: [wire(A), wire(C)], latestItems: [],
+      baselineFeeds: [A, C], baselineItems: [],
+      local: [mine({ id: A }), mine({ id: C })],
+    }), 'items'),
+    [C],
+  );
+  // The obvious alternative — split the old baseline by placement — makes
+  // baselineItems name an entry the items list has never held, so `adds` is
+  // empty and the first publish there is an empty event. The entry is stranded
+  // on the feeds list and the migration silently never completes.
+  check(
+    'splitting the old baseline by placement strands it instead — pinned so it cannot be reintroduced',
+    idsOn(plan({
+      latestFeeds: [wire(A), wire(C)], latestItems: [],
+      baselineFeeds: [A], baselineItems: [C], // ← the buggy derivation
+      local: [mine({ id: A }), mine({ id: C })],
+    }), 'items'),
+    [],
+  );
+
+  console.log('\n  legacy single-list mode — everyone not on the allowlist');
+  const legacy = planFavoritesPublish({
+    latestFeeds: [], latestItems: [],
+    feedsTrustworthy: true, itemsTrustworthy: true,
+    baselineFeeds: [], baselineItems: [],
+    local: [mine({ id: A }), mine({ id: C })],
+    split: false,
+  });
+  check('exactly one list is planned', legacy.map((p) => p.list), ['feeds']);
+  check('holding shows and episodes together, unsplit', legacy[0].next.map((i) => i.id), [A, C]);
 }
 
 // ---------------------------------------------------------------------------
