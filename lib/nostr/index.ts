@@ -80,15 +80,18 @@ export {
   mergeSharedFavorites,
   publishSharedFavorites,
   syncFavorites,
-  scheduleSyncFavorites,
   type SharedFavoriteItem,
   type SharedFavorites,
   type SyncOptions,
 } from './favorites';
 
+// `scheduleSyncFavorites` deliberately isn't here any more: every favorites
+// cycle has to be both debounced and queued, and a scheduler that skipped the
+// queue was a second way in. Use `requestFavoritesSync`.
 export {
   localFavoriteItems,
   requestFavoritesSync,
+  serializeFavoritesCycle,
   syncFavoritesNow,
   syncOptionsFor,
 } from './favorites-sync';

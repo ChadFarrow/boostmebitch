@@ -9,9 +9,9 @@
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { resolvePublishRelays } from './relays';
+import { createScheduledPublish } from './debounced-publish';
 import {
   itemId,
-  scheduleSyncFavorites,
   showId,
   syncFavorites,
   type SharedFavoriteItem,
@@ -62,13 +62,47 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
   };
 }
 
+/**
+ * One favorites read-merge-publish cycle at a time.
+ *
+ * Hydration and a heart-toggle publish are the SAME cycle as far as the relays
+ * are concerned: both read the list, merge a delta over what came back, and
+ * replace the whole event. Run two concurrently and they merge against the same
+ * `latest`, so whichever publishes second silently overwrites the first's
+ * changes with a `next` computed before they existed — the multi-writer clobber
+ * this feature exists to prevent, committed against ourselves.
+ *
+ * It became reachable when `<FavoritesSyncNotice>` grew a retry button: that
+ * fires a hydrate while a debounced publish is already pending. The hydrator's
+ * own npub-keyed guard doesn't cover it, because that guard dedupes *identical*
+ * work and these are two different jobs.
+ *
+ * So: serialized, not deduped — a publish queues behind a hydrate rather than
+ * joining it. `chain` swallows failures so one rejected cycle can't wedge every
+ * later one, the same shape as the settle chain in lib/v4v/streaming.ts.
+ */
+let chain: Promise<unknown> = Promise.resolve();
+
+export function serializeFavoritesCycle<T>(fn: () => Promise<T>): Promise<T> {
+  const next = chain.then(fn, fn);
+  chain = next.catch(() => {});
+  return next;
+}
+
+// Collapses rapid heart-toggles into one cycle, and so one signing prompt. The
+// getters in SyncOptions are re-read at fire time, so a burst publishes once
+// with the final set.
+const scheduleFavoritesPublish = createScheduledPublish('favorites');
+
 /** Debounced read-merge-publish. Signed out, favorites stay local — no-op. */
 export function requestFavoritesSync(identity: NostrIdentity | null | undefined) {
   if (!identity) return;
-  scheduleSyncFavorites(syncOptionsFor(identity));
+  scheduleFavoritesPublish(() =>
+    serializeFavoritesCycle(() => syncFavorites(syncOptionsFor(identity))),
+  );
 }
 
 /** Immediate read-merge-publish, for callers that must await the result. */
 export function syncFavoritesNow(identity: NostrIdentity) {
-  return syncFavorites(syncOptionsFor(identity));
+  return serializeFavoritesCycle(() => syncFavorites(syncOptionsFor(identity)));
 }

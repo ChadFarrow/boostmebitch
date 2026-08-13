@@ -166,9 +166,12 @@ export function FavoritesList({
   const favorites = useApp((s) => s.favorites);
   const list = useMemo(
     () =>
-      Object.values(favorites).sort((a, b) =>
-        (a.title ?? '').localeCompare(b.title ?? '', undefined, { sensitivity: 'base' }),
-      ),
+      Object.values(favorites).sort((a, b) => {
+        // Unresolved entries have no title. Sink them rather than letting an
+        // empty string sort them to the top of the user's library.
+        if (!a.title !== !b.title) return a.title ? -1 : 1;
+        return (a.title ?? '').localeCompare(b.title ?? '', undefined, { sensitivity: 'base' });
+      }),
     [favorites],
   );
 
@@ -177,12 +180,18 @@ export function FavoritesList({
   return (
     <ul className="divide-y divide-bone/10">
       {list.map((p) => {
+        const title = p.title;
+        // No title means Podcast Index hasn't answered for this guid — a feed
+        // that was never indexed, or has since been delisted. Render it rather
+        // than hiding it: it is still the user's favorite and is still
+        // republished, and a row they can see is a row they can clean up.
+        if (!title) return <UnresolvedFavoriteRow key={p.podcastGuid} id={p.podcastGuid} kind="show" />;
         // FavoritePodcast → Podcast: the cache doesn't carry the value block,
         // so the value-aware stamp is hidden via showV4VStamp={false}.
         const minimal: Podcast = {
           id: p.id,
           podcastGuid: p.podcastGuid,
-          title: p.title,
+          title,
           author: p.author,
           image: p.image,
           artwork: p.artwork,
@@ -199,6 +208,29 @@ export function FavoritesList({
         );
       })}
     </ul>
+  );
+}
+
+/**
+ * A favorite whose identifier this device can't resolve.
+ *
+ * It exists because the favorite is the guid, not the metadata: an entry
+ * Podcast Index doesn't know is not an entry we may drop, so it has to have
+ * somewhere to go on screen. Deliberately inert — there is nothing to open.
+ */
+function UnresolvedFavoriteRow({ id, kind }: { id: string; kind: 'show' | 'episode' }) {
+  return (
+    <li className="flex gap-3 py-3 px-1 items-center">
+      <div className="w-14 h-14 border border-bone/20 flex-shrink-0 grid place-items-center text-muted text-xl">
+        ?
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-display text-base leading-tight text-muted">
+          Couldn&apos;t load this {kind}
+        </div>
+        <div className="text-[11px] font-mono text-muted/70 truncate">{id}</div>
+      </div>
+    </li>
   );
 }
 
@@ -224,40 +256,48 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
         {list.length} favorite {list.length === 1 ? 'episode' : 'episodes'}
       </div>
       <ul className="divide-y divide-bone/10">
-        {list.map((ep) => (
-          <li
-            key={ep.itemGuid}
-            className="flex gap-3 py-3 px-1 cursor-pointer group transition hover:bg-bone/5"
-            onClick={async () => {
-              // feedId is present for anything this device resolved through PI.
-              // An entry synced from another app before its backfill ran has
-              // only the guid, so fall back to resolving it on demand.
-              if (ep.feedId) {
-                onSelect({
-                  id: ep.feedId,
-                  podcastGuid: ep.feedGuid,
-                  title: ep.podcastTitle ?? ep.title,
-                  image: ep.image,
-                  url: ep.feedUrl,
-                });
-                return;
-              }
-              const podcast = await resolvePodcastByGuid(ep.feedGuid);
-              if (podcast) onSelect(podcast);
-            }}
-          >
-            <PodcastCover
-              image={ep.image}
-              title={ep.title}
-              seed={ep.itemGuid}
-              className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
-            />
-            <div className="min-w-0 flex-1">
-              <div className="font-display text-base leading-tight truncate">{ep.title}</div>
-              <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
-            </div>
-          </li>
-        ))}
+        {list.map((ep) => {
+          const { title, feedGuid } = ep;
+          // Unresolved: no parent feed guid to look up, or PI had nothing for
+          // it. Still the user's favorite, still republished — see
+          // <UnresolvedFavoriteRow>.
+          if (!title) return <UnresolvedFavoriteRow key={ep.itemGuid} id={ep.itemGuid} kind="episode" />;
+          return (
+            <li
+              key={ep.itemGuid}
+              className="flex gap-3 py-3 px-1 cursor-pointer group transition hover:bg-bone/5"
+              onClick={async () => {
+                // feedId is present for anything this device resolved through
+                // PI. An entry synced from another app before its backfill ran
+                // has only the guid, so fall back to resolving it on demand.
+                if (!feedGuid) return;
+                if (ep.feedId) {
+                  onSelect({
+                    id: ep.feedId,
+                    podcastGuid: feedGuid,
+                    title: ep.podcastTitle ?? title,
+                    image: ep.image,
+                    url: ep.feedUrl,
+                  });
+                  return;
+                }
+                const podcast = await resolvePodcastByGuid(feedGuid);
+                if (podcast) onSelect(podcast);
+              }}
+            >
+              <PodcastCover
+                image={ep.image}
+                title={title}
+                seed={ep.itemGuid}
+                className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="font-display text-base leading-tight truncate">{title}</div>
+                <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </>
   );

@@ -252,16 +252,37 @@ export interface StoredBoostLeg {
   boostboxUrl?: string;         // present on LNURL legs when BoostBox accepted
 }
 
+/**
+ * A favorited show.
+ *
+ * **The favorite IS `podcastGuid`; everything else is display cache.** That
+ * split is load-bearing, not stylistic: the store is what
+ * `localFavoriteItems()` publishes from, so an entry that Podcast Index
+ * couldn't resolve must still hold a row here. Dropping it instead used to
+ * prune the store, and because the baseline was recorded from the *pre-prune*
+ * set, the next page load read every unresolved entry as a local removal and
+ * published the deletion to a list other apps read. One PI outage, one reload.
+ *
+ * So `title` and a real `id` are optional-by-absence, and a row without them
+ * renders as unresolved rather than vanishing — which is also what the spec
+ * asks for ("keep it on the list, keep republishing it, and render it as
+ * unresolved").
+ */
 export interface FavoritePodcast {
-  id: number;             // Podcast Index feed ID
+  /** Podcast Index feed ID. 0 until this device resolves one. */
+  id: number;
   podcastGuid: string;    // canonical NIP-73 identifier (key)
-  title: string;
+  /** Absent until PI resolves the guid — never a reason to drop the favorite. */
+  title?: string;
   author?: string;
   image?: string;
   /** Mirror of Podcast.artwork — second-chance source when `image` 404s. */
   artwork?: string;
   url?: string;           // RSS feed URL
-  addedAt: number;        // unix ms — used for sort + last-write-wins merge
+  /** unix ms — used for sort + last-write-wins merge. 0 means "not known yet",
+   *  so a first real resolve stamps its own rather than inheriting a
+   *  placeholder's; see the resolve merge in favorites-hydrator.ts. */
+  addedAt: number;
 }
 
 /**
@@ -269,16 +290,23 @@ export interface FavoritePodcast {
  * `feedGuid` carried alongside because PI's /episodes/byguid wants
  * `podcastguid` — an item guid on its own is not enough to resolve one.
  * Everything after those two is display cache, refreshed on hydration.
+ *
+ * Same rule as {@link FavoritePodcast}: the favorite is the guid. An entry
+ * whose parent feed is unknown is unresolvable, not deletable.
  */
 export interface FavoriteEpisode {
   itemGuid: string;       // <guid> of the RSS item — the key
-  feedGuid: string;       // parent <podcast:guid>, required to resolve the item
+  /** Parent <podcast:guid>. Absent when the wire entry carried no position-3
+   *  parent ref, which makes the item unresolvable through PI but still the
+   *  user's favorite. */
+  feedGuid?: string;
   feedId?: number;        // Podcast Index feed ID, when known
-  feedUrl?: string;       // parent RSS feed URL — the NIP-73 hint we publish
-  title: string;
+  feedUrl?: string;       // parent RSS feed URL — a legacy position-2 hint
+  /** Absent until PI resolves the item. */
+  title?: string;
   podcastTitle?: string;
   image?: string;
   enclosureUrl?: string;
   datePublished?: number;
-  addedAt: number;        // unix ms
+  addedAt: number;        // unix ms — 0 means "not known yet"
 }
