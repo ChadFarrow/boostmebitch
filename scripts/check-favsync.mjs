@@ -632,8 +632,12 @@ console.log('\nplacement — which of the two lists an entry belongs to');
 
   check('the items list has its own title', titleFor(ITEMS_D_TAG), 'Podcast Favorite Items');
   check('the feeds list keeps the original', titleFor(SHARED_D_TAG), 'Podcast Favorites');
-  // Changing the legacy event's title would churn it for nothing.
-  check('the legacy list keeps it too', titleFor(LEGACY_D_TAG), 'Podcast Favorites');
+  // The legacy address gets the same title as the feeds address — it does NOT
+  // preserve what is on the event. The live legacy event says 'Favorite
+  // Podcasts' and the next publish overwrites it. Harmless (nothing renders a
+  // title tag) and longstanding, but pinned so nobody reads the branch above as
+  // "only the items list is special-cased because the others are preserved".
+  check('the legacy list gets the feeds title, not its own', titleFor(LEGACY_D_TAG), 'Podcast Favorites');
   check(
     'the title tag follows the address it is published to',
     tagsForSharedFavorites([mine({ id: C })], [], ITEMS_D_TAG).slice(0, 2),

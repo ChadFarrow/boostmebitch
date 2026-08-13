@@ -71,9 +71,18 @@ export const ITEM_PREFIX = 'podcast:item:guid:';
 export const LIST_TITLE = 'Podcast Favorites';
 export const ITEMS_LIST_TITLE = 'Podcast Favorite Items';
 
-/** The `title` tag for a list address. Nothing renders it; it keeps the event
- *  self-describing for anyone reading raw relay output. The legacy address
- *  keeps the original title — changing it would churn the event for nothing. */
+/**
+ * The `title` tag for a list address. Nothing renders it; it keeps the event
+ * self-describing for anyone reading raw relay output.
+ *
+ * **Only the items address differs.** The legacy address gets `Podcast
+ * Favorites` exactly like the shared feeds address — it does NOT keep whatever
+ * title is on the event today. Checked on the wire: the live legacy event says
+ * `Favorite Podcasts`, and the next publish to it will overwrite that. Longstanding
+ * behaviour rather than a decision (this writer has always emitted `LIST_TITLE`),
+ * and left alone deliberately: threading a per-address title through to preserve
+ * a field no client reads is more machinery than the fact is worth.
+ */
 export const titleFor = (dTag: string): string =>
   dTag === ITEMS_D_TAG ? ITEMS_LIST_TITLE : LIST_TITLE;
 
@@ -649,7 +658,10 @@ export function tagsForSharedFavorites(
     if (kind) kinds.add(kind);
   }
   // One `k` per distinct identifier kind. The old code emitted one per
-  // favorite; harmless, but N copies of the same two strings.
+  // favorite; harmless, but N copies of the same two strings — the live legacy
+  // event still carries 17 identical `['k','podcast:guid']` tags from that era,
+  // so the first publish to it collapses them and produces a bigger diff than
+  // the change that triggered it.
   for (const kind of kinds) tags.push(['k', kind]);
   return tags;
 }
