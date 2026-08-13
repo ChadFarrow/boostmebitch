@@ -1,5 +1,11 @@
 import type { Event, Filter, SimplePool } from 'nostr-tools';
 import { withPool, QUERY_MAX_WAIT_MS, FEED_QUERY_MAX_WAIT_MS } from './pool';
+import {
+  acceptsEvent,
+  readIsTrustworthy,
+  syntheticEoseTimeoutFor,
+  type ReadExpectation,
+} from './read-trust';
 
 // After the first matching event arrives, wait this long for a newer
 // version from the remaining relays, then resolve. Replaceable events
@@ -26,6 +32,16 @@ export async function fetchLatestEvent(
   return (await fetchLatestEventDetailed(relays, filter, maxWait)).event;
 }
 
+export interface DetailedRead {
+  event: Event | null;
+  /** Relays that accepted a connection and stayed up long enough to answer. */
+  reached: number;
+  /** Of those, the ones that sent an EOSE inside the window. */
+  answered: number;
+  /** Whether a null `event` may be believed. See `readIsTrustworthy`. */
+  trustworthy: boolean;
+}
+
 /**
  * As {@link fetchLatestEvent}, but also reports whether the *absence* of a
  * result can be trusted.
@@ -39,63 +55,125 @@ export async function fetchLatestEvent(
  * Same discipline `fetchFollowList` applies with its `ok` flag and
  * `resolveProfilesForNotes` with `firstHealthy`.
  *
- * `trustworthy` is true when an event arrived, or when the aggregate EOSE
- * fired. **It is not a perfect signal** and shouldn't be read as one: a relay
- * that never connects doesn't hold nostr-tools' aggregate `oneose` open, so an
- * EOSE means "every *reachable* relay confirmed none", not "every relay". It
- * is strictly better than the previous behaviour, which treated a total
- * timeout — zero relays reached — as proof of absence.
+ * **This counts relays itself rather than trusting the library's aggregate
+ * EOSE**, which folds two non-answers into a single "the query completed"
+ * callback: a synthesized EOSE on a timer, and a failed connection. See
+ * `readIsTrustworthy` for what each one costs. That is why this opens a
+ * subscription per relay instead of calling `subscribeMany` — the aggregate is
+ * the only thing `subscribeMany` exposes, and it is the thing that is wrong.
+ *
+ * The change is behaviour-compatible except where it is the fix: a relay that
+ * connected and then hung already degraded the read (the 4000 ms hard timer
+ * beat the 4400 ms synthetic EOSE), and a dead relay in the defaults still
+ * doesn't degrade it. What changes is that **zero relays reached is no longer
+ * proof of absence** — being offline used to return `trustworthy: true` in
+ * about 19 ms.
+ *
+ * Pass `expect` to reject non-matching events at intake; see `acceptsEvent`.
  */
 export async function fetchLatestEventDetailed(
   relays: string[],
   filter: Filter,
   maxWait = QUERY_MAX_WAIT_MS,
-): Promise<{ event: Event | null; trustworthy: boolean }> {
+  expect?: ReadExpectation,
+): Promise<DetailedRead> {
   return withPool(relays, async (pool) => {
     try {
-      return await new Promise<{ event: Event | null; trustworthy: boolean }>((resolve) => {
+      return await new Promise<DetailedRead>((resolve) => {
         let best: Event | null = null;
         let settled = false;
-        let eosed = false;
+        let reached = 0;
+        let answered = 0;
+        // Relays not yet in a terminal state (connect-failed, answered, or
+        // closed on us). Hitting zero means there is nothing left to wait for,
+        // which is what the aggregate EOSE used to tell us.
+        let outstanding = relays.length;
         let graceTimer: ReturnType<typeof setTimeout> | null = null;
-        // Declared before subscribeMany so finish() can clear the hard timer and
-        // close the sub even if subscribeMany throws synchronously (malformed
-        // relay URL) — otherwise the timer kept running to maxWait. Mirrors the
-        // sub-first pattern in collectEventsByAuthors.
-        let sub: { close: () => void } | null = null;
+        const subs: { close: (reason?: string) => void }[] = [];
 
         const finish = () => {
           if (settled) return;
           settled = true;
           clearTimeout(hardTimer);
           if (graceTimer) clearTimeout(graceTimer);
-          try { sub?.close(); } catch { /* already closed / never opened */ }
-          // An event in hand is its own proof the query worked. Otherwise only
-          // an EOSE counts — resolving on the hard timer means we heard nothing.
-          resolve({ event: best, trustworthy: best !== null || eosed });
+          for (const s of subs) {
+            try { s.close(); } catch { /* already closed / never opened */ }
+          }
+          resolve({
+            event: best,
+            reached,
+            answered,
+            trustworthy: readIsTrustworthy({ eventInHand: best !== null, reached, answered }),
+          });
         };
 
         const hardTimer = setTimeout(finish, maxWait);
-        try {
-          sub = pool.subscribeMany(relays, filter, {
-            onevent(e: Event) {
-              if (!best || e.created_at > best.created_at) best = e;
-              if (!graceTimer) graceTimer = setTimeout(finish, FIRST_EVENT_GRACE_MS);
-            },
-            oneose() {
-              // Fires once all reachable relays have EOSE'd — nothing more is coming.
-              eosed = true;
-              finish();
-            },
-          });
-        } catch {
-          // subscribeMany threw before any relay was queried — the opposite of
-          // trustworthy, so leave `eosed` false.
-          finish();
+        if (relays.length === 0) { finish(); return; }
+
+        const eoseTimeout = syntheticEoseTimeoutFor(maxWait);
+
+        for (const url of relays) {
+          // One terminal outcome per relay. `close()` in finish() re-enters
+          // `onclose` for every sub, and the library's synthetic EOSE fires on
+          // an already-closed sub ~SYNTHETIC_EOSE_MARGIN_MS later, so both
+          // paths have to be idempotent per relay.
+          let done = false;
+          const terminal = (fn: () => void) => {
+            if (done) return;
+            done = true;
+            fn();
+            outstanding -= 1;
+            if (outstanding <= 0) finish();
+          };
+
+          pool
+            .ensureRelay(url)
+            // No `connectionTimeout`: ensureRelay applies it only when it
+            // CONSTRUCTS the relay, i.e. once per URL for the pool's lifetime,
+            // so whichever caller touches a relay first would set it for
+            // everyone. The 4400 ms default outlives our window anyway, which
+            // is the behaviour we want — a relay that never connects simply
+            // never enters `reached`.
+            .then((relay) => {
+              if (settled) return;
+              reached += 1;
+              try {
+                subs.push(
+                  relay.subscribe([filter], {
+                    eoseTimeout,
+                    onevent(e: Event) {
+                      // Reject at intake, never on the winner: a foreign event
+                      // with a newer created_at would otherwise take the slot
+                      // and, discarded later, take the genuine event with it.
+                      if (expect && !acceptsEvent(expect, e)) return;
+                      if (!best || e.created_at > best.created_at) best = e;
+                      if (!graceTimer) graceTimer = setTimeout(finish, FIRST_EVENT_GRACE_MS);
+                    },
+                    oneose() {
+                      terminal(() => { answered += 1; });
+                    },
+                    onclose() {
+                      // Closed before answering. We learned nothing from it, so
+                      // drop it from the denominator rather than degrading the
+                      // whole read — a hang (no close, no EOSE) is the case
+                      // that stays counted and unanswered.
+                      terminal(() => { reached -= 1; });
+                    },
+                  }),
+                );
+              } catch {
+                // send() on a socket that died between connect and REQ.
+                terminal(() => { reached -= 1; });
+              }
+            })
+            .catch(() => {
+              // Never connected — excluded from the denominator entirely.
+              terminal(() => {});
+            });
         }
       });
     } catch {
-      return { event: null, trustworthy: false };
+      return { event: null, reached: 0, answered: 0, trustworthy: false };
     }
   });
 }
@@ -103,9 +181,23 @@ export async function fetchLatestEventDetailed(
 export interface CollectResult {
   /** Every matching event collected across the relay union, deduped by id. */
   events: Event[];
-  /** Aggregate EOSE fired — every queried relay reached end-of-stored-events
-   *  within the window (vs. resolving on the maxWait hard timeout). When true
-   *  an author's absence is trustworthy; when false the query was degraded. */
+  /**
+   * Aggregate EOSE fired — every queried relay either reached
+   * end-of-stored-events within the window or failed to connect (nostr-tools
+   * folds a failed connection into the aggregate). When true an author's
+   * absence is *probably* trustworthy; when false the query was degraded.
+   *
+   * **Weaker than `fetchLatestEventDetailed`'s `trustworthy`, on purpose.**
+   * This path collects across many authors and relays, where per-relay
+   * accounting buys much less, so it keeps the aggregate — but the aggregate
+   * still fires vacuously when nothing is reachable. Callers gating a negative
+   * cache on this should pair it with `gotAnyEvent`.
+   *
+   * It used to be worse than that: with no `maxWait` passed to the library,
+   * every connected relay got a SYNTHESIZED EOSE at 4400 ms, and this path's
+   * 8000 ms window meant those fake EOSEs always won the race — so `allEosed`
+   * was reporting "everyone answered" for relays that had said nothing at all.
+   */
   allEosed: boolean;
   /** At least one event arrived. A false here on a multi-author batch means a
    *  network blackout, not "none of these authors has a profile". */
@@ -176,6 +268,11 @@ export async function collectEventsByAuthors(
     let sub: { close: () => void } | undefined;
     try {
       sub = pool.subscribeMany(relays, filter, {
+        // subscribeMany's `maxWait` is used for ONE thing — it becomes each
+        // subscription's `eoseTimeout` — so this pushes the library's
+        // synthesized EOSE past our own deadline instead of letting it fire
+        // inside the window and pose as an answer. It does not close anything.
+        maxWait: syntheticEoseTimeoutFor(maxWait),
         onevent(e: Event) {
           if (!byId.has(e.id)) byId.set(e.id, e);
           seenAuthors.add(e.pubkey);
