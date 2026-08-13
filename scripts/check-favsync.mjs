@@ -436,6 +436,19 @@ console.log('\ntagsForSharedFavorites / itemsFromTags — the wire round trip');
     itemFrom({ id: A }).tag,
     ['i', A],
   );
+  // ...but one the feed DID declare goes out, with 2 and 3 held open. On a feed
+  // entry that padding costs nearly as much as the value it precedes, and it
+  // buys the position its meaning.
+  check(
+    'a declared medium is published at position 4',
+    itemFrom({ id: A, medium: 'music' }).tag,
+    ['i', A, '', '', 'music'],
+  );
+  check(
+    'an item publishes its parent feed and its medium together',
+    itemFrom({ id: C, feedRef: A, medium: 'music' }).tag,
+    ['i', C, '', A, 'music'],
+  );
   check(
     'an episode carries its parent feed in position 3, with position 2 held open',
     tags.find((t) => t[1] === C),

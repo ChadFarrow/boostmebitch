@@ -58,6 +58,27 @@ function HeartButton({
   );
 }
 
+/**
+ * The `<podcast:medium>` that may be published for a feed, or undefined.
+ *
+ * **Only what the FEED declared ever reaches the wire.** `Podcast.medium` is
+ * populated from Podcast Index (`lib/pi.ts`) or the RSS channel parse
+ * (`app/api/feed/route.ts`) — both of those are the feed speaking, and both are
+ * fine. What is not fine is this app's own conclusion about a show: a guess
+ * published to a shared list is one no other app will ever correct, and the
+ * position exists precisely because the list carries podcasts and music at once.
+ *
+ * The one synthetic value in the codebase is the publisher stub `<HomePage>`
+ * builds for a cold restore — `{ id: 0, title: 'Publisher', medium: 'publisher' }`
+ * — which is a back-button label, not a declaration. It has no `podcastGuid`, so
+ * it can't be favorited today, but that is an accident of an unrelated guard
+ * rather than a rule. `id <= 0` means nothing ever resolved this feed.
+ */
+function declaredMedium(podcast?: Podcast | null): string | undefined {
+  if (!podcast || podcast.id <= 0) return undefined;
+  return podcast.medium;
+}
+
 export function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: Size }) {
   const guid = podcast.podcastGuid;
   const isFav = useApp((s) => s.isFavorite(guid));
@@ -83,6 +104,7 @@ export function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: Si
         image: podcast.image,
         artwork: podcast.artwork,
         url: podcast.url,
+        medium: declaredMedium(podcast),
         addedAt: Date.now(),
       };
       addFavorite(fav);
@@ -143,6 +165,9 @@ export function FavEpisodeHeart({
         image: episode.image || episode.feedImage || podcast?.image,
         enclosureUrl: episode.enclosureUrl,
         datePublished: episode.datePublished,
+        // The PARENT FEED's medium — Podcasting 2.0 has no per-item one, and
+        // `podcast` here is that feed.
+        medium: declaredMedium(podcast),
         addedAt: Date.now(),
       };
       addFavoriteEpisode(fav);

@@ -34,12 +34,13 @@ export function localFavoriteItems(): SharedFavoriteItem[] {
   const state = useApp.getState();
   const items: SharedFavoriteItem[] = [];
   for (const fav of Object.values(state.favorites)) {
-    items.push(itemFrom({ id: showId(fav.podcastGuid) }));
+    items.push(itemFrom({ id: showId(fav.podcastGuid), medium: fav.medium }));
   }
   for (const ep of Object.values(state.favoriteEpisodes)) {
     items.push(itemFrom({
       id: itemId(ep.itemGuid),
       feedRef: ep.feedGuid ? showId(ep.feedGuid) : undefined,
+      medium: ep.medium,
     }));
   }
   return items;
