@@ -11,14 +11,14 @@ import { PodcastCover } from './podcast-cover';
 import { PodcastNostrFeed } from './podcast-nostr-feed';
 import { DeferredOnScroll } from './deferred-on-scroll';
 import { Podroll } from './podroll';
-import { FavEpisodeHeart, FavHeart } from './fav-heart';
+import { FavEpisodeHeart, FavEpisodeRowHeart, FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
 import { useStreamPanel } from './streaming-settings';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
 
 // Re-exported for the surfaces that have always imported it from here.
-export { FavEpisodeHeart, FavHeart };
+export { FavEpisodeHeart, FavEpisodeRowHeart, FavHeart };
 
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   if (status === 'live') {
@@ -198,6 +198,20 @@ function groupByMedium<T>(rows: T[], mediumOf: (row: T) => string | undefined) {
   return groups;
 }
 
+/**
+ * What one row of a favorited feed is called, by medium.
+ *
+ * A music feed's items are singles, not episodes — calling a track an episode
+ * is wrong in the one place the user is most likely to be looking, since music
+ * is the bulk of this list. Anything else keeps "episode": the alternatives
+ * (chapters for an audiobook, and so on) are guesses about an open vocabulary,
+ * and a wrong specific word reads worse than a right generic one.
+ */
+function itemNoun(mediumKey: string, n: number): string {
+  const one = mediumKey === 'music' ? 'single' : 'episode';
+  return n === 1 ? one : `${one}s`;
+}
+
 /** A group heading, shown only when there is more than one group — a lone
  *  "PODCAST" banner over an undivided list is noise, not information. */
 function MediumHeading({ label }: { label: string }) {
@@ -305,16 +319,15 @@ function UnresolvedFavoriteRow({ id, kind }: { id: string; kind: 'show' | 'episo
  */
 export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => void }) {
   const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
-  // Item favorites another app left on the FEEDS list are displayed exactly
-  // like our own — they are the user's favorites and this app can resolve and
-  // play them. What they must never do is enter the publishable map, which is
-  // why they arrive from a separate store slot rather than a flag. Ours win a
-  // key collision.
-  const foreignEpisodes = useApp((s) => s.foreignFavoriteEpisodes);
+  // Item favorites another app added are ordinary rows now. They used to need a
+  // separate store slot: on the two-address design, copying an item entry found
+  // on the FEEDS list over to the ITEMS list made it removable from one and not
+  // the other, so unfavoriting it brought it back on every load, forever. One
+  // event means no relocation, so the hazard is gone and the quarantine with
+  // it — what keeps another app's entries safe now is the baseline, per entry.
   const list = useMemo(
-    () => Object.values({ ...foreignEpisodes, ...favoriteEpisodes })
-      .sort((a, b) => b.addedAt - a.addedAt),
-    [favoriteEpisodes, foreignEpisodes],
+    () => Object.values(favoriteEpisodes).sort((a, b) => b.addedAt - a.addedAt),
+    [favoriteEpisodes],
   );
 
   const groups = useMemo(() => groupByMedium(list, (ep) => ep.medium), [list]);
@@ -323,12 +336,17 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
 
   return (
     <>
-      <div className="text-[11px] uppercase tracking-widest text-muted mt-4 mb-2 px-1">
-        {list.length} favorite {list.length === 1 ? 'episode' : 'episodes'}
-      </div>
       {groups.map((g) => (
         <div key={g.key}>
-          {groups.length > 1 && <MediumHeading label={g.label} />}
+          {/* Counted PER MEDIUM so each group can use its own noun — a track on
+              a music feed is a single, not an episode. One combined heading
+              would have to pick one word and be wrong for half the list, the
+              same trap `MEDIUM_ORDER` exists to avoid. The overall total is on
+              the panel header. */}
+          <div className="text-[11px] uppercase tracking-widest text-muted mt-4 mb-2 px-1">
+            {groups.length > 1 && `${g.label} — `}
+            {g.rows.length} favorite {itemNoun(g.key, g.rows.length)}
+          </div>
           <ul className="divide-y divide-bone/10">
             {g.rows.map((ep) => {
               const { title, feedGuid } = ep;
@@ -367,7 +385,17 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
                   />
                   <div className="min-w-0 flex-1">
                     <div className="font-display text-base leading-tight truncate">{title}</div>
-                    <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
+                    {/* Only when it says something the title didn't. A single
+                        names its album after its one track, so printing both
+                        renders the same words twice and reads as an album
+                        sitting in the episodes list — 74 of one user's 227
+                        tracks. */}
+                    {ep.podcastTitle && ep.podcastTitle !== title && (
+                      <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
+                    )}
+                  </div>
+                  <div className="flex-shrink-0 self-center">
+                    <FavEpisodeRowHeart favorite={ep} />
                   </div>
                 </li>
               );

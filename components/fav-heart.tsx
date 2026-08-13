@@ -129,6 +129,48 @@ export function FavHeart({ podcast, size = 'sm' }: { podcast: Podcast; size?: Si
  * /episodes/byguid needs `podcastguid`, so an episode favorite with no parent
  * feed is unresolvable on any other device and is not offered at all.
  */
+/**
+ * The heart for a row on the favorites list itself, where the entry is ALREADY
+ * a `FavoriteEpisode`.
+ *
+ * Separate from {@link FavEpisodeHeart} because that one builds a favorite out
+ * of an `Episode` + its parent `Podcast`, and the favorites list has neither —
+ * it has the stored row. Reconstructing a synthetic `Episode` just to hand it
+ * back would drop whatever the stored row knows that an `Episode` has no field
+ * for (the medium hint another app wrote, most obviously), so an unfavorite
+ * followed by a re-favorite would quietly downgrade the entry. Re-adding the
+ * stored object verbatim is lossless.
+ *
+ * `addedAt` is deliberately NOT restamped: the row keeps its place in the list
+ * instead of jumping to the top, which is what you want when the toggle was a
+ * misfire.
+ */
+export function FavEpisodeRowHeart({
+  favorite,
+  size = 'sm',
+}: {
+  favorite: FavoriteEpisode;
+  size?: Size;
+}) {
+  const isFav = useApp((s) => s.isFavoriteEpisode(favorite.itemGuid));
+  const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
+  const removeFavoriteEpisode = useApp((s) => s.removeFavoriteEpisode);
+  const identity = useApp((s) => s.identity);
+
+  function toggle(e: React.MouseEvent) {
+    // The row is clickable (it opens the show), so the toggle must not bubble.
+    e.stopPropagation();
+    e.preventDefault();
+    if (isFav) removeFavoriteEpisode(favorite.itemGuid);
+    else addFavoriteEpisode(favorite);
+    requestFavoritesSync(identity);
+  }
+
+  return (
+    <HeartButton isFav={isFav} size={size} synced={!!identity} onToggle={toggle} label="episode" />
+  );
+}
+
 export function FavEpisodeHeart({
   episode,
   podcast,

@@ -22,32 +22,21 @@ import { resetPiBreaker } from '@/lib/podcast-meta';
 // design with no key to sync them under, so there is no relay failure to
 // report and claiming one would be a lie.
 //
-// There are TWO lists and therefore two flags, and it must be able to say that
-// only part of what you are looking at failed to load. One flag across both
-// would be worse than none: a successful shows read would clear the notice a
-// failed tracks read set, handing the user a clean, confident empty state for
-// their entire track library.
+// ONE flag, where there used to be one per list. Shows and episodes live in a
+// single kind:10333 event now, so they cannot fail independently and the notice
+// has nothing to disambiguate — the old three-branch message existed only
+// because a successful read of one address had to be prevented from clearing a
+// notice the other's failure had raised.
 
 export function FavoritesSyncNotice() {
   const identity = useApp((s) => s.identity);
-  const feeds = useApp((s) => s.favoritesSync.feeds);
-  const items = useApp((s) => s.favoritesSync.items);
+  const degraded = useApp((s) => s.favoritesSync === 'degraded');
   const [retrying, setRetrying] = useState(false);
 
-  // 'idle' is NOT a failure. Accounts on the legacy single-list address have no
-  // items list at all, so `items` sits at 'idle' forever — and that is everyone
-  // not on the trial allowlist, so treating it as degraded would show a
-  // permanent false alarm to the entire user base.
-  const message =
-    feeds === 'degraded' && items === 'degraded'
-      ? "Couldn't reach the relays — showing what's on this device."
-      : feeds === 'degraded'
-        ? "Couldn't load your saved shows — showing what's on this device."
-        : items === 'degraded'
-          ? "Couldn't load your saved episodes — showing what's on this device."
-          : null;
-
-  if (!identity || !message) return null;
+  // 'idle' is NOT a failure — it is the pre-hydration and signed-out state, and
+  // treating it as one would show a relay warning to every visitor before
+  // anything had even been attempted.
+  if (!identity || !degraded) return null;
 
   async function retry() {
     setRetrying(true);
@@ -76,7 +65,7 @@ export function FavoritesSyncNotice() {
       role="status"
       className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5 mb-2 flex items-center justify-between gap-2"
     >
-      <span>⚠ {message}</span>
+      <span>⚠ Couldn&apos;t reach the relays — showing what&apos;s on this device.</span>
       <button
         type="button"
         onClick={retry}

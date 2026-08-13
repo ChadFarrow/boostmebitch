@@ -1,6 +1,6 @@
 'use client';
 
-// The glue between the store's two favorite maps and the one shared kind:30078
+// The glue between the store's two favorite maps and the one shared kind:10333
 // list on Nostr. Kept apart from `favorites.ts` so that module stays pure wire
 // format + merge (and stays pinnable by scripts/check-favsync.mjs), and apart
 // from `favorites-hydrator.ts` so <FavHeart> doesn't have to import the
@@ -11,44 +11,45 @@ import { storage } from '@/lib/storage';
 import { resolvePublishRelays } from './relays';
 import { createScheduledPublish } from './debounced-publish';
 import {
-  itemFrom,
+  groupLocalFavorites,
   itemId,
   showId,
   syncFavorites,
-  type SharedFavoriteItem,
+  type FavoriteEntry,
+  type LocalList,
   type SyncOptions,
 } from './favorites';
 import type { NostrIdentity } from './auth';
 
 /**
- * This device's favorites as wire items — both maps in one list, because they
- * share one Nostr event. Episodes carry their parent feed at position 3,
- * without which an item guid can't be resolved through PI.
+ * This device's favorites as flat wire entries — both maps in one list, because
+ * they share one Nostr event.
  *
- * Neither carries a feed URL any more. `FavoritePodcast.url` and
- * `FavoriteEpisode.feedUrl` are still populated (from PI, and from legacy
- * position-2 values found on the wire) and still used for rendering — they just
- * no longer reach the wire. See `itemFrom`, which has no parameter for one.
+ * An episode carries its parent feed guid, without which it cannot be grouped
+ * (and cannot be resolved through PI, which needs a `podcastguid`). One with no
+ * parent is not dropped: `groupLocalFavorites` keeps it as an orphan ahead of
+ * the groups, because losing a track because we can't name its album is a worse
+ * trade than an unplaceable entry.
+ *
+ * Neither carries a feed URL. `FavoritePodcast.url` and `FavoriteEpisode.feedUrl`
+ * are still populated and still used for rendering — kind:10333 simply has no
+ * slot for one, an `i` tag there being bare.
  */
-export function localFavoriteItems(): SharedFavoriteItem[] {
+export function localFavoriteEntries(): FavoriteEntry[] {
   const state = useApp.getState();
-  const items: SharedFavoriteItem[] = [];
+  const entries: FavoriteEntry[] = [];
   for (const fav of Object.values(state.favorites)) {
-    items.push(itemFrom({ id: showId(fav.podcastGuid), medium: fav.medium }));
+    entries.push({ id: showId(fav.podcastGuid), medium: fav.medium });
   }
   for (const ep of Object.values(state.favoriteEpisodes)) {
-    items.push(itemFrom({
-      id: itemId(ep.itemGuid),
-      // BARE, not `showId(...)`. Position 3 is defined as a parent feed guid,
-      // so the `podcast:guid:` prefix restates what the position already means
-      // — 13 bytes per entry on the list whose whole purpose is to hold as many
-      // as it can. Readers still accept both; `feedRefOf` normalizes on the way
-      // in, so `ep.feedGuid` is already bare.
-      feedRef: ep.feedGuid,
-      medium: ep.medium,
-    }));
+    entries.push({ id: itemId(ep.itemGuid), feedRef: ep.feedGuid, medium: ep.medium });
   }
-  return items;
+  return entries;
+}
+
+/** The same, grouped for the wire. */
+export function localFavoriteList(): LocalList {
+  return groupLocalFavorites(localFavoriteEntries());
 }
 
 export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
@@ -57,25 +58,24 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     relays: resolvePublishRelays(identity),
     // Getters, not values: the debounce re-reads at fire time, so a burst of
     // heart-taps publishes once with the final set.
-    local: localFavoriteItems,
-    lastSynced: (list) =>
-      list === 'items'
-        ? storage.favSyncedItems.get(identity.npub)
-        : storage.favSynced.get(identity.npub),
-    // Both callbacks also move `favoritesSync`, so the whole feature reports
-    // its relay health from one place: hydration routes its own success
-    // through this same `onSynced` (see favorites-hydrator.ts), and a publish
-    // that lands is proof the relays are answering again — it clears a notice
-    // an earlier degraded read put up. Per list, both directions: one flag
-    // across both would let a good feeds publish clear a notice a failed items
-    // read raised, giving the user a confident empty state for every track
-    // they own.
-    onSynced: (list, ids) => {
-      if (list === 'items') storage.favSyncedItems.set(identity.npub, ids);
-      else storage.favSynced.set(identity.npub, ids);
-      useApp.getState().setFavoritesSync(list, 'ok');
+    local: localFavoriteList,
+    baseline: () => storage.favBaseline.get(identity.npub),
+    // Both callbacks also move `favoritesSync`, so the whole feature reports its
+    // relay health from one place: hydration routes its own success through this
+    // same `onSynced` (see favorites-hydrator.ts), and a publish that lands is
+    // proof the relays are answering again — it clears a notice an earlier
+    // degraded read put up.
+    //
+    // ONE flag, where there used to be two. That is not a simplification of the
+    // old rule but its replacement: two flags existed because two events could
+    // fail independently, and a single flag across them let a good read on one
+    // clear a notice the other's failure had raised. There is one event now, so
+    // a partial failure is not expressible and a single flag cannot lie.
+    onSynced: (baseline) => {
+      storage.favBaseline.set(identity.npub, baseline);
+      useApp.getState().setFavoritesSync('ok');
     },
-    onDegraded: (list) => useApp.getState().setFavoritesSync(list, 'degraded'),
+    onDegraded: () => useApp.getState().setFavoritesSync('degraded'),
   };
 }
 

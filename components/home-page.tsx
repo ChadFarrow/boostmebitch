@@ -207,11 +207,7 @@ export function HomePage() {
   }
   const favorites = useApp((s) => s.favorites);
   const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
-  // Counted and shown like any other favorite. They are quarantined from being
-  // PUBLISHED, not from being the user's — see `foreignFavoriteEpisodes`.
-  const foreignFavoriteEpisodes = useApp((s) => s.foreignFavoriteEpisodes);
-  const episodeCount =
-    Object.keys(favoriteEpisodes).length + Object.keys(foreignFavoriteEpisodes).length;
+  const episodeCount = Object.keys(favoriteEpisodes).length;
   const hasFavorites = Object.keys(favorites).length > 0 || episodeCount > 0;
 
   // A degraded relay read opens the panel even with nothing to put in it —
@@ -222,13 +218,8 @@ export function HomePage() {
   // cards are already the right "you have nothing saved yet" affordance, and
   // because degraded now always opens the panel, seeing them positively means
   // the read worked.
-  // Either list failing opens the panel — the notice has to have somewhere to
-  // go in exactly the case it exists for. 'idle' is not a failure: it is where
-  // `items` sits for every account on the legacy single-list address.
-  const favoritesDegraded = useApp(
-    (s) => !!s.identity
-      && (s.favoritesSync.feeds === 'degraded' || s.favoritesSync.items === 'degraded'),
-  );
+  // 'idle' is not a failure — it is the pre-hydration and signed-out state.
+  const favoritesDegraded = useApp((s) => !!s.identity && s.favoritesSync === 'degraded');
   const showFavoritesPanel = !query && (hasFavorites || favoritesDegraded);
   const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel || !!publisherSource;
   const inDetailView = !!selected;

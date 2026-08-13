@@ -6,10 +6,10 @@
 // type-only one, since the relative specifiers in this repo carry no extension
 // — would break that. A reimplemented copy in the check script would stay green
 // while the shipping rule drifted, which is the exact failure being guarded.
-// Same arrangement as `favorites-merge.ts`.
+// Same arrangement as `favorites-list.ts`.
 //
 // The rule is specified externally, alongside the wire format that leans on it:
-// github.com/ChadFarrow/PC20-Nostr/specs/pc20-favorites.md — see "Never write
+// github.com/ChadFarrow/PC20-Nostr/blob/main/pc20-favorites.md — see "Never write
 // on top of a read you didn't get" and "An aggregate EOSE is not automatically
 // an answer".
 // ---------------------------------------------------------------------------

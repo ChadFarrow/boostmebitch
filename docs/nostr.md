@@ -10,7 +10,7 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 
 - **kind:0 profile** — `name`, `display_name`, `picture`, `nip05`, `about` → header avatar, boost-modal "From" auto-fill.
 - **NIP-65 relay list (kind:10002)** — unmarked + `write` entries → publish target.
-- **Favorites (NIP-78 kind:30078, `d:podcast:favorites`)** — shared cross-app list, see Favorites and [the `podcast:favorites` spec](https://github.com/ChadFarrow/PC20-Nostr/blob/main/specs/pc20-favorites.md). The legacy kind:30003 `d:boostmebitch:favorites` list is read-only, for migration.
+- **Favorites (kind:10333, no `d` tag)** — shared cross-app list, one plain replaceable event per pubkey; see Favorites and [the spec](https://github.com/ChadFarrow/PC20-Nostr/blob/main/pc20-favorites.md). The three addresses it replaced (kind:30078 `d:podcast:favorites` and `d:podcast:favorites:items`, kind:30003 `d:boostmebitch:favorites`) are read-only, for the one-time migration.
 - **NIP-51 mutes (kind:10000)** — public + NIP-04 private p-tags. See Mutes.
 - **Spark backup (kind:30078, `d:boostmebitch:wallet:spark`)** — NIP-44 v2 encrypted-to-self mnemonic; best-effort silent restore, failures swallowed.
 - **Settings (kind:30078, `d:boostmebitch:settings`)** — NIP-44 encrypted-to-self JSON, currently just `railPref` → `storage.railPref`. `lib/nostr/settings-backup.ts`.
@@ -38,78 +38,334 @@ NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (
 A corrupt entry (a NIP-65 `r`-tag of `"avatar wss://purplerelay.com"`, or spam stuffed into one) otherwise reaches nostr-tools' `normalizeURL`, which **throws `Invalid URL` synchronously inside `pool.querySync`/`subscribeMany`**; that rejection escapes per-call try/catch and aborts the whole flow. **A `startsWith('wss://')` check does not catch this** — only `new URL()` does, because a comma in the host is what throws. Defense in depth: `collectEventsByAuthors` wraps its `subscribeMany` so a survivor resolves empty rather than aborting.
 
 
-## Favorites (NIP-78 kind:30078) — SHARED with other apps
+## Favorites (kind:10333) — SHARED with other apps
 
-♡ toggles a favorite on a podcast row (`<FavHeart>`) or an episode row (`<FavEpisodeHeart>`), both in `components/fav-heart.tsx`. They go into **two** kind:30078 events — `d:podcast:favorites` for shows, albums and publishers, `d:podcast:favorites:items` for episodes and tracks — app-neutral addresses shared with StableKraft and any other app that implements [the `podcast:favorites` spec](https://github.com/ChadFarrow/PC20-Nostr/blob/main/specs/pc20-favorites.md).
+♡ toggles a favorite on a podcast row (`<FavHeart>`) or an episode row
+(`<FavEpisodeHeart>`), both in `components/fav-heart.tsx`. They go into **one**
+plain replaceable event at **kind 10333** — no `d` tag, one per pubkey — an
+app-neutral address shared with StableKraft and any other app implementing
+[the spec](https://github.com/ChadFarrow/PC20-Nostr/blob/main/pc20-favorites.md).
 
-**Which list an entry belongs to is derived from its identifier, never chosen** (`placementFor`). If an entry could plausibly land on either, two apps would disagree — and an entry added to one list and removed from the other is one that comes back, forever. Unrecognized kinds default to the feeds list; a new kind goes in the spec's table before anyone writes it. **Two events because item favorites accumulate an order of magnitude faster than feed favorites**: someone saving tracks passes a thousand without trying where the same person follows forty shows, and since every publish replaces the whole event against a relay size cap (nos.lol's 131,072 bytes is the smallest in the default set, and you publish to all of them so the smallest binds), one list means the tracks eventually make the publish fail and take the podcast subscriptions with them.
+**That document, not this code, is the spec, and it is not ours to change.** It
+lives in its own app-neutral repo precisely so neither implementation owns it. A
+change to the format is a PR there first; `docs/pc20-favorites.md` is only a
+stub pointing at it. The kind is **self-assigned, not NIP-allocated** — relay
+filters are kind-scoped, so a later NIP landing on 10333 would put two unrelated
+event types into every query either app makes.
 
-**Legacy kind:30003 accounts stay single-list.** `favoritesAddressFor` returns `items: null` for them — `null` rather than a boolean so `if (addr.items)` is a branch the compiler makes every caller handle. There is nothing to split a single-writer private list *for*: the size pressure the two addresses isolate is a property of a shared list many apps append to. **That document, not this code, is the spec, and it is no longer ours to change** — it lives in its own app-neutral repo precisely so neither implementation owns it. This app follows it. A change to the format is a PR there first; `docs/pc20-favorites.md` is now only a stub pointing at it.
+`content` stays empty and public, unlike `settings-backup.ts`/`wallet-backup.ts`
+which NIP-44 encrypt their 30078 payloads — a second app has to be able to read
+this one.
 
-**Kind 30078 (NIP-78 app data), deliberately not 30003 (NIP-51 bookmark sets).** Kind 30003 is user-named bookmark collections — saved links. Podcast favorites belong in neither that category nor that write-space: a generic bookmark client that lets someone edit a set would rewrite this list with none of the merge discipline below, and it would be doing nothing wrong. The trade is that favorites are no longer visible in generic NIP-51 list clients, which is intended. `content` stays empty and public, unlike `settings-backup.ts`/`wallet-backup.ts` which NIP-44 encrypt their 30078 payloads — a second app has to be able to read this one.
+### Tag order is the data
 
-Items are NIP-73 identifiers: `i: podcast:guid:<feedGuid>` for a show, `i: podcast:item:guid:<itemGuid>` for an episode. The `i` tag is positional:
+This is the one property everything else follows from, and the easiest thing in
+the format to break by accident.
 
-| Position | Holds | Rule |
-|---|---|---|
-| 1 | the NIP-73 identifier | the merge key, and the only position `identifierKind` may read |
-| 2 | the feed's RSS URL | **legacy** — preserve what you find, never originate a new one |
-| 3 | an item's parent feed guid | **bare uuid**; readers accept the legacy `podcast:guid:` prefix too. `getEpisodeByGuid` needs `podcastguid`, and an item guid alone won't resolve |
-| 4 | the entry's `<podcast:medium>` | advisory and **strictly sticky** — see below |
-| 5+ | undefined | belongs to an app newer than this one; carry it verbatim |
+An `i` tag is **bare** — `['i', '<identifier>']`, two elements. There is no
+parent field and no medium field. Instead:
 
-Caches `bmb:favorites:<npub>` and `bmb:favepisodes:<npub>` (or `:guest`) render instantly; toggles are optimistic and publish is **debounced 1.5 s**.
+| Tag | Meaning |
+|---|---|
+| `['alt', 'PC 2.0 Favorites']` | NIP-31 label, first, ours — a read `alt` is discarded and re-emitted |
+| `['medium', v]` | a **running value**: applies to every entry after it, until the next one |
+| `['i', 'podcast:guid:<uuid>']` | opens a **feed group**, tagged with the current medium |
+| `['i', 'podcast:item:guid:<guid>']` | belongs to the **most recently opened** feed group |
+| `['k', kind]` | trailing, **one per distinct kind** — ignored entirely on read |
 
-**An `i` tag is OVERLAID, never rebuilt — and `SharedFavoriteItem` carries the raw tag for exactly that reason.** The natural implementation is to parse each tag into `{id, feedUrl, feedRef}`, merge those, and write them back out; that deletes every position past the third, on every entry, on every publish, with no error and nothing on screen. This app did it for the feature's entire life, and the spec names it by file and line — a `<podcast:medium>` StableKraft wrote survived only until BMB next republished. A struct with a `tail` field fixes that case and re-arms it for position 6; carrying the whole tag makes the truncation *unrepresentable*, because there is no rebuild step left to truncate. `itemFrom` and `overlayTag` are the only two places a tag is constructed and both are lossless; read positions through `feedUrlOf`/`feedRefOf`/`mediumOf`.
+So a client that parses entries into structs and rebuilds the array from them —
+sorting, deduping, or emitting groups in a different order — silently reattaches
+every item to the wrong feed and re-labels everything past a medium boundary.
+Nothing else in the format recovers the association, and nothing looks wrong on
+screen. **The parsed model is therefore an ordered node list** (`ParsedList.nodes`,
+each a `FeedGroup` or a `LooseEntry`), the merge is an *edit* of that list, and
+`tagsFromList` walks it in place.
 
-`overlayTag` fills positions that are empty and never touches one another writer filled — **not** "prefer my own resolved value", which is what makes two apps rewrite the event against each other on every publish, forever, each publish locally reasonable and the only symptom being that it never stops. Membership is decided first, on raw identifier strings; the hint pass is subordinate and can never add an entry, remove one, or change its identifier.
+This is the predecessor format's mistake one level up. That design carried a
+feed URL, a parent guid and a medium at positions 2–4 *inside* each `i` tag, and
+this app rebuilt the tag from a three-field struct — deleting every position past
+the third, on every entry, on every publish, for the feature's entire life. The
+fix there was to carry the whole tag; the fix here is to carry the whole array.
 
-**Position 3 is read through `feedRefOf`, which accepts both forms and returns the bare one.** The spec dropped the `podcast:guid:` prefix — 13 bytes restating what the position already means, which on a list whose purpose is to hold as many entries as it can costs real favorites — but every event written before that revision carries it, and that is still most of what is on the wire. Getting this wrong is silent and total: a prefixed value handed to PI as `podcastguid` matches nothing, so every item favorite resolves empty while being republished faithfully. Here it was worse — `parseShowGuid` required the prefix, so a bare uuid returned `undefined` and the hydrator dropped the episode from the UI entirely. **That is why StableKraft deferred adopting the bare form until this landed**; the reader has to move first, or a format change only one side can read is worth less than the one it replaces. `parseFeedRef` is deliberately not uuid-gated (an unparseable parent ref is still the user's favorite and must ride through every republish); `looksLikeFeedGuid` gates only whether a PI request is worth spending. **Normalizing here doesn't contradict the position-2 rule** — `podcast:guid:<uuid>` → `<uuid>` is a lossless re-encoding in a position whose meaning is fixed, whereas removing a position-2 URL destroys information only its writer had.
+Two emission rules exist only to keep that array stable:
 
-**Position 4 sorts the favorites list, and absent is its own bucket.** `<FavoritesList>` and `<FavoriteEpisodesList>` group by medium via `groupByMedium` (`components/lists.tsx`), in `MEDIUM_ORDER` with **medium-unknown last** and never folded into `podcast` — the list carries podcasts and music at once by design, so whichever way you default you are wrong about half of it. Headings only appear when there's more than one group. Case is folded for bucketing only; an unrecognized value keeps its own label rather than being dropped or coerced, because the vocabulary is open. Precedence is `resolved ?? wire hint`: Podcast Index wins where we have it, the hint fills the gap, and **a disagreement is a stale hint, not an error — render your own value and never republish to correct the wire.** Two independent things keep that true: `overlayTag` preserves `latest[4]`, and the hydrator's publish gate compares id sets only, so a hint difference can't trigger a republish. The hint is what makes the split possible on first paint at all — resolution is one PI request per entry, so a 300-entry library is 300 round trips before anything can be sorted, and for a delisted feed there is no other answer ever. An item's medium is its **parent feed's** (Podcasting 2.0 has no per-item medium); it comes from the parent's own favorite entry where there is one, deliberately not from a per-parent `/podcasts/byguid` fan-out whose only purpose would be a hint.
+- **Unknown-medium nodes are emitted FIRST**, ahead of any `medium` tag.
+  Appending them would make them inherit whatever medium was declared last, and
+  minting `['medium','unknown']` would write a value no reader has been told
+  about. Ahead of the first tag is the one position that says "not told" without
+  inventing anything. **Never default a missing medium to `podcast`** — the list
+  carries podcasts and music at once by design, so a default is wrong for
+  exactly the half the hint exists to separate.
+- **Where preserving read order and keeping same-medium groups contiguous
+  conflict, contiguity wins.** Reordering groups within a medium block reattaches
+  nothing, since an item always travels directly beneath its own feed entry,
+  whereas a broken block silently re-labels every entry after the boundary. This
+  means our first publish after an interleaved read legitimately differs from
+  what we read — so **idempotence is `merge(parse(output)) === output`**, not
+  `output === input`. A vector written the naive way fails correctly and gets
+  "fixed" wrongly.
 
-**The check script's fixtures must come from literal wire tags.** A round-trip assertion built out of your own struct cannot fail — you write the positions you know, read them back, and the comparison is vacuously true while the code truncates. `check:favsync` shipped exactly that assertion, green for the feature's whole life, which is why the tail-preservation vector carries a position nothing in the codebase models. It was verified to *fail* against the old builder before being accepted; a new vector that passes immediately against the code it was written for has proved nothing.
+`k` is ignored on read and the kind comes from the identifier's prefix via a
+known-kinds **table**, never string-scanning: item guids are routinely permalink
+URLs, so "everything before the last colon" on
+`podcast:item:guid:https://example.com/ep/42` yields `podcast:item:guid:https`, a
+tag no relay filter matches, breaking discovery with nothing visibly wrong. An
+earlier revision of the spec paired a `k` with every `i`; **a reader must accept
+both layouts**, and one that walks `i`/`k` in pairs reads a current-form list as
+an empty library rather than as an error.
 
-**The module split is load-bearing.** `lib/nostr/favorites-merge.ts` is the wire format and the merge, and has **zero imports** so `npm run check:favsync` can load the real thing under plain Node — a reimplemented copy in the check script would stay green while the shipping merge drifted, the exact failure being guarded. `lib/nostr/favorites.ts` holds the I/O and re-exports it. Don't add an import to the merge module.
+### A feed group is not always a favorite
 
-**There is deliberately no "publish my favorites" function.** A shared replaceable event has no partial update, so a blind publish deletes whatever the other app added, silently, with no undo. `syncFavorites` reads → merges → publishes as one step, and the exported surface gives a caller no way to skip the read. Three rules follow:
+Opening a group is the only way to name an item's parent, so **a group appears
+whether or not the user favorited the feed**. On the live list this was built
+against, 197 groups carry 38 unambiguous favorites; the other 159 exist so a
+favorited track can name its album.
 
-- **The delta is against a BASELINE, not against the local set.** `storage.favSynced.<npub>` holds the id list this device last agreed with the relay on. `next = (latest ∪ (local − baseline)) − (baseline − local)`. Publishing the local set alone erases every entry another app added; publishing the union alone makes unfavoriting impossible, permanently. An empty local set with an empty baseline must delete nothing — a device that hasn't hydrated is not making a claim — while an empty local set with a full baseline is a real clear-all.
-- **A degraded read publishes nothing.** `fetchSharedFavorites` reports `trustworthy` (from `fetchLatestEventDetailed`), and both `syncFavorites` and `hydrateFavorites` bail on false. A null from a relay means "nobody had it" *or* "nothing answered", and acting on the second wipes favorites across every app the user owns. Same rule as kind:3 and kind:0.
-- **Identifiers we can't read still ride along, and "verbatim" means POSITIONALLY.** The merge never looks inside an `i` tag; `interpretShows`/`interpretItems` run at render time only. A third app's `podcast:publisher:guid:`, or StableKraft's track favorites viewed from here, survive our republish untouched — as do unrecognized top-level tags and `k` tags naming kinds we don't generate (stripping those would remove another app's `#k` filter from the event). The rule covers *every* `i` tag, not only the ones whose identifier we couldn't parse: an entry whose identifier we understood perfectly and whose position 4 we silently deleted was not preserved.
+**Only an *itemless* group reads back as a feed favorite** (`partitionList`
+reports `itemless`). Treating every `podcast:guid:` as one manufactures albums
+the user never made, on every page load — the reference implementation read its
+own output back and would have created 114 of them. Inventing a favorite is
+worse than missing one, and the missing case self-corrects as soon as the feed is
+the only thing left on that group.
 
-**`planFavoritesPublish` is the single, pure decision for both lists**, and it is pure so that the spec's placement vector can be asserted over `publish()` rather than over `placementFor` — a unit test on the mapping table passes while the publish path ignores placement entirely, which is the failure being pinned. It also collapses what used to be two copies of the merge-and-baseline logic (`syncFavorites` and `runHydrate`); across two lists that would have been four chances to get `baseline = next ∩ local` wrong. Rules it encodes:
+The hydrator has **two exceptions**, both records that predate the ambiguity and
+are not contradicted by the wire, only unrepresentable in it:
 
-- **`local` is partitioned, never reused.** Running one list's merge against the whole local set makes `adds = local − baseline` sweep every track onto the feeds list and every show onto the items list in a single publish.
-- **Relocation is add-first.** Our own legacy item entry stays in `local_feeds` until it has been *read back* from the items list. Remove-first loses it outright: the feeds publish succeeds, the items publish is blocked by a degraded read exactly as instructed, and the entry exists on neither list. `local_feeds` intersects with the **current** local set — without that, an entry the user just unfavorited is still in `baseline_feeds`, gets re-added, never enters `removes`, and the unfavorite never propagates.
-- **The trust flag decides, not an empty array.** `relocated` is only populated from a *trustworthy* items read, so a failed read can never be mistaken for evidence a relocation landed.
-- **Failures stay independent.** A degraded read or a failed publish on one list never aborts the other, or the volume-heavy list hands its failure rate to the list the split protects.
-- **`changed` compares ids only**, which makes it blind to hint changes on purpose: "never publish solely to upgrade a hint". It also keeps two signing prompts off the screen for a page load that changed nothing.
+- `storage.favorites` — this device's own cache. The user favorited it *here*.
+- `explicitFeeds` — a pre-10333 event that named the feed outright. Worth 46 of
+  one user's 94 album favorites on a device hydrating without a cache, which is
+  precisely the case migration exists to serve.
 
-**Baselines: `bmb:favsynced:<npub>` keeps its exact meaning as the FEEDS baseline and `bmb:favsynced:items:<npub>` starts empty.** A baseline records what you published *to a given address*, not what kind of thing it was, and everything in the old one went to `podcast:favorites`. Splitting it by placement would make the items baseline name entries that list has never held, so the first publish there reads them as removals and deletes exactly what the split was moving — pinned in `check:favsync` alongside the correct derivation, same anti-revert pattern as the legacy-migration vector.
+The converse limitation has no workaround: **unfavoriting a feed while a track
+of it stays favorited is invisible on the wire.** The placement group and the
+feed favorite are the same bytes, so a writer cannot signal the removal and a
+reader cannot detect it. It is removed locally and stays for everyone else.
 
-**Reading events written before the split.** Every event on the wire today puts episodes on `podcast:favorites` alongside shows — written correctly against the spec as it stood, so those entries are the user's favorites and not junk. The hydrator reads **both** addresses and renders the union; an app that read only `podcast:favorites:items` for tracks would show a new user an empty library while their whole history sat one address away. **Surfacing a legacy item entry does not make it ours to publish**: one found on the feeds list and absent from our baseline goes into `foreignFavoriteEpisodes`, a render-only store slot `localFavoriteItems()` never reads. Copying it to the items list breaks unfavoriting permanently — publish it there, the user unfavorites it, it comes off the items list, it is still on the feeds list where the merge rightly forbids us removing it, and the next hydration puts it back, on every page load, forever, on every device. A **separate slot rather than a flag** is what makes that a property of where the data lives instead of a rule someone has to remember; deriving the foreign set per-publish would leak every entry the moment a feeds read came back degraded. The PI resolve pass routes results back to the map they came from for the same reason — resolving an entry is exactly the step that would otherwise launder it into the publishable map. Item entries another app wrote on the **items** list are ordinary: they sit at the address we publish to, so they enter our baseline and the user can unfavorite them here.
+### The baseline — foreign entry, or one you removed?
 
-**A degraded read must also be VISIBLE — the guard being right is only half of it.** Keeping local state and saying nothing renders identically to "your list is empty", and on a device with no cache (new browser, private tab, second device) that is a blank library indistinguishable from "your favorites are gone". It cost about half an hour of production debugging: the app looked broken, the correct address gate was suspected twice, and a revert that would have re-exposed every user to the shared list was nearly shipped for a bug that didn't exist. The read-path and write-path skips are equally silent, so both report through one in-memory `favoritesSync` flag (`lib/store.ts`, `'idle' | 'loading' | 'ok' | 'degraded'`):
+There is deliberately no "publish my favorites" function. One replaceable event
+with many writers has no partial update, so a blind publish deletes whatever the
+other app added, silently, with no undo. `syncFavorites` reads → merges →
+publishes as one step and the exported surface gives a caller no way to skip the
+read.
 
-- `hydrateFavorites` sets it, and sets `'ok'` **immediately after the trustworthy check** rather than at the end — everything past that point is Podcast Index resolution, which fails for unrelated reasons and must not be reported as a relay problem. It's wrapped so a throw lands on `'degraded'`, because the caller in `nostr-auth` swallows it and the status would otherwise sit on `'loading'` forever.
-- `syncFavorites` reports through the new optional `onDegraded` on `SyncOptions`, injected in `syncOptionsFor` exactly like `onSynced` — the callback shape is what keeps `favorites.ts` free of React and browser globals. `onSynced` sets `'ok'` in the same place, so a publish that lands clears a notice an earlier failed read put up.
-- **One flag per list, and one flag across both is worse than none.** `favoritesSync` is `{ feeds, items }`: a successful feeds read sharing a flag would clear the notice a failed items read set, handing the user a clean, confident empty state for their entire track library — precisely what this exists to prevent. `<FavoritesSyncNotice>` has three copies so it can say that only part of what you're looking at failed. **`'idle'` is not a failure**: accounts on the legacy single-list address have no items list, so `items` sits at `'idle'` forever, and that is everyone not on the trial allowlist — treating it as degraded would show a permanent false alarm to the entire user base. `resetFavoritesSync()` clears both halves in one call so a third list can't be added and left stale in one of the three teardowns.
-- `<FavoritesSyncNotice>` (`components/favorites-sync-notice.tsx`) renders it in the home-page aside, with a retry. `showFavoritesPanel` includes `favoritesDegraded` so the panel opens with nothing in it — otherwise the notice has nowhere to go in exactly the case it exists for. The genuinely-empty case keeps `<EmptyState>`, which means those onboarding cards now positively mean "the read worked". Never render the notice signed out: favorites are local by design there and there's no relay failure to report.
-- **Hydration is single-flight, keyed by npub.** Sign-in was deduped upstream by `pendingProfileLoad`; the retry button makes a concurrent hydrate reachable for the first time, and a double-tap must not run two read-merge-publish cycles. Keyed so an account switch is never handed the previous account's in-flight run.
-- `setFavoritesSync('idle')` sits beside all three `setFavorites({})` teardowns in `nostr-auth`, or B inherits A's notice. It is deliberately **not** reset inside `setIdentity`, which runs mid-hydration with the enriched identity and would clobber a fresh `'ok'`.
+`storage.favBaseline` (`{feeds, items}` of full NIP-73 ids) answers the question
+a **second** writer must answer and a single writer never faces: an entry on the
+relay and absent from local state is *either* something another app added *or*
+something this device just unfavorited. Prefer the relay and unfavoriting
+silently stops working; prefer local state and you delete the other app's
+entries.
 
-**`k` tags come from a known-kind table, never from string-scanning.** `podcast:guid`, `podcast:item:guid`, `podcast:publisher:guid`. Item guids are routinely permalink URLs, so "everything before the last colon" yields `podcast:item:guid:https` — a tag no relay filter matches, breaking discovery with nothing visibly wrong. `check:favsync` pins this.
+`feeds` records every group this device **emitted** — favorited or opened purely
+to place an item — because the question it answers is "did I write this group",
+which is what licenses dropping it once its last item is gone. It is emphatically
+not "did the user favorite this feed"; conflating the two either manufactures
+favorites or strands empty groups forever.
 
-**Malformed guids are separated at read, not dropped at write.** `interpretShows` splits non-UUID `podcast:guid:` values out as `malformed` — older versions of this app wrote feed IDs and live-episode strings there. They stay on the wire regardless; `window.bmbCleanFavorites()` is an explicit, user-invoked purge. "This app can't read it" is not the same claim as "this is junk".
+Rules the merge encodes (`mergeFavoritesList`):
 
-**Migration off kind:30003 `boostmebitch:favorites`.** `migrateLegacyList` unions the old list into the shared one, and runs on **every** hydrate — a no-op once absorbed, but a user signing in on a new device months later still finds their pre-sync history there. It requires **both** reads to be trustworthy, and merges with an **empty baseline**: passing the legacy ids as a baseline would read anything already on the shared list as a removal. The old event is left intact as the rollback path.
+- **Item removals are reconciled under EVERY group**, not only groups we still
+  hold — otherwise unfavoriting a track whose album we've since dropped never
+  propagates.
+- **A group we published keeps its place while any item under it survives.**
+  Dropping it takes the other app's items with it, since the group is the only
+  thing naming their parent. It is dropped only once nothing is left to place.
+- **Items read off the wire keep their wire position**; local-only items append.
+  Imposing our own order on every republish means two apps reorder the event at
+  each other forever, each publish locally reasonable, the only symptom being
+  that it never stops.
+- **The append pass honours the baseline**, so an entry another app *removed* is
+  not resurrected by this device on the next cycle.
+- **An empty baseline deletes nothing** — a device that hasn't hydrated is not
+  making a claim — while an empty local set with a full baseline is a real
+  clear-all.
+- **A local value never overwrites a non-empty one another writer set.** The
+  medium is filled only into a gap; "prefer my own resolved value" is what makes
+  two apps rewrite the event against each other forever.
+- **`changed` is a BYTE comparison against what the relay holds**, not a
+  membership one — order and grouping are semantic, so two lists with identical
+  membership can mean different things. Comparing against the read rather than a
+  digest of our own last publish is also what lets us notice another app has
+  edited the event since. Byte-equality with the read *is* the idempotence
+  vector, executed on every cycle in production.
 
-**The baseline it records afterwards comes from `localFavoriteItems()`, NOT from `legacy.items`** — and the difference is the whole migration. The baseline isn't a record of authorship, it's a promise that `local` will keep asserting every id in it, because the next merge computes `removes = baseline − local`. `migrateLegacyList` runs *before* `setFavorites`, so the store is empty of the migrated shows when the baseline is written; naming the legacy ids there makes the very next `mergeSharedFavorites` — in the same function, ~35 lines down — read all of them as local removals and publish them straight back out. That shipped: `[favorites] migrated 17 entries from the legacy list` logged on **every page load**, adding 17 and deleting 17 twice per load, with 0 of the 17 ever reaching the shared list. Nothing was lost, because the legacy event is never touched — the rollback path doing its job is also what hid it. Passing `local` leaves the migrated ids out of the baseline, so the merge treats them as foreign and **carries** them; they're adopted a hydrate later, once they've resolved into the store and the promise can be kept. Pinned by `check:favsync`'s "migration round trip" block, including a vector that reproduces the buggy baseline so the fix can't silently revert.
+**A degraded read publishes nothing.** `fetchFavoritesList` reports `trustworthy`
+(from `fetchLatestEventDetailed`), and both `syncFavorites` and `hydrateFavorites`
+bail on false. Under wholesale replacement this is the most expensive mistake the
+format allows: one bad read, republished, is the entire list. Same rule as kind:3
+and kind:0. The read also passes `dTag: ''` as its `ReadExpectation` — which
+`acceptsEvent` treats as matching an **absent** `d` — so an addressable event
+sharing the kind can't be laundered into the user's favorites.
 
-Sign-out clears in-memory favorites; the per-npub caches are left so re-signing in is fast. `bmb:favsynced:<npub>` is deliberately **not** cleared on an identity switch — it's per-npub, so switching back to A must find A's baseline where A left it.
+### Carry what you can't read
 
-**Switching identities must wipe in-memory state — for favorites that's correctness, not tidiness.** `hydrateFavorites` reads the store rather than the per-npub cache (deliberately — that's how a signed-**out** user's favorites get adopted on first sign-in), and adoption publishes whatever it finds there under the incoming key. So carrying account A's favorites across a switch writes A's list to relays under B's key. `completeSignIn`'s `identity && identity.pubkey !== id.pubkey` branch therefore clears `favorites`, `favoriteEpisodes`, `mutedPubkeys` and `resetFollows()` alongside the wallet teardown — signed-out → signed-in leaves `identity` null, skips the block, and still adopts as intended. (`hydrateMutes` reads the per-npub cache and was already correct; cleared for consistency. `resetFollows()` is explicit because `useFollows` only resets the singleton once a `<FollowButton>` effect runs, and a stale `ok: true` gates the kind:3 publish path.)
+An identifier kind outside the table, a tag type we have no meaning for, a `k`
+naming a kind we never emit, a malformed `podcast:guid:<not-a-uuid>` — all belong
+to a writer newer or older than us and ride through untouched as `LooseEntry`
+nodes holding the **whole tag**, because a future writer may use NIP-73's third
+element (the spec reserves it for a feed-URL fallback). Rebuilding the tag from
+its identifier would delete that.
+
+A loose node deliberately does **not** close the open group: an unrecognized `i`
+sitting between a feed and its items must not re-parent the ones after it. The
+entries around it belong to a writer that knew what it meant, and our not
+understanding one of them is not licence to move the others.
+
+`parseShowGuid` is UUID-gated and `bareFeedGuid` must reject exactly what it
+rejects — otherwise we'd open groups whose emitted `podcast:guid:` we can't read
+back, the array would never reach a fixed point, and two writers would rewrite
+the event at each other forever. `parseItemGuid` is **not** gated: an RSS `<guid>`
+is an arbitrary publisher-chosen string, and the live list carries
+`thenogs-donkey-01-porky-piggin-it` alongside 226 UUIDs.
+
+Malformed guids are separated at read (`partitionList().malformed`), never
+dropped at write — older versions of this app wrote feed IDs and live-episode
+strings there. `window.bmbCleanFavorites()` is an explicit, user-invoked purge.
+"This app can't read it" is not the same claim as "this is junk".
+
+### There is no migration path
+
+kind:10333 is the only favorites address this app reads or writes. The three it
+replaced — kind:30078 `d:podcast:favorites` and `d:podcast:favorites:items`, and
+kind:30003 `d:boostmebitch:favorites` — are **gone from the code entirely**, not
+merely unwritten. Their events are still on relays, untouched, and remain the
+rollback path; nothing here reads them.
+
+A one-time fold of those addresses did exist for one build and was removed
+deliberately. Two things are worth recording from it, because both are reasons
+not to bring it back casually:
+
+- **It recovered real data**, so removing it has a cost: the format cannot say
+  "this album is favorited" once a track of it is, and the old events could.
+  On the list this was developed against that was 46 of 94 album favorites,
+  visible only on a device whose local cache already held them. A device
+  hydrating fresh now sees the itemless groups and nothing more.
+- **It destroyed real data**, which is why it went. The new baseline was seeded
+  from the *old* baseline keys, which asserts that this device published those
+  ids to the 10333 list — a list it had never written to. An album that existed
+  only on the other app's side was in that stale baseline, absent from local, and
+  the merge correctly read "mine, and I removed it" and deleted it. The merge was
+  right; the input was a lie. **A baseline may only ever describe the list it
+  belongs to.** `storage.favBaseline` therefore starts empty, and empty is the
+  safe direction: no removals, so a first publish is a pure union.
+
+### Rendering
+
+Caches `bmb:favorites:<npub>` and `bmb:favepisodes:<npub>` (or `:guest`) render
+instantly; toggles are optimistic and publish is **debounced 1.5 s**.
+
+**The store maps are the source of truth for what gets published, not a render
+cache.** Every entry on the merged list gets a row whether or not Podcast Index
+resolved it; an unresolved row renders as a placeholder. Building those maps from
+resolved entries only meant a PI outage pruned the store while the baseline still
+named the un-pruned set — so the next page load read every unresolved entry as a
+local removal and published the deletion. One outage plus one reload.
+`addedAt: 0` means "not known yet", so a first real resolve stamps its own rather
+than inheriting a placeholder's and sinking to the bottom forever.
+
+**Medium sorts the list, and absent is its own bucket.** `<FavoritesList>` and
+`<FavoriteEpisodesList>` group via `groupByMedium` (`components/lists.tsx`) in
+`MEDIUM_ORDER` with medium-unknown last and never folded into `podcast`.
+Headings only appear when there's more than one group; case is folded for
+bucketing only, and an unrecognized value keeps its own label because the
+vocabulary is open. Precedence is `resolved ?? wire hint`: PI wins where we have
+it, the hint fills the gap, and **a disagreement is a stale hint, not an error —
+render your own value and never republish to correct the wire.** The hint is what
+makes the split possible on first paint at all: resolution is one PI request per
+entry, so a 300-entry library is 300 round trips before anything can be sorted,
+and for a delisted feed there is no other answer ever. An item's medium is its
+**parent feed's** (Podcasting 2.0 has no per-item medium), taken from the group
+it sits in — deliberately not a per-parent `/podcasts/byguid` fan-out whose only
+purpose would be a hint.
+
+**Item favorites another app added are ordinary rows.** They used to need a
+separate quarantine slot (`foreignFavoriteEpisodes`), because on the two-address
+design copying an item entry found on the *feeds* list over to the *items* list
+made it removable from one and not the other — so unfavoriting it brought it back
+on every load, forever. One event means no relocation, so the hazard is gone and
+the slot with it. What keeps another app's entries safe now is the baseline, per
+entry.
+
+### A degraded read must be VISIBLE
+
+The guard being right is only half of it. Keeping local state and saying nothing
+renders identically to "your list is empty", and on a device with no cache (new
+browser, private tab, second device) that is a blank library indistinguishable
+from "your favorites are gone". It cost about half an hour of production
+debugging: the app looked broken, the correct address gate was suspected twice,
+and a revert that would have re-exposed every user to the shared list was nearly
+shipped for a bug that didn't exist. Read-path and write-path skips are equally
+silent, so both report through one in-memory `favoritesSync` flag (`lib/store.ts`,
+`'idle' | 'loading' | 'ok' | 'degraded'`):
+
+- `hydrateFavorites` sets it, and sets `'ok'` **immediately after the
+  trustworthy check** rather than at the end — everything past that point is
+  Podcast Index resolution, which fails for unrelated reasons and must not be
+  reported as a relay problem. It's wrapped so a throw lands on `'degraded'`,
+  because the caller in `nostr-auth` swallows it and the status would otherwise
+  sit on `'loading'` forever.
+- `syncFavorites` reports through the optional `onDegraded` on `SyncOptions`,
+  injected in `syncOptionsFor` exactly like `onSynced` — the callback shape is
+  what keeps `favorites.ts` free of React and browser globals. `onSynced` sets
+  `'ok'` in the same place, so a publish that lands clears a notice an earlier
+  failed read put up.
+- **ONE flag, where there used to be one per list.** That is a consequence of the
+  format change, not a relaxation: two flags existed because two events could
+  fail independently, and a single flag across them let a good read on one clear
+  the notice the other's failure raised. There is one event now, so a partial
+  failure is not expressible and one flag cannot lie. **`'idle'` is still not a
+  failure** — it is the pre-hydration and signed-out state.
+- `<FavoritesSyncNotice>` (`components/favorites-sync-notice.tsx`) renders it in
+  the home-page aside, with a retry that also calls `resetPiBreaker()` — the PI
+  breaker lives in sessionStorage and survives reloads for the life of the tab,
+  so a combined outage otherwise leaves episodes short-circuiting to null with no
+  fetch and no way back. `showFavoritesPanel` includes `favoritesDegraded` so the
+  panel opens with nothing in it — otherwise the notice has nowhere to go in
+  exactly the case it exists for. Never render it signed out: favorites are local
+  by design there and there's no relay failure to report.
+- **Hydration is single-flight, keyed by npub**, and every cycle is serialized
+  through `serializeFavoritesCycle` — hydration and a heart-toggle publish are
+  the same cycle as far as the relays are concerned, and two running concurrently
+  merge against the same read, so whichever publishes second overwrites the
+  first's changes. The retry button is what made that reachable.
+- `setFavoritesSync('idle')` sits beside all three `setFavorites({})` teardowns
+  in `nostr-auth`, or B inherits A's notice. It is deliberately **not** reset
+  inside `setIdentity`, which runs mid-hydration with the enriched identity and
+  would clobber a fresh `'ok'`.
+
+### Module split
+
+`lib/nostr/favorites-list.ts` is the wire format and the merge, and has **zero
+imports** so `npm run check:favsync` can load the real thing under plain Node — a
+reimplemented copy in the check script would stay green while the shipping merge
+drifted, the exact failure being guarded. `favorites-legacy.ts` is import-free
+for the same reason. `lib/nostr/favorites.ts` holds the I/O and re-exports both.
+**Don't add an import to either pure module.**
+
+`npm run probe:favorites -- <npub> [--dump f.json]` prints what is actually on
+the relays for all four addresses, read-only, and is where the check script's
+fixtures should come from — real wire data carries shapes nobody thinks to
+invent.
+
+Sign-out clears in-memory favorites; the per-npub caches are left so re-signing
+in is fast. `bmb:favbaseline:<npub>` is deliberately **not** cleared on an
+identity switch — it's per-npub, so switching back to A must find A's baseline
+where A left it.
+
+**Switching identities must wipe in-memory state — for favorites that's
+correctness, not tidiness.** `hydrateFavorites` reads the store rather than the
+per-npub cache (deliberately — that's how a signed-**out** user's favorites get
+adopted on first sign-in), and adoption publishes whatever it finds there under
+the incoming key. So carrying account A's favorites across a switch writes A's
+list to relays under B's key. `completeSignIn`'s
+`identity && identity.pubkey !== id.pubkey` branch therefore clears `favorites`,
+`favoriteEpisodes`, `mutedPubkeys` and `resetFollows()` alongside the wallet
+teardown — signed-out → signed-in leaves `identity` null, skips the block, and
+still adopts as intended. (`hydrateMutes` reads the per-npub cache and was
+already correct; cleared for consistency. `resetFollows()` is explicit because
+`useFollows` only resets the singleton once a `<FollowButton>` effect runs, and a
+stale `ok: true` gates the kind:3 publish path.)
+
 
 ## Mutes (NIP-51 kind:10000)
 
@@ -239,7 +495,7 @@ Publish target is `resolvePublishRelays(identity)`. Body lives in `formatContent
 [nostr:npub… mentions, when the feed declared any]
 ```
 
-`signAndPublish` handles both kind:1 boost notes and kind:30078 favorites — a third event kind is ~10 lines.
+`signAndPublish` handles both kind:1 boost notes and kind:10333 favorites — a third event kind is ~10 lines.
 
 ## Site Nostr identity (boost notes for signed-out users)
 

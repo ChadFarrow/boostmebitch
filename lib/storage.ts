@@ -44,8 +44,7 @@ const KEYS = {
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
-  favSyncedPrefix: 'bmb:favsynced',   // + ':<npub>' — the NIP-73 id list this device last agreed with the FEEDS list on. NOT a cache: without it the shared kind:30078 list can't tell "another app added this" from "I removed this". See lib/nostr/favorites.ts.
-  favSyncedItemsPrefix: 'bmb:favsynced:items', // + ':<npub>' — same, for the podcast:favorites:items list. Starts empty at the split; never derived by splitting the key above, which would read migrated entries as removals.
+  favBaselinePrefix: 'bmb:favbaseline', // + ':<npub>' — {feeds,items} of NIP-73 ids this device last agreed with the kind:10333 list on. NOT a cache: without it a shared, replaceable, many-writer event can't tell "another app added this" from "I removed this". See lib/nostr/favorites-list.ts.
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   episodeMetaPrefix: 'bmb:epmeta',    // /api/episode-by-guid result, keyed by '<feedGuid>:<itemGuid>'
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
@@ -1154,53 +1153,52 @@ export const storage = {
   },
 
   /**
-   * The NIP-73 identifier list this device last agreed with the relay on — the
-   * baseline the shared favorites list is diffed against. Losing it is not
-   * fatal (an empty baseline yields no removals, so the next publish is a pure
-   * union) but it does mean one unfavorite fails to propagate, so it is a
-   * setting rather than a cache and never appears in EVICTABLE_PREFIXES.
-   */
-  favSynced: {
-    get: (npub: string | null | undefined): string[] => {
-      const raw = safeGet(identityKey(KEYS.favSyncedPrefix, npub));
-      if (!raw) return [];
-      try {
-        const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : [];
-      } catch {
-        return [];
-      }
-    },
-    set: (npub: string | null | undefined, ids: string[]) => {
-      safeSet(identityKey(KEYS.favSyncedPrefix, npub), JSON.stringify(ids));
-    },
-  },
-
-  /**
-   * The same baseline, for the `podcast:favorites:items` list.
+   * What this device last agreed with the kind:10333 favorites list on.
    *
-   * **It starts empty, and the existing `favSynced` key keeps its exact meaning
-   * as the FEEDS baseline.** That is the upgrade rule, and the obvious
-   * alternative destroys data: a baseline records what you published *to a
-   * given address*, not what kind of thing it was, and everything in the old
-   * one went to `podcast:favorites` whatever its identifier kind. Splitting it
-   * by placement would make this key name entries the items list has never
-   * held, so the first publish there reads them as removals and deletes exactly
-   * the entries the split was moving.
+   * It answers the one question a SECOND writer to a shared replaceable event
+   * must answer and a single writer never faces: an entry on the relay and
+   * absent from local state is either something another app added, or something
+   * this device just unfavorited. Prefer the relay and unfavoriting silently
+   * stops working; prefer local state and you delete the other app's entries.
+   *
+   * Losing it is not fatal — an empty baseline yields no removals, so the next
+   * publish is a pure union — but it does mean one unfavorite fails to
+   * propagate. So it is a setting, not a cache, and never appears in
+   * EVICTABLE_PREFIXES.
+   *
+   * **It starts EMPTY, and is deliberately NOT seeded from the two pre-10333
+   * keys.** Those describe a different event at a different address. Carrying
+   * them over asserts that this device published those ids *to the 10333 list*,
+   * which it never did — so any entry sitting on 10333 that this device did not
+   * write reads as "mine, and I removed it" and gets deleted on the first
+   * publish. That shipped for one build and deleted a real album favorite that
+   * existed only on the other app's side: the id was in the old baseline, absent
+   * from local, and the merge did exactly what a truthful baseline would have
+   * meant.
+   *
+   * Empty is both safe and correct here. Safe, because an empty baseline yields
+   * no removals — the first publish is a pure union. Correct, because a removal
+   * this device made before the cutover was already propagated to the OLD list;
+   * it has no pending removals against a list it has never written to. The only
+   * cost is that an unfavorite made between hydration and the first successful
+   * publish waits for the next toggle, which is recoverable in a way that
+   * deleting another app's entry is not.
    */
-  favSyncedItems: {
-    get: (npub: string | null | undefined): string[] => {
-      const raw = safeGet(identityKey(KEYS.favSyncedItemsPrefix, npub));
-      if (!raw) return [];
+  favBaseline: {
+    get: (npub: string | null | undefined): { feeds: string[]; items: string[] } => {
+      const raw = safeGet(identityKey(KEYS.favBaselinePrefix, npub));
+      if (!raw) return { feeds: [], items: [] };
+      const strings = (v: unknown): string[] =>
+        (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
       try {
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : [];
+        return { feeds: strings(parsed?.feeds), items: strings(parsed?.items) };
       } catch {
-        return [];
+        return { feeds: [], items: [] };
       }
     },
-    set: (npub: string | null | undefined, ids: string[]) => {
-      safeSet(identityKey(KEYS.favSyncedItemsPrefix, npub), JSON.stringify(ids));
+    set: (npub: string | null | undefined, v: { feeds: string[]; items: string[] }) => {
+      safeSet(identityKey(KEYS.favBaselinePrefix, npub), JSON.stringify(v));
     },
   },
 };
