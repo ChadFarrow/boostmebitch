@@ -86,19 +86,106 @@ const KNOWN_IDENTIFIER_KINDS = [
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * One entry in the shared list, kept as the raw NIP-73 identifier plus its
- * optional hints. The merge never interprets `id` — that happens at render
- * time — so a third app's identifier kind survives a round trip through here.
+ * One entry in the shared list: the raw `i` tag, exactly as it came off the
+ * wire, plus its identifier lifted out as the merge key.
+ *
+ * **It carries the whole tag rather than a parsed struct, and that is the
+ * point.** The natural implementation — parse each tag into
+ * `{id, feedUrl, feedRef}`, merge those, write them back out — silently deletes
+ * every position past the third, on every entry, on every publish, with no
+ * error and nothing on screen to show for it. This app did exactly that, and
+ * the spec names it by file and line: a `<podcast:medium>` another app wrote at
+ * position 4 survived only until this one next republished the list.
+ *
+ * A struct with a `tail` field would fix that case and re-arm it for position
+ * 6. Carrying the tag makes the truncation *unrepresentable* — there is no
+ * rebuild step left to truncate. See `overlayTag`.
+ *
+ * Positions, per the spec:
+ *   1  the NIP-73 identifier — the merge key, and the only thing `identifierKind`
+ *      may ever read
+ *   2  legacy RSS feed URL — preserve what you find, never originate
+ *   3  parent feed guid, for items
+ *   4  `<podcast:medium>` — advisory, strictly sticky
+ *   5+ not defined; belongs to an app newer than this one
  */
 export interface SharedFavoriteItem {
-  /** Full NIP-73 identifier, e.g. `podcast:guid:<uuid>`. The merge key. */
+  /** Full NIP-73 identifier, e.g. `podcast:guid:<uuid>`. Mirrors `tag[1]`. */
   id: string;
-  /** NIP-73 optional URL hint (tag position 2): the feed's RSS URL. */
+  /** The whole `i` tag. `tag[0]` is always `'i'`, `tag[1]` always `id`. */
+  tag: string[];
+}
+
+/** Trailing empty positions carry no information, so they never reach the wire.
+ *  Applied once, at the end of every tag build, so that reading a tag and
+ *  rewriting it unchanged is a fixed point rather than a slow drift. */
+function trimTag(tag: string[]): string[] {
+  const out = tag.slice();
+  while (out.length > 2 && !out[out.length - 1]) out.pop();
+  return out;
+}
+
+/**
+ * Build a wire entry from what this device knows.
+ *
+ * Empty positions are held open with `''` rather than closed up, which
+ * `trimTag` then removes only from the tail. So a feed entry that knows only
+ * its medium is `['i', id, '', '', 'music']` — six bytes of padding that buy
+ * the position its meaning. Shifting the medium down into position 3 would
+ * have the next reader hand it to Podcast Index as a `podcastguid`.
+ */
+export function itemFrom(parts: {
+  id: string;
   feedUrl?: string;
-  /** Additive extension (tag position 3): `podcast:guid:<feedGuid>` of an
-   *  item's parent feed. PI's /episodes/byguid wants `podcastguid`, so
-   *  carrying it inline saves a feed-URL→guid round trip. */
   feedRef?: string;
+  medium?: string;
+}): SharedFavoriteItem {
+  return {
+    id: parts.id,
+    tag: trimTag(['i', parts.id, parts.feedUrl ?? '', parts.feedRef ?? '', parts.medium ?? '']),
+  };
+}
+
+/** Position 2 — the legacy RSS feed URL. Read-only: never originated. */
+export const feedUrlOf = (item: SharedFavoriteItem): string | undefined => item.tag[2] || undefined;
+/** Position 3 — an item's parent feed guid. */
+export const feedRefOf = (item: SharedFavoriteItem): string | undefined => item.tag[3] || undefined;
+/** Position 4 — the entry's `<podcast:medium>`, if any writer has supplied one. */
+export const mediumOf = (item: SharedFavoriteItem): string | undefined => item.tag[4] || undefined;
+
+/**
+ * Reconstruct an `i` tag by overlaying what this device knows onto the tag that
+ * came back from the relay, index by index — never by rebuilding it from our
+ * own fields.
+ *
+ * **A non-empty value you didn't write is not yours to change.** Fill positions
+ * that are empty or absent; leave the rest alone, even when you resolved a
+ * different value and are confident yours is better. The tempting rule —
+ * "prefer my own resolved value" — is what makes two apps holding different
+ * values rewrite the event against each other on every publish, forever.
+ * Neither is wrong, neither converges, and nothing looks wrong from either
+ * side: each publish is locally reasonable and the only symptom is that it
+ * never stops. Stickiness terminates instead.
+ *
+ * Three invariants here, each a way to lose someone's data:
+ *
+ *   - **Positions 5+ come from `latest` only.** We never originate there, so we
+ *     have nothing to say about them; copying from `mine` could only invent
+ *     something. They belong to an app newer than this one.
+ *   - **`latest[4]` is never normalized.** Not lowercased, not dropped for
+ *     being unrecognized — the medium vocabulary is open, and a value we don't
+ *     know is one a newer app does.
+ *   - **Membership is decided elsewhere.** This runs as a subordinate pass over
+ *     an entry the merge has already decided to keep; it can never add an
+ *     entry, remove one, or change its identifier.
+ */
+export function overlayTag(latest: string[] | null, mine: string[] | null): string[] {
+  if (!latest) return trimTag(mine ?? []);
+  if (!mine) return trimTag(latest);
+  const out = ['i', latest[1] ?? mine[1] ?? ''];
+  for (let p = 2; p <= 4; p += 1) out.push(latest[p] || mine[p] || '');
+  for (let p = 5; p < latest.length; p += 1) out.push(latest[p] ?? '');
+  return trimTag(out);
 }
 
 // --- identifier helpers ----------------------------------------------------
@@ -131,7 +218,13 @@ export function identifierKind(id: string): string | null {
 
 // --- reading ---------------------------------------------------------------
 
-/** Every `i` tag on an event, in order, deduped by identifier. */
+/**
+ * Every `i` tag on an event, in order, deduped by identifier.
+ *
+ * The tag is copied WHOLE and verbatim — no interpretation, no truncation to
+ * the positions this app happens to understand. `.slice()` rather than the
+ * array itself so nothing downstream can mutate the event we read.
+ */
 export function itemsFromTags(tags: string[][]): SharedFavoriteItem[] {
   const items: SharedFavoriteItem[] = [];
   const seen = new Set<string>();
@@ -139,11 +232,7 @@ export function itemsFromTags(tags: string[][]): SharedFavoriteItem[] {
     if (tag[0] !== 'i' || !tag[1]) continue;
     if (seen.has(tag[1])) continue; // a duplicate id is one favorite
     seen.add(tag[1]);
-    items.push({
-      id: tag[1],
-      feedUrl: tag[2] || undefined,
-      feedRef: tag[3] || undefined,
-    });
+    items.push({ id: tag[1], tag: tag.slice() });
   }
   return items;
 }
@@ -194,10 +283,11 @@ export function interpretItems(items: SharedFavoriteItem[]): Array<{
   for (const item of items) {
     const itemGuid = parseItemGuid(item.id);
     if (!itemGuid) continue;
+    const ref = feedRefOf(item);
     out.push({
       itemGuid,
-      feedGuid: item.feedRef ? parseShowGuid(item.feedRef) ?? undefined : undefined,
-      feedUrl: item.feedUrl,
+      feedGuid: ref ? parseShowGuid(ref) ?? undefined : undefined,
+      feedUrl: feedUrlOf(item),
     });
   }
   return out;
@@ -238,18 +328,11 @@ export function mergeSharedFavorites(args: {
     if (removed.has(item.id)) continue;
     if (kept.has(item.id)) continue;
     kept.add(item.id);
-    // Hints improve over time and cost nothing to upgrade, but an existing
-    // hint is never blanked by a local entry that happens to lack one.
+    // Membership was decided above, on raw identifier strings and nothing else.
+    // THIS is the subordinate hint pass: it may fill an empty position from
+    // what this device knows, and may never touch one another writer filled.
     const mine = localById.get(item.id);
-    out.push(
-      mine
-        ? {
-            id: item.id,
-            feedUrl: mine.feedUrl ?? item.feedUrl,
-            feedRef: mine.feedRef ?? item.feedRef,
-          }
-        : item,
-    );
+    out.push({ id: item.id, tag: overlayTag(item.tag, mine?.tag ?? null) });
   }
   for (const item of local) {
     if (kept.has(item.id)) continue;
@@ -303,12 +386,15 @@ export function tagsForSharedFavorites(
   ];
   const kinds = new Set<string>();
   for (const item of items) {
-    // Position 2 is NIP-73's optional URL hint; position 3 is our parent-feed
-    // extension. An empty string holds position 2 open when only the feed ref
-    // is known — consumers read position 2 as "absent" either way.
-    if (item.feedRef) tags.push(['i', item.id, item.feedUrl ?? '', item.feedRef]);
-    else if (item.feedUrl) tags.push(['i', item.id, item.feedUrl]);
-    else tags.push(['i', item.id]);
+    // The tag goes out AS IT CAME IN. There is deliberately no rebuild here
+    // from known fields — that is what deleted other writers' positions on
+    // every publish. `itemFrom` and `overlayTag` are the only places a tag is
+    // ever constructed, and both are lossless. Copied so a caller mutating the
+    // returned tags can't reach back into the item.
+    tags.push(item.tag.slice());
+    // Derived from position 1 ONLY. Never from position 4: a `["k", "music"]`
+    // names nothing any app subscribes to and pollutes the `#k` discovery
+    // filter for everyone who does.
     const kind = identifierKind(item.id);
     if (kind) kinds.add(kind);
   }

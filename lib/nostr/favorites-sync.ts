@@ -11,6 +11,7 @@ import { storage } from '@/lib/storage';
 import { resolvePublishRelays } from './relays';
 import { createScheduledPublish } from './debounced-publish';
 import {
+  itemFrom,
   itemId,
   showId,
   syncFavorites,
@@ -29,14 +30,14 @@ export function localFavoriteItems(): SharedFavoriteItem[] {
   const state = useApp.getState();
   const items: SharedFavoriteItem[] = [];
   for (const fav of Object.values(state.favorites)) {
-    items.push({ id: showId(fav.podcastGuid), feedUrl: fav.url });
+    items.push(itemFrom({ id: showId(fav.podcastGuid), feedUrl: fav.url }));
   }
   for (const ep of Object.values(state.favoriteEpisodes)) {
-    items.push({
+    items.push(itemFrom({
       id: itemId(ep.itemGuid),
       feedUrl: ep.feedUrl,
       feedRef: ep.feedGuid ? showId(ep.feedGuid) : undefined,
-    });
+    }));
   }
   return items;
 }

@@ -11,17 +11,35 @@
 // (github.com/ChadFarrow/PC20-Nostr/specs/pc20-favorites.md). A replaceable event
 // has no partial update — every publish replaces the whole thing — so a merge
 // bug doesn't degrade, it DELETES, silently, on someone else's device, with no
-// undo and no error anywhere. The three ways to get it wrong all type-check:
+// undo and no error anywhere. The four ways to get it wrong all type-check:
 //
 //   - Publish the local set → every entry another app added is erased.
 //   - Publish the union → unfavoriting stops working, permanently.
 //   - Interpret before merging → identifier kinds this app doesn't implement
 //     (a third app's, or StableKraft's track favorites seen from here) get
 //     dropped as "unrecognized" the first time this app publishes.
+//   - Rebuild the `i` tag from the fields you parsed → every position past the
+//     ones you model is deleted, on every entry, on every publish.
 //
 // The must-still-work half is the removal cases: a merge that never deletes
 // anything is trivially safe and completely useless, so `lastSynced` semantics
 // are pinned in both directions.
+//
+// ---------------------------------------------------------------------------
+// FIXTURE RULE, and it is the reason this file was rewritten.
+//
+// Build every wire fixture with `wire(...)` — from a literal `i` tag — never
+// from an object literal made of the fields the code already knows about. A
+// round-trip assertion whose input is constructed out of your own struct CANNOT
+// FAIL: you write the positions you know, read them back, and the comparison is
+// vacuously true while the code truncates everything else.
+//
+// This script had exactly such an assertion, named 'tags → items → tags is
+// lossless', and it was green for the entire life of the feature while every
+// publish dropped whatever another app had written past position 3. The spec
+// calls this file out by name for it. The tail-preservation block below is the
+// fixture that can actually fail: it carries a position nothing here models.
+// ---------------------------------------------------------------------------
 //
 // `--experimental-strip-types` lets this .mjs import the real .ts module. That
 // is the whole point: a reimplemented copy stays green while the shipping merge
@@ -34,11 +52,15 @@ import {
   baselineFrom,
   LEGACY_FAVORITES_KIND,
   SHARED_FAVORITES_KIND,
+  feedRefOf,
+  feedUrlOf,
   identifierKind,
   interpretItems,
   interpretShows,
+  itemFrom,
   itemId,
   itemsFromTags,
+  mediumOf,
   mergeSharedFavorites,
   otherTagsFrom,
   showId,
@@ -63,7 +85,15 @@ const B = showId('c31ad2f6-1b7e-5b34-a2a4-6b06d5b0b4e2');
 const C = itemId('https://example.com/ep/42');
 const X = 'podcast:publisher:guid:0e8f6a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b';
 
+// An entry as it arrives FROM A RELAY: parsed out of a literal wire tag, the
+// same way the reader does it. See the FIXTURE RULE above — this is what makes
+// a preservation vector capable of failing.
+const wire = (...tag) => itemsFromTags([['i', ...tag]])[0];
+// An entry as THIS DEVICE builds it from the store.
+const mine = itemFrom;
+
 const ids = (items) => items.map((i) => i.id);
+const tagsOf = (items) => items.map((i) => i.tag);
 
 console.log('the address — where the shared list actually lives');
 {
@@ -84,7 +114,7 @@ console.log('\nmergeSharedFavorites — a shared list several apps write to');
 {
   check(
     'a first publish from a device with no baseline is a pure union',
-    ids(mergeSharedFavorites({ latest: [], lastSynced: [], local: [{ id: A }] })),
+    ids(mergeSharedFavorites({ latest: [], lastSynced: [], local: [mine({ id: A })] })),
     [A],
   );
 
@@ -93,13 +123,13 @@ console.log('\nmergeSharedFavorites — a shared list several apps write to');
   // local set here is what wipes another app's favorites.
   check(
     'an entry another app added survives a republish from this device',
-    ids(mergeSharedFavorites({ latest: [{ id: B }], lastSynced: [], local: [{ id: A }] })),
+    ids(mergeSharedFavorites({ latest: [wire(B)], lastSynced: [], local: [mine({ id: A })] })),
     [B, A],
   );
 
   check(
     'a local removal propagates — it was in the baseline and is now gone',
-    ids(mergeSharedFavorites({ latest: [{ id: A }, { id: B }], lastSynced: [A, B], local: [{ id: B }] })),
+    ids(mergeSharedFavorites({ latest: [wire(A), wire(B)], lastSynced: [A, B], local: [mine({ id: B })] })),
     [B],
   );
 
@@ -107,9 +137,9 @@ console.log('\nmergeSharedFavorites — a shared list several apps write to');
   check(
     'a local add and a local removal apply on top of a concurrent foreign add',
     ids(mergeSharedFavorites({
-      latest: [{ id: A }, { id: X }],
+      latest: [wire(A), wire(X)],
       lastSynced: [A],
-      local: [{ id: C }],
+      local: [mine({ id: C })],
     })),
     [X, C],
   );
@@ -119,7 +149,7 @@ console.log('\nmergeSharedFavorites — a shared list several apps write to');
   // untouched — an empty `local` must never read as "delete everything".
   check(
     'an empty local set with no baseline deletes nothing',
-    ids(mergeSharedFavorites({ latest: [{ id: A }, { id: B }], lastSynced: [], local: [] })),
+    ids(mergeSharedFavorites({ latest: [wire(A), wire(B)], lastSynced: [], local: [] })),
     [A, B],
   );
 
@@ -127,13 +157,13 @@ console.log('\nmergeSharedFavorites — a shared list several apps write to');
   // all", and must be honoured, or the list can never be emptied.
   check(
     'an empty local set with a full baseline is a real clear-all',
-    ids(mergeSharedFavorites({ latest: [{ id: A }, { id: B }], lastSynced: [A, B], local: [] })),
+    ids(mergeSharedFavorites({ latest: [wire(A), wire(B)], lastSynced: [A, B], local: [] })),
     [],
   );
 
   check(
     'an identifier kind this app does not implement is never dropped',
-    ids(mergeSharedFavorites({ latest: [{ id: X }], lastSynced: [], local: [{ id: A }] })),
+    ids(mergeSharedFavorites({ latest: [wire(X)], lastSynced: [], local: [mine({ id: A })] })),
     [X, A],
   );
 
@@ -144,45 +174,145 @@ console.log('\nmergeSharedFavorites — a shared list several apps write to');
   // and it returns. Only a genuine local ADD may be appended.
   check(
     'an entry another app removed is NOT resurrected by this device',
-    ids(mergeSharedFavorites({ latest: [{ id: B }], lastSynced: [A, B], local: [{ id: A }, { id: B }] })),
+    ids(mergeSharedFavorites({ latest: [wire(B)], lastSynced: [A, B], local: [mine({ id: A }), mine({ id: B })] })),
     [B],
   );
   // ...while an entry this device added and has never published (not in the
   // baseline) still goes up, which is what distinguishes the two.
   check(
     'a never-published local add still goes up',
-    ids(mergeSharedFavorites({ latest: [{ id: B }], lastSynced: [B], local: [{ id: A }, { id: B }] })),
+    ids(mergeSharedFavorites({ latest: [wire(B)], lastSynced: [B], local: [mine({ id: A }), mine({ id: B })] })),
     [B, A],
+  );
+
+  // The `∪ adds` vs `∪ local` asymmetry, which the vectors above cannot
+  // distinguish: with local == baseline both produce the same answer. This is
+  // the first asymmetry the spec flags and it silently resurrects deleted
+  // favorites, so it gets its own vector. Another app unfavorited B; this
+  // device has changed nothing, so B must not come back.
+  check(
+    'a foreign removal is not undone by appending the whole local set',
+    ids(mergeSharedFavorites({
+      latest: [wire(A)],
+      lastSynced: [A, B],
+      local: [mine({ id: A }), mine({ id: B })],
+    })),
+    [A], // `∪ local` would give [A, B], on every device, on every publish
   );
 
   check(
     'surviving entries keep relay order; new local entries append',
     ids(mergeSharedFavorites({
-      latest: [{ id: B }, { id: X }, { id: A }],
+      latest: [wire(B), wire(X), wire(A)],
       lastSynced: [B, X, A],
-      local: [{ id: A }, { id: B }, { id: X }, { id: C }],
+      local: [mine({ id: A }), mine({ id: B }), mine({ id: X }), mine({ id: C })],
     })),
     [B, X, A, C],
   );
+}
 
+console.log('\noverlayTag — fill what is empty, never touch what is not');
+{
   check(
-    'a local hint upgrades a relay entry that has none',
-    mergeSharedFavorites({
-      latest: [{ id: A }],
+    'a local hint fills a position the relay entry left empty',
+    tagsOf(mergeSharedFavorites({
+      latest: [wire(A)],
       lastSynced: [A],
-      local: [{ id: A, feedUrl: 'https://example.com/feed.xml' }],
-    }),
-    [{ id: A, feedUrl: 'https://example.com/feed.xml', feedRef: undefined }],
+      local: [mine({ id: A, feedUrl: 'https://example.com/feed.xml' })],
+    })),
+    [['i', A, 'https://example.com/feed.xml']],
   );
 
   check(
     'a relay hint is never blanked by a local entry that lacks one',
-    mergeSharedFavorites({
-      latest: [{ id: A, feedUrl: 'https://example.com/feed.xml' }],
+    tagsOf(mergeSharedFavorites({
+      latest: [wire(A, 'https://example.com/feed.xml')],
       lastSynced: [A],
-      local: [{ id: A }],
-    }),
-    [{ id: A, feedUrl: 'https://example.com/feed.xml', feedRef: undefined }],
+      local: [mine({ id: A })],
+    })),
+    [['i', A, 'https://example.com/feed.xml']],
+  );
+
+  // Spec vector 7 — absent is not "clear it".
+  check(
+    'a medium this device does not know is left alone, not blanked',
+    tagsOf(mergeSharedFavorites({
+      latest: [wire(A, '', '', 'music')],
+      lastSynced: [A],
+      local: [mine({ id: A })],
+    })),
+    [['i', A, '', '', 'music']],
+  );
+
+  // Spec vector 8 — filling position 4 must hold 2 and 3 open. Shifting the
+  // medium down into position 3 would have the next reader hand "music" to
+  // Podcast Index as a podcastguid.
+  check(
+    'filling an empty medium holds the earlier positions open',
+    tagsOf(mergeSharedFavorites({
+      latest: [wire(A, 'https://example.com/feed.xml')],
+      lastSynced: [A],
+      local: [mine({ id: A, medium: 'music' })],
+    })),
+    [['i', A, 'https://example.com/feed.xml', '', 'music']],
+  );
+
+  // Spec vector 9 — the medium vocabulary is open. A value we don't recognize
+  // is one a newer app does: not overwritten, not dropped, not case-normalized.
+  check(
+    'an unrecognized medium survives contact with this app',
+    tagsOf(mergeSharedFavorites({
+      latest: [wire(A, '', '', 'somethingL')],
+      lastSynced: [A],
+      local: [mine({ id: A, medium: 'music' })],
+    })),
+    [['i', A, '', '', 'somethingL']],
+  );
+
+  // Spec vector 6, and the one worth copying first. A hint that flip-flops is
+  // invisible to any single-pass assertion: each publish looks locally
+  // reasonable and the only symptom is that it never stops. Two apps running
+  // "prefer my own resolved value" pass every other vector here and rewrite the
+  // event against each other forever.
+  const local = [mine({ id: A, medium: 'podcast' })]; // we resolved something else
+  const once = mergeSharedFavorites({ latest: [wire(A, '', '', 'music')], lastSynced: [A], local });
+  const twice = mergeSharedFavorites({ latest: once, lastSynced: [A], local });
+  check('the foreign hint wins over our own resolved value', tagsOf(once), [['i', A, '', '', 'music']]);
+  check('and feeding the result back in changes nothing (idempotent)', tagsOf(twice), tagsOf(once));
+}
+
+console.log('\ntail preservation — a position this app has no field for');
+{
+  // SPEC VECTOR 4, and the fixture this script was missing. Everything past
+  // position 4 belongs exclusively to somebody else: an earlier revision of the
+  // spec, or an app newer than this one. The fixture carries a position nothing
+  // here models, because a round trip built from our own fields cannot fail.
+  const full = ['i', C, 'https://example.com/feed.xml', A, 'music', 'something-new'];
+
+  const merged = mergeSharedFavorites({
+    latest: itemsFromTags([full]),
+    lastSynced: [C],
+    local: [mine({ id: C })], // this device knows only the identifier
+  });
+
+  check('every position survives read → merge → write', tagsOf(merged), [full]);
+  check('including the one past anything this app models', merged[0].tag[5], 'something-new');
+  check(
+    'and it reaches the wire, not just the merge',
+    tagsForSharedFavorites(merged).find((t) => t[1] === C),
+    full,
+  );
+
+  // The same entry, unfavorited elsewhere and re-added locally, must not be
+  // rebuilt from our three fields on the way back up.
+  check(
+    'a local entry never truncates the relay tag it merges onto',
+    tagsOf(mergeSharedFavorites({
+      latest: itemsFromTags([full]),
+      lastSynced: [],
+      local: [mine({ id: C, feedUrl: 'https://other.example/feed.xml', feedRef: B })],
+    })),
+    [full], // ours fills nothing: every position it could touch is already set
   );
 }
 
@@ -195,21 +325,21 @@ console.log('\nbaselineFrom — what this app is allowed to delete later');
   // the exact opposite of the rule the format rests on.
   check(
     'a foreign id is never written into the baseline',
-    baselineFrom([{ id: B }, { id: X }, { id: A }], [{ id: A }]),
+    baselineFrom([wire(B), wire(X), wire(A)], [mine({ id: A })]),
     [A],
   );
   check(
     'so it survives the SECOND publish too, not just the first',
     ids(mergeSharedFavorites({
-      latest: [{ id: X }, { id: A }],
-      lastSynced: baselineFrom([{ id: X }, { id: A }], [{ id: A }]),
-      local: [{ id: A }],
+      latest: [wire(X), wire(A)],
+      lastSynced: baselineFrom([wire(X), wire(A)], [mine({ id: A })]),
+      local: [mine({ id: A })],
     })),
     [X, A],
   );
   check(
     'an entry this device dropped locally leaves the baseline',
-    baselineFrom([{ id: A }, { id: B }], [{ id: B }]),
+    baselineFrom([wire(A), wire(B)], [mine({ id: B })]),
     [B],
   );
 }
@@ -230,8 +360,8 @@ console.log('\nthe migration round trip — a migrated entry must survive the hy
   // forever, with 0 of them ever reaching the shared list. Vectors below pin
   // the composed behaviour, since the ordering bug lives in the hydrator (which
   // imports the store and can't be loaded here) rather than in the merge.
-  const shared = [{ id: X }];          // a foreign entry already on the list
-  const legacy = [{ id: A }, { id: B }]; // this app's pre-sync history
+  const shared = [wire(X)];                          // a foreign entry already on the list
+  const legacy = [mine({ id: A }), mine({ id: B })]; // this app's pre-sync history
   const merged = mergeSharedFavorites({ latest: shared, lastSynced: [], local: legacy });
   check('migration adds the legacy entries without touching the foreign one', ids(merged), [X, A, B]);
 
@@ -263,7 +393,7 @@ console.log('\nthe migration round trip — a migrated entry must survive the hy
   );
   check(
     'once the shows resolve into the store, the baseline adopts them',
-    baselineFrom(merged, [{ id: A }, { id: B }]),
+    baselineFrom(merged, [mine({ id: A }), mine({ id: B })]),
     [A, B],
   );
 }
@@ -271,9 +401,9 @@ console.log('\nthe migration round trip — a migrated entry must survive the hy
 console.log('\ntagsForSharedFavorites / itemsFromTags — the wire round trip');
 {
   const items = [
-    { id: A, feedUrl: 'https://example.com/feed.xml' },
-    { id: C, feedUrl: 'https://example.com/feed.xml', feedRef: A },
-    { id: X },
+    mine({ id: A, feedUrl: 'https://example.com/feed.xml' }),
+    mine({ id: C, feedUrl: 'https://example.com/feed.xml', feedRef: A }),
+    mine({ id: X }),
   ];
   const tags = tagsForSharedFavorites(items, [['alt', 'from another client']]);
 
@@ -311,14 +441,28 @@ console.log('\ntagsForSharedFavorites / itemsFromTags — the wire round trip');
     identifierKind('some:other:scheme:value'),
     null,
   );
+  // The k tag is derived from position 1 and nothing else. A `["k","music"]`
+  // names nothing any app subscribes to, and it pollutes the #k discovery
+  // filter for every app that relies on one.
   check(
-    'but another app\'s k tag for that kind is preserved, not stripped',
+    'a medium at position 4 mints no k tag of its own',
+    tagsForSharedFavorites([wire(A, '', '', 'music')]).filter((t) => t[0] === 'k'),
+    [['k', 'podcast:guid']],
+  );
+  check(
+    'nor does a value at a position the spec does not define',
+    tagsForSharedFavorites([wire(A, '', '', '', 'something-new')]).filter((t) => t[0] === 'k'),
+    [['k', 'podcast:guid']],
+  );
+  check(
+    'but another app\'s k tag for an unknown kind is preserved, not stripped',
     otherTagsFrom([['k', 'some:other:scheme'], ['k', 'podcast:guid'], ['d', SHARED_D_TAG]]),
     [['k', 'some:other:scheme']],
   );
-  // The round trip is what a second app depends on: anything this app writes,
-  // it must be able to read back identically, hints and all.
-  check('tags → items → tags is lossless', itemsFromTags(tags), items);
+  // NOTE: this round trip is built from `mine(...)`, so it can only ever prove
+  // that what we write we can read. It is NOT the losslessness vector — see
+  // "tail preservation" above, which is the one with a fixture that can fail.
+  check('what this app writes, it reads back identically', itemsFromTags(tags), items);
   check('managed tags are not mistaken for another writer\'s', otherTagsFrom(tags), [
     ['alt', 'from another client'],
   ]);
@@ -327,20 +471,19 @@ console.log('\ntagsForSharedFavorites / itemsFromTags — the wire round trip');
   // position 2 is held open with an empty string rather than shifting.
   check(
     'a feed ref with no URL hint holds position 2 open',
-    tagsForSharedFavorites([{ id: C, feedRef: A }]).find((t) => t[1] === C),
+    tagsForSharedFavorites([mine({ id: C, feedRef: A })]).find((t) => t[1] === C),
     ['i', C, '', A],
   );
-  check(
-    'and reads back with the hint absent, not empty-string',
-    itemsFromTags([['i', C, '', A]]),
-    [{ id: C, feedUrl: undefined, feedRef: A }],
-  );
+  const heldOpen = itemsFromTags([['i', C, '', A]])[0];
+  check('...and position 2 reads back as absent, not empty-string', feedUrlOf(heldOpen), undefined);
+  check('...while position 3 reads back as the parent ref', feedRefOf(heldOpen), A);
+  check('...and an absent position 4 is undefined, never a default', mediumOf(heldOpen), undefined);
 }
 
 console.log('\ninterpretShows / interpretItems — reading is lossy, the wire is not');
 {
   // Feed IDs and live-episode strings written by old versions of this app.
-  const junk = [{ id: A }, { id: showId('920666') }, { id: showId('live:abc') }];
+  const junk = [wire(A), wire(showId('920666')), wire(showId('live:abc'))];
   check('malformed show guids are separated, not silently kept', interpretShows(junk), {
     guids: ['9b024349-ccf0-5f69-a609-6b82873eab3c'],
     malformed: ['920666', 'live:abc'],
@@ -355,7 +498,7 @@ console.log('\ninterpretShows / interpretItems — reading is lossy, the wire is
 
   check(
     'an episode resolves its parent feed from the position-3 hint',
-    interpretItems([{ id: C, feedUrl: 'https://example.com/feed.xml', feedRef: A }]),
+    interpretItems([wire(C, 'https://example.com/feed.xml', A)]),
     [{
       itemGuid: 'https://example.com/ep/42',
       feedGuid: '9b024349-ccf0-5f69-a609-6b82873eab3c',
@@ -364,12 +507,12 @@ console.log('\ninterpretShows / interpretItems — reading is lossy, the wire is
   );
   check(
     'an episode with no parent feed is readable but unresolvable',
-    interpretItems([{ id: C }]),
+    interpretItems([wire(C)]),
     [{ itemGuid: 'https://example.com/ep/42', feedGuid: undefined, feedUrl: undefined }],
   );
   check(
     'a show identifier is never read as an episode',
-    interpretItems([{ id: A }, { id: X }]),
+    interpretItems([wire(A), wire(X)]),
     [],
   );
 }
@@ -382,7 +525,7 @@ console.log('\nthe published d tag — which list a user\'s favorites land on');
   // The default is the shared address, so every existing caller is unchanged.
   check(
     'defaults to the shared cross-app address',
-    dOf(tagsForSharedFavorites([{ id: A }])),
+    dOf(tagsForSharedFavorites([mine({ id: A })])),
     SHARED_D_TAG,
   );
 
@@ -392,14 +535,14 @@ console.log('\nthe published d tag — which list a user\'s favorites land on');
   // silently, on a list other apps read and write. See favorites-gate.ts.
   check(
     'honors an explicit address (the trial gate depends on this)',
-    dOf(tagsForSharedFavorites([{ id: A }], [], LEGACY_D_TAG)),
+    dOf(tagsForSharedFavorites([mine({ id: A })], [], LEGACY_D_TAG)),
     LEGACY_D_TAG,
   );
 
   // The d tag is the ONLY thing that changes with the address: same items,
   // same k tags, same carried-through foreign tags.
-  const shared = tagsForSharedFavorites([{ id: A }], [['alt', 'x']]);
-  const legacy = tagsForSharedFavorites([{ id: A }], [['alt', 'x']], LEGACY_D_TAG);
+  const shared = tagsForSharedFavorites([mine({ id: A })], [['alt', 'x']]);
+  const legacy = tagsForSharedFavorites([mine({ id: A })], [['alt', 'x']], LEGACY_D_TAG);
   check(
     'nothing but the d tag differs between the two addresses',
     JSON.stringify(shared.filter((t) => t[0] !== 'd')),
