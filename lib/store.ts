@@ -11,9 +11,6 @@ export type SignInIntent = 'default' | 'google';
 
 /** See `favoritesSync` below. */
 export type FavoritesSyncStatus = 'idle' | 'loading' | 'ok' | 'degraded';
-/** Which of the two shared lists a status refers to. `items` stays 'idle' for
- *  accounts on the legacy single-list address, where no such list exists. */
-export type FavoritesList = 'feeds' | 'items';
 
 interface AppState {
   identity: NostrIdentity | null;
@@ -144,36 +141,23 @@ interface AppState {
   // callbacks (see favorites-sync.ts), cleared to 'idle' wherever nostr-auth
   // tears an identity down. NOT reset inside setIdentity — that runs
   // mid-hydration with the enriched identity and would clobber a fresh 'ok'.
-  // ONE FLAG PER LIST, and one flag across both is worse than none: a
-  // successful feeds read would clear the notice a failed items read set, and
-  // the user gets a clean, confident empty state for their nine hundred tracks
-  // — precisely the state this flag exists to prevent. In legacy single-list
-  // mode `items` stays 'idle' forever and every consumer must ignore 'idle',
-  // or every non-allowlisted user (i.e. everyone) gets a permanent false alarm.
-  favoritesSync: { feeds: FavoritesSyncStatus; items: FavoritesSyncStatus };
-  setFavoritesSync: (list: FavoritesList, s: FavoritesSyncStatus) => void;
-  /** Both halves back to 'idle', for the identity teardowns in nostr-auth.
-   *  One call so a new list can never be added and left stale in one of the
-   *  three places that has to clear it. */
+  // ONE flag, where there used to be one per list.
+  //
+  // That is a consequence of the format change, not a relaxation of the old
+  // rule. Two flags existed because there were two events that could fail
+  // independently, and a single flag across them let a good read on one clear
+  // the notice the other's failure had raised — handing the user a confident
+  // empty state for their whole track library. There is one event now, so a
+  // partial failure is not expressible and one flag cannot lie.
+  //
+  // 'idle' still is not a failure: it is the pre-hydration and signed-out
+  // state, and a consumer that treats it as one shows every visitor a relay
+  // warning before anything has been attempted.
+  favoritesSync: FavoritesSyncStatus;
+  setFavoritesSync: (s: FavoritesSyncStatus) => void;
+  /** Back to 'idle', for the identity teardowns in nostr-auth. Kept as its own
+   *  call so the three places that clear it can't drift. */
   resetFavoritesSync: () => void;
-
-  /**
-   * Item favorites found on the FEEDS list that this device did not put there.
-   *
-   * Render-only, and deliberately a separate slot rather than a flag on the
-   * ordinary map. The spec forbids copying a foreign legacy item entry to the
-   * items list: publish it, the user unfavorites it, it comes off the items
-   * list, it is still on the feeds list where the merge rightly forbids us
-   * removing it, and the next hydration puts it back — the favorite returns on
-   * every page load, forever, on every device.
-   *
-   * `localFavoriteItems()` never reads this map, so "must not enter adds_items"
-   * stops being a rule someone has to remember at one specific line and becomes
-   * a property of where the data lives. Deriving the set per-publish instead
-   * would leak every entry the moment a feeds read came back degraded.
-   */
-  foreignFavoriteEpisodes: Record<string, FavoriteEpisode>;
-  setForeignFavoriteEpisodes: (next: Record<string, FavoriteEpisode>) => void;
 
   // NIP-51 kind:10000 mute list, hydrated on login from the user's relay
   // event. Filter is applied at render time in NoteCard and feed surfaces.
@@ -310,15 +294,9 @@ export const useApp = create<AppState>((set, get) => ({
     return { favoriteEpisodes: next };
   }),
 
-  favoritesSync: { feeds: 'idle', items: 'idle' },
-  setFavoritesSync: (list, s) =>
-    set((prev) => ({ favoritesSync: { ...prev.favoritesSync, [list]: s } })),
-  resetFavoritesSync: () => set({ favoritesSync: { feeds: 'idle', items: 'idle' } }),
-
-  // Not persisted: it is rebuilt from the feeds list on every hydrate, and a
-  // stale copy would be indistinguishable from an entry that is genuinely ours.
-  foreignFavoriteEpisodes: {},
-  setForeignFavoriteEpisodes: (next) => set({ foreignFavoriteEpisodes: next }),
+  favoritesSync: 'idle',
+  setFavoritesSync: (s) => set({ favoritesSync: s }),
+  resetFavoritesSync: () => set({ favoritesSync: 'idle' }),
 
   // Hydrate from the guest cache; once the user signs in, hydrateMutes
   // replaces this with their NIP-51 set reconciled against the relay event.

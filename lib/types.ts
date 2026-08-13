@@ -257,7 +257,7 @@ export interface StoredBoostLeg {
  *
  * **The favorite IS `podcastGuid`; everything else is display cache.** That
  * split is load-bearing, not stylistic: the store is what
- * `localFavoriteItems()` publishes from, so an entry that Podcast Index
+ * `localFavoriteEntries()` publishes from, so an entry that Podcast Index
  * couldn't resolve must still hold a row here. Dropping it instead used to
  * prune the store, and because the baseline was recorded from the *pre-prune*
  * set, the next page load read every unresolved entry as a local removal and
