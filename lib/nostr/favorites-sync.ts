@@ -39,7 +39,12 @@ export function localFavoriteItems(): SharedFavoriteItem[] {
   for (const ep of Object.values(state.favoriteEpisodes)) {
     items.push(itemFrom({
       id: itemId(ep.itemGuid),
-      feedRef: ep.feedGuid ? showId(ep.feedGuid) : undefined,
+      // BARE, not `showId(...)`. Position 3 is defined as a parent feed guid,
+      // so the `podcast:guid:` prefix restates what the position already means
+      // — 13 bytes per entry on the list whose whole purpose is to hold as many
+      // as it can. Readers still accept both; `feedRefOf` normalizes on the way
+      // in, so `ep.feedGuid` is already bare.
+      feedRef: ep.feedGuid,
       medium: ep.medium,
     }));
   }
@@ -61,10 +66,10 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // its relay health from one place: hydration routes its own success
     // through this same `onSynced` (see favorites-hydrator.ts), and a publish
     // that lands is proof the relays are answering again — it clears a notice
-    // an earlier degraded read put up.
-    // Per list, both directions. One flag across both would let a good feeds
-    // publish clear a notice a failed items read raised — the user gets a
-    // confident empty state for their entire track library.
+    // an earlier degraded read put up. Per list, both directions: one flag
+    // across both would let a good feeds publish clear a notice a failed items
+    // read raised, giving the user a confident empty state for every track
+    // they own.
     onSynced: (list, ids) => {
       if (list === 'items') storage.favSyncedItems.set(identity.npub, ids);
       else storage.favSynced.set(identity.npub, ids);

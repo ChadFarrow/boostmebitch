@@ -85,7 +85,8 @@ function check(label, actual, expected) {
 
 // Real-shaped identifiers. A is a show this device favorited, B a show another
 // app added, C an episode, X an identifier kind this app doesn't implement.
-const A = showId('9b024349-ccf0-5f69-a609-6b82873eab3c');
+const FEED_GUID = '9b024349-ccf0-5f69-a609-6b82873eab3c';
+const A = showId(FEED_GUID);
 const B = showId('c31ad2f6-1b7e-5b34-a2a4-6b06d5b0b4e2');
 const C = itemId('https://example.com/ep/42');
 const X = 'podcast:publisher:guid:0e8f6a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b';
@@ -223,11 +224,25 @@ console.log('\noverlayTag — fill what is empty, never touch what is not');
     tagsOf(mergeSharedFavorites({
       latest: [wire(C)],
       lastSynced: [C],
-      local: [mine({ id: C, feedRef: A })],
+      local: [mine({ id: C, feedRef: FEED_GUID })],
     })),
-    [['i', C, '', A]],
+    [['i', C, '', FEED_GUID]],
   );
 
+  // The one licensed rewrite of a value we may not have written. Position 3 is
+  // re-encoded to bare — lossless, in a position whose meaning is fixed — which
+  // is how the wire converges off the 13-byte prefix. The fixture MUST arrive
+  // prefixed or it exercises nothing. Contrast position 2 below, where
+  // stripping a value you didn't write is forbidden.
+  check(
+    'a prefixed parent ref from another writer is re-emitted bare',
+    tagsOf(mergeSharedFavorites({
+      latest: [wire(C, 'https://example.com/feed.xml', A)],
+      lastSynced: [],
+      local: [],
+    })),
+    [['i', C, 'https://example.com/feed.xml', FEED_GUID]],
+  );
 
   // Position 2 is reserved. An existing value is carried forever...
   check(
@@ -302,7 +317,11 @@ console.log('\ntail preservation — a position this app has no field for');
   // position 4 belongs exclusively to somebody else: an earlier revision of the
   // spec, or an app newer than this one. The fixture carries a position nothing
   // here models, because a round trip built from our own fields cannot fail.
-  const full = ['i', C, 'https://example.com/feed.xml', A, 'music', 'something-new'];
+  // Position 3 is bare here so the vector stays about the TAIL. A prefixed one
+  // would be normalized on write — legitimately, see "a prefixed parent ref
+  // from another writer is re-emitted bare" above — and the round trip would
+  // fail for a reason that has nothing to do with truncation.
+  const full = ['i', C, 'https://example.com/feed.xml', FEED_GUID, 'music', 'something-new'];
 
   const merged = mergeSharedFavorites({
     latest: itemsFromTags([full]),

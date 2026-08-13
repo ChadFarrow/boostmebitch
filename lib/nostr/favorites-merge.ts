@@ -286,6 +286,20 @@ export function overlayTag(latest: string[] | null, mine: string[] | null): stri
     out = base.slice();
   }
 
+  // The one licensed rewrite of a value we may not have written: position 3 is
+  // re-encoded to the bare form. Lossless, in a position whose meaning is
+  // FIXED — nothing is lost and nothing is decided — and it is how the wire
+  // converges off 13 bytes of prefix per entry. Applied on the carry path too,
+  // or a prefixed value this device never touches stays prefixed forever.
+  //
+  // Gated on the entry being an ITEM, because that is the only kind for which
+  // position 3 is defined as a parent feed guid. On anything else it is a
+  // position we don't recognize, and a position you don't recognize belongs to
+  // an app that does. Position 2 gets no such treatment at all: stripping a URL
+  // there would destroy information only its writer had.
+  if (out[3] && identifierKind(id) === 'podcast:item:guid') {
+    out[3] = parseFeedRef(out[3]) ?? '';
+  }
   return trimTag(out);
 }
 
