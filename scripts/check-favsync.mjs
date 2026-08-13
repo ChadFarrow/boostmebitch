@@ -216,21 +216,30 @@ console.log('\noverlayTag — fill what is empty, never touch what is not');
   check(
     'a local hint fills a position the relay entry left empty',
     tagsOf(mergeSharedFavorites({
-      latest: [wire(A)],
-      lastSynced: [A],
-      local: [mine({ id: A, feedUrl: 'https://example.com/feed.xml' })],
+      latest: [wire(C)],
+      lastSynced: [C],
+      local: [mine({ id: C, feedRef: A })],
     })),
-    [['i', A, 'https://example.com/feed.xml']],
+    [['i', C, '', A]],
   );
 
+  // Position 2 is reserved. An existing value is carried forever...
   check(
-    'a relay hint is never blanked by a local entry that lacks one',
+    'a legacy feed URL on the wire is never blanked by a local entry lacking one',
     tagsOf(mergeSharedFavorites({
       latest: [wire(A, 'https://example.com/feed.xml')],
       lastSynced: [A],
       local: [mine({ id: A })],
     })),
     [['i', A, 'https://example.com/feed.xml']],
+  );
+  // ...and one this device somehow held would still never reach the wire,
+  // because `itemFrom` has no parameter that can put it there. Reintroducing
+  // origination is a compile error, not a silent regression.
+  check(
+    'this app cannot originate a position 2 even when handed one',
+    itemFrom({ id: A, feedUrl: 'https://example.com/feed.xml' }).tag,
+    ['i', A],
   );
 
   // Spec vector 7 — absent is not "clear it".
@@ -310,7 +319,7 @@ console.log('\ntail preservation — a position this app has no field for');
     tagsOf(mergeSharedFavorites({
       latest: itemsFromTags([full]),
       lastSynced: [],
-      local: [mine({ id: C, feedUrl: 'https://other.example/feed.xml', feedRef: B })],
+      local: [mine({ id: C, feedRef: B })],
     })),
     [full], // ours fills nothing: every position it could touch is already set
   );
@@ -401,8 +410,8 @@ console.log('\nthe migration round trip — a migrated entry must survive the hy
 console.log('\ntagsForSharedFavorites / itemsFromTags — the wire round trip');
 {
   const items = [
-    mine({ id: A, feedUrl: 'https://example.com/feed.xml' }),
-    mine({ id: C, feedUrl: 'https://example.com/feed.xml', feedRef: A }),
+    mine({ id: A }),
+    mine({ id: C, feedRef: A }),
     mine({ id: X }),
   ];
   const tags = tagsForSharedFavorites(items, [['alt', 'from another client']]);
@@ -414,14 +423,14 @@ console.log('\ntagsForSharedFavorites / itemsFromTags — the wire round trip');
     [['alt', 'from another client']],
   );
   check(
-    'a show is a NIP-73 i tag with the feed URL as the position-2 hint',
+    'a show this app writes is a bare NIP-73 identifier, no feed URL',
     tags.find((t) => t[1] === A),
-    ['i', A, 'https://example.com/feed.xml'],
+    ['i', A],
   );
   check(
-    'an episode carries its parent feed in position 3',
+    'an episode carries its parent feed in position 3, with position 2 held open',
     tags.find((t) => t[1] === C),
-    ['i', C, 'https://example.com/feed.xml', A],
+    ['i', C, '', A],
   );
   check(
     'k tags are one per distinct identifier kind, not one per favorite',

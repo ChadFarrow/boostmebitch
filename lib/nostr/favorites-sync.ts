@@ -22,20 +22,23 @@ import type { NostrIdentity } from './auth';
 
 /**
  * This device's favorites as wire items — both maps in one list, because they
- * share one Nostr event. Shows carry the feed URL as the NIP-73 hint; episodes
- * additionally carry their parent feed, without which an item guid can't be
- * resolved through PI.
+ * share one Nostr event. Episodes carry their parent feed at position 3,
+ * without which an item guid can't be resolved through PI.
+ *
+ * Neither carries a feed URL any more. `FavoritePodcast.url` and
+ * `FavoriteEpisode.feedUrl` are still populated (from PI, and from legacy
+ * position-2 values found on the wire) and still used for rendering — they just
+ * no longer reach the wire. See `itemFrom`, which has no parameter for one.
  */
 export function localFavoriteItems(): SharedFavoriteItem[] {
   const state = useApp.getState();
   const items: SharedFavoriteItem[] = [];
   for (const fav of Object.values(state.favorites)) {
-    items.push(itemFrom({ id: showId(fav.podcastGuid), feedUrl: fav.url }));
+    items.push(itemFrom({ id: showId(fav.podcastGuid) }));
   }
   for (const ep of Object.values(state.favoriteEpisodes)) {
     items.push(itemFrom({
       id: itemId(ep.itemGuid),
-      feedUrl: ep.feedUrl,
       feedRef: ep.feedGuid ? showId(ep.feedGuid) : undefined,
     }));
   }

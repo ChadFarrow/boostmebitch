@@ -133,16 +133,27 @@ function trimTag(tag: string[]): string[] {
  * its medium is `['i', id, '', '', 'music']` — six bytes of padding that buy
  * the position its meaning. Shifting the medium down into position 3 would
  * have the next reader hand it to Podcast Index as a `podcastguid`.
+ *
+ * **There is deliberately no `feedUrl` parameter.** Position 2 is reserved: an
+ * existing value is preserved forever, and a new one is never written. Every
+ * app implementing this format has a Podcast Index key and `podcast:guid`
+ * resolves without a hint, so the URL was redundant on every path that mattered
+ * — while being the largest field on the tag and the one two apps were most
+ * likely to disagree about (`http` vs `https`, a PI-canonical URL vs the
+ * publisher's, a proxy vs the origin). The only way a position 2 exists is if
+ * it came off the wire, so the only way to build an item carrying one is
+ * `itemsFromTags`. Leaving the parameter here would make re-originating it a
+ * one-word change; removing it makes it a compile error.
  */
 export function itemFrom(parts: {
   id: string;
-  feedUrl?: string;
   feedRef?: string;
   medium?: string;
 }): SharedFavoriteItem {
   return {
     id: parts.id,
-    tag: trimTag(['i', parts.id, parts.feedUrl ?? '', parts.feedRef ?? '', parts.medium ?? '']),
+    // Position 2 is held open, never filled — see above.
+    tag: trimTag(['i', parts.id, '', parts.feedRef ?? '', parts.medium ?? '']),
   };
 }
 
