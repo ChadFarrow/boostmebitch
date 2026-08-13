@@ -29,6 +29,7 @@ import {
   fetchSharedFavorites,
   interpretItems,
   interpretShows,
+  looksLikeFeedGuid,
   mergeSharedFavorites,
   publishSharedFavorites,
   showId,
@@ -291,9 +292,11 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
       addedAt: 0,
     };
     // PI's /episodes/byguid wants a parent guid, so an entry without one can't
-    // be resolved. It still gets a row, still rides through every republish,
-    // and renders unresolved — it is the user's favorite either way.
-    if (!hit && ep.feedGuid) unresolvedEpisodes.push(ep);
+    // be resolved. Nor can one whose parent ref isn't guid-shaped — that gate
+    // decides only whether to spend a request, never whether the favorite is
+    // kept. Either way it still gets a row above, still rides through every
+    // republish, and renders unresolved: it is the user's favorite regardless.
+    if (!hit && ep.feedGuid && looksLikeFeedGuid(ep.feedGuid)) unresolvedEpisodes.push(ep);
   }
 
   setFavorites(nextShows);

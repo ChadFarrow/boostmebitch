@@ -159,8 +159,49 @@ export function itemFrom(parts: {
 
 /** Position 2 — the legacy RSS feed URL. Read-only: never originated. */
 export const feedUrlOf = (item: SharedFavoriteItem): string | undefined => item.tag[2] || undefined;
-/** Position 3 — an item's parent feed guid. */
-export const feedRefOf = (item: SharedFavoriteItem): string | undefined => item.tag[3] || undefined;
+
+/**
+ * Position 3 — an item's parent feed guid, normalized to the **bare** form.
+ *
+ * **Readers must accept both.** The spec now defines this position as a bare
+ * uuid: the `podcast:guid:` prefix is 13 bytes restating what the position
+ * already means, and on a list whose whole purpose is to hold as many entries
+ * as it can that is real favorites lost. But every event written before that
+ * revision carries the prefixed form — which is still most of what is on the
+ * wire — and both reference implementations wrote it that way.
+ *
+ * Getting this wrong is silent and total: handing a prefixed value to Podcast
+ * Index as `podcastguid` matches nothing, so every item favorite resolves empty
+ * while being republished faithfully. In this app it was worse than unresolved
+ * — a parent ref that didn't parse made the episode vanish from the UI
+ * entirely, which is why StableKraft deliberately deferred adopting the bare
+ * form until this landed.
+ *
+ * Normalizing here is not a licence to rewrite other writers' data, and it does
+ * not contradict position 2 where stripping a value you didn't write is
+ * forbidden: `podcast:guid:<uuid>` → `<uuid>` is a lossless re-encoding of the
+ * same guid in a position whose meaning is fixed. Nothing is lost and nothing
+ * is decided. Removing a position-2 URL destroys information only its writer
+ * had.
+ */
+export const feedRefOf = (item: SharedFavoriteItem): string | undefined =>
+  parseFeedRef(item.tag[3]);
+
+/** Strip an optional leading `podcast:guid:` from a position-3 value.
+ *
+ *  Deliberately NOT uuid-gated: an entry whose parent ref this app can't make
+ *  sense of is still the user's favorite, and it must ride through every
+ *  republish rather than being read as absent. Use `looksLikeFeedGuid` to
+ *  decide whether it is worth sending to Podcast Index. */
+export function parseFeedRef(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const bare = value.startsWith(SHOW_PREFIX) ? value.slice(SHOW_PREFIX.length) : value;
+  return bare || undefined;
+}
+
+/** Whether a bare feed guid is worth a Podcast Index lookup. The ONLY thing
+ *  this gates — never whether an entry is kept, rendered or republished. */
+export const looksLikeFeedGuid = (guid: string): boolean => UUID_RE.test(guid);
 /** Position 4 — the entry's `<podcast:medium>`, if any writer has supplied one. */
 export const mediumOf = (item: SharedFavoriteItem): string | undefined => item.tag[4] || undefined;
 
@@ -294,10 +335,13 @@ export function interpretItems(items: SharedFavoriteItem[]): Array<{
   for (const item of items) {
     const itemGuid = parseItemGuid(item.id);
     if (!itemGuid) continue;
-    const ref = feedRefOf(item);
     out.push({
+      // Already bare, whichever form was on the wire. NOT uuid-gated: a parent
+      // ref this app can't parse still belongs to the user, and reading it as
+      // absent is how an episode disappears from the UI while being faithfully
+      // republished. `looksLikeFeedGuid` decides what reaches Podcast Index.
       itemGuid,
-      feedGuid: ref ? parseShowGuid(ref) ?? undefined : undefined,
+      feedGuid: feedRefOf(item),
       feedUrl: feedUrlOf(item),
     });
   }

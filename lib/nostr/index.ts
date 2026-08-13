@@ -75,6 +75,8 @@ export {
   feedUrlOf,
   feedRefOf,
   mediumOf,
+  parseFeedRef,
+  looksLikeFeedGuid,
   parseShowGuid,
   parseItemGuid,
   fetchSharedFavorites,

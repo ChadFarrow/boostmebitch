@@ -60,6 +60,7 @@ import {
   itemFrom,
   itemId,
   itemsFromTags,
+  looksLikeFeedGuid,
   mediumOf,
   mergeSharedFavorites,
   otherTagsFrom,
@@ -485,7 +486,11 @@ console.log('\ntagsForSharedFavorites / itemsFromTags — the wire round trip');
   );
   const heldOpen = itemsFromTags([['i', C, '', A]])[0];
   check('...and position 2 reads back as absent, not empty-string', feedUrlOf(heldOpen), undefined);
-  check('...while position 3 reads back as the parent ref', feedRefOf(heldOpen), A);
+  check(
+    '...while position 3 reads back bare, whichever form was written',
+    feedRefOf(heldOpen),
+    '9b024349-ccf0-5f69-a609-6b82873eab3c',
+  );
   check('...and an absent position 4 is undefined, never a default', mediumOf(heldOpen), undefined);
 }
 
@@ -505,20 +510,42 @@ console.log('\ninterpretShows / interpretItems — reading is lossy, the wire is
     3,
   );
 
+  const BARE = '9b024349-ccf0-5f69-a609-6b82873eab3c';
+
+  // SPEC VECTOR 3, second half. Position 3 is a bare uuid in this revision, but
+  // every event written before it carries `podcast:guid:<uuid>` there — and
+  // that is still most of what is on the wire. The fixture MUST arrive
+  // prefixed: one whose input is already bare passes without exercising the
+  // strip at all, which is the whole behaviour being pinned.
   check(
-    'an episode resolves its parent feed from the position-3 hint',
+    'a PREFIXED parent feed is normalized on read',
     interpretItems([wire(C, 'https://example.com/feed.xml', A)]),
-    [{
-      itemGuid: 'https://example.com/ep/42',
-      feedGuid: '9b024349-ccf0-5f69-a609-6b82873eab3c',
-      feedUrl: 'https://example.com/feed.xml',
-    }],
+    [{ itemGuid: 'https://example.com/ep/42', feedGuid: BARE, feedUrl: 'https://example.com/feed.xml' }],
+  );
+  // ...and the bare form a spec-compliant writer produces reads identically.
+  // Before this, a bare uuid failed parseShowGuid, `feedGuid` came back
+  // undefined, and the hydrator dropped the episode from the UI entirely —
+  // which is why the other app deferred adopting the bare form.
+  check(
+    'a BARE parent feed reads the same way',
+    interpretItems([wire(C, '', BARE)]),
+    [{ itemGuid: 'https://example.com/ep/42', feedGuid: BARE, feedUrl: undefined }],
   );
   check(
     'an episode with no parent feed is readable but unresolvable',
     interpretItems([wire(C)]),
     [{ itemGuid: 'https://example.com/ep/42', feedGuid: undefined, feedUrl: undefined }],
   );
+  // A parent ref that is neither form is carried, not dropped. The uuid test
+  // gates only whether it is worth a Podcast Index request.
+  check(
+    'a parent ref this app cannot parse is still surfaced',
+    interpretItems([wire(C, '', 'not-a-guid')]),
+    [{ itemGuid: 'https://example.com/ep/42', feedGuid: 'not-a-guid', feedUrl: undefined }],
+  );
+  check('...but is not sent to Podcast Index', looksLikeFeedGuid('not-a-guid'), false);
+  check('...while a real one is', looksLikeFeedGuid(BARE), true);
+  check('...and the prefixed form is never handed over as-is', looksLikeFeedGuid(A), false);
   check(
     'a show identifier is never read as an episode',
     interpretItems([wire(A), wire(X)]),
