@@ -207,8 +207,12 @@ export function HomePage() {
   }
   const favorites = useApp((s) => s.favorites);
   const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
-  const hasFavorites =
-    Object.keys(favorites).length > 0 || Object.keys(favoriteEpisodes).length > 0;
+  // Counted and shown like any other favorite. They are quarantined from being
+  // PUBLISHED, not from being the user's — see `foreignFavoriteEpisodes`.
+  const foreignFavoriteEpisodes = useApp((s) => s.foreignFavoriteEpisodes);
+  const episodeCount =
+    Object.keys(favoriteEpisodes).length + Object.keys(foreignFavoriteEpisodes).length;
+  const hasFavorites = Object.keys(favorites).length > 0 || episodeCount > 0;
 
   // A degraded relay read opens the panel even with nothing to put in it —
   // otherwise the notice has nowhere to render, and a device with no cached
@@ -218,7 +222,13 @@ export function HomePage() {
   // cards are already the right "you have nothing saved yet" affordance, and
   // because degraded now always opens the panel, seeing them positively means
   // the read worked.
-  const favoritesDegraded = useApp((s) => !!s.identity && s.favoritesSync === 'degraded');
+  // Either list failing opens the panel — the notice has to have somewhere to
+  // go in exactly the case it exists for. 'idle' is not a failure: it is where
+  // `items` sits for every account on the legacy single-list address.
+  const favoritesDegraded = useApp(
+    (s) => !!s.identity
+      && (s.favoritesSync.feeds === 'degraded' || s.favoritesSync.items === 'degraded'),
+  );
   const showFavoritesPanel = !query && (hasFavorites || favoritesDegraded);
   const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel || !!publisherSource;
   const inDetailView = !!selected;
@@ -343,7 +353,7 @@ export function HomePage() {
                 {/* Total across both maps — with only episodes favorited, a
                     show-only count reads "0 favorites" above a populated list. */}
                 <span>
-                  {Object.keys(favorites).length + Object.keys(favoriteEpisodes).length} favorites
+                  {Object.keys(favorites).length + episodeCount} favorites
                 </span>
                 <span aria-hidden className="text-bone/60">
                   {favoritesCollapsed ? '▸' : '▾'}

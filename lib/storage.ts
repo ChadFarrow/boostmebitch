@@ -44,7 +44,8 @@ const KEYS = {
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
-  favSyncedPrefix: 'bmb:favsynced',   // + ':<npub>' — the NIP-73 id list this device last agreed with the relay on. NOT a cache: without it the shared kind:30078 list can't tell "another app added this" from "I removed this". See lib/nostr/favorites.ts.
+  favSyncedPrefix: 'bmb:favsynced',   // + ':<npub>' — the NIP-73 id list this device last agreed with the FEEDS list on. NOT a cache: without it the shared kind:30078 list can't tell "another app added this" from "I removed this". See lib/nostr/favorites.ts.
+  favSyncedItemsPrefix: 'bmb:favsynced:items', // + ':<npub>' — same, for the podcast:favorites:items list. Starts empty at the split; never derived by splitting the key above, which would read migrated entries as removals.
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   episodeMetaPrefix: 'bmb:epmeta',    // /api/episode-by-guid result, keyed by '<feedGuid>:<itemGuid>'
   feedNotesPrefix: 'bmb:feed',        // last DiscoveredNote[] per feed surface
@@ -1172,6 +1173,34 @@ export const storage = {
     },
     set: (npub: string | null | undefined, ids: string[]) => {
       safeSet(identityKey(KEYS.favSyncedPrefix, npub), JSON.stringify(ids));
+    },
+  },
+
+  /**
+   * The same baseline, for the `podcast:favorites:items` list.
+   *
+   * **It starts empty, and the existing `favSynced` key keeps its exact meaning
+   * as the FEEDS baseline.** That is the upgrade rule, and the obvious
+   * alternative destroys data: a baseline records what you published *to a
+   * given address*, not what kind of thing it was, and everything in the old
+   * one went to `podcast:favorites` whatever its identifier kind. Splitting it
+   * by placement would make this key name entries the items list has never
+   * held, so the first publish there reads them as removals and deletes exactly
+   * the entries the split was moving.
+   */
+  favSyncedItems: {
+    get: (npub: string | null | undefined): string[] => {
+      const raw = safeGet(identityKey(KEYS.favSyncedItemsPrefix, npub));
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : [];
+      } catch {
+        return [];
+      }
+    },
+    set: (npub: string | null | undefined, ids: string[]) => {
+      safeSet(identityKey(KEYS.favSyncedItemsPrefix, npub), JSON.stringify(ids));
     },
   },
 };

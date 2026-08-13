@@ -1,16 +1,20 @@
 import type { EventTemplate } from 'nostr-tools';
-import { DEFAULT_RELAYS } from './relays';
-import { signAndPublish, type PublishedNote } from './publish';
-import { fetchLatestEventDetailed } from './event-queries';
-import { createScheduledPublish } from './debounced-publish';
 import {
-  baselineFrom,
+  assertPublished,
+  NoRelayAcceptedError,
+  signAndPublish,
+  type PublishedNote,
+} from './publish';
+import { fetchLatestEventDetailed } from './event-queries';
+import { QUERY_MAX_WAIT_MS } from './pool';
+import {
   itemsFromTags,
   otherTagsFrom,
-  mergeSharedFavorites,
+  planFavoritesPublish,
   tagsForSharedFavorites,
   LEGACY_D_TAG,
   LEGACY_FAVORITES_KIND,
+  type FavoritesPlacement,
   type SharedFavoriteItem,
 } from './favorites-merge';
 import { favoritesAddressFor } from './favorites-gate';
@@ -56,12 +60,16 @@ async function fetchList(
   dTag: string,
   relays: string[],
 ): Promise<SharedFavorites> {
-  const { event, trustworthy } = await fetchLatestEventDetailed(relays, {
-    kinds: [kind],
-    authors: [pubkey],
-    '#d': [dTag],
-    limit: 1,
-  });
+  const { event, trustworthy } = await fetchLatestEventDetailed(
+    relays,
+    { kinds: [kind], authors: [pubkey], '#d': [dTag], limit: 1 },
+    QUERY_MAX_WAIT_MS,
+    // Belt and braces on the one read where a wrong event is worst: whatever
+    // lands here is merged over and republished under the user's key, so an
+    // event for another pubkey, kind or list would be laundered into their
+    // favorites. Rejected at intake so it can never displace the real one.
+    { pubkey, kinds: [kind], dTag },
+  );
   if (!event) {
     return { items: [], otherTags: [], updatedAt: 0, exists: false, trustworthy };
   }
@@ -80,21 +88,51 @@ async function fetchList(
  * The address depends on the account: allowlisted accounts use the shared
  * cross-app list, everyone else keeps reading the address their favorites have
  * always been at. See `favorites-gate.ts` for why that beats an on/off switch.
+ *
+ * `queryRelays` is REQUIRED, and the missing default is the point. It used to
+ * fall back to `DEFAULT_RELAYS` while every publish went to
+ * `resolvePublishRelays` (the user's NIP-65 write set ∪ the defaults), so a
+ * newer event living only on the user's own write relay was invisible to the
+ * read and got published over on the next merge — a narrower read than write is
+ * exactly how you overwrite data you never saw. Pass the publish set.
  */
 export function fetchSharedFavorites(
   pubkey: string,
-  queryRelays?: string[],
+  queryRelays: string[],
 ): Promise<SharedFavorites> {
-  const { kind, dTag } = favoritesAddressFor(pubkey);
-  return fetchList(pubkey, kind, dTag, queryRelays ?? DEFAULT_RELAYS);
+  const { kind, feeds } = favoritesAddressFor(pubkey);
+  return fetchList(pubkey, kind, feeds, queryRelays);
+}
+
+/**
+ * Read the items list — episodes and tracks — or resolve to an explicitly
+ * ABSENT result in legacy single-list mode, where no such address exists.
+ *
+ * `trustworthy: false` would be wrong for the legacy case and actively
+ * dangerous: it is the flag that blocks publishing, and a permanent false would
+ * wedge the feature for everyone not on the allowlist. `exists: false` with
+ * `trustworthy: true` is the honest answer — there is nothing at that address
+ * and we are sure of it, because there is no such address.
+ */
+export function fetchSharedFavoriteItems(
+  pubkey: string,
+  queryRelays: string[],
+): Promise<SharedFavorites> {
+  const { kind, items } = favoritesAddressFor(pubkey);
+  if (!items) {
+    return Promise.resolve({
+      items: [], otherTags: [], updatedAt: 0, exists: false, trustworthy: true,
+    });
+  }
+  return fetchList(pubkey, kind, items, queryRelays);
 }
 
 /** Read this app's pre-sync list. Migration only — never republished here. */
 export function fetchLegacyFavorites(
   pubkey: string,
-  queryRelays?: string[],
+  queryRelays: string[],
 ): Promise<SharedFavorites> {
-  return fetchList(pubkey, LEGACY_FAVORITES_KIND, LEGACY_D_TAG, queryRelays ?? DEFAULT_RELAYS);
+  return fetchList(pubkey, LEGACY_FAVORITES_KIND, LEGACY_D_TAG, queryRelays);
 }
 
 /**
@@ -103,32 +141,45 @@ export function fetchLegacyFavorites(
  * `pubkey` is required rather than optional on purpose: a default would mean a
  * caller could publish the shared list for an account that reads the legacy
  * one, which puts a user's favorites at an address their own app never checks.
+ *
+ * Throws {@link NoRelayAcceptedError} when the event reached nobody. The assert
+ * lives HERE rather than at each call site because all three writers —
+ * `syncFavorites`, `migrateLegacyList`, `bmbCleanFavorites` — record a baseline
+ * immediately afterwards, and a baseline written for an event that never landed
+ * permanently stops that entry from being retried. Three places to remember is
+ * three places to forget.
  */
 export async function publishSharedFavorites(
   items: SharedFavoriteItem[],
   otherTags: string[][],
   relays: string[],
   pubkey: string,
+  list: FavoritesPlacement = 'feeds',
 ): Promise<PublishedNote> {
   const address = favoritesAddressFor(pubkey);
+  // `items` is null in legacy single-list mode, where 'items' is not a valid
+  // destination — everything lives on the one address.
+  const dTag = list === 'items' ? address.items : address.feeds;
+  if (!dTag) throw new Error('favorites: no items address for this account');
   const template: EventTemplate = {
     kind: address.kind,
     created_at: Math.floor(Date.now() / 1000),
-    tags: tagsForSharedFavorites(items, otherTags, address.dTag),
+    tags: tagsForSharedFavorites(items, otherTags, dTag),
     content: '',
   };
-  return signAndPublish(template, relays);
+  return assertPublished(await signAndPublish(template, relays), `favorites:${list}`);
 }
 
 export interface SyncOptions {
   pubkey: string;
   relays: string[];
-  /** This device's current favorites, as wire items. */
+  /** This device's current favorites, as wire items. Must NOT include foreign
+   *  legacy item entries — see `foreignFavoriteEpisodes` in lib/store.ts. */
   local: () => SharedFavoriteItem[];
-  /** The id list this device last agreed with the relay on. */
-  lastSynced: () => string[];
-  /** Called with the published id list once the event lands. */
-  onSynced: (ids: string[]) => void;
+  /** The id list this device last agreed with the given list on. */
+  lastSynced: (list: FavoritesPlacement) => string[];
+  /** Called with the published id list once that list's event lands. */
+  onSynced: (list: FavoritesPlacement, ids: string[]) => void;
   /**
    * Called instead of publishing when the read came back untrustworthy. The
    * skip is correct (see below) but invisible, and a heart-tap that never
@@ -136,7 +187,7 @@ export interface SyncOptions {
    * Injected like `onSynced` rather than reaching for the store here, which
    * keeps this module free of React and browser globals.
    */
-  onDegraded?: () => void;
+  onDegraded?: (list: FavoritesPlacement) => void;
 }
 
 /**
@@ -144,35 +195,84 @@ export interface SyncOptions {
  * so they are never separated: a caller that could publish without reading is
  * a caller that can wipe another app's favorites.
  *
- * Returns null without publishing when the read was degraded. Losing a
- * republish is recoverable — the next toggle or page load retries it — whereas
- * publishing over a list we couldn't read is not.
+ * Returns null without recording anything in two cases: the read was degraded,
+ * or the publish reached no relay. Losing a republish is recoverable — the next
+ * toggle or page load retries it — whereas publishing over a list we couldn't
+ * read is not, and recording a baseline for an event that never landed is what
+ * stops the retry from ever happening.
  */
 export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | null> {
-  const latest = await fetchSharedFavorites(opts.pubkey, opts.relays);
-  if (!latest.trustworthy) {
-    opts.onDegraded?.();
+  // Both reads, evaluated separately. An event arriving at one address is no
+  // evidence whatever about the other.
+  const [latestFeeds, latestItems] = await Promise.all([
+    fetchSharedFavorites(opts.pubkey, opts.relays),
+    fetchSharedFavoriteItems(opts.pubkey, opts.relays),
+  ]);
+  const split = !!favoritesAddressFor(opts.pubkey).items;
+
+  if (!latestFeeds.trustworthy) {
+    opts.onDegraded?.('feeds');
     // eslint-disable-next-line no-console
-    console.warn('[favorites] skipping publish — could not read the current list');
-    return null;
+    console.warn('[favorites] skipping feeds publish — could not read the current list');
   }
-  const local = opts.local();
-  const next = mergeSharedFavorites({
-    latest: latest.items,
-    lastSynced: opts.lastSynced(),
-    local,
+  if (split && !latestItems.trustworthy) {
+    opts.onDegraded?.('items');
+    // eslint-disable-next-line no-console
+    console.warn('[favorites] skipping items publish — could not read the current list');
+  }
+
+  const plans = planFavoritesPublish({
+    latestFeeds: latestFeeds.items,
+    latestItems: latestItems.items,
+    feedsTrustworthy: latestFeeds.trustworthy,
+    itemsTrustworthy: latestItems.trustworthy,
+    baselineFeeds: opts.lastSynced('feeds'),
+    baselineItems: opts.lastSynced('items'),
+    local: opts.local(),
+    split,
   });
-  const published = await publishSharedFavorites(next, latest.otherTags, opts.relays, opts.pubkey);
-  // Only our own contribution goes into the baseline — see `baselineFrom`.
-  opts.onSynced(baselineFrom(next, local));
-  return published;
+
+  let first: PublishedNote | null = null;
+  for (const plan of plans) {
+    // Nothing to say: membership already matches the relay. Still record the
+    // baseline — without it the first unfavorite on this device has nothing to
+    // diff against and silently fails to propagate.
+    if (!plan.changed) {
+      opts.onSynced(plan.list, plan.baseline);
+      continue;
+    }
+    const otherTags = plan.list === 'feeds' ? latestFeeds.otherTags : latestItems.otherTags;
+    try {
+      const published = await publishSharedFavorites(
+        plan.next, otherTags, opts.relays, opts.pubkey, plan.list,
+      );
+      // Only our own contribution goes into the baseline — see `baselineFrom`.
+      // This line is why `assertPublished` exists: the baseline is a promise
+      // that `local` will keep asserting these ids, and it may only be made
+      // about an event that actually landed.
+      opts.onSynced(plan.list, plan.baseline);
+      first ??= published;
+    } catch (e) {
+      // Only the reached-nobody case is a relay problem. A signing rejection is
+      // the user saying no, and reporting that as "couldn't reach the relays"
+      // would be a lie — it rethrows to the debounce's own warn instead.
+      if (!(e instanceof NoRelayAcceptedError)) throw e;
+      opts.onDegraded?.(plan.list);
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[favorites] ${plan.list} publish reached no relay — baseline unchanged, next toggle retries`,
+      );
+      // Deliberately no rethrow and no break: the two lists' failures stay
+      // independent, or the volume-heavy list hands its failure rate straight
+      // to the list the split exists to protect.
+    }
+  }
+  return first;
 }
 
-// Debounced wrapper — collapses rapid heart-toggles into a single read-merge-
-// publish cycle, and so a single signing prompt. The getters are re-read at
-// fire time, so a burst publishes once with the final set.
-const _schedulePublish = createScheduledPublish('favorites');
-
-export function scheduleSyncFavorites(opts: SyncOptions, delayMs = 1500) {
-  _schedulePublish(() => syncFavorites(opts), delayMs);
-}
+// The debounce that used to live here now sits in `favorites-sync.ts`, next to
+// the serializer it has to compose with: every cycle must be both debounced AND
+// queued behind any other in-flight cycle, and a scheduler exported from here
+// would be a second, unserialized way in. This module can't import
+// favorites-sync (that's the cycle it exists to avoid), so the pair lives
+// there. See `serializeFavoritesCycle`.

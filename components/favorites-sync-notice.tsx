@@ -21,13 +21,33 @@ import { resetPiBreaker } from '@/lib/podcast-meta';
 // Signed out is deliberately not a case this handles: favorites are local by
 // design with no key to sync them under, so there is no relay failure to
 // report and claiming one would be a lie.
+//
+// There are TWO lists and therefore two flags, and it must be able to say that
+// only part of what you are looking at failed to load. One flag across both
+// would be worse than none: a successful shows read would clear the notice a
+// failed tracks read set, handing the user a clean, confident empty state for
+// their entire track library.
 
 export function FavoritesSyncNotice() {
   const identity = useApp((s) => s.identity);
-  const status = useApp((s) => s.favoritesSync);
+  const feeds = useApp((s) => s.favoritesSync.feeds);
+  const items = useApp((s) => s.favoritesSync.items);
   const [retrying, setRetrying] = useState(false);
 
-  if (!identity || status !== 'degraded') return null;
+  // 'idle' is NOT a failure. Accounts on the legacy single-list address have no
+  // items list at all, so `items` sits at 'idle' forever — and that is everyone
+  // not on the trial allowlist, so treating it as degraded would show a
+  // permanent false alarm to the entire user base.
+  const message =
+    feeds === 'degraded' && items === 'degraded'
+      ? "Couldn't reach the relays — showing what's on this device."
+      : feeds === 'degraded'
+        ? "Couldn't load your saved shows — showing what's on this device."
+        : items === 'degraded'
+          ? "Couldn't load your saved episodes — showing what's on this device."
+          : null;
+
+  if (!identity || !message) return null;
 
   async function retry() {
     setRetrying(true);
@@ -56,7 +76,7 @@ export function FavoritesSyncNotice() {
       role="status"
       className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5 mb-2 flex items-center justify-between gap-2"
     >
-      <span>⚠ Couldn&apos;t reach the relays — showing what&apos;s on this device.</span>
+      <span>⚠ {message}</span>
       <button
         type="button"
         onClick={retry}
