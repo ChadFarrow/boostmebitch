@@ -17,9 +17,16 @@
   --line:  31 29 24;
   color-scheme: dark;
   /* App header height used for sticky podcast header offset.
-     py-4 (32px) + flex content (~36px) + border (1px) = 69px base.
-     env() adds the iOS notch / safe-area inset on top. */
-  --app-header-h: calc(69px + env(safe-area-inset-top, 0px));
+     py-4 (32px) + tallest row child + bottom border (1px).
+     The row is `flex items-center`, so the tallest child sets the height, and
+     that is always a .btn-ghost: 20px (text-sm line box) + 16px (py-2) + 2px
+     (border) = 38px. ThemeToggle is 32px and the AccountMenu avatar is w-5 —
+     neither ever wins. 32 + 38 + 1 = 71px.
+     env() adds the iOS notch / safe-area inset on top.
+     The wordmark is `truncate`, so it CANNOT wrap and this stays exact — it
+     was 69px against a "~36px" guess for the middle term, and a wrapping
+     wordmark then hid the whole show header behind this one. */
+  --app-header-h: calc(71px + env(safe-area-inset-top, 0px));
 }
 
 :root[data-theme='light'] {
@@ -88,6 +95,19 @@ body::before {
            border border-bolt bg-bolt/10 text-bolt transition
            hover:bg-bolt/20 active:translate-y-px;
     font-variant-emoji: text;
+  }
+  /* Mobile squeeze for button ROWS that must fit four or five peers inside a
+     ~326px card (the show header cluster, the track-row BOOST). Padding and gap
+     only — height is deliberately untouched, so a compact button still lines up
+     with an unmodified .btn-ghost beside it. Folding a 44px touch target in here
+     instead would make every cluster button 44px tall on mobile while its
+     unmodified neighbours stayed 38px; the two icon-only sites carry their own
+     min-h/min-w. Always a modifier (`btn-ghost btn-compact`), never used alone.
+     MUST stay BELOW .btn / .btn-ghost / .btn-bolt / .btn-bolt-soft in this file:
+     same specificity, so source order is the only thing making px-2.5 win.
+     Moved above them it silently does nothing. */
+  .btn-compact {
+    @apply px-2.5 gap-1.5 sm:px-4 sm:gap-2;
   }
   /* Inline follow toggle injected after an npub in show notes (components/notes-follows.ts). */
   .npub-follow-btn {

@@ -16,9 +16,18 @@ import { requestFavoritesSync } from '@/lib/nostr';
 
 type Size = 'sm' | 'md';
 
+// `flex-shrink-0` is in the BASE string on purpose — a fixed-size control should
+// not squash. The mobile fix is making it SMALL (the 'sm' chip drops its word
+// below sm:), not making it shrinkable.
+//
+// Touch target comes from min-h/min-w rather than padding: adding `py` to 'sm'
+// would change the chip on DESKTOP too, visibly, at lists.tsx (favorite-episode
+// rows) and podroll.tsx, where it is `self-center` and ~18px tall.
 function heartClasses(isFav: boolean, size: Size) {
   return `inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 ${
-    size === 'md' ? 'gap-2 px-4 py-2 text-sm' : 'gap-1.5 px-3 text-xs leading-none'
+    size === 'md'
+      ? 'gap-1.5 px-2.5 py-2 text-sm sm:gap-2 sm:px-4'
+      : 'gap-1.5 px-3 text-xs leading-none min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0'
   } ${
     isFav
       ? 'border-nostr text-nostr hover:bg-nostr/10'
@@ -53,7 +62,17 @@ function HeartButton({
       <span className={size === 'md' ? 'text-lg leading-none' : 'text-base leading-none'}>
         {isFav ? '♥' : '♡'}
       </span>
-      {isFav ? 'FAVORITED' : 'FAVORITE'}
+      {/* 'sm' is the list-row chip: at 390px it competes with a BOOST button and
+          the episode title inside a ~314px row, and the word alone is ~70px of
+          it — so below sm: it collapses to the glyph and leans on the aria-label
+          above, which already carries the full meaning. 'md' keeps the word at
+          every width: it lives in a full-width cluster and is deliberately
+          dimensioned to match .btn-ghost (see the note at the top of this file).
+          `hidden` is display:none, so the label is not a flex item and gap-1.5
+          contributes nothing — the mobile chip is exactly a 44x44 glyph square. */}
+      <span className={size === 'md' ? undefined : 'hidden sm:inline'}>
+        {isFav ? 'FAVORITED' : 'FAVORITE'}
+      </span>
     </button>
   );
 }
