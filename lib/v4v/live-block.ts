@@ -74,7 +74,10 @@ function toRecipients(destinations: unknown): ValueRecipient[] {
     out.push({
       name: typeof d?.name === 'string' ? d.name : undefined,
       // Split Kit infers the same way in its own sender: an address with an @
-      // is a Lightning address whatever the stored type says.
+      // is a Lightning address whatever the stored type says. Deliberately an
+      // inline copy of lib/util.ts's isLnAddressRecipient rather than a call —
+      // this module's only import is `import type` so check-live-block.mjs can
+      // load it under plain Node. Keep the two rules in step.
       type: address.includes('@') ? 'lnaddress' : (d?.type === 'lnaddress' ? 'lnaddress' : 'node'),
       address,
       // Empty strings are dropped, not carried. Split Kit really does send

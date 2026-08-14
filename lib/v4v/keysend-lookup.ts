@@ -10,6 +10,10 @@
 //
 // Everything here is best-effort: any failure returns null and the caller
 // falls back to the LNURL path that has always worked.
+//
+// One deliberate exception runs the other way — see LNURL_ONLY_DOMAINS. A few
+// providers accept keysend perfectly well but never show the recipient what
+// rode in the TLV, so the upgrade's whole justification is void for them.
 
 export interface KeysendTarget {
   pubkey: string;
@@ -36,6 +40,51 @@ const cache = new Map<string, { value: KeysendTarget | null; expires: number }>(
 // pubkey that slipped through would fail the leg outright rather than
 // falling back.
 const NODE_PUBKEY = /^0[23][0-9a-f]{64}$/i;
+
+/**
+ * Providers we deliberately pay over LNURL even though they publish a
+ * `.well-known/keysend` document.
+ *
+ * Fountain is the reason this list exists, and the reason is NOT that it lacks
+ * keysend. It has keysend, it publishes the well-known, the payment arrives and
+ * the sats land — **it just doesn't surface the TLV boostagram to the person
+ * who received it.** So the upgrade fired on every `@fountain.fm` leg, did
+ * exactly what it was designed to do, and dropped the metadata anyway. Its
+ * whole justification — "carry the boostagram inline instead of degrading it to
+ * a comment" — is void against a recipient that never reads the inline copy.
+ * The LUD-21 comment is the only channel Fountain actually shows.
+ *
+ * Do not "correct" this by checking whether the domain serves the well-known:
+ * it does, and that is the trap. Nothing observable from our side distinguishes
+ * a provider that renders the TLV from one that discards it — the payment
+ * succeeds identically either way, which is why this went unnoticed for as long
+ * as it did. Membership here is knowledge about the provider, not a probe.
+ *
+ * Strictly non-regressive, the same rule the upgrade itself is held to: LNURL
+ * works on every rail and keysend does not, so moving a leg BACK to LNURL can
+ * only make it more likely to pay. Spark users gain outright — that rail is
+ * BOLT11-only, so `payKeysend` threw for these recipients before.
+ *
+ * Adding a domain here is the whole change; nothing else needs to know.
+ */
+const LNURL_ONLY_DOMAINS = ['fountain.fm'];
+
+/**
+ * Whether `address`'s domain is one we always pay over LNURL.
+ *
+ * Matches the domain exactly or as a parent of it (`x@wallet.fountain.fm`), and
+ * deliberately NOT as a bare suffix: `endsWith('fountain.fm')` would also match
+ * `notfountain.fm`, handing any third party the ability to opt other people's
+ * recipients out of keysend by registering a hostname. The value block is
+ * attacker-authored text, so the domain is lowercased and a trailing root dot
+ * stripped first — `USER@Fountain.FM.` is the same host to DNS, and
+ * `app/api/keysend/route.ts` already lowercases on its side.
+ */
+export function isLnurlOnlyAddress(address: string): boolean {
+  const domain = address.split('@')[1]?.trim().toLowerCase().replace(/\.$/, '');
+  if (!domain) return false;
+  return LNURL_ONLY_DOMAINS.some((d) => domain === d || domain.endsWith(`.${d}`));
+}
 
 /**
  * Pull the routing pair out of a keysend response. The documented shape is
@@ -84,6 +133,12 @@ export function parseKeysendResponse(data: any): KeysendTarget | null {
 export async function lookupKeysendTarget(address: string): Promise<KeysendTarget | null> {
   const [name, domain] = address.split('@');
   if (!name || !domain) return null;
+
+  // Ahead of the cache, not just the fetch: these domains DO answer the probe,
+  // so a cached hit would be a real keysend target we then have to remember to
+  // ignore at every read. Refusing to look is the only version with one place
+  // to get wrong.
+  if (isLnurlOnlyAddress(address)) return null;
 
   const key = address.toLowerCase();
   const hit = cache.get(key);
