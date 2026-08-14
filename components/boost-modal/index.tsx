@@ -261,6 +261,14 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           aTag: streamChatAddr(liveStreamId),
           relays: LIVE_STREAM_RELAYS,
           rail: rail ?? undefined,
+          // So the LUD-21 comment carries the rss::payment descriptor, exactly
+          // as an ordinary LNURL leg does. A single-recipient live block, so
+          // the whole amount is this leg.
+          metadata: {
+            boostagram,
+            recipient: value.recipients[0],
+            legMsat: sats * 1000,
+          },
         });
       } catch (e) {
         alert(getErrorMessage(e, 'zap failed'));
