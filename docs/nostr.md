@@ -128,13 +128,17 @@ own output back and would have created 114 of them. Inventing a favorite is
 worse than missing one, and the missing case self-corrects as soon as the feed is
 the only thing left on that group.
 
-The hydrator has **two exceptions**, both records that predate the ambiguity and
-are not contradicted by the wire, only unrepresentable in it:
+The hydrator has **one exception**, a record that predates the ambiguity and is
+not contradicted by the wire, only unrepresentable in it:
 
 - `storage.favorites` — this device's own cache. The user favorited it *here*.
-- `explicitFeeds` — a pre-10333 event that named the feed outright. Worth 46 of
-  one user's 94 album favorites on a device hydrating without a cache, which is
-  precisely the case migration exists to serve.
+
+There was going to be a second — a pre-10333 event that named the feed
+outright, worth 46 of one user's 94 album favorites on a device hydrating
+without a cache. It went away with the migration path (see *There is no
+migration path* below), so a fresh device now recovers only what the wire
+states unambiguously plus whatever this device already cached. Don't go
+looking for `explicitFeeds` in the hydrator; it isn't there.
 
 The converse limitation has no workaround: **unfavoriting a feed while a track
 of it stays favorited is invisible on the wire.** The placement group and the

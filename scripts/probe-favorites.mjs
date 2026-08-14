@@ -4,13 +4,14 @@
 // Usage:
 //   npm run probe:favorites -- <npub|hex> [--relay wss://…] [--dump <file>]
 //
-// Why this exists: this repo is porting favorites from kind:30078 (two
-// `d`-tagged addresses, data carried by position INSIDE each `i` tag) to
-// kind:10333 (one plain replaceable event, data carried by position IN THE TAG
-// ARRAY). Both are live on relays right now — StableKraft publishes 10333 and
-// has retired 30078; this app still publishes 30078 and has never written
-// 10333. Before rewriting the merge, it is worth seeing the real bytes rather
-// than the shape the old struct implies.
+// Why this exists: this repo moved favorites from kind:30078 (two `d`-tagged
+// addresses, data carried by position INSIDE each `i` tag) to kind:10333 (one
+// plain replaceable event, data carried by position IN THE TAG ARRAY). Both
+// apps now publish 10333 — StableKraft since 2026-08-13, this app since later
+// the same evening — and the old 30078 addresses survive on relays as the
+// rollback path only. Two writers on one replaceable event is exactly the
+// situation where you want the real bytes in front of you rather than the
+// shape your own struct implies.
 //
 // DESCRIPTIVE ONLY, and deliberately so. It reports the raw tag array — counts,
 // order, and the specific things the spec says are load-bearing — and does NOT
