@@ -45,8 +45,21 @@ function check(label, actual, expected) {
   if (!ok) console.log(`       expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 
-// A real BoostBox descriptor, the shape boostbox.clj returns. 44 chars.
-const DESC = 'rss::payment::boost https://tardbox.com/b/aG9t';
+// A REAL BoostBox descriptor, lifted verbatim from a live boost receipt —
+// `/boost/<26-char ULID>`, 72 characters. Do not shorten it and do not invent
+// one: the first version of this file used a made-up `https://tardbox.com/b/…`
+// at 46 chars, which is 26 short, and every boundary case below is measured in
+// characters against a recipient's commentAllowed. A fixture guessed at the
+// wrong length makes the arithmetic look right while testing budgets no real
+// payment ever sees — 46 fits inside a 64-char allowance and 72 does not, so
+// the invented value hid the exact case the drop-the-descriptor rule exists
+// for. Same rule as everywhere else in this repo: build the fixture from the
+// wire.
+const DESC = 'rss::payment::boost https://tardbox.com/boost/01M005ZZ2JE2J9BPVYVN2F3K0K';
+// Streaming settlements carry the longer verb (boostbox.ts downgrades 'auto' →
+// 'stream'), so the worst case is one character more. Pinned separately because
+// the streaming path is the one that runs unattended.
+const DESC_STREAM = 'rss::payment::stream https://tardbox.com/boost/01M005ZZ2JE2J9BPVYVN2F3K0K';
 const MSG = 'great episode, thanks for the show';
 
 console.log('buildLnurlComment — the descriptor survives whole or not at all');
@@ -88,6 +101,34 @@ console.log('buildLnurlComment — the descriptor survives whole or not at all')
     buildLnurlComment({ desc: DESC, message: MSG }, 20),
     MSG.slice(0, 20),
   );
+
+  // The case the invented 46-char fixture could not express. A real descriptor
+  // is 72 characters, so a 64-char allowance — a perfectly ordinary LNURL
+  // setting — cannot hold it. This is the live scenario the whole rule exists
+  // for, and with the old fixture it silently tested the opposite branch.
+  check(
+    'a real 72-char descriptor does not fit a 64-char allowance',
+    buildLnurlComment({ desc: DESC, message: MSG }, 64),
+    MSG.slice(0, 64),
+  );
+  check(
+    'a real descriptor DOES fit the common 255-char allowance',
+    buildLnurlComment({ desc: DESC, message: MSG }, 255),
+    `${DESC} — ${MSG}`,
+  );
+
+  // Streaming settlements are one character longer and run unattended, so the
+  // boundary is checked on the exact wire string that path emits.
+  check(
+    'a stream descriptor survives whole at its own exact length',
+    buildLnurlComment({ desc: DESC_STREAM, message: MSG }, DESC_STREAM.length),
+    DESC_STREAM,
+  );
+  check(
+    'a stream descriptor one char short of fitting is dropped, not clipped',
+    buildLnurlComment({ desc: DESC_STREAM, message: MSG }, DESC_STREAM.length - 1),
+    MSG.slice(0, DESC_STREAM.length - 1),
+  );
   check(
     'descriptor does not fit and there is no message: nothing rather than a broken URL',
     buildLnurlComment({ desc: DESC }, 20),
@@ -121,16 +162,16 @@ console.log('\nbuildLnurlComment — never exceeds the budget');
   // The one property a recipient's server enforces. Sweep every budget across
   // the interesting range rather than trusting the arithmetic above.
   let over = null;
-  for (let budget = 0; budget <= 120; budget++) {
+  for (let budget = 0; budget <= 200; budget++) {
     const out = buildLnurlComment({ desc: DESC, message: MSG }, budget);
     if (out != null && out.length > budget) { over = { budget, len: out.length }; break; }
   }
-  check('output never exceeds commentAllowed, for any budget 0..120', over, null);
+  check('output never exceeds commentAllowed, for any budget 0..200', over, null);
 
   // And whenever a descriptor IS emitted it is the complete one — the property
   // the whole function exists for, asserted independently of the cases above.
   let clipped = null;
-  for (let budget = 0; budget <= 120; budget++) {
+  for (let budget = 0; budget <= 200; budget++) {
     const out = buildLnurlComment({ desc: DESC, message: MSG }, budget);
     if (out?.startsWith('rss::payment') && !out.startsWith(DESC)) { clipped = { budget, out }; break; }
   }
@@ -150,12 +191,12 @@ console.log('\n(naive) the join-then-slice this replaced');
   // At a tight budget the old code emits a truncated URL; ours must not agree.
   check(
     '(naive) disagrees where it truncated the descriptor',
-    buildLnurlComment({ desc: DESC, message: MSG }, 30) !== naive(DESC, MSG, 30),
+    buildLnurlComment({ desc: DESC, message: MSG }, 50) !== naive(DESC, MSG, 50),
     true,
   );
   check(
     '(naive) really did emit a clipped descriptor',
-    naive(DESC, MSG, 30).startsWith(DESC),
+    naive(DESC, MSG, 50).startsWith(DESC),
     false,
   );
   // …and agrees on the generous budget, so the divergence is specific to the
