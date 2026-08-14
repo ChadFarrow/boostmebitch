@@ -30,6 +30,12 @@ export async function POST(req: Request) {
         'X-Api-Key': BOOSTBOX_API_KEY,
       },
       body: JSON.stringify(payload),
+      // Shorter than the client's own budget (lib/v4v/boostbox.ts) so this
+      // route answers before the caller aborts — same relationship
+      // app/api/keysend has with keysend-lookup.ts. This runs inside a boost
+      // the user is waiting on, with the legs paid serially behind it, so an
+      // unbounded upstream stalls the whole send.
+      signal: AbortSignal.timeout(4500),
     });
 
     if (!upstream.ok) {

@@ -11,6 +11,23 @@
 import { nip19 } from 'nostr-tools';
 import type { Boostagram, ValueRecipient } from '@/lib/types';
 
+/**
+ * How long a leg will wait for BoostBox before paying without a `desc`.
+ *
+ * This call sits on the money path in the worst way: it is awaited BEFORE the
+ * invoice fetch and the payment, and legs are paid serially, so an unbounded
+ * hang here doesn't cost one leg — it stalls the entire boost with the user
+ * watching a SENDING… button. Both hops were previously timeout-free, alone
+ * among the repo's outbound fetches (`/api/keysend` uses 3.5s, `/api/chapters`
+ * and `/api/transcript` 8s).
+ *
+ * Deliberately above the route's own upstream budget so the proxy answers
+ * first and we get a real 5xx rather than a client-side abort — the same
+ * relationship keysend-lookup.ts has with app/api/keysend. Losing the desc is
+ * already non-fatal: the leg falls back to the plain user message.
+ */
+const BOOSTBOX_TIMEOUT_MS = 6000;
+
 interface BoostBoxResponse {
   id: string;
   url: string;
@@ -100,6 +117,7 @@ export async function storeBoostMetadata(args: {
       body: JSON.stringify(
         buildPayload(args.boostagram, args.recipient, args.splitWeight, args.legMsat),
       ),
+      signal: AbortSignal.timeout(BOOSTBOX_TIMEOUT_MS),
     });
     if (!res.ok) return null;
     const data = (await res.json()) as Partial<BoostBoxResponse>;

@@ -40,6 +40,15 @@ import { useApp } from '@/lib/store';
 import { storage, subscribeRailPref } from '@/lib/storage';
 
 /**
+ * How long to sit on event-driven balance refreshes before firing one.
+ *
+ * Sized against two things: a multi-leg boost's `payment_sent` burst, which it
+ * must collapse, and the Spark retry ladder (2s/5s/12s), whose gaps it must
+ * stay below so those still land as three separate reads.
+ */
+const BALANCE_DEBOUNCE_MS = 1200;
+
+/**
  * Returns the active rail's balance + the rail it came from. Pass a
  * `railOverride` to force a specific rail (e.g. the boost modal passes its
  * picker selection so the displayed balance matches the rail that will pay).
@@ -109,6 +118,27 @@ export function useWalletBalance(
       }
     };
 
+    // Event-driven refreshes are debounced; the first read of each rail stays
+    // immediate so the chip paints without a delay.
+    //
+    // A boost pays its legs serially and the wallet pushes a `payment_sent`
+    // per leg, so a ten-recipient boost used to fire ten balance reads — and
+    // this hook is mounted twice while boosting (header chip + boost modal),
+    // making it twenty. Each read opens a NIP-47 connection, so that burst was
+    // the single largest contributor to the socket leak that took payments
+    // down mid-session (see lib/v4v/nwc.ts:client). Closing the clients bounds
+    // it; collapsing the burst means we don't open twenty in the first place.
+    //
+    // Trailing edge, and deliberately shorter than the gaps in the Spark retry
+    // ladder below (2s/5s/12s) so those still land as three separate reads.
+    let debounce: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRefresh = () => {
+      if (cancelled) return;
+      if (debounce) clearTimeout(debounce);
+      debounce = setTimeout(() => { debounce = null; void refresh(); }, BALANCE_DEBOUNCE_MS);
+    };
+    cleanups.push(() => { if (debounce) clearTimeout(debounce); });
+
     if (rail === 'spark') {
       let unsubEvents: (() => void) | null = null;
       const retryTimers: ReturnType<typeof setTimeout>[] = [];
@@ -117,7 +147,7 @@ export function useWalletBalance(
           || e.type === 'claimedDeposits'
           || e.type === 'newDeposits'
           || e.type === 'synced') {
-          refresh();
+          scheduleRefresh();
         }
       }).then((fn) => {
         if (cancelled) { fn(); return; }
@@ -136,13 +166,13 @@ export function useWalletBalance(
       refresh();
       subscribeNwcNotifications((e) => {
         if (e.notification_type === 'payment_received' || e.notification_type === 'payment_sent') {
-          refresh();
+          scheduleRefresh();
         }
       }).then((fn) => {
         if (cancelled) { fn(); return; }
         unsubNotifs = fn;
       });
-      const onFocus = () => { if (document.visibilityState === 'visible') refresh(); };
+      const onFocus = () => { if (document.visibilityState === 'visible') scheduleRefresh(); };
       document.addEventListener('visibilitychange', onFocus);
       window.addEventListener('focus', onFocus);
       cleanups.push(() => {
@@ -154,8 +184,8 @@ export function useWalletBalance(
       // WebLN: no notifications API. Refresh on tab return + every webln
       // event we emit (post-payment notify, enable transitions).
       refresh();
-      const unsubWebln = subscribeWebln(refresh);
-      const onFocus = () => { if (document.visibilityState === 'visible') refresh(); };
+      const unsubWebln = subscribeWebln(scheduleRefresh);
+      const onFocus = () => { if (document.visibilityState === 'visible') scheduleRefresh(); };
       document.addEventListener('visibilitychange', onFocus);
       window.addEventListener('focus', onFocus);
       cleanups.push(() => {
