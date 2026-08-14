@@ -20,6 +20,7 @@
     "check:favsync": "node --experimental-strip-types scripts/check-favsync.mjs",
     "check:readtrust": "node --experimental-strip-types scripts/check-readtrust.mjs",
     "check:lease": "node --experimental-strip-types scripts/check-lease.mjs",
+    "check:nwcerror": "node --experimental-strip-types scripts/check-nwcerror.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs"
