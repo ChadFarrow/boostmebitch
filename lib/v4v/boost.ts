@@ -16,10 +16,10 @@ import {
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
-import { lookupKeysendTarget } from './keysend-lookup';
+import { lookupKeysendTarget, isLnurlOnlyAddress } from './keysend-lookup';
 import { storeBoostMetadata } from './boostbox';
 import { storage } from '@/lib/storage';
-import { recipientOrder } from '@/lib/util';
+import { recipientOrder, isLnAddressRecipient } from '@/lib/util';
 
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
@@ -300,20 +300,29 @@ async function payOne(
   const base: BoostResult = { recipient, sats, ok: false };
   if (sats <= 0) return { ...base, ok: true };
   try {
-    if (recipient.type !== 'lnaddress') {
+    // Not `type !== 'lnaddress'`: an address with an @ is a Lightning address
+    // whatever the feed declared. See isLnAddressRecipient — a keysend at an
+    // email-shaped string cannot route on any rail, so this only ever turns a
+    // certain failure into a working LNURL leg.
+    if (!isLnAddressRecipient(recipient)) {
       return await payKeysend(recipient, sats, rail, boostagram);
     }
     const upgraded =
       canKeysend === 'no' ? null : await keysendRecipientFor(recipient);
     if (!upgraded) {
-      // Both gates fall back silently by design, which makes a mis-detected
-      // wallet capability and an address with no endpoint look identical from
-      // the outside — say which one sent this leg to LNURL.
+      // Every gate here falls back silently by design, which makes a
+      // mis-detected wallet capability, an address with no endpoint and a
+      // provider we route to LNURL on purpose look identical from the outside —
+      // say which one sent this leg to LNURL. The third arm is not decoration:
+      // an @fountain.fm leg matches none of the other two, and a log naming the
+      // wrong cause is worse than no log at all.
       console.info(
         `[keysend] ${recipient.address} → LNURL (${
           canKeysend === 'no'
             ? `${rail} wallet cannot keysend`
-            : 'no .well-known/keysend endpoint'
+            : isLnurlOnlyAddress(recipient.address)
+              ? 'LNURL-only provider'
+              : 'no .well-known/keysend endpoint'
         })`,
       );
       return await payLnurl(recipient, sats, rail, boostagram);
@@ -385,12 +394,16 @@ export async function sendBoost(args: {
   const results: BoostResult[] = new Array(recipients.length);
 
   // Resolved once per boost, not per leg, and only when there's actually an
-  // lnaddress recipient to upgrade. Both halves matter: a node-only value
-  // block (still the common case) must not pay for a capability check it
-  // can't use, and on the NWC rail `nwcFetchCapabilities` does NOT populate
-  // its cache when get_info fails — so calling it per leg would re-fire a
-  // relay round trip for every recipient against an unreachable wallet.
-  const canKeysend: KeysendCapability = recipients.some((r) => r.type === 'lnaddress')
+  // UPGRADEABLE lnaddress recipient. All three halves matter: a node-only value
+  // block (still the common case) must not pay for a capability check it can't
+  // use; an LNURL-only provider is never upgraded whatever the wallet can do, so
+  // a fountain-only block shouldn't probe either; and on the NWC rail
+  // `nwcFetchCapabilities` does NOT populate its cache when get_info fails — so
+  // calling it per leg would re-fire a relay round trip for every recipient
+  // against an unreachable wallet.
+  const canKeysend: KeysendCapability = recipients.some(
+    (r) => isLnAddressRecipient(r) && !isLnurlOnlyAddress(r.address),
+  )
     ? await railCanKeysend(rail)
     : 'no';
 

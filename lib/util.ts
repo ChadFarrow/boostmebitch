@@ -15,13 +15,40 @@ export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;
 }
 
+/**
+ * Whether a recipient pays over LNURL rather than keysend.
+ *
+ * `type` alone is not the answer, because an address containing an `@` is a
+ * Lightning address whatever the wire claims. Both publishing sides mislabel
+ * these as `"node"`: The Split Kit stores that type for lnaddress destinations
+ * (which is why `live-block.ts` re-infers, and why the fixtures in
+ * check-live-block.mjs carry `type:'node', address:'artist@fountain.fm'`), and
+ * plenty of hand-written `<podcast:valueRecipient>` tags do the same. The three
+ * feed-side parsers — lib/pi.ts twice and lib/musicl-resolver.ts — take the
+ * declared type verbatim, so trusting it sends a keysend to an email-shaped
+ * string, which no rail can route. Inferring here converts a leg that was
+ * guaranteed to fail into one that pays.
+ *
+ * `live-block.ts` deliberately does NOT call this — it keeps its own inline
+ * copy of the same rule, because its only import is `import type` and
+ * check-live-block.mjs relies on that to load it under plain Node. The two
+ * must agree; if you change the rule here, change it there too.
+ */
+export function isLnAddressRecipient(r: Pick<ValueRecipient, 'type' | 'address'>): boolean {
+  return r.type === 'lnaddress' || r.address.includes('@');
+}
+
 // A recipient's payment destination, shortened for display: an lnaddress verbatim
 // (it's already human-readable and the whole point is that you can read it), a
 // keysend node pubkey elided in the middle (66 hex chars never fits a modal row,
 // and the head/tail is what people actually compare against). Every surface that
 // shows a value split renders this, so the elision stays identical across them.
 export function recipientAddress(r: Pick<ValueRecipient, 'type' | 'address'>): string {
-  if (r.type === 'lnaddress' || r.address.length <= 20) return r.address;
+  // isLnAddressRecipient, not `type === 'lnaddress'`, for the same reason
+  // payOne uses it: a feed that mislabels an @-address as "node" would
+  // otherwise get it elided into `someone…ntain.fm` on one screen and printed
+  // verbatim on another, which is the drift this helper exists to prevent.
+  if (isLnAddressRecipient(r) || r.address.length <= 20) return r.address;
   return `${r.address.slice(0, 8)}…${r.address.slice(-8)}`;
 }
 
