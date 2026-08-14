@@ -127,5 +127,21 @@ export async function provisionSparkFromKey(
   // backup with the derived one. kind:30078 is replaceable: that loss is
   // permanent.
   if (!sparkSeedIsActive(mnemonic)) return;
-  await publishEncryptedMnemonic(identity, mnemonic);
+
+  // Throw on a publish that reached nobody. `signAndPublish` resolves once every
+  // relay has SETTLED, accepted or not — so a total failure awaits cleanly and
+  // returns an empty `acceptedRelays`, which read as success here for as long as
+  // this code existed. It matters most in exactly this spot: a seconds-old npub
+  // has no kind:10002 yet, so `resolvePublishRelays` falls back to DEFAULT_RELAYS,
+  // and one bad moment during signup left the account with no backup and nothing
+  // anywhere saying so.
+  //
+  // Throwing is enough because it's now recoverable both ways: the caller
+  // console.warns it, and doLoadProfile's backfill republishes on the next
+  // sign-in once it can confirm the backup really is missing. (Same check
+  // `publishProfile` makes for the same reason.)
+  const res = await publishEncryptedMnemonic(identity, mnemonic);
+  if (res.acceptedRelays.length === 0) {
+    throw new Error('wallet backup reached no relays');
+  }
 }

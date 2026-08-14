@@ -108,6 +108,7 @@ export {
   WALLET_BACKUP_D_TAG,
   WALLET_NWC_D_TAG,
   fetchEncryptedMnemonic,
+  fetchEncryptedMnemonicDetailed,
   publishEncryptedMnemonic,
   fetchEncryptedNwc,
   publishEncryptedNwc,
