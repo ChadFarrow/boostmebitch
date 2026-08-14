@@ -13,72 +13,14 @@ import { createLeasePool, type Lease } from './lease';
 const { subscribe: subscribeNwc, notify } = createObservable();
 export { subscribeNwc };
 
-/**
- * Thrown when the wallet answers a NIP-47 request with `NOT_IMPLEMENTED`.
- *
- * Load-bearing as a *type*, not just a message: the wallet returns this error
- * **instead of** executing the payment, so nothing left the wallet and the
- * caller may safely retry the leg by another route. `boost.ts` keys its one
- * permitted keysend→LNURL fallback off `instanceof` this. Flattening it back
- * into a plain Error (as this code used to) makes a wallet that can't keysend
- * indistinguishable from a routing failure that may already have paid — and
- * the fallback would then be a double-pay.
- */
-export class NwcMethodUnsupportedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NwcMethodUnsupportedError';
-  }
-}
+// The NIP-47 error classification lives in `nwc-errors.ts` so it can load under
+// plain Node and be pinned by `npm run check:nwcerror` — this module imports
+// `../storage` and cannot. Both classes are RE-EXPORTED here so every existing
+// import site (`boost.ts` keys its one permitted keysend→LNURL fallback off
+// `instanceof NwcMethodUnsupportedError`) is unchanged.
+import { mapNwcError, NwcIndeterminateError, NwcMethodUnsupportedError } from './nwc-errors';
 
-/**
- * Thrown when the request reached the wallet's relay but no reply came back
- * inside the SDK's 60 s cap.
- *
- * **This is not a failure, and reporting it as one is a money bug.** The
- * request was published; the wallet may have executed the payment and simply
- * answered late, or not at all. Observed live against AlbyHub: every leg of a
- * boost showed ✗ in the modal while Alby pushed "Sent 10 sats" notifications
- * for each one and the recipient's wallet showed the sats arriving two minutes
- * later. A ✗ invites the user to boost again, and a re-boost repeats EVERY
- * leg — including the ones that already paid. Losing sats is recoverable;
- * sending them twice is not.
- *
- * The exact inverse of `NwcMethodUnsupportedError`, and the pair is worth
- * holding together: NOT_IMPLEMENTED is the wallet answering *instead of*
- * paying, so it proves nothing moved and the leg may be retried elsewhere. A
- * reply timeout proves nothing at all, so the leg must NOT be retried and must
- * NOT be called failed.
- *
- * Deliberately NOT raised for `Nip47PublishTimeoutError` — that one means the
- * request never reached the relay, so no payment can have happened and an
- * ordinary failure is the honest answer.
- */
-export class NwcIndeterminateError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'NwcIndeterminateError';
-  }
-}
-
-const NOT_IMPLEMENTED_MSG =
-  'Wallet returned NOT_IMPLEMENTED — your NWC wallet may not support this payment type. Try Alby or Mutiny instead of an embedded node.';
-
-const TIMEOUT_MSG =
-  'Wallet did not answer in time — this payment may still have been sent. Check your wallet before boosting again.';
-
-/** Map the SDK's typed errors into ours; pass anything else through. */
-function mapNwcError(e: unknown): unknown {
-  if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
-    return new NwcMethodUnsupportedError(NOT_IMPLEMENTED_MSG);
-  }
-  // Reply timeout only. Nip47PublishTimeoutError extends the same parent but
-  // means the opposite thing, so match the leaf class, not Nip47TimeoutError.
-  if (e instanceof nwc.Nip47ReplyTimeoutError) {
-    return new NwcIndeterminateError(TIMEOUT_MSG);
-  }
-  return e;
-}
+export { NwcIndeterminateError, NwcMethodUnsupportedError };
 
 // Cached methods list from the last successful get_info call. Populated by
 // nwcValidate (at connect time) and nwcFetchCapabilities (lazy on card mount).
