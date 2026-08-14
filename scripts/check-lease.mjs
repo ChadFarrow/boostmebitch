@@ -34,6 +34,7 @@
 // lease.ts free of imports.
 
 import { createLeasePool } from '../lib/v4v/lease.ts';
+import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 let failures = 0;
 
@@ -255,6 +256,18 @@ section('A throwing close cannot wedge the pool');
   check('...and the pool is empty rather than stuck', pool.stats().open, false);
   const b = pool.acquire('w');
   check('...so a fresh resource can still be built', b.value !== a.value, true);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nlease.ts stays loadable under plain Node');
+// ---------------------------------------------------------------------------
+{
+  // The arrangement this whole script depends on: it imports the REAL module,
+  // so the module must keep resolving under `node --experimental-strip-types`.
+  // See scripts/import-free.mjs for why a type-only relative import counts.
+  const problems = importFreeProblems('lib/v4v/lease.ts');
+  if (problems.length) { explainImportFree('lib/v4v/lease.ts', problems); failures += problems.length; }
+  else console.log('  ok    lib/v4v/lease.ts has no imports that plain Node cannot resolve');
 }
 
 if (failures) {
