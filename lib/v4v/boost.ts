@@ -163,17 +163,18 @@ async function payLnurl(
     splitWeight: recipient.split,
     legMsat: sats * 1000,
   });
-  // Concat desc + user message so recipients without BoostBox-aware tooling
-  // still see the typed message. fetchLnInvoice truncates to commentAllowed
-  // if the combined string exceeds the recipient's cap.
-  const userMsg = boostagram.message?.trim() || undefined;
-  const comment = stored?.desc
-    ? userMsg ? `${stored.desc} — ${userMsg}` : stored.desc
-    : userMsg;
+  // Handed over separately, NOT pre-joined: the two truncate differently and
+  // fetchLnInvoice is the only place that knows the recipient's commentAllowed.
+  // `desc` is the rss::payment descriptor — Fountain authored that spec and
+  // parses it, so on an LNURL leg it is the metadata channel and is worth
+  // nothing clipped; the message is prose and reads fine short. Joining here
+  // and letting the far end slice would cut the URL, not the prose. See
+  // buildLnurlComment.
   const invoice = await fetchLnInvoice({
     address: recipient.address,
     amount_msat: sats * 1000,
-    comment,
+    desc: stored?.desc,
+    message: boostagram.message,
   });
   let preimage: string;
   if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);

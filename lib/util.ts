@@ -38,6 +38,47 @@ export function isLnAddressRecipient(r: Pick<ValueRecipient, 'type' | 'address'>
   return r.type === 'lnaddress' || r.address.includes('@');
 }
 
+/**
+ * Fit the LUD-21 comment into the recipient's `commentAllowed` budget.
+ *
+ * Split into two arguments because they truncate differently, and the naive
+ * single-string version gets it exactly backwards. `desc` is BoostBox's
+ * `rss::payment::<action> <url>` descriptor — Fountain wrote that spec and
+ * parses it, so for an LNURL leg it IS the metadata channel, and it is only
+ * worth anything WHOLE. `message` is human prose that reads fine clipped.
+ *
+ * `${desc} — ${message}`.slice(0, budget) puts the fragile part first and cuts
+ * from the right, so a tight budget shortens the URL into a dead link while
+ * still spending the entire allowance on it: the recipient gets no metadata AND
+ * no message, and nothing anywhere reports a problem. Many services allow 255 or
+ * 500 and this never bites; some allow 32, and 0 means "no comment at all".
+ *
+ * So: keep `desc` only if it fits whole, spend what's left on `message`, and if
+ * `desc` cannot fit, drop it entirely rather than send a broken URL — a clipped
+ * message alone is strictly more use to the recipient than a link that 404s.
+ */
+export function buildLnurlComment(
+  args: { desc?: string; message?: string },
+  commentAllowed: number | undefined,
+): string | undefined {
+  const budget = commentAllowed ?? 0;
+  if (budget <= 0) return undefined;
+  const desc = args.desc?.trim() || undefined;
+  const message = args.message?.trim() || undefined;
+
+  if (!desc) return message?.slice(0, budget) || undefined;
+  // Whole or not at all.
+  if (desc.length > budget) return message?.slice(0, budget) || undefined;
+  if (!message) return desc;
+
+  const sep = ' — ';
+  const room = budget - desc.length - sep.length;
+  // No room for a separator plus at least one character of prose: send the
+  // descriptor alone rather than a dangling em dash.
+  if (room < 1) return desc;
+  return `${desc}${sep}${message.slice(0, room)}`;
+}
+
 // A recipient's payment destination, shortened for display: an lnaddress verbatim
 // (it's already human-readable and the whole point is that you can read it), a
 // keysend node pubkey elided in the middle (66 hex chars never fits a modal row,
