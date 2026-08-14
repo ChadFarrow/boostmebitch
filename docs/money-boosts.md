@@ -91,6 +91,26 @@ Separately, and for the same recipients: **`payOne` dispatches on `isLnAddressRe
 
 The endpoint's routing pair **wins** over the feed's (a feed-side `customKey` on an lnaddress recipient is ignored by the LNURL path anyway, while the endpoint's pair selects the sub-account); the feed's is used only when the endpoint supplies none. An upgraded leg **skips BoostBox** — LNURL-only by design, and the TLV now carries the metadata. `BoostResult.recipient` reports the **original lnaddress recipient**, not the resolved pubkey, so per-leg rows and `bmb:boosts:*` stay readable. Lookups are cached module-scope (6 h hit / 15 min miss) so a boost-all over 20 tracks sharing an artist address probes once. **Zaps are untouched:** `lib/v4v/zap.ts` must stay LNURL — a keysend can't make the recipient's LN service publish a kind:9735 receipt.
 
+### The unanswered wallet
+
+**A NIP-47 reply timeout is the one payment outcome that is neither success nor failure, and the UI used to have no way to say so.**
+
+The Alby SDK caps a `pay_invoice` / `pay_keysend` reply at **60 s** (reads — `get_info`, `get_balance`, `get_budget`, `list_transactions` — are capped at 10 s; the cap is not reachable from the public API, since `executeNip47Request` is private). AlbyHub answers only once the payment settles, and settlement can take minutes: pathfinding on a keysend leg, a slow destination on an LNURL one. So the cap fires while the payment is still in flight.
+
+What that looked like in production: every leg of a boost showed **✗**, while Alby pushed a "Sent 10 sats" notification for each one and the recipient's Fountain wallet showed the sats arriving two minutes later. The payments were fine. The report was wrong.
+
+**A false ✗ is worse than a failed payment**, which is why this is an invariant and not a polish item. It reads as "this didn't send", the obvious response is to boost again, and a re-boost repeats **every** leg — including the ones that already paid. The repo's standing trade — losing sats is recoverable, sending them twice is not — points the same way here as it does at the streaming ledger and the keysend retry rule.
+
+So `mapNwcError` maps `Nip47ReplyTimeoutError` to a typed `NwcIndeterminateError`, `payOne` sets `BoostResult.indeterminate` alongside `ok: false` (false is correct — we hold no preimage and must not claim delivery), and every surface that renders a leg renders three states instead of two: `<SplitsPreview>`, `<LightningStatus>` (which counts them and leads with them, since "go look at your wallet" is the actionable part), `<BoostCard>` for the permanent log, and `BoostAllModal`'s per-track rows plus its summary line.
+
+Three things not to get wrong:
+
+- **Match `Nip47ReplyTimeoutError`, not its parent `Nip47TimeoutError`.** `Nip47PublishTimeoutError` shares that parent and means the request never reached the relay — no payment can have happened, so a plain failure is the honest answer. Matching the parent would launder real failures into "maybe".
+- **It must never become retryable.** `payOne`'s single LNURL retry stays gated on `instanceof NwcMethodUnsupportedError`. That error is the wallet answering *instead of* paying, which is proof nothing moved; a timeout is proof of nothing. The two are exact inverses and the pair is only safe held together.
+- **Streaming still treats it as a failure.** `paidAny` is false, so `noteFailure` fires and two consecutive stop the engine for that item. Correct for an unattended payer — and the ledger is debited before the await, so an in-flight payment that later settles was already accounted for.
+
+**Not pinned by a check script.** `lib/v4v/nwc.ts` imports `../storage`, which touches `localStorage`, so it can't be loaded under `node --experimental-strip-types` the way the other `check:*` targets are. The mapping is three `instanceof` arms; if it grows conditions, extracting them into a pure helper in `lib/util.ts` would make it pinnable.
+
 ### Serving our own lightning address
 
 The mirror image of the above: `chadf@boostmebitch.com` is a recipient other apps pay, assembled from two pieces on this domain plus an LNbits instance behind `pay.boostmebitch.com` fronting Chad's LND node.

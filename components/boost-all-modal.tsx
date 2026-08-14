@@ -28,6 +28,13 @@ interface Props {
 interface TrackProgress {
   index: number;
   ok: boolean;
+  /**
+   * No leg confirmed, but at least one went unanswered by the wallet — so this
+   * track may in fact have paid. Same rule as BoostResult.indeterminate, one
+   * level up: over N tracks a run of false ✗ is exactly what makes someone
+   * boost the whole album a second time.
+   */
+  indeterminate?: boolean;
   error?: string;
 }
 
@@ -197,6 +204,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         uuid: crypto.randomUUID(),
       };
       let trackOk = false;
+      // Only meaningful when trackOk is false: at least one leg's wallet never
+      // answered, so "this track didn't pay" is not a claim we can make.
+      let trackUnknown = false;
       try {
         if (trackSats > 0) {
           const results = await sendBoost({
@@ -206,6 +216,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             rail,
           });
           trackOk = paidAny(results);
+          trackUnknown = results.some((r) => r?.indeterminate);
           if (trackOk) {
             const stored: StoredBoost = {
               uuid: trackBoostagram.uuid!,
@@ -290,7 +301,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       }
 
       if (cancelled.current) return;
-      setProgress((prev) => [...prev, { index: i, ok: trackOk }]);
+      setProgress((prev) => [
+        ...prev,
+        { index: i, ok: trackOk, indeterminate: !trackOk && trackUnknown },
+      ]);
     }
 
     setRunning(false);
@@ -439,8 +453,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                         </div>
                       </div>
                       {result && (
-                        <span className={result.ok ? 'text-bolt text-sm' : 'text-nostr/80 text-sm'}>
-                          {result.ok ? '✓' : '✗'}
+                        <span
+                          className={
+                            result.ok
+                              ? 'text-bolt text-sm'
+                              : result.indeterminate
+                                ? 'text-muted text-sm'
+                                : 'text-nostr/80 text-sm'
+                          }
+                          title={result.indeterminate ? 'Wallet did not answer — this may still have been sent' : undefined}
+                        >
+                          {result.ok ? '✓' : result.indeterminate ? '?' : '✗'}
                         </span>
                       )}
                       {running && !result && i >= (progress.length) && (
@@ -471,6 +494,15 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           {done && (
             <div className="text-sm text-muted">
               {progress.filter((p) => p.ok).length} of {splits.length} tracks boosted successfully.
+              {progress.some((p) => p.indeterminate) && (
+                <>
+                  {' '}
+                  <span className="text-bolt">
+                    {progress.filter((p) => p.indeterminate).length} unconfirmed
+                  </span>{' '}
+                  — your wallet didn&rsquo;t answer in time. Check it before boosting these again.
+                </>
+              )}
             </div>
           )}
 

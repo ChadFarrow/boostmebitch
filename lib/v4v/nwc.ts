@@ -30,13 +30,51 @@ export class NwcMethodUnsupportedError extends Error {
   }
 }
 
+/**
+ * Thrown when the request reached the wallet's relay but no reply came back
+ * inside the SDK's 60 s cap.
+ *
+ * **This is not a failure, and reporting it as one is a money bug.** The
+ * request was published; the wallet may have executed the payment and simply
+ * answered late, or not at all. Observed live against AlbyHub: every leg of a
+ * boost showed ✗ in the modal while Alby pushed "Sent 10 sats" notifications
+ * for each one and the recipient's wallet showed the sats arriving two minutes
+ * later. A ✗ invites the user to boost again, and a re-boost repeats EVERY
+ * leg — including the ones that already paid. Losing sats is recoverable;
+ * sending them twice is not.
+ *
+ * The exact inverse of `NwcMethodUnsupportedError`, and the pair is worth
+ * holding together: NOT_IMPLEMENTED is the wallet answering *instead of*
+ * paying, so it proves nothing moved and the leg may be retried elsewhere. A
+ * reply timeout proves nothing at all, so the leg must NOT be retried and must
+ * NOT be called failed.
+ *
+ * Deliberately NOT raised for `Nip47PublishTimeoutError` — that one means the
+ * request never reached the relay, so no payment can have happened and an
+ * ordinary failure is the honest answer.
+ */
+export class NwcIndeterminateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NwcIndeterminateError';
+  }
+}
+
 const NOT_IMPLEMENTED_MSG =
   'Wallet returned NOT_IMPLEMENTED — your NWC wallet may not support this payment type. Try Alby or Mutiny instead of an embedded node.';
 
-/** Map the SDK's typed NOT_IMPLEMENTED into ours; pass anything else through. */
+const TIMEOUT_MSG =
+  'Wallet did not answer in time — this payment may still have been sent. Check your wallet before boosting again.';
+
+/** Map the SDK's typed errors into ours; pass anything else through. */
 function mapNwcError(e: unknown): unknown {
   if (e instanceof nwc.Nip47WalletError && e.code === 'NOT_IMPLEMENTED') {
     return new NwcMethodUnsupportedError(NOT_IMPLEMENTED_MSG);
+  }
+  // Reply timeout only. Nip47PublishTimeoutError extends the same parent but
+  // means the opposite thing, so match the leaf class, not Nip47TimeoutError.
+  if (e instanceof nwc.Nip47ReplyTimeoutError) {
+    return new NwcIndeterminateError(TIMEOUT_MSG);
   }
   return e;
 }

@@ -140,6 +140,7 @@ export function storedBoostLegs(results: BoostResult[]): StoredBoostLeg[] {
       recipientName: r.recipient.name,
       sats: r.sats,
       ok: r.ok,
+      indeterminate: r.indeterminate,
       error: r.error,
       boostboxUrl: r.boostboxUrl,
     };
