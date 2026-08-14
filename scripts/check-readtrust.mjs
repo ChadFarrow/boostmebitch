@@ -50,6 +50,7 @@ import {
   readIsTrustworthy,
   syntheticEoseTimeoutFor,
 } from '../lib/nostr/read-trust.ts';
+import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 // The two windows this app actually uses (lib/nostr/pool.ts) and the
 // nostr-tools default the margin exists to clear.
@@ -165,6 +166,18 @@ console.log('\nintake — reject at the door, never on the winner');
   // about, and `expect` is optional at the call site.
   check('an empty expectation accepts anything', acceptsEvent({}, theirs), true);
   check('a pubkey-only expectation ignores kind', acceptsEvent({ pubkey: 'aa11' }, wrongKind), true);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nread-trust.ts stays loadable under plain Node');
+// ---------------------------------------------------------------------------
+{
+  // The arrangement this whole script depends on: it imports the REAL module,
+  // so the module must keep resolving under `node --experimental-strip-types`.
+  // See scripts/import-free.mjs for why a type-only relative import counts.
+  const problems = importFreeProblems('lib/nostr/read-trust.ts');
+  if (problems.length) { explainImportFree('lib/nostr/read-trust.ts', problems); failures += problems.length; }
+  else console.log('  ok    lib/nostr/read-trust.ts has no imports that plain Node cannot resolve');
 }
 
 if (failures) {

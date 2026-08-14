@@ -66,6 +66,7 @@ import {
   showId,
   tagsFromList,
 } from '../lib/nostr/favorites-list.ts';
+import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 let failures = 0;
 
@@ -577,6 +578,18 @@ section('Control — the obvious wrong implementation must fail these');
     const differs = JSON.stringify(ours) !== JSON.stringify(theirs);
     check(`(naive) ${label}`, differs, true);
   }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nfavorites-list.ts stays loadable under plain Node');
+// ---------------------------------------------------------------------------
+{
+  // The arrangement this whole script depends on: it imports the REAL module,
+  // so the module must keep resolving under `node --experimental-strip-types`.
+  // See scripts/import-free.mjs for why a type-only relative import counts.
+  const problems = importFreeProblems('lib/nostr/favorites-list.ts');
+  if (problems.length) { explainImportFree('lib/nostr/favorites-list.ts', problems); failures += problems.length; }
+  else console.log('  ok    lib/nostr/favorites-list.ts has no imports that plain Node cannot resolve');
 }
 
 if (failures) {

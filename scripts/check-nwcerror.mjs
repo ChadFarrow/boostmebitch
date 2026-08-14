@@ -47,6 +47,7 @@ import {
   NwcMethodUnsupportedError,
   mapNwcError,
 } from '../lib/v4v/nwc-errors.ts';
+import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 let failures = 0;
 
@@ -175,6 +176,18 @@ section('Control — a parent-class matcher must fail the publish-timeout vector
     naive(replyTimeout()) instanceof NwcIndeterminateError
       && mapNwcError(replyTimeout()) instanceof NwcIndeterminateError,
     true);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nnwc-errors.ts stays loadable under plain Node');
+// ---------------------------------------------------------------------------
+{
+  // The arrangement this whole script depends on: it imports the REAL module,
+  // so the module must keep resolving under `node --experimental-strip-types`.
+  // See scripts/import-free.mjs for why a type-only relative import counts.
+  const problems = importFreeProblems('lib/v4v/nwc-errors.ts', { allowBare: true });
+  if (problems.length) { explainImportFree('lib/v4v/nwc-errors.ts', problems); failures += problems.length; }
+  else console.log('  ok    lib/v4v/nwc-errors.ts has no imports that plain Node cannot resolve');
 }
 
 if (failures) {
