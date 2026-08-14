@@ -12,8 +12,8 @@
 // falls back to the LNURL path that has always worked.
 //
 // One deliberate exception runs the other way — see LNURL_ONLY_DOMAINS. A few
-// providers serve the keysend well-known but want the payment on their LNURL
-// endpoint, because that is the side that attributes it to the recipient.
+// providers accept keysend perfectly well but never show the recipient what
+// rode in the TLV, so the upgrade's whole justification is void for them.
 
 export interface KeysendTarget {
   pubkey: string;
@@ -45,14 +45,20 @@ const NODE_PUBKEY = /^0[23][0-9a-f]{64}$/i;
  * Providers we deliberately pay over LNURL even though they publish a
  * `.well-known/keysend` document.
  *
- * Fountain is the reason this list exists — and it is not an edge case, it is
- * the provider the namespace discussion was written around (customKey `906608`
- * routes to a Fountain sub-account). Because it serves the keysend well-known,
- * the upgrade fires on EVERY `@fountain.fm` leg, so a boost from this app never
- * touched Fountain's LNURL endpoint at all — which is the side that attributes
- * the payment to the recipient and shows them its metadata. The upgrade was
- * doing exactly what it was designed to do; the design was wrong for this one
- * provider.
+ * Fountain is the reason this list exists, and the reason is NOT that it lacks
+ * keysend. It has keysend, it publishes the well-known, the payment arrives and
+ * the sats land — **it just doesn't surface the TLV boostagram to the person
+ * who received it.** So the upgrade fired on every `@fountain.fm` leg, did
+ * exactly what it was designed to do, and dropped the metadata anyway. Its
+ * whole justification — "carry the boostagram inline instead of degrading it to
+ * a comment" — is void against a recipient that never reads the inline copy.
+ * The LUD-21 comment is the only channel Fountain actually shows.
+ *
+ * Do not "correct" this by checking whether the domain serves the well-known:
+ * it does, and that is the trap. Nothing observable from our side distinguishes
+ * a provider that renders the TLV from one that discards it — the payment
+ * succeeds identically either way, which is why this went unnoticed for as long
+ * as it did. Membership here is knowledge about the provider, not a probe.
  *
  * Strictly non-regressive, the same rule the upgrade itself is held to: LNURL
  * works on every rail and keysend does not, so moving a leg BACK to LNURL can

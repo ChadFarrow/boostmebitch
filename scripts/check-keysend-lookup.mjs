@@ -10,10 +10,11 @@
 // silent and cost someone something.
 //
 //   Under-match — fountain.fm stops matching and every @fountain.fm leg goes
-//   back to being a keysend to Fountain's shared node. The payment SUCCEEDS,
-//   which is precisely why nobody notices: the sats land, and only the
-//   recipient's missing metadata says anything is wrong, on their screen, not
-//   ours. This is the state the repo shipped in before this feature.
+//   back to being a keysend. Fountain ACCEPTS keysend; it just never shows the
+//   recipient the TLV boostagram. So the payment succeeds, the sats land, the
+//   modal shows a ✓, and the only evidence is metadata missing on someone
+//   else's screen. This is the state the repo shipped in before this feature,
+//   and no assertion about the payment itself would have caught it.
 //
 //   Over-match — a suffix test (`domain.endsWith('fountain.fm')`) also matches
 //   `notfountain.fm`, so anyone who registers a hostname ending in a listed
