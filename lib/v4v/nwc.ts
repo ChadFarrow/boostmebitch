@@ -171,6 +171,36 @@ export const clearNwcUri = () => {
 };
 export const hasNwc = () => storage.nwcUri.has();
 
+/**
+ * A fresh NIP-47 client — **and therefore a fresh WebSocket. Every caller MUST
+ * close it, in a `finally`.**
+ *
+ * This is not hygiene, it is the money path. `NWCClient`'s constructor does
+ * `this.relay = new Relay(url)`, and nostr-tools does NOT dedupe by URL —
+ * deduping lives in `SimplePool`, which the Alby SDK doesn't use. So one call
+ * here is one socket, `NWCClient.close()` is the only thing that tears it down,
+ * and `executeNip47Request` closes only its *subscription*, never the relay.
+ * The relay is also constructed with no options, so `enableReconnect` is false
+ * and there is no keepalive ping: an unclosed socket sits half-open forever,
+ * still counting against the relay's per-connection cap.
+ *
+ * Four of the five call sites used to leak, and it degraded in two stages
+ * within a single page session — each worse than a plain outage:
+ *
+ *   1. The relay still accepts connections but starves REQ on the over-limit
+ *      ones. `relay.publish` lands, so **the wallet pays**, while the kind:23195
+ *      reply never routes back — every leg reports failure on a payment that
+ *      went through. Re-boosting then pays twice.
+ *   2. The relay refuses outright. `_checkConnected`/publish fails, nothing is
+ *      sent, and every leg fails fast on the 5 s publish cap.
+ *
+ * Observed live: 1 failed leg of 3, then 2 of 5, then 5 of 5 with no payments
+ * at all, across ~20 minutes without a reload. A reload "fixed" it, which is
+ * exactly what a leak looks like from the outside.
+ *
+ * `subscribeNwcNotifications` is the long-lived exception and closes its client
+ * from the returned unsub — see the wrapper there.
+ */
 function client() {
   const uri = loadNwcUri();
   if (!uri) throw new Error('No NWC URI configured');
@@ -240,6 +270,11 @@ export async function nwcPayInvoice(invoice: string): Promise<string> {
     return res.preimage;
   } catch (e) {
     throw mapNwcError(e);
+  } finally {
+    // Must be `finally`, not a line after the await: the catch above rethrows,
+    // and a boost pays its legs in a serial loop — leaking one socket per leg is
+    // how a five-recipient block saturates a relay inside one session.
+    try { c.close(); } catch { /* ignore */ }
   }
 }
 
@@ -250,14 +285,21 @@ export async function nwcPayInvoice(invoice: string): Promise<string> {
  * rather than show a stale or zero value.
  */
 export async function nwcGetBalance(): Promise<number | null> {
+  let c: ReturnType<typeof client> | null = null;
   try {
-    const c = client();
+    c = client();
     const res = await c.getBalance();
     const msat = Number(res?.balance ?? 0);
     if (!Number.isFinite(msat) || msat < 0) return null;
     return Math.floor(msat / 1000);
   } catch {
     return null;
+  } finally {
+    // The biggest leaker of the four, because it is the most frequently called:
+    // `useWalletBalance` refreshes on every `payment_sent` push, and the hook is
+    // mounted twice during a boost (header chip + boost modal), so each paid leg
+    // used to strand two more sockets on top of the payment's own.
+    try { c?.close(); } catch { /* ignore */ }
   }
 }
 
@@ -270,13 +312,28 @@ export async function nwcGetBalance(): Promise<number | null> {
 export async function subscribeNwcNotifications(
   onNotification: (e: nwc.Nip47Notification) => void,
 ): Promise<() => void> {
+  let c: ReturnType<typeof client> | null = null;
   try {
-    const c = client();
-    return await c.subscribeNotifications(onNotification, [
+    c = client();
+    const held = c;
+    const unsub = await held.subscribeNotifications(onNotification, [
       'payment_received',
       'payment_sent',
     ]);
+    // The SDK's unsub stops its reconnect loop and closes the NIP-47
+    // subscription — but NOT the relay, so returning it bare stranded a socket
+    // that no caller could ever reach: `c` went out of scope here and the SDK
+    // exposes no handle to it. This hook mounts twice (header chip + boost
+    // modal) and re-runs whenever the rail changes, so every remount used to
+    // cost one permanent connection.
+    return () => {
+      try { unsub(); } catch { /* ignore */ }
+      try { held.close(); } catch { /* ignore */ }
+    };
   } catch {
+    // Close the half-built client too — subscribeNotifications can reject after
+    // the socket is already open.
+    try { c?.close(); } catch { /* ignore */ }
     return () => {};
   }
 }
@@ -314,5 +371,10 @@ export async function nwcKeysend(args: {
     // boost.ts is allowed to retry over LNURL. Everything else stays opaque
     // precisely because it may have paid already.
     throw mapNwcError(e);
+  } finally {
+    // `finally` specifically: this catch both RETURNS (the Zeus no-preimage
+    // path) and RETHROWS, so a close appended to either one would be skipped by
+    // the other.
+    try { c.close(); } catch { /* ignore */ }
   }
 }
