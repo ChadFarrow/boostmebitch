@@ -14,17 +14,26 @@ type NavOverride = { onClick: () => void; disabled: boolean; label: string };
  *
  * `playOnly` renders just the play/pause button (no prev/next) — used for live
  * streams, where stepping the queue isn't meaningful.
+ *
+ * `sidesOnDesktopOnly` hides ⏮/⏭ below `sm:` while leaving play/pause. The
+ * mini-bar passes it because three 40px buttons plus BOOST left the title and
+ * seek bar 31px between them on a 390px phone — measured, not estimated. It is
+ * a hide, not a drop: the whole mini-bar is a button that opens the fullscreen
+ * player, which carries the full transport one tap away. Same trade the
+ * `<VideoToggle className="hidden sm:inline-flex">` beside it already makes.
  */
 export function TransportControls({
   size = 'sm',
   prev,
   next,
   playOnly = false,
+  sidesOnDesktopOnly = false,
 }: {
   size?: 'sm' | 'lg';
   prev?: NavOverride;
   next?: NavOverride;
   playOnly?: boolean;
+  sidesOnDesktopOnly?: boolean;
 }) {
   const current = useApp((s) => s.current);
   const isPlaying = useApp((s) => s.isPlaying);
@@ -42,9 +51,14 @@ export function TransportControls({
   const nextDisabled = next ? next.disabled : !(idx >= 0 && idx < episodeQueue.length - 1);
   const nextLabel = next?.label ?? 'Next track';
 
+  // `hidden sm:flex` rather than `flex` when the sides are desktop-only. Both
+  // are display utilities, so this can't be expressed by appending a class to a
+  // string that already says `flex` and trusting order — the base `flex` has to
+  // not be there.
+  const sideShow = sidesOnDesktopOnly ? 'hidden sm:flex' : 'flex';
   const sideBtn = size === 'lg'
-    ? 'btn text-xl w-12 h-12 flex items-center justify-center flex-shrink-0'
-    : 'btn w-10 h-10 flex items-center justify-center flex-shrink-0';
+    ? `btn text-xl w-12 h-12 ${sideShow} items-center justify-center flex-shrink-0`
+    : `btn w-10 h-10 ${sideShow} items-center justify-center flex-shrink-0`;
   const playBtn = size === 'lg'
     ? 'btn text-2xl w-14 h-14 flex items-center justify-center flex-shrink-0'
     : 'btn w-10 h-10 flex items-center justify-center flex-shrink-0';

@@ -561,7 +561,10 @@ export function Player() {
           }}
           onError={(e) => { if (!isVideoRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
-        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center gap-4">
+        {/* Tighter padding and gap below sm:. At 390px the row has 358px to
+            divide and every px of it is contested — art, title, seek bar and
+            controls. gap-4 twice plus px-4 spent 64px of that on nothing. */}
+        <div className="max-w-7xl mx-auto px-3 sm:px-4 py-3 flex items-center gap-3 sm:gap-4">
           {isVideo ? (
             <div className="w-12 h-12 flex-shrink-0 bg-black overflow-hidden border border-bone/20">
               {videoNode && !playerExpanded && <OutPortal node={videoNode} />}
@@ -629,7 +632,12 @@ export function Player() {
             )}
           </div>
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <TransportControls playOnly={isLive} prev={chapterNav?.prev} next={chapterNav?.next} />
+            <TransportControls
+              playOnly={isLive}
+              prev={chapterNav?.prev}
+              next={chapterNav?.next}
+              sidesOnDesktopOnly
+            />
             {/* Compact enough for the mini-bar on desktop; hidden on the cramped
                 mobile mini-bar (the fullscreen player carries the toggle there). */}
             <VideoToggle className="hidden sm:inline-flex" />
@@ -643,13 +651,20 @@ export function Player() {
                 <PipIcon />
               </button>
             )}
+            {/* Collapses to a 44px icon square below sm:, the same trade the
+                track rows make — the word cost 104px of a 358px row and the
+                bolt already says "boost" everywhere else in this app. The
+                aria-label is REQUIRED, not decorative: `title` is not an
+                accessible name, so without it the mobile button is unlabelled. */}
             <button
               onClick={() => setBoostOpen(true)}
               disabled={!hasValue}
-              className="btn-bolt disabled:opacity-40 disabled:cursor-not-allowed"
+              className="btn-bolt btn-compact flex-shrink-0 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
               title={hasValue ? 'Send a boost' : 'Episode has no value block'}
+              aria-label={hasValue ? 'Send a boost' : 'Episode has no value block'}
             >
-              <BoltIcon /> BOOST
+              <BoltIcon />
+              <span className="hidden sm:inline">BOOST</span>
             </button>
           </div>
         </div>
