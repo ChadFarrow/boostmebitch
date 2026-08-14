@@ -14,9 +14,13 @@
     "check:ssrf": "node --experimental-strip-types scripts/check-ssrf-guard.mjs",
     "check:stream": "node --experimental-strip-types scripts/check-stream-ledger.mjs",
     "check:liveblock": "node --experimental-strip-types scripts/check-live-block.mjs",
+    "check:keysend": "node --experimental-strip-types scripts/check-keysend-lookup.mjs",
+    "check:lnurl": "node --experimental-strip-types scripts/check-lnurl-comment.mjs",
     "check:npub": "node --experimental-strip-types scripts/check-nostr-txt.mjs",
     "check:favsync": "node --experimental-strip-types scripts/check-favsync.mjs",
     "check:readtrust": "node --experimental-strip-types scripts/check-readtrust.mjs",
+    "check:lease": "node --experimental-strip-types scripts/check-lease.mjs",
+    "check:nwcerror": "node --experimental-strip-types scripts/check-nwcerror.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs"

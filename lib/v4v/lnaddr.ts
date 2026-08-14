@@ -1,7 +1,10 @@
 // Lightning Address resolution. Returns a BOLT11 invoice for amount_msat.
-// Boostagrams are sent in the LUD-21 `comment` field when supported.
+// Boost metadata rides in the LUD-21 `comment` field when supported — see
+// buildLnurlComment for why the descriptor and the message are passed
+// separately rather than pre-joined by the caller.
 
 import { bolt11AmountMsat } from './bolt11';
+import { buildLnurlComment } from '@/lib/util';
 
 interface LnurlPayParams {
   callback: string;
@@ -24,7 +27,10 @@ async function resolveLnAddress(addr: string): Promise<LnurlPayParams> {
 export async function fetchLnInvoice(args: {
   address: string;          // name@domain
   amount_msat: number;
-  comment?: string;
+  /** BoostBox's `rss::payment::…` descriptor. Sent whole or not at all. */
+  desc?: string;
+  /** The user's typed message. Clipped to whatever budget remains. */
+  message?: string;
 }): Promise<string> {
   const params = await resolveLnAddress(args.address);
   if (
@@ -37,12 +43,8 @@ export async function fetchLnInvoice(args: {
   }
   const url = new URL(params.callback);
   url.searchParams.set('amount', String(args.amount_msat));
-  if (args.comment && (params.commentAllowed ?? 0) > 0) {
-    url.searchParams.set(
-      'comment',
-      args.comment.slice(0, params.commentAllowed),
-    );
-  }
+  const comment = buildLnurlComment(args, params.commentAllowed);
+  if (comment) url.searchParams.set('comment', comment);
   const cb = await fetch(url.toString());
   if (!cb.ok) throw new Error(`LNURL callback failed: ${cb.status}`);
   const data = await cb.json();

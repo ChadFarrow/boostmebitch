@@ -12,10 +12,13 @@
 
 import { bech32 } from '@scure/base';
 import type { EventTemplate } from 'nostr-tools';
+import type { Boostagram, ValueRecipient } from '../types';
+import { buildLnurlComment } from '../util';
 import { nwcPayInvoice } from './nwc';
 import { sparkPayInvoice } from './spark';
 import { weblnPayInvoice } from './webln';
 import { pickRail, type Rail } from './boost';
+import { storeBoostMetadata } from './boostbox';
 import { bolt11AmountMsat } from './bolt11';
 
 interface LnurlPayMetadata {
@@ -70,6 +73,19 @@ export async function sendZap(args: {
   /** Rail the user picked in the modal. Falls back to pickRail() priority when
    *  omitted — without threading it, a WebLN-override user got zapped over NWC. */
   rail?: Rail;
+  /**
+   * Boost context, so the LUD-21 comment can carry the `rss::payment`
+   * descriptor the way an ordinary LNURL leg does.
+   *
+   * Optional because a plain profile/note zap has no boost behind it. Omit it
+   * and the comment is just the typed message, which is the old behaviour.
+   *
+   * The BoostBox POST happens HERE rather than at the call site: `boostbox.ts`
+   * is not part of the surface components are meant to reach (see the swap-out
+   * boundary in CLAUDE.md), and putting it in the modal would have meant a
+   * second copy of the desc-plus-message rule living in the UI.
+   */
+  metadata?: { boostagram: Boostagram; recipient: ValueRecipient; legMsat: number };
 }): Promise<{ preimage: string }> {
   if (typeof window === 'undefined' || !window.nostr) {
     throw new Error('No Nostr signer available');
@@ -111,6 +127,11 @@ export async function sendZap(args: {
   if (args.eventId) tags.push(['e', args.eventId]);
   if (args.aTag) tags.push(['a', args.aTag]);
 
+  // The zap request's content is what Nostr clients RENDER as the zap message,
+  // so it stays the human's prose. The descriptor belongs in the LUD-21
+  // `comment` below, which is the machine-readable channel the recipient's LN
+  // service reads — putting it here would print `rss::payment::boost <url>` in
+  // the middle of every zap in every client.
   const template: EventTemplate = {
     kind: 9734,
     created_at: Math.floor(Date.now() / 1000),
@@ -119,13 +140,34 @@ export async function sendZap(args: {
   };
   const signed = await window.nostr.signEvent(template);
 
+  // Same channel and same rule as an ordinary LNURL leg (`payLnurl`): the
+  // descriptor is worth something only whole, the message reads fine clipped,
+  // so `buildLnurlComment` fits the descriptor first and spends the remainder
+  // on prose — never the reverse, which cuts a URL into a dead link and still
+  // burns the whole allowance on it.
+  //
+  // Without this a live-stream boost to a Fountain host arrived with the typed
+  // message alone and no machine-readable metadata at all, which is the exact
+  // gap the @fountain.fm keysend divert exists to close — it just never covered
+  // this path, because zaps don't go through `payLnurl`.
+  const stored = args.metadata
+    ? await storeBoostMetadata({
+        boostagram: args.metadata.boostagram,
+        recipient: args.metadata.recipient,
+        splitWeight: args.metadata.recipient.split,
+        legMsat: args.metadata.legMsat,
+      })
+    : null;
+
   const cbUrl = new URL(meta.callback);
   cbUrl.searchParams.set('amount', String(amountMsat));
   cbUrl.searchParams.set('nostr', JSON.stringify(signed));
   cbUrl.searchParams.set('lnurl', lnurl);
-  if (args.comment && (meta.commentAllowed ?? 0) > 0) {
-    cbUrl.searchParams.set('comment', args.comment.slice(0, meta.commentAllowed));
-  }
+  const comment = buildLnurlComment(
+    { desc: stored?.desc, message: args.comment },
+    meta.commentAllowed,
+  );
+  if (comment) cbUrl.searchParams.set('comment', comment);
 
   const cb = await fetch(cbUrl.toString());
   const cbText = await cb.text();
