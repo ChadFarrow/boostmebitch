@@ -12,6 +12,7 @@ import {
   nwcKeysend,
   nwcPayInvoice,
   NwcMethodUnsupportedError,
+  NwcIndeterminateError,
 } from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
@@ -355,7 +356,14 @@ async function payOne(
       return await payLnurl(recipient, sats, rail, boostagram);
     }
   } catch (e: any) {
-    return { ...base, ok: false, error: e?.message ?? String(e) };
+    // A wallet that never answered is not a wallet that refused. `ok` stays
+    // false (we hold no preimage), but the flag stops every consumer — the
+    // modal's ✗, the stored log, the user's decision to boost again — from
+    // asserting a failure that may have been a payment. See
+    // NwcIndeterminateError; the LNURL retry above is already gated on
+    // NwcMethodUnsupportedError alone, so this can never be retried.
+    const indeterminate = e instanceof NwcIndeterminateError;
+    return { ...base, ok: false, indeterminate, error: e?.message ?? String(e) };
   }
 }
 

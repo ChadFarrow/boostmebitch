@@ -215,6 +215,13 @@ export interface BoostResult {
   recipient: ValueRecipient;
   sats: number;
   ok: boolean;
+  /**
+   * The leg neither succeeded nor provably failed — the wallet was asked and
+   * never answered (see NwcIndeterminateError). `ok` is false because we have
+   * no preimage, but the sats may well have gone out, so nothing may present
+   * this as a failure and nothing may retry it.
+   */
+  indeterminate?: boolean;
   preimage?: string;
   error?: string;
   // Set on LNURL legs when BoostBox accepted the metadata. The URL is the
@@ -248,6 +255,8 @@ export interface StoredBoostLeg {
   recipientName?: string;
   sats: number;
   ok: boolean;
+  /** See BoostResult.indeterminate — the log must not claim a failure either. */
+  indeterminate?: boolean;
   error?: string;
   boostboxUrl?: string;         // present on LNURL legs when BoostBox accepted
 }

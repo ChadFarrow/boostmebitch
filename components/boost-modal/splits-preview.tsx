@@ -57,8 +57,14 @@ export function SplitsPreview({
                 )}
               </span>
               <span className="tabular-nums flex items-center gap-2 flex-shrink-0">
+                {/* Three states, not two. A leg whose wallet never answered
+                    must not show ✗ — the sats may have gone out, and a ✗ is
+                    what talks someone into boosting again and paying twice. */}
                 {res?.ok && <span className="text-bolt">✓</span>}
-                {res && !res.ok && <span className="text-nostr">✗</span>}
+                {res && !res.ok && res.indeterminate && (
+                  <span className="text-muted" title="Wallet did not answer — this may still have been sent">?</span>
+                )}
+                {res && !res.ok && !res.indeterminate && <span className="text-nostr">✗</span>}
                 {splits[i]} sat
               </span>
             </li>
@@ -82,10 +88,28 @@ export function LightningStatus({
   const settled = results.filter((r): r is BoostResult => !!r);
   if (settled.length === 0) return null;
   const okCount = settled.filter((r) => r.ok).length;
-  const errors = settled.filter((r) => !r.ok);
+  // Split the two, and lead with the unknowns: an unanswered wallet is the one
+  // state where the right next step is "look before you act", and folding it
+  // in with the outright failures is what made a paid boost read as a failed
+  // one. Counted, not just listed, so it's visible without opening anything.
+  const unknown = settled.filter((r) => !r.ok && r.indeterminate);
+  const errors = settled.filter((r) => !r.ok && !r.indeterminate);
   return (
     <div className="text-xs text-muted">
       ⚡ Lightning: {okCount}/{totalRecipients} sent
+      {unknown.length > 0 && (
+        <div className="mt-1">
+          <span className="text-bolt">
+            {unknown.length} unconfirmed — your wallet didn&rsquo;t answer in time.
+          </span>{' '}
+          These may already have been paid; check your wallet before boosting again.
+          <ul className="mt-1 space-y-0.5">
+            {unknown.map((r, i) => (
+              <li key={i}>· {r.recipient.name || 'recipient'} ({r.sats} sat)</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {errors.length > 0 && (
         <details className="mt-1">
           <summary className="text-nostr cursor-pointer">errors</summary>

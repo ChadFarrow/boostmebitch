@@ -81,8 +81,12 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
         <ul className="mt-2 space-y-0.5 text-[11px] text-muted">
           {boost.legs.map((leg, i) => (
             <li key={i} className="flex items-center gap-2 flex-wrap">
-              <span className={leg.ok ? 'text-bolt' : 'text-red-400'}>
-                {leg.ok ? '✓' : '✗'}
+              {/* An unanswered wallet is neither ✓ nor ✗. The log is permanent
+                  and is what someone reads weeks later deciding whether a
+                  recipient was ever paid — recording a guess as a fact is the
+                  one thing it must not do. */}
+              <span className={leg.ok ? 'text-bolt' : leg.indeterminate ? 'text-muted' : 'text-red-400'}>
+                {leg.ok ? '✓' : leg.indeterminate ? '?' : '✗'}
               </span>
               <span className="text-bone">{leg.recipientName || shortAddr(leg.recipient)}</span>
               <span>· {leg.sats} sats</span>
@@ -98,7 +102,12 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
                 </a>
               )}
               {leg.error && !leg.ok && (
-                <span className="text-red-400/80" title={leg.error}>· {leg.error}</span>
+                <span
+                  className={leg.indeterminate ? 'text-muted' : 'text-red-400/80'}
+                  title={leg.error}
+                >
+                  · {leg.indeterminate ? 'unconfirmed — may have been sent' : leg.error}
+                </span>
               )}
             </li>
           ))}
