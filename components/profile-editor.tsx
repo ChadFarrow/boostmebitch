@@ -231,8 +231,8 @@ export function ProfileEditor({
 
   return createPortal(
     // pb-28 so the centered card clears the mini-player bar.
-    <div className="fixed inset-0 z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pb-28">
-      <div className="card w-full max-w-md bg-ink relative max-h-[92vh] overflow-y-auto">
+    <div className="fixed inset-x-0 top-0 h-[100dvh] z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pb-28">
+      <div className="card w-full max-w-md bg-ink relative max-h-full overflow-y-auto">
         <button
           onClick={onClose}
           className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"

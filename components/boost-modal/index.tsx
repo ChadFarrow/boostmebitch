@@ -355,12 +355,21 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
   return createPortal(
     // pb-28 clears the fixed mini-player bar so the sticky footer isn't hidden behind it.
-    <div className="fixed inset-0 z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pb-28">
+    //
+    // Height is the *dynamic* viewport, not inset-0 — the same iOS Safari rule
+    // <FullscreenPlayer> already carries: a fixed inset-0 element sizes to the
+    // LARGE (toolbar-hidden) viewport, so this box is taller than what you can
+    // actually see. Centering a tall card inside it then pushes the card's head
+    // off the top of the screen — reported as "the boost modal is cut off", with
+    // the amount field visible and the episode title gone. h-[100dvh] tracks the
+    // visible area, and max-h-full on the card below spends exactly what's left
+    // after this padding.
+    <div className="fixed inset-x-0 top-0 h-[100dvh] z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pb-28">
       {/* scrollbar-gutter reserves the scrollbar's width even while it's not
           shown, so content growing past 92vh (a wrapped desc line, status
           rows appearing) can't jitter the content width when the scrollbar
           pops in. */}
-      <div className="card w-full max-w-xl bg-ink relative max-h-[92vh] overflow-y-auto [scrollbar-gutter:stable]">
+      <div className="card w-full max-w-xl bg-ink relative max-h-full overflow-y-auto [scrollbar-gutter:stable]">
         <button
           onClick={onClose}
           className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
