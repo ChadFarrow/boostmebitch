@@ -8,8 +8,33 @@ import { rateLimit } from '@/lib/rate-limit';
 const BOOSTBOX_URL = process.env.BOOSTBOX_URL || 'https://tardbox.com';
 const BOOSTBOX_API_KEY = process.env.BOOSTBOX_API_KEY || 'v4v4me';
 
+/**
+ * PER-LEG, not per-user-action — which is why this is 120 and not 30.
+ *
+ * `payLnurl` POSTs here once for every LNURL leg, and `<BoostAllModal>` calls
+ * `sendBoost` twice per track (track legs, then host legs), so a 12-track album
+ * with two LNURL recipients plus a host leg is ~36 requests in one run. At 30 the
+ * limit bit from leg 31 and the *later tracks* were the ones that lost their
+ * metadata. The peer route is `/api/keysend` (120), the other one called once per
+ * leg — 30 is the tier for `site-sign`, `publisher` and `value-splits`, all of
+ * which fire once per user action.
+ *
+ * Getting rate-limited here is silent and total for the recipient:
+ * `storeBoostMetadata` returns null on any non-2xx without distinguishing a 429,
+ * so `buildLnurlComment` falls back to the bare message — no descriptor, payment
+ * succeeds, nothing logged. `<BoostCard>` still renders the BoostBox link from
+ * `BoostResult.boostboxUrl`, so it looks correct in the sender's own history
+ * while the recipient got nothing machine-readable.
+ *
+ * 120 is a ceiling, not a target: legs are paid SERIALLY (never parallelize —
+ * see CLAUDE.md), so each POST is followed by a real Lightning payment. A minute
+ * of boosting can't physically produce more than ~30-60 legs, which is both why
+ * 30 bit and why 120 leaves room without letting one IP hammer the upstream.
+ */
+const BOOSTBOX_RATE_LIMIT = 120;
+
 export async function POST(req: Request) {
-  const limited = rateLimit(req, 'boostbox', 30);
+  const limited = rateLimit(req, 'boostbox', BOOSTBOX_RATE_LIMIT);
   if (limited) return limited;
   return withErrorHandling(async () => {
     const raw = await req.text();
