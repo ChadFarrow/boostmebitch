@@ -533,10 +533,18 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
 
   return (
     <div ref={containerRef}>
-      {/* `gap-x-4 gap-y-3`, not `gap-4`: gap-x keeps the cover-to-text gap at the
-          original 16px, and gap-y reproduces the `mt-3` that came OFF the action
-          cluster when it was hoisted out of the text column below. */}
-      <header className="sticky top-[var(--app-header-h)] z-10 bg-ink/90 backdrop-blur -mx-4 px-4 flex flex-wrap items-start gap-x-4 gap-y-3 pb-4 border-b border-bone/15">
+      {/* NOT sticky on phones. Pinned, this header plus the app header held 282px
+          of an 844px viewport — a third of the screen — and tracks scrolled
+          underneath the album art, reading as three stacked layers fighting each
+          other. It earns its keep on desktop, where it's ~156px of 900+ and the
+          tracklist is long; on a phone it just eats the content.
+          `top-` MUST stay sm:-prefixed: `top` on a *relative* element offsets it
+          rather than pinning it, so an unprefixed value would shove the whole
+          header a header's-height down the page.
+          `gap-x-4` keeps the original 16px cover-to-text gap; `gap-y-3`
+          reproduces the `mt-3` that came OFF the action cluster when it was
+          hoisted out of the text column below. */}
+      <header className="relative sm:sticky sm:top-[var(--app-header-h)] z-10 bg-ink/90 backdrop-blur -mx-4 px-4 flex flex-wrap items-start gap-x-4 gap-y-3 pb-4 border-b border-bone/15">
         {isMusic && firstPlayable ? (
           <button
             type="button"
