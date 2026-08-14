@@ -4,6 +4,7 @@
 import { nwc } from '@getalby/sdk';
 import { storage } from '../storage';
 import { createObservable } from '../pubsub';
+import { createLeasePool, type Lease } from './lease';
 
 // Components reading hasNwc() during render need to refresh when an outside
 // actor flips the connect state — most commonly the wallet modal showing the
@@ -130,17 +131,12 @@ export const nwcGetMethods = (): string[] | null => {
 /** Fetch and cache the wallet's supported methods. No-op if not connected. */
 export async function nwcFetchCapabilities(): Promise<string[]> {
   if (!hasNwc()) return [];
-  let c: ReturnType<typeof client> | null = null;
   try {
-    c = client();
-    const info = await c.getInfo();
+    // A read, so a retry is safe — see `withNwcClient`.
+    const info = await withNwcClient((c) => c.getInfo(), { retry: true });
     return setNwcMethods(info.methods ?? []);
   } catch {
     return nwcGetMethods() ?? [];
-  } finally {
-    // Matches nwcValidate — this now runs on every connect, so leaving the
-    // relay socket open each time would accumulate them.
-    try { c?.close(); } catch { /* ignore */ }
   }
 }
 
@@ -159,6 +155,11 @@ export async function nwcFetchCapabilities(): Promise<string[]> {
 export const saveNwcUri = (uri: string) => {
   storage.nwcUri.set(uri);
   cachedNwcMethods = null;
+  // Drop any socket held against the previous wallet. `acquire` also catches a
+  // URI change, but only on the next call — this makes it immediate, and a
+  // shared client outliving the wallet it authenticates to is worth no window
+  // at all.
+  disposeNwcClient();
   notify();
   if (!nwcGetMethods()) void nwcFetchCapabilities().catch(() => {});
 };
@@ -167,44 +168,122 @@ export const clearNwcUri = () => {
   storage.nwcUri.clear();
   storage.nwcMethods.clear();
   cachedNwcMethods = null;
+  // MUST be explicit here, not left to `acquire`: with no URI stored, `acquire`
+  // throws before it can compare, so a disconnect would otherwise strand the
+  // socket until the idle timer happened to fire.
+  disposeNwcClient();
   notify();
 };
 export const hasNwc = () => storage.nwcUri.has();
 
 /**
- * A fresh NIP-47 client — **and therefore a fresh WebSocket. Every caller MUST
- * close it, in a `finally`.**
+ * ONE shared NIP-47 client, leased by every caller and closed when idle.
  *
- * This is not hygiene, it is the money path. `NWCClient`'s constructor does
- * `this.relay = new Relay(url)`, and nostr-tools does NOT dedupe by URL —
- * deduping lives in `SimplePool`, which the Alby SDK doesn't use. So one call
- * here is one socket, `NWCClient.close()` is the only thing that tears it down,
- * and `executeNip47Request` closes only its *subscription*, never the relay.
- * The relay is also constructed with no options, so `enableReconnect` is false
- * and there is no keepalive ping: an unclosed socket sits half-open forever,
- * still counting against the relay's per-connection cap.
+ * **The relay limits how many connections you OPEN, not how many you hold.**
+ * That is the correction to the previous design, which gave every call its own
+ * socket and closed it in a `finally`. Closing promptly is right and is kept —
+ * it just doesn't help, because the cap being hit is a dial rate.
  *
- * Four of the five call sites used to leak, and it degraded in two stages
- * within a single page session — each worse than a plain outage:
+ * Measured from a HAR of three boosts: 28 connections to `relay.getalby.com` in
+ * 83 seconds, of which 19 upgraded and the rest came back
+ * **`429 Too Many Requests` with `Retry-After: 600`** — Cloudflare, in front of
+ * the relay, refusing the WebSocket upgrade. From that point publish cannot
+ * happen at all, so every leg fails with nothing sent, and the block outlives
+ * a page reload by ten minutes. (Which also retires the old "a reload fixes it"
+ * note below: the reload never fixed anything, the window expired.)
  *
- *   1. The relay still accepts connections but starves REQ on the over-limit
- *      ones. `relay.publish` lands, so **the wallet pays**, while the kind:23195
- *      reply never routes back — every leg reports failure on a payment that
- *      went through. Re-boosting then pays twice.
- *   2. The relay refuses outright. `_checkConnected`/publish fails, nothing is
- *      sent, and every leg fails fast on the 5 s publish cap.
+ * Where 28 came from: on the NWC rail each mounted `useWalletBalance` opens one
+ * socket for its immediate `nwcGetBalance()` and another for
+ * `subscribeNwcNotifications`, and the hook is mounted TWICE during a boost
+ * (header chip + boost modal). Add one dial per leg and one per mount per
+ * debounced refresh and a three-leg boost cost ~8. Sharing one client makes
+ * that ~1: the notification lease holds the socket open, and every balance read
+ * and every payment rides it.
  *
- * Observed live: 1 failed leg of 3, then 2 of 5, then 5 of 5 with no payments
- * at all, across ~20 minutes without a reload. A reload "fixed" it, which is
- * exactly what a leak looks like from the outside.
+ * `NWCClient`'s constructor does `this.relay = new Relay(url)` and nostr-tools
+ * does NOT dedupe by URL — deduping lives in `SimplePool`, which the Alby SDK
+ * doesn't use — so without this there is no sharing anywhere in the stack.
  *
- * `subscribeNwcNotifications` is the long-lived exception and closes its client
- * from the returned unsub — see the wrapper there.
+ * Three rules keep the sharing safe:
+ *
+ *   - **Refcounted, with an idle close.** The socket goes away once nothing
+ *     holds it, so a signed-in idle tab isn't pinning a connection forever, and
+ *     `enableReconnect` being false can't strand us on a dead one indefinitely.
+ *   - **A URI change disposes it immediately.** Otherwise a reconnect to a
+ *     different wallet would keep paying from the old one.
+ *   - **A suspect socket is discarded, never reused — but a PAYMENT is never
+ *     retried on one.** See `withNwcClient`.
  */
-function client() {
+const IDLE_CLOSE_MS = 10_000;
+
+/**
+ * The refcount lives in `lease.ts`, which has NO imports so
+ * `npm run check:lease` can pin it against the real thing — this module can't
+ * be loaded that way, because it imports `../storage`. The URI is the pool key,
+ * so a wallet switch disposes the old client rather than paying from it.
+ */
+const pool = createLeasePool<nwc.NWCClient>({
+  create: (uri) => new nwc.NWCClient({ nostrWalletConnectUrl: uri }),
+  close: (c) => c.close(),
+  idleMs: IDLE_CLOSE_MS,
+});
+
+/** Drop the shared client now — a URI change, a disconnect, or a bad socket. */
+export function disposeNwcClient() {
+  pool.dispose();
+}
+
+function acquire(): Lease<nwc.NWCClient> {
   const uri = loadNwcUri();
   if (!uri) throw new Error('No NWC URI configured');
-  return new nwc.NWCClient({ nostrWalletConnectUrl: uri });
+  return pool.acquire(uri);
+}
+
+/**
+ * True when a failure suggests the SOCKET is bad rather than the wallet
+ * declining. A publish timeout means the request never reached the relay, which
+ * is exactly what a dead or refused connection looks like.
+ *
+ * Deliberately does NOT include a reply timeout: that one means the request WAS
+ * published and the wallet may have paid, so the socket is fine and the leg is
+ * indeterminate — see `NwcIndeterminateError`.
+ */
+function isSocketSuspect(e: unknown): boolean {
+  if (e instanceof nwc.Nip47PublishTimeoutError) return true;
+  const msg = e instanceof Error ? e.message : '';
+  return /not connected|connection|websocket|socket closed/i.test(msg);
+}
+
+/**
+ * Run one NIP-47 request on the shared client.
+ *
+ * `retry` is **opt-in and only ever safe for reads.** Retrying a payment is a
+ * double-spend: a publish that landed and then failed to answer has already
+ * moved the sats, and nothing on this side can tell that apart from one that
+ * never left. So `nwcPayInvoice` and `nwcKeysend` pass nothing here — they
+ * discard a suspect socket so the NEXT leg dials fresh, and let the current leg
+ * fail honestly. Losing a leg is recoverable; paying twice is not.
+ */
+async function withNwcClient<T>(
+  fn: (c: nwc.NWCClient) => Promise<T>,
+  opts: { retry?: boolean } = {},
+): Promise<T> {
+  const lease = acquire();
+  try {
+    return await fn(lease.value);
+  } catch (e) {
+    if (!isSocketSuspect(e)) throw e;
+    lease.discard();
+    if (!opts.retry) throw e;
+    const fresh = acquire();
+    try {
+      return await fn(fresh.value);
+    } finally {
+      fresh.release();
+    }
+  } finally {
+    lease.release();
+  }
 }
 
 /**
@@ -264,17 +343,13 @@ export async function nwcValidate(uri: string): Promise<string | null> {
 }
 
 export async function nwcPayInvoice(invoice: string): Promise<string> {
-  const c = client();
   try {
-    const res = await c.payInvoice({ invoice });
+    // NO `retry`. A publish that landed and then failed to answer has already
+    // moved the sats, and nothing here can tell that from one that never left.
+    const res = await withNwcClient((c) => c.payInvoice({ invoice }));
     return res.preimage;
   } catch (e) {
     throw mapNwcError(e);
-  } finally {
-    // Must be `finally`, not a line after the await: the catch above rethrows,
-    // and a boost pays its legs in a serial loop — leaking one socket per leg is
-    // how a five-recipient block saturates a relay inside one session.
-    try { c.close(); } catch { /* ignore */ }
   }
 }
 
@@ -285,21 +360,18 @@ export async function nwcPayInvoice(invoice: string): Promise<string> {
  * rather than show a stale or zero value.
  */
 export async function nwcGetBalance(): Promise<number | null> {
-  let c: ReturnType<typeof client> | null = null;
   try {
-    c = client();
-    const res = await c.getBalance();
+    // The most frequently called of the lot — `useWalletBalance` refreshes on
+    // every `payment_sent` push and the hook is mounted twice during a boost —
+    // and so the one that used to dial the most sockets. It now rides whichever
+    // client the notification subscription is already holding open. A read, so
+    // a retry is safe.
+    const res = await withNwcClient((c) => c.getBalance(), { retry: true });
     const msat = Number(res?.balance ?? 0);
     if (!Number.isFinite(msat) || msat < 0) return null;
     return Math.floor(msat / 1000);
   } catch {
     return null;
-  } finally {
-    // The biggest leaker of the four, because it is the most frequently called:
-    // `useWalletBalance` refreshes on every `payment_sent` push, and the hook is
-    // mounted twice during a boost (header chip + boost modal), so each paid leg
-    // used to strand two more sockets on top of the payment's own.
-    try { c?.close(); } catch { /* ignore */ }
   }
 }
 
@@ -312,28 +384,31 @@ export async function nwcGetBalance(): Promise<number | null> {
 export async function subscribeNwcNotifications(
   onNotification: (e: nwc.Nip47Notification) => void,
 ): Promise<() => void> {
-  let c: ReturnType<typeof client> | null = null;
+  let lease: Lease<nwc.NWCClient> | null = null;
   try {
-    c = client();
-    const held = c;
-    const unsub = await held.subscribeNotifications(onNotification, [
+    lease = acquire();
+    const held = lease;
+    const unsub = await held.value.subscribeNotifications(onNotification, [
       'payment_received',
       'payment_sent',
     ]);
+    // The LONG-LIVED lease, and the one that makes the sharing pay off: it is
+    // held for the life of the subscription, so the socket stays open and every
+    // balance read and every payment leg rides it instead of dialing. Two
+    // mounted hooks now take two leases on ONE connection rather than opening
+    // two of their own.
+    //
     // The SDK's unsub stops its reconnect loop and closes the NIP-47
-    // subscription — but NOT the relay, so returning it bare stranded a socket
-    // that no caller could ever reach: `c` went out of scope here and the SDK
-    // exposes no handle to it. This hook mounts twice (header chip + boost
-    // modal) and re-runs whenever the rail changes, so every remount used to
-    // cost one permanent connection.
+    // subscription but NOT the relay, so releasing the lease is what eventually
+    // frees the socket — after the idle window, and only if nothing else holds
+    // it.
     return () => {
       try { unsub(); } catch { /* ignore */ }
-      try { held.close(); } catch { /* ignore */ }
+      held.release();
     };
   } catch {
-    // Close the half-built client too — subscribeNotifications can reject after
-    // the socket is already open.
-    try { c?.close(); } catch { /* ignore */ }
+    // `subscribeNotifications` can reject after the socket is already open.
+    lease?.release();
     return () => {};
   }
 }
@@ -343,19 +418,20 @@ export async function nwcKeysend(args: {
   amount_msat: number;
   tlv_records?: { type: number; value: string }[];
 }): Promise<string> {
-  const c = client();
   // Generate a random preimage and pass it explicitly. Some NWC wallets
   // (Zeus embedded node) require the client to supply the preimage rather
   // than auto-generating it; wallets that auto-generate their own will
   // ignore this and return their preimage in res.preimage.
   const preimage = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('hex');
   try {
-    const res = await c.payKeysend({
+    // NO `retry`, for the same reason as `nwcPayInvoice`: this may already have
+    // paid. A suspect socket is still discarded, so the next leg dials fresh.
+    const res = await withNwcClient((c) => c.payKeysend({
       pubkey: args.pubkey,
       amount: args.amount_msat,
       preimage,
       tlv_records: args.tlv_records ?? [],
-    });
+    }));
     return res.preimage ?? preimage;
   } catch (e) {
     // Zeus embedded node sometimes succeeds in sending the keysend but returns
@@ -371,10 +447,5 @@ export async function nwcKeysend(args: {
     // boost.ts is allowed to retry over LNURL. Everything else stays opaque
     // precisely because it may have paid already.
     throw mapNwcError(e);
-  } finally {
-    // `finally` specifically: this catch both RETURNS (the Zeus no-preimage
-    // path) and RETHROWS, so a close appended to either one would be skipped by
-    // the other.
-    try { c.close(); } catch { /* ignore */ }
   }
 }
