@@ -4,6 +4,7 @@
 import { nwc } from '@getalby/sdk';
 import { storage } from '../storage';
 import { createObservable } from '../pubsub';
+import { createLeasePool, type Lease } from './lease';
 
 // Components reading hasNwc() during render need to refresh when an outside
 // actor flips the connect state — most commonly the wallet modal showing the
@@ -215,64 +216,27 @@ export const hasNwc = () => storage.nwcUri.has();
  */
 const IDLE_CLOSE_MS = 10_000;
 
-interface SharedClient {
-  c: nwc.NWCClient;
-  uri: string;
-  refs: number;
-  idle: ReturnType<typeof setTimeout> | null;
-}
-
-let shared: SharedClient | null = null;
-
-function closeShared(s: SharedClient) {
-  if (s.idle) clearTimeout(s.idle);
-  try { s.c.close(); } catch { /* already closed / never opened */ }
-}
+/**
+ * The refcount lives in `lease.ts`, which has NO imports so
+ * `npm run check:lease` can pin it against the real thing — this module can't
+ * be loaded that way, because it imports `../storage`. The URI is the pool key,
+ * so a wallet switch disposes the old client rather than paying from it.
+ */
+const pool = createLeasePool<nwc.NWCClient>({
+  create: (uri) => new nwc.NWCClient({ nostrWalletConnectUrl: uri }),
+  close: (c) => c.close(),
+  idleMs: IDLE_CLOSE_MS,
+});
 
 /** Drop the shared client now — a URI change, a disconnect, or a bad socket. */
 export function disposeNwcClient() {
-  if (!shared) return;
-  const s = shared;
-  shared = null; // clear first: `release` compares identity and must not re-enter
-  closeShared(s);
+  pool.dispose();
 }
 
-interface Lease {
-  c: nwc.NWCClient;
-  release: () => void;
-  /** Drop the underlying socket so the next lease dials fresh. */
-  discard: () => void;
-}
-
-function acquire(): Lease {
+function acquire(): Lease<nwc.NWCClient> {
   const uri = loadNwcUri();
   if (!uri) throw new Error('No NWC URI configured');
-  // A different wallet than the one we're holding: never pay from the old one.
-  if (shared && shared.uri !== uri) disposeNwcClient();
-  if (!shared) {
-    shared = { c: new nwc.NWCClient({ nostrWalletConnectUrl: uri }), uri, refs: 0, idle: null };
-  }
-  const held = shared;
-  if (held.idle) { clearTimeout(held.idle); held.idle = null; }
-  held.refs += 1;
-
-  let done = false;
-  return {
-    c: held.c,
-    release: () => {
-      if (done) return; // idempotent: callers release in a `finally`
-      done = true;
-      if (held !== shared) return; // already disposed by someone else
-      held.refs -= 1;
-      if (held.refs > 0) return;
-      held.idle = setTimeout(() => {
-        if (shared === held && held.refs <= 0) disposeNwcClient();
-      }, IDLE_CLOSE_MS);
-    },
-    discard: () => {
-      if (held === shared) disposeNwcClient();
-    },
-  };
+  return pool.acquire(uri);
 }
 
 /**
@@ -306,14 +270,14 @@ async function withNwcClient<T>(
 ): Promise<T> {
   const lease = acquire();
   try {
-    return await fn(lease.c);
+    return await fn(lease.value);
   } catch (e) {
     if (!isSocketSuspect(e)) throw e;
     lease.discard();
     if (!opts.retry) throw e;
     const fresh = acquire();
     try {
-      return await fn(fresh.c);
+      return await fn(fresh.value);
     } finally {
       fresh.release();
     }
@@ -420,11 +384,11 @@ export async function nwcGetBalance(): Promise<number | null> {
 export async function subscribeNwcNotifications(
   onNotification: (e: nwc.Nip47Notification) => void,
 ): Promise<() => void> {
-  let lease: Lease | null = null;
+  let lease: Lease<nwc.NWCClient> | null = null;
   try {
     lease = acquire();
     const held = lease;
-    const unsub = await held.c.subscribeNotifications(onNotification, [
+    const unsub = await held.value.subscribeNotifications(onNotification, [
       'payment_received',
       'payment_sent',
     ]);
