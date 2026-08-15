@@ -269,6 +269,7 @@ export function FullscreenPlayer({
   open,
   duration,
   onSeek,
+  onSkip,
   videoNode,
   videoRef,
   isVideo,
@@ -292,6 +293,10 @@ export function FullscreenPlayer({
   /** Seek the active media element (audio or video) — owned by <Player>, which
       knows which element is live. Also updates the store position. */
   onSeek: (s: number) => void;
+  /** Jump by a signed number of seconds from wherever playback actually is.
+   *  Separate from `onSeek` because it is RELATIVE — see `skipBy` in
+   *  <Player> for why that can't be built out of `onSeek` + `positionSec`. */
+  onSkip: (deltaSec: number) => void;
   videoNode: HtmlPortalNode | null;
   /** The single <video> element, owned by <Player>. Needed only for the iPhone
    *  fullscreen fallback (`webkitEnterFullscreen`), which takes the element
@@ -697,12 +702,30 @@ export function FullscreenPlayer({
             )}
 
             <div className="flex flex-col gap-2">
-              <div className="flex items-center gap-3">
-                <TransportControls size="lg" prev={chapterNav?.prev} next={chapterNav?.next} />
+              {/* `flex-wrap` + `basis-full sm:basis-auto` on BOOST, because the
+                  transport is five buttons wide once skip is in it and they do
+                  not fit beside BOOST on a phone. Measured at 390px: the pane's
+                  p-4 leaves 358px, and ⏮ + −15 + ▶ + +30 + ⏭ is 248px of button
+                  plus 48px of gap-3, so BOOST would have been left ~50px — the
+                  same squeeze the mini-bar solved by shedding ⏮/⏭. Skip has
+                  nowhere to be shed TO, so BOOST takes its own line instead and
+                  gets the full width, which is the better shape for the primary
+                  action anyway. Unchanged from sm: up, where it is flex-1 on one
+                  line exactly as before. */}
+              <div className="flex flex-wrap items-center gap-3">
+                <TransportControls
+                  size="lg"
+                  prev={chapterNav?.prev}
+                  next={chapterNav?.next}
+                  // No fixed-interval skip on a live stream: there is no
+                  // timeline to jump within, and the seek bar above is
+                  // replaced by a ● LIVE stamp for the same reason.
+                  onSkip={isLive ? undefined : onSkip}
+                />
                 <button
                   onClick={onBoost}
                   disabled={!hasValue}
-                  className="btn-bolt flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="btn-bolt basis-full sm:basis-auto sm:flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
                   title={hasValue ? 'Send a boost' : 'Episode has no value block'}
                 >
                   <BoltIcon /> BOOST

@@ -126,6 +126,73 @@ export function ExitFullscreenIcon({ className = 'w-4 h-4' }: { className?: stri
   );
 }
 
+/**
+ * Skip-back / skip-forward: a broken circular arrow with the interval written
+ * inside it — the idiom every podcast app uses, and the reason these are SVG
+ * rather than glyphs. There is no character for "jump back fifteen seconds":
+ * ⏪/⏩ mean *scan*, which is a different transport verb, and ↺/↻ beside a
+ * separate number reads as two controls rather than one.
+ *
+ * The number is `<text>`, so it tracks the button's color with everything else
+ * (`fill-current`) and the caller states the interval once — the same constant
+ * that drives the seek, so the button cannot say 15 and jump 30. Rendered at
+ * `fontSize` 9 against a 24-unit box: two digits fit inside the arc's gap
+ * without touching it, which is why the arc is drawn open at the top.
+ */
+function SkipIcon({
+  seconds,
+  forward,
+  className,
+}: {
+  seconds: number;
+  forward: boolean;
+  className: string;
+}) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      className={`flex-shrink-0 ${className}`}
+      // Mirrored rather than drawn twice: the two icons are the same shape and
+      // keeping one path means they can't drift apart by a pixel.
+      //
+      // The path below is drawn as the FORWARD arrow — arc sweeping clockwise
+      // with the tip at the top right — so it is *back* that gets the mirror.
+      // Worth stating, because the first version had this the wrong way round
+      // and it is close to invisible in review: both buttons still showed a
+      // circular arrow with the right number, just each wearing the other's
+      // direction.
+      style={forward ? undefined : { transform: 'scaleX(-1)' }}
+    >
+      <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        {/* Open at the top so the digits sit in the gap, not on the stroke. */}
+        <path d="M20 12a8 8 0 1 1-3.5-6.6" />
+        <path d="M16.2 2.3v3.6h-3.6" />
+      </g>
+      <text
+        x="12"
+        y="15.5"
+        textAnchor="middle"
+        fontSize="9"
+        className="fill-current"
+        // Undo the mirror on the label — a flipped "15" is unreadable. Tracks
+        // whichever side actually carries the mirror above.
+        style={forward ? undefined : { transform: 'scaleX(-1)', transformOrigin: 'center' }}
+      >
+        {seconds}
+      </text>
+    </svg>
+  );
+}
+
+export function SkipBackIcon({ seconds, className = 'w-6 h-6' }: { seconds: number; className?: string }) {
+  return <SkipIcon seconds={seconds} forward={false} className={className} />;
+}
+
+export function SkipForwardIcon({ seconds, className = 'w-6 h-6' }: { seconds: number; className?: string }) {
+  return <SkipIcon seconds={seconds} forward className={className} />;
+}
+
 export function MoonIcon({ className = 'w-4 h-4' }: { className?: string }) {
   return (
     <svg
