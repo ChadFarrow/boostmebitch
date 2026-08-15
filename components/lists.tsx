@@ -1,6 +1,6 @@
 'use client';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
-import type { Episode, Podcast, ValueBlock } from '@/lib/types';
+import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
@@ -225,6 +225,51 @@ function MediumHeading({ label }: { label: string }) {
   );
 }
 
+/**
+ * How many rows of one favorites group render before "show more".
+ *
+ * This is a BYTES cap wearing a UI hat. Each row mounts a <PodcastCover>
+ * pointing at arbitrary third-party artwork, and podcast art in the wild is
+ * routinely megabytes — measured on a real library: 55.6 MB of images across 84
+ * requests, with a single 7.9 MB JPEG and a 4.8 MB animated GIF, all to paint
+ * 56x56 tiles. On a slow connection that is minutes of downloading, and the
+ * page never finishes.
+ *
+ * `loading="lazy"` alone was not enough: the browser still fetched most of a
+ * long list because so much of it sits within its "near the viewport"
+ * threshold. Not rendering the row at all is the reliable lever.
+ *
+ * Per GROUP rather than across the whole list, so each medium's heading can
+ * keep stating its true total — a count that shrank to match what happened to
+ * be revealed would be a worse lie than a long list.
+ */
+const FAV_PAGE = 12;
+
+/** Reveal a list in FAV_PAGE-sized steps. Returns the visible slice + control. */
+function useRevealed<T>(rows: T[]) {
+  const [shown, setShown] = useState(FAV_PAGE);
+  // A shorter list (an unfavorite, a medium filter change) must not leave the
+  // counter stranded above it, or "show more" renders with nothing to add.
+  const visible = rows.slice(0, shown);
+  const remaining = Math.max(0, rows.length - visible.length);
+  return {
+    visible,
+    remaining,
+    more: () => setShown((n) => n + FAV_PAGE),
+  };
+}
+
+/** The "show N more" control, shared by both favorites lists. */
+function ShowMore({ remaining, onClick, noun }: { remaining: number; onClick: () => void; noun: string }) {
+  if (remaining <= 0) return null;
+  return (
+    <button type="button" onClick={onClick} className="btn-ghost w-full mt-2 text-xs">
+      show {Math.min(remaining, FAV_PAGE)} more {noun}
+      {remaining > FAV_PAGE ? ` (${remaining} left)` : ''}
+    </button>
+  );
+}
+
 export function FavoritesList({
   selected,
   onSelect,
@@ -251,10 +296,36 @@ export function FavoritesList({
   return (
     <>
       {groups.map((g) => (
-        <div key={g.key}>
-          {groups.length > 1 && <MediumHeading label={g.label} />}
+        <ShowGroup
+          key={g.key}
+          label={groups.length > 1 ? g.label : null}
+          rows={g.rows}
+          selected={selected}
+          onSelect={onSelect}
+        />
+      ))}
+    </>
+  );
+}
+
+/** One medium's worth of favorited shows, revealed FAV_PAGE at a time. */
+function ShowGroup({
+  label,
+  rows,
+  selected,
+  onSelect,
+}: {
+  label: string | null;
+  rows: FavoritePodcast[];
+  selected: number | null;
+  onSelect: (p: Podcast) => void;
+}) {
+  const { visible, remaining, more } = useRevealed(rows);
+  return (
+        <div>
+          {label && <MediumHeading label={label} />}
           <ul className="divide-y divide-bone/10">
-            {g.rows.map((p) => {
+            {visible.map((p) => {
               const title = p.title;
               // No title means Podcast Index hasn't answered for this guid — a
               // feed that was never indexed, or has since been delisted. Render
@@ -286,9 +357,8 @@ export function FavoritesList({
               );
             })}
           </ul>
+          <ShowMore remaining={remaining} onClick={more} noun="shows" />
         </div>
-      ))}
-    </>
   );
 }
 
@@ -342,18 +412,46 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
   return (
     <>
       {groups.map((g) => (
-        <div key={g.key}>
+        <EpisodeGroup
+          key={g.key}
+          groupKey={g.key}
+          label={groups.length > 1 ? g.label : null}
+          rows={g.rows}
+          onSelect={onSelect}
+        />
+      ))}
+    </>
+  );
+}
+
+/** One medium's worth of favorited items, revealed FAV_PAGE at a time. */
+function EpisodeGroup({
+  groupKey,
+  label,
+  rows,
+  onSelect,
+}: {
+  groupKey: string;
+  label: string | null;
+  rows: FavoriteEpisode[];
+  onSelect: (p: Podcast) => void;
+}) {
+  const { visible, remaining, more } = useRevealed(rows);
+  return (
+        <div>
           {/* Counted PER MEDIUM so each group can use its own noun — a track on
               a music feed is a single, not an episode. One combined heading
               would have to pick one word and be wrong for half the list, the
               same trap `MEDIUM_ORDER` exists to avoid. The overall total is on
-              the panel header. */}
+              the panel header.
+              `rows.length`, NOT the revealed slice: this states how many
+              favorites the group HAS, which paging must not appear to change. */}
           <div className="text-[11px] uppercase tracking-widest text-muted mt-4 mb-2 px-1">
-            {groups.length > 1 && `${g.label} — `}
-            {g.rows.length} favorite {itemNoun(g.key, g.rows.length)}
+            {label && `${label} — `}
+            {rows.length} favorite {itemNoun(groupKey, rows.length)}
           </div>
           <ul className="divide-y divide-bone/10">
-            {g.rows.map((ep) => {
+            {visible.map((ep) => {
               const { title, feedGuid } = ep;
               // Unresolved: no parent feed guid to look up, or PI had nothing for
               // it. Still the user's favorite, still republished — see
@@ -406,9 +504,8 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
               );
             })}
           </ul>
+          <ShowMore remaining={remaining} onClick={more} noun={itemNoun(groupKey, remaining)} />
         </div>
-      ))}
-    </>
   );
 }
 
