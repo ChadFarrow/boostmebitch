@@ -4,6 +4,7 @@ import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
+import { nowPlayingArt } from '@/lib/track-art';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import type { TranscriptCue } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
@@ -260,6 +261,7 @@ export function FullscreenPlayer({
   isVideo,
   audioErr,
   artOk,
+  splitArt,
   pipAvailable,
   onPip,
   chapters,
@@ -282,10 +284,16 @@ export function FullscreenPlayer({
       or a failing live stream reads as a silent black box (the mini-bar's tiny
       error line is hidden behind this overlay). */
   audioErr: string | null;
-  /** False when the buffer can't afford heavy chapter artwork — see <Player>'s
-   *  `artOk`. Passed down rather than recomputed so both art surfaces share one
-   *  verdict; a gate applied to only one of them doesn't help at all. */
+  /** False when audio is playing and the buffer can't afford heavy artwork —
+   *  <Player>'s `artUsable`, which is the gate AND the "is anything actually
+   *  playing" test, since a paused element has no enclosure to starve. Passed
+   *  down rather than recomputed so both art surfaces share one verdict; a gate
+   *  applied to only one of them doesn't help at all. */
   artOk: boolean;
+  /** Cover of the track a <podcast:valueTimeSplit> is redirecting to right now,
+   *  resolved once per episode by <Player> (`useSplitArt`) — this component is
+   *  always mounted, so its own hook would double every episode's request. */
+  splitArt?: string;
   pipAvailable: boolean;
   onPip: () => void;
   // Fetched once by <Player> and passed down (so it isn't fetched twice).
@@ -450,10 +458,13 @@ export function FullscreenPlayer({
             </div>
           ) : (
             <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
-              {/* Prefer the LIVE BLOCK's art — on a Split Kit show that's the
-                  cover of the record actually playing, and it's the one thing
-                  on screen that makes a redirected payment self-evident. Then
-                  the active chapter's artwork (Podcasting 2.0 chapters `img`);
+              {/* Whatever is playing at this second, via `nowPlayingArt`: the
+                  LIVE BLOCK's art first — on a Split Kit show that's the cover
+                  of the record actually playing, and it's the one thing on
+                  screen that makes a redirected payment self-evident — then the
+                  track a <podcast:valueTimeSplit> redirects to (the same thing,
+                  one episode later: BOOST pressed here pays that artist), then
+                  the active chapter's artwork (Podcasting 2.0 chapters `img`).
                   PodcastCover falls back image→artwork→initial-tile, so a
                   broken/missing image degrades to the episode/podcast art. */}
               {/* lowPriority is not cosmetic here. This pane is ALWAYS MOUNTED —
@@ -463,7 +474,14 @@ export function FullscreenPlayer({
                   20–36 MB apiece on a real music feed, over the same connection
                   the audio is streaming on. See PodcastCover's own note. */}
               <PodcastCover
-                image={liveBlockImage ?? (artOk ? activeChapter?.img : undefined) ?? episode.image ?? podcast.image}
+                image={
+                  nowPlayingArt({
+                    liveBlockImage,
+                    splitImage: splitArt,
+                    chapterImage: activeChapter?.img,
+                    artOk,
+                  }) || episode.image || podcast.image
+                }
                 artwork={podcast.artwork}
                 title={podcast.title}
                 seed={podcast.id?.toString()}
