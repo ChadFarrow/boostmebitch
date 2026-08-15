@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
@@ -89,8 +89,6 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // view (inside that wrapper), the mini-player (body-level, z-30) paints over
   // its footer. Opening from the player already worked because the player shares
   // the body-level context; portaling makes every entry point behave the same.
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-  useEffect(() => { setPortalTarget(document.body); }, []);
 
   // Keep rail in sync if wallet connects/disconnects while the modal is open.
   useEffect(() => {
@@ -485,25 +483,22 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     }
   }
 
-  if (!portalTarget) return null;
-
-  return createPortal(
-    // pb-28 clears the fixed mini-player bar so the sticky footer isn't hidden behind it.
+  return (
+    // NOT dismissable while `running`: Escape or a stray backdrop click in the
+    // middle of a multi-leg send would take the per-leg results off screen
+    // while sats are still moving, and the legs settle sequentially so there is
+    // no single moment it's safe to lose sight of. The Cancel/x controls stay
+    // in charge either way.
     //
-    // Height is the *dynamic* viewport, not inset-0 — the same iOS Safari rule
-    // <FullscreenPlayer> already carries: a fixed inset-0 element sizes to the
-    // LARGE (toolbar-hidden) viewport, so this box is taller than what you can
-    // actually see. Centering a tall card inside it then pushes the card's head
-    // off the top of the screen — reported as "the boost modal is cut off", with
-    // the amount field visible and the episode title gone. h-[100dvh] tracks the
-    // visible area, and max-h-full on the card below spends exactly what's left
-    // after this padding.
-    <div className="fixed inset-x-0 top-0 h-[100dvh] z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pb-28">
-      {/* scrollbar-gutter reserves the scrollbar's width even while it's not
-          shown, so content growing past 92vh (a wrapped desc line, status
-          rows appearing) can't jitter the content width when the scrollbar
-          pops in. */}
-      <div className="card w-full max-w-xl bg-ink relative max-h-full overflow-y-auto [scrollbar-gutter:stable]">
+    // scrollbar-gutter reserves the scrollbar's width even while it's not
+    // shown, so content growing (a wrapped desc line, status rows appearing)
+    // can't jitter the content width when the scrollbar pops in.
+    <ModalShell
+      onClose={onClose}
+      label={episode?.title ?? podcast.title}
+      className="w-full max-w-xl [scrollbar-gutter:stable]"
+      dismissable={!running}
+    >
         <button
           onClick={onClose}
           className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
@@ -632,8 +627,6 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             )}
           </div>
         </div>
-      </div>
-    </div>,
-    portalTarget,
+    </ModalShell>
   );
 }

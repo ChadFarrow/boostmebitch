@@ -1,6 +1,6 @@
 'use client';
 import { memo, useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { ModalShell } from './modal-shell';
 import {
   resolvePublishRelays,
   shortNpub,
@@ -381,11 +381,10 @@ function ZapDialog({
   const [comment, setComment] = useState('');
   const [state, setState] = useState<ActionState>('idle');
   const [err, setErr] = useState<string | null>(null);
-  // Portal to <body>: NoteCard renders inside feeds, which sit in the layout's
-  // `relative z-0` content wrapper, so this dialog's z-index couldn't rise above
-  // the body-level mini-player (z-30) without escaping the wrapper.
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-  useEffect(() => { setPortalTarget(document.body); }, []);
+  // NoteCard renders inside feeds, which sit in the layout's `relative z-0`
+  // content wrapper, so this dialog's z-index couldn't rise above the
+  // body-level mini-player (z-30) without escaping it. <ModalShell> owns the
+  // portal that does the escaping.
 
   const lud = note.author?.lud16 || note.author?.lud06;
   const canZap = !!lud;
@@ -412,13 +411,18 @@ function ZapDialog({
     }
   }
 
-  if (!portalTarget) return null;
+  const zapTarget = note.author?.display_name || note.author?.name || shortNpub(note.npub, 6);
 
-  return createPortal(
-    <div className="fixed inset-x-0 top-0 h-[100dvh] z-[60] bg-ink/80 backdrop-blur-sm grid place-items-center px-4 pb-28">
-      <div className="card p-4 max-w-sm w-full max-h-full overflow-y-auto">
+  return (
+    // Not dismissable while paying — this is a real Lightning send.
+    <ModalShell
+      onClose={onClose}
+      label={`Zap ${zapTarget}`}
+      className="p-4 max-w-sm w-full"
+      dismissable={state !== 'busy'}
+    >
         <header className="flex items-center justify-between mb-3">
-          <h3 className="font-display text-lg">⚡ Zap {note.author?.display_name || note.author?.name || shortNpub(note.npub, 6)}</h3>
+          <h3 className="font-display text-lg">⚡ Zap {zapTarget}</h3>
           <button
             onClick={onClose}
             aria-label="Close"
@@ -471,8 +475,6 @@ function ZapDialog({
             {err && <p className="text-xs text-red-400 mt-2">{err}</p>}
           </>
         )}
-      </div>
-    </div>,
-    portalTarget,
+    </ModalShell>
   );
 }

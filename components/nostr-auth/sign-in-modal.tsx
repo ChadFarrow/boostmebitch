@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { ModalShell } from '../modal-shell';
 import dynamic from 'next/dynamic';
 // Lazy-loaded: <SignInModal> is imported by the header-mounted <NostrAuth> on
 // every page, but the QR only renders on the "Remote Signer → Generate QR" tab.
@@ -43,7 +43,6 @@ export function SignInModal({
   onClose: () => void;
   onSuccess: (id: NostrIdentity, kind: 'extension' | 'amber' | 'bunker' | 'local') => void;
 }) {
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [hasExt] = useState(() => typeof window !== 'undefined' && !!window.nostr);
   const [android] = useState(() => isLikelyAndroid());
   const [tab, setTab] = useState<Tab>(() => (hasExt ? 'extension' : 'remote'));
@@ -80,8 +79,6 @@ export function SignInModal({
   const [genAuthUrl, setGenAuthUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => setPortalTarget(document.body), []);
-
   // Fetch the GIS script the moment the modal is on screen rather than when the
   // user taps "Continue with Google" — a cold fetch inside the click path burns
   // its transient activation and the consent popup gets blocked. See
@@ -90,14 +87,6 @@ export function SignInModal({
     if (googleOpen) preloadGis();
   }, [googleOpen]);
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') handleClose();
-    }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   async function onExtension() {
     setExtBusy(true);
@@ -220,8 +209,6 @@ export function SignInModal({
     onClose();
   }
 
-  if (!portalTarget) return null;
-
   const tabClass = (active: boolean) =>
     `flex-1 px-4 py-3 text-sm transition ${
       active
@@ -229,9 +216,8 @@ export function SignInModal({
         : 'text-muted hover:text-bone'
     }`;
 
-  return createPortal(
-    <div className="fixed inset-x-0 top-0 h-[100dvh] z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="card w-full max-w-md bg-ink relative max-h-full overflow-y-auto">
+  return (
+    <ModalShell onClose={handleClose} label="Sign in" className="w-full max-w-md">
         <button
           onClick={handleClose}
           className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
@@ -465,13 +451,11 @@ export function SignInModal({
           </>
         )}
 
-        <div className="p-4 border-t border-bone/15 flex justify-end">
-          <button onClick={handleClose} className="btn-ghost">
-            Cancel
-          </button>
-        </div>
+      <div className="p-4 border-t border-bone/15 flex justify-end">
+        <button onClick={handleClose} className="btn-ghost">
+          Cancel
+        </button>
       </div>
-    </div>,
-    portalTarget,
+    </ModalShell>
   );
 }

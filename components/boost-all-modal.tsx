@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
@@ -80,9 +80,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // wrapper (app/layout.tsx). Inside that wrapper a `fixed` modal's z-index only
   // competes WITHIN the wrapper's stacking context, so the mini-player (a
   // body-level sibling at z-30) painted on top of it — burying the Cancel /
-  // BOOST footer. Same fix wallet-modal / sign-in-modal use.
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-  useEffect(() => { setPortalTarget(document.body); }, []);
+  // BOOST footer. <ModalShell> owns the portal now.
 
   function handleShareNostrChange(v: boolean) {
     setShareNostr(v);
@@ -392,15 +390,19 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     }
   }
 
-  if (!portalTarget) return null;
-
-  return createPortal(
-    // pb-28 clears the fixed mini-player bar so the sticky footer (Cancel / BOOST)
-    // is never hidden behind it.
-    <div className="fixed inset-x-0 top-0 h-[100dvh] z-[60] bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pb-28">
-      {/* Same stable scrollbar gutter as BoostModal — per-track progress rows
-          appear dynamically and would otherwise jitter the width. */}
-      <div className="card w-full max-w-xl bg-ink relative max-h-full overflow-y-auto [scrollbar-gutter:stable]">
+  return (
+    // Not dismissable while `running` — same reason as <BoostModal>: this one
+    // walks a whole album's tracks sequentially, so losing the per-track rows
+    // mid-run hides the most sats of any modal here.
+    //
+    // Same stable scrollbar gutter as BoostModal: per-track progress rows
+    // appear dynamically and would otherwise jitter the width.
+    <ModalShell
+      onClose={onClose}
+      label={`Boost all tracks — ${podcast.title}`}
+      className="w-full max-w-xl [scrollbar-gutter:stable]"
+      dismissable={!running}
+    >
         <button
           onClick={onClose}
           className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
@@ -547,8 +549,6 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             )}
           </div>
         </div>
-      </div>
-    </div>,
-    portalTarget,
+    </ModalShell>
   );
 }
