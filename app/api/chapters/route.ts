@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch } from '@/lib/safe-fetch';
+import { safeFetch, readCappedJson } from '@/lib/safe-fetch';
 
 // Server-side proxy for Podcasting 2.0 chapters JSON. Many chapter hosts
 // (e.g. feeds.fountain.fm) serve the file without an Access-Control-Allow-Origin
@@ -24,7 +24,9 @@ export async function GET(req: Request) {
     if (!res.ok) {
       return NextResponse.json({ error: `upstream ${res.status}` }, { status: 502 });
     }
-    const data = await res.json();
+    // Capped: the URL is feed-supplied, and the 8 s timeout above bounds how
+    // long this runs, not how many bytes it returns.
+    const data = await readCappedJson(res);
     return NextResponse.json(data, {
       headers: { 'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400' },
     });

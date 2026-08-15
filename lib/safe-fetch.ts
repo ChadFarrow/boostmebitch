@@ -160,6 +160,69 @@ export async function assertResolvedHostSafe(host: string): Promise<void> {
 
 const MAX_REDIRECTS = 5;
 
+/** 8 MB. Larger than any real RSS feed, chapters file or transcript. */
+export const MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Read a response body as text, refusing anything past `maxBytes`.
+ *
+ * `AbortSignal.timeout(...)` — which every caller here passes — caps how LONG a
+ * fetch may run, not how much it may return. Eight seconds of a fast upstream is
+ * hundreds of megabytes, and the URL is feed-supplied, so `await res.text()`
+ * handed an attacker a way to fill a serverless instance's heap from one
+ * request. Worse where the result is then cached: `lib/pi.ts` retains feed XML
+ * keyed by that same URL.
+ *
+ * Streams and aborts mid-body rather than buffering first and measuring after,
+ * which would defeat the point. `Content-Length` is only a fast path — it is
+ * absent on chunked responses and trivially lied about, so the byte count while
+ * reading is what actually enforces the limit.
+ */
+export async function readCappedText(
+  res: Response,
+  maxBytes: number = MAX_BODY_BYTES,
+): Promise<string> {
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    throw new Error(`response too large (${declared} bytes, max ${maxBytes})`);
+  }
+  if (!res.body) return res.text();
+
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        throw new Error(`response too large (exceeded ${maxBytes} bytes)`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    // Releases the socket on the throw path too — an abandoned reader keeps the
+    // connection half-open against the pool.
+    await reader.cancel().catch(() => {});
+  }
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    joined.set(c, at);
+    at += c.byteLength;
+  }
+  return new TextDecoder().decode(joined);
+}
+
+/** {@link readCappedText}, then `JSON.parse`. */
+export async function readCappedJson(
+  res: Response,
+  maxBytes: number = MAX_BODY_BYTES,
+): Promise<unknown> {
+  return JSON.parse(await readCappedText(res, maxBytes));
+}
+
 /**
  * `fetch` that re-runs {@link assertSafeFetchUrl} on **every** hop.
  *

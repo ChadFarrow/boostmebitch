@@ -18,6 +18,11 @@ export async function GET(req: Request) {
   // The synthetic id can't be re-resolved server-side to a URL, so the client
   // passes the feed URL directly for these.
   const url = searchParams.get('url');
+  // Length cap, as every sibling route has (chapters/transcript 2000,
+  // by-guid 2048). This one was the only proxy param without one.
+  if (url && url.length > 2048) {
+    return NextResponse.json({ error: 'invalid url' }, { status: 400 });
+  }
   if (url) {
     return withErrorHandling(async () => {
       const parsed = await getFeedFromRss(url);

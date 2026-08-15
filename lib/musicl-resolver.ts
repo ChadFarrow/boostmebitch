@@ -13,7 +13,7 @@
 // the item itself has none.
 
 import type { ValueBlock, ValueRecipient } from './types';
-import { safeFetch } from './safe-fetch';
+import { safeFetch, readCappedText } from './safe-fetch';
 import { readAttr } from './feed-xml';
 
 const FETCH_TIMEOUT_MS = 5000;
@@ -26,19 +26,38 @@ interface CachedFeed {
   xml: string;
   expires: number;
 }
+// BOUNDED. Keyed by a feed-supplied URL and holding whole RSS bodies, this was
+// a plain Map with no eviction — expired entries stopped being served but were
+// never deleted, so distinct URLs pinned one body each forever. Same shape and
+// same fix as `rssXmlCache` in lib/pi.ts; the two caches are separate only
+// because the fetch policies differ (5 min vs 60 s, 5 s vs 8 s).
+const FEED_CACHE_MAX = 100;
 const feedCache = new Map<string, CachedFeed>();
 
 async function fetchFeedXml(url: string): Promise<string | null> {
+  const now = Date.now();
   const cached = feedCache.get(url);
-  if (cached && cached.expires > Date.now()) return cached.xml;
+  if (cached && cached.expires > now) return cached.xml;
   try {
     const res = await safeFetch(url, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: { 'User-Agent': 'boostmebitch musicl-resolver' },
+      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
     });
     if (!res.ok) return null;
-    const xml = await res.text();
-    feedCache.set(url, { xml, expires: Date.now() + CACHE_TTL_MS });
+    // Capped for the same reason as lib/pi.ts: the body is retained below.
+    const xml = await readCappedText(res);
+    for (const [k, v] of feedCache) {
+      if (v.expires <= now) feedCache.delete(k);
+    }
+    // Delete-then-set so a refreshed entry moves to the back of the eviction
+    // queue; a plain `set` on an existing key keeps its original position.
+    feedCache.delete(url);
+    feedCache.set(url, { xml, expires: now + CACHE_TTL_MS });
+    while (feedCache.size > FEED_CACHE_MAX) {
+      const oldest = feedCache.keys().next();
+      if (oldest.done) break;
+      feedCache.delete(oldest.value);
+    }
     return xml;
   } catch {
     return null;

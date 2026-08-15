@@ -1,7 +1,13 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch } from '@/lib/safe-fetch';
+import { safeFetch, readCappedJson } from '@/lib/safe-fetch';
+
+// A keysend well-known is a handful of fields — a node pubkey, an optional
+// customKey/customValue pair. 64 KB is orders of magnitude of slack, and this
+// runs inside a boost the user is waiting on, so there is no reason to read an
+// SPA shell to its end before deciding it isn't JSON.
+const MAX_KEYSEND_BYTES = 64 * 1024;
 
 // Server-side proxy for a lightning address's `.well-known/keysend` document.
 //
@@ -61,9 +67,12 @@ export async function GET(req: Request) {
     // straight into res.json() threw and withErrorHandling dressed "this
     // address has no keysend endpoint" up as a 500. Same absent-endpoint case
     // as the branch above — answer it the same way.
+    // Capped as well as caught: `host` comes from a feed's lnaddress, so an
+    // over-large body is the same untrusted-upstream case as a non-JSON one and
+    // gets the same answer.
     let data: unknown;
     try {
-      data = await res.json();
+      data = await readCappedJson(res, MAX_KEYSEND_BYTES);
     } catch {
       return NextResponse.json({ error: 'no keysend endpoint' }, { status: 404 });
     }

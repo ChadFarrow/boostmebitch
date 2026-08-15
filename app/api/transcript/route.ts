@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch } from '@/lib/safe-fetch';
+import { safeFetch, readCappedText } from '@/lib/safe-fetch';
 
 // Server-side proxy for Podcasting 2.0 <podcast:transcript> files. Same reason
 // as /api/chapters: many transcript hosts serve without an
@@ -26,7 +26,9 @@ export async function GET(req: Request) {
     if (!res.ok) {
       return NextResponse.json({ error: `upstream ${res.status}` }, { status: 502 });
     }
-    const text = await res.text();
+    // Capped: the URL is feed-supplied, and the 8 s timeout above bounds how
+    // long this runs, not how many bytes it returns.
+    const text = await readCappedText(res);
     // Serve as inert text/plain regardless of the upstream Content-Type. The
     // client parser (lib/transcript.ts) branches on the `?type=` hint, not the
     // MIME, so nothing here needs the real type — and reflecting a malicious
