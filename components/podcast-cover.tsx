@@ -67,7 +67,23 @@ export function PodcastCover({
         key={current}
         src={current}
         alt=""
-        {...(lowPriority ? { loading: 'lazy' as const, fetchPriority: 'low' as const, decoding: 'async' as const } : {})}
+        // `loading="lazy"` is the DEFAULT, not an opt-in. It used to ride on
+        // `lowPriority`, which only <FullscreenPlayer> passes — so every other
+        // surface downloaded every cover eagerly. On a favorites list of ~100
+        // that is ~100 image requests for the ~8 tiles actually on screen,
+        // issued while the page is still fetching metadata for the same rows.
+        // Observed on 3G as a fully-populated list (titles and authors resolved)
+        // with every cover still blank.
+        //
+        // Safe as a default: these are fixed-size tiles whose box comes from
+        // `className`, so lazy loading them shifts no layout, and the browser
+        // still fetches anything near the viewport immediately.
+        loading="lazy"
+        decoding="async"
+        // `lowPriority` now means only what its name says — deprioritise
+        // against other in-flight requests. That is the half <Player> needs,
+        // where chapter art competes with the audio enclosure on one connection.
+        {...(lowPriority ? { fetchPriority: 'low' as const } : {})}
         className={`${className ?? ''} object-cover`}
         onError={() => setIdx((i) => i + 1)}
       />
