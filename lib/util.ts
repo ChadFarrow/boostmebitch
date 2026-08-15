@@ -148,6 +148,65 @@ export function storedBoostLegs(results: BoostResult[]): StoredBoostLeg[] {
 }
 
 /**
+ * Distribute total sats across recipients by split weight, using the
+ * largest-remainder (Hamilton) method: floor every share, then hand the
+ * leftover sats out one at a time to the recipients whose exact share was
+ * rounded down the most (fee recipients broken last on a tie).
+ *
+ * The naive "floor everyone, dump all remainder on the first recipient"
+ * approach silently mispays small splits: a 100-sat boost to a 98%/1%/1%
+ * block whose 1% legs are really ~0.8% floors both to 0 sats, then sends the
+ * whole 100 to the artist and nothing to the other two. Largest-remainder
+ * gives those legs their 1 sat each (→ 98/1/1) instead.
+ *
+ * Finally, every weighted recipient is guaranteed at least 1 sat — that's the
+ * whole reason for the 100-sat minimum boost. If largest-remainder still left
+ * a positive-weight recipient at 0, pull the make-up sat from the largest
+ * allocation (which never drops below 1), so the total is preserved. When
+ * there are more recipients than sats to go round it tops up as many as it
+ * can and leaves the rest at 0.
+ */
+export function splitSats(total: number, recipients: ValueRecipient[]): number[] {
+  // Clamp weights at 0: a malformed feed with a negative `split` would
+  // otherwise poison totalWeight (even flip it negative) and produce nonsensical
+  // — including negative — allocations.
+  const w = (r: ValueRecipient) => Math.max(0, r.split || 0);
+  const totalWeight = recipients.reduce((s, r) => s + w(r), 0);
+  if (totalWeight === 0) return recipients.map(() => 0);
+  const exact = recipients.map((r) => (total * w(r)) / totalWeight);
+  const allocated = exact.map((x) => Math.floor(x));
+  let remainder = total - allocated.reduce((a, b) => a + b, 0);
+  if (remainder > 0) {
+    const order = recipients
+      .map((_, i) => i)
+      .sort((a, b) => {
+        const frac = exact[b] - allocated[b] - (exact[a] - allocated[a]);
+        if (Math.abs(frac) > 1e-9) return frac;
+        // Tie on fractional part: prefer non-fee recipients.
+        return (recipients[a].fee ? 1 : 0) - (recipients[b].fee ? 1 : 0);
+      });
+    for (let k = 0; k < order.length && remainder > 0; k++, remainder--) {
+      allocated[order[k]] += 1;
+    }
+  }
+  // Floor of 1 sat per weighted recipient. Taking from the largest allocation
+  // (only ever one with >1 sat) keeps the total constant and can't create a
+  // new zero, so this terminates.
+  const needy = () =>
+    recipients.findIndex((r, i) => w(r) > 0 && allocated[i] === 0);
+  for (let i = needy(); i !== -1; i = needy()) {
+    let maxIdx = -1;
+    for (let j = 0; j < allocated.length; j++) {
+      if (allocated[j] > 1 && (maxIdx === -1 || allocated[j] > allocated[maxIdx])) maxIdx = j;
+    }
+    if (maxIdx === -1) break; // not enough sats to give everyone a sat
+    allocated[maxIdx] -= 1;
+    allocated[i] += 1;
+  }
+  return allocated;
+}
+
+/**
  * The `<podcast:valueTimeSplit>` window covering a playback position, or null.
  *
  * **Half-open — [startTime, startTime + duration).** Adjacent splits in a real
@@ -199,19 +258,16 @@ export function splitAtPosition<T extends { startTime: number; duration: number 
  * **Floor, never round.** Rounding up hands out a sat the user didn't authorise
  * and makes the two legs sum to more than the boost.
  *
- * **`hostRecipientCount` is why this takes an argument it looks like it
- * shouldn't need.** `splitSats` guarantees every positive-weight recipient at
- * least one sat, funded out of the largest allocation — but it can only do that
- * when there are enough sats to go round, and it gives up silently when there
- * aren't (`maxIdx === -1; break`). The live case that prompted this: a 100-sat
- * boost at 97% leaves 3 sats for a show block with FOUR recipients, so one is
- * allocated zero, and `payOne` returns `ok: true` for a zero-sat leg without
- * paying anything. The modal then prints a ✓ beside a recipient who received
- * nothing. So an unpayable host leg is dropped and its sats ride with the track
- * instead — the sats stay in the boost, and no row claims a payment that didn't
- * happen. The rule is deliberately one-sided: the track is the target the user
- * is looking at, and the 100-sat minimum boost plus the ≥90% typical redirect
- * mean the track share is never the one that lands short.
+ * **The show's share is paid even when it is tiny** — 100 sats at 97% is 97 to
+ * the artist and 3 to the show, full stop. An earlier version folded a
+ * too-small remainder back into the track, because 3 sats across a four-payee
+ * show block leaves one payee at zero and `payOne` reports a zero-sat leg as
+ * `ok: true` — a ✓ beside someone who received nothing. But that solved a
+ * *display* problem by changing where money went, and it made a 100-sat boost
+ * pay the show nothing at all, which is not what the feed asked for.
+ * `payableSplit` fixes the actual problem instead, by not creating the zero-sat
+ * leg. The only fold left is the one with nowhere else to go: a show with no
+ * value block at all.
  *
  * Shared by `<BoostModal>` and `<BoostAllModal>` so the same feed can't be paid
  * two different ways depending on which button was pressed. `check:vts` pins it.
@@ -230,11 +286,46 @@ export function splitTrackAndHost(args: {
   const trackSats = Math.floor((total * pct) / 100);
   const hostSats = total - trackSats;
 
-  // Nobody to pay the remainder to, or too little to pay them all one sat.
-  if (hostSats > 0 && (args.hostRecipientCount <= 0 || hostSats < args.hostRecipientCount)) {
-    return { trackSats: total, hostSats: 0 };
-  }
+  // Nobody to pay the remainder to.
+  if (hostSats > 0 && args.hostRecipientCount <= 0) return { trackSats: total, hostSats: 0 };
   return { trackSats, hostSats };
+}
+
+/**
+ * The recipients an amount can actually pay, and what each gets.
+ *
+ * `splitSats` guarantees every positive-weight recipient at least one sat by
+ * pulling make-up sats from the largest allocation — but it can only do that
+ * while there is a larger allocation to pull from, and when there isn't it
+ * gives up silently and leaves those recipients at zero (`maxIdx === -1;
+ * break`). That is the honest arithmetic; three sats cannot be four payments.
+ * The damage happens one layer down: `payOne` returns `ok: true` for a zero-sat
+ * leg without contacting anyone, so the modal renders a ✓ and the boost log
+ * records a payment, for a recipient who received nothing.
+ *
+ * So drop them from the leg rather than paying them zero. The remaining
+ * recipients are re-split so the amount is spent on payees who can receive it
+ * — 3 sats to a four-payee block becomes one sat each to the three largest,
+ * not 1/1/1/0. One re-split always settles: every kept recipient has at least
+ * one sat, so `kept.length <= total`, which is exactly the condition under
+ * which `splitSats`' floor can satisfy everyone. The loop is bounded anyway.
+ *
+ * Deliberately NOT applied to a boost's primary leg, which is the whole amount
+ * and is gated by the 100-sat minimum. This exists for the derived leg — a
+ * `remotePercentage` remainder is arbitrarily small by construction.
+ */
+export function payableSplit(
+  totalSats: number,
+  recipients: ValueRecipient[],
+): { recipients: ValueRecipient[]; splits: number[] } {
+  let kept = recipients;
+  for (let pass = 0; pass < 4; pass++) {
+    const splits = splitSats(totalSats, kept);
+    const payable = kept.filter((_, i) => splits[i] > 0);
+    if (payable.length === kept.length || payable.length === 0) return { recipients: kept, splits };
+    kept = payable;
+  }
+  return { recipients: kept, splits: splitSats(totalSats, kept) };
 }
 
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric

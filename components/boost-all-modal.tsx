@@ -8,7 +8,7 @@ import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage, type ShareNostrAs } from '@/lib/storage';
-import { getErrorMessage, hasValueRecipients, resolveSenderName, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableSplit, resolveSenderName, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
@@ -181,11 +181,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       // Shared with <BoostModal>, which applies the same redirect to a single
       // boost pressed mid-song — two copies of this is how the same feed comes
       // to be paid two different ways depending on which button was pressed.
-      // It also fixes a case this inline version got wrong: when the host share
-      // is too small to give every host recipient one sat, splitSats allocates
-      // some of them zero and payOne reports a zero-sat leg as ok, so the show's
-      // log showed a payment that never happened. Those sats now ride with the
-      // track instead. `check:vts` pins it.
+      // `check:vts` pins it.
       const { trackSats, hostSats: showLegSats } = splitTrackAndHost({
         totalSats: sats,
         remotePercentage: split.remotePercentage,
@@ -283,7 +279,13 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         };
         try {
           const hostResults = await sendBoost({
-            value: hostValue!, // guaranteed by hasValueRecipients(hostValue) above
+            // Trimmed to the recipients this share can actually pay. A per-track
+            // host share is arbitrarily small — 3 sats across four payees leaves
+            // one at zero, and payOne reports a zero-sat leg as ok:true, so the
+            // boost log recorded a payment nobody received. Same helper the
+            // single boost modal uses. hostValue is non-null here, guaranteed by
+            // hasValueRecipients above.
+            value: { ...hostValue!, recipients: payableSplit(showLegSats, hostValue!.recipients).recipients },
             totalSats: showLegSats,
             boostagram: hostBoostagram,
             rail,
