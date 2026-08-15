@@ -139,8 +139,18 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
       }
       storage.sparkOptOut.clear(identity?.npub);
       await sparkInitFromMnemonic({ mnemonic: trimmed, ownerPubkey: identity.pubkey });
-      // Back up so silent auto-restore works on the next load. Non-fatal.
-      await publishEncryptedMnemonic(identity, trimmed).catch(() => {});
+      // Back up so silent auto-restore works on the next load. Non-fatal: the
+      // wallet is already up and the user holds the seed they just pasted, so
+      // failing the connect over the backup would be the worse trade.
+      //
+      // But say so rather than swallowing it. `publishEncryptedMnemonic` now
+      // throws when the event reached no relay, and that case is exactly "the
+      // seed you just connected has no backup" — the login backfill won't cover
+      // it either, since that path only ever republishes a seed WE derived.
+      // Message only, never the seed.
+      await publishEncryptedMnemonic(identity, trimmed).catch((e) => {
+        console.warn('[spark] wallet backup failed:', getErrorMessage(e, 'unknown'));
+      });
       setPasteSeed('');
       setInternalMode('idle');
       onConnected?.();

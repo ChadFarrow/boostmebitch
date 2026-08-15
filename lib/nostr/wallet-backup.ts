@@ -17,7 +17,7 @@
 // boostmebitch app data, not a portable Cashu wallet.
 
 import { FEED_QUERY_MAX_WAIT_MS } from './pool';
-import { signAndPublish, type PublishedNote } from './publish';
+import { assertPublished, signAndPublish, type PublishedNote } from './publish';
 import { fetchLatestEvent, fetchLatestEventDetailed } from './event-queries';
 import { DEFAULT_RELAYS, resolvePublishRelays } from './relays';
 import { requireNip44 } from './signer';
@@ -85,11 +85,21 @@ export async function fetchEncryptedMnemonic(
  * general "never record an absence you didn't reliably observe" rule with money
  * attached, so the flag is mandatory rather than advisory.
  *
- * `trustworthy` comes straight from `fetchLatestEventDetailed`: true when an
- * event arrived or the aggregate EOSE fired. Its documented weakness (a relay
- * that never connects doesn't hold the aggregate EOSE open) applies here too —
- * it rules out the total-blackout case, not every partial one. `sparkSeedIsActive`
- * at the call site is the second half of the guard.
+ * `trustworthy` comes straight from `fetchLatestEventDetailed`, which counts
+ * per relay: an event in hand, or every relay we REACHED sent a real EOSE and
+ * there was at least one. Relays that never connect leave the denominator, so a
+ * total blackout reads as untrustworthy rather than as proof of absence — which
+ * is the case that matters here. See `readIsTrustworthy` in `./read-trust`.
+ * `sparkSeedIsActive` at the call site is the second half of the guard.
+ *
+ * The `expect` predicate is not belt-and-braces. This app writes THREE kind:30078
+ * coordinates (`boostmebitch:wallet:spark`, `boostmebitch:wallet:nwc`, and the
+ * settings d-tag), and `acceptsEvent`'s own note is that the moment two `d` tags
+ * share one subscription — which the spec permits as the efficient implementation
+ * — `matchFilters` accepts both and only a predicate can tell them apart. Reading
+ * the NWC connection string as the seed backup, finding it "present", and so
+ * skipping the backfill forever is a silent version of the bug this whole path
+ * exists to fix.
  *
  * Note what is deliberately NOT caught: a decrypt failure or timeout on an event
  * that exists propagates as a rejection, exactly as the plain function has
@@ -104,6 +114,7 @@ export async function fetchEncryptedMnemonicDetailed(
     readRelays(identity),
     { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_BACKUP_D_TAG], limit: 1 },
     FEED_QUERY_MAX_WAIT_MS,
+    { pubkey: identity.pubkey, kinds: [WALLET_BACKUP_KIND], dTag: WALLET_BACKUP_D_TAG },
   );
   // An event with empty content is a tombstone (the shape `deleteEncryptedNwc`
   // writes at the NWC coordinate; nothing writes one here today). It's the
@@ -115,21 +126,40 @@ export async function fetchEncryptedMnemonicDetailed(
   return { mnemonic: await decryptWithTimeout(identity.pubkey, event.content), trustworthy };
 }
 
-/** Encrypt-to-self and publish a new wallet backup event. */
+/**
+ * Encrypt-to-self and publish a new wallet backup event.
+ *
+ * **Throws if the event reached no relay.** `signAndPublish` resolves once every
+ * relay has SETTLED, accepted or not, so a total failure awaits cleanly and hands
+ * back an empty `acceptedRelays` — which read as success here for as long as this
+ * function existed. It bites hardest at provisioning: a seconds-old npub has no
+ * kind:10002 yet, so `resolvePublishRelays` falls back to DEFAULT_RELAYS, and one
+ * bad moment during signup left the account with a working derived wallet, no
+ * backup, and nothing anywhere saying so.
+ *
+ * The assert lives HERE rather than at each call site because there are four
+ * writers (both `<SparkWallet>` paths, `provisionSparkFromKey`, and the login
+ * backfill) and four is four places to forget — the same rule the favorites
+ * baseline learned the expensive way. Callers still choose what to do with the
+ * throw; what they no longer get to do is not notice.
+ */
 export async function publishEncryptedMnemonic(
   identity: NostrIdentity,
   mnemonic: string,
 ): Promise<PublishedNote> {
   const ciphertext = await requireNip44().encrypt(identity.pubkey, mnemonic);
 
-  return signAndPublish(
-    {
-      kind: WALLET_BACKUP_KIND,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [['d', WALLET_BACKUP_D_TAG]],
-      content: ciphertext,
-    },
-    resolvePublishRelays(identity),
+  return assertPublished(
+    await signAndPublish(
+      {
+        kind: WALLET_BACKUP_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['d', WALLET_BACKUP_D_TAG]],
+        content: ciphertext,
+      },
+      resolvePublishRelays(identity),
+    ),
+    'spark wallet backup',
   );
 }
 

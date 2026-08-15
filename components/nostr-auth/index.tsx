@@ -25,6 +25,7 @@ import { hasSpark, sparkDisconnect, sparkInitFromMnemonic, sparkSeedIsActive } f
 import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
+import { getErrorMessage } from '@/lib/util';
 // Direct import, not the barrel: lib/nostr/follows.ts is deliberately
 // store-free to avoid a cycle with lib/store, and it isn't re-exported.
 import { resetFollows } from '@/lib/nostr/follows';
@@ -228,12 +229,15 @@ export function NostrAuth() {
           //    already been torn down.
           if (!trustworthy || !derived) return;
           if (!sparkSeedIsActive(derived) || storage.npub.get() !== id.npub) return;
-          const res = await publishEncryptedMnemonic(enriched, derived);
-          if (res.acceptedRelays.length === 0) {
-            // Message only, never the error/seed — same rule as the provisioning
-            // path. Nothing to do beyond saying so: the next sign-in retries.
-            console.warn('[spark] wallet backup backfill reached no relays');
-          }
+
+          // `publishEncryptedMnemonic` throws when the event reached no relay.
+          // Caught here rather than left to the outer `.catch(() => {})` so it
+          // is at least visible: message only, never the error object or the
+          // seed. Nothing else to do — the next sign-in retries, which is the
+          // whole recovery mechanism and why this needs no `bmb:*` key.
+          await publishEncryptedMnemonic(enriched, derived).catch((e) => {
+            console.warn('[spark] wallet backup backfill failed:', getErrorMessage(e, 'unknown'));
+          });
         })().catch(() => {}).finally(() => { if (expectWallet) setWalletRestoring(false); })
       : Promise.resolve();
     // Synced settings: apply the last-used boost rail.
