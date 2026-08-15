@@ -147,6 +147,96 @@ export function storedBoostLegs(results: BoostResult[]): StoredBoostLeg[] {
   });
 }
 
+/**
+ * The `<podcast:valueTimeSplit>` window covering a playback position, or null.
+ *
+ * **Half-open — [startTime, startTime + duration).** Adjacent splits in a real
+ * music show abut exactly: track B's `startTime` is the second track A's
+ * duration runs out. An inclusive end puts that second inside two windows at
+ * once, and since this returns the FIRST match, the boundary second would pay
+ * the outgoing artist for the incoming one's audio. A zero-length window
+ * therefore matches nothing, which is load-bearing rather than incidental:
+ * `live-value.ts` synthesises live targets with `duration: 0` because a live
+ * stream has no time base to anchor a window to, and `allocationAt` resolves
+ * those by polling the feed above this call. A zero-length window that matched
+ * its own start would route a pre-recorded position to a live artist.
+ *
+ * **It lives here, not in `lib/v4v/streaming.ts`, because two callers must not
+ * drift.** The streaming engine credits per-second accrual by this rule and the
+ * boost modal picks a payment target by it. If they disagree by one second at a
+ * boundary, a boost pays one artist while streaming credits another — for the
+ * same moment of the same episode, with nothing on screen saying so. Same
+ * argument that moved `trackBucket` into `stream-ledger.ts`. `check:vts` pins
+ * the boundaries.
+ *
+ * Feed data is third-party, so a malformed window (negative or absent duration)
+ * simply never matches rather than throwing.
+ */
+export function splitAtPosition<T extends { startTime: number; duration: number }>(
+  splits: readonly T[] | null | undefined,
+  positionSec: number,
+): T | null {
+  if (!splits?.length || !Number.isFinite(positionSec)) return null;
+  for (const s of splits) {
+    const start = s.startTime;
+    const dur = s.duration;
+    if (!Number.isFinite(start) || !Number.isFinite(dur) || dur <= 0) continue;
+    if (positionSec >= start && positionSec < start + dur) return s;
+  }
+  return null;
+}
+
+/**
+ * Divide a boost between the track a valueTimeSplit redirects to and the show
+ * that redirected it.
+ *
+ * `remotePercentage` is the share the publisher sent to the remote item; the
+ * remainder is still the show's (a valueTimeSplit *redirects* part of the
+ * value, it doesn't replace it). Absent means the whole redirect — that is the
+ * spec default, and it is also what a feed that just doesn't write the
+ * attribute means.
+ *
+ * **Floor, never round.** Rounding up hands out a sat the user didn't authorise
+ * and makes the two legs sum to more than the boost.
+ *
+ * **`hostRecipientCount` is why this takes an argument it looks like it
+ * shouldn't need.** `splitSats` guarantees every positive-weight recipient at
+ * least one sat, funded out of the largest allocation — but it can only do that
+ * when there are enough sats to go round, and it gives up silently when there
+ * aren't (`maxIdx === -1; break`). The live case that prompted this: a 100-sat
+ * boost at 97% leaves 3 sats for a show block with FOUR recipients, so one is
+ * allocated zero, and `payOne` returns `ok: true` for a zero-sat leg without
+ * paying anything. The modal then prints a ✓ beside a recipient who received
+ * nothing. So an unpayable host leg is dropped and its sats ride with the track
+ * instead — the sats stay in the boost, and no row claims a payment that didn't
+ * happen. The rule is deliberately one-sided: the track is the target the user
+ * is looking at, and the 100-sat minimum boost plus the ≥90% typical redirect
+ * mean the track share is never the one that lands short.
+ *
+ * Shared by `<BoostModal>` and `<BoostAllModal>` so the same feed can't be paid
+ * two different ways depending on which button was pressed. `check:vts` pins it.
+ */
+export function splitTrackAndHost(args: {
+  totalSats: number;
+  remotePercentage: number | undefined;
+  hostRecipientCount: number;
+}): { trackSats: number; hostSats: number } {
+  const total = Math.max(0, Math.floor(args.totalSats || 0));
+  if (total <= 0) return { trackSats: 0, hostSats: 0 };
+
+  const raw = args.remotePercentage;
+  const pct = Number.isFinite(raw) ? Math.min(100, Math.max(0, raw!)) : 100;
+
+  const trackSats = Math.floor((total * pct) / 100);
+  const hostSats = total - trackSats;
+
+  // Nobody to pay the remainder to, or too little to pay them all one sat.
+  if (hostSats > 0 && (args.hostRecipientCount <= 0 || hostSats < args.hostRecipientCount)) {
+    return { trackSats: total, hostSats: 0 };
+  }
+  return { trackSats, hostSats };
+}
+
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
 // IDs (e.g. synthesizing an Episode.id from a guid) that survive reloads.
 export function fnvHash(s: string): number {

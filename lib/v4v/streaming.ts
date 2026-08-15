@@ -45,7 +45,7 @@ import { createObservable } from '@/lib/pubsub';
 // DEFAULT_SENDER_NAME lives in lib/util.ts, NOT in the boost modal that owns
 // the "From" field — importing it from `components/` here would invert the v4v
 // swap-out boundary and pull a 'use client' React module into the engine.
-import { getErrorMessage, hasValueRecipients, DEFAULT_SENDER_NAME } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, splitAtPosition, DEFAULT_SENDER_NAME } from '@/lib/util';
 import { isLiveStreamId } from '@/lib/nostr/live-streams';
 import { sendBoost, pickRail, paidAny } from './boost';
 import { subscribeNwc } from './nwc';
@@ -289,12 +289,17 @@ function applyTrackCredit(
   return ledgerNext;
 }
 
-/** The split covering a playback position, if any. */
+/**
+ * The split covering a playback position, if any.
+ *
+ * The window arithmetic itself lives in `lib/util.ts:splitAtPosition`, shared
+ * with the boost modal so the two can't drift: the engine credits accrual by
+ * this rule and the modal picks a payment target by it, and a one-second
+ * disagreement at a boundary pays one artist while crediting another for the
+ * same moment. This wrapper only adapts the bucket map to a list.
+ */
 function splitAt(splits: Map<string, ValueTimeSplit>, positionSec: number): ValueTimeSplit | null {
-  for (const s of splits.values()) {
-    if (positionSec >= s.startTime && positionSec < s.startTime + s.duration) return s;
-  }
-  return null;
+  return splitAtPosition([...splits.values()], positionSec);
 }
 
 /**

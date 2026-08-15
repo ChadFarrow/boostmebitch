@@ -17,16 +17,22 @@ export function SplitsPreview({
   recipients,
   splits,
   results,
+  title = 'Recipients',
 }: {
   recipients: ValueRecipient[];
   splits: number[];
   // Sparse mid-send — a hole is a recipient whose leg hasn't settled yet.
   results: (BoostResult | undefined)[];
+  // Overridden only when a boost sends TWO legs — a valueTimeSplit redirect
+  // pays the track and the show separately, and two identically-headed
+  // "Recipients" cards would leave the user to guess which was which while
+  // deciding whether to press the button.
+  title?: string;
 }) {
   const totalWeight = recipients.reduce((sum, r) => sum + (r.split ?? 0), 0);
   return (
     <div className="card p-3">
-      <div className="text-[11px] uppercase tracking-widest text-muted mb-2">Recipients</div>
+      <div className="text-[11px] uppercase tracking-widest text-muted mb-2">{title}</div>
       <ul className="text-xs space-y-1.5 max-h-48 overflow-y-auto pr-2">
         {/* Biggest share first — and since sendBoost traverses this same order,
             it's also the order the sats actually go out in. `i` stays the

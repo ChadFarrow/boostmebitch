@@ -8,7 +8,7 @@ import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage, type ShareNostrAs } from '@/lib/storage';
-import { getErrorMessage, hasValueRecipients, resolveSenderName, storedBoostLegs } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, resolveSenderName, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
@@ -175,11 +175,22 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       if (cancelled.current) return;
       const split = splits[i];
       // Spec: remotePercentage is the share that goes to the remote (track)
-      // recipients; (100 − remotePercentage) goes to the host show.
-      // Default 100 (all to track) when missing.
-      const remotePct = Math.min(100, Math.max(0, split.remotePercentage ?? 100));
-      const trackSats = Math.floor((sats * remotePct) / 100);
-      const showLegSats = sats - trackSats;
+      // recipients; (100 − remotePercentage) goes to the host show. Default 100
+      // (all to track) when missing.
+      //
+      // Shared with <BoostModal>, which applies the same redirect to a single
+      // boost pressed mid-song — two copies of this is how the same feed comes
+      // to be paid two different ways depending on which button was pressed.
+      // It also fixes a case this inline version got wrong: when the host share
+      // is too small to give every host recipient one sat, splitSats allocates
+      // some of them zero and payOne reports a zero-sat leg as ok, so the show's
+      // log showed a payment that never happened. Those sats now ride with the
+      // track instead. `check:vts` pins it.
+      const { trackSats, hostSats: showLegSats } = splitTrackAndHost({
+        totalSats: sats,
+        remotePercentage: split.remotePercentage,
+        hostRecipientCount: hostValue?.recipients?.length ?? 0,
+      });
       // Boostagram shape for valueTimeSplits: HOST episode in primary fields
       // (the album/playlist the listener is playing), TRACK in remote_*. The
       // recipient artist sees `podcast`/`episode` describing the listener's
