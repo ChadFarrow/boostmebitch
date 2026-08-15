@@ -24,6 +24,12 @@ import { FullscreenPlayer } from './fullscreen-player';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 
+/** How long the now-playing art must hold still before the OS is told about it.
+ *  Long enough that a run of ⏭ presses issues no lock-screen fetch at all —
+ *  the timer restarts on each one — and short enough that stopping on a chapter
+ *  updates the lock screen while the user is still looking at it. */
+const LOCK_ART_SETTLE_MS = 3000;
+
 export function Player() {
   // Per-field selectors, not a bare `useApp()`. In zustand v5 a selector-less
   // call re-renders on EVERY store write; <Player> is mounted in the root
@@ -509,38 +515,6 @@ export function Player() {
   // active chapter's art) for hook order.
   const { chapters, loading: chaptersLoading } = useChapters(chapterUrlFor(current));
 
-  // Metadata for the lock-screen / notification (title, podcast, artwork).
-  //
-  // **The artwork is the EPISODE's, not the active chapter's, and that is a
-  // bandwidth decision rather than a design one.** This art used to track the
-  // chapter, which meant every ⏭ handed the OS a new URL to fetch — and unlike
-  // an <img>, a MediaMetadata artwork fetch is issued by the browser on our
-  // behalf: it cannot be given a priority hint, and it is not cancelled when the
-  // next chapter supersedes it. On a feed whose chapter art is hosted on the
-  // SAME ORIGIN as the enclosure that is a self-inflicted denial of service.
-  // Measured on Homegrown Hits ep. 146: chapter art of 20–36 MB apiece
-  // (`hgh-vinyl.gif` 33.4 MB, `HGH-Disco-Head.gif` 36.3 MB) beside a 175 MB mp3,
-  // 15 of the 31 images on the audio's own host, all sharing one HTTP/2
-  // connection. Skipping through chapters starved the audio until the element
-  // sat at readyState 1 with nothing buffered — playing according to `paused`,
-  // silent in fact.
-  //
-  // So this depends only on the episode, and a chapter change no longer re-runs
-  // it at all. The in-app art still follows the chapter; the lock screen shows
-  // the episode cover, which is one fetch per episode instead of one per skip.
-  useEffect(() => {
-    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
-    if (!current) { navigator.mediaSession.metadata = null; return; }
-    const { episode, podcast } = current;
-    const art = episode.image || podcast.image || podcast.artwork;
-    navigator.mediaSession.metadata = new MediaMetadata({
-      title: episode.title,
-      artist: podcast.title,
-      album: podcast.title,
-      artwork: art ? [{ src: art }] : undefined,
-    });
-  }, [current?.episode.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Reflect play/pause to the OS so the lock-screen button shows the right state.
   useEffect(() => {
     if (typeof navigator !== 'undefined' && 'mediaSession' in navigator) {
@@ -582,24 +556,14 @@ export function Player() {
   // No-ops (and issues no request) on an episode with no windows.
   const splitArt = useSplitArt(current?.episode, positionSec);
 
-  if (!current) return null;
-  const { episode, podcast } = current;
-  const hasValue = hasValueRecipients(episode.value);
-  const isLive = episode.liveStatus === 'live';
-
+  // Both above the early return: the lock-screen effect below reads `nowArt`,
+  // and `chapterState` is pure — with no chapters it answers `{-1, null, 0}`,
+  // which is what it would have answered after the return anyway.
   const { index: activeIdx, chapter: activeChapter, end: activeChapterEnd } = chapterState(
     chapters,
     positionSec,
     duration,
   );
-
-  function seekMedia(v: number) {
-    const el = isVideoRef.current ? video.current : audio.current;
-    if (el) el.currentTime = v;
-    lastTick.current = Math.floor(v);
-    setPosition(v);
-  }
-  const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekMedia);
   // The artwork for the moment being played — the redirected track's cover
   // ahead of the chapter's own `img`, and only while the buffer can afford it.
   // Both art surfaces compose it through `nowPlayingArt`, never from
@@ -622,6 +586,81 @@ export function Player() {
     chapterImage: activeChapter?.img,
     artOk: artUsable,
   });
+
+  // The lock screen / notification follows the chapter too — but it is handed a
+  // SETTLED url, never the live one.
+  //
+  // A MediaMetadata artwork fetch is not an <img>. The browser issues it on our
+  // behalf: it takes no `fetchPriority`, `loading="lazy"` means nothing to it,
+  // and it is NOT cancelled when the next chapter supersedes it — replacing the
+  // metadata just adds a second fetch to the first one's queue. That is why this
+  // was episode-only before, and the measurement behind it stands: Homegrown
+  // Hits ep. 146 carries chapter art of 20–36 MB apiece (`hgh-vinyl.gif` 33.4 MB,
+  // `HGH-Disco-Head.gif` 36.3 MB) beside a 175 MB mp3, 15 of the 31 images on the
+  // audio's OWN host and sharing its HTTP/2 connection. Handing the OS a new one
+  // per ⏭ starved the element to readyState 1 — playing according to `paused`,
+  // silent in fact.
+  //
+  // Two things make following the chapter affordable, and neither is optional:
+  //
+  //   1. **It reads `nowArt`, so it is behind the same `artUsable` gate as the
+  //      on-screen art.** A starved buffer hands the OS nothing new; the episode
+  //      cover it already has stays put.
+  //   2. **It settles.** The timer restarts on every change, so a run of skips
+  //      issues NOTHING — only the chapter someone actually stops on is fetched.
+  //      This is the direct answer to "every ⏭ swapped a new one in": that
+  //      sequence now costs one fetch instead of six, and it costs it after the
+  //      skipping has stopped, when the connection is free again.
+  //
+  // What is left is honest and unavoidable: on a feed with 36 MB chapter art you
+  // will still fetch one per chapter you genuinely listen to. The gate closing
+  // is what protects playback if that turns out to hurt.
+  //
+  // The settled value carries the episode it was settled FOR. Without that, the
+  // 3 s of lag becomes a correctness bug at every episode change: the metadata
+  // effect re-runs immediately on the new episode while this state still holds
+  // the old one's chapter art, and the lock screen shows the previous show's
+  // cover under the new title — and pays for the fetch. Comparing the id makes
+  // the stale value evaluate to undefined in the SAME render, so the new
+  // episode's own cover goes out first and the chapter art follows once it has
+  // held still.
+  const [lockArt, setLockArt] = useState<{ epId?: number; url?: string }>({});
+  const episodeId = current?.episode.id;
+  useEffect(() => {
+    const t = setTimeout(() => setLockArt({ epId: episodeId, url: nowArt }), LOCK_ART_SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [nowArt, episodeId]);
+  const settledArt = lockArt.epId === episodeId ? lockArt.url : undefined;
+
+  // Metadata for the lock-screen / notification (title, podcast, artwork).
+  // Re-runs on the settled art as well as the episode, and rebuilds the whole
+  // MediaMetadata rather than mutating `.artwork` in place — mutation is not
+  // reliably picked up once the object has been handed over.
+  useEffect(() => {
+    if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
+    if (!current) { navigator.mediaSession.metadata = null; return; }
+    const { episode, podcast } = current;
+    const art = settledArt || episode.image || podcast.image || podcast.artwork;
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: episode.title,
+      artist: podcast.title,
+      album: podcast.title,
+      artwork: art ? [{ src: art }] : undefined,
+    });
+  }, [episodeId, settledArt]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!current) return null;
+  const { episode, podcast } = current;
+  const hasValue = hasValueRecipients(episode.value);
+  const isLive = episode.liveStatus === 'live';
+
+  function seekMedia(v: number) {
+    const el = isVideoRef.current ? video.current : audio.current;
+    if (el) el.currentTime = v;
+    lastTick.current = Math.floor(v);
+    setPosition(v);
+  }
+  const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekMedia);
   const transcriptActiveIdx = transcriptIndexAt(transcriptCues, positionSec);
 
   function onMediaError(code: number | undefined) {
