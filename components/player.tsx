@@ -96,6 +96,54 @@ export function Player() {
   // reconnect rather than continue. Cleared by the source effect, so the FIRST
   // play of an item takes the normal path (that effect owns that play).
   const pausedLive = useRef(false);
+  // The element ran out of data and is waiting on the network. NOT an error: the
+  // request is still open and it may recover on its own, so this only drives a
+  // readout and the resume path below — nothing here calls pause().
+  //
+  // Without it a starved element is indistinguishable from a playing one from
+  // the outside, which is the whole reported bug: `paused` stays false and
+  // `isPlaying` stays true while `readyState` sits at 1 with nothing buffered at
+  // the play head, so the transport shows ❚❚ over silence and the app has
+  // nothing to say about it. Measured on a real feed after six chapter skips:
+  // frozen at the same currentTime for 15 s, still claiming to play.
+  const [stalled, setStalled] = useState(false);
+  // Mirror for the play/pause effect, which must not re-run on this.
+  const stalledRef = useRef(false);
+  stalledRef.current = stalled;
+
+  /**
+   * Whether there is enough buffered audio to afford loading heavy artwork.
+   *
+   * Chapter art is a nice-to-have; the enclosure is the product. On a music feed
+   * the two compete directly — chapter art is routinely hosted on the SAME
+   * ORIGIN as the enclosure and routinely enormous (20–36 MB animated GIFs on
+   * Homegrown Hits) — and the audio loses. Measured A/B on ep. 146 over a 2 Mbit
+   * link, six chapter skips, identical in every other respect:
+   *
+   *   images blocked → +13.1 s of playback in the next 20 s, readyState 4
+   *   images allowed → +0.0 s, frozen at readyState 1
+   *
+   * Lazy loading, `fetchPriority="low"` and killing the duplicate fetches all
+   * helped and none of them were enough, because one 36 MB GIF is still 36 MB.
+   * So the art yields instead: below the floor we show the episode cover (one
+   * fetch per episode, already warm), which also CANCELS an in-flight chapter
+   * image, and we only go back to chapter art once there is real headroom again.
+   *
+   * Hysteresis is the whole design. A single threshold oscillates — dropping the
+   * art frees the pipe, the buffer recovers, the art reloads, the buffer starves
+   * — so the gate opens at 20 s of headroom and doesn't close until 5 s.
+   * Sampled from the existing 1 Hz `timeupdate` tick and written only on a
+   * crossing, so it costs no extra renders.
+   */
+  const [artOk, setArtOk] = useState(true);
+  function sampleHeadroom(el: HTMLMediaElement) {
+    const b = el.buffered;
+    // No ranges yet (fresh source / mid-seek) says nothing either way — leave
+    // the gate where it is rather than flapping it shut on every seek.
+    if (!b.length) return;
+    const ahead = b.end(b.length - 1) - el.currentTime;
+    setArtOk((prev) => (prev ? ahead >= 5 : ahead >= 20));
+  }
   // Created lazily on the client only — createHtmlPortalNode() touches
   // document, which would crash Next's server render. Player renders null until
   // there's a `current` (client-only state), so the server never needs it and
@@ -120,6 +168,10 @@ export function Player() {
     lastTick.current = -1;
     pausedLive.current = false;
     setAudioErr(null);
+    // A fresh source is a fresh verdict — clear the stall so a recovered element
+    // (this effect re-runs on the reload nonce that recovery itself bumps) can't
+    // keep reporting the starvation it was just rescued from.
+    setStalled(false);
 
     if (isVideo) {
       // Park the audio element so it doesn't error on the video URL.
@@ -306,6 +358,21 @@ export function Player() {
       setReloadNonce((n) => n + 1);
       return;
     }
+    // A stalled element reads to the user exactly like the paused-live case
+    // above — "the play button does nothing until I reload the page" — and it
+    // has the same answer, for the same reason: re-running the source effect IS
+    // that reload, scoped to the media element. The difference is only how it
+    // got wedged. A starved buffer (chapter art of tens of MB competing with the
+    // enclosure on one connection) leaves the element with an open request it
+    // will not finish; `el.play()` on it resolves and then plays nothing.
+    //
+    // The source effect restores `positionSec` via its loadedmetadata handler,
+    // so this resumes where the listener was rather than at the top.
+    if (stalledRef.current) {
+      setStalled(false);
+      setReloadNonce((n) => n + 1);
+      return;
+    }
     el.play().catch(() => setPlaying(false));
   }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -419,24 +486,37 @@ export function Player() {
   // active chapter's art) for hook order.
   const { chapters, loading: chaptersLoading } = useChapters(chapterUrlFor(current));
 
-  // Metadata for the lock-screen / notification (title, podcast, artwork). Art
-  // tracks the active chapter (Podcasting 2.0 chapters `img`) so the OS surface
-  // stays in sync with the in-app now-playing art. Depends on the derived image
-  // string — not positionSec — so it only re-runs when the chapter art changes,
-  // not every 1 Hz position tick.
-  const activeChapterImg = chapterState(chapters, positionSec, duration).chapter?.img;
+  // Metadata for the lock-screen / notification (title, podcast, artwork).
+  //
+  // **The artwork is the EPISODE's, not the active chapter's, and that is a
+  // bandwidth decision rather than a design one.** This art used to track the
+  // chapter, which meant every ⏭ handed the OS a new URL to fetch — and unlike
+  // an <img>, a MediaMetadata artwork fetch is issued by the browser on our
+  // behalf: it cannot be given a priority hint, and it is not cancelled when the
+  // next chapter supersedes it. On a feed whose chapter art is hosted on the
+  // SAME ORIGIN as the enclosure that is a self-inflicted denial of service.
+  // Measured on Homegrown Hits ep. 146: chapter art of 20–36 MB apiece
+  // (`hgh-vinyl.gif` 33.4 MB, `HGH-Disco-Head.gif` 36.3 MB) beside a 175 MB mp3,
+  // 15 of the 31 images on the audio's own host, all sharing one HTTP/2
+  // connection. Skipping through chapters starved the audio until the element
+  // sat at readyState 1 with nothing buffered — playing according to `paused`,
+  // silent in fact.
+  //
+  // So this depends only on the episode, and a chapter change no longer re-runs
+  // it at all. The in-app art still follows the chapter; the lock screen shows
+  // the episode cover, which is one fetch per episode instead of one per skip.
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('mediaSession' in navigator)) return;
     if (!current) { navigator.mediaSession.metadata = null; return; }
     const { episode, podcast } = current;
-    const art = activeChapterImg || episode.image || podcast.image || podcast.artwork;
+    const art = episode.image || podcast.image || podcast.artwork;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: episode.title,
       artist: podcast.title,
       album: podcast.title,
       artwork: art ? [{ src: art }] : undefined,
     });
-  }, [current?.episode.id, activeChapterImg]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [current?.episode.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Reflect play/pause to the OS so the lock-screen button shows the right state.
   useEffect(() => {
@@ -490,6 +570,11 @@ export function Player() {
     setPosition(v);
   }
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekMedia);
+  // The chapter's artwork, but only while the buffer can afford it — see artOk.
+  // Both art surfaces read THIS, not `activeChapter.img`, so the gate can't be
+  // half-applied: one surface still fetching the 36 MB GIF starves the audio
+  // just as thoroughly as two did.
+  const chapterArt = artOk ? activeChapter?.img : undefined;
   const transcriptActiveIdx = transcriptIndexAt(transcriptCues, positionSec);
 
   function onMediaError(code: number | undefined) {
@@ -520,6 +605,7 @@ export function Player() {
               if (tick !== lastTick.current) {
                 lastTick.current = tick;
                 setPosition(t);
+                sampleHeadroom(e.currentTarget);
               }
             }}
             // A video alternateEnclosure has a finite duration (unlike a live HLS
@@ -533,6 +619,9 @@ export function Player() {
             // Progressive video (a podcast video rendition) just stops at the end;
             // live HLS never fires this. Music auto-advance stays on the <audio>.
             onEnded={() => setPlaying(false)}
+            onWaiting={() => { setStalled(true); setArtOk(false); }}
+            onStalled={() => { setStalled(true); setArtOk(false); }}
+            onPlaying={() => setStalled(false)}
             onError={(e) => onMediaError(e.currentTarget.error?.code)}
           />
         </InPortal>
@@ -552,6 +641,7 @@ export function Player() {
             if (tick !== lastTick.current) {
               lastTick.current = tick;
               setPosition(t);
+              sampleHeadroom(e.currentTarget);
             }
           }}
           onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); setAudioErr(null); }}
@@ -559,6 +649,20 @@ export function Player() {
             if (current && isMusicMedium(current.podcast)) playNext();
             else setPlaying(false);
           }}
+          // `waiting` fires the moment playback runs dry; `stalled` when the
+          // browser has had no data for a while. Neither is an error and neither
+          // pauses anything — they only make the starved state SAYABLE, and arm
+          // the resume path so pressing play re-sources instead of doing nothing.
+          // `playing` is the all-clear, which is why recovery needs no timer.
+          // These also SLAM THE ART GATE SHUT, and that is not belt-and-braces:
+          // `sampleHeadroom` rides on `timeupdate`, which a wedged element stops
+          // firing — so a gate that only closed from there would stay open in
+          // precisely the case it exists for. `waiting`/`stalled` are the only
+          // signals still arriving once playback has run dry. Reopening is left
+          // to the headroom sample, which needs a real buffer to see.
+          onWaiting={() => { if (!isVideoRef.current) { setStalled(true); setArtOk(false); } }}
+          onStalled={() => { if (!isVideoRef.current) { setStalled(true); setArtOk(false); } }}
+          onPlaying={() => { if (!isVideoRef.current) setStalled(false); }}
           onError={(e) => { if (!isVideoRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
         {/* Tighter padding and gap below sm:. At 390px the row has 358px to
@@ -569,18 +673,40 @@ export function Player() {
             <div className="w-12 h-12 flex-shrink-0 bg-black overflow-hidden border border-bone/20">
               {videoNode && !playerExpanded && <OutPortal node={videoNode} />}
             </div>
-          ) : (liveBlockImage || activeChapter?.img || episode.image) ? (
+          ) : (liveBlockImage || chapterArt || episode.image) ? (
             // Prefer the live block's art (the record actually playing on a
             // Split Kit show), then the active chapter's artwork (Podcasting 2.0
             // chapters `img`), falling back to the episode cover on a
             // missing/broken image.
+            //
+            // `key` is the URL, so a chapter change REPLACES this element rather
+            // than mutating it. Two things depend on that. It cancels the
+            // outgoing image's download — chapter art is routinely tens of MB on
+            // these feeds, and a rapid ⏭ run otherwise leaves every one of them
+            // in flight against the audio's own origin. And it resets the
+            // onError bookkeeping below, which would otherwise persist on a
+            // reused element and blank a later chapter that was perfectly fine.
+            //
+            // fetchPriority low + decoding async keep it behind the media on the
+            // shared HTTP/2 connection: this is a 48px thumbnail, and nothing
+            // about it is worth a frame of audio.
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              src={liveBlockImage || activeChapter?.img || episode.image}
+              key={liveBlockImage || chapterArt || episode.image}
+              src={liveBlockImage || chapterArt || episode.image}
               alt=""
+              fetchPriority="low"
+              decoding="async"
               onError={(e) => {
-                if (episode.image && e.currentTarget.src !== episode.image)
-                  e.currentTarget.src = episode.image;
+                // One attempt at the episode cover, tracked on the element
+                // rather than by comparing `src` against the fallback string:
+                // the `src` GETTER returns a RESOLVED absolute URL, so an
+                // untrimmed or relative feed URL never compares equal and the
+                // handler re-assigns the same failing URL forever.
+                const el = e.currentTarget;
+                if (el.dataset.fellBack || !episode.image) return;
+                el.dataset.fellBack = '1';
+                el.src = episode.image;
               }}
               className="w-12 h-12 object-cover border border-bone/20 flex-shrink-0"
             />
@@ -600,6 +726,23 @@ export function Player() {
                 playback dies — wrap it (break-words), never truncate it. */}
             {audioErr && (
               <div className="text-[11px] text-nostr mt-1 break-words">⚠ {audioErr}</div>
+            )}
+            {/* Buffering is NOT an error — muted, not nostr — but it has to be
+                said. A starved element keeps `paused === false`, so the transport
+                shows ❚❚ over silence and the only honest reading of the screen is
+                "this app is broken". Naming it also makes the fix discoverable:
+                the resume path re-sources a stalled element, so "press play"
+                is real advice rather than a shrug. */}
+            {/* Deliberately does NOT name a cause. Starvation by the feed's own
+                artwork is the case that prompted this, but the gate above now
+                handles that one, so a stall that still reaches the user is a
+                plain slow network — and guessing at a cause we've already
+                mitigated would be a confident lie. Say what is true and what to
+                do about it. */}
+            {stalled && !audioErr && (
+              <div className="text-[11px] text-muted mt-1">
+                ⋯ buffering — press play to retry if it doesn&rsquo;t resume.
+              </div>
             )}
             {isLive ? (
               <div className="flex items-center gap-2 mt-1">
@@ -677,6 +820,7 @@ export function Player() {
         videoNode={videoNode}
         isVideo={isVideo}
         audioErr={audioErr}
+        artOk={artOk}
         pipAvailable={pipOk}
         onPip={requestPip}
         chapters={chapters}
