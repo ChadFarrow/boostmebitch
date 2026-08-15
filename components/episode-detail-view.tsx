@@ -60,6 +60,7 @@ function ChaptersList({
               {(c.img || fallbackImg) && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
+                  key={c.img || fallbackImg}
                   src={c.img || fallbackImg}
                   alt=""
                   loading="lazy"
@@ -67,12 +68,28 @@ function ChaptersList({
                   // rot. Fall back to the episode art before giving up, the same
                   // two-URL-then-hide chain <PodcastCover> uses — hiding on the
                   // first failure is what reintroduces the ragged edge.
+                  fetchPriority="low"
+                  decoding="async"
                   onError={(e) => {
-                    if (fallbackImg && e.currentTarget.src !== fallbackImg) {
-                      e.currentTarget.src = fallbackImg;
-                    } else {
-                      e.currentTarget.style.display = 'none';
+                    // ONE attempt at the fallback, tracked on the element.
+                    // Comparing `src` against the fallback string cannot
+                    // terminate: the `src` GETTER returns a RESOLVED absolute
+                    // URL while the fallback is a raw feed string, so an
+                    // untrimmed, relative or protocol-relative URL never
+                    // compares equal and this re-assigns the same failing URL
+                    // forever. An ad-blocked host makes that a tight loop —
+                    // it fails with no round trip — and <FullscreenPlayer> is
+                    // always mounted, so collapsing the player does not stop
+                    // it. `visibility`, not `display`, so a dead image still
+                    // holds its box and the one-left-edge this whole prop
+                    // exists for survives the failure it was written for.
+                    const el = e.currentTarget;
+                    if (!el.dataset.fellBack && fallbackImg) {
+                      el.dataset.fellBack = '1';
+                      el.src = fallbackImg;
+                      return;
                     }
+                    el.style.visibility = 'hidden';
                   }}
                   className="w-10 h-10 rounded object-cover flex-shrink-0 border border-bone/15"
                 />
@@ -434,7 +451,17 @@ export function EpisodeDetailView() {
                     chapters={chapters!}
                     activeIdx={chaptersActiveIdx}
                     onSeek={seekEpisodeTo}
-                    fallbackImg={episode.image ?? podcast?.image}
+                    // `||`, never `??`, and `artwork` is not optional here.
+                    // Podcast Index returns "" rather than omitting an absent
+                    // image (lib/pi.ts:buildEpisode has no empty-string guard,
+                    // unlike its neighbours), and `'' ?? x` is `''` — so on
+                    // exactly the episodes with no art of their own, the ones
+                    // this fallback exists for, it silently did nothing.
+                    // `podcast.artwork` is the third link because a dead
+                    // channel <image> beside a working <itunes:image> is the
+                    // documented case (Homegrown Hits) that PodcastCover was
+                    // written for; omitting it here fell back to a 404.
+                    fallbackImg={episode.image || podcast?.image || podcast?.artwork}
                   />
                 )
                 : <p className="text-xs text-muted">Loading chapters…</p>)}

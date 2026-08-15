@@ -19,6 +19,7 @@ export function PodcastCover({
   title,
   seed,
   className,
+  lowPriority,
 }: {
   image?: string | null;
   artwork?: string | null;
@@ -28,6 +29,23 @@ export function PodcastCover({
    *  string. */
   seed?: string;
   className?: string;
+  /**
+   * "This image must never compete with audio playback."
+   *
+   * Sets lazy loading, a low fetch priority and async decode together, because
+   * they are only useful together and the reason for all three is the same one:
+   * podcast and chapter artwork is arbitrary third-party media, it is routinely
+   * hosted on the SAME ORIGIN as the enclosure, and it is routinely enormous —
+   * 20–36 MB animated GIFs per chapter on a real music feed, against a 175 MB
+   * mp3 on one shared HTTP/2 connection. Whoever wins that connection decides
+   * whether the show keeps playing.
+   *
+   * `loading="lazy"` is the load-bearing half for a surface that is mounted but
+   * off-screen: <FullscreenPlayer> is always in the DOM and merely translated
+   * out of view, so without it the collapsed player downloads every chapter's
+   * art that nobody is looking at.
+   */
+  lowPriority?: boolean;
 }) {
   const candidates = useMemo(() => {
     const out: string[] = [];
@@ -49,6 +67,7 @@ export function PodcastCover({
         key={current}
         src={current}
         alt=""
+        {...(lowPriority ? { loading: 'lazy' as const, fetchPriority: 'low' as const, decoding: 'async' as const } : {})}
         className={`${className ?? ''} object-cover`}
         onError={() => setIdx((i) => i + 1)}
       />

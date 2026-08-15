@@ -74,7 +74,14 @@ function buildPodcast(f: any): Podcast {
     title: f.title,
     author: f.author,
     description: f.description,
-    image: f.image || f.artwork,
+    // `|| undefined` on the tail, not just between the two: PI returns "" for
+    // an absent field rather than omitting it, so without this `image` is `""`
+    // while its type says `string | undefined`. Every `??` downstream then reads
+    // the empty string as a real value and stops falling through — which is how
+    // a chapter-art fallback chain silently did nothing on exactly the items
+    // that had no art. Same guard the neighbouring `link`/`chaptersUrl` fields
+    // already carry.
+    image: f.image || f.artwork || undefined,
     // Keep `artwork` separate so the renderer can try it if `image` 404s —
     // PI maps RSS <image><url> to `image` and <itunes:image> to `artwork`,
     // and the two often disagree (Homegrown Hits has a dead bowlafterbowl
@@ -221,7 +228,7 @@ function buildEpisode(e: any): Episode {
     enclosureType: e.enclosureType,
     duration: e.duration,
     datePublished: e.datePublished,
-    image: e.image || e.feedImage,
+    image: e.image || e.feedImage || undefined,   // see buildPodcast: PI sends "", not absent
     feedId: e.feedId,
     feedTitle: e.feedTitle,
     feedImage: e.feedImage,

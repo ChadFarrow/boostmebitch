@@ -134,15 +134,32 @@ function EpisodeInfoPanel({
                     {(c.img || chapterFallbackImg) && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
+                        key={c.img || chapterFallbackImg}
                         src={c.img || chapterFallbackImg}
                         alt=""
                         loading="lazy"
+                        fetchPriority="low"
+                        decoding="async"
                         onError={(e) => {
-                          if (chapterFallbackImg && e.currentTarget.src !== chapterFallbackImg) {
-                            e.currentTarget.src = chapterFallbackImg;
-                          } else {
-                            e.currentTarget.style.display = 'none';
+                        // ONE attempt at the fallback, tracked on the element.
+                        // Comparing `src` against the fallback string cannot
+                        // terminate: the `src` GETTER returns a RESOLVED absolute
+                        // URL while the fallback is a raw feed string, so an
+                        // untrimmed, relative or protocol-relative URL never
+                        // compares equal and this re-assigns the same failing URL
+                        // forever. An ad-blocked host makes that a tight loop —
+                        // it fails with no round trip — and <FullscreenPlayer> is
+                        // always mounted, so collapsing the player does not stop
+                        // it. `visibility`, not `display`, so a dead image still
+                        // holds its box and the one-left-edge this whole prop
+                        // exists for survives the failure it was written for.
+                          const el = e.currentTarget;
+                          if (!el.dataset.fellBack && chapterFallbackImg) {
+                            el.dataset.fellBack = '1';
+                            el.src = chapterFallbackImg;
+                            return;
                           }
+                          el.style.visibility = 'hidden';
                         }}
                         className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
                       />
@@ -242,6 +259,7 @@ export function FullscreenPlayer({
   videoNode,
   isVideo,
   audioErr,
+  artOk,
   pipAvailable,
   onPip,
   chapters,
@@ -264,6 +282,10 @@ export function FullscreenPlayer({
       or a failing live stream reads as a silent black box (the mini-bar's tiny
       error line is hidden behind this overlay). */
   audioErr: string | null;
+  /** False when the buffer can't afford heavy chapter artwork — see <Player>'s
+   *  `artOk`. Passed down rather than recomputed so both art surfaces share one
+   *  verdict; a gate applied to only one of them doesn't help at all. */
+  artOk: boolean;
   pipAvailable: boolean;
   onPip: () => void;
   // Fetched once by <Player> and passed down (so it isn't fetched twice).
@@ -434,11 +456,18 @@ export function FullscreenPlayer({
                   the active chapter's artwork (Podcasting 2.0 chapters `img`);
                   PodcastCover falls back image→artwork→initial-tile, so a
                   broken/missing image degrades to the episode/podcast art. */}
+              {/* lowPriority is not cosmetic here. This pane is ALWAYS MOUNTED —
+                  the fullscreen player is translated off-screen when collapsed,
+                  not unmounted — so without lazy loading a collapsed player
+                  downloads the art for every chapter the listener passes, at
+                  20–36 MB apiece on a real music feed, over the same connection
+                  the audio is streaming on. See PodcastCover's own note. */}
               <PodcastCover
-                image={liveBlockImage ?? activeChapter?.img ?? episode.image ?? podcast.image}
+                image={liveBlockImage ?? (artOk ? activeChapter?.img : undefined) ?? episode.image ?? podcast.image}
                 artwork={podcast.artwork}
                 title={podcast.title}
                 seed={podcast.id?.toString()}
+                lowPriority
                 className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
               />
             </div>
@@ -635,7 +664,9 @@ export function FullscreenPlayer({
               hasTranscriptUrl={hasTranscriptUrl}
               onSeek={seekTo}
               currentSec={positionSec}
-              chapterFallbackImg={episode.image ?? podcast.image}
+              // `||` not `??`, plus artwork — see the same prop in
+              // <ChaptersList> (episode-detail-view.tsx) for why.
+              chapterFallbackImg={episode.image || podcast.image || podcast.artwork}
             />
 
             {episode.socialInteract?.length ? (
