@@ -28,11 +28,38 @@ const MAX_TAG_ITEM_LEN = 512;
 const MAX_TAGS_TOTAL_LEN = 4096;
 const CREATED_AT_SKEW_SECS = 300; // reject notes back/post-dated beyond ±5 min
 // Every genuine boost note — single and boost-all summary alike — is framed by
-// formatContent()/the summary override with this exact prefix. Requiring it
-// stops the oracle being repurposed to sign arbitrary free-text (spam,
-// harassment, defamation) as the site's NIP-05-verified identity: whatever is
-// signed must at least be shaped like a boost announcement.
+// formatContent()/the summary override with this exact prefix.
+//
+// BE CLEAR ABOUT WHAT THIS DOES AND DOESN'T BUY. It constrains the first ten
+// characters. It was commented as stopping "the oracle being repurposed to sign
+// arbitrary free-text (spam, harassment, defamation)", and it does not: the
+// remaining MAX_CONTENT characters are still whatever the caller sends, under
+// the site's NIP-05-verified identity. That can't be regexed away, because a
+// boost note legitimately carries the user's own typed message — arbitrary text
+// is the feature, not a hole in it.
+//
+// What CAN be bounded is the amplifier, and that's what the tag rules below do.
 const BOOST_CONTENT_PREFIX = '⚡ Boost ⚡';
+
+// The complete tag vocabulary `buildBoostNoteTemplate` emits
+// (lib/nostr/boost-notes.ts) — NIP-73 `i`/`k`, landing-page `r`, artist `p`,
+// `amount`, `client`, and the two `t` markers. An allowlist rather than a
+// denylist, for the same fail-closed reason as safeUrlAttr.
+//
+// It costs nothing and closes the one thing that made this oracle worth
+// attacking: an `e` tag. A boost note never has one, so refusing them outright
+// is provably not a regression — and with one, a signed event from the site key
+// appears to REPLY to any note in the world, which is a far better vehicle for
+// harassment than a standalone post nobody is subscribed to.
+//
+// If buildBoostNoteTemplate ever emits a new tag, add it here in the same
+// change or site-signed notes start failing.
+const ALLOWED_TAG_NAMES = new Set(['i', 'k', 'r', 'p', 'amount', 'client', 't']);
+
+// A real boost `p`-tags the artists a feed names — one to a few, and a
+// compilation is still nowhere near this. The cap is what stops one unauthed
+// POST becoming a mention-spam blast at 40 strangers from a verified identity.
+const MAX_P_TAGS = 8;
 
 // Bound the signing oracle: this endpoint must only ever sign boost-shaped
 // kind:1 notes as the site, never arbitrary events (DMs, kind:0 hijack, etc.).
@@ -61,6 +88,12 @@ function validateBoostTemplate(body: unknown): EventTemplate {
     0,
   );
   if (tagsLen > MAX_TAGS_TOTAL_LEN) throw new Error('invalid tags');
+  if (!strTags.every((tag) => tag.length > 0 && ALLOWED_TAG_NAMES.has(tag[0]!))) {
+    throw new Error('unsupported tag');
+  }
+  if (strTags.filter((tag) => tag[0] === 'p').length > MAX_P_TAGS) {
+    throw new Error('too many p tags');
+  }
   const hasT = (v: string) => strTags.some((tag) => tag[0] === 't' && tag[1] === v);
   // The two markers publishBoostNote always emits — proves this is a boost note.
   if (!hasT('boostagram') || !hasT('value4value')) {

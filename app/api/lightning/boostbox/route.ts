@@ -5,6 +5,17 @@ import { rateLimit } from '@/lib/rate-limit';
 // Server-side proxy for the BoostBox metadata service.
 // Defaults match the public reference instance so the integration works
 // out of the box; override via env to point at a self-hosted deployment.
+//
+// `v4v4me` is NOT a leaked credential — it is the public reference instance's
+// published shared key, which is why it also sits in .env.example. Left in place
+// deliberately: removing it breaks zero-config setup and protects nothing.
+// Don't "fix" it by deleting the fallback; if you run a private BoostBox, set
+// BOOSTBOX_API_KEY and the env value wins.
+//
+// BOOSTBOX_URL is interpolated into the fetch below without going through
+// safeFetch. That's sound only because it's operator-supplied env, not feed
+// data — the one outbound in this app that isn't attacker-influenceable. Keep
+// it that way: never let a request parameter reach it.
 const BOOSTBOX_URL = process.env.BOOSTBOX_URL || 'https://tardbox.com';
 const BOOSTBOX_API_KEY = process.env.BOOSTBOX_API_KEY || 'v4v4me';
 
@@ -48,6 +59,21 @@ export async function POST(req: Request) {
       // A malformed body is the client's fault — 400, not a 500 via the handler.
       return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
     }
+    // Shape check before forwarding. Without one this route relays ANY JSON
+    // under 10 KB to a third party stamped with our API key — an open relay
+    // whose consequences land on the upstream's trust in that key, not on us.
+    // Deliberately a shape check and not a full schema: the BoostBox payload is
+    // the upstream's to define, so validating field-by-field here would drift
+    // against it. Requiring a plain object with the one field the endpoint is
+    // named for is enough to stop it being a general-purpose pipe.
+    if (
+      !payload
+      || typeof payload !== 'object'
+      || Array.isArray(payload)
+      || typeof (payload as { action?: unknown }).action !== 'string'
+    ) {
+      return NextResponse.json({ error: 'invalid boost payload' }, { status: 400 });
+    }
     const upstream = await fetch(`${BOOSTBOX_URL}/boost`, {
       method: 'POST',
       headers: {
@@ -64,9 +90,15 @@ export async function POST(req: Request) {
     });
 
     if (!upstream.ok) {
+      // The upstream's body goes to OUR log, not back to the caller — it's a
+      // third party's internals, and BoostBox failure is non-fatal anyway
+      // (lib/v4v/boostbox.ts falls back to the bare message), so nothing on the
+      // client acts on `detail`.
       const detail = await upstream.text().catch(() => '');
+      // eslint-disable-next-line no-console
+      console.error(`[boostbox] upstream ${upstream.status}:`, detail.slice(0, 500));
       return NextResponse.json(
-        { error: `BoostBox error: ${upstream.status}`, detail },
+        { error: `BoostBox error: ${upstream.status}` },
         { status: upstream.status },
       );
     }
