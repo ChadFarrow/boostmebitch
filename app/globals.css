@@ -190,6 +190,30 @@ input[type='range'].seek::-moz-range-thumb {
 .show-notes code { @apply font-mono text-xs px-1 py-0.5 rounded; background: rgb(var(--bone) / 0.1); }
 .show-notes blockquote { @apply border-l-2 pl-3 italic mb-3; border-color: rgb(var(--bone) / 0.3); }
 
+/* The fullscreen player's video stage is sized in-page by Tailwind width caps
+   plus aspect-video. Promoted to the browser's top layer those AUTHOR styles
+   still beat the UA's :fullscreen rules, so the video would render as a capped
+   16:9 box pinned to the corner of a black screen. Shed them.
+
+   Two rules, never one comma-joined selector list: a browser that can't parse
+   :-webkit-full-screen discards the ENTIRE rule if the selectors are joined. */
+.video-stage:fullscreen {
+  max-width: none;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  border-radius: 0;
+  border: 0;
+}
+.video-stage:-webkit-full-screen {
+  max-width: none;
+  width: 100%;
+  height: 100%;
+  aspect-ratio: auto;
+  border-radius: 0;
+  border: 0;
+}
+
 /* Scrollbar — uses theme tokens so it follows the active mode */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: rgb(var(--ink)); }

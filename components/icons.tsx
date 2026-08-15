@@ -90,6 +90,42 @@ export function PipIcon({ className = 'w-4 h-4' }: { className?: string }) {
   );
 }
 
+// Corner brackets pointing outward — enter fullscreen.
+export function FullscreenIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`flex-shrink-0 ${className}`}
+    >
+      <path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5" />
+    </svg>
+  );
+}
+
+// The same brackets pointing inward — exit fullscreen.
+export function ExitFullscreenIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={`flex-shrink-0 ${className}`}
+    >
+      <path d="M3 8h5V3M21 8h-5V3M3 16h5v5M21 16h-5v5" />
+    </svg>
+  );
+}
+
 export function MoonIcon({ className = 'w-4 h-4' }: { className?: string }) {
   return (
     <svg

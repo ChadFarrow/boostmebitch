@@ -9,7 +9,7 @@ import {
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
-import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipSupported, togglePip } from '@/lib/util';
+import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipNeedsOwnButton, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useSplitArt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
@@ -56,6 +56,11 @@ export function Player() {
   // Whether the active <video> can enter Picture-in-Picture (HLS streams only —
   // the native <audio> can't). Recomputed per item; gates the PiP button.
   const [pipOk, setPipOk] = useState(false);
+  // Same question for the big fullscreen stage, where Chrome and Firefox paint
+  // their own hover control and ours would be a duplicate icon in the same
+  // corner. The 48px mini-bar thumbnail is below the size at which they do that,
+  // so the two flags genuinely differ — see pipNeedsOwnButton.
+  const [stagePipOk, setStagePipOk] = useState(false);
   // Last whole second pushed to the store. timeupdate fires ~4×/sec, but
   // every consumer renders whole seconds (fmt(), step=1 seek bars, chapter
   // highlighting) — gating on the floor cuts store-driven re-renders to 1 Hz.
@@ -471,6 +476,7 @@ export function Player() {
   // always mounted (in the portal) so video.current is live here.
   useEffect(() => {
     setPipOk(isVideo && pipSupported(video.current));
+    setStagePipOk(isVideo && pipNeedsOwnButton(video.current));
   }, [isVideo, current?.episode.id]);
 
   function requestPip() {
@@ -913,11 +919,12 @@ export function Player() {
         duration={duration}
         onSeek={seekMedia}
         videoNode={videoNode}
+        videoRef={video}
         isVideo={isVideo}
         audioErr={audioErr}
         artOk={artUsable}
         splitArt={splitArt}
-        pipAvailable={pipOk}
+        pipAvailable={stagePipOk}
         onPip={requestPip}
         chapters={chapters}
         chaptersLoading={chaptersLoading}
