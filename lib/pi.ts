@@ -1192,6 +1192,11 @@ export async function resolveLiveSplit(episode: Episode): Promise<LiveValueResul
   return { split: null, signal: 'none' };
 }
 
+// A music episode with a track per valueTimeSplit runs to a few dozen; 200
+// leaves room for a long DJ set without letting a hostile feed turn one request
+// into an unbounded outbound fan-out.
+const MAX_RESOLVED_SPLITS = 200;
+
 export async function resolveValueTimeSplits(
   splits: ValueTimeSplit[],
 ): Promise<ValueTimeSplit[]> {
@@ -1211,11 +1216,31 @@ export async function resolveValueTimeSplits(
     return splits;
   }
 
-  return Promise.all(
+  // CAP THE FAN-OUT — but cap the WORK, never the array. `splits` is
+  // feed-supplied (PI maps <podcast:valueTimeSplit> wholesale), so its length is
+  // attacker-chosen, and each entry can trigger a PI call plus the publisher
+  // walk in lib/musicl-resolver.ts. Slicing the RESULT instead would be a bug:
+  // callers read this list positionally and `splitAtPosition` walks it to decide
+  // which window covers a second, so dropping entries would silently move which
+  // artist a boost pays.
+  //
+  // Over the cap, entries pass through unresolved — the same value the
+  // per-entry `catch` already yields, and a case the UI handles: an unresolved
+  // remote item falls back to the show's block and says so on screen.
+  let budget = MAX_RESOLVED_SPLITS;
+  const resolved = await Promise.all(
     splits.map(async (s, i): Promise<ValueTimeSplit> => {
       if (i === probeIdx) return probeResolved;
+      if (budget <= 0) return s;
+      budget--;
       try { return await resolveOneSplit(s); } catch { return s; }
     }),
   );
+  if (splits.length > MAX_RESOLVED_SPLITS) {
+    console.warn(
+      `[pi] episode lists ${splits.length} valueTimeSplits; resolved the first ${MAX_RESOLVED_SPLITS}, rest left unresolved`,
+    );
+  }
+  return resolved;
 }
 

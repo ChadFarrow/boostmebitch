@@ -18,6 +18,9 @@ import { readAttr } from './feed-xml';
 
 const FETCH_TIMEOUT_MS = 5000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+// Matches MAX_PUBLISHER_ALBUMS in app/api/publisher/route.ts — the same walk,
+// so the same ceiling. Comfortably above any real publisher's catalogue.
+const MAX_ALBUM_FEEDS = 100;
 
 interface CachedFeed {
   xml: string;
@@ -190,8 +193,26 @@ export async function resolveRemoteItemFromRss(
 
   // Publisher chain: walk remoteItems[] for an album feed that contains the item
   if (!isPublisherFeed(xml)) return null;
-  const albumUrls = publisherRemoteItemUrls(xml);
-  if (albumUrls.length === 0) return null;
+  const all = publisherRemoteItemUrls(xml);
+  if (all.length === 0) return null;
+
+  // CAP THE FAN-OUT. `all` is every <podcast:remoteItem feedUrl> in a
+  // third-party publisher feed, so its length is attacker-chosen — one request
+  // here turned into N parallel outbound fetches, and this path is reachable
+  // from /api/value-splits and /api/live-value, whose own `splits` list is
+  // itself feed-supplied. Nested, they multiply.
+  //
+  // app/api/publisher/route.ts already caps its copy of this walk at
+  // MAX_PUBLISHER_ALBUMS; this second path simply never got one.
+  const albumUrls = all.slice(0, MAX_ALBUM_FEEDS);
+  if (all.length > albumUrls.length) {
+    // Say what was dropped. Silent truncation reads as "searched everything",
+    // which is how a genuinely missing album becomes an unexplained fallback
+    // to the show's value block.
+    console.warn(
+      `[musicl-resolver] publisher feed lists ${all.length} albums; searching the first ${MAX_ALBUM_FEEDS}`,
+    );
+  }
 
   const candidates = await Promise.all(
     albumUrls.map(async (albumUrl): Promise<ResolvedRemoteItem | null> => {
