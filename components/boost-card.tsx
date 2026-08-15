@@ -3,13 +3,8 @@ import type { StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { shortNpub } from '@/lib/nostr';
 import { linkify, timeAgo } from '@/lib/format';
+import { elideAddress } from '@/lib/util';
 import { Avatar } from './avatar';
-
-function shortAddr(addr: string): string {
-  if (addr.includes('@')) return addr;
-  if (addr.length <= 14) return addr;
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
 
 /**
  * Renders one of the user's locally-saved sent boosts. Visual sibling to
@@ -88,7 +83,7 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
               <span className={leg.ok ? 'text-bolt' : leg.indeterminate ? 'text-muted' : 'text-red-400'}>
                 {leg.ok ? '✓' : leg.indeterminate ? '?' : '✗'}
               </span>
-              <span className="text-bone">{leg.recipientName || shortAddr(leg.recipient)}</span>
+              <span className="text-bone">{leg.recipientName || elideAddress(leg.recipient)}</span>
               <span>· {leg.sats} sats</span>
               {leg.boostboxUrl && (
                 <a

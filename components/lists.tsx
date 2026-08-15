@@ -2,7 +2,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { fmtDuration, fmtLiveTime } from '@/lib/format';
+import { fmtDate, fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { BoostModal } from './boost-modal';
@@ -779,7 +779,7 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
                   ) : (
                     e.datePublished && (
                       <span className="whitespace-nowrap">
-                        {new Date(e.datePublished * 1000).toLocaleDateString()}
+                        {fmtDate(e.datePublished)}
                       </span>
                     )
                   )}

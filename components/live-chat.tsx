@@ -2,7 +2,7 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { nip19, type Event } from 'nostr-tools';
 import { subscribeLiveChat, publishLiveChat, LIVE_STREAM_RELAYS } from '@/lib/nostr';
-import { fetchProfile } from '@/lib/nostr';
+import { fetchProfile, shortNpub } from '@/lib/nostr';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
@@ -21,10 +21,6 @@ const TOKEN_RE = /nostr:n(?:pub|profile|event|ote|addr)1[023456789acdefghjklmnpq
 
 function authorName(p: ProfileMetadata | null | undefined, pubkey: string) {
   return p?.display_name?.trim() || p?.name?.trim() || `${pubkey.slice(0, 8)}…`;
-}
-
-function shortNpub(bech: string) {
-  return bech.length > 16 ? `${bech.slice(0, 10)}…${bech.slice(-4)}` : bech;
 }
 
 // Parse a kind:9735 zap receipt (a boost from Fountain / zap.stream / any NIP-57

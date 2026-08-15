@@ -89,8 +89,26 @@ export function recipientAddress(r: Pick<ValueRecipient, 'type' | 'address'>): s
   // payOne uses it: a feed that mislabels an @-address as "node" would
   // otherwise get it elided into `someone…ntain.fm` on one screen and printed
   // verbatim on another, which is the drift this helper exists to prevent.
-  if (isLnAddressRecipient(r) || r.address.length <= 20) return r.address;
-  return `${r.address.slice(0, 8)}…${r.address.slice(-8)}`;
+  return elideAddress(r.address, isLnAddressRecipient(r));
+}
+
+/**
+ * The elision itself, for callers that hold an address WITHOUT its recipient.
+ *
+ * `StoredBoost.legs` is the one — a leg records `recipient` as a bare string
+ * with no `type`, so `<BoostCard>` can't call `recipientAddress` and grew its
+ * own `shortAddr` instead: `6…4` against this function's `8…8`, and
+ * `.includes('@')` against `isLnAddressRecipient`. The result was that
+ * <SplitsPreview> showed a pubkey as `03ae9f2b…41d4f2a1` while the permanent
+ * history card for THAT SAME PAYMENT showed `03ae9f…f2a1`. Someone checking
+ * where their sats went saw two different strings for one recipient.
+ *
+ * CLAUDE.md names this exact failure for a copy that used to live in
+ * lists.tsx. One elision, one place — pass `isLnAddress` when you know it.
+ */
+export function elideAddress(address: string, isLnAddress = address.includes('@')): string {
+  if (isLnAddress || address.length <= 20) return address;
+  return `${address.slice(0, 8)}…${address.slice(-8)}`;
 }
 
 /**
