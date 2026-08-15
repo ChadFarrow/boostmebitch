@@ -4,35 +4,45 @@ import { splitAtPosition } from './util';
 import type { Episode, ValueTimeSplit } from './types';
 
 /**
- * Cover art for the TRACK a `<podcast:valueTimeSplit>` is redirecting to right
- * now — the pre-recorded twin of `useLiveBlockImage`.
+ * This episode's `<podcast:valueTimeSplit>` windows, RESOLVED — each carrying
+ * the track's own title, cover, value block and parent-feed ids, fetched from
+ * the artist's feed via the remote item.
  *
- * A live Split Kit show has shown the record actually playing since
- * `live-value.ts` shipped, and the reason given there is not decoration: it is
- * the one thing on screen that makes a redirected payment self-evident. A
- * pre-recorded episode redirects exactly the same way — press BOOST inside a
- * window and `<BoostModal>` pays the artist, not the show (CLAUDE.md boost
- * invariant 0.5) — and showed the episode cover throughout, so the screen said
- * "the show" while the money said "the song".
+ * Two things read it, and they are the same claim made twice:
  *
- * **Follows the position live; it does NOT freeze.** `useActiveSplit` freezes
- * because a boost aimed at a song must not land on the show because the song
- * ended while the user was typing. This is artwork: the honest thing for it to
- * do is track what is playing, and a frozen hero would keep showing the last
- * song's cover for the rest of the episode.
+ * - **`splitArtAt`** (below) — the cover of whatever is playing this second,
+ *   the pre-recorded twin of `useLiveBlockImage`. A live Split Kit show has
+ *   shown the record actually playing since `live-value.ts` shipped, and the
+ *   reason given there is not decoration: it is the one thing on screen that
+ *   makes a redirected payment self-evident. A pre-recorded episode redirects
+ *   exactly the same way — press BOOST inside a window and `<BoostModal>` pays
+ *   the artist, not the show (CLAUDE.md boost invariant 0.5) — and showed the
+ *   episode cover throughout, so the screen said "the show" while the money
+ *   said "the song".
+ * - **`<TrackList>`** — the same windows as a list, so the tracks a show played
+ *   can be seeked to and favorited individually.
  *
- * One fetch per episode, then a synchronous window lookup per second. The
- * endpoint is the same one both boost modals use and it answers with a one-hour
- * CDN cache, so opening a played-before episode costs nothing. Resolution is
- * best-effort by design: Podcast Index hasn't crawled every album feed, so an
- * unresolved window returns undefined and the caller's existing fallback chain
- * (chapter art → episode cover) is what the user sees — the behavior before
- * this hook existed.
+ * **This list is the episode's tracks; the chapter list is not.** They look
+ * alike and they are not the same thing. On *Mutton, Mead & Music* 150 the
+ * chapters JSON carries 25 entries against 15 windows: ten are the show's own
+ * talk breaks, two songs share a `28:20` start with one of them, and a talk
+ * break at `33:49` falls *inside* the 28:21–33:50 window. So there is no
+ * reliable chapter→track mapping to hang per-track UI off — and plenty of Split
+ * Kit shows publish windows and no chapters JSON at all. The window is also the
+ * authoritative one: it is what decides who gets paid, and it is the only one
+ * of the two carrying a `feedGuid`/`itemGuid` pair, which is exactly what
+ * naming a track on another device takes.
+ *
+ * One fetch per episode. The endpoint is the same one both boost modals use and
+ * it answers with a one-hour CDN cache, so opening a played-before episode
+ * costs nothing. Resolution is best-effort by design: Podcast Index hasn't
+ * crawled every album feed, so an unresolved window keeps its `remoteItem` and
+ * loses only its title/art — still seekable, still favoritable.
  *
  * Live items are excluded: they have no time base for a window to anchor to,
  * and `useLiveBlockImage` already covers them.
  */
-export function useSplitArt(episode: Episode | undefined, positionSec: number): string | undefined {
+export function useResolvedSplits(episode: Episode | undefined): ValueTimeSplit[] | null {
   const feedId = episode?.feedId;
   const episodeId = episode?.id;
   // The windows themselves ride on the episode, so "does this episode redirect
@@ -56,15 +66,33 @@ export function useSplitArt(episode: Episode | undefined, positionSec: number): 
         if (!cancelled) setSplits((data?.splits as ValueTimeSplit[]) ?? null);
       })
       .catch(() => {
-        // Artwork is not worth surfacing an error for — the cover falls back.
+        // Neither consumer is worth surfacing an error for: the cover falls
+        // back, and the track list simply doesn't appear.
         if (!cancelled) setSplits(null);
       });
     return () => { cancelled = true; };
   }, [hasWindows, feedId, episodeId]);
 
-  // Same window rule the boost path pays by (`splitAtPosition`, pinned by
-  // `check:vts`), so the art on screen and the recipient of a boost pressed at
-  // that second can never disagree about which song is playing.
+  return splits;
+}
+
+/**
+ * The cover of the track a window is redirecting to at `positionSec`.
+ *
+ * **Follows the position live; it does NOT freeze.** `useActiveSplit` freezes
+ * because a boost aimed at a song must not land on the show because the song
+ * ended while the user was typing. This is artwork: the honest thing for it to
+ * do is track what is playing, and a frozen hero would keep showing the last
+ * song's cover for the rest of the episode.
+ *
+ * Same window rule the boost path pays by (`splitAtPosition`, pinned by
+ * `check:vts`), so the art on screen and the recipient of a boost pressed at
+ * that second can never disagree about which song is playing.
+ */
+export function splitArtAt(
+  splits: ValueTimeSplit[] | null,
+  positionSec: number,
+): string | undefined {
   return splitAtPosition(splits, positionSec)?.image || undefined;
 }
 

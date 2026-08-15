@@ -1149,6 +1149,12 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
       title: ep.title,
       image: ep.image,
       feedId: ep.feedId,
+      // The ALBUM's title, not the show's — see ValueTimeSplit.feedTitle. Only
+      // this branch can supply it: the RSS fallback below resolves an item out
+      // of a feed it may have reached through a publisher chain, and
+      // ResolvedRemoteItem carries no channel title, so it stays undefined
+      // there rather than being guessed at from the URL.
+      feedTitle: ep.feedTitle,
       episodeGuid: ep.guid,
     };
   }
