@@ -22,15 +22,31 @@ export function SearchBar({ onResults, onLoading }: Props) {
     if (window.matchMedia('(pointer: fine)').matches) inputRef.current?.focus();
   }, []);
 
+  // Generation counter, because `clearTimeout` only cancels a request that
+  // hasn't STARTED. Once one is in flight the cleanup can't reach it, so a slow
+  // response for "bow" could land after a fast one for "bowl after bowl" and
+  // replace the results the user is looking at with the ones they'd moved past.
+  const genRef = useRef(0);
+
   useEffect(() => {
     if (!q.trim()) { onResults([], ''); return; }
+    const gen = ++genRef.current;
     const t = setTimeout(async () => {
       onLoading(true);
       try {
         const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
         const data = await r.json();
-        onResults(data.feeds ?? [], q);
-      } finally { onLoading(false); }
+        if (gen !== genRef.current) return;
+        onResults(Array.isArray(data?.feeds) ? data.feeds : [], q);
+      } catch {
+        // try/finally with no catch made a dropped connection or a non-JSON
+        // body an unhandled rejection. An empty result set is the honest answer
+        // here — the surrounding UI already renders "no results" — and the next
+        // keystroke retries anyway.
+        if (gen === genRef.current) onResults([], q);
+      } finally {
+        if (gen === genRef.current) onLoading(false);
+      }
     }, 280);
     return () => clearTimeout(t);
   }, [q, onResults, onLoading]);

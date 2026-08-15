@@ -436,6 +436,15 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
     podcast: null, episodes: [],
   });
   const [loading, setLoading] = useState(false);
+  // A failed load used to fall through to the `not found` branch below, which
+  // says the show doesn't exist when what actually happened is that the network
+  // dropped. Separate state, separate message, and a way back.
+  const [loadError, setLoadError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+  // Generation counter for the feed fetch — the same guard lib/nostr/use-feed.ts
+  // and components/podroll.tsx already use. See the effect below for why this
+  // one is not merely a render optimisation.
+  const feedGenRef = useRef(0);
   const [showBoostOpen, setShowBoostOpen] = useState(false);
   const [boostTrack, setBoostTrack] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
@@ -467,21 +476,45 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
     const endpoint = feedUrl
       ? `/api/feed?url=${encodeURIComponent(feedUrl)}`
       : `/api/feed?id=${feedId}`;
+    // The generation guard is a CORRECTNESS gate, not a perf one. Switching
+    // shows quickly can land A's response after B's, and the handler below
+    // writes `episodeQueue` — the array <TransportControls> computes prev/next
+    // from and playNext() traverses. A late response therefore repointed the
+    // transport at the previous show while this one was on screen.
+    //
+    // The `.catch` is the other half. `.finally` does NOT handle rejection, so
+    // an offline fetch, a 5xx serving an HTML body, or any r.json() parse
+    // failure was an unhandled promise rejection: loading cleared, data stayed
+    // empty, and the page rendered `not found`.
+    const gen = ++feedGenRef.current;
+    setLoadError(false);
     fetch(endpoint)
       .then((r) => r.json())
       .then((d) => {
-        setData({ podcast: d.podcast, episodes: d.episodes });
-        setEpisodeQueue(d.episodes);
+        if (gen !== feedGenRef.current) return;
+        // An `{ error }` body parses fine and would otherwise put `undefined`
+        // into the store as the episode queue.
+        const episodes = Array.isArray(d?.episodes) ? d.episodes : [];
+        if (!d?.podcast) { setLoadError(true); return; }
+        setData({ podcast: d.podcast, episodes });
+        setEpisodeQueue(episodes);
         // Push the RSS-enriched podcast (funding/medium/podroll) back into the
         // store so the episode detail view — which reads selectedPodcast — shows
         // the SUPPORT link the show page gets. No-op if it's a different show.
-        if (d.podcast) syncSelectedPodcast(d.podcast);
+        syncSelectedPodcast(d.podcast);
       })
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (gen === feedGenRef.current) setLoadError(true);
+      })
+      .finally(() => {
+        if (gen === feedGenRef.current) setLoading(false);
+      });
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
-  }, [feedId, feedUrl, setEpisodeQueue, syncSelectedPodcast]);
+    // `reloadKey` is what the retry button below bumps — it re-runs this effect
+    // without needing the feed to change.
+  }, [feedId, feedUrl, reloadKey, setEpisodeQueue, syncSelectedPodcast]);
 
   // Above the early returns — hook order has to stay stable, and the hook
   // itself no-ops (returns nulls) while the podcast is still null.
@@ -516,6 +549,19 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
     );
   }
   if (loading) return <div ref={containerRef} className="text-muted text-sm py-8">loading episodes…</div>;
+  // A dropped connection is not the same answer as "this show doesn't exist",
+  // and telling a user the second when the first happened sends them looking
+  // for a problem that isn't there.
+  if (loadError) {
+    return (
+      <div ref={containerRef} className="text-sm py-8 flex flex-wrap items-center gap-3">
+        <span className="text-muted">couldn&apos;t load this show — check your connection</span>
+        <button type="button" className="btn-ghost" onClick={() => setReloadKey((k) => k + 1)}>
+          ↻ retry
+        </button>
+      </div>
+    );
+  }
   if (!data.podcast) return <div ref={containerRef} className="text-muted text-sm py-8">not found</div>;
 
   const showHasValue = hasValueRecipients(data.podcast.value);
