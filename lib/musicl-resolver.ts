@@ -14,6 +14,7 @@
 
 import type { ValueBlock, ValueRecipient } from './types';
 import { safeFetch } from './safe-fetch';
+import { readAttr } from './feed-xml';
 
 const FETCH_TIMEOUT_MS = 5000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -41,18 +42,25 @@ async function fetchFeedXml(url: string): Promise<string | null> {
   }
 }
 
+// Attributes are read through `readAttr` (lib/feed-xml.ts), NOT through local
+// regexes. The hand-rolled `/address="([^"]*)"/` this replaced had no name
+// boundary at all, so it matched the tail of `x-address="…"` and returned an
+// attacker's node id in preference to the real `address=` beside it — the same
+// payee-substitution `readAttr`'s own comment documents, reached independently
+// through a second parser. Two copies of an attribute reader is two places to
+// get that wrong; `npm run check:feedxml` pins the one that survives.
 function parseValueRecipients(valueXml: string): ValueRecipient[] {
   const recRe = /<podcast:valueRecipient\b[^/>]*\/?>/g;
   const recipients: ValueRecipient[] = [];
   for (const m of valueXml.matchAll(recRe)) {
     const block = m[0];
-    const name = /name="([^"]*)"/.exec(block)?.[1];
-    const typeStr = /type="([^"]*)"/.exec(block)?.[1];
-    const address = /address="([^"]*)"/.exec(block)?.[1];
-    const split = Number(/split="([^"]*)"/.exec(block)?.[1] ?? '0');
-    const fee = /fee="true"/i.test(block);
-    const customKey = /customKey="([^"]*)"/.exec(block)?.[1];
-    const customValue = /customValue="([^"]*)"/.exec(block)?.[1];
+    const name = readAttr(block, 'name');
+    const typeStr = readAttr(block, 'type');
+    const address = readAttr(block, 'address');
+    const split = Number(readAttr(block, 'split') ?? '0');
+    const fee = readAttr(block, 'fee')?.toLowerCase() === 'true';
+    const customKey = readAttr(block, 'customKey');
+    const customValue = readAttr(block, 'customValue');
     if (!address || (typeStr !== 'node' && typeStr !== 'lnaddress')) continue;
     recipients.push({
       name,
@@ -72,7 +80,10 @@ function extractValueBlock(scopeXml: string): ValueBlock | null {
   if (!valMatch) return null;
   const recipients = parseValueRecipients(valMatch[0]);
   if (recipients.length === 0) return null;
-  const method = /method="([^"]+)"/.exec(valMatch[0])?.[1] || 'keysend';
+  // The OPEN tag only. `valMatch[0]` spans the whole element, so an unanchored
+  // read would happily take a `method=` off a nested <podcast:valueRecipient>.
+  const openTag = /<podcast:value\b[^>]*>/.exec(valMatch[0])?.[0] ?? '';
+  const method = readAttr(openTag, 'method') || 'keysend';
   return { type: 'lightning', method, recipients };
 }
 
@@ -93,13 +104,14 @@ function findItemByGuid(xml: string, itemGuid: string): FoundItem | null {
     const guidMatch = /<guid\b[^>]*>([^<]+)<\/guid>/.exec(itemXml);
     if (!guidMatch || guidMatch[1].trim() !== itemGuid) continue;
     const titleMatch = /<title>([\s\S]*?)<\/title>/.exec(itemXml);
-    const imageMatch =
-      /<itunes:image[^>]+href="([^"]+)"/.exec(itemXml)
-      ?? /<image>[\s\S]*?<url>([^<]+)<\/url>/.exec(itemXml);
+    const itunesImg = /<itunes:image\b([^>]*)>/.exec(itemXml);
+    const image =
+      (itunesImg ? readAttr(itunesImg[1], 'href') : undefined)
+      ?? /<image>[\s\S]*?<url>([^<]+)<\/url>/.exec(itemXml)?.[1];
     return {
       itemXml,
       title: titleMatch?.[1].trim(),
-      image: imageMatch?.[1],
+      image,
     };
   }
   return null;
@@ -120,7 +132,10 @@ function publisherRemoteItemUrls(xml: string): string[] {
   const urls: string[] = [];
   const remoteItemRe = /<podcast:remoteItem\b[^>]*>/g;
   for (const m of xml.matchAll(remoteItemRe)) {
-    const url = /feedUrl="([^"]+)"/.exec(m[0])?.[1];
+    // `readAttr`, not a bare `/feedUrl="…"/`: this URL decides which album feed
+    // gets fetched and therefore which value block is paid, so an `x-feedUrl`
+    // decoy winning the match is the same payee substitution one level up.
+    const url = readAttr(m[0], 'feedUrl');
     if (url) urls.push(url);
   }
   return urls;
