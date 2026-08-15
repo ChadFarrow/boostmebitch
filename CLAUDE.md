@@ -64,6 +64,8 @@ Each **imports the real module** via `node --experimental-strip-types` — a rei
 
 Run all of them alongside typecheck/lint/build before anything ships. **Stop the dev server before `npm run build`** — the build rewrites `.next` and the running server then serves a mismatched chunk manifest.
 
+**And `rm -rf .next` before starting `dev` again, because the collision runs BOTH ways.** Starting the dev server on a `.next` a production build just wrote is equally broken and much harder to read: the dev server inherits production manifests (`prerender-manifest.json` sitting beside `static/development`) and serves a chunk graph that doesn't match. It surfaces as a Next dev overlay reading **`undefined is not an object (evaluating 'originalFactory.call')`** — a React Refresh error that looks like an application bug and sends you hunting through app code for a fault that isn't there. Then note the second half: a phone or second browser **keeps serving those broken chunks from its own cache** after the server is fixed, and a plain reload will not evict them, so retest in a private tab before concluding the fix failed.
+
 `.env.local`: `PODCAST_INDEX_KEY`/`SECRET` (server-only), `APP_NAME` (optional). The Spark rail needs **no** API key.
 
 ## Server vs client boundary (don't cross it)
