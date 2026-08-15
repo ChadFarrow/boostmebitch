@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   createHtmlPortalNode,
   InPortal,
@@ -483,6 +483,36 @@ export function Player() {
     void togglePip(video.current);
   }
 
+  /**
+   * Jump by a signed number of seconds, relative to where playback ACTUALLY is.
+   *
+   * **Reads `el.currentTime`, never `positionSec`, and that is the whole point
+   * of it existing separately from `seekMedia`.** The store's position is a
+   * copy refreshed from `timeupdate`, which fires about 4x a second and is
+   * mirrored into React state — so two quick taps on +30 both compute from the
+   * same stale base and the second one *overwrites* the first instead of adding
+   * to it. The user presses twice and moves thirty seconds. Relative seeking has
+   * to read the clock it is offsetting from.
+   *
+   * Clamped to `[0, duration]`. `duration` comes off the element too: it is
+   * `Infinity` on a live stream and `NaN` before metadata, and in both cases
+   * there is no end to clamp against, so the upper bound is simply skipped
+   * rather than turned into a NaN comparison that swallows the seek.
+   *
+   * Defined with refs and stable setters only, so it can be a dependency-free
+   * `useCallback` and the Media Session effect below can close over it.
+   */
+  const skipBy = useCallback((deltaSec: number) => {
+    const el = isVideoRef.current ? video.current : audio.current;
+    if (!el) return;
+    const dur = el.duration;
+    const target = el.currentTime + deltaSec;
+    const clamped = Math.max(0, Number.isFinite(dur) ? Math.min(target, dur) : target);
+    el.currentTime = clamped;
+    lastTick.current = Math.floor(clamped);
+    setPosition(clamped);
+  }, [setPosition]);
+
   // Media Session — OS lock-screen / notification transport + metadata. Wires
   // the system media controls to the same store actions the in-app UI uses, so
   // play/pause/skip and (for podcasts) lock-screen scrubbing work with the
@@ -501,8 +531,13 @@ export function Player() {
       ['pause', () => setPlaying(false)],
       ['previoustrack', () => useApp.getState().playPrev()],
       ['nexttrack', () => useApp.getState().playNext()],
-      ['seekbackward', (d) => seekActive(Math.max(0, useApp.getState().positionSec - (d.seekOffset || 10)))],
-      ['seekforward', (d) => seekActive(useApp.getState().positionSec + (d.seekOffset || 10))],
+      // Through `skipBy`, not `seekActive` + `getState().positionSec`: these are
+      // RELATIVE jumps and had the same stale-base bug the in-app buttons would
+      // have had — hold down the lock-screen skip and every repeat recomputed
+      // from the same ~4Hz-old position, so a run of them moved one interval.
+      // `seekto` below stays on `seekActive`, because it is absolute.
+      ['seekbackward', (d) => skipBy(-(d.seekOffset || 10))],
+      ['seekforward', (d) => skipBy(d.seekOffset || 10)],
       ['seekto', (d) => { if (d.seekTime != null) seekActive(d.seekTime); }],
     ];
     for (const [action, handler] of handlers) {
@@ -918,6 +953,7 @@ export function Player() {
         open={playerExpanded}
         duration={duration}
         onSeek={seekMedia}
+        onSkip={skipBy}
         videoNode={videoNode}
         videoRef={video}
         isVideo={isVideo}
