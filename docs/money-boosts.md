@@ -38,6 +38,25 @@ The `⚡ BOOST N TRACKS` button on each episode row (`components/lists.tsx`) ope
 
 Rail picker: see [`wallets.md`](wallets.md) — `components/rail-picker.tsx` is shared with `BoostModal`. Computed inline (no `useMemo`) so the existing `subscribeNwc`/`subscribeSpark` re-render path surfaces newly-connected wallets without remount.
 
+### The single BOOST button inside a split window
+
+`BoostAllModal` pays every track in an episode; this is the other half — the plain BOOST button, pressed while one of those tracks is playing.
+
+It didn't exist for the whole life of the valueTimeSplit feature, and the gap was invisible from the inside: the boost succeeded, the modal showed ✓, the sats arrived — at the *show*. The report that surfaced it was a host who had built an episode specifically to demo value-for-value music (Chad and Reeds Podcast ep. 002, 97% redirected to Matt Finlay's "Copenhagen Time" for the last 281 seconds) and found the boost button ignoring the split he'd authored. Two things were wrong at once: the artist got none of it, and the boostagram carried no `remote_feed_guid`/`remote_item_guid`, so nothing downstream could tell that boost apart from any other.
+
+The asymmetry that hid it: a **live** show redirects correctly, because `live-value.ts` rewrites `episode.value` with the artist's block and the modal reads `episode.value`. A pre-recorded split rewrites nothing, so there was no path from `episode.valueTimeSplits` to the modal at all.
+
+**Shape** (`components/boost-modal/use-active-split.ts` + `index.tsx`):
+
+1. **Window test is synchronous, target resolution is not.** `startTime`/`duration` are already on `episode.valueTimeSplits`, so `splitAtPosition` knows *instantly* that a redirect applies; the artist's recipients need `/api/value-splits` (the same endpoint and the same one-hour CDN cache `BoostAllModal` uses). The button is disabled in between — that gap is the only moment where a tap could pay the show while the screen was about to promise the artist.
+2. **`splitAtPosition` re-runs over the RESOLVED list** rather than matching the unresolved window against it by guid. One rule, one place; the alternative is a second definition of "which split is this" that can drift from the first.
+3. **Both legs, not a merged block.** `splitTrackAndHost` returns `{trackSats, hostSats}`; `sendBoost` runs once per block, sequentially. Merging would mean rescaling two sets of weights against one denominator and would break `splitSats`' one-sat-per-recipient floor.
+4. **`hostRecipientCount` decides whether the show gets a leg at all.** 100 sats at 97% leaves 3 for a 4-payee show; `splitSats` can't floor everyone at 1 and gives up silently, and `payOne` returns `ok: true` for a 0-sat leg — so the modal printed a ✓ next to a recipient who received nothing. Those sats now ride with the track. `BoostAllModal` had the same bug in its own inline copy of the arithmetic and now shares the helper.
+5. **Two `<SplitsPreview>` cards, titled.** Track first (it's the larger share and the thing on screen), show second. `<LightningStatus>` counts both.
+6. **One `StoredBoost`, one note.** The user pressed boost once. `storedBoostLegs` runs per group and the results are concatenated track-first — a single merged sort would compare a host payee's raw weight against an artist's across different denominators. The note uses the base boostagram's `value_msat_total` (the full amount), so a 100-sat boost reads "Boosted 100 sats" rather than naming one leg — invariant 7.
+
+Everything above is pinned by `npm run check:vts` except the React wiring; see the CLAUDE.md table for what the boundaries cost when they're wrong.
+
 
 ### Success celebration (confetti + sound)
 

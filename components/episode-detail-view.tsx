@@ -27,10 +27,16 @@ function ChaptersList({
   chapters,
   activeIdx,
   onSeek,
+  fallbackImg,
 }: {
   chapters: ChapterEntry[];
   activeIdx: number;
   onSeek: (t: number) => void;
+  // The episode's (or show's) own art, for chapters that ship no `img`. Most
+  // feeds only illustrate a handful of chapters, so without this the list
+  // alternates between indented rows and flush ones and reads as broken
+  // alignment rather than as "this chapter has a picture".
+  fallbackImg?: string;
 }) {
   return (
     <ul className="-mx-1 text-sm">
@@ -51,13 +57,23 @@ function ChaptersList({
                 on ? '' : 'hover:bg-bone/5'
               }`}
             >
-              {c.img && (
+              {(c.img || fallbackImg) && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={c.img}
+                  src={c.img || fallbackImg}
                   alt=""
                   loading="lazy"
-                  onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                  // A chapter image is an arbitrary third-party URL and they do
+                  // rot. Fall back to the episode art before giving up, the same
+                  // two-URL-then-hide chain <PodcastCover> uses — hiding on the
+                  // first failure is what reintroduces the ragged edge.
+                  onError={(e) => {
+                    if (fallbackImg && e.currentTarget.src !== fallbackImg) {
+                      e.currentTarget.src = fallbackImg;
+                    } else {
+                      e.currentTarget.style.display = 'none';
+                    }
+                  }}
                   className="w-10 h-10 rounded object-cover flex-shrink-0 border border-bone/15"
                 />
               )}
@@ -413,7 +429,14 @@ export function EpisodeDetailView() {
 
             {activeInfo === 'chapters' &&
               (hasChapters
-                ? <ChaptersList chapters={chapters!} activeIdx={chaptersActiveIdx} onSeek={seekEpisodeTo} />
+                ? (
+                  <ChaptersList
+                    chapters={chapters!}
+                    activeIdx={chaptersActiveIdx}
+                    onSeek={seekEpisodeTo}
+                    fallbackImg={episode.image ?? podcast?.image}
+                  />
+                )
                 : <p className="text-xs text-muted">Loading chapters…</p>)}
 
             {activeInfo === 'transcript' && (

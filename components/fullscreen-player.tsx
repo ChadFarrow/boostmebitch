@@ -38,6 +38,7 @@ function EpisodeInfoPanel({
   hasTranscriptUrl,
   onSeek,
   currentSec,
+  chapterFallbackImg,
 }: {
   description: string;
   chapters: ChapterEntry[] | null;
@@ -49,6 +50,8 @@ function EpisodeInfoPanel({
   hasTranscriptUrl: boolean;
   onSeek: (s: number) => void;
   currentSec: number;
+  // The episode's own art, for chapters that ship no `img` of their own.
+  chapterFallbackImg?: string;
 }) {
   const [tab, setTab] = useState<InfoTab>('about');
 
@@ -124,13 +127,23 @@ function EpisodeInfoPanel({
                       on ? 'text-bolt' : 'text-bone/80 hover:bg-bone/5'
                     }`}
                   >
-                    {c.img && (
+                    {/* Chapters with no art of their own borrow the episode's,
+                        so the list keeps one left edge instead of alternating
+                        between indented and flush rows. Same fallback chain as
+                        the episode page's list. */}
+                    {(c.img || chapterFallbackImg) && (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img
-                        src={c.img}
+                        src={c.img || chapterFallbackImg}
                         alt=""
                         loading="lazy"
-                        onError={(e) => { e.currentTarget.style.display = 'none'; }}
+                        onError={(e) => {
+                          if (chapterFallbackImg && e.currentTarget.src !== chapterFallbackImg) {
+                            e.currentTarget.src = chapterFallbackImg;
+                          } else {
+                            e.currentTarget.style.display = 'none';
+                          }
+                        }}
                         className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
                       />
                     )}
@@ -622,6 +635,7 @@ export function FullscreenPlayer({
               hasTranscriptUrl={hasTranscriptUrl}
               onSeek={seekTo}
               currentSec={positionSec}
+              chapterFallbackImg={episode.image ?? podcast.image}
             />
 
             {episode.socialInteract?.length ? (
