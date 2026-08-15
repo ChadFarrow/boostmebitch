@@ -19,11 +19,20 @@
 // Imports lib/safe-fetch.ts directly via --experimental-strip-types so this
 // exercises production code rather than a copy.
 //
-// Known and accepted gap, deliberately NOT asserted here: there is no DNS
-// resolution, so a public hostname that resolves to a private IP still passes.
-// Closing that needs a custom dialer that validates the resolved address
-// (and re-validates at connect time to beat TOCTOU rebinding). Documented at
-// the top of lib/safe-fetch.ts.
+// SCOPE: this pins `assertSafeFetchUrl`, the SYNC half — schemes, hostnames and
+// IP literals. It is deliberately pure so it can be asserted offline.
+//
+// `safeFetch` has a second layer, `assertResolvedHostSafe`, which resolves the
+// hostname and re-runs the same IP checks on every address DNS returns. That
+// one is NOT asserted here because it needs a live resolver, and a check script
+// that fails on a plane is a check script people start skipping. It shares
+// `isPrivateIp` with this half, so every range pinned below is a range it
+// enforces too — which is exactly why that predicate is one exported function
+// and not two lists.
+//
+// Both layers together still leave TOCTOU rebinding open: we resolve, then
+// undici resolves again when it dials. Closing that needs a custom dialer
+// pinning the validated address. Documented at the top of lib/safe-fetch.ts.
 
 import { assertSafeFetchUrl } from '../lib/safe-fetch.ts';
 
@@ -69,6 +78,25 @@ const BLOCKED = [
   ['IPv6 link-local',          'http://[fe80::1]/'],
   ['IPv6 ULA',                 'http://[fc00::1]/'],
   ['IPv4-mapped IPv6',         'http://[::ffff:127.0.0.1]/'],
+  // IPv6 encodings that route somewhere private WITHOUT matching any of the
+  // patterns above. Every one of these passed the guard until the whole of each
+  // prefix was refused — decoding the embedded IPv4 instead would have meant a
+  // second address parser and a second place to get it wrong.
+  ['IPv4-compatible IPv6',     'http://[::7f00:1]/'],            // 127.0.0.1
+  ['NAT64 loopback',           'http://[64:ff9b::7f00:1]/'],     // 127.0.0.1
+  ['NAT64 metadata',           'http://[64:ff9b::a9fe:a9fe]/'],  // 169.254.169.254
+  ['6to4 loopback',            'http://[2002:7f00:1::]/'],       // 127.0.0.1
+  ['IPv6 site-local',          'http://[fec0::1]/'],
+  ['Teredo',                   'http://[2001:0:1:2::]/'],
+  ['discard-only 100::/64',    'http://[100::1]/'],
+  // IETF special-use IPv4. None is routable, so none can be a real podcast host,
+  // and each is a plausible internal target.
+  ['192.0.0.0/24 IETF',        'http://192.0.0.1/'],
+  ['TEST-NET-1',               'http://192.0.2.5/'],
+  ['TEST-NET-2',               'http://198.51.100.5/'],
+  ['TEST-NET-3',               'http://203.0.113.5/'],
+  ['benchmarking 198.18/15',   'http://198.18.0.1/'],
+  ['6to4 relay anycast',       'http://192.88.99.1/'],
   ['file: scheme',             'file:///etc/passwd'],
   ['gopher: scheme',           'gopher://evil/'],
   ['unparseable',              'not a url at all'],
@@ -92,6 +120,21 @@ const ALLOWED = [
   ['172.32 above RFC1918','http://172.32.0.1/'],
   ['223.x below multicast','http://223.255.255.255/'],
   ['public IPv6',         'http://[2606:4700::1111]/'],
+  // Boundaries just outside each range added for the IPv6/special-use pass.
+  // These matter as much as the BLOCKED half: the cheap way to "fix" a bypass
+  // is to widen a prefix until it swallows real hosts, and nothing else here
+  // would notice.
+  ['2001: public (Google DNS)', 'http://[2001:4860:4860::8888]/'], // NOT Teredo
+  ['2003: above 6to4',    'http://[2003::1]/'],
+  ['65:: above NAT64',    'http://[65:ff9b::1]/'],
+  ['192.0.1 above IETF',  'http://192.0.1.1/'],
+  ['192.0.3 above TEST-NET-1', 'http://192.0.3.1/'],
+  ['198.17 below bench',  'http://198.17.255.255/'],
+  ['198.20 above bench',  'http://198.20.0.1/'],
+  ['192.88.98 below 6to4 relay', 'http://192.88.98.1/'],
+  ['192.88.100 above 6to4 relay', 'http://192.88.100.1/'],
+  ['203.0.114 above TEST-NET-3', 'http://203.0.114.1/'],
+  ['198.51.101 above TEST-NET-2', 'http://198.51.101.1/'],
 ];
 
 console.log('\nMust be ALLOWED — ordinary podcast hosts');
