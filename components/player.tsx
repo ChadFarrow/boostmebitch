@@ -916,6 +916,9 @@ export function Player() {
               prev={chapterNav?.prev}
               next={chapterNav?.next}
               sidesOnDesktopOnly
+              // No live gate needed here: `playOnly` already collapses the whole
+              // cluster to play/pause on a live stream, before skip is reached.
+              onSkip={skipBy}
             />
             {/* Compact enough for the mini-bar on desktop; hidden on the cramped
                 mobile mini-bar (the fullscreen player carries the toggle there). */}
