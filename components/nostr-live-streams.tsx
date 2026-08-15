@@ -10,6 +10,7 @@ import {
   type NostrLiveStream,
 } from '@/lib/nostr/live-streams';
 import { fetchProfile } from '@/lib/nostr';
+import { hasValueRecipients } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel';
@@ -321,12 +322,20 @@ function StreamCard({
         >
           {isCurrentStream && isPlaying ? '❚❚' : '▶'} PLAY
         </button>
-        {value && (
+        {/* hasValueRecipients, not a bare truthiness check: resolveStreamV4V can
+            return a block with an empty `recipients` array, which opened the
+            boost modal with nobody to pay. */}
+        {hasValueRecipients(value) && (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onBoost(); }}
             className="btn-bolt text-xs py-1 px-2 flex-shrink-0 flex items-center gap-1"
             title="Boost this stream"
+            // REQUIRED, not decorative — `title` is not an accessible name, so
+            // without this the button reads as unlabelled and its only content
+            // is an emoji whose announced name is "high voltage". Same rule
+            // player.tsx and lists.tsx already spell out for their own buttons.
+            aria-label="Boost this stream"
           >
             ⚡
           </button>

@@ -479,6 +479,16 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                           title={result.indeterminate ? 'Wallet did not answer — this may still have been sent' : undefined}
                         >
                           {result.ok ? '✓' : result.indeterminate ? '?' : '✗'}
+                          {/* Same reason as <SplitsPreview>: colour plus glyph
+                              is not a status a reader can hear, and `title` is
+                              unreachable on touch. */}
+                          <span className="sr-only">
+                            {result.ok
+                              ? ' sent'
+                              : result.indeterminate
+                                ? ' wallet did not answer — this may still have been sent'
+                                : ' failed'}
+                          </span>
                         </span>
                       )}
                       {running && !result && i >= (progress.length) && (

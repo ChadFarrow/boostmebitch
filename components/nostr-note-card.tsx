@@ -1,5 +1,5 @@
 'use client';
-import { memo, useEffect, useState } from 'react';
+import { memo, useEffect, useId, useState } from 'react';
 import { ModalShell } from './modal-shell';
 import {
   resolvePublishRelays,
@@ -412,6 +412,10 @@ function ZapDialog({
   }
 
   const zapTarget = note.author?.display_name || note.author?.name || shortNpub(note.npub, 6);
+  // htmlFor/id — both fields were bare siblings, so neither had an accessible
+  // name, on the dialog that sends the zap.
+  const amountId = useId();
+  const commentId = useId();
 
   return (
     // Not dismissable while paying — this is a real Lightning send.
@@ -438,12 +442,16 @@ function ZapDialog({
         )}
         {canZap && (
           <>
-            <label className="block text-[11px] uppercase tracking-widest text-muted mb-1">amount (sats)</label>
+            <label htmlFor={amountId} className="block text-[11px] uppercase tracking-widest text-muted mb-1">amount (sats)</label>
             <input
+              id={amountId}
               type="number"
               min={1}
+              step={1}
               value={amount}
-              onChange={(e) => setAmount(Math.max(1, Number(e.target.value) || 0))}
+              // Math.round as well as the clamp: the field accepts decimals, and
+              // a fractional sat is not a thing that can be sent.
+              onChange={(e) => setAmount(Math.max(1, Math.round(Number(e.target.value) || 0)))}
               className="input w-full mb-3"
             />
             <div className="flex gap-2 mb-3">
@@ -457,8 +465,9 @@ function ZapDialog({
                 </button>
               ))}
             </div>
-            <label className="block text-[11px] uppercase tracking-widest text-muted mb-1">comment (optional)</label>
+            <label htmlFor={commentId} className="block text-[11px] uppercase tracking-widest text-muted mb-1">comment (optional)</label>
             <input
+              id={commentId}
               type="text"
               value={comment}
               onChange={(e) => setComment(e.target.value)}
