@@ -368,10 +368,6 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           }),
       });
       setResults(collected);
-      if (paidAny(collected)) {
-        fireConfetti();
-        playBoostSound({ appIsPlaying: useApp.getState().isPlaying });
-      }
     } catch (e) {
       alert(getErrorMessage(e, 'boost failed'));
       setRunning(false);
@@ -414,6 +410,18 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     setRunning(false);
 
     const anyPaid = paidAny(collected) || paidAny(hostCollected);
+
+    // Celebrate ONCE, after every leg of every block has settled — not inside
+    // the first sendBoost. A redirected boost sends the track's block and then
+    // the show's, so firing on the track's completion popped the confetti and
+    // played the ping while the show's legs were still going out and the button
+    // still read "sending…". A success chime mid-payment is worse than a late
+    // one: it says "done" over money that is still moving, which is the same
+    // wrong claim a ✗ on an unanswered wallet makes, pointed the other way.
+    if (anyPaid) {
+      fireConfetti();
+      playBoostSound({ appIsPlaying: useApp.getState().isPlaying });
+    }
 
     // Auto-close after a successful send (brief delay so the confetti + "sent"
     // state register). The Nostr note + chat publishes below continue in the
