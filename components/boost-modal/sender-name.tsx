@@ -1,5 +1,6 @@
 'use client';
 
+import { useId } from 'react';
 import { DEFAULT_SENDER_NAME } from '@/lib/util';
 
 // Re-exported so every existing import site keeps working. The constant itself
@@ -23,17 +24,26 @@ export function SenderName({
    */
   anonymous?: boolean;
 }) {
+  // htmlFor/id: the label was a bare sibling, so this field had no accessible
+  // name. aria-describedby carries the anonymity sentence with it — that line
+  // is the whole explanation for why the input is disabled and blank.
+  const id = useId();
+  const hintId = `${id}-hint`;
   return (
     <div>
-      <label className="text-[11px] uppercase tracking-widest text-muted">From</label>
+      <label htmlFor={id} className="text-[11px] uppercase tracking-widest text-muted">
+        From
+      </label>
       <input
+        id={id}
+        aria-describedby={hintId}
         className="input mt-1.5 w-full disabled:opacity-60"
         value={anonymous ? '' : value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={DEFAULT_SENDER_NAME}
         disabled={anonymous}
       />
-      <p className="text-[11px] text-muted mt-1">
+      <p id={hintId} className="text-[11px] text-muted mt-1">
         {anonymous
           ? `Sent as “${DEFAULT_SENDER_NAME}” — your name isn’t included.`
           : `Left blank, boosts are sent as “${DEFAULT_SENDER_NAME}”.`}

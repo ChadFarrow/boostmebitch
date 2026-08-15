@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 
 export const MIN_BOOST_SATS = 100;
 
@@ -11,6 +11,11 @@ export function AmountInput({
   onChange: (n: number) => void;
 }) {
   const [raw, setRaw] = useState(sats > 0 ? String(sats) : '');
+  // htmlFor/id, not a bare sibling <label>. The label was unassociated, so the
+  // accessible name of the field where a user types HOW MANY SATS TO SEND was
+  // empty — a screen reader announced an unlabelled text box on a payment form.
+  const id = useId();
+  const hintId = `${id}-hint`;
 
   useEffect(() => {
     setRaw(sats > 0 ? String(sats) : '');
@@ -18,8 +23,15 @@ export function AmountInput({
 
   return (
     <div>
-      <label className="text-[11px] uppercase tracking-widest text-muted">Amount to send (sats)</label>
+      <label htmlFor={id} className="text-[11px] uppercase tracking-widest text-muted">
+        Amount to send (sats)
+      </label>
       <input
+        id={id}
+        // aria-describedby so the minimum is announced with the field. It's the
+        // reason the send button disables, and without the association that
+        // reason was on screen but not in the accessibility tree.
+        aria-describedby={hintId}
         type="text"
         inputMode="numeric"
         pattern="[0-9]*"
@@ -33,7 +45,7 @@ export function AmountInput({
           if (digits) onChange(Number(digits));
         }}
       />
-      <p className="text-[11px] text-muted mt-1.5">minimum {MIN_BOOST_SATS} sats</p>
+      <p id={hintId} className="text-[11px] text-muted mt-1.5">minimum {MIN_BOOST_SATS} sats</p>
     </div>
   );
 }

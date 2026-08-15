@@ -43,6 +43,18 @@ export function fmtLiveTime(unixSec: number): string {
     : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${fmtClock(unixSec)}`;
 }
 
+/**
+ * Absolute publish date. Accepts unix seconds.
+ *
+ * Exists so `new Date(x * 1000).toLocaleDateString()` isn't re-inlined at every
+ * episode row — it was in two, plus a third copy inside `timeAgo` below, which
+ * is three places to change if the format ever should. Same reason `fmtClock`
+ * and `fmtLiveTime` live here.
+ */
+export function fmtDate(unixSec: number): string {
+  return new Date(unixSec * 1000).toLocaleDateString();
+}
+
 /** Human-readable relative timestamp. Accepts unix seconds. */
 export function timeAgo(unixSec: number): string {
   const diff = Date.now() / 1000 - unixSec;
@@ -50,7 +62,7 @@ export function timeAgo(unixSec: number): string {
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
   if (diff < 86400 * 30) return `${Math.floor(diff / 86400)}d ago`;
-  return new Date(unixSec * 1000).toLocaleDateString();
+  return fmtDate(unixSec);
 }
 
 // ─── Link parsing & rendering ─────────────────────────────────────────────────

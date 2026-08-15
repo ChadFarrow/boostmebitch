@@ -95,6 +95,41 @@ function favoriteFromEpisode(ep: Episode, feedGuid: string): FavoriteEpisode | n
  * with a 100-entry list would otherwise hammer a broken endpoint on every
  * reload, which StrictMode and Fast Refresh amplify into thousands.
  */
+// Concurrency ceiling for the batch below. NOT about our own server — it is
+// about the BROWSER's connection pool.
+//
+// A browser allows ~6 concurrent connections per host. `Promise.all` over a
+// 100-entry favorites list issues 100 fetches at once, so the other 94 sit in
+// the pool queue — and so does anything the USER asks for next, because it
+// joins the same queue behind them. Measured on Regular 3G: clicking a show
+// sat on "loading episodes…" while ~100 by-guid calls drained, with the server
+// answering the feed request in 241ms once it finally arrived. On a fast link
+// the queue clears instantly and the starvation is invisible, which is why this
+// only ever shows up on a slow connection — i.e. for the users it hurts most.
+//
+// Six leaves headroom in the pool for a navigation to overtake the burst.
+// Hydration is background work; the thing the user just clicked is not.
+const HYDRATE_CONCURRENCY = 6;
+
+/** Map with a bounded number of in-flight promises, preserving input order. */
+async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
 async function resolveBatch<T, R>(
   pending: T[],
   resolve: (item: T) => Promise<R | null>,
@@ -102,7 +137,7 @@ async function resolveBatch<T, R>(
   if (pending.length === 0) return [];
   const first = await resolve(pending[0]);
   const remaining = piMaybeUp() ? pending.slice(1) : [];
-  const rest = await Promise.all(remaining.map(resolve));
+  const rest = await mapLimit(remaining, HYDRATE_CONCURRENCY, resolve);
   return [first, ...rest];
 }
 

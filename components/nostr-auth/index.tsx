@@ -91,13 +91,13 @@ export function NostrAuth() {
     // before any relay queries, while the signer extension is freshly active.
     // This avoids the iOS issue where nostash's background service worker is
     // killed during the 8+ second relay wait, causing NIP-44 decrypt to hang.
-    if (!hasNwc() && typeof sessionStorage !== 'undefined') {
-      const sessionUri = sessionStorage.getItem(`bmb:nwc_uri_sess:${id.npub}`);
+    if (!hasNwc()) {
+      const sessionUri = storage.nwcSessionUri.get(id.npub);
       if (sessionUri) {
         saveNwcUri(sessionUri);
         storage.nwcBackup.set(id.npub);
         markNwcRestored(id.npub);
-        sessionStorage.removeItem(`bmb:nwc_uri_sess:${id.npub}`);
+        storage.nwcSessionUri.clear(id.npub);
       }
     }
 
@@ -466,9 +466,7 @@ export function NostrAuth() {
       // sessionStorage is cleared automatically on tab close, and the key is
       // per-npub so it can't leak to a different account signing in.
       const nwcUri = loadNwcUri();
-      if (nwcUri && typeof sessionStorage !== 'undefined') {
-        try { sessionStorage.setItem(`bmb:nwc_uri_sess:${identity.npub}`, nwcUri); } catch {}
-      }
+      if (nwcUri) storage.nwcSessionUri.set(identity.npub, nwcUri);
       clearNwcUri();
       storage.nwcBackup.clear(identity.npub);
     }

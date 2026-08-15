@@ -17,7 +17,7 @@
 // wasn't trustworthy — see the guard in `load()`.
 
 import { useCallback, useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { ModalShell } from './modal-shell';
 import { coerceProfileMetadata, fetchRawProfile, publishProfile, type NostrIdentity } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
@@ -70,7 +70,6 @@ export function ProfileEditor({
   onClose: () => void;
 }) {
   const setIdentity = useApp((s) => s.setIdentity);
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
   /** The author's own kind:0 content, which we merge over. null until loaded. */
   const [base, setBase] = useState<Record<string, unknown> | null>(null);
@@ -132,17 +131,8 @@ export function ProfileEditor({
   }, [identity.pubkey, identity.writeRelays]);
 
   useEffect(() => {
-    setPortalTarget(document.body);
     void load();
   }, [load]);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
-    }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   const pic = draft.picture.trim();
   // `data:image/` is not a nicety — it's what THIS APP writes. Every account
@@ -225,14 +215,18 @@ export function ProfileEditor({
     }
   }
 
-  if (!portalTarget) return null;
-
   const busy = phase === 'saving';
 
-  return createPortal(
-    // pb-28 so the centered card clears the mini-player bar.
-    <div className="fixed inset-x-0 top-0 h-[100dvh] z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pb-28">
-      <div className="card w-full max-w-md bg-ink relative max-h-full overflow-y-auto">
+  return (
+    // Not dismissable while publishing: Escape or a stray backdrop click during
+    // a relay round-trip would drop the user out of a save they can't tell the
+    // outcome of.
+    <ModalShell
+      onClose={onClose}
+      label="Edit profile"
+      className="w-full max-w-md"
+      dismissable={!busy}
+    >
         <button
           onClick={onClose}
           className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
@@ -304,8 +298,6 @@ export function ProfileEditor({
             </div>
           </div>
         )}
-      </div>
-    </div>,
-    portalTarget,
+    </ModalShell>
   );
 }

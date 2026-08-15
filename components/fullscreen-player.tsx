@@ -382,6 +382,11 @@ export function FullscreenPlayer({
     };
   }, []);
 
+  // Latches on first open and never resets — see the mount gate in the render
+  // below for why the subtree is gated on this rather than on `open`.
+  const [everOpened, setEverOpened] = useState(false);
+  useEffect(() => { if (open) setEverOpened(true); }, [open]);
+
   // Collapsing the player while the stage is fullscreen would leave a top-layer
   // video covering the whole app with no way back — the overlay it belongs to is
   // gone. Exit with it.
@@ -435,6 +440,20 @@ export function FullscreenPlayer({
       className={`fixed inset-x-0 top-0 h-[100dvh] z-50 flex flex-col bg-ink transition-transform duration-300 ease-in-out ${open ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
+      {/* MOUNT GATE. "Closed" here is a CSS transform, not an unmount, so this
+          whole subtree used to be live whenever an episode was loaded — and it
+          is not a passive tree. <LiveChat> opens a SECOND SimplePool (~7
+          WebSockets, a persistent subscription and a 12 s poll) and
+          <EpisodeSocialThread> fires a BFS relay query per episode, both of them
+          off-screen, for a user who may never open this player. The subtree also
+          subscribes to positionSec, so it reconciled once a second while
+          invisible.
+
+          `everOpened`, not `open`: once the user has been in here, the panes
+          keep their state (scroll position, selected tab, loaded chat history)
+          across a close/reopen. The slide transition still works because the
+          container itself is always mounted — only its contents are gated. */}
+      {everOpened && (<>
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
         <div className="flex items-center gap-3">
           <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs" aria-label="Back">
@@ -785,6 +804,7 @@ export function FullscreenPlayer({
         </div>
         )}
       </div>
+      </>)}
     </div>
   );
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { ModalShell } from './modal-shell';
 import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
 import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
 import { hasWebln, isWeblnEnabled, subscribeWebln, weblnEnable } from '@/lib/v4v/webln';
@@ -44,12 +44,7 @@ export function WalletModal({ onClose }: Props) {
   const [view, setView] = useState<WalletView>(() =>
     getActiveRail() !== null ? { kind: 'connected' } : { kind: 'picker', switching: false }
   );
-  // Portal target only resolves on the client; tracking it in state lets the
-  // first render no-op during SSR and re-render once the body is available.
-  const [portalTarget, setPortalTarget] = useState<HTMLElement | null>(null);
-
   useEffect(() => {
-    setPortalTarget(document.body);
     // Sync view when wallet state changes externally (e.g. auto-restore completes
     // after the modal is already open, or a disconnect fires from outside).
     const bump = () => {
@@ -69,11 +64,6 @@ export function WalletModal({ onClose }: Props) {
     return () => { unsubNwc(); unsubSpark(); unsubWebln(); };
   }, []);
 
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') onClose(); }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
 
   async function handleConnected(rail: 'nwc' | 'spark' | 'webln') {
     await clearOtherWallets(rail, identity?.npub);
@@ -109,11 +99,6 @@ export function WalletModal({ onClose }: Props) {
   function handleDisconnected() {
     setView({ kind: 'picker', switching: false });
   }
-
-  // Portal to body so `position: fixed` resolves against the viewport, not the
-  // sticky <header>. The header uses `backdrop-blur` which creates a containing
-  // block for fixed descendants per CSS spec.
-  if (!portalTarget) return null;
 
   const activeRail = getActiveRail();
   const weblnDetected = hasWebln();
@@ -264,24 +249,21 @@ export function WalletModal({ onClose }: Props) {
     );
   }
 
-  return createPortal(
-    <div className="fixed inset-x-0 top-0 h-[100dvh] z-40 bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="card w-full max-w-md bg-ink relative max-h-full overflow-y-auto">
-        <button
-          onClick={onClose}
-          className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
-          aria-label="Close"
-        >
-          ×
-        </button>
-        <div className="p-5 border-b border-bone/15">
-          <div className="stamp text-bolt border-bolt/60 mb-2">⚡ LIGHTNING WALLET</div>
-          <h3 className="font-display text-2xl leading-tight">{headerTitle}</h3>
-          {headerSub && <p className="text-xs text-muted mt-1">{headerSub}</p>}
-        </div>
-        {renderBody()}
+  return (
+    <ModalShell onClose={onClose} label={headerTitle} className="w-full max-w-md">
+      <button
+        onClick={onClose}
+        className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
+        aria-label="Close"
+      >
+        ×
+      </button>
+      <div className="p-5 border-b border-bone/15">
+        <div className="stamp text-bolt border-bolt/60 mb-2">⚡ LIGHTNING WALLET</div>
+        <h3 className="font-display text-2xl leading-tight">{headerTitle}</h3>
+        {headerSub && <p className="text-xs text-muted mt-1">{headerSub}</p>}
       </div>
-    </div>,
-    portalTarget,
+      {renderBody()}
+    </ModalShell>
   );
 }

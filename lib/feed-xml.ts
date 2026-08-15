@@ -11,9 +11,37 @@
 import { nip19 } from 'nostr-tools';
 import type { FeedNpub } from './types';
 
-/** Read one attribute off a raw tag's attribute string. Quote-agnostic. */
+/**
+ * Read one attribute off a raw tag's attribute string. Quote-agnostic.
+ *
+ * **The name is anchored to a whitespace or start-of-string boundary, NOT to
+ * `\b`, and that is a money invariant — see `npm run check:feedxml`.**
+ *
+ * `\b` is a *word* boundary and `-` is a non-word character, so `\baddress`
+ * matches inside `x-address`, `\bhref` inside `data-href`, `\bsplit` inside
+ * `w-split`. Since `String.match` returns the FIRST hit, a feed that writes a
+ * decoy attribute ahead of the real one wins:
+ *
+ *     <podcast:valueRecipient name="Real Artist" type="node"
+ *         x-address="03ATTACKER…" address="03REALARTIST…"
+ *         w-split="1" split="100"/>
+ *
+ * Under `\b` that parses to address `03ATTACKER…` and split `1`. The recipient
+ * this app pays is then a different node than the one the feed nominates, and
+ * the substitution is invisible to review: every other Podcasting 2.0 client
+ * reads `address=`, so the artist, the aggregators and anyone eyeballing the
+ * XML all see a correct feed. Only this parser is steered.
+ *
+ * The same trick reaches `href`/`src` in show notes (`data-href` satisfying an
+ * `href` lookup, routing a link to an attacker's URL past the reader's eye) and
+ * `url` on funding/enclosure tags.
+ *
+ * `(?:^|\s)` requires the name to actually start an attribute. Namespaced
+ * attributes (`xml:lang`) deliberately do NOT satisfy a bare-name lookup —
+ * nothing here reads one, and treating `foo:url` as `url` is the same bug.
+ */
 export function readAttr(attrs: string, name: string): string | undefined {
-  const re = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
+  const re = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, 'i');
   const m = attrs.match(re);
   return m ? (m[1] ?? m[2]) : undefined;
 }

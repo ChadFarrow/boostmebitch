@@ -26,6 +26,13 @@ export function Avatar({
       <img
         src={picture}
         alt=""
+        // Same reasoning as <PodcastCover>: feed surfaces render one of these
+        // per note and per chat message, all pointing at arbitrary third-party
+        // hosts. Eager loading meant a long thread issued a request per author
+        // before the reader had scrolled to any of them. Fixed-size tiles, so
+        // deferring them shifts no layout.
+        loading="lazy"
+        decoding="async"
         className={`${className ?? ''} object-cover`}
         onError={() => setErrored(true)}
       />

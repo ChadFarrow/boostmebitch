@@ -39,6 +39,35 @@ const nextConfig = {
           { key: 'X-Content-Type-Options', value: 'nosniff' },
           { key: 'X-Frame-Options', value: 'DENY' },
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          // HSTS. Vercel sets this automatically on *.vercel.app but NOT on a
+          // custom apex, which is where this app actually serves from — so
+          // without it the canonical domain had no HSTS at all. Two years,
+          // subdomains included: pay.boostmebitch.com (the LNbits instance the
+          // lnurlp rewrite points at) should never be reachable over plain http
+          // either. No `preload` — that's a one-way door and belongs in a
+          // deliberate submission, not a config edit.
+          {
+            key: 'Strict-Transport-Security',
+            value: 'max-age=63072000; includeSubDomains',
+          },
+          // COOP, and it MUST be `same-origin-allow-popups`, not `same-origin`.
+          // Google Sign-In runs through GIS's popup (`initTokenClient` in
+          // lib/nostr/google-auth.ts), and the popup reports its result back
+          // through the opener relationship. Plain `same-origin` severs that,
+          // so sign-in would hang on a popup that never answers — Google's own
+          // guidance says to use the allow-popups form for exactly this. The
+          // variant still cuts off any window a THIRD party opens us in, which
+          // is the part worth having.
+          { key: 'Cross-Origin-Opener-Policy', value: 'same-origin-allow-popups' },
+          // Deliberately NO Cross-Origin-Resource-Policy. Two of our endpoints
+          // exist to be read cross-origin — `.well-known/nostr.json` (NIP-05
+          // verification, by every Nostr client) and `.well-known/keysend`
+          // (by other podcast apps' payers) — and both send
+          // `Access-Control-Allow-Origin: *` on purpose. CORP is scoped to
+          // no-cors subresource loads so it shouldn't reach a CORS fetch, but
+          // the upside here is near zero (this app serves no sensitive
+          // subresources to embed) and the downside is silently breaking a
+          // verification path we can only observe from other people's clients.
           // Clipboard intentionally untouched: the Amber signer reads and the
           // Share button writes via same-origin JS, covered by the default
           // `self` allowlist.
@@ -57,13 +86,19 @@ const nextConfig = {
           //      protection than it delivers.
           // What IS worth setting are the directives that cost nothing and
           // close real injection vectors: base-uri stops a <base> tag from
-          // repointing every relative URL, object-src kills plugin embeds, and
+          // repointing every relative URL, object-src kills plugin embeds,
           // frame-ancestors backs up X-Frame-Options for browsers that prefer
-          // CSP. This matters more now that the origin can hold a signing key
-          // (see lib/nostr/local-key-store.ts).
+          // CSP, and form-action stops an injected <form> posting somewhere
+          // else — the one exfiltration route that needs no script at all, and
+          // so the one directive that still bites despite connect-src being
+          // unconstrainable. This app has no cross-origin form submissions:
+          // every write goes through fetch to our own routes. This matters more
+          // now that the origin can hold a signing key (see
+          // lib/nostr/local-key-store.ts).
           {
             key: 'Content-Security-Policy',
-            value: "base-uri 'self'; object-src 'none'; frame-ancestors 'none'",
+            value:
+              "base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'",
           },
         ],
       },

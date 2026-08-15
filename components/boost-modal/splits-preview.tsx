@@ -33,7 +33,16 @@ export function SplitsPreview({
   return (
     <div className="card p-3">
       <div className="text-[11px] uppercase tracking-widest text-muted mb-2">{title}</div>
-      <ul className="text-xs space-y-1.5 max-h-48 overflow-y-auto pr-2">
+      {/* tabIndex on the scroll box: a keyboard user has no other way to reach
+          the rows below the fold in a long value block, since the rows hold no
+          focusable controls of their own.
+          aria-live so legs settling are announced as they land, rather than
+          silently changing under a reader who has already passed them. */}
+      <ul
+        className="text-xs space-y-1.5 max-h-48 overflow-y-auto pr-2"
+        tabIndex={0}
+        aria-live="polite"
+      >
         {/* Biggest share first — and since sendBoost traverses this same order,
             it's also the order the sats actually go out in. `i` stays the
             ORIGINAL index throughout, so splits[i] and results[i] still belong
@@ -66,11 +75,22 @@ export function SplitsPreview({
                 {/* Three states, not two. A leg whose wallet never answered
                     must not show ✗ — the sats may have gone out, and a ✗ is
                     what talks someone into boosting again and paying twice. */}
-                {res?.ok && <span className="text-bolt">✓</span>}
-                {res && !res.ok && res.indeterminate && (
-                  <span className="text-muted" title="Wallet did not answer — this may still have been sent">?</span>
+                {/* Each glyph carries an sr-only word. The mark alone is
+                    colour-and-symbol only, and the ? in particular means
+                    something a reader cannot guess — its explanation used to
+                    live in `title`, which is unreachable on touch and
+                    unreliably announced. */}
+                {res?.ok && (
+                  <span className="text-bolt">✓<span className="sr-only"> sent</span></span>
                 )}
-                {res && !res.ok && !res.indeterminate && <span className="text-nostr">✗</span>}
+                {res && !res.ok && res.indeterminate && (
+                  <span className="text-muted" title="Wallet did not answer — this may still have been sent">
+                    ?<span className="sr-only"> wallet did not answer — this may still have been sent</span>
+                  </span>
+                )}
+                {res && !res.ok && !res.indeterminate && (
+                  <span className="text-nostr">✗<span className="sr-only"> failed</span></span>
+                )}
                 {splits[i]} sat
               </span>
             </li>

@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
 import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
-import { safeFetch } from './safe-fetch';
+import { safeFetch, readCappedText } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
 import { fnvHash, httpUrl } from './util';
 
@@ -40,8 +40,13 @@ async function pi<T>(path: string): Promise<T> {
     // Podcast Index data is fairly cacheable; 60s is sane for search.
     next: { revalidate: 60 },
   });
-  if (!res.ok) throw new PiHttpError(res.status, await res.text());
-  return res.json() as Promise<T>;
+  // PI is a trusted upstream (hardcoded BASE), so this is about not letting a
+  // bad day there become an OOM here rather than about a hostile body. The
+  // error branch is capped hardest: that string ends up inside an exception
+  // message, so an HTML error page would otherwise ride along in memory and,
+  // before the api-handler change, out to the caller.
+  if (!res.ok) throw new PiHttpError(res.status, await readCappedText(res, 4 * 1024));
+  return JSON.parse(await readCappedText(res)) as T;
 }
 
 // PI's value object → our ValueBlock
@@ -285,9 +290,37 @@ export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
 //     last-known-good copy rather than blanking the feed's live items /
 //     enrichment on a transient publisher outage (stale-while-error).
 // A successful fetch always replaces the cached copy and resets both windows.
+//
+// BOUNDED, and it has to be. The key is a feed URL that reaches here from
+// untrusted data, and the value is a whole RSS body. Entries past STALE stopped
+// being *read* but were never *deleted*, so the map only ever grew: iterating
+// distinct `?url=` values pinned one full feed body each, for the life of the
+// instance, with no ceiling on the count. Insertion order is eviction order —
+// a `Map` iterates oldest-first, so the first key is the least recently
+// inserted. That is by insert time, not access time; a true LRU would need a
+// re-set on every hit, and for a cache whose entries expire on a timer anyway
+// the extra bookkeeping buys nothing.
 const RSS_FRESH_MS = 60_000;
 const RSS_STALE_MS = 10 * 60_000;
+const RSS_CACHE_MAX = 200;
 const rssXmlCache = new Map<string, { xml: string; fetchedAt: number }>();
+
+function rememberFeedXml(rssUrl: string, xml: string, now: number): void {
+  // Drop entries nobody can serve any more before evicting ones that are still
+  // useful — expiry first, capacity second.
+  for (const [k, v] of rssXmlCache) {
+    if (now - v.fetchedAt >= RSS_STALE_MS) rssXmlCache.delete(k);
+  }
+  // Re-setting an existing key keeps its original insertion position, so delete
+  // first to move a refreshed entry to the back of the eviction queue.
+  rssXmlCache.delete(rssUrl);
+  rssXmlCache.set(rssUrl, { xml, fetchedAt: now });
+  while (rssXmlCache.size > RSS_CACHE_MAX) {
+    const oldest = rssXmlCache.keys().next();
+    if (oldest.done) break;
+    rssXmlCache.delete(oldest.value);
+  }
+}
 
 // `maxAgeMs` shortens the fresh window for ONE caller without shortening it for
 // everyone. The live-value poller needs the current "now playing", which turns
@@ -311,13 +344,16 @@ async function fetchFeedXml(
       next: { revalidate: Math.max(1, Math.floor(freshMs / 1000)) },
       signal: AbortSignal.timeout(8000),
     });
-    if (res.ok) xml = await res.text();
+    // Capped: `rssUrl` is feed-supplied and the result is RETAINED below, so an
+    // unbounded read is not one big allocation, it's one big allocation that
+    // stays.
+    if (res.ok) xml = await readCappedText(res);
   } catch {
     // fall through to the stale-on-error path
   }
 
   if (xml != null) {
-    rssXmlCache.set(rssUrl, { xml, fetchedAt: now });
+    rememberFeedXml(rssUrl, xml, now);
     return xml;
   }
   // Fetch failed or returned non-2xx — serve the last good copy if it's still
@@ -1192,6 +1228,11 @@ export async function resolveLiveSplit(episode: Episode): Promise<LiveValueResul
   return { split: null, signal: 'none' };
 }
 
+// A music episode with a track per valueTimeSplit runs to a few dozen; 200
+// leaves room for a long DJ set without letting a hostile feed turn one request
+// into an unbounded outbound fan-out.
+const MAX_RESOLVED_SPLITS = 200;
+
 export async function resolveValueTimeSplits(
   splits: ValueTimeSplit[],
 ): Promise<ValueTimeSplit[]> {
@@ -1211,11 +1252,31 @@ export async function resolveValueTimeSplits(
     return splits;
   }
 
-  return Promise.all(
+  // CAP THE FAN-OUT — but cap the WORK, never the array. `splits` is
+  // feed-supplied (PI maps <podcast:valueTimeSplit> wholesale), so its length is
+  // attacker-chosen, and each entry can trigger a PI call plus the publisher
+  // walk in lib/musicl-resolver.ts. Slicing the RESULT instead would be a bug:
+  // callers read this list positionally and `splitAtPosition` walks it to decide
+  // which window covers a second, so dropping entries would silently move which
+  // artist a boost pays.
+  //
+  // Over the cap, entries pass through unresolved — the same value the
+  // per-entry `catch` already yields, and a case the UI handles: an unresolved
+  // remote item falls back to the show's block and says so on screen.
+  let budget = MAX_RESOLVED_SPLITS;
+  const resolved = await Promise.all(
     splits.map(async (s, i): Promise<ValueTimeSplit> => {
       if (i === probeIdx) return probeResolved;
+      if (budget <= 0) return s;
+      budget--;
       try { return await resolveOneSplit(s); } catch { return s; }
     }),
   );
+  if (splits.length > MAX_RESOLVED_SPLITS) {
+    console.warn(
+      `[pi] episode lists ${splits.length} valueTimeSplits; resolved the first ${MAX_RESOLVED_SPLITS}, rest left unresolved`,
+    );
+  }
+  return resolved;
 }
 

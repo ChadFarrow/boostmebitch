@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
-import { fmtDuration } from '@/lib/format';
+import { fmtDate, fmtDuration } from '@/lib/format';
 import { hasValueRecipients, httpUrl, stripHtml } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
 import { useChapters, type ChapterEntry } from '@/lib/chapters';
@@ -311,7 +311,7 @@ export function EpisodeDetailView() {
           <p className="text-sm text-muted mt-1">{podcast.title}</p>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted mt-2">
             {episode.datePublished && (
-              <span>{new Date(episode.datePublished * 1000).toLocaleDateString()}</span>
+              <span>{fmtDate(episode.datePublished)}</span>
             )}
             {episode.duration ? <span>· {fmtDuration(episode.duration)}</span> : null}
             {episode.episode ? <span>· Episode {episode.episode}</span> : null}

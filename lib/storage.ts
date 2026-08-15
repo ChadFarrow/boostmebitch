@@ -63,6 +63,14 @@ const KEYS = {
   // long note in sparkOptOut.get. It still sits in the localStorage of anyone
   // who used the app before that refactor; leave it there, it is inert.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
+  // ── sessionStorage, NOT localStorage ──────────────────────────────────────
+  // Both die with the tab, which is exactly why they're allowed to hold what
+  // they hold. Accessed via storage.nwcSessionUri / storage.piBreaker at the
+  // foot of this file, never through safeGet/safeSet — those are localStorage
+  // and their memory mirror would outlive the tab lifetime that makes these
+  // safe.
+  nwcUriSessPrefix: 'bmb:nwc_uri_sess', // + ':<npub>' — NWC URI parked across a same-account sign-out → sign-in in one tab. A SPENDING CREDENTIAL; tab-scoped on purpose.
+  piDead: 'bmb:pi:dead',              // '1' while the Podcast Index breaker is tripped. Survives a reload (an outage doesn't end because someone refreshed), not the tab.
   // Streaming rate and streaming on/off are SEPARATE keys, at both scopes, so
   // switching streaming off doesn't destroy the number the user typed. Also the
   // prefixes for the per-show overrides `…:<podcastGuid|feedId>`.
@@ -1199,6 +1207,60 @@ export const storage = {
     },
     set: (npub: string | null | undefined, v: { feeds: string[]; items: string[] }) => {
       safeSet(identityKey(KEYS.favBaselinePrefix, npub), JSON.stringify(v));
+    },
+  },
+
+  /**
+   * The NWC URI parked across a same-account sign-out → sign-in inside one tab.
+   *
+   * sessionStorage, not localStorage, and deliberately so: it dies with the tab,
+   * which is the whole reason it's an acceptable place to hold a **spending
+   * credential** at all. That's why it doesn't go through safeGet/safeSet —
+   * those read and write localStorage, and the memory mirror would outlive the
+   * window this value is allowed to exist in.
+   *
+   * It IS here rather than inline, because the key was hand-written as a
+   * template literal in four places across two files. CLAUDE.md's rule — every
+   * `bmb:*` access through a typed helper — was written for localStorage and
+   * this slipped through the gap. The stakes are the reason it matters: the
+   * remove in the disconnect path is what stops a wallet the user disconnected
+   * coming back on the next sign-in, and it was one character away from no
+   * longer matching the writer, with nothing to catch the mismatch.
+   */
+  nwcSessionUri: {
+    get: (npub: string | null | undefined): string | null => {
+      if (!isBrowser()) return null;
+      try { return sessionStorage.getItem(identityKey(KEYS.nwcUriSessPrefix, npub)); } catch { return null; }
+    },
+    set: (npub: string | null | undefined, uri: string) => {
+      if (!isBrowser()) return;
+      try { sessionStorage.setItem(identityKey(KEYS.nwcUriSessPrefix, npub), uri); } catch { /* blocked */ }
+    },
+    clear: (npub: string | null | undefined) => {
+      if (!isBrowser()) return;
+      try { sessionStorage.removeItem(identityKey(KEYS.nwcUriSessPrefix, npub)); } catch { /* blocked */ }
+    },
+  },
+
+  /**
+   * Client-side circuit breaker for Podcast Index metadata resolution.
+   *
+   * sessionStorage for the same reason as above — it should survive a reload
+   * (a PI outage doesn't end because someone refreshed) but not outlive the tab.
+   */
+  piBreaker: {
+    /** True while PI is considered usable. Fails OPEN: unreadable storage must not disable resolution. */
+    isAlive: (): boolean => {
+      if (!isBrowser()) return true;
+      try { return sessionStorage.getItem(KEYS.piDead) !== '1'; } catch { return true; }
+    },
+    trip: () => {
+      if (!isBrowser()) return;
+      try { sessionStorage.setItem(KEYS.piDead, '1'); } catch { /* blocked */ }
+    },
+    reset: () => {
+      if (!isBrowser()) return;
+      try { sessionStorage.removeItem(KEYS.piDead); } catch { /* blocked */ }
     },
   },
 };
