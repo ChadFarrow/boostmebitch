@@ -230,23 +230,38 @@ export function HomePage() {
     <main className="min-h-screen pb-32">
       {/* Header */}
       <header className="border-b border-bone/15 sticky top-0 z-20 bg-ink/90 backdrop-blur pt-[env(safe-area-inset-top)]">
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-4">
+        {/* `truncate` on the wordmark is load-bearing, and so is the `min-w-0`
+            beside it. A flex item's min-width is `auto`, i.e. min-content, which
+            for this button is its widest WORD — so without them "Boost Me Bitch"
+            broke onto three lines at 390px, tripling the header and pushing the
+            show header's own `sticky top-[var(--app-header-h)]` underneath it.
+            `shrink-0` is NOT the fix: signed in with a wallet the right-hand
+            cluster is ~230px, leaving ~128px for a ~200px title, and
+            `html { overflow-x: clip }` (below) CLIPS rather than scrolls — the
+            account menu would be silently cut off. An ellipsis is the better
+            failure. `--app-header-h` assumes this can't wrap. */}
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-2 sm:gap-4">
           <button
             type="button"
             onClick={goHome}
-            className="flex items-center gap-2 hover:opacity-80 transition"
+            className="flex items-center gap-2 min-w-0 hover:opacity-80 transition"
             aria-label="Go to home"
           >
-            <BoltIcon className="w-6 h-6 text-bolt" />
-            <span className="font-display text-2xl">Boost Me Bitch</span>
-            <span className="text-[10px] text-muted uppercase tracking-widest hidden sm:inline">
+            <BoltIcon className="w-6 h-6 text-bolt shrink-0" />
+            <span className="font-display text-xl sm:text-2xl truncate">Boost Me Bitch</span>
+            <span className="text-[10px] text-muted uppercase tracking-widest hidden sm:inline shrink-0">
               podcasting 2.0
             </span>
           </button>
-          <div className="flex-1" />
-          <ThemeToggle />
-          <AuthControl />
-          <NostrAuth />
+          {/* `ml-auto` rather than a `flex-1` spacer: the spacer sat between two
+              gaps and cost a whole gap of width on mobile for nothing. Identical
+              on desktop — an auto margin and a flex-1 spacer lay out the same
+              wherever there is slack. */}
+          <div className="ml-auto flex items-center gap-2 sm:gap-4 shrink-0">
+            <ThemeToggle />
+            <AuthControl />
+            <NostrAuth />
+          </div>
         </div>
       </header>
 

@@ -532,9 +532,13 @@ export function FullscreenPlayer({
                   <BoltIcon /> BOOST
                 </button>
               </div>
+              {/* The one cluster holding BOTH hearts, so both name their target
+                  (SHOW/EPISODE, or ALBUM/TRACK on a music feed). They otherwise
+                  render the identical word side by side and nothing on screen
+                  says which favorites what. */}
               <div className="flex items-center gap-2 flex-wrap">
-                <FavHeart podcast={podcast} size="md" />
-                <FavEpisodeHeart episode={episode} podcast={podcast} size="md" />
+                <FavHeart podcast={podcast} size="md" nameTarget />
+                <FavEpisodeHeart episode={episode} podcast={podcast} size="md" nameTarget />
                 <ShareButton liveStreamId={null} podcast={podcast} />
                 {/* The meter below says what streaming is DOING; this is the
                     only place in the player you can change it. Without it the

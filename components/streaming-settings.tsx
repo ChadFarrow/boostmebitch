@@ -399,7 +399,7 @@ export function useStreamPanel(podcast: Podcast | null | undefined, enabled: boo
     <button
       type="button"
       onClick={() => setOpen((v) => !v)}
-      className="btn-ghost"
+      className="btn-ghost btn-compact"
       aria-expanded={open}
       title="Stream sats per minute while this show plays"
     >

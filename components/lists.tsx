@@ -20,14 +20,19 @@ import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
 // Re-exported for the surfaces that have always imported it from here.
 export { FavEpisodeHeart, FavEpisodeRowHeart, FavHeart };
 
+// `shrink-0 whitespace-nowrap` on both branches: .stamp is inline-flex with
+// neither, and this sits in a flex row beside a truncating title with no slack,
+// so on a phone `● LIVE` wrapped to two lines and blew up the row height.
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   if (status === 'live') {
     return (
-      <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+      <span className="stamp shrink-0 whitespace-nowrap text-nostr border-nostr/60 bg-nostr/10 animate-bolt">
+        ● LIVE
+      </span>
     );
   }
   if (status === 'pending') {
-    return <span className="stamp text-bolt border-bolt/60">PENDING</span>;
+    return <span className="stamp shrink-0 whitespace-nowrap text-bolt border-bolt/60">PENDING</span>;
   }
   return null;
 }
@@ -53,7 +58,7 @@ function ShareButton({ podcast }: { podcast: Podcast }) {
   return (
     <button
       onClick={onClick}
-      className="btn-ghost"
+      className="btn-ghost btn-compact"
       title="Copy link to this show"
       aria-label="Copy link to this show"
     >
@@ -73,7 +78,7 @@ function SupportButton({ podcast }: { podcast: Podcast }) {
       href={funding.url}
       target="_blank"
       rel="noopener noreferrer"
-      className="btn-ghost"
+      className="btn-ghost btn-compact"
       title={funding.message || 'Support this show'}
     >
       <CoinIcon /> SUPPORT
@@ -528,7 +533,18 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
 
   return (
     <div ref={containerRef}>
-      <header className="sticky top-[var(--app-header-h)] z-10 bg-ink/90 backdrop-blur -mx-4 px-4 flex items-start gap-4 pb-4 border-b border-bone/15">
+      {/* NOT sticky on phones. Pinned, this header plus the app header held 282px
+          of an 844px viewport — a third of the screen — and tracks scrolled
+          underneath the album art, reading as three stacked layers fighting each
+          other. It earns its keep on desktop, where it's ~156px of 900+ and the
+          tracklist is long; on a phone it just eats the content.
+          `top-` MUST stay sm:-prefixed: `top` on a *relative* element offsets it
+          rather than pinning it, so an unprefixed value would shove the whole
+          header a header's-height down the page.
+          `gap-x-4` keeps the original 16px cover-to-text gap; `gap-y-3`
+          reproduces the `mt-3` that came OFF the action cluster when it was
+          hoisted out of the text column below. */}
+      <header className="relative sm:sticky sm:top-[var(--app-header-h)] z-10 bg-ink/90 backdrop-blur -mx-4 px-4 flex flex-wrap items-start gap-x-4 gap-y-3 pb-4 border-b border-bone/15">
         {isMusic && firstPlayable ? (
           <button
             type="button"
@@ -565,43 +581,67 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
           />
         )}
         <div className="min-w-0 flex-1">
-          <h2 className="font-display text-3xl leading-tight font-semibold break-words">{data.podcast.title}</h2>
+          {/* text-lg on phones is sized to the COLUMN, not chosen for looks: the
+              cover eats 80px + a 16px gap, leaving ~244px, and one long word
+              ("Deprogramming") plus its article overflows that at text-xl and
+              above — which orphaned "The" on its own line and pushed the rest
+              past the clamp, ellipsizing an ordinary album title. The clamp
+              bounds a STICKY header, so it has to stay, but at this size three
+              lines hold ~60 characters before anything is lost. */}
+          <h2 className="font-display text-lg sm:text-3xl leading-tight font-semibold break-words line-clamp-3 sm:line-clamp-none">
+            {data.podcast.title}
+          </h2>
           <p className="text-sm text-muted mt-1">{data.podcast.author}</p>
-          {data.podcast.isPreview && (
-            <span
-              className="stamp mt-2 text-muted border-muted/40"
-              title="This feed isn't in Podcast Index — parsed directly from RSS for preview"
-            >
-              NOT IN PI · PREVIEW
-            </span>
+          {/* Both stamps share one wrapper. They are `inline-flex` and each used
+              to carry its own `mt-2`, so a preview feed that ALSO has a value
+              block rendered them separated by nothing but a JSX whitespace node
+              — which collides at 326px. */}
+          {(data.podcast.isPreview || data.podcast.value) && (
+            <div className="flex flex-wrap items-center gap-2 mt-2">
+              {data.podcast.isPreview && (
+                <span
+                  className="stamp text-muted border-muted/40"
+                  title="This feed isn't in Podcast Index — parsed directly from RSS for preview"
+                >
+                  NOT IN PI · PREVIEW
+                </span>
+              )}
+              {data.podcast.value && (
+                <button
+                  type="button"
+                  onClick={() => setValueOpen((v) => !v)}
+                  className="stamp text-bolt border-bolt/60 hover:bg-bolt/10 transition cursor-pointer"
+                  aria-expanded={valueOpen}
+                  title={valueOpen ? 'Hide split details' : 'Show split details'}
+                >
+                  ⚡ {data.podcast.value.recipients?.length ?? 0} recipients
+                  <span className="ml-1">{valueOpen ? '▾' : '▸'}</span>
+                </button>
+              )}
+            </div>
           )}
-          {data.podcast.value && (
+        </div>
+        {/* A `basis-full` SIBLING of the text column, not a child of it. DOM
+            nesting can't be responsive, and nested under the author line this
+            cluster is capped at ~230px on a 390px screen — which stacks five
+            ~105px controls one-per-line into a ragged column. As a basis-full
+            sibling it claims the header's whole width at every breakpoint (the
+            header is `flex-wrap` for exactly this). Order is documented in
+            docs/ui.md; all five controls stay, none hide behind a menu. */}
+        <div className="basis-full flex flex-wrap items-center gap-2">
+          <FavHeart podcast={data.podcast} size="md" />
+          <ShareButton podcast={data.podcast} />
+          <SupportButton podcast={data.podcast} />
+          {streamButton}
+          {showHasValue && (
             <button
-              type="button"
-              onClick={() => setValueOpen((v) => !v)}
-              className="stamp mt-2 text-bolt border-bolt/60 hover:bg-bolt/10 transition cursor-pointer"
-              aria-expanded={valueOpen}
-              title={valueOpen ? 'Hide split details' : 'Show split details'}
+              onClick={() => setShowBoostOpen(true)}
+              className="btn-bolt btn-compact"
+              title="Boost the show"
             >
-              ⚡ {data.podcast.value.recipients?.length ?? 0} recipients
-              <span className="ml-1">{valueOpen ? '▾' : '▸'}</span>
+              <BoltIcon /> BOOST
             </button>
           )}
-          <div className="flex flex-wrap items-center gap-2 mt-3">
-            <FavHeart podcast={data.podcast} size="md" />
-            <ShareButton podcast={data.podcast} />
-            <SupportButton podcast={data.podcast} />
-            {streamButton}
-            {showHasValue && (
-              <button
-                onClick={() => setShowBoostOpen(true)}
-                className="btn-bolt"
-                title="Boost the show"
-              >
-                <BoltIcon /> BOOST
-              </button>
-            )}
-          </div>
         </div>
       </header>
       {streamPanel && (
@@ -642,7 +682,7 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
                 }
               }}
             >
-              <div className="flex gap-3 py-3 pr-3">
+              <div className="flex gap-2 sm:gap-3 py-3 pr-1 sm:pr-3">
               <button
                 type="button"
                 onClick={(ev) => {
@@ -675,37 +715,59 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
                 )}
               </button>
               <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                   {e.liveStatus && <LiveBadge status={e.liveStatus} />}
                   <div className="text-base font-display font-medium leading-tight truncate">{e.title}</div>
                 </div>
-                <div className="text-xs text-muted flex gap-2 mt-0.5">
+                {/* Wraps, deliberately NOT truncates: at ~150px the date and
+                    duration fit line 1 and `· ⚡ V4V` drops to line 2, whereas a
+                    truncate here would silently eat the V4V signal. Without the
+                    wrap these spans couldn't shrink below their content and
+                    painted out sideways under the BOOST button. */}
+                <div className="text-xs text-muted flex flex-wrap gap-x-2 gap-y-0.5 min-w-0 mt-0.5">
                   {e.liveStatus && e.liveStartTime ? (
-                    <span>
+                    <span className="whitespace-nowrap">
                       {e.liveStatus === 'pending' ? 'starts ' : 'started '}
                       {fmtLiveTime(e.liveStartTime)}
                     </span>
                   ) : (
-                    e.datePublished && <span>{new Date(e.datePublished * 1000).toLocaleDateString()}</span>
+                    e.datePublished && (
+                      <span className="whitespace-nowrap">
+                        {new Date(e.datePublished * 1000).toLocaleDateString()}
+                      </span>
+                    )
                   )}
-                  {e.duration && <span>· {fmtDuration(e.duration)}</span>}
-                  {e.value && <span className="text-bolt">· ⚡ V4V</span>}
+                  {e.duration && <span className="whitespace-nowrap">· {fmtDuration(e.duration)}</span>}
+                  {e.value && <span className="text-bolt whitespace-nowrap">· ⚡ V4V</span>}
                 </div>
-                {e.socialInteract?.length ? (
-                  <span className="text-nostr text-[11px] mt-0.5">💬 discussion</span>
-                ) : null}
-                {e.valueTimeSplits?.length ? (
-                  <span className="text-bolt text-[11px] mt-0.5">⚡ {e.valueTimeSplits.length} tracks</span>
+                {/* These were bare inline <span>s carrying `mt-0.5`, which does
+                    nothing on a non-replaced inline element, and they abutted
+                    with only a JSX whitespace node between them when both ran. */}
+                {e.socialInteract?.length || e.valueTimeSplits?.length ? (
+                  <div className="flex flex-wrap items-center gap-x-2 text-[11px] mt-0.5">
+                    {e.socialInteract?.length ? (
+                      <span className="text-nostr">💬 discussion</span>
+                    ) : null}
+                    {e.valueTimeSplits?.length ? (
+                      <span className="text-bolt">⚡ {e.valueTimeSplits.length} tracks</span>
+                    ) : null}
+                  </div>
                 ) : null}
               </div>
               {hasValueRecipients(e.value) && (
+                // Icon-only below sm: — the word cost ~100px of a ~314px row and
+                // left the title ~24px ("Vi…", "Co…"). aria-label is REQUIRED
+                // now, not decorative: `title` is not an accessible name, so
+                // without it this button reads as unlabelled once the word goes.
                 <button
                   type="button"
                   onClick={(ev) => { ev.stopPropagation(); setBoostTrack(e); }}
-                  className="btn-bolt self-center flex-shrink-0"
+                  className="btn-bolt btn-compact self-center flex-shrink-0 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0"
                   title="Boost this track"
+                  aria-label="Boost this track"
                 >
-                  <BoltIcon /> BOOST
+                  <BoltIcon />
+                  <span className="hidden sm:inline">BOOST</span>
                 </button>
               )}
               <div className="self-center flex-shrink-0">

@@ -415,8 +415,8 @@ function ZapDialog({
   if (!portalTarget) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-[60] bg-ink/80 backdrop-blur-sm grid place-items-center px-4 pb-28">
-      <div className="card p-4 max-w-sm w-full">
+    <div className="fixed inset-x-0 top-0 h-[100dvh] z-[60] bg-ink/80 backdrop-blur-sm grid place-items-center px-4 pb-28">
+      <div className="card p-4 max-w-sm w-full max-h-full overflow-y-auto">
         <header className="flex items-center justify-between mb-3">
           <h3 className="font-display text-lg">⚡ Zap {note.author?.display_name || note.author?.name || shortNpub(note.npub, 6)}</h3>
           <button
