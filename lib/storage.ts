@@ -42,6 +42,7 @@ const KEYS = {
   senderNamePrefix: 'bmb:sender_name', // + ':<npub>' — the boost modal's "From". Per-npub because it's an identity-linked display name, not a device setting.
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
+  favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
   favBaselinePrefix: 'bmb:favbaseline', // + ':<npub>' — {feeds,items} of NIP-73 ids this device last agreed with the kind:10333 list on. NOT a cache: without it a shared, replaceable, many-writer event can't tell "another app added this" from "I removed this". See lib/nostr/favorites-list.ts.
@@ -590,6 +591,40 @@ export const storage = {
     },
     clear: (npub: string | null | undefined) =>
       safeRemove(identityKey(KEYS.walletBalancePrefix, npub)),
+  },
+
+  /**
+   * Which favorites group headings the user has collapsed.
+   *
+   * COLLAPSED keys are stored, never expanded ones, and the distinction is
+   * load-bearing: the medium vocabulary is open (see `groupByMedium`), so a
+   * medium this device has never grouped by must default to VISIBLE. Storing
+   * expanded keys would hide every future group behind a heading the user
+   * never touched, and hiding a favorite is the one failure this control must
+   * not have.
+   *
+   * Keys are namespaced by list — 'show:<medium>' and 'ep:<medium>' — because
+   * both lists group by medium and 'music' appears in each. One shared key
+   * would collapse a user's albums the moment they collapsed their tracks.
+   *
+   * Stale keys (a medium the user no longer has anything under) are harmless
+   * and left alone: the set is bounded by the medium vocabulary, and pruning
+   * on write would mean a device that momentarily resolved nothing — a PI
+   * outage, mid-hydration — silently forgetting the user's choice.
+   */
+  favCollapsed: {
+    get: (): string[] => {
+      const raw = safeGet(KEYS.favCollapsed);
+      if (!raw) return [];
+      try {
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? arr.filter((k): k is string => typeof k === 'string') : [];
+      } catch {
+        return [];
+      }
+    },
+    /** Empty set removes the key rather than storing '[]' — nothing collapsed is the default. */
+    set: (v: string[]) => (v.length ? safeSet(KEYS.favCollapsed, JSON.stringify(v)) : safeRemove(KEYS.favCollapsed)),
   },
 
   /** User's publish-relay override (manual, rare). null = no override set. */
