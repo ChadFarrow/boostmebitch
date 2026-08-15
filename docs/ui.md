@@ -74,9 +74,29 @@ Three rules on that prop, each of which shipped wrong first:
 
 **Fullscreen `<EpisodeInfoPanel>`** merges about-text, chapters and transcript under an **About / Chapters / Transcript** tab strip. Tabs appear only for sections with content (2+); a lone section renders under a plain label; a loading section shows its own state; neither → null. The strip is `inline-flex max-w-full overflow-x-auto` with `shrink-0` pills, so it's compact on desktop and swipeable on mobile instead of clipping the last tab. Chapters there are seek targets with an active highlight. Receives `chapters`/`loading` as props. The list **flows with the page's single scroll** — no inner `max-h`/`overflow` box, which fought the right pane's own scroll. The non-live right pane splits into a **pinned header** (title, seek, transport/boost, value-split, album) and a **scrollable body** so controls stay put while About/Chapters scroll (desktop `sm+` only; mobile stays one scroll).
 
+### The art follows the payment target, not the show
+
+**Whatever is playing at this second is what the hero shows, and the ranking is by how authoritatively a source names the song — which is also the order in which those sources decide who gets paid.** `nowPlayingArt(…)` (`lib/track-art.ts`) is the single composer, called by the mini-bar thumbnail and the always-mounted fullscreen hero:
+
+1. **`liveBlockImage`** — the record a live Split Kit show is playing (`useLiveBlockImage`, from the live-value watcher). Ungated: it changes once per record, so it can't be the thing hammering the audio's own origin.
+2. **`splitImage`** — the track the active `<podcast:valueTimeSplit>` redirects to (`useSplitArt`, resolved through `/api/value-splits` → `resolveValueTimeSplits`, so the art comes from the artist's own feed via the remote item).
+3. **`chapterImage`** — the active chapter's `img`.
+
+Then each surface's own tail (`|| episode.image || podcast.image`), which is why the helper returns `undefined` rather than a fallback: those tails differ, and `||` is deliberate throughout (PI returns `""` for an absent image, and `'' ?? x` is `''` — the same trap as the chapter-row `fallbackImg` above; the fullscreen hero was on `??` and has been moved over).
+
+**The valueTimeSplit entry is not decoration — it's the pre-recorded half of a promise the live path has been keeping since `live-value.ts` shipped.** Press BOOST inside a window and the payment goes to the artist, in two legs, carrying the track's `remote_*` guids ([`../CLAUDE.md`](../CLAUDE.md) boost invariant 0.5). The screen said "the show" the whole time: episode cover, show title, and the only hint that anything had been redirected was inside the modal you hadn't opened yet. Reported as *"this should have the art for the song and not the show"* on **Chad and Reeds 002 · Idea Economy** at 1:37:53 — inside the Copenhagen Time window (`startTime: 5854`, `duration: 281`, the same wire vector `check:vts` pins).
+
+**Why the redirect outranks the chapter, when both are trying to name the song.** A chapter `img` is whatever the host illustrated that stretch of audio with — routinely the show's own cover, and routinely absent (4 of 16 on a real episode). The remote item is the artist's own feed. They also disagree about boundaries: on that same episode the chapter starts at 1:37:45 and the window at 1:37:34, an 11-second stretch where the two sources name different things — and it's the window that decides who gets paid, so it's the window the picture should agree with.
+
+**One fetch per episode, owned by `<Player>`,** for the same reason `chapters` is: `<FullscreenPlayer>` is always mounted, so a hook in both doubles every episode's request. `<Player>` calls `useSplitArt` and passes `splitArt` down. Two properties keep the request rare: the windows themselves ride on `episode.valueTimeSplits`, so an episode with no redirects issues nothing at all; and the endpoint answers with a one-hour CDN cache shared with both boost modals.
+
+**It follows the position live — unlike `useActiveSplit`, which freezes on purpose.** The boost hook freezes because a boost aimed at a song must not land on the show because the song ended while the user was typing. Artwork has the opposite obligation: a frozen hero would show the last song's cover for the rest of the episode. Both call the same `splitAtPosition`, so the picture and the payee can never disagree about which song is playing at a given second.
+
+Unresolved windows are ordinary, not an error — PI hasn't crawled every album feed — and they simply fall through to the chapter/episode art, i.e. exactly the behavior before this existed.
+
 ### Artwork must never outrank the audio
 
-`<Player>` keeps an `artOk` gate, and both art surfaces — the mini-bar thumbnail and the fullscreen hero — read `chapterArt` (gated) rather than `activeChapter.img` directly. A gate applied to one surface only is no gate at all: either fetch alone is enough to starve the enclosure.
+`<Player>` keeps an `artOk` gate, and both art surfaces — the mini-bar thumbnail and the fullscreen hero — compose their image through `nowPlayingArt(…)` (`lib/track-art.ts`, gated) rather than reading `activeChapter.img` directly. A gate applied to one surface only is no gate at all: either fetch alone is enough to starve the enclosure.
 
 **Why it exists.** Chapter art is arbitrary third-party media, it is routinely hosted on the **same origin as the enclosure**, and it is routinely enormous. Homegrown Hits ep. 146: 31 chapters, 15 of them on the audio's own host, `hgh-vinyl.gif` at 33.4 MB, `HGH-Disco-Head.gif` at 36.3 MB, `HGH-TNS-Disco-Seedubs-Edition-ultra-high-res.gif` at 34.2 MB — beside a 175 MB mp3, all on one HTTP/2 connection. Every ⏭ swapped a new one in. Measured A/B over a 2 Mbit link, six chapter skips, identical in every other respect:
 

@@ -11,6 +11,7 @@ import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
+import { useSplitArt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { useLiveBlockImage } from './live-now-playing';
@@ -552,6 +553,13 @@ export function Player() {
   // art is being credited, so ordinary playback is untouched.
   const liveBlockImage = useLiveBlockImage(current?.episode.guid);
 
+  // The pre-recorded twin of the above: the cover of the track a
+  // <podcast:valueTimeSplit> is redirecting to at this second. Owned here and
+  // passed down for the same reason `chapters` is — <FullscreenPlayer> is
+  // always mounted, so a hook in both would fetch the episode's splits twice.
+  // No-ops (and issues no request) on an episode with no windows.
+  const splitArt = useSplitArt(current?.episode, positionSec);
+
   if (!current) return null;
   const { episode, podcast } = current;
   const hasValue = hasValueRecipients(episode.value);
@@ -570,11 +578,18 @@ export function Player() {
     setPosition(v);
   }
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekMedia);
-  // The chapter's artwork, but only while the buffer can afford it — see artOk.
-  // Both art surfaces read THIS, not `activeChapter.img`, so the gate can't be
+  // The artwork for the moment being played — the redirected track's cover
+  // ahead of the chapter's own `img`, and only while the buffer can afford it.
+  // Both art surfaces compose it through `nowPlayingArt`, never from
+  // `activeChapter.img` directly, so neither the gate nor the precedence can be
   // half-applied: one surface still fetching the 36 MB GIF starves the audio
   // just as thoroughly as two did.
-  const chapterArt = artOk ? activeChapter?.img : undefined;
+  const nowArt = nowPlayingArt({
+    liveBlockImage,
+    splitImage: splitArt,
+    chapterImage: activeChapter?.img,
+    artOk,
+  });
   const transcriptActiveIdx = transcriptIndexAt(transcriptCues, positionSec);
 
   function onMediaError(code: number | undefined) {
@@ -673,27 +688,28 @@ export function Player() {
             <div className="w-12 h-12 flex-shrink-0 bg-black overflow-hidden border border-bone/20">
               {videoNode && !playerExpanded && <OutPortal node={videoNode} />}
             </div>
-          ) : (liveBlockImage || chapterArt || episode.image) ? (
-            // Prefer the live block's art (the record actually playing on a
-            // Split Kit show), then the active chapter's artwork (Podcasting 2.0
-            // chapters `img`), falling back to the episode cover on a
-            // missing/broken image.
+          ) : (nowArt || episode.image) ? (
+            // `nowPlayingArt` picks the record a live Split Kit show is playing,
+            // then the track a <podcast:valueTimeSplit> redirects to, then the
+            // active chapter's artwork (Podcasting 2.0 chapters `img`), falling
+            // back to the episode cover on a missing/broken image.
             //
-            // `key` is the URL, so a chapter change REPLACES this element rather
-            // than mutating it. Two things depend on that. It cancels the
-            // outgoing image's download — chapter art is routinely tens of MB on
-            // these feeds, and a rapid ⏭ run otherwise leaves every one of them
-            // in flight against the audio's own origin. And it resets the
-            // onError bookkeeping below, which would otherwise persist on a
-            // reused element and blank a later chapter that was perfectly fine.
+            // `key` is the URL, so a chapter or track change REPLACES this
+            // element rather than mutating it. Two things depend on that. It
+            // cancels the outgoing image's download — chapter art is routinely
+            // tens of MB on these feeds, and a rapid ⏭ run otherwise leaves
+            // every one of them in flight against the audio's own origin. And it
+            // resets the onError bookkeeping below, which would otherwise
+            // persist on a reused element and blank a later chapter that was
+            // perfectly fine.
             //
             // fetchPriority low + decoding async keep it behind the media on the
             // shared HTTP/2 connection: this is a 48px thumbnail, and nothing
             // about it is worth a frame of audio.
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              key={liveBlockImage || chapterArt || episode.image}
-              src={liveBlockImage || chapterArt || episode.image}
+              key={nowArt || episode.image}
+              src={nowArt || episode.image}
               alt=""
               fetchPriority="low"
               decoding="async"
@@ -821,6 +837,7 @@ export function Player() {
         isVideo={isVideo}
         audioErr={audioErr}
         artOk={artOk}
+        splitArt={splitArt}
         pipAvailable={pipOk}
         onPip={requestPip}
         chapters={chapters}

@@ -1,0 +1,113 @@
+'use client';
+import { useEffect, useState } from 'react';
+import { splitAtPosition } from './util';
+import type { Episode, ValueTimeSplit } from './types';
+
+/**
+ * Cover art for the TRACK a `<podcast:valueTimeSplit>` is redirecting to right
+ * now — the pre-recorded twin of `useLiveBlockImage`.
+ *
+ * A live Split Kit show has shown the record actually playing since
+ * `live-value.ts` shipped, and the reason given there is not decoration: it is
+ * the one thing on screen that makes a redirected payment self-evident. A
+ * pre-recorded episode redirects exactly the same way — press BOOST inside a
+ * window and `<BoostModal>` pays the artist, not the show (CLAUDE.md boost
+ * invariant 0.5) — and showed the episode cover throughout, so the screen said
+ * "the show" while the money said "the song".
+ *
+ * **Follows the position live; it does NOT freeze.** `useActiveSplit` freezes
+ * because a boost aimed at a song must not land on the show because the song
+ * ended while the user was typing. This is artwork: the honest thing for it to
+ * do is track what is playing, and a frozen hero would keep showing the last
+ * song's cover for the rest of the episode.
+ *
+ * One fetch per episode, then a synchronous window lookup per second. The
+ * endpoint is the same one both boost modals use and it answers with a one-hour
+ * CDN cache, so opening a played-before episode costs nothing. Resolution is
+ * best-effort by design: Podcast Index hasn't crawled every album feed, so an
+ * unresolved window returns undefined and the caller's existing fallback chain
+ * (chapter art → episode cover) is what the user sees — the behavior before
+ * this hook existed.
+ *
+ * Live items are excluded: they have no time base for a window to anchor to,
+ * and `useLiveBlockImage` already covers them.
+ */
+export function useSplitArt(episode: Episode | undefined, positionSec: number): string | undefined {
+  const feedId = episode?.feedId;
+  const episodeId = episode?.id;
+  // The windows themselves ride on the episode, so "does this episode redirect
+  // at all" is known synchronously and the overwhelming majority of episodes
+  // never issue a request.
+  const hasWindows =
+    episode?.liveStatus !== 'live' && !!episode?.valueTimeSplits?.length && !!feedId && !!episodeId;
+
+  const [splits, setSplits] = useState<ValueTimeSplit[] | null>(null);
+
+  useEffect(() => {
+    if (!hasWindows) {
+      setSplits(null);
+      return;
+    }
+    let cancelled = false;
+    setSplits(null);
+    fetch(`/api/value-splits?feedId=${feedId}&episodeId=${episodeId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!cancelled) setSplits((data?.splits as ValueTimeSplit[]) ?? null);
+      })
+      .catch(() => {
+        // Artwork is not worth surfacing an error for — the cover falls back.
+        if (!cancelled) setSplits(null);
+      });
+    return () => { cancelled = true; };
+  }, [hasWindows, feedId, episodeId]);
+
+  // Same window rule the boost path pays by (`splitAtPosition`, pinned by
+  // `check:vts`), so the art on screen and the recipient of a boost pressed at
+  // that second can never disagree about which song is playing.
+  return splitAtPosition(splits, positionSec)?.image || undefined;
+}
+
+/**
+ * Which feed-supplied artwork the players show for the moment being played.
+ *
+ * Both surfaces — the mini-bar thumbnail and the always-mounted fullscreen hero
+ * — call this rather than composing the chain themselves. The gate is the
+ * reason: `artOk` applied to one surface only is no gate at all, because either
+ * fetch alone is enough to starve the enclosure (see docs/ui.md, "Artwork must
+ * never outrank the audio"), and two hand-written chains is how one surface
+ * comes to be gated and the other not.
+ *
+ * Precedence — payment target first, then the show's own chaptering:
+ *
+ * 1. `liveBlockImage` — the record a live Split Kit show is playing now.
+ * 2. `splitImage` — the track a `<podcast:valueTimeSplit>` is redirecting to.
+ * 3. `chapterImage` — the active chapter's `img`.
+ *
+ * The redirect outranks the chapter because it names the song *authoritatively*:
+ * the art comes from the artist's own feed via the remote item, whereas a
+ * chapter `img` is whatever the host illustrated that stretch of audio with —
+ * routinely the show's own cover, and routinely absent. The two also disagree
+ * about boundaries (this episode's chapter starts 11 s after its window does),
+ * and it is the window that decides who gets paid.
+ *
+ * Returns undefined when there is nothing feed-supplied to show or the gate is
+ * shut, so each caller keeps its own tail (`|| episode.image || …`) — those
+ * differ per surface, and `||` is deliberate throughout: Podcast Index returns
+ * `""` for an absent image, and `'' ?? x` is `''`.
+ */
+export function nowPlayingArt(opts: {
+  liveBlockImage?: string | null;
+  splitImage?: string;
+  chapterImage?: string;
+  /** False when the buffer can't afford heavy third-party artwork. */
+  artOk: boolean;
+}): string | undefined {
+  const { liveBlockImage, splitImage, chapterImage, artOk } = opts;
+  // The live block is exempt from the gate for the same reason it outranks
+  // everything: it changes once per record rather than once per ⏭, so it can't
+  // be the thing hammering the audio's own origin.
+  if (liveBlockImage) return liveBlockImage;
+  if (!artOk) return undefined;
+  return splitImage || chapterImage || undefined;
+}
