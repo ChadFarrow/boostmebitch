@@ -423,6 +423,90 @@ export async function togglePip(el: HTMLVideoElement | null): Promise<void> {
   }
 }
 
+// Whether WE need to draw a PiP button over a large <video>. Chrome and Firefox
+// paint their OWN Picture-in-Picture control on hover over any sizeable video —
+// both implement the standard API, and both paint that overlay whether or not
+// the element carries `controls` — so our button lands as a second, identical
+// icon in the same corner. Safari (desktop and iOS) implements only
+// webkitSetPresentationMode and paints nothing without `controls`, so there the
+// button is the only way in.
+//
+// `disablepictureinpicture` would suppress the browser's overlay, but it also
+// disables the very API our button calls, so hiding ours is the only lever.
+//
+// This is for the big fullscreen stage only. The 48px mini-bar thumbnail is far
+// below the size at which browsers paint their overlay, so it keeps using
+// `pipSupported`.
+export function pipNeedsOwnButton(el: HTMLVideoElement | null): boolean {
+  if (!el || typeof document === 'undefined') return false;
+  if (document.pictureInPictureEnabled && !el.disablePictureInPicture) return false;
+  const w = el as WebkitVideo;
+  return (
+    typeof w.webkitSupportsPresentationMode === 'function' &&
+    w.webkitSupportsPresentationMode('picture-in-picture')
+  );
+}
+
+// Native fullscreen for the video stage. Two APIs again: the standard
+// `Element.requestFullscreen` (desktop, Android, iPadOS) and WebKit's prefixed
+// `webkitRequestFullscreen`. iPhone Safari implements NEITHER for arbitrary
+// elements — only `video.webkitEnterFullscreen()`, which hands off to the native
+// iOS player — hence the two-element signature.
+//
+// The STAGE goes fullscreen rather than the <video>, so our own overlay controls
+// (tap-to-play, PiP, the exit button) ride along on top of the picture. The iOS
+// fallback loses them, which is fine: iOS owns that UI and its Done button exits.
+type WebkitFsElement = HTMLElement & { webkitRequestFullscreen?: () => void };
+type WebkitFsDocument = Document & {
+  webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => void;
+};
+type WebkitFsVideo = HTMLVideoElement & { webkitEnterFullscreen?: () => void };
+
+export function fullscreenElement(): Element | null {
+  if (typeof document === 'undefined') return null;
+  return document.fullscreenElement ?? (document as WebkitFsDocument).webkitFullscreenElement ?? null;
+}
+
+export function fullscreenSupported(
+  stage: HTMLElement | null,
+  video: HTMLVideoElement | null,
+): boolean {
+  if (typeof document === 'undefined') return false;
+  if (document.fullscreenEnabled && stage?.requestFullscreen) return true;
+  if (typeof (stage as WebkitFsElement | null)?.webkitRequestFullscreen === 'function') return true;
+  return typeof (video as WebkitFsVideo | null)?.webkitEnterFullscreen === 'function';
+}
+
+export async function exitFullscreen(): Promise<void> {
+  if (!fullscreenElement()) return;
+  const d = document as WebkitFsDocument;
+  try {
+    if (document.exitFullscreen) await document.exitFullscreen();
+    else d.webkitExitFullscreen?.();
+  } catch { /* silent */ }
+}
+
+export async function toggleFullscreen(
+  stage: HTMLElement | null,
+  video: HTMLVideoElement | null,
+): Promise<void> {
+  if (typeof document === 'undefined') return;
+  if (fullscreenElement()) return exitFullscreen();
+  const s = stage as WebkitFsElement | null;
+  try {
+    if (document.fullscreenEnabled && s?.requestFullscreen) {
+      await s.requestFullscreen();
+      return;
+    }
+    if (typeof s?.webkitRequestFullscreen === 'function') {
+      s.webkitRequestFullscreen();
+      return;
+    }
+  } catch { /* fall through to the iPhone video-only path */ }
+  (video as WebkitFsVideo | null)?.webkitEnterFullscreen?.();
+}
+
 // Coerce an unknown thrown value into a user-readable string. Use for the
 // fallback in `catch (e) { return { error: getErrorMessage(e, '<x> failed') } }`
 // patterns in API routes and UI handlers.

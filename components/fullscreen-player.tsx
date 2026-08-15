@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
@@ -11,8 +11,16 @@ import { TranscriptPanel } from './transcript-ui';
 import type { Podcast } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
-import { BoltIcon, ShareIcon, PipIcon } from './icons';
-import { hasValueRecipients, isMusicMedium, stripHtml } from '@/lib/util';
+import { BoltIcon, ShareIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
+import {
+  hasValueRecipients,
+  isMusicMedium,
+  stripHtml,
+  fullscreenElement,
+  fullscreenSupported,
+  toggleFullscreen,
+  exitFullscreen,
+} from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
@@ -258,6 +266,7 @@ export function FullscreenPlayer({
   duration,
   onSeek,
   videoNode,
+  videoRef,
   isVideo,
   audioErr,
   artOk,
@@ -279,6 +288,10 @@ export function FullscreenPlayer({
       knows which element is live. Also updates the store position. */
   onSeek: (s: number) => void;
   videoNode: HtmlPortalNode | null;
+  /** The single <video> element, owned by <Player>. Needed only for the iPhone
+   *  fullscreen fallback (`webkitEnterFullscreen`), which takes the element
+   *  itself — everything else fullscreens the stage div around it. */
+  videoRef: RefObject<HTMLVideoElement | null>;
   isVideo: boolean;
   /** Playback error from <Player> — the fullscreen surface must show it too,
       or a failing live stream reads as a silent black box (the mini-bar's tiny
@@ -345,6 +358,37 @@ export function FullscreenPlayer({
   // returns null for anything that isn't a live block, so hoisting costs nothing.
   const liveBlockImage = useLiveBlockImage(current?.episode.guid);
 
+  // Native fullscreen for the video stage. `fsOk` is feature detection (recomputed
+  // per item and per audio/video switch, mirroring <Player>'s pipOk effect — the
+  // stage div only exists while isVideo, so it has to run after that render).
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [fsOk, setFsOk] = useState(false);
+  const [fsOn, setFsOn] = useState(false);
+
+  useEffect(() => {
+    setFsOk(isVideo && fullscreenSupported(stageRef.current, videoRef.current));
+  }, [isVideo, current?.episode.id, videoRef]);
+
+  // Keep the button's label honest. The iPhone path (webkitEnterFullscreen) fires
+  // neither event and never sets document.fullscreenElement, so there the label
+  // stays "Full screen" — iOS draws its own player chrome and owns the exit.
+  useEffect(() => {
+    const sync = () => setFsOn(!!fullscreenElement());
+    document.addEventListener('fullscreenchange', sync);
+    document.addEventListener('webkitfullscreenchange', sync);
+    return () => {
+      document.removeEventListener('fullscreenchange', sync);
+      document.removeEventListener('webkitfullscreenchange', sync);
+    };
+  }, []);
+
+  // Collapsing the player while the stage is fullscreen would leave a top-layer
+  // video covering the whole app with no way back — the overlay it belongs to is
+  // gone. Exit with it.
+  useEffect(() => {
+    if (!open) void exitFullscreen();
+  }, [open]);
+
   if (!current) return null;
 
   const { episode, podcast } = current;
@@ -355,6 +399,14 @@ export function FullscreenPlayer({
   // becomes the kind:1311 live chat instead of the usual episode info.
   const liveStreamId =
     isVideo && isLiveStreamId(episode.guid) ? episode.guid! : null;
+  // Video mode hands the left column more of the screen at lg+ (60/40); audio
+  // mode keeps the square-artwork 50/50. Both panes carry EXPLICIT complementary
+  // widths: the media column is flex-shrink-0, so leaving the info pane at
+  // sm:w-1/2 would make the real split a side effect of flex shrinking. The
+  // widening starts at lg, not sm — between 640 and 1023 a 40% info pane is
+  // 256–410px, too tight for the title + seek + transport/BOOST row it pins.
+  const mediaPane = isVideo ? 'sm:w-1/2 lg:w-3/5' : 'sm:w-1/2';
+  const infoPane = isVideo ? 'sm:w-1/2 lg:w-2/5' : 'sm:w-1/2';
   const value = episode.value ?? podcast.value;
   const hasValue = hasValueRecipients(value);
   const description = episode.description ? stripHtml(episode.description) : '';
@@ -415,9 +467,29 @@ export function FullscreenPlayer({
             stays put as the page scrolls. For HLS streams the shared <video>
             is displayed here via its OutPortal while the player is open; when
             closed it moves back to the mini-bar so audio keeps playing. */}
-        <div className="flex flex-col items-center justify-center gap-4 p-4 sm:p-6 lg:p-10 flex-shrink-0 sm:w-1/2 sm:sticky sm:top-0 sm:self-start sm:h-[calc(100vh-3.5rem)]">
+        {/* sm:h-full, NOT a calc against the viewport. Both panes used to be
+            `h-[calc(100vh-3.5rem)]`, which guesses at the header's height and
+            measures against the wrong viewport unit: the overlay is 100dvh, the
+            header is whatever its buttons make it (the signed-out SIGN IN button
+            alone changes it), and every pixel the guess is short by is overflow
+            in this row — which is `overflow-y-auto`, so it shows up as a
+            scrollbar down the whole page. `h-full` resolves against the row's own
+            definite height, so the panes fit exactly whatever the header does. */}
+        <div className={`flex flex-col items-center justify-center gap-4 p-4 sm:p-6 lg:p-10 flex-shrink-0 ${mediaPane} sm:sticky sm:top-0 sm:self-start sm:h-full`}>
           {isVideo ? (
-            <div className="relative w-full max-w-md sm:max-w-lg lg:max-w-2xl aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black">
+            // The width cap is bounded by the AVAILABLE HEIGHT, not by a max-h:
+            // the box is aspect-video, so height derives from width, and clamping
+            // the height while w-full held the width would break the 16:9 frame.
+            // 13rem is what the screen spends around it — the header (~3.5rem,
+            // more when signed out), lg:p-10 top+bottom, the gap-4, and the
+            // AUDIO/VIDEO pill — rounded UP deliberately: this column has no
+            // overflow of its own, so anything it can't fit becomes a scrollbar
+            // on the row. `video-stage` sheds all of this in the browser's top
+            // layer (see app/globals.css).
+            <div
+              ref={stageRef}
+              className="video-stage relative w-full max-w-md sm:max-w-lg lg:max-w-[min(64rem,calc((100dvh-13rem)*16/9))] aspect-video rounded-xl border border-bone/10 shadow-2xl overflow-hidden bg-black"
+            >
               {open && videoNode && <OutPortal node={videoNode} />}
               {/* Play/pause lives on the video itself (tap anywhere to toggle).
                   The glyph is prominent while paused and fades out while playing
@@ -444,17 +516,34 @@ export function FullscreenPlayer({
                   ⚠ {audioErr}
                 </div>
               )}
-              {pipAvailable && (
-                <button
-                  type="button"
-                  onClick={onPip}
-                  aria-label="Picture-in-Picture"
-                  title="Picture-in-Picture"
-                  className="absolute top-2 right-2 z-10 flex items-center justify-center w-9 h-9 rounded-lg bg-ink/55 text-bone backdrop-blur-sm hover:bg-ink/75 transition-colors"
-                >
-                  <PipIcon className="w-5 h-5" />
-                </button>
-              )}
+              {/* Our own video controls. Chrome and Firefox paint their own PiP
+                  control on hover in this same corner, which is why `pipAvailable`
+                  is the stage-specific test (see pipNeedsOwnButton) rather than
+                  plain PiP support. */}
+              <div className="absolute top-2 right-2 z-10 flex items-center gap-2">
+                {pipAvailable && (
+                  <button
+                    type="button"
+                    onClick={onPip}
+                    aria-label="Picture-in-Picture"
+                    title="Picture-in-Picture"
+                    className="flex items-center justify-center w-9 h-9 rounded-lg bg-ink/55 text-bone backdrop-blur-sm hover:bg-ink/75 transition-colors"
+                  >
+                    <PipIcon className="w-5 h-5" />
+                  </button>
+                )}
+                {fsOk && (
+                  <button
+                    type="button"
+                    onClick={() => void toggleFullscreen(stageRef.current, videoRef.current)}
+                    aria-label={fsOn ? 'Exit full screen' : 'Full screen'}
+                    title={fsOn ? 'Exit full screen' : 'Full screen'}
+                    className="flex items-center justify-center w-9 h-9 rounded-lg bg-ink/55 text-bone backdrop-blur-sm hover:bg-ink/75 transition-colors"
+                  >
+                    {fsOn ? <ExitFullscreenIcon className="w-5 h-5" /> : <FullscreenIcon className="w-5 h-5" />}
+                  </button>
+                )}
+              </div>
             </div>
           ) : (
             <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
@@ -498,7 +587,7 @@ export function FullscreenPlayer({
 
         {/* Right pane: kind:1311 live chat for Nostr streams, else episode info */}
         {liveStreamId ? (
-          <div className="flex-1 min-h-0 sm:flex-none sm:w-1/2 p-4 sm:p-6 lg:p-10 flex flex-col gap-3 sm:gap-4 sm:h-[calc(100vh-3.5rem)]">
+          <div className={`flex-1 min-h-0 sm:flex-none ${infoPane} p-4 sm:p-6 lg:p-10 flex flex-col gap-3 sm:gap-4 sm:h-full`}>
             <div className="flex-shrink-0 flex flex-col gap-3 min-w-0">
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -539,7 +628,7 @@ export function FullscreenPlayer({
             </div>
           </div>
         ) : (
-        <div className="sm:w-1/2 p-4 sm:p-6 lg:p-10 flex flex-col gap-5 min-w-0 sm:h-[calc(100vh-3.5rem)]">
+        <div className={`${infoPane} p-4 sm:p-6 lg:p-10 flex flex-col gap-5 min-w-0 sm:h-full`}>
           {/* Fixed header: title, seek + transport controls stay put; only the
               About/Chapters body below scrolls (on desktop). */}
           <div className="flex-shrink-0 flex flex-col gap-5">
