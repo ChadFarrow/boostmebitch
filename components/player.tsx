@@ -135,6 +135,17 @@ export function Player() {
    * — so the gate opens at 20 s of headroom and doesn't close until 5 s.
    * Sampled from the existing 1 Hz `timeupdate` tick and written only on a
    * crossing, so it costs no extra renders.
+   *
+   * **Closing it is cheap and reopening it is not, so every way back has to be
+   * wired or the gate is one-way.** It shipped sampled from `timeupdate` alone,
+   * which fires only while audio is advancing — so a `waiting`/`stalled` (which
+   * iOS Safari raises on an ordinary seek) shut the gate, and then a listener who
+   * paused to let it buffer, or who simply stopped, never produced another
+   * sample. Reported as chapter art that "should change everywhere" while the
+   * mini-bar sat on the show cover next to the buffering line, on a chapter whose
+   * own art was visible in the chapter list one scroll above. `progress` and
+   * `playing` sample too, and the gate doesn't apply at all while nothing is
+   * playing — see `artUsable` below.
    */
   const [artOk, setArtOk] = useState(true);
   function sampleHeadroom(el: HTMLMediaElement) {
@@ -143,7 +154,18 @@ export function Player() {
     // the gate where it is rather than flapping it shut on every seek.
     if (!b.length) return;
     const ahead = b.end(b.length - 1) - el.currentTime;
-    setArtOk((prev) => (prev ? ahead >= 5 : ahead >= 20));
+    // Measure against what's LEFT, never a bare 20 s. In the tail of a file
+    // there is less audio remaining than the threshold asks for, so a fixed
+    // number is unreachable however complete the download is — and a fully
+    // buffered element has nothing left to starve. Without this the gate is
+    // permanently shut for the last 20 s of every episode, which on a music
+    // show is precisely where the closing song's art lives. A non-finite
+    // `duration` — Infinity on a live stream, NaN before metadata arrives —
+    // means "no end in sight", so the plain thresholds apply; taking the
+    // subtraction anyway would put NaN on both sides of the comparison and shut
+    // the gate for good.
+    const left = Number.isFinite(el.duration) ? Math.max(0, el.duration - el.currentTime) : Infinity;
+    setArtOk((prev) => (prev ? ahead >= Math.min(5, left) : ahead >= Math.min(20, left)));
   }
   // Created lazily on the client only — createHtmlPortalNode() touches
   // document, which would crash Next's server render. Player renders null until
@@ -584,11 +606,21 @@ export function Player() {
   // `activeChapter.img` directly, so neither the gate nor the precedence can be
   // half-applied: one surface still fetching the 36 MB GIF starves the audio
   // just as thoroughly as two did.
+  //
+  // **The gate only applies while audio is actually flowing.** Its whole claim
+  // is that artwork must not outrank the enclosure — with nothing playing there
+  // is no enclosure in flight to outrank, and a paused screen is exactly when
+  // someone is looking at the art. This is also the only thing that unsticks a
+  // gate shut by the `waiting` on a seek: a paused element that has finished
+  // downloading emits neither `timeupdate` nor `progress`, so there is no
+  // sample left to reopen it with. Computed once here and passed to
+  // <FullscreenPlayer> so both surfaces still share ONE verdict.
+  const artUsable = artOk || !isPlaying;
   const nowArt = nowPlayingArt({
     liveBlockImage,
     splitImage: splitArt,
     chapterImage: activeChapter?.img,
-    artOk,
+    artOk: artUsable,
   });
   const transcriptActiveIdx = transcriptIndexAt(transcriptCues, positionSec);
 
@@ -636,7 +668,8 @@ export function Player() {
             onEnded={() => setPlaying(false)}
             onWaiting={() => { setStalled(true); setArtOk(false); }}
             onStalled={() => { setStalled(true); setArtOk(false); }}
-            onPlaying={() => setStalled(false)}
+            onProgress={(e) => sampleHeadroom(e.currentTarget)}
+            onPlaying={(e) => { setStalled(false); sampleHeadroom(e.currentTarget); }}
             onError={(e) => onMediaError(e.currentTarget.error?.code)}
           />
         </InPortal>
@@ -677,7 +710,14 @@ export function Player() {
           // to the headroom sample, which needs a real buffer to see.
           onWaiting={() => { if (!isVideoRef.current) { setStalled(true); setArtOk(false); } }}
           onStalled={() => { if (!isVideoRef.current) { setStalled(true); setArtOk(false); } }}
-          onPlaying={() => { if (!isVideoRef.current) setStalled(false); }}
+          // The two ways back in that don't need audio to be advancing.
+          // `progress` fires as bytes land, including while paused — it is the
+          // only sample a stopped-but-downloading element produces at all.
+          // `playing` is the all-clear after a stall, and sampling it there
+          // means resuming with a warm buffer restores the art in the same tick
+          // rather than blanking it for another 20 s of `timeupdate`s.
+          onProgress={(e) => { if (!isVideoRef.current) sampleHeadroom(e.currentTarget); }}
+          onPlaying={(e) => { if (!isVideoRef.current) { setStalled(false); sampleHeadroom(e.currentTarget); } }}
           onError={(e) => { if (!isVideoRef.current) onMediaError(e.currentTarget.error?.code); }}
         />
         {/* Tighter padding and gap below sm:. At 390px the row has 358px to
@@ -836,7 +876,7 @@ export function Player() {
         videoNode={videoNode}
         isVideo={isVideo}
         audioErr={audioErr}
-        artOk={artOk}
+        artOk={artUsable}
         splitArt={splitArt}
         pipAvailable={pipOk}
         onPip={requestPip}

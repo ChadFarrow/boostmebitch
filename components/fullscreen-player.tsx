@@ -284,9 +284,11 @@ export function FullscreenPlayer({
       or a failing live stream reads as a silent black box (the mini-bar's tiny
       error line is hidden behind this overlay). */
   audioErr: string | null;
-  /** False when the buffer can't afford heavy chapter artwork — see <Player>'s
-   *  `artOk`. Passed down rather than recomputed so both art surfaces share one
-   *  verdict; a gate applied to only one of them doesn't help at all. */
+  /** False when audio is playing and the buffer can't afford heavy artwork —
+   *  <Player>'s `artUsable`, which is the gate AND the "is anything actually
+   *  playing" test, since a paused element has no enclosure to starve. Passed
+   *  down rather than recomputed so both art surfaces share one verdict; a gate
+   *  applied to only one of them doesn't help at all. */
   artOk: boolean;
   /** Cover of the track a <podcast:valueTimeSplit> is redirecting to right now,
    *  resolved once per episode by <Player> (`useSplitArt`) — this component is
