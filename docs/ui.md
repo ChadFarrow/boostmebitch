@@ -187,3 +187,12 @@ So `bg-ink`, `text-bone`, `border-bone/40`, `bg-ink/75`, `bg-ink/90` all work in
 Don't introduce a token whose name implies a fixed color (avoid `dark-gray`); follow the role pattern.
 
 
+
+
+## The maskable icon that wasn't
+
+`public/manifest.json` declared `/icons/icon-512.png` twice — once as `purpose: "any"` and once as `purpose: "maskable"` — with the same, unpadded asset.
+
+Those two purposes want different artwork. Android crops a maskable icon to a platform-chosen shape (circle, squircle, teardrop) and only guarantees the **inner 80%** — the "safe zone" — survives; art drawn to the edges gets its edges cut. Declaring an `any` icon as maskable therefore doesn't add support, it opts into having the icon clipped on every Android launcher, which is strictly worse than the fallback (Android shrinks a non-maskable icon inside a white plate instead).
+
+So the declaration is **removed** rather than repaired. Restoring it means exporting a genuinely padded variant — the same logo at ~66% scale on the `#0a0a08` background, saved as its own file — and pointing `purpose: "maskable"` at *that*. Don't point it back at the shared asset.
