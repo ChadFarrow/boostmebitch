@@ -381,8 +381,16 @@ export type StreamStoppedReason = 'failures' | 'rail-cannot-pay' | null;
 export interface StreamingStatus {
   /** Streaming is on and accruing for whatever is playing right now. */
   active: boolean;
-  /** Resolved rate for the current item, sats/min. 0 = off / not eligible.
-   *  Still the ON signal in track mode — see resolveStreamPlan. */
+  /**
+   * Resolved rate for the current item, sats/min. **0 means streaming is OFF
+   * for what is playing** — for this show, or globally — and stays the ON
+   * signal in track mode (see resolveStreamPlan).
+   *
+   * Read from the live context while one exists and from the show's settings
+   * when one doesn't, so it does not collapse to 0 the moment streaming gives
+   * up on an item. `active` is what says whether anything is accruing right
+   * now; this says what the user asked for.
+   */
   ratePerMin: number;
   /** What the number means. */
   mode: StreamMode;
@@ -432,13 +440,26 @@ export interface StreamingStatus {
 
 export function streamingStatus(): StreamingStatus {
   const now = Date.now();
-  const currentKey = itemKeyOfCurrent();
+  const cur = useApp.getState().current;
+  const currentKey = cur ? itemKey(cur.episode, cur.podcast) : null;
   const isStopped = !!disabledKey && disabledKey === currentKey;
+  // With no live context the SETTINGS are still the honest answer to "what is
+  // this show streaming?", and this is precisely when the meter is on screen:
+  // it renders for a failed settle long after the context that ran it is gone
+  // (give-up tears one down, and so does turning streaming off — which is
+  // itself a settle edge for the time already listened). Reading the rate off
+  // the torn-down context reported `streaming 0 sats/min` over the error, which
+  // is false twice: it claims to be streaming, and it names a rate nobody set.
+  // Worse, it reported the same 0 for a show still streaming at 10 as for one
+  // that is genuinely off, so the readout could not distinguish "paused, and
+  // fixing your wallet resumes it" from "off, nothing more will be tried".
+  // Memoized by show, so this is at most one localStorage read per show.
+  const plan = ctx ? null : cur ? cachedStreamPlan(cur.podcast) : null;
   return {
     active: !!ctx && !!ledger,
-    ratePerMin: ctx?.ratePerMin ?? 0,
-    mode: ctx?.mode ?? 'rate',
-    amountPerTrack: ctx?.amountPerTrack ?? 0,
+    ratePerMin: ctx?.ratePerMin ?? plan?.ratePerMin ?? 0,
+    mode: ctx?.mode ?? plan?.mode ?? 'rate',
+    amountPerTrack: ctx?.amountPerTrack ?? plan?.amountPerTrack ?? 0,
     // No live block and no resolved valueTimeSplits means no track will ever
     // become current, so the fixed amount has nothing to attach to.
     trackModeIdle: ctx?.mode === 'track' && !ctx.liveBucket && ctx.splits.size === 0,
@@ -563,11 +584,6 @@ function cachedStreamPlan(podcast: Podcast): StreamPlan {
 
 function itemKey(episode: Episode, podcast: Podcast): string {
   return `${podcast.podcastGuid || podcast.id}::${episode.guid || episode.id}`;
-}
-
-function itemKeyOfCurrent(): string | null {
-  const cur = useApp.getState().current;
-  return cur ? itemKey(cur.episode, cur.podcast) : null;
 }
 
 function persist(l: StreamLedger) {
