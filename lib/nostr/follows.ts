@@ -4,7 +4,7 @@ import type { NostrIdentity } from './auth';
 import { DEFAULT_RELAYS, PROFILE_RELAYS, resolvePublishRelays, sanitizeRelays } from './relays';
 import { collectEventsByAuthors } from './event-queries';
 import { withPool, FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS } from './pool';
-import { signAndPublish } from './publish';
+import { signAndPublish, assertPublished } from './publish';
 import { storage } from '../storage';
 
 // NIP-02 kind:3 contact-list ("follow list") read/write. The rest of the app
@@ -64,6 +64,20 @@ export async function fetchFollowList(identity: NostrIdentity): Promise<FollowLi
  * fetch, or the republish wipes the real list. Returns the new signed event (so
  * a follow-up toggle builds on the latest tags, not stale ones) + the resulting
  * following set.
+ *
+ * **Throws unless at least one relay accepted.** `signAndPublish` uses
+ * `Promise.allSettled` and never rejects, so resolving proves nothing landed —
+ * `acceptedRelays` can be `[]`. That matters more here than almost anywhere
+ * else, because `toggleFollow` writes `storage.follows` on the strength of this
+ * return value and labels it "last-known-good", and the degraded-write guard
+ * directly above that write READS the same cache to decide whether an empty
+ * fetch is real. So a publish that reached nobody would promote a phantom list
+ * to last-known-good, show the user as following, and leave the guard
+ * protecting their kind:3 comparing against state no relay holds.
+ *
+ * The assert lives here, in the feature's own publish wrapper, rather than at
+ * the call site — one wrapper is one place to remember, three call sites is
+ * three places to forget.
  */
 export async function publishFollow(
   identity: NostrIdentity,
@@ -79,7 +93,10 @@ export async function publishFollow(
     tags,
     content: current?.content ?? '',
   };
-  const published = await signAndPublish(template, resolvePublishRelays(identity));
+  const published = assertPublished(
+    await signAndPublish(template, resolvePublishRelays(identity)),
+    'follows',
+  );
   return { event: published.event, following: followingFromTags(published.event.tags) };
 }
 
