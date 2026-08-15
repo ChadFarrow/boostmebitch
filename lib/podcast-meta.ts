@@ -35,9 +35,20 @@ export function tripPiBreaker() {
   storage.piBreaker.trip();
 }
 
-/** Reset the breaker (used after the user explicitly retries). */
+/**
+ * Reset the breaker (used after the user explicitly retries).
+ *
+ * **Drops the negative entries too.** Clearing the flag alone was not a retry:
+ * every id the breaker had already answered `null` for stayed `null` in
+ * `podcastMem`/`episodeMem` for the life of the tab, so the button cleared the
+ * breaker and the screen did not change. Only the nulls go — a resolved entry
+ * is still good, and re-fetching hundreds of them would undo the point of the
+ * cache.
+ */
 export function resetPiBreaker() {
   storage.piBreaker.reset();
+  for (const [k, v] of podcastMem) if (v === null) podcastMem.delete(k);
+  for (const [k, v] of episodeMem) if (v === null) episodeMem.delete(k);
 }
 
 /**
@@ -53,17 +64,19 @@ async function resolveVia(cacheKey: string, query: string): Promise<Podcast | nu
     podcastMem.set(cacheKey, cached);
     return cached;
   }
-  if (!piMaybeUp()) {
-    podcastMem.set(cacheKey, null);
-    return null;
-  }
+  // "We didn't ask" — NOT an answer, so nothing is cached. Caching here made
+  // resetPiBreaker() unable to recover: the breaker cleared but every entry it
+  // had already poisoned stayed null for the life of the tab.
+  if (!piMaybeUp()) return null;
   try {
     const r = await fetch(`/api/by-guid?${query}`);
+    // 5xx is PI being down, not PI saying no. Trip the breaker and leave the
+    // entry UNCACHED so a retry can still resolve it.
     if (r.status >= 500) {
       tripPiBreaker();
-      podcastMem.set(cacheKey, null);
       return null;
     }
+    // 404 IS an answer: PI has been asked and does not hold this feed. Cache it.
     if (!r.ok) {
       podcastMem.set(cacheKey, null);
       return null;
@@ -77,7 +90,17 @@ async function resolveVia(cacheKey: string, query: string): Promise<Podcast | nu
     storage.podcastMeta.set(cacheKey, podcast);
     return podcast;
   } catch {
-    podcastMem.set(cacheKey, null);
+    // The fetch never completed — offline, aborted, a throttled connection
+    // giving up. That is "we could not ask", and caching it as null was this
+    // module breaking CLAUDE.md's oldest rule: never record an absence you
+    // didn't reliably observe.
+    //
+    // It bit exactly as predicted. Favorites hydration fans ~100 parallel
+    // requests at once; on a slow link many stall, each got negative-cached in
+    // a module-level Map that is never invalidated, and those favorites then
+    // rendered as blank placeholders with no art or title FOR THE LIFE OF THE
+    // TAB — surviving the network recovering, and fixed only by opening a new
+    // tab. Leave it unresolved instead so the next attempt retries.
     return null;
   }
 }
@@ -120,17 +143,14 @@ export async function resolveEpisodeByGuid(
     episodeMem.set(cacheKey, cached);
     return cached;
   }
-  if (!piMaybeUp()) {
-    episodeMem.set(cacheKey, null);
-    return null;
-  }
+  // Not an answer — see resolveVia. Nothing cached.
+  if (!piMaybeUp()) return null;
   try {
     const r = await fetch(
       `/api/episode-by-guid?feedGuid=${encodeURIComponent(feedGuid)}&itemGuid=${encodeURIComponent(itemGuid)}`,
     );
     if (r.status >= 500) {
       tripPiBreaker();
-      episodeMem.set(cacheKey, null);
       return null;
     }
     if (!r.ok) {
@@ -146,7 +166,7 @@ export async function resolveEpisodeByGuid(
     storage.episodeMeta.set(cacheKey, episode);
     return episode;
   } catch {
-    episodeMem.set(cacheKey, null);
+    // Transient, not an absence — see resolveVia's catch.
     return null;
   }
 }

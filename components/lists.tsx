@@ -469,7 +469,12 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
     setValueOpen(false);
     setVisibleCount(10);
     liveMissesRef.current = {};
-    if (!feedId) { setData({ podcast: null, episodes: [] }); return; }
+    // setLoading(false) matters on this branch: it returns before the fetch
+    // below, so a `loading` left true by a PREVIOUS run was never cleared and
+    // the render — which checks `loading` first — sat on "loading episodes…"
+    // forever. Reachable whenever a favorite hasn't resolved an id yet, which
+    // is exactly the state a slow or failed metadata fetch leaves behind.
+    if (!feedId) { setData({ podcast: null, episodes: [] }); setLoading(false); setLoadError(false); return; }
     setLoading(true);
     // Preview (not-in-PI) feeds load by URL — the synthetic id can't be
     // resolved server-side. PI feeds load by numeric id as before.
