@@ -208,7 +208,17 @@ export function HomePage() {
   const favorites = useApp((s) => s.favorites);
   const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
   const episodeCount = Object.keys(favoriteEpisodes).length;
-  const hasFavorites = Object.keys(favorites).length > 0 || episodeCount > 0;
+  // `mounted` gate, for the reason <AuthControl> already documents at the top
+  // of its own: lib/store.ts hydrates `favorites` from localStorage at MODULE
+  // scope, which is `{}` on the server but already populated on the client
+  // before React hydrates. This value decides `showFavoritesPanel` and through
+  // it `showLeftRightLayout`, i.e. the whole page's layout — so a returning
+  // user's first client render disagreed with the server HTML and React 19
+  // threw the homepage subtree away and rebuilt it. First client render now
+  // matches SSR; the favorites panel paints one tick later.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  const hasFavorites = mounted && (Object.keys(favorites).length > 0 || episodeCount > 0);
 
   // A degraded relay read opens the panel even with nothing to put in it —
   // otherwise the notice has nowhere to render, and a device with no cached

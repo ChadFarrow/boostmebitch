@@ -1,5 +1,5 @@
 'use client';
-import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { nip19, type Event } from 'nostr-tools';
 import { subscribeLiveChat, publishLiveChat, LIVE_STREAM_RELAYS } from '@/lib/nostr';
 import { fetchProfile, shortNpub } from '@/lib/nostr';
@@ -104,7 +104,15 @@ function renderContent(content: string, profiles: Profiles): ReactNode[] {
 
 // One chat row: avatar + name + timestamp + content. `badge` (a zap amount
 // stamp) also tints the row, so the same row renders both messages and boosts.
-function ChatRow({
+//
+// memo()'d: <LiveChat> re-renders on every keystroke in its composer, and
+// without this every visible row reconciled with it — each one re-running
+// renderContent(), which is a global regex scan plus an nip19.decode() per
+// mention. `content` and `badge` are elements built fresh by the parent each
+// render, so this only skips rows whose props are otherwise unchanged when the
+// parent memoizes those too; the win that matters is the common case where the
+// message list itself hasn't moved.
+const ChatRow = memo(function ChatRow({
   pubkey,
   profile,
   timestamp,
@@ -135,7 +143,7 @@ function ChatRow({
       </div>
     </div>
   );
-}
+});
 
 // Append a chat message to the list, de-duped by id, sorted oldest-first, capped.
 function mergeMessage(prev: Event[], e: Event): Event[] {
@@ -234,13 +242,21 @@ export function LiveChat({ streamId }: { streamId: string }) {
     }
   }
 
-  const visible = messages.filter((m) => !mutedPubkeys.has(itemAuthor(m)));
+  // Both memoized on `messages`, because they used to be recomputed in the
+  // render body and this component re-renders on EVERY KEYSTROKE in the
+  // composer below (setDraft). `zapInfo` runs JSON.parse over a zap request
+  // blob, so an untouched typing pass was re-parsing up to MAX_MESSAGES of
+  // them, per character, to arrive at the number it already had.
+  const visible = useMemo(
+    () => messages.filter((m) => !mutedPubkeys.has(itemAuthor(m))),
+    [messages, mutedPubkeys],
+  );
 
   // Total sats zapped to this stream — sum of every kind:9735 receipt (not the
   // mute-filtered list; muting an author doesn't un-raise the stream's sats).
-  const totalSats = messages.reduce(
-    (n, m) => (m.kind === 9735 ? n + (zapInfo(m)?.sats ?? 0) : n),
-    0,
+  const totalSats = useMemo(
+    () => messages.reduce((n, m) => (m.kind === 9735 ? n + (zapInfo(m)?.sats ?? 0) : n), 0),
+    [messages],
   );
 
   return (

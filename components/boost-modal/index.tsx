@@ -78,6 +78,15 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // the wrong total.
   const [hostResults, setHostResults] = useState<(BoostResult | undefined)[]>([]);
   const [running, setRunning] = useState(false);
+  // Inline error surface. This replaced two alert()s — the only ones in the
+  // codebase, both on the payment path. A blocking native dialog over a modal
+  // that is mid-teardown can't be styled, isn't read in context by a screen
+  // reader, and on iOS Safari can be suppressed outright; meanwhile this modal
+  // already owns three structured status surfaces. `hostErr` is separate
+  // because the host leg is non-fatal and its message has to sit beside a
+  // partly-successful send rather than replacing it.
+  const [sendErr, setSendErr] = useState<string | null>(null);
+  const [hostErr, setHostErr] = useState<string | null>(null);
   const [paymentDone, setPaymentDone] = useState(false);
 
   const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
@@ -262,6 +271,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // The muted unlock claims an audio session too, so it takes the same live
     // isPlaying reading as the ping (see primeBoostSound).
     primeBoostSound({ appIsPlaying: useApp.getState().isPlaying });
+    // Clear last attempt's errors — a stale message beside a fresh send reads
+    // as this send having failed.
+    setSendErr(null);
+    setHostErr(null);
     // Saved even for an anonymous boost — it's the user's own device-local
     // "From" default, and withholding it from the wire is what anonymity means
     // here, not forgetting what they typed.
@@ -343,7 +356,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           },
         });
       } catch (e) {
-        alert(getErrorMessage(e, 'zap failed'));
+        setSendErr(getErrorMessage(e, 'zap failed'));
         setRunning(false);
         return;
       }
@@ -382,7 +395,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       });
       setResults(collected);
     } catch (e) {
-      alert(getErrorMessage(e, 'boost failed'));
+      setSendErr(getErrorMessage(e, 'boost failed'));
       setRunning(false);
       return;
     }
@@ -420,7 +433,16 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             }),
         });
         setHostResults(hostCollected);
-      } catch { /* non-fatal — see above */ }
+      } catch (e) {
+        // Non-fatal, per the note above — but NOT silent. CLAUDE.md: "A guard
+        // that silently withholds must say so." With the artist's leg already
+        // paid and this one thrown, hostResults stays all holes, <LightningStatus>
+        // simply counts fewer settled legs, and nothing on screen said the
+        // show's share never went out. The modal already gets this right for the
+        // adjacent case (`hostDropped`); this is the same sentence for the
+        // thrown one.
+        setHostErr(getErrorMessage(e, "the show's share could not be sent"));
+      }
     }
 
     setPaymentDone(true);
@@ -595,7 +617,21 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
                   {' '}{hostValue.recipients.length} ways. Boost more to include everyone.
                 </div>
               )}
+              {/* The thrown-host-leg case. The artist's legs above may show ✓
+                  while this one never went out at all, so it has to say so
+                  rather than just be missing from the count. */}
+              {hostErr && (
+                <p className="text-[11px] text-nostr/80 -mt-2" role="status">
+                  {podcast.title}&rsquo;s share didn&rsquo;t send: {hostErr}. The track&rsquo;s
+                  legs above are unaffected.
+                </p>
+              )}
             </>
+          )}
+          {/* Whole-send failure. role="alert" because it means nothing was paid
+              and the user is about to decide whether to try again. */}
+          {sendErr && (
+            <p className="text-xs text-nostr/80" role="alert">{sendErr}</p>
           )}
           <LightningStatus
             results={[...results, ...hostResults]}

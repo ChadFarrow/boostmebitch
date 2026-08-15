@@ -3,6 +3,7 @@ import Image from 'next/image';
 import './globals.css';
 import { ServiceWorkerRegister } from '@/components/sw-register';
 import { Player } from '@/components/player';
+import { ErrorBoundary } from '@/components/error-boundary';
 
 export const metadata: Metadata = {
   // The canonical origin, and it must be the `www` form: the apex 307-redirects
@@ -153,8 +154,19 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </div>
         {/* App-global player — mounted in the layout so playback (and the
             fullscreen player overlay) survives route changes, e.g. navigating
-            between the browse page and the /stream/<naddr> page. */}
-        <Player />
+            between the browse page and the /stream/<naddr> page.
+
+            Wrapped, because being in the layout puts it OUTSIDE app/error.tsx,
+            which is a route-segment boundary and only covers app/page.tsx's
+            tree. <Player> is the most stateful component here and every input it
+            takes — enclosure URLs, HLS manifests, chapter JSON, value blocks —
+            comes from an arbitrary third-party feed, so a throw was a
+            whole-document "Application error" that took the browse UI with it.
+            The fallback is null: losing playback should cost you the player, not
+            the page. */}
+        <ErrorBoundary label="Player">
+          <Player />
+        </ErrorBoundary>
         <ServiceWorkerRegister />
       </body>
     </html>
