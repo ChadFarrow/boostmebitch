@@ -173,7 +173,19 @@ export function HomePage() {
     setFeeds(f);
     setQuery(q);
     clearPublisher();
-    if (!f.length) setSelected(null);
+    // A search must LEAVE the drilled-in views, not just refill `feeds` behind
+    // them. The results section is a ternary that checks discussion → episode →
+    // detail before it ever reaches the branch that renders `feeds`, and the
+    // search bar is rendered on all of them — so typing a new query from a show
+    // page fetched, matched and stored results that nothing on screen could
+    // display. The bar looked dead: the old query stayed in the input, the same
+    // show stayed open, and there was no error anywhere to notice.
+    // `setSelected(null)` is the one lever that exits all three (selectPodcast
+    // clears selectedEpisode and discussionEpisode too), and it is deliberately
+    // NOT gated on `f.length` alone — a search that matched something is
+    // exactly the case that must become visible; the empty-query/no-match reset
+    // is the other half.
+    if (q || !f.length) setSelected(null);
   }, [setSelected]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelect = useCallback(async (p: Podcast) => {
