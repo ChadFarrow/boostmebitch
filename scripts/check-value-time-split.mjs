@@ -1,12 +1,13 @@
 #!/usr/bin/env node --experimental-strip-types --no-warnings
 /**
- * Pins the two pure functions that decide, for a boost pressed mid-episode,
- * WHICH artist is paid and HOW MUCH of the amount leaves the show.
+ * Pins the pure functions that decide, for a boost pressed mid-episode, WHICH
+ * artist is paid and HOW MUCH of the amount leaves the show.
  *
- *   splitAtPosition  — which <podcast:valueTimeSplit> window covers this second
+ *   splitAtPosition   — which <podcast:valueTimeSplit> window covers this second
  *   splitTrackAndHost — how the amount divides between the track and the show
+ *   payableSplit      — who a leg can actually pay once it is that small
  *
- * Both live in lib/util.ts and both are imported by more than one caller, which
+ * All live in lib/util.ts and all are imported by more than one caller, which
  * is the entire reason they are pinned. `splitAtPosition` is shared by the boost
  * modal and lib/v4v/streaming.ts: if those two disagree about which window a
  * position falls in — by one second, at a boundary — a boost pays one artist
@@ -14,7 +15,12 @@
  * episode, and nothing on screen says so. `splitTrackAndHost` is shared by the
  * single boost modal and BoostAllModal: two copies of "97% to the track, 3% to
  * the show" is how the same feed comes to be paid two different ways depending
- * on which button was pressed.
+ * on which button was pressed. `payableSplit` guards the seam between them:
+ * `splitSats` honestly returns 0 for a recipient it cannot reach, and `payOne`
+ * short-circuits `sats <= 0` to `ok: true` without contacting anyone — so a leg
+ * small enough to strand a payee renders a ✓ and writes a boost-log entry for a
+ * payment that never happened. Both facts are individually reasonable; together
+ * they invent money.
  *
  * The window arithmetic is half-open on purpose — [start, start+duration) — and
  * that is not a style choice. Adjacent splits in a real music show abut exactly
@@ -32,7 +38,7 @@
  * second episode. That split is the reason this file exists: the boost button
  * ignored it and paid the show.
  */
-import { splitAtPosition, splitTrackAndHost } from '../lib/util.ts';
+import { payableSplit, splitAtPosition, splitSats, splitTrackAndHost } from '../lib/util.ts';
 
 let failures = 0;
 function check(name, actual, expected) {
@@ -118,15 +124,15 @@ console.log('\nsplitTrackAndHost — how much leaves the show');
 const at = (totalSats, remotePercentage, hostRecipientCount) =>
   splitTrackAndHost({ totalSats, remotePercentage, hostRecipientCount });
 
-// The live case. 100 sats at 97% is 97 to Matt Finlay; the show's own block on
-// that feed has FOUR recipients, and 3 sats cannot give each of them one. The
-// host leg is dropped and its sats ride with the track rather than being
-// silently discarded — splitSats would otherwise allocate a 0-sat leg, which
-// payOne reports as ok:true, i.e. a ✓ next to a recipient who received nothing.
-check('100 @ 97% with a 4-payee show → host leg cannot fund, folds into track',
-  at(100, 97, 4), { trackSats: 100, hostSats: 0 });
-// Same split, same percentage, a show whose block has one recipient: 3 sats is
-// payable, so the show keeps its share.
+// The live case, and the shape of the whole feature: 100 sats at 97% is 97 to
+// Matt Finlay and 3 to the show. The show's block on that feed has FOUR
+// recipients and 3 sats cannot give each of them one — that is `payableSplit`'s
+// problem to solve (below), NOT a reason to redirect the money somewhere else.
+// An earlier version folded the remainder back into the track, which fixed a
+// display bug by changing where sats went and made a 100-sat boost pay the show
+// nothing at all.
+check('100 @ 97% with a 4-payee show → 97/3, small share still paid',
+  at(100, 97, 4), { trackSats: 97, hostSats: 3 });
 check('100 @ 97% with a 1-payee show → 97/3', at(100, 97, 1), { trackSats: 97, hostSats: 3 });
 check('100 @ 97% with a 3-payee show → 97/3', at(100, 97, 3), { trackSats: 97, hostSats: 3 });
 check('1000 @ 97% with a 4-payee show → 970/30', at(1000, 97, 4), { trackSats: 970, hostSats: 30 });
@@ -152,6 +158,7 @@ for (const [total, pct, hosts] of [
 }
 
 // remotePercentage is optional in the spec; absent means the whole redirect.
+check('7 @ 90% with a 3-payee show → 6/1, not folded', at(7, 90, 3), { trackSats: 6, hostSats: 1 });
 check('missing remotePercentage defaults to 100% to the track',
   at(100, undefined, 4), { trackSats: 100, hostSats: 0 });
 check('100% leaves no host leg', at(100, 100, 1), { trackSats: 100, hostSats: 0 });
@@ -166,6 +173,59 @@ check('zero percentage sends nothing to the track', at(100, 0, 1), { trackSats: 
 check('zero sats', at(0, 97, 1), { trackSats: 0, hostSats: 0 });
 check('negative sats', at(-5, 97, 1), { trackSats: 0, hostSats: 0 });
 check('NaN percentage falls back to the whole redirect', at(100, NaN, 2), { trackSats: 100, hostSats: 0 });
+
+// ── payableSplit ────────────────────────────────────────────────────────────
+// The rule that lets a 3-sat share exist without lying about who received it.
+console.log('\npayableSplit — who a small leg can actually pay');
+
+// The show's own block, lifted from the same feed: <podcast:valueRecipient>
+// weights as authored, not the percentages the modal renders from them.
+const SHOW = [
+  { name: 'candr show', address: 'greyturkey26@primal.net', type: 'lnaddress', split: 33 },
+  { name: 'ChadF', address: 'chadf@getalby.com', type: 'lnaddress', split: 32 },
+  { name: 'Reed', address: 'reed@getalby.com', type: 'lnaddress', split: 32 },
+  { name: 'Podcastindex.org', address: 'podcastindex@getalby.com', type: 'lnaddress', split: 1, fee: true },
+];
+const names = (r) => r.recipients.map((x) => x.name);
+
+// 3 sats, 4 payees. splitSats alone returns [1,1,1,0] and payOne turns that
+// last 0 into `ok: true` — a ✓ in the modal and a line in the boost log for a
+// recipient who was never contacted. Drop them from the leg instead.
+const three = payableSplit(3, SHOW);
+check('3 sats over 4 payees → three legs, not four', three.splits.length, 3);
+check('3 sats pays the three largest', names(three), ['candr show', 'ChadF', 'Reed']);
+check('3 sats: one each', three.splits, [1, 1, 1]);
+check('3 sats: nothing dropped on the floor', three.splits.reduce((a, b) => a + b, 0), 3);
+// No zero survives, at any size. That is the whole postcondition.
+for (const n of [1, 2, 3, 4, 5, 11, 30, 97, 1000]) {
+  const r = payableSplit(n, SHOW);
+  const bad = r.splits.filter((s) => s <= 0).length;
+  check(`payableSplit(${n}) emits no zero-sat leg`, bad, 0);
+  check(`payableSplit(${n}) spends the whole leg`, r.splits.reduce((a, b) => a + b, 0), n);
+}
+// Big enough for everyone: nobody is dropped, and the fee recipient keeps its
+// place — trimming must not become a way to quietly stop paying the 1% payee.
+const thirty = payableSplit(30, SHOW);
+check('30 sats keeps all four', names(thirty),
+  ['candr show', 'ChadF', 'Reed', 'Podcastindex.org']);
+// Feed order, not display order — <SplitsPreview> renders through
+// recipientOrder, so the screen lists these biggest-first while the array does
+// not. Largest-remainder gives idx1/idx2 the two leftover sats, then the
+// one-sat floor pulls Podcastindex's sat out of the largest allocation.
+check('30 sats over all four', thirty.splits, [9, 10, 10, 1]);
+// The 3% of a real 1,328-sat boost, as it actually went out.
+check('10 sats reproduces the observed live host leg',
+  payableSplit(10, SHOW).splits, [3, 3, 3, 1]);
+// One sat, four payees: exactly one leg, the largest.
+check('1 sat pays exactly one payee', names(payableSplit(1, SHOW)), ['candr show']);
+// Degenerate inputs must not throw or invent legs.
+check('0 sats pays nobody', payableSplit(0, SHOW).splits.every((s) => s === 0), true);
+check('no recipients', payableSplit(10, []), { recipients: [], splits: [] });
+// A zero-weight recipient can never be paid by largest-remainder, so it must
+// not survive into the leg either.
+check('zero-weight recipient is dropped, not paid 0',
+  names(payableSplit(10, [...SHOW, { name: 'ghost', address: 'g@x.com', type: 'lnaddress', split: 0 }])),
+  ['candr show', 'ChadF', 'Reed', 'Podcastindex.org']);
 
 // ── The obvious wrong implementations ───────────────────────────────────────
 // A vector that passes the moment it is written has proved nothing. When there
@@ -197,8 +257,8 @@ const naiveCaught = [
     naiveSplitAt(two, 160)?.id === 'A'],
   ['zero-duration live block matches its start',
     naiveSplitAt([LIVE], 0) !== null],
-  ['unpayable host leg is emitted instead of folded into the track',
-    naiveTrackAndHost({ totalSats: 100, remotePercentage: 97 }).hostSats === 3],
+  ['a bare splitSats leaves a zero-sat leg that payOne reports as paid',
+    splitSats(3, SHOW).filter((s) => s <= 0).length > 0],
   ['rounding hands the track a sat out of the show\'s share',
     naiveTrackAndHost({ totalSats: 350, remotePercentage: 97 }).trackSats === 340],
   ['no clamp lets a malformed percentage produce a negative host leg',

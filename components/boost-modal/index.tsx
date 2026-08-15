@@ -3,13 +3,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, splitSats, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
+import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { subscribeNwc } from '@/lib/v4v/nwc';
 import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage, type ShareNostrAs } from '@/lib/storage';
-import { getErrorMessage, resolveSenderName, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { getErrorMessage, payableSplit, resolveSenderName, splitSats, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
@@ -166,9 +166,9 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const active = useActiveSplit(episode, positionSec);
   const redirect = active.state === 'ready' ? active.split : null;
 
-  // How the amount divides between the artist and the show. `hostRecipientCount`
-  // is what lets an unpayable remainder fold back into the track leg rather than
-  // being allocated to recipients who'd each get zero — see splitTrackAndHost.
+  // How the amount divides between the artist and the show: remotePercentage to
+  // the track, the remainder to the show, however small that remainder is. 100
+  // sats at 97% is 97 and 3.
   const { trackSats, hostSats } = useMemo(
     () => redirect
       ? splitTrackAndHost({
@@ -188,12 +188,27 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     () => splitSats(primarySats, value.recipients),
     [primarySats, value.recipients],
   );
-  // Only rendered when a redirect actually leaves the show a payable share.
+  // The show's leg. `payableSplit`, not `splitSats`: a small remainder can't
+  // give every show recipient a whole sat, and a zero-sat leg is reported as
+  // PAID (payOne short-circuits `sats <= 0` to ok:true), so it would render a ✓
+  // and enter the boost log for someone who received nothing. Dropping them
+  // from the leg spends the remainder on payees who can actually receive it.
+  //
+  // ONE object drives both the preview and the send — re-deriving the trimmed
+  // set at send time would let the rows the user approved differ from the legs
+  // that go out.
   const showsHostLeg = !!redirect && hostSats > 0;
-  const hostSplits = useMemo(
-    () => showsHostLeg ? splitSats(hostSats, hostValue.recipients) : [],
+  const hostLeg = useMemo(
+    () => showsHostLeg
+      ? payableSplit(hostSats, hostValue.recipients)
+      : { recipients: [], splits: [] },
     [showsHostLeg, hostSats, hostValue.recipients],
   );
+  // Recipients the feed lists but this leg is too small to pay — named on
+  // screen rather than silently absent.
+  const hostDropped = showsHostLeg
+    ? hostValue.recipients.length - hostLeg.recipients.length
+    : 0;
 
   // A window covers this second but we don't yet know whose block it points at.
   // Blocking the button is the point: the window is known synchronously and the
@@ -295,7 +310,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // leaving a length gap — sendBoost pays biggest share first, so the first
     // leg to settle is rarely recipients[0].
     setResults(new Array(value.recipients.length));
-    setHostResults(showsHostLeg ? new Array(hostValue.recipients.length) : []);
+    setHostResults(showsHostLeg ? new Array(hostLeg.recipients.length) : []);
 
     // ── Live-stream zap path ────────────────────────────────────────────────
     // Boosting a Nostr live stream while signed in, when the host's Lightning
@@ -388,7 +403,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     if (showsHostLeg) {
       try {
         hostCollected = await sendBoost({
-          value: hostValue,
+          // The trimmed block the preview rendered, NOT hostValue — sending the
+          // full one would re-split inside sendBoost and could pay a recipient
+          // zero, which reports as a ✓. Same object, so the rows the user
+          // approved are exactly the legs that go out.
+          value: { ...hostValue, recipients: hostLeg.recipients },
           totalSats: hostSats,
           // Its own uuid — it's a distinct payment and a recipient aggregator
           // dedupes on that field — but the same remote_* guids as the track
@@ -563,16 +582,29 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             title={redirect ? splitTargetLabel(redirect) : 'Recipients'}
           />
           {showsHostLeg && (
-            <SplitsPreview
-              recipients={hostValue.recipients}
-              splits={hostSplits}
-              results={hostResults}
-              title={podcast.title}
-            />
+            <>
+              <SplitsPreview
+                recipients={hostLeg.recipients}
+                splits={hostLeg.splits}
+                results={hostResults}
+                title={podcast.title}
+              />
+              {/* Say who the show's share was too small to reach. Without this
+                  the recipient is simply absent from a list the user is reading
+                  to check where their money went, and a silent omission on a
+                  payment screen is indistinguishable from a bug. */}
+              {hostDropped > 0 && (
+                <div className="text-[11px] text-muted -mt-2">
+                  {hostDropped} more {hostDropped === 1 ? 'recipient' : 'recipients'} in {podcast.title}
+                  &rsquo;s split — {hostSats} sat {hostSats === 1 ? 'doesn' : 'don'}&rsquo;t reach
+                  {' '}{hostValue.recipients.length} ways. Boost more to include everyone.
+                </div>
+              )}
+            </>
           )}
           <LightningStatus
             results={[...results, ...hostResults]}
-            totalRecipients={value.recipients.length + (showsHostLeg ? hostValue.recipients.length : 0)}
+            totalRecipients={value.recipients.length + hostLeg.recipients.length}
           />
           <PublishStatus state={pubState} />
         </div>

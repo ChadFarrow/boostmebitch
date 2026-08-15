@@ -20,7 +20,7 @@ import { fetchLnInvoice } from './lnaddr';
 import { lookupKeysendTarget, isLnurlOnlyAddress } from './keysend-lookup';
 import { storeBoostMetadata } from './boostbox';
 import { storage } from '@/lib/storage';
-import { recipientOrder, isLnAddressRecipient } from '@/lib/util';
+import { recipientOrder, isLnAddressRecipient, splitSats } from '@/lib/util';
 
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
@@ -50,64 +50,11 @@ export function pickRail(): Rail | null {
   return null;
 }
 
-/**
- * Distribute total sats across recipients by split weight, using the
- * largest-remainder (Hamilton) method: floor every share, then hand the
- * leftover sats out one at a time to the recipients whose exact share was
- * rounded down the most (fee recipients broken last on a tie).
- *
- * The naive "floor everyone, dump all remainder on the first recipient"
- * approach silently mispays small splits: a 100-sat boost to a 98%/1%/1%
- * block whose 1% legs are really ~0.8% floors both to 0 sats, then sends the
- * whole 100 to the artist and nothing to the other two. Largest-remainder
- * gives those legs their 1 sat each (→ 98/1/1) instead.
- *
- * Finally, every weighted recipient is guaranteed at least 1 sat — that's the
- * whole reason for the 100-sat minimum boost. If largest-remainder still left
- * a positive-weight recipient at 0, pull the make-up sat from the largest
- * allocation (which never drops below 1), so the total is preserved. When
- * there are more recipients than sats to go round it tops up as many as it
- * can and leaves the rest at 0.
- */
-export function splitSats(total: number, recipients: ValueRecipient[]): number[] {
-  // Clamp weights at 0: a malformed feed with a negative `split` would
-  // otherwise poison totalWeight (even flip it negative) and produce nonsensical
-  // — including negative — allocations.
-  const w = (r: ValueRecipient) => Math.max(0, r.split || 0);
-  const totalWeight = recipients.reduce((s, r) => s + w(r), 0);
-  if (totalWeight === 0) return recipients.map(() => 0);
-  const exact = recipients.map((r) => (total * w(r)) / totalWeight);
-  const allocated = exact.map((x) => Math.floor(x));
-  let remainder = total - allocated.reduce((a, b) => a + b, 0);
-  if (remainder > 0) {
-    const order = recipients
-      .map((_, i) => i)
-      .sort((a, b) => {
-        const frac = exact[b] - allocated[b] - (exact[a] - allocated[a]);
-        if (Math.abs(frac) > 1e-9) return frac;
-        // Tie on fractional part: prefer non-fee recipients.
-        return (recipients[a].fee ? 1 : 0) - (recipients[b].fee ? 1 : 0);
-      });
-    for (let k = 0; k < order.length && remainder > 0; k++, remainder--) {
-      allocated[order[k]] += 1;
-    }
-  }
-  // Floor of 1 sat per weighted recipient. Taking from the largest allocation
-  // (only ever one with >1 sat) keeps the total constant and can't create a
-  // new zero, so this terminates.
-  const needy = () =>
-    recipients.findIndex((r, i) => w(r) > 0 && allocated[i] === 0);
-  for (let i = needy(); i !== -1; i = needy()) {
-    let maxIdx = -1;
-    for (let j = 0; j < allocated.length; j++) {
-      if (allocated[j] > 1 && (maxIdx === -1 || allocated[j] > allocated[maxIdx])) maxIdx = j;
-    }
-    if (maxIdx === -1) break; // not enough sats to give everyone a sat
-    allocated[maxIdx] -= 1;
-    allocated[i] += 1;
-  }
-  return allocated;
-}
+// splitSats now lives in lib/util.ts (with recipientOrder, for the same
+// reason: <SplitsPreview> renders an allocation and must not import the
+// payment engine to do it). Re-exported here so every existing call site and
+// the v4v swap-out boundary are unchanged.
+export { splitSats } from '@/lib/util';
 
 // NIP-47 pay_keysend expects { type, value } where value is hex-encoded.
 function tlvHexFor(
