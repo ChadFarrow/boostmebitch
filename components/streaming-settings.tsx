@@ -434,13 +434,26 @@ export function StreamMeter({ className = '' }: { className?: string }) {
   if (!status.active && !status.lastError) return null;
 
   const mins = Math.ceil(status.msUntilSettle / 60_000);
+  // A resolved rate of 0 means streaming is OFF for what's playing, so the only
+  // reason this component is on screen is a settle that failed on the way out —
+  // turning streaming off force-settles the time already listened, and that
+  // last payment can fail like any other. Saying "streaming 0 sats/min" there
+  // claims a live rate for a show that has none; it also read identically for a
+  // show still streaming at 10 that had merely given up, which is the one
+  // distinction this line has to make.
+  const off = status.ratePerMin === 0;
+  const amountLabel =
+    status.mode === 'track'
+      ? `${status.amountPerTrack.toLocaleString()} sats/track`
+      : `${status.ratePerMin} sats/min`;
   return (
     <div className={`text-[11px] ${className}`}>
       <span className="text-bolt">
-        ≋ streaming{' '}
-        {status.mode === 'track'
-          ? `${status.amountPerTrack.toLocaleString()} sats/track`
-          : `${status.ratePerMin} sats/min`}
+        {off
+          ? '≋ streaming off for this show'
+          : status.active
+            ? `≋ streaming ${amountLabel}`
+            : `≋ streaming paused · ${amountLabel}`}
       </span>
       {/* Track mode with nothing to pay for. The rate path always accrues, so a
           rising number is its own proof it's working; this mode can sit at zero
@@ -484,13 +497,21 @@ export function StreamMeter({ className = '' }: { className?: string }) {
       {status.lastError && (
         <div className="text-nostr mt-0.5 break-words">
           ⚠ {status.lastError}
-          {/* Only ever offer a remedy that can actually work. 'rail-cannot-pay'
-              is a capability gap, so "change the rate to retry" would loop the
-              user through the identical failure. */}
-          {status.stoppedReason === 'failures'
-            && ' — streaming paused for this episode. Change the rate or connect a wallet to retry.'}
-          {status.stoppedReason === 'rail-cannot-pay'
-            && ' — connect NWC or a WebLN extension to stream this show.'}
+          {/* Only ever offer a remedy that can actually work — and with
+              streaming off there is nothing to remedy, so the retry copy is
+              worse than none: it asks the user to re-arm spending they have
+              already turned off, over an error they did nothing to cause.
+              What they need to know instead is that no sats left the wallet
+              and nothing further will be attempted. 'rail-cannot-pay' is a
+              capability gap, so "change the rate to retry" would loop the user
+              through the identical failure. */}
+          {off
+            ? ' — nothing was sent. Streaming is off for this show, so nothing further will be tried.'
+            : status.stoppedReason === 'failures'
+              ? ' — streaming paused for this episode. Change the rate or connect a wallet to retry.'
+              : status.stoppedReason === 'rail-cannot-pay'
+                ? ' — connect NWC or a WebLN extension to stream this show.'
+                : null}
         </div>
       )}
     </div>
@@ -521,10 +542,17 @@ export function StreamPulse() {
   // The failure state is never hidden at any width — it's the one thing a user
   // has to be able to see.
   if (s.stopped || s.lastError) {
+    const failure = s.lastError ?? 'payment failed';
     return (
       <span
         className="text-[11px] text-nostr shrink-0"
-        title={`Streaming stopped: ${s.lastError ?? 'payment failed'}`}
+        title={
+          // Same distinction <StreamMeter> makes: with streaming off for this
+          // show, "stopped" reads as something the user has to go and restart.
+          s.ratePerMin === 0
+            ? `Streaming payment failed: ${failure} — nothing was sent, and streaming is off for this show.`
+            : `Streaming stopped: ${failure}`
+        }
       >
         ⚠ ≋
       </span>
