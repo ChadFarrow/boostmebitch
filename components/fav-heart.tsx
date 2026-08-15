@@ -1,5 +1,11 @@
 'use client';
-import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast } from '@/lib/types';
+import type {
+  Episode,
+  Podcast,
+  FavoriteEpisode,
+  FavoritePodcast,
+  ValueTimeSplit,
+} from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { requestFavoritesSync } from '@/lib/nostr';
 import { isMusicMedium } from '@/lib/util';
@@ -289,6 +295,90 @@ export function FavEpisodeHeart({
       onToggle={toggle}
       label="episode"
       word={nameTarget ? targetWord('item', podcast) : undefined}
+    />
+  );
+}
+
+/**
+ * The heart for a TRACK a show played — one `<podcast:valueTimeSplit>` window,
+ * as rendered by `<TrackList>`.
+ *
+ * The favorite it writes points at the **artist's own release**, not at the
+ * episode that played it: `remoteItem` carries a `feedGuid`/`itemGuid` pair
+ * naming the track on the album feed it lives on, which is precisely the two
+ * halves `<FavEpisodeHeart>` refuses to work without. So this is the same
+ * `FavoriteEpisode` every other episode heart writes and goes onto the same
+ * kind:10333 list — favoriting a song off a DJ set and favoriting it off the
+ * artist's album produce the *same entry*, which is the point. Nothing about
+ * the show doing the playing is recorded, and nothing should be.
+ *
+ * **A window that Podcast Index couldn't resolve still gets a heart.** Title
+ * and cover come from resolution and are merely nice; the identifiers come off
+ * the wire and are the whole record. Withholding the control until PI has
+ * crawled the album would hide it on exactly the independent releases this app
+ * exists to pay — and the favorites hydrator already renders an unresolved
+ * entry as a placeholder and fills it in on a later load.
+ *
+ * `medium` is `remoteItem.medium` and nothing else. That is the host's feed
+ * declaring what it pointed at, which is a declaration; this app's own guess
+ * that a track in a music show must be `music` is not, and a guess published to
+ * a list other apps read is one no other app will ever correct. Same rule
+ * `declaredMedium` applies above.
+ */
+export function FavTrackHeart({
+  split,
+  size = 'sm',
+}: {
+  split: ValueTimeSplit;
+  size?: Size;
+}) {
+  const itemGuid = split.remoteItem?.itemGuid;
+  const feedGuid = split.remoteItem?.feedGuid;
+  const isFav = useApp((s) => s.isFavoriteEpisode(itemGuid));
+  const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
+  const removeFavoriteEpisode = useApp((s) => s.removeFavoriteEpisode);
+  const identity = useApp((s) => s.identity);
+
+  // Same rule as every other heart: no canonical identifier, no heart. A
+  // window with no remote item is a plain time-boxed value override — there is
+  // no track for it to name.
+  if (!itemGuid || !feedGuid) return null;
+
+  function toggle(e: React.MouseEvent) {
+    // The row is a seek button, so the toggle must not bubble.
+    e.stopPropagation();
+    e.preventDefault();
+    if (isFav) {
+      removeFavoriteEpisode(itemGuid!);
+    } else {
+      const fav: FavoriteEpisode = {
+        itemGuid: itemGuid!,
+        feedGuid: feedGuid!,
+        // Both absent on a window PI couldn't resolve — see above.
+        feedId: split.feedId,
+        title: split.title,
+        podcastTitle: split.feedTitle,
+        image: split.image,
+        medium: split.remoteItem?.medium,
+        addedAt: Date.now(),
+      };
+      addFavoriteEpisode(fav);
+    }
+    requestFavoritesSync(identity);
+  }
+
+  return (
+    <HeartButton
+      isFav={isFav}
+      size={size}
+      synced={!!identity}
+      onToggle={toggle}
+      // Named, not the bare "track" the other hearts pass: fifteen rows of
+      // "Favorite track" is fifteen indistinguishable controls to anyone
+      // reading by label rather than by the title beside it. No `word` —
+      // one heart per row, so FAVORITE is unambiguous on screen and
+      // `nameTarget` is for clusters where two hearts sit side by side.
+      label={split.title ? `track ${split.title}` : 'track'}
     />
   );
 }

@@ -11,7 +11,7 @@ import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipNeedsOwnButton, pipSupported, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
-import { useSplitArt, nowPlayingArt } from '@/lib/track-art';
+import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { useLiveBlockImage } from './live-now-playing';
@@ -555,12 +555,16 @@ export function Player() {
   // art is being credited, so ordinary playback is untouched.
   const liveBlockImage = useLiveBlockImage(current?.episode.guid);
 
-  // The pre-recorded twin of the above: the cover of the track a
-  // <podcast:valueTimeSplit> is redirecting to at this second. Owned here and
+  // This episode's resolved <podcast:valueTimeSplit> windows. Owned here and
   // passed down for the same reason `chapters` is — <FullscreenPlayer> is
   // always mounted, so a hook in both would fetch the episode's splits twice.
   // No-ops (and issues no request) on an episode with no windows.
-  const splitArt = useSplitArt(current?.episode, positionSec);
+  //
+  // Two surfaces read the one fetch: the art below (the cover of whatever is
+  // playing this second — the pre-recorded twin of the live block) and the
+  // fullscreen player's Tracks list, which is the same windows enumerated.
+  const splits = useResolvedSplits(current?.episode);
+  const splitArt = splitArtAt(splits, positionSec);
 
   // Both above the early return: the lock-screen effect below reads `nowArt`,
   // and `chapterState` is pure — with no chapters it answers `{-1, null, 0}`,
@@ -924,6 +928,7 @@ export function Player() {
         audioErr={audioErr}
         artOk={artUsable}
         splitArt={splitArt}
+        splits={splits}
         pipAvailable={stagePipOk}
         onPip={requestPip}
         chapters={chapters}

@@ -40,8 +40,9 @@ A corrupt entry (a NIP-65 `r`-tag of `"avatar wss://purplerelay.com"`, or spam s
 
 ## Favorites (kind:10333) — SHARED with other apps
 
-♡ toggles a favorite on a podcast row (`<FavHeart>`) or an episode row
-(`<FavEpisodeHeart>`), both in `components/fav-heart.tsx`. They go into **one**
+♡ toggles a favorite on a podcast row (`<FavHeart>`), an episode row
+(`<FavEpisodeHeart>`) or a track a show played (`<FavTrackHeart>`), all in
+`components/fav-heart.tsx`. They go into **one**
 plain replaceable event at **kind 10333** — no `d` tag, one per pubkey — an
 app-neutral address shared with StableKraft and any other app implementing
 [the spec](https://github.com/ChadFarrow/PC20-Nostr/blob/main/pc20-favorites.md).
@@ -56,6 +57,18 @@ event types into every query either app makes.
 `content` stays empty and public, unlike `settings-backup.ts`/`wallet-backup.ts`
 which NIP-44 encrypt their 30078 payloads — a second app has to be able to read
 this one.
+
+**A track favorite is an ordinary item favorite, and it names the artist's
+release rather than the show that played it.** `<FavTrackHeart>` builds its
+`FavoriteEpisode` out of a `<podcast:valueTimeSplit>`'s `remoteItem`, whose
+`feedGuid`/`itemGuid` pair points at the track on the album feed it lives on —
+so favoriting a song off a DJ set and favoriting it off the artist's own album
+produce the **same entry**, and nothing about the intermediary is recorded.
+There is no third entry type here and there must not be: the format has feeds
+and items, a track is an item, and inventing a "track played by show X" shape
+would be a spec change (see above) to express something the spec already says.
+Reasoning about which list the rows come from is in
+[`ui.md`](ui.md#tracks-podcastvaluetimesplit--the-list-a-chapter-list-is-not).
 
 ### Tag order is the data
 

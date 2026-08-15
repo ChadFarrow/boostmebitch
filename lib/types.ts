@@ -34,6 +34,12 @@ export interface ValueTimeSplit {
   title?: string;
   image?: string;
   feedId?: number;
+  /** The remote item's PARENT FEED title — the album the track belongs to, not
+   *  the show playing it. Carried so a track favorite can record it:
+   *  `<FavTrackHeart>` writes a `FavoriteEpisode` whose `podcastTitle` is this,
+   *  and without it a freshly-favorited track sits on the favorites list with no
+   *  album name until Podcast Index re-resolves it on some later load. */
+  feedTitle?: string;
   episodeGuid?: string;
 }
 

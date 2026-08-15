@@ -5,10 +5,11 @@ import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { nowPlayingArt } from '@/lib/track-art';
-import { ChapterTicks, ChapterLabel } from './chapter-ui';
+import { ChapterTicks, ChapterLabel, RowThumb } from './chapter-ui';
 import type { TranscriptCue } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
-import type { Podcast } from '@/lib/types';
+import { TrackList } from './track-list';
+import type { Podcast, ValueTimeSplit } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
 import { BoltIcon, ShareIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
@@ -31,13 +32,15 @@ import { LiveChat } from './live-chat';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 
-// About-this-episode text + Podcasting 2.0 chapters + transcript, toggled by a
-// tab strip. Tabs show only for sections with real content (2+); a lone section
-// renders under a plain label. A still-loading section renders its own loading
-// state. Returns null when there's nothing to show and nothing loading.
-type InfoTab = 'about' | 'chapters' | 'transcript';
+// About-this-episode text + the episode's tracks + Podcasting 2.0 chapters +
+// transcript, toggled by a tab strip. Tabs show only for sections with real
+// content (2+); a lone section renders under a plain label. A still-loading
+// section renders its own loading state. Returns null when there's nothing to
+// show and nothing loading.
+type InfoTab = 'about' | 'tracks' | 'chapters' | 'transcript';
 function EpisodeInfoPanel({
   description,
+  splits,
   chapters,
   chaptersLoading,
   hasChaptersUrl,
@@ -50,6 +53,10 @@ function EpisodeInfoPanel({
   chapterFallbackImg,
 }: {
   description: string;
+  /** Resolved `<podcast:valueTimeSplit>` windows — the tracks this episode
+   *  played. Fetched once by <Player> for the same reason `chapters` is: this
+   *  component is always mounted, so its own hook would double the request. */
+  splits: ValueTimeSplit[] | null;
   chapters: ChapterEntry[] | null;
   chaptersLoading: boolean;
   hasChaptersUrl: boolean;
@@ -65,18 +72,25 @@ function EpisodeInfoPanel({
   const [tab, setTab] = useState<InfoTab>('about');
 
   const hasDescription = !!description;
+  const hasTracks = !!splits?.length;
   const hasChapters = !!chapters?.length;
   const hasTranscript = !!transcriptCues?.length;
   const chaptersPending = hasChaptersUrl && chaptersLoading;
   const transcriptPending = hasTranscriptUrl && transcriptLoading;
-  if (!hasDescription && !hasChapters && !hasTranscript && !chaptersPending && !transcriptPending) {
+  if (
+    !hasDescription && !hasTracks && !hasChapters && !hasTranscript
+    && !chaptersPending && !transcriptPending
+  ) {
     return null;
   }
 
   // Only sections with loaded content get a tab; a pending section joins once
-  // it resolves.
+  // it resolves. Tracks sit ahead of Chapters on purpose: where a show has
+  // both, the tracks are what a listener is looking for by name, and the
+  // chapter list is largely the host's own interstitials between them.
   const tabs: InfoTab[] = [];
   if (hasDescription) tabs.push('about');
+  if (hasTracks) tabs.push('tracks');
   if (hasChapters) tabs.push('chapters');
   if (hasTranscript) tabs.push('transcript');
 
@@ -94,7 +108,8 @@ function EpisodeInfoPanel({
         : 'text-muted hover:text-bone hover:bg-bone/5'
     }`;
   const label = (t: InfoTab) =>
-    t === 'chapters' ? `Chapters (${chapters?.length ?? 0})`
+    t === 'tracks' ? `Tracks (${splits?.length ?? 0})`
+    : t === 'chapters' ? `Chapters (${chapters?.length ?? 0})`
     : t === 'transcript' ? 'Transcript'
     : 'About this episode';
 
@@ -104,7 +119,10 @@ function EpisodeInfoPanel({
         <div className="inline-flex max-w-full overflow-x-auto gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
           {tabs.map((t) => (
             <button key={t} type="button" onClick={() => setTab(t)} className={tabCls(active === t)}>
-              {t === 'chapters' ? `Chapters (${chapters!.length})` : t === 'transcript' ? 'Transcript' : 'About'}
+              {t === 'tracks' ? `Tracks (${splits!.length})`
+                : t === 'chapters' ? `Chapters (${chapters!.length})`
+                : t === 'transcript' ? 'Transcript'
+                : 'About'}
             </button>
           ))}
         </div>
@@ -116,6 +134,17 @@ function EpisodeInfoPanel({
         <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words">
           {description}
         </div>
+      )}
+
+      {/* The tracks the show played, each seekable and each favoritable. NOT
+          derived from the chapter list below — see <TrackList>. */}
+      {active === 'tracks' && hasTracks && (
+        <TrackList
+          splits={splits!}
+          currentSec={currentSec}
+          onSeek={onSeek}
+          fallbackImg={chapterFallbackImg}
+        />
       )}
 
       {active === 'chapters' &&
@@ -138,41 +167,16 @@ function EpisodeInfoPanel({
                   >
                     {/* Chapters with no art of their own borrow the episode's,
                         so the list keeps one left edge instead of alternating
-                        between indented and flush rows. Same fallback chain as
-                        the episode page's list. */}
-                    {(c.img || chapterFallbackImg) && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        key={c.img || chapterFallbackImg}
-                        src={c.img || chapterFallbackImg}
-                        alt=""
-                        loading="lazy"
-                        fetchPriority="low"
-                        decoding="async"
-                        onError={(e) => {
-                        // ONE attempt at the fallback, tracked on the element.
-                        // Comparing `src` against the fallback string cannot
-                        // terminate: the `src` GETTER returns a RESOLVED absolute
-                        // URL while the fallback is a raw feed string, so an
-                        // untrimmed, relative or protocol-relative URL never
-                        // compares equal and this re-assigns the same failing URL
-                        // forever. An ad-blocked host makes that a tight loop —
-                        // it fails with no round trip — and <FullscreenPlayer> is
-                        // always mounted, so collapsing the player does not stop
-                        // it. `visibility`, not `display`, so a dead image still
-                        // holds its box and the one-left-edge this whole prop
-                        // exists for survives the failure it was written for.
-                          const el = e.currentTarget;
-                          if (!el.dataset.fellBack && chapterFallbackImg) {
-                            el.dataset.fellBack = '1';
-                            el.src = chapterFallbackImg;
-                            return;
-                          }
-                          el.style.visibility = 'hidden';
-                        }}
-                        className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
-                      />
-                    )}
+                        between indented and flush rows. The fallback chain and
+                        the terminating onError live in <RowThumb> — this list,
+                        the episode page's and the track list all had (or would
+                        have had) their own copy of a rule that only works if
+                        every copy has it. */}
+                    <RowThumb
+                      src={c.img}
+                      fallback={chapterFallbackImg}
+                      className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
+                    />
                     <span className={`tabular-nums w-12 flex-shrink-0 ${on ? 'text-bolt' : 'text-muted'}`}>
                       {fmt(c.startTime)}
                     </span>
@@ -271,6 +275,7 @@ export function FullscreenPlayer({
   audioErr,
   artOk,
   splitArt,
+  splits,
   pipAvailable,
   onPip,
   chapters,
@@ -307,6 +312,9 @@ export function FullscreenPlayer({
    *  resolved once per episode by <Player> (`useSplitArt`) — this component is
    *  always mounted, so its own hook would double every episode's request. */
   splitArt?: string;
+  /** The same windows `splitArt` was picked out of, in full — the episode's
+   *  tracks, for the Tracks tab. One fetch, two readers, for the reason above. */
+  splits: ValueTimeSplit[] | null;
   pipAvailable: boolean;
   onPip: () => void;
   // Fetched once by <Player> and passed down (so it isn't fetched twice).
@@ -781,6 +789,7 @@ export function FullscreenPlayer({
           <div className="flex-1 sm:min-h-0 sm:overflow-y-auto">
             <EpisodeInfoPanel
               description={description}
+              splits={splits}
               chapters={chapters}
               chaptersLoading={chaptersLoading}
               hasChaptersUrl={!isLive && !!episode.chaptersUrl}
