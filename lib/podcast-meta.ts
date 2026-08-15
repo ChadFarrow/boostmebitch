@@ -22,24 +22,22 @@
 import { storage } from './storage';
 import type { Episode, Podcast } from './types';
 
-const PI_BREAKER_KEY = 'bmb:pi:dead';
-
 const podcastMem = new Map<string, Podcast | null>();
 
+// The breaker's key and storage medium live in lib/storage.ts with every other
+// `bmb:*` key, per CLAUDE.md. These stay as named functions because the call
+// sites read as domain vocabulary ("is PI maybe up?") rather than as storage.
 export function piMaybeUp(): boolean {
-  if (typeof window === 'undefined') return true;
-  try { return sessionStorage.getItem(PI_BREAKER_KEY) !== '1'; } catch { return true; }
+  return storage.piBreaker.isAlive();
 }
 
 export function tripPiBreaker() {
-  if (typeof window === 'undefined') return;
-  try { sessionStorage.setItem(PI_BREAKER_KEY, '1'); } catch {}
+  storage.piBreaker.trip();
 }
 
 /** Reset the breaker (used after the user explicitly retries). */
 export function resetPiBreaker() {
-  if (typeof window === 'undefined') return;
-  try { sessionStorage.removeItem(PI_BREAKER_KEY); } catch {}
+  storage.piBreaker.reset();
 }
 
 /**
