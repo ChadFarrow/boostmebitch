@@ -1,10 +1,11 @@
 'use client';
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
 import { resolvePodcastByGuid } from '@/lib/podcast-meta';
+import { storage } from '@/lib/storage';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, ShareIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
@@ -217,11 +218,76 @@ function itemNoun(mediumKey: string, n: number): string {
   return n === 1 ? one : `${one}s`;
 }
 
-/** A group heading, shown only when there is more than one group — a lone
- *  "PODCAST" banner over an undivided list is noise, not information. */
-function MediumHeading({ label }: { label: string }) {
+/**
+ * What one favorited FEED is called, by medium — the `itemNoun` above one
+ * level up. A favorited music feed is an album, not a show.
+ */
+function feedNoun(mediumKey: string, n: number): string {
+  const one = mediumKey === 'music' ? 'album' : 'show';
+  return n === 1 ? one : `${one}s`;
+}
+
+/**
+ * Remembered collapsed state for the favorites group headings.
+ *
+ * Initialized LAZILY from storage rather than loaded in an effect. That is
+ * safe here for a specific reason: both favorites lists render only inside
+ * `<HomePage>`'s favorites panel, which is gated on its `mounted` flag (the
+ * store's `identity` starts null, so `favoritesDegraded` can't open the panel
+ * on the first pass either) — so there is no server render for this value to
+ * disagree with. An effect would instead paint every group expanded for a
+ * frame and then snap them shut, which is precisely the flash that persisting
+ * the state is meant to avoid.
+ */
+function useCollapsedGroups() {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(storage.favCollapsed.get()));
+  const toggle = (key: string) => {
+    // Read-modify-write against STORAGE, not against local state. Both lists
+    // mount this hook independently and the key holds one flat array covering
+    // both namespaces, so writing `[...myOwnSet]` from the shows list would
+    // silently erase every `ep:` key the episodes list had written, and vice
+    // versa. The two in-memory Sets are then allowed to drift, because each
+    // list only ever asks about keys in its own namespace.
+    const next = new Set(storage.favCollapsed.get());
+    if (!next.delete(key)) next.add(key);
+    storage.favCollapsed.set([...next]);
+    setCollapsed(next);
+  };
+  return [collapsed, toggle] as const;
+}
+
+/**
+ * A group heading that collapses its group.
+ *
+ * It always renders, including for a lone group — which reverses the old rule
+ * that a single "PODCAST" banner was noise. A heading carrying a count and a
+ * control is information, and the one-medium library (all music, the common
+ * shape here) is exactly the one long enough to want folding away.
+ */
+function CollapsibleHeading({
+  label,
+  collapsed,
+  onToggle,
+  controls,
+  className,
+}: {
+  label: React.ReactNode;
+  collapsed: boolean;
+  onToggle: () => void;
+  controls: string;
+  className: string;
+}) {
   return (
-    <div className="text-[11px] uppercase tracking-widest text-muted mt-3 mb-1 px-1">{label}</div>
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      aria-controls={controls}
+      className={`w-full text-[11px] uppercase tracking-widest text-muted px-1 flex items-center justify-between gap-2 hover:text-bone ${className}`}
+    >
+      <span className="text-left">{label}</span>
+      <span aria-hidden className="text-bone/60">{collapsed ? '▸' : '▾'}</span>
+    </button>
   );
 }
 
@@ -245,49 +311,75 @@ export function FavoritesList({
   );
 
   const groups = useMemo(() => groupByMedium(list, (p) => p.medium), [list]);
+  const [collapsed, toggle] = useCollapsedGroups();
+  const baseId = useId();
 
   if (!list.length) return null;
 
   return (
     <>
-      {groups.map((g) => (
-        <div key={g.key}>
-          {groups.length > 1 && <MediumHeading label={g.label} />}
-          <ul className="divide-y divide-bone/10">
-            {g.rows.map((p) => {
-              const title = p.title;
-              // No title means Podcast Index hasn't answered for this guid — a
-              // feed that was never indexed, or has since been delisted. Render
-              // it rather than hiding it: it is still the user's favorite and is
-              // still republished, and a row they can see is one they can clean
-              // up.
-              if (!title) {
-                return <UnresolvedFavoriteRow key={p.podcastGuid} id={p.podcastGuid} kind="show" />;
+      {groups.map((g) => {
+        // Namespaced: the episodes list groups by medium too, and 'music'
+        // appears in both. A shared key folds a user's albums away the moment
+        // they fold away their tracks.
+        const key = `show:${g.key}`;
+        const isCollapsed = collapsed.has(key);
+        const listId = `${baseId}-${g.key}`;
+        return (
+          <div key={g.key}>
+            <CollapsibleHeading
+              label={
+                <>
+                  {groups.length > 1 && `${g.label} — `}
+                  {g.rows.length} favorite {feedNoun(g.key, g.rows.length)}
+                </>
               }
-              // FavoritePodcast → Podcast: the cache doesn't carry the value
-              // block, so the value-aware stamp is hidden via showV4VStamp.
-              const minimal: Podcast = {
-                id: p.id,
-                podcastGuid: p.podcastGuid,
-                title,
-                author: p.author,
-                image: p.image,
-                artwork: p.artwork,
-                url: p.url,
-              };
-              return (
-                <PodcastRow
-                  key={p.podcastGuid}
-                  podcast={minimal}
-                  selected={selected === p.id}
-                  onSelect={onSelect}
-                  showV4VStamp={false}
-                />
-              );
-            })}
-          </ul>
-        </div>
-      ))}
+              collapsed={isCollapsed}
+              onToggle={() => toggle(key)}
+              controls={listId}
+              className="mt-3 mb-1"
+            />
+            {/* The rows are UNMOUNTED, not merely hidden — a collapsed music
+                group is hundreds of them, each mounting a cover image and a
+                favorite button, and `hidden` alone would keep paying for all of
+                it. The empty <ul> stays in the DOM regardless, because
+                `aria-controls` above must point at something that exists. */}
+            <ul id={listId} className="divide-y divide-bone/10" hidden={isCollapsed}>
+              {isCollapsed ? null : g.rows.map((p) => {
+                const title = p.title;
+                // No title means Podcast Index hasn't answered for this guid — a
+                // feed that was never indexed, or has since been delisted. Render
+                // it rather than hiding it: it is still the user's favorite and is
+                // still republished, and a row they can see is one they can clean
+                // up.
+                if (!title) {
+                  return <UnresolvedFavoriteRow key={p.podcastGuid} id={p.podcastGuid} kind="show" />;
+                }
+                // FavoritePodcast → Podcast: the cache doesn't carry the value
+                // block, so the value-aware stamp is hidden via showV4VStamp.
+                const minimal: Podcast = {
+                  id: p.id,
+                  podcastGuid: p.podcastGuid,
+                  title,
+                  author: p.author,
+                  image: p.image,
+                  artwork: p.artwork,
+                  url: p.url,
+                };
+                return (
+                  <PodcastRow
+                    key={p.podcastGuid}
+                    podcast={minimal}
+                    selected={selected === p.id}
+                    onSelect={onSelect}
+                    showV4VStamp={false}
+                  />
+                );
+              })}
+            </ul>
+          </div>
+        );
+      })}
     </>
   );
 }
@@ -336,78 +428,95 @@ export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => v
   );
 
   const groups = useMemo(() => groupByMedium(list, (ep) => ep.medium), [list]);
+  const [collapsed, toggle] = useCollapsedGroups();
+  const baseId = useId();
 
   if (!list.length) return null;
 
   return (
     <>
-      {groups.map((g) => (
-        <div key={g.key}>
-          {/* Counted PER MEDIUM so each group can use its own noun — a track on
-              a music feed is a single, not an episode. One combined heading
-              would have to pick one word and be wrong for half the list, the
-              same trap `MEDIUM_ORDER` exists to avoid. The overall total is on
-              the panel header. */}
-          <div className="text-[11px] uppercase tracking-widest text-muted mt-4 mb-2 px-1">
-            {groups.length > 1 && `${g.label} — `}
-            {g.rows.length} favorite {itemNoun(g.key, g.rows.length)}
+      {groups.map((g) => {
+        const key = `ep:${g.key}`;
+        const isCollapsed = collapsed.has(key);
+        const listId = `${baseId}-${g.key}`;
+        return (
+          <div key={g.key}>
+            {/* Counted PER MEDIUM so each group can use its own noun — a track on
+                a music feed is a single, not an episode. One combined heading
+                would have to pick one word and be wrong for half the list, the
+                same trap `MEDIUM_ORDER` exists to avoid. The overall total is on
+                the panel header. The count stays on screen while collapsed: a
+                heading that hid what it was hiding would just look like a
+                shorter list. */}
+            <CollapsibleHeading
+              label={
+                <>
+                  {groups.length > 1 && `${g.label} — `}
+                  {g.rows.length} favorite {itemNoun(g.key, g.rows.length)}
+                </>
+              }
+              collapsed={isCollapsed}
+              onToggle={() => toggle(key)}
+              controls={listId}
+              className="mt-4 mb-2"
+            />
+            <ul id={listId} className="divide-y divide-bone/10" hidden={isCollapsed}>
+              {isCollapsed ? null : g.rows.map((ep) => {
+                const { title, feedGuid } = ep;
+                // Unresolved: no parent feed guid to look up, or PI had nothing for
+                // it. Still the user's favorite, still republished — see
+                // <UnresolvedFavoriteRow>.
+                if (!title) return <UnresolvedFavoriteRow key={ep.itemGuid} id={ep.itemGuid} kind="episode" />;
+                return (
+                  <li
+                    key={ep.itemGuid}
+                    className="flex gap-3 py-3 px-1 cursor-pointer group transition hover:bg-bone/5"
+                    onClick={async () => {
+                      // feedId is present for anything this device resolved through
+                      // PI. An entry synced from another app before its backfill ran
+                      // has only the guid, so fall back to resolving it on demand.
+                      if (!feedGuid) return;
+                      if (ep.feedId) {
+                        onSelect({
+                          id: ep.feedId,
+                          podcastGuid: feedGuid,
+                          title: ep.podcastTitle ?? title,
+                          image: ep.image,
+                          url: ep.feedUrl,
+                        });
+                        return;
+                      }
+                      const podcast = await resolvePodcastByGuid(feedGuid);
+                      if (podcast) onSelect(podcast);
+                    }}
+                  >
+                    <PodcastCover
+                      image={ep.image}
+                      title={title}
+                      seed={ep.itemGuid}
+                      className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-display text-base leading-tight truncate">{title}</div>
+                      {/* Only when it says something the title didn't. A single
+                          names its album after its one track, so printing both
+                          renders the same words twice and reads as an album
+                          sitting in the episodes list — 74 of one user's 227
+                          tracks. */}
+                      {ep.podcastTitle && ep.podcastTitle !== title && (
+                        <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
+                      )}
+                    </div>
+                    <div className="flex-shrink-0 self-center">
+                      <FavEpisodeRowHeart favorite={ep} />
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
-          <ul className="divide-y divide-bone/10">
-            {g.rows.map((ep) => {
-              const { title, feedGuid } = ep;
-              // Unresolved: no parent feed guid to look up, or PI had nothing for
-              // it. Still the user's favorite, still republished — see
-              // <UnresolvedFavoriteRow>.
-              if (!title) return <UnresolvedFavoriteRow key={ep.itemGuid} id={ep.itemGuid} kind="episode" />;
-              return (
-                <li
-                  key={ep.itemGuid}
-                  className="flex gap-3 py-3 px-1 cursor-pointer group transition hover:bg-bone/5"
-                  onClick={async () => {
-                    // feedId is present for anything this device resolved through
-                    // PI. An entry synced from another app before its backfill ran
-                    // has only the guid, so fall back to resolving it on demand.
-                    if (!feedGuid) return;
-                    if (ep.feedId) {
-                      onSelect({
-                        id: ep.feedId,
-                        podcastGuid: feedGuid,
-                        title: ep.podcastTitle ?? title,
-                        image: ep.image,
-                        url: ep.feedUrl,
-                      });
-                      return;
-                    }
-                    const podcast = await resolvePodcastByGuid(feedGuid);
-                    if (podcast) onSelect(podcast);
-                  }}
-                >
-                  <PodcastCover
-                    image={ep.image}
-                    title={title}
-                    seed={ep.itemGuid}
-                    className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="font-display text-base leading-tight truncate">{title}</div>
-                    {/* Only when it says something the title didn't. A single
-                        names its album after its one track, so printing both
-                        renders the same words twice and reads as an album
-                        sitting in the episodes list — 74 of one user's 227
-                        tracks. */}
-                    {ep.podcastTitle && ep.podcastTitle !== title && (
-                      <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
-                    )}
-                  </div>
-                  <div className="flex-shrink-0 self-center">
-                    <FavEpisodeRowHeart favorite={ep} />
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
+        );
+      })}
     </>
   );
 }
