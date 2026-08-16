@@ -314,7 +314,8 @@ export function FullscreenPlayer({
    *  applied to only one of them doesn't help at all. */
   artOk: boolean;
   /** Cover of the track a <podcast:valueTimeSplit> is redirecting to right now,
-   *  resolved once per episode by <Player> (`useSplitArt`) — this component is
+   *  resolved once per episode by <Player> (`useResolvedSplits` + `splitArtAt`,
+   *  `lib/track-art.ts`) — this component is
    *  always mounted, so its own hook would double every episode's request. */
   splitArt?: string;
   /** The same windows `splitArt` was picked out of, in full — the episode's
