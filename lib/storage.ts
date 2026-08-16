@@ -43,6 +43,7 @@ const KEYS = {
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
+  favPanelOpen: 'bmb:fav_panel_open', // '1' when the user EXPANDED the whole favorites panel; absent = collapsed, which is the default. Stores the OPPOSITE sense to favCollapsed above, on purpose — see the accessor. Also a device SETTING, also not evictable.
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
   favBaselinePrefix: 'bmb:favbaseline', // + ':<npub>' — {feeds,items} of NIP-73 ids this device last agreed with the kind:10333 list on. NOT a cache: without it a shared, replaceable, many-writer event can't tell "another app added this" from "I removed this". See lib/nostr/favorites-list.ts.
@@ -625,6 +626,30 @@ export const storage = {
     },
     /** Empty set removes the key rather than storing '[]' — nothing collapsed is the default. */
     set: (v: string[]) => (v.length ? safeSet(KEYS.favCollapsed, JSON.stringify(v)) : safeRemove(KEYS.favCollapsed)),
+  },
+
+  /**
+   * Whether the whole favorites panel is expanded. Absent = collapsed.
+   *
+   * This stores OPEN where its neighbour above stores COLLAPSED, and the
+   * inconsistency is the point rather than a slip to be tidied away. Both keys
+   * hold the same invariant — **absent means the default** — and they differ
+   * only because their defaults differ. `favCollapsed` must default to *visible*
+   * because the medium vocabulary is open-ended, so an unseen medium would
+   * otherwise hide behind a heading nobody touched. The panel is one fixed
+   * control with no vocabulary and defaults to *closed* (a long favorites list
+   * pushes the rest of the page off the first screen), so the exception worth
+   * naming is "the user opened it".
+   *
+   * Keeping absent == default is also what lets `set` remove the key instead of
+   * writing '0', which matters on a full store: the fewer bytes a setting needs,
+   * the likelier `safeSet` lands it.
+   *
+   * A device view setting, not per-npub, and not evictable.
+   */
+  favPanelOpen: {
+    get: (): boolean => safeGet(KEYS.favPanelOpen) === '1',
+    set: (v: boolean) => (v ? safeSet(KEYS.favPanelOpen, '1') : safeRemove(KEYS.favPanelOpen)),
   },
 
   /** User's publish-relay override (manual, rare). null = no override set. */

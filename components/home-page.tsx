@@ -12,6 +12,7 @@ import { BoltIcon } from '@/components/icons';
 import { ThemeToggle } from '@/components/theme-toggle';
 import { AuthControl } from '@/components/auth-control';
 import { useApp } from '@/lib/store';
+import { storage } from '@/lib/storage';
 import { resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
 
@@ -21,7 +22,19 @@ export function HomePage() {
   const [feeds, setFeeds] = useState<Podcast[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
-  const [favoritesCollapsed, setFavoritesCollapsed] = useState(false);
+  // Collapsed by default, and remembered. A long favorites list pushes every
+  // section below it — the live streams, the global feed — off the first screen
+  // before the user has chosen anything, and the panel is a browse aid rather
+  // than the reason the page exists.
+  //
+  // Initialized LAZILY from storage rather than in an effect, for the reason
+  // `useCollapsedGroups` spells out in components/lists.tsx: an effect paints the
+  // panel open for a frame and then snaps it shut, which is the exact flash that
+  // persisting the value is meant to avoid. Safe against SSR because none of this
+  // subtree reaches the server render — `showLeftRightLayout` is false on the
+  // first pass (see `mounted` below), so the whole <aside> is <EmptyState /> until
+  // after hydration, and `safeGet` returns null off-browser anyway.
+  const [favoritesCollapsed, setFavoritesCollapsed] = useState(() => !storage.favPanelOpen.get());
   const [searchKey, setSearchKey] = useState(0);
   const [publisherSource, setPublisherSource] = useState<Podcast | null>(null);
   const [publisherAlbums, setPublisherAlbums] = useState<Podcast[] | null>(null);
@@ -393,7 +406,16 @@ export function HomePage() {
             ) : showFavoritesPanel && !query && !loading ? (
               <button
                 type="button"
-                onClick={() => setFavoritesCollapsed((v) => !v)}
+                // Write-through, computed OUTSIDE the setter: StrictMode
+                // double-invokes an updater, so a storage write in there runs
+                // twice. A click handler already closes over a fresh value each
+                // render, so there is no staleness to route around — same shape
+                // as `useCollapsedGroups`' read-modify-write in lists.tsx.
+                onClick={() => {
+                  const next = !favoritesCollapsed;
+                  setFavoritesCollapsed(next);
+                  storage.favPanelOpen.set(!next);
+                }}
                 aria-expanded={!favoritesCollapsed}
                 className="w-full text-[11px] uppercase tracking-widest text-muted mb-2 px-1 flex items-center justify-between gap-2 hover:text-bone"
               >
