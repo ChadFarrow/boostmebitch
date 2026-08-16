@@ -25,6 +25,12 @@ One polyfill active at a time. `captureOriginal()` snapshots the underlying NIP-
 
 So the boundary to hold when editing: **no signer instance on a global, no module-level accessor, no key reachable without a person having asked for it.** One reveal in one component is the whole exception. If you find yourself adding a second caller of `getKey()` that isn't user-initiated, that's the rule reasserting itself.
 
+**`decryptWithTimeout(pubkey, ciphertext)` also lives here, and every background decrypt goes through it.** NIP-44 decrypt calls are handed to the user's signer — extension, Amber, or bunker — and on iOS the extension's background service worker can be killed *between* the relay query and the decrypt call, leaving the promise pending forever. There is no rejection and no timeout of its own: the restore simply never finishes, and a spinner that never resolves is indistinguishable from a slow relay. So every such call is capped (10 s) and rejects instead of hanging.
+
+It sits in `signer.ts` because this module owns `requireNip44` — but it is shared rather than per-caller because it had been copied verbatim, same body and same constant, into `lib/nostr/wallet-backup.ts` and `lib/nostr/settings-backup.ts`. Those are the two encrypted-to-self restore paths, which is precisely where a hang is invisible: both run in the background during `loadProfile`, neither has a screen in front of it. Both already imported from this module, so sharing it added no import edge. **A new encrypted-to-self backup uses this rather than awaiting `requireNip44().decrypt` directly.**
+
+**Its read-side relay set is `backupReadRelays` (`lib/nostr/relays.ts`), also shared, also formerly duplicated** — see [`nostr.md`](nostr.md) for why the union of publish relays and `DEFAULT_RELAYS` is the right set and what a narrowed one silently reports.
+
 ### Google onboarding — a key for users who have none
 
 Ported from **Wisp** (github.com/barrydeen/wisp, `v1.1.0`). The central insight, because the obvious version is wrong: **Google is not an identity provider here — it's a zero-knowledge blob store.** The key is generated locally at random (`generateSecretKey()`); nothing derives from the Google account. Wisp shipped deterministic `sub`-derived nsecs once and reverted.
