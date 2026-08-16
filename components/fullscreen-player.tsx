@@ -1,4 +1,5 @@
 'use client';
+import { CopyLinkButton } from './copy-link-button';
 import { useEffect, useRef, useState, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
@@ -12,10 +13,11 @@ import { EpisodeContents } from './episode-contents';
 import type { Podcast, ValueTimeSplit } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
-import { BoltIcon, ShareIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
+import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
 import {
   hasValueRecipients,
   isMusicMedium,
+  showShareUrl,
   stripHtml,
   fullscreenElement,
   fullscreenSupported,
@@ -192,36 +194,23 @@ function ShareButton({
   liveHostPubkey?: string;
   podcast: Podcast;
 }) {
-  const [copied, setCopied] = useState(false);
-
+  // This player shares two different kinds of thing, which is why the URL is
+  // built here rather than inside <CopyLinkButton>: a live stream resolves to
+  // its host's /live/<npub> page, everything else to the show link. The show
+  // branch goes through the shared `showShareUrl` so it can't drift from the
+  // one in the episode list again — this copy used to interpolate
+  // `${origin}/?podcast=` and produced a different link off the root path.
   function buildUrl(): string | null {
     if (typeof window === 'undefined') return null;
-    const origin = window.location.origin;
     if (liveStreamId) {
       const parsed = parseStreamId(liveStreamId);
       if (!parsed) return null;
-      return `${origin}/live/${nip19.npubEncode(liveHostPubkey ?? parsed.pubkey)}`;
+      return `${window.location.origin}/live/${nip19.npubEncode(liveHostPubkey ?? parsed.pubkey)}`;
     }
-    if (podcast.podcastGuid) return `${origin}/?podcast=${podcast.podcastGuid}`;
-    return null;
+    return showShareUrl(podcast.podcastGuid);
   }
 
-  const url = buildUrl();
-  if (!url) return null;
-
-  async function onClick() {
-    try {
-      await navigator.clipboard.writeText(url!);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch { /* clipboard blocked — silent no-op */ }
-  }
-
-  return (
-    <button onClick={onClick} className="btn-ghost" title="Copy link to this page" aria-label="Copy link to this page">
-      <ShareIcon /> {copied ? 'COPIED' : 'SHARE'}
-    </button>
-  );
+  return <CopyLinkButton url={buildUrl()} title="Copy link to this page" />;
 }
 
 export function FullscreenPlayer({

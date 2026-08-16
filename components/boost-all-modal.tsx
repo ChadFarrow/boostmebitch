@@ -1,13 +1,13 @@
 'use client';
+import { useWalletChange } from '@/lib/use-wallet-change';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { subscribeNwc } from '@/lib/v4v/nwc';
-import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
-import { storage, type ShareNostrAs } from '@/lib/storage';
+import { storage } from '@/lib/storage';
+import { useSharePicker } from './boost-modal/use-share-picker';
 import { getErrorMessage, hasValueRecipients, payableSplit, resolveSenderName, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
@@ -54,26 +54,27 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const [done, setDone] = useState(false);
   const [progress, setProgress] = useState<TrackProgress[]>([]);
 
-  const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
-  const [shareAs, setShareAs] = useState<ShareNostrAs>(() => storage.shareNostrAs.get());
+  // Share picker + the `anonymous` flag derived from it, shared with
+  // <BoostModal>. It used to be a second copy of the same state, handlers and
+  // expression — see ./boost-modal/use-share-picker for why a single definition
+  // of `anonymous` is the point, and note that this modal in particular leaked
+  // the sender name a second time through its hand-built summary
+  // `contentOverride` after the single-boost path had already been fixed.
+  const {
+    shareNostr,
+    setShareNostr: handleShareNostrChange,
+    shareAs,
+    setShareAs: handleShareAsChange,
+    anonymous,
+  } = useSharePicker(identity);
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
 
-  // "Anonymous" must anonymize the PAYMENT too, not just who signs the note —
-  // and that means the "From" name as well as the pubkey: sender_id resolves to
-  // the user's profile in recipient aggregators, and sender_name is displayed
-  // verbatim there and printed into the note body below. The pubkey is dropped;
-  // the name is REPLACED by DEFAULT_SENDER_NAME (same as when "From" is just
-  // left empty) so it presents consistently instead of rendering blank in one
-  // aggregator and "Unknown" in the next. Applies to every leg — per-track,
-  // host share, summary.
-  //
-  // Component scope because <SenderName> renders off it, and gated on
-  // `identity` for the same reason as BoostModal's — signed out the picker is a
-  // bare checkbox and the typed "From" name is a site-signed note's only
-  // attribution, so a stale global `bmb:share_nostr_as` of 'site' must not
-  // silently replace it there.
-  const anonymous = !!identity && shareNostr && shareAs === 'site';
+  // The NAME needs this modal's own "From" state, so it stays here.
+  // DEFAULT_SENDER_NAME substitutes rather than omits (same as when "From" is
+  // just left empty) so it presents consistently instead of rendering blank in
+  // one aggregator and "Unknown" in the next. Applies to every leg — per-track,
+  // host share, summary. Component scope because <SenderName> renders off it.
   const senderName = resolveSenderName(name, anonymous);
 
   // Portal to <body> so the overlay escapes the layout's `relative z-0` content
@@ -81,16 +82,6 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // competes WITHIN the wrapper's stacking context, so the mini-player (a
   // body-level sibling at z-30) painted on top of it — burying the Cancel /
   // BOOST footer. <ModalShell> owns the portal now.
-
-  function handleShareNostrChange(v: boolean) {
-    setShareNostr(v);
-    storage.shareNostr.set(v);
-  }
-
-  function handleShareAsChange(v: ShareNostrAs) {
-    setShareAs(v);
-    storage.shareNostrAs.set(v);
-  }
 
   // Set on unmount so the in-flight loop bails before firing more sends or
   // calling setState on an unmounted component. The current track's send
@@ -105,13 +96,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     return () => { cancelled.current = true; };
   }, []);
 
-  // Sync rail if wallet connects/disconnects while modal is open.
-  useEffect(() => {
-    const bump = () => setRail(pickRail());
-    const unsubNwc = subscribeNwc(bump);
-    const unsubSpark = subscribeSpark(bump);
-    return () => { unsubNwc(); unsubSpark(); };
-  }, []);
+  // Sync rail if a wallet connects/disconnects while the modal is open. Covers
+  // WebLN too — see the same note in boost-modal/index.tsx; both modals were
+  // missing that third subscription while rendering a picker that reads it.
+  useWalletChange(() => setRail(pickRail()));
 
   useEffect(() => {
     // pickRail() honors the stored rail pref when that rail is still

@@ -1,10 +1,7 @@
 'use client';
+import { useWalletChange } from '@/lib/use-wallet-change';
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
-import { subscribeNwc } from '@/lib/v4v/nwc';
-import { subscribeSpark } from '@/lib/v4v/spark';
-import { subscribeWebln } from '@/lib/v4v/webln';
-import { subscribeRailPref } from '@/lib/storage';
 import { isGoogleAuthConfigured } from '@/lib/nostr/google-auth';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
 import { WalletModal } from './wallet-modal';
@@ -42,14 +39,9 @@ export function AuthControl() {
 
   // Re-render on rail-state changes so the control flips between the
   // "Sign in" affordance and the connected chip without a remount.
-  useEffect(() => {
-    const bump = () => setTick((t) => t + 1);
-    const unsubNwc = subscribeNwc(bump);
-    const unsubSpark = subscribeSpark(bump);
-    const unsubWebln = subscribeWebln(bump);
-    const unsubPref = subscribeRailPref(bump);
-    return () => { unsubNwc(); unsubSpark(); unsubWebln(); unsubPref(); };
-  }, []);
+  // railPref included: this control renders the EFFECTIVE rail, which moves when
+  // the preference moves even though no readiness flag changed.
+  useWalletChange(() => setTick((t) => t + 1), { railPref: true });
 
   // Dismiss the dropdown on outside-click / Escape.
   useEffect(() => {
