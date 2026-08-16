@@ -70,6 +70,25 @@ would be a spec change (see above) to express something the spec already says.
 Reasoning about which list the rows come from is in
 [`ui.md`](ui.md#tracks-podcastvaluetimesplit--the-list-a-chapter-list-is-not).
 
+**But `remoteItem.feedGuid` is not always the track's parent feed, and the
+difference is invisible in a resolved row.** A host may point a
+`valueTimeSplit` at a **publisher** feed, whose `<podcast:remoteItem>` entries
+name the real album feeds; `resolveRemoteItemFromRss` walks that chain and
+returns a value block, a title and a cover either way, so the row looks fully
+resolved while its `feedGuid` names something `/episodes/byguid` will never
+accept as a `podcastguid`. Recording it publishes an entry to the shared
+kind:10333 list that **no app can ever open** — not a placeholder that fills
+itself in on a later load, which is ordinary and fine, but a permanent one.
+`ValueTimeSplit.parentFeedGuid` carries the verdict back in three states:
+`undefined` (nothing learned — use the wire value, a placeholder is fine), a
+string (the album's own `<podcast:guid>`, recovered during the walk — use it
+instead), and `null` (walked to a publisher, album declared no guid — **offer
+no heart at all**, the same refusal `<FavEpisodeHeart>` makes for an episode
+with no parent feed). The distinction matters because the naive test —
+"suppress when `episodeGuid` is missing" — over-blocks: that is also true when
+PI simply hasn't crawled the item yet, which is exactly the independent release
+this app exists to pay.
+
 ### Tag order is the data
 
 This is the one property everything else follows from, and the easiest thing in

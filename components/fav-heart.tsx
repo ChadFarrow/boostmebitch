@@ -319,6 +319,17 @@ export function FavEpisodeHeart({
  * exists to pay — and the favorites hydrator already renders an unresolved
  * entry as a placeholder and fills it in on a later load.
  *
+ * **The one exception is a parent that can never resolve, not merely one that
+ * hasn't yet.** A host's `remoteItem.feedGuid` is sometimes a PUBLISHER feed,
+ * whose `<podcast:remoteItem>` entries name the real album feeds — the resolver
+ * walks that chain and still returns a title and a cover, so the row looks
+ * fully resolved while its `feedGuid` names something `/episodes/byguid` cannot
+ * take as a `podcastguid`. `parentFeedGuid` is what carries that verdict back:
+ * the recovered album guid when the walk found one, `null` when it didn't. A
+ * placeholder that fills itself in is fine; one that never can is an entry the
+ * user cannot open in this app or any other, on a list with no undo, so it is
+ * the same refusal `<FavEpisodeHeart>` makes for an episode with no parent feed.
+ *
  * `medium` is `remoteItem.medium` and nothing else. That is the host's feed
  * declaring what it pointed at, which is a declaration; this app's own guess
  * that a track in a music show must be `music` is not, and a guess published to
@@ -333,7 +344,14 @@ export function FavTrackHeart({
   size?: Size;
 }) {
   const itemGuid = split.remoteItem?.itemGuid;
-  const feedGuid = split.remoteItem?.feedGuid;
+  // `parentFeedGuid` OVERRIDES the wire value when resolution learned better,
+  // and `null` positively withdraws it — see the note above. `??` alone would
+  // be wrong twice: it would let the publisher guid through on null, and it
+  // would ignore a recovered album guid whenever the wire also had one.
+  const feedGuid =
+    split.parentFeedGuid === null
+      ? undefined
+      : split.parentFeedGuid ?? split.remoteItem?.feedGuid;
   const isFav = useApp((s) => s.isFavoriteEpisode(itemGuid));
   const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
   const removeFavoriteEpisode = useApp((s) => s.removeFavoriteEpisode);

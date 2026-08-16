@@ -1177,6 +1177,13 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
       value: rss.value,
       title: rss.title,
       image: rss.image,
+      // Case 2 above is the one that matters here: the host's feedGuid named a
+      // PUBLISHER, so it is not the track's parent and can't resolve it later.
+      // `albumFeedGuid` is the real one when the album declared it, and `null`
+      // says "known unresolvable" — which is a different claim from the
+      // `undefined` that case 1 leaves behind, where the guid is correct and
+      // only PI's crawl is behind. See ValueTimeSplit.parentFeedGuid.
+      parentFeedGuid: rss.viaPublisher ? rss.albumFeedGuid ?? null : undefined,
     };
   } catch {
     return split;
