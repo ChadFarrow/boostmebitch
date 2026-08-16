@@ -173,20 +173,38 @@ export function HomePage() {
     setFeeds(f);
     setQuery(q);
     clearPublisher();
-    // A search must LEAVE the drilled-in views, not just refill `feeds` behind
-    // them. The results section is a ternary that checks discussion → episode →
-    // detail before it ever reaches the branch that renders `feeds`, and the
-    // search bar is rendered on all of them — so typing a new query from a show
-    // page fetched, matched and stored results that nothing on screen could
-    // display. The bar looked dead: the old query stayed in the input, the same
-    // show stayed open, and there was no error anywhere to notice.
-    // `setSelected(null)` is the one lever that exits all three (selectPodcast
-    // clears selectedEpisode and discussionEpisode too), and it is deliberately
-    // NOT gated on `f.length` alone — a search that matched something is
-    // exactly the case that must become visible; the empty-query/no-match reset
-    // is the other half.
-    if (q || !f.length) setSelected(null);
-  }, [setSelected]); // eslint-disable-line react-hooks/exhaustive-deps
+    // Deliberately does NOT change which view is showing — see
+    // handleQueryChange. Results arriving is the wrong moment to navigate on:
+    // this callback runs for a response the user may have abandoned several
+    // keystrokes ago, and `SearchBar`'s generation counter only suppresses
+    // OUT-OF-ORDER results, not ones that are still the newest for a query the
+    // user has moved on from. Resetting here let the newest response land
+    // moments after a click into a show and throw the user back out of it.
+  }, []);
+
+  /**
+   * A search must LEAVE the drilled-in views, not just refill `feeds` behind
+   * them. The results section is a ternary that checks discussion → episode →
+   * detail before it ever reaches the branch that renders `feeds`, and the
+   * search bar is rendered on all of them — so typing a new query from a show
+   * page fetched, matched and stored results that nothing on screen could
+   * display. The bar looked dead: the old query stayed in the input, the same
+   * show stayed open, and there was no error anywhere to notice.
+   *
+   * `setSelected(null)` is the one lever that exits all three (selectPodcast
+   * clears selectedEpisode and discussionEpisode too). It hangs off the EDIT
+   * rather than off the results because the edit is the user's own action:
+   * it can't arrive late, and it can't be for a query they've abandoned.
+   * Clearing the box is an edit too, which is the old `!f.length` half.
+   *
+   * Read through getState() rather than the subscribed `selected`, so the
+   * callback stays stable and a keystroke on the home page — where there is
+   * nothing to leave — doesn't touch the store at all.
+   */
+  const handleQueryChange = useCallback(() => {
+    const st = useApp.getState();
+    if (st.selectedPodcast || st.selectedEpisode || st.discussionEpisode) setSelected(null);
+  }, [setSelected]);
 
   const handleSelect = useCallback(async (p: Podcast) => {
     if (p.medium === 'publisher') {
@@ -316,6 +334,7 @@ export function HomePage() {
             key={searchKey}
             onResults={handleResults}
             onLoading={setLoading}
+            onQueryChange={handleQueryChange}
           />
         </div>
       </section>
