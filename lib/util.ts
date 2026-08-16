@@ -1,6 +1,6 @@
 import type {
   Podcast, ValueBlock, ValueRecipient, Episode, AlternateEnclosure,
-  BoostResult, StoredBoostLeg,
+  BoostResult, StoredBoostLeg, ChapterEntry, ValueTimeSplit,
 } from './types';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
@@ -261,6 +261,166 @@ export function splitAtPosition<T extends { startTime: number; duration: number 
     if (positionSec >= start && positionSec < start + dur) return s;
   }
   return null;
+}
+
+/**
+ * One row of the merged episode-contents list: either a track the show played
+ * (a `<podcast:valueTimeSplit>` window) or a chapter.
+ *
+ * The two are kept as distinct variants rather than flattened into a common
+ * `{ title, image, startTime }` shape on purpose. A track row carries the
+ * `remoteItem` identifiers a favorite is made of; a chapter row carries none and
+ * must never be offered one. Making them structurally different is what stops a
+ * later edit from hanging a heart on the wrong one — the type simply has no
+ * `split` to hand `<FavTrackHeart>` on a chapter row.
+ */
+export type EpisodeContentRow =
+  | {
+      kind: 'track';
+      startTime: number;
+      split: ValueTimeSplit;
+      /**
+       * The title of the chapter this window absorbed, when it absorbed exactly
+       * one and that chapter had a title. **Display fallback only** — see rule 5
+       * on `mergeEpisodeContents`. Never an input to the favorite.
+       */
+      absorbedTitle?: string;
+    }
+  | { kind: 'chapter'; startTime: number; chapter: ChapterEntry };
+
+/** How close a chapter has to sit to a window before it's read as naming the
+ *  same moment. See the note on `mergeEpisodeContents`. */
+const CONTENT_DEDUPE_SEC = 2;
+
+/**
+ * Interleave the tracks a show played with its chapters into ONE list, in time
+ * order — the list the episode page and the fullscreen player both render.
+ *
+ * **This is a presentational merge and nothing more. A chapter is never mapped
+ * to a window.** That distinction is the whole reason this function is shaped
+ * the way it is, and it is not a style preference — it was measured. On
+ * *Mutton, Mead & Music* 150 the episode publishes 15 windows against 25
+ * chapters: ten of the chapters are the host's own talk breaks, two chapters
+ * tie on a `28:20` start with the tie resolving to the talk break, and a talk
+ * break at `33:49` falls INSIDE the `28:21`–`33:50` window. So both of the
+ * obvious mappings — "the chapter nearest this window" and "the window covering
+ * this chapter" — attach a row to a song it isn't naming. A favorite is an
+ * irreversible write to a kind:10333 list other apps read, so a silently wrong
+ * one is the expensive kind of wrong.
+ *
+ * What this does instead is put both sources on one timeline and let each row
+ * keep its own provenance. A track row is built from a window and carries that
+ * window; a chapter row is built from a chapter and carries no identifiers at
+ * all. `<FavTrackHeart>` reads the window object, exactly as it did when the
+ * tracks had a tab of their own.
+ *
+ * Five rules, in descending order of how much they cost to break:
+ *
+ * 1. **Every window becomes a row, always.** Windows are never deduped against
+ *    each other and never dropped. Dropping one removes a heart, and it does so
+ *    invisibly — the row it collided with still looks like the song.
+ * 2. **Only a chapter may be dropped.** A chapter within `toleranceSec` of some
+ *    window's start is naming the same moment as that window, and the window is
+ *    the half carrying the identifiers, so the chapter goes. Reverse this and
+ *    every song the host also chaptered loses its heart — which on a music show
+ *    is most of them.
+ * 3. **A tolerance, not exact equality**, and the live feed is emphatic about
+ *    it. Homegrown Hits 146 publishes 14 windows against 31 chapters, and every
+ *    one of the 14 has a chapter within **0.445 s** — because Podcast Index
+ *    hands back integer `startTime`s while the chapters JSON is fractional
+ *    (`34` against `33.778`, `351` against `350.981`, `1149` against
+ *    `1148.691`). Exactly ONE pair matches exactly. So exact-equality dedupe
+ *    leaves thirteen duplicate pairs standing, one row of each pair carrying a
+ *    heart and the other not, both naming the same song. The other direction is
+ *    bounded too: the closest two distinct chapters on that episode are 14 s
+ *    apart, so 2 s cannot over-merge.
+ * 4. **A track sorts ahead of a chapter at the same second**, so the row with
+ *    the heart is the one the eye lands on. The sort is otherwise stable, so
+ *    feed order survives among equal starts.
+ * 5. **An absorbed chapter leaves its title behind, and only its title.** The
+ *    window at `5046` on that episode is one Podcast Index hasn't crawled, so
+ *    it renders as *"Track not yet indexed"* — while the chapter at `5045.605`
+ *    that rule 2 just dropped is titled *"Shanti"*. Discarding that is a
+ *    regression against the chapters list this replaces, so the row keeps it as
+ *    `absorbedTitle` and the component prefers `split.title` over it.
+ *    **Guarded on the pairing being unambiguous**: a chapter is absorbed by its
+ *    NEAREST window, and a window that absorbed more than one publishes no
+ *    title at all. That is the *Mutton, Mead & Music* case — two chapters tied
+ *    on `28:20`, one a talk break and one the song — where any pick is a coin
+ *    flip. **This is decoration and cannot reach a favorite**: the heart is
+ *    built from `remoteItem`, which is untouched here, so the worst a bad
+ *    borrow can do is mislabel a row, never mis-favorite one.
+ *
+ * Malformed feed data is skipped rather than thrown on, the same posture
+ * `splitAtPosition` takes: a non-finite `startTime` matches no tolerance test
+ * and sorts last.
+ *
+ * `check:vts` pins all of it against the real 14-window/31-chapter wire arrays,
+ * including a `naive()` pass that fails the run if the window-dropping or
+ * exact-equality versions would have survived the vectors.
+ */
+export function mergeEpisodeContents(
+  splits: readonly ValueTimeSplit[] | null | undefined,
+  chapters: readonly ChapterEntry[] | null | undefined,
+  toleranceSec: number = CONTENT_DEDUPE_SEC,
+): EpisodeContentRow[] {
+  const windows = splits ?? [];
+  const tol = Number.isFinite(toleranceSec) ? Math.abs(toleranceSec) : CONTENT_DEDUPE_SEC;
+
+  // Rule 1: every window, unconditionally. No dedupe pass runs over these.
+  const rows: EpisodeContentRow[] = windows.map((split) => ({
+    kind: 'track' as const,
+    startTime: split.startTime,
+    split,
+  }));
+  // Which chapters each window swallowed, by window index — rule 5 needs the
+  // COUNT, not just the first, so an ambiguous pairing can decline to borrow.
+  const absorbed: (ChapterEntry[] | undefined)[] = [];
+
+  // Rule 2/3: a chapter survives only if no window is naming its moment, and it
+  // is absorbed by the NEAREST such window. A non-finite start on either side
+  // fails the comparison and so keeps the chapter, which is the safe direction
+  // — an extra row, never a missing heart.
+  for (const chapter of chapters ?? []) {
+    let nearest = -1;
+    let bestGap = Infinity;
+    if (Number.isFinite(chapter.startTime)) {
+      windows.forEach((w, i) => {
+        if (!Number.isFinite(w.startTime)) return;
+        const gap = Math.abs(w.startTime - chapter.startTime);
+        if (gap <= tol && gap < bestGap) {
+          bestGap = gap;
+          nearest = i;
+        }
+      });
+    }
+    if (nearest < 0) {
+      rows.push({ kind: 'chapter', startTime: chapter.startTime, chapter });
+    } else {
+      (absorbed[nearest] ??= []).push(chapter);
+    }
+  }
+
+  // Rule 5. Exactly one absorbed chapter, and it has a title, or nothing is
+  // borrowed — a window that swallowed two chapters cannot tell which of them
+  // named the song.
+  absorbed.forEach((list, i) => {
+    const row = rows[i];
+    if (row?.kind !== 'track' || list?.length !== 1) return;
+    const title = list[0].title;
+    if (title) row.absorbedTitle = title;
+  });
+
+  // Rule 4. `Array.prototype.sort` is stable per spec, so equal keys keep the
+  // order built above — windows in feed order, then chapters in feed order.
+  // Non-finite starts compare false either way and settle at the end.
+  return rows.sort((a, b) => {
+    const av = Number.isFinite(a.startTime) ? a.startTime : Infinity;
+    const bv = Number.isFinite(b.startTime) ? b.startTime : Infinity;
+    if (av !== bv) return av - bv;
+    if (a.kind === b.kind) return 0;
+    return a.kind === 'track' ? -1 : 1;
+  });
 }
 
 /**

@@ -61,6 +61,24 @@ export interface ValueTimeSplit {
   parentFeedGuid?: string | null;
 }
 
+/**
+ * One entry from a Podcasting 2.0 `<podcast:chapters>` JSON file.
+ *
+ * **It lives here rather than in `lib/chapters.ts` so `lib/util.ts` can name
+ * it.** `mergeEpisodeContents` interleaves chapters with `ValueTimeSplit`
+ * windows, and `lib/chapters.ts` is a `'use client'` module that already
+ * imports `isMusicMedium` from `lib/util.ts` — importing back would be a cycle,
+ * and would put a React module on the import graph of the one file that has to
+ * stay loadable under `node --experimental-strip-types` for `check:vts`.
+ * `lib/chapters.ts` re-exports it, so every existing import site is unchanged.
+ */
+export interface ChapterEntry {
+  startTime: number;
+  title?: string;
+  img?: string;   // per-chapter artwork (Podcasting 2.0 chapters `img`)
+  url?: string;   // per-chapter external link (chapters `url`)
+}
+
 // A single <podcast:funding> entry — a host's non-Lightning support link
 // (Patreon, Buy Me a Coffee, etc.). `message` is the tag's text content, shown
 // as a label/tooltip. Channel-scoped; PI indexes one, RSS may carry several.

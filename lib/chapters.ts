@@ -1,14 +1,12 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { isMusicMedium } from './util';
-import type { Episode, Podcast } from './types';
+import type { ChapterEntry, Episode, Podcast } from './types';
 
-export interface ChapterEntry {
-  startTime: number;
-  title?: string;
-  img?: string;   // per-chapter artwork (Podcasting 2.0 chapters `img`)
-  url?: string;   // per-chapter external link (chapters `url`)
-}
+// Defined in `lib/types.ts` (see the note there — `lib/util.ts` needs to name it
+// and cannot import from this `'use client'` module) and re-exported here so
+// every `from '@/lib/chapters'` import site keeps working.
+export type { ChapterEntry };
 
 /** Fetch and parse a Podcasting 2.0 chapters JSON file. Re-fetches when `url` changes. */
 export function useChapters(url: string): { chapters: ChapterEntry[] | null; loading: boolean } {

@@ -4,10 +4,9 @@ import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import { hasValueRecipients, httpUrl, stripHtml } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
-import { useChapters, type ChapterEntry } from '@/lib/chapters';
+import { useChapters } from '@/lib/chapters';
 import { useResolvedSplits } from '@/lib/track-art';
-import { RowThumb } from './chapter-ui';
-import { TrackList } from './track-list';
+import { EpisodeContents } from './episode-contents';
 import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
 import { useNotesFollows } from './notes-follows';
@@ -19,87 +18,6 @@ import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
 import { useStreamPanel } from './streaming-settings';
 import type { Episode, ValueBlock } from '@/lib/types';
-
-// Chapter list. The fetch is lifted to EpisodeDetailView so the tab strip knows
-// whether chapters exist. `activeIdx` (>= 0 only while this episode is playing)
-// highlights the current chapter so the list tracks playback. Tapping a row
-// seeks playback there via `onSeek`. No auto-scroll — the list flows in the
-// page, and scrolling it would yank the whole page every chapter change (the
-// fullscreen player's chapters highlight without scrolling too).
-function ChaptersList({
-  chapters,
-  activeIdx,
-  onSeek,
-  fallbackImg,
-}: {
-  chapters: ChapterEntry[];
-  activeIdx: number;
-  onSeek: (t: number) => void;
-  // The episode's (or show's) own art, for chapters that ship no `img`. Most
-  // feeds only illustrate a handful of chapters, so without this the list
-  // alternates between indented rows and flush ones and reads as broken
-  // alignment rather than as "this chapter has a picture".
-  fallbackImg?: string;
-}) {
-  return (
-    <ul className="-mx-1 text-sm">
-      {chapters.map((c, i) => {
-        const on = i === activeIdx;
-        return (
-          <li
-            key={i}
-            className={`flex items-center gap-1 rounded-md transition ${
-              on ? 'bg-bolt/10 ring-1 ring-inset ring-bolt/30' : ''
-            }`}
-          >
-            <button
-              type="button"
-              onClick={() => onSeek(c.startTime)}
-              title={`Jump to ${fmtDuration(c.startTime)}`}
-              className={`flex-1 min-w-0 flex gap-3 items-center text-left px-3 py-1.5 rounded-md transition ${
-                on ? '' : 'hover:bg-bone/5'
-              }`}
-            >
-              {/* A chapter image is an arbitrary third-party URL and they do
-                  rot. The two-URL-then-hide chain, and the marker that makes
-                  its onError terminate, live in <RowThumb> — this list, the
-                  fullscreen player's and the track list all need the same rule,
-                  and a rule that only works if every copy has it should have
-                  one copy. */}
-              <RowThumb
-                src={c.img}
-                fallback={fallbackImg}
-                className="w-10 h-10 rounded object-cover flex-shrink-0 border border-bone/15"
-              />
-              <span
-                className={`tabular-nums text-xs w-12 flex-shrink-0 text-right ${
-                  on ? 'text-bolt' : 'text-muted'
-                }`}
-              >
-                {fmtDuration(c.startTime)}
-              </span>
-              <span className={`leading-snug break-words min-w-0 ${on ? 'text-bolt' : 'text-bone/85'}`}>
-                {c.title ?? `Chapter ${i + 1}`}
-              </span>
-            </button>
-            {c.url && (
-              <a
-                href={c.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                title="Open chapter link"
-                aria-label="Open chapter link"
-                className="flex-shrink-0 px-3 py-1.5 text-muted hover:text-bolt transition"
-              >
-                ↗
-              </a>
-            )}
-          </li>
-        );
-      })}
-    </ul>
-  );
-}
 
 function ValueSplitSection({ value }: { value: ValueBlock }) {
   const suggestedSats =
@@ -150,9 +68,13 @@ function EpisodeShareButton({ episode, podcast }: { episode: Episode; podcast: N
 }
 
 // Tabs over the long content sections so the page doesn't stack them all.
-// Mirrors the fullscreen player's EpisodeInfoPanel (About/Chapters/Transcript),
+// Mirrors the fullscreen player's EpisodeInfoPanel (About/Contents/Transcript),
 // plus a Boosts tab for the episode's Nostr feed.
-type InfoTab = 'notes' | 'tracks' | 'chapters' | 'transcript' | 'boosts';
+//
+// `contents` is ONE tab holding the tracks and the chapters interleaved — see
+// <EpisodeContents>. They were two tabs of near-identical rows that largely
+// named the same songs.
+type InfoTab = 'notes' | 'contents' | 'transcript' | 'boosts';
 
 export function EpisodeDetailView() {
   const episode = useApp((s) => s.selectedEpisode);
@@ -227,25 +149,31 @@ export function EpisodeDetailView() {
   const episodePageUrl = httpUrl(episode.link);
   const hasTracks = !!splits?.length;
   const hasChapters = !!chapters?.length;
+  // One tab for both — <EpisodeContents> interleaves them.
+  const hasContents = hasTracks || hasChapters;
+  // The count names what the LABEL names: songs when the episode published
+  // valueTimeSplit windows, chapters when it only has chapters. Deliberately not
+  // the merged row count — "Tracks (31)" on an episode with 14 songs and 17 talk
+  // breaks claims 31 songs.
+  const contentsLabel = hasTracks
+    ? `Tracks (${splits?.length ?? 0})`
+    : `Chapters (${chapters?.length ?? 0})`;
   const hasTranscript = !!transcriptCues?.length;
   const hasBoosts = !!episode.guid; // the feed owns its own loading/empty state
   const chaptersPending = !!episode.chaptersUrl && chaptersLoading;
   const transcriptPending = !!episode.transcriptUrl && transcriptLoading;
-  const anyInfo = hasShowNotes || hasTracks || hasChapters || hasTranscript || hasBoosts || chaptersPending || transcriptPending;
+  const anyInfo = hasShowNotes || hasContents || hasTranscript || hasBoosts || chaptersPending || transcriptPending;
 
   const infoTabs: InfoTab[] = [];
   if (hasShowNotes) infoTabs.push('notes');
-  // Ahead of Chapters, matching the fullscreen player's strip — where a show
-  // has both, the tracks are what someone is looking for by name.
-  if (hasTracks) infoTabs.push('tracks');
-  if (hasChapters) infoTabs.push('chapters');
+  if (hasContents) infoTabs.push('contents');
   if (hasTranscript) infoTabs.push('transcript');
   if (hasBoosts) infoTabs.push('boosts');
   const showInfoTabs = infoTabs.length >= 2;
   const activeInfo: InfoTab =
     showInfoTabs && infoTabs.includes(infoTab) ? infoTab
     : infoTabs.length ? infoTabs[0]
-    : chaptersPending ? 'chapters'
+    : chaptersPending ? 'contents'
     : transcriptPending ? 'transcript'
     : 'notes';
   const infoTabCls = (on: boolean) =>
@@ -253,18 +181,11 @@ export function EpisodeDetailView() {
       on ? 'bg-bolt text-ink shadow-sm' : 'text-muted hover:text-bone hover:bg-bone/5'
     }`;
   const infoLabel = (t: InfoTab) =>
-    t === 'tracks' ? `Tracks (${splits?.length ?? 0})`
-    : t === 'chapters' ? `Chapters (${chapters?.length ?? 0})`
+    t === 'contents' ? contentsLabel
     : t === 'transcript' ? 'Transcript'
     : t === 'boosts' ? 'Boosts'
     : 'Show notes';
 
-  // Highlight the current chapter/line only while THIS episode is the one
-  // playing — otherwise the list is a static reference (-1 = nothing active).
-  const chaptersActiveIdx =
-    isThisPlaying && chapters
-      ? chapters.reduce((acc, c, i) => (positionSec >= c.startTime ? i : acc), -1)
-      : -1;
   const transcriptActiveIdx = isThisPlaying ? transcriptIndexAt(transcriptCues, positionSec) : -1;
 
   // Jump playback to a timestamp from a chapter/transcript tap. If this episode
@@ -397,8 +318,7 @@ export function EpisodeDetailView() {
               <div className="inline-flex max-w-full overflow-x-auto gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
                 {infoTabs.map((t) => (
                   <button key={t} type="button" onClick={() => setInfoTab(t)} className={infoTabCls(activeInfo === t)}>
-                    {t === 'tracks' ? `Tracks (${splits!.length})`
-                      : t === 'chapters' ? `Chapters (${chapters!.length})`
+                    {t === 'contents' ? contentsLabel
                       : t === 'transcript' ? 'Transcript'
                       : t === 'boosts' ? 'Boosts'
                       : 'Show notes'}
@@ -437,42 +357,37 @@ export function EpisodeDetailView() {
               </>
             )}
 
-            {/* The tracks this episode played — driven by its
-                <podcast:valueTimeSplit> windows, never by the chapter list
-                below. See <TrackList>. `currentSec` is UNDEFINED unless this is
-                the episode actually playing, so nothing highlights on a list
-                someone is only reading — 0 would be a real position and would
-                light up any window authored at startTime 0. */}
-            {activeInfo === 'tracks' && hasTracks && (
-              <TrackList
-                splits={splits!}
-                currentSec={isThisPlaying ? positionSec : undefined}
-                onSeek={seekEpisodeTo}
-                fallbackImg={episode.image || podcast?.image || podcast?.artwork}
-              />
-            )}
+            {/* The episode's own timeline — the tracks it played and its
+                chapters, in ONE list. See <EpisodeContents>: the heart still
+                rides on the valueTimeSplit window, and no chapter is ever mapped
+                to one.
 
-            {activeInfo === 'chapters' &&
-              (hasChapters
-                ? (
-                  <ChaptersList
-                    chapters={chapters!}
-                    activeIdx={chaptersActiveIdx}
-                    onSeek={seekEpisodeTo}
-                    // `||`, never `??`, and `artwork` is not optional here.
-                    // Podcast Index returns "" rather than omitting an absent
-                    // image (lib/pi.ts:buildEpisode has no empty-string guard,
-                    // unlike its neighbours), and `'' ?? x` is `''` — so on
-                    // exactly the episodes with no art of their own, the ones
-                    // this fallback exists for, it silently did nothing.
-                    // `podcast.artwork` is the third link because a dead
-                    // channel <image> beside a working <itunes:image> is the
-                    // documented case (Homegrown Hits) that PodcastCover was
-                    // written for; omitting it here fell back to a 404.
-                    fallbackImg={episode.image || podcast?.image || podcast?.artwork}
-                  />
-                )
-                : <p className="text-xs text-muted">Loading chapters…</p>)}
+                `currentSec` is UNDEFINED unless this is the episode actually
+                playing, so nothing highlights on a list someone is only reading
+                — 0 would be a real position and would light up any window
+                authored at startTime 0.
+
+                `||`, never `??`, and `artwork` is not optional. Podcast Index
+                returns "" rather than omitting an absent image, and `'' ?? x` is
+                `''` — so on exactly the episodes with no art of their own, the
+                ones this fallback exists for, it silently did nothing.
+                `podcast.artwork` is the third link because a dead channel
+                <image> beside a working <itunes:image> is the documented case
+                (Homegrown Hits) that PodcastCover was written for; omitting it
+                here fell back to a 404. */}
+            {activeInfo === 'contents' && (
+              hasContents ? (
+                <EpisodeContents
+                  splits={splits}
+                  chapters={chapters}
+                  currentSec={isThisPlaying ? positionSec : undefined}
+                  onSeek={seekEpisodeTo}
+                  fallbackImg={episode.image || podcast?.image || podcast?.artwork}
+                />
+              ) : (
+                <p className="text-xs text-muted">Loading chapters…</p>
+              )
+            )}
 
             {activeInfo === 'transcript' && (
               <TranscriptPanel

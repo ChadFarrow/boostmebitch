@@ -6,6 +6,7 @@
  *   splitAtPosition   — which <podcast:valueTimeSplit> window covers this second
  *   splitTrackAndHost — how the amount divides between the track and the show
  *   payableSplit      — who a leg can actually pay once it is that small
+ *   mergeEpisodeContents — which rows of the one contents list may carry a heart
  *
  * All live in lib/util.ts and all are imported by more than one caller, which
  * is the entire reason they are pinned. `splitAtPosition` is shared by the boost
@@ -38,7 +39,9 @@
  * second episode. That split is the reason this file exists: the boost button
  * ignored it and paid the show.
  */
-import { payableSplit, splitAtPosition, splitSats, splitTrackAndHost } from '../lib/util.ts';
+import {
+  mergeEpisodeContents, payableSplit, splitAtPosition, splitSats, splitTrackAndHost,
+} from '../lib/util.ts';
 
 let failures = 0;
 function check(name, actual, expected) {
@@ -232,6 +235,149 @@ check('zero-weight recipient is dropped, not paid 0',
 // is no prior implementation to run against, run against the version someone
 // would plausibly write instead — if these survive the vectors above, the
 // vectors are not testing what this file claims to test.
+// ── mergeEpisodeContents ────────────────────────────────────────────────────
+// The tracks a show played and its chapters render as ONE list. The merge is by
+// timestamp and nothing else — a chapter is never mapped to a window — because
+// the row built from a window is the row allowed to carry a <FavTrackHeart>, and
+// a favorite is an irreversible write to a kind:10333 list other apps read.
+//
+// The wire arrays below are lifted verbatim from Homegrown Hits ep. 146 (feed
+// 6611624, episode 59021623364): `valueTimeSplits` exactly as Podcast Index
+// returns it, and the chapters JSON exactly as
+// feed.homegrownhits.xyz/assets/chapters/ch-episode-146.json serves it. They are
+// real for a reason invention would have missed — PI hands back INTEGER
+// startTimes while the chapters file is fractional, so 13 of the 14 pairs that
+// name the same moment differ by a fraction of a second and only ONE matches
+// exactly. A hand-built fixture would have used round numbers and made
+// exact-equality dedupe look correct forever.
+console.log('\nmergeEpisodeContents — one list, and which rows may carry a heart');
+
+const HGH_WINDOWS = [
+  { startTime: 34, duration: 209, remotePercentage: 99, remoteItem: { feedGuid: '606dd394-6294-53cd-ba85-9ea5ca59407b', itemGuid: 'indiesats:npub13jml82yy69370amnfl0tfsreyg5hjqwxsmnttxv7g27usl8w5h5qnvtmat:b776fda162d2f3b4b000b2f0951acee134bdbabb0610dd0db495fb9269a962fa' } },
+  { startTime: 351, duration: 197, remotePercentage: 99, remoteItem: { feedGuid: '048d73a2-5ca3-4593-8d8d-bca7d9e72d4a', itemGuid: '50b9894e-b189-4fba-a076-9f61684ee433' } },
+  { startTime: 1149, duration: 232, remotePercentage: 99, remoteItem: { feedGuid: '19215795-6853-5a12-8f84-8fe4d877ed53', itemGuid: 'b85d2b40-e19a-4843-89e6-eed6dec0177a' } },
+  { startTime: 1919, duration: 285, remotePercentage: 99, remoteItem: { feedGuid: 'de54dc36-3eda-4c19-8749-367cf5aeec76', itemGuid: 'c92a2add-6af3-4ead-a8fa-fd82d33a23a3' } },
+  { startTime: 2192, duration: 252, remotePercentage: 99, remoteItem: { feedGuid: '9bc0816d-338e-5b22-ad06-bf26459b4e12', itemGuid: '92f511a1-3faf-4895-8c20-5f9b87ee6f59' } },
+  { startTime: 2977, duration: 224, remotePercentage: 99, remoteItem: { feedGuid: '18e5f71e-e3b1-4799-b603-57b18ca944b9', itemGuid: 'efc0fe9c-5917-4961-aa07-5cd877ff17f7' } },
+  // PI has not crawled this one — no title comes back for it, which is what
+  // makes it the vector for the absorbed-title rule below ("Shanti").
+  { startTime: 5046, duration: 247, remotePercentage: 99, remoteItem: { feedGuid: '66c9200e-f218-51a1-a7b2-1bed8a7868b0', itemGuid: '574af3df-ef69-4cf9-bbe8-d4439fb2cbc8' } },
+  { startTime: 5288, duration: 191, remotePercentage: 99, remoteItem: { feedGuid: '629d9247-dd36-5d78-87a6-bb614bffe106', itemGuid: '98fdca72-0362-4a85-927f-b5dbcf76f307' } },
+  { startTime: 5872, duration: 182, remotePercentage: 99, remoteItem: { feedGuid: 'fc815bcf-3639-5395-ba7d-fa217ec93d32', itemGuid: 'b2a61b9f-4dc8-40e3-a849-e7fe96d4e843' } },
+  { startTime: 6056, duration: 248, remotePercentage: 99, remoteItem: { feedGuid: 'c989830b-49a1-572f-9f0e-0fec994a6d5a', itemGuid: 'a8f3468a-d12c-429e-b96b-fcc6a6494e86' } },
+  { startTime: 6303, duration: 213, remotePercentage: 99, remoteItem: { feedGuid: 'a71b097b-4cf0-5e74-b6a9-1271373bb396', itemGuid: 'a45376c3-c8b3-4173-80c4-4cdfa266e0db' } },
+  // Two windows with NO itemGuid. They still get rows; <FavTrackHeart> declines
+  // to render on them for want of an identifier, which is its own rule and not
+  // this one's — the merge must not start filtering rows on favoritability.
+  { startTime: 6530, duration: 177, remotePercentage: 99, remoteItem: { feedGuid: '7c6f7875-2b73-491e-b32c-e2c8d6e91d53' } },
+  { startTime: 6746, duration: 31, remotePercentage: 99, remoteItem: { feedGuid: 'ab6cfe0a-4311-4569-85e0-eaff9b11e5ea' } },
+  { startTime: 7089, duration: 213, remotePercentage: 99, remoteItem: { feedGuid: 'a2d2e313-9cbd-5169-b89c-ab07b33ecc33', itemGuid: '9ff8f18b-cc79-474c-a3e9-2948113b8bf5' } },
+];
+
+const HGH_CHAPTERS = [
+  { startTime: 0.001, title: 'Homegrown Hits Episode 146 LIVE' },
+  { startTime: 33.778, title: 'Casino Cumrag' },
+  { startTime: 239.429, title: 'HGH 146 ⚡︎ 08-13-26' },
+  { startTime: 350.981, title: 'Please Stand By' },
+  { startTime: 545.046, title: 'What Do You Desire?' },
+  { startTime: 1148.691, title: 'Temple' },
+  { startTime: 1379.986, title: 'In the Hitter!' },
+  { startTime: 1918.814, title: 'Victim [432Hz]' },
+  { startTime: 2192.022, title: 'Cloud Burst' },
+  { startTime: 2439.672, title: 'Decentralize!' },
+  { startTime: 2674.202, title: 'Pre-Boosts' },
+  { startTime: 2813.202, title: 'Homegrown Hits PayPal' },
+  { startTime: 2976.739, title: '03. Crypto Phonics' },
+  { startTime: 3199.561, title: '(213) 839-8668' },
+  { startTime: 4850.202, title: 'Text Pic 1' },
+  { startTime: 4880.202, title: 'Text Pic 2' },
+  { startTime: 4895.202, title: 'Text Pic 3' },
+  { startTime: 5045.605, title: 'Shanti' },
+  { startTime: 5287.783, title: 'Eurydice' },
+  { startTime: 5478.537, title: '(213) 839-8668' },
+  { startTime: 5695.202, title: 'Text Pic 4' },
+  { startTime: 5798.202, title: 'Tiddicate a song' },
+  { startTime: 5871.555, title: 'The Devil Never Change' },
+  { startTime: 6055.914, title: 'January Shock' },
+  { startTime: 6303.055, title: 'The Wait Is Over' },
+  { startTime: 6516.202, title: 'New to DeMu!' },
+  { startTime: 6530.202, title: 'Chad and Reeds Podcast' },
+  { startTime: 6707.202, title: 'Live Boostagrams' },
+  { startTime: 6746, title: 'Rollz Radio' },
+  { startTime: 6777.202, title: 'Live Boostagrams' },
+  { startTime: 7088.762, title: 'Luv Song 4 U' },
+];
+
+const hgh = mergeEpisodeContents(HGH_WINDOWS, HGH_CHAPTERS);
+const hghTracks = hgh.filter((r) => r.kind === 'track');
+
+// Rule 1, the one that costs a heart if it breaks: every window is present, in
+// order, and identity-equal to the input element — the row hands that very
+// object to <FavTrackHeart>.
+check('every window survives the merge', hghTracks.length, HGH_WINDOWS.length);
+check('window rows are the input objects, in feed order',
+  hghTracks.every((r, i) => r.split === HGH_WINDOWS[i]), true);
+// 14 windows + the 17 chapters that name a moment no window does.
+check('HGH 146 merges 14 windows and 31 chapters into 31 rows', hgh.length, 31);
+check('17 chapters survive as chapter rows', hgh.length - hghTracks.length, 17);
+// Rule 2's direction, stated as the thing that would be silently wrong.
+check('no chapter row carries a split',
+  hgh.every((r) => r.kind === 'chapter' ? !('split' in r) : true), true);
+check('rows come out in ascending time',
+  hgh.every((r, i) => i === 0 || hgh[i - 1].startTime <= r.startTime), true);
+
+// The songs the host chaptered AND published a window for are one row, not two.
+const rowsAt = (t) => hgh.filter((r) => Math.abs(r.startTime - t) < 3);
+check('"Casino Cumrag" is one row, the window', rowsAt(34).map((r) => r.kind), ['track']);
+check('"Rollz Radio" (the exact-match pair) is one row', rowsAt(6746).map((r) => r.kind), ['track']);
+// ...and a talk break the host chaptered with no window keeps its own row.
+check('a talk break with no window survives',
+  rowsAt(2674).map((r) => r.kind === 'chapter' ? r.chapter.title : 'track'), ['Pre-Boosts']);
+check('the 0.001s intro chapter survives',
+  rowsAt(0).map((r) => r.kind === 'chapter' ? r.chapter.title : 'track'),
+  ['Homegrown Hits Episode 146 LIVE']);
+// 6516.202 "New to DeMu!" sits 13.8s from the 6530 window — outside tolerance,
+// so BOTH rows stand. This is the vector that stops the tolerance being widened
+// to something like 15s to "clean up" the list.
+check('a chapter 13.8s from a window is NOT absorbed',
+  hgh.filter((r) => r.startTime >= 6516 && r.startTime <= 6531).map((r) => r.kind),
+  ['chapter', 'track']);
+
+// Rule 5 — the absorbed title, and its guard.
+const shanti = hghTracks.find((r) => r.split.startTime === 5046);
+check('an uncrawled window borrows its absorbed chapter\'s title', shanti.absorbedTitle, 'Shanti');
+check('the borrow does not touch the identifiers',
+  shanti.split.remoteItem.itemGuid, '574af3df-ef69-4cf9-bbe8-d4439fb2cbc8');
+// The Mutton, Mead & Music shape: two chapters tied on one start, one a talk
+// break and one the song, so any pick is a coin flip and none is made.
+const tied = mergeEpisodeContents(
+  [{ startTime: 1701, duration: 200, remoteItem: { feedGuid: 'f', itemGuid: 'i' } }],
+  [{ startTime: 1700, title: 'Mutton, Mead & Music' }, { startTime: 1700, title: '10. Reefer Gladness' }],
+);
+check('a window that absorbed TWO chapters borrows no title', tied[0].absorbedTitle, undefined);
+check('...and still absorbed them both', tied.length, 1);
+
+// Ordering at an exact tie: the heart-bearing row leads.
+const tie = mergeEpisodeContents(
+  [{ startTime: 100, duration: 60, remoteItem: { feedGuid: 'f', itemGuid: 'i' } }],
+  [{ startTime: 130, title: 'later chapter' }],
+  0, // tolerance 0 so the chapter is not absorbed
+);
+check('tolerance 0 keeps both rows', tie.map((r) => r.kind), ['track', 'chapter']);
+
+// Feeds are third-party; none of these may throw.
+check('no windows, chapters only',
+  mergeEpisodeContents([], [{ startTime: 5, title: 'a' }]).map((r) => r.kind), ['chapter']);
+check('no chapters, windows only',
+  mergeEpisodeContents(HGH_WINDOWS, null).length, 14);
+check('both empty', mergeEpisodeContents(null, undefined), []);
+const nan = mergeEpisodeContents(
+  [{ startTime: 10, duration: 5, remoteItem: { feedGuid: 'f' } }],
+  [{ startTime: NaN, title: 'malformed' }, { startTime: 3, title: 'early' }],
+);
+check('a NaN chapter start is kept and sorts last',
+  nan.map((r) => (r.kind === 'track' ? 'track' : r.chapter.title)), ['early', 'track', 'malformed']);
+
 console.log('\nnaive() — the vectors must reject the obvious wrong versions');
 
 function naiveSplitAt(splits, pos) {
@@ -250,7 +396,60 @@ function naiveTrackAndHost({ totalSats, remotePercentage }) {
   return { trackSats, hostSats: totalSats - trackSats };
 }
 
+// Dedupe the wrong way round: when a chapter and a window name the same moment,
+// keep the CHAPTER. Reads just as naturally ("the chapter list, with hearts on
+// it") and silently strips the heart off every song the host also chaptered.
+function naiveChapterWins(splits, chapters, tol = 2) {
+  const rows = (chapters ?? []).map((chapter) => ({ kind: 'chapter', startTime: chapter.startTime, chapter }));
+  for (const split of splits ?? []) {
+    if (!(chapters ?? []).some((c) => Math.abs(c.startTime - split.startTime) <= tol)) {
+      rows.push({ kind: 'track', startTime: split.startTime, split });
+    }
+  }
+  return rows.sort((a, b) => a.startTime - b.startTime);
+}
+
+// Dedupe on exact equality. Correct-looking, and on any hand-built fixture with
+// round numbers it passes — which is exactly why the vectors above are the real
+// integer-vs-fractional wire arrays.
+function naiveExactDedupe(splits, chapters) {
+  const starts = new Set((splits ?? []).map((s) => s.startTime));
+  return [
+    ...(splits ?? []).map((split) => ({ kind: 'track', startTime: split.startTime, split })),
+    ...(chapters ?? []).filter((c) => !starts.has(c.startTime))
+      .map((chapter) => ({ kind: 'chapter', startTime: chapter.startTime, chapter })),
+  ].sort((a, b) => a.startTime - b.startTime);
+}
+
+// "The window covering this chapter's start" — the mapping docs/ui.md measured
+// as wrong, and HGH 146 is more damning than the write-up there. The windows
+// OVERLAP by a second or two (1919 + 285 = 2204, past the 2192 window's start),
+// so the covering-window rule hands the "Cloud Burst" chapter the identifiers of
+// "Victim [432Hz]" — despite Cloud Burst having a window of its own, right
+// there, at its own start. It does the same to "Eurydice" (given Shanti's
+// window) and "The Wait Is Over" (given January Shock's). Three named songs,
+// one episode, each favoritable as the wrong track with nothing on screen
+// saying so.
+function naiveCoveringWindow(splits, chapters) {
+  return (chapters ?? []).map((chapter) => ({
+    kind: 'chapter',
+    startTime: chapter.startTime,
+    chapter,
+    split: (splits ?? []).find(
+      (s) => chapter.startTime >= s.startTime && chapter.startTime < s.startTime + s.duration,
+    ),
+  }));
+}
+
 const naiveCaught = [
+  ['chapter-wins dedupe strips the heart off a song the host also chaptered',
+    naiveChapterWins(HGH_WINDOWS, HGH_CHAPTERS).filter((r) => r.kind === 'track').length
+      < HGH_WINDOWS.length],
+  ['exact-equality dedupe leaves 13 duplicate pairs standing',
+    naiveExactDedupe(HGH_WINDOWS, HGH_CHAPTERS).length === 44],
+  ['"the window covering this chapter" gives Cloud Burst the Victim [432Hz] window',
+    naiveCoveringWindow(HGH_WINDOWS, HGH_CHAPTERS)
+      .find((r) => r.chapter.startTime === 2192.022)?.split?.startTime === 1919],
   ['inclusive end lets the window match its own end second',
     naiveSplitAt(one, 6135) !== null],
   ['inclusive end gives the boundary second to the OUTGOING track',
