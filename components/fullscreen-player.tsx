@@ -5,10 +5,10 @@ import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { nowPlayingArt } from '@/lib/track-art';
-import { ChapterTicks, ChapterLabel, RowThumb } from './chapter-ui';
+import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import type { TranscriptCue } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
-import { TrackList } from './track-list';
+import { EpisodeContents } from './episode-contents';
 import type { Podcast, ValueTimeSplit } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
@@ -37,7 +37,11 @@ import { useLiveBlockImage } from './live-now-playing';
 // content (2+); a lone section renders under a plain label. A still-loading
 // section renders its own loading state. Returns null when there's nothing to
 // show and nothing loading.
-type InfoTab = 'about' | 'tracks' | 'chapters' | 'transcript';
+//
+// `contents` is ONE tab holding the tracks and the chapters interleaved — see
+// <EpisodeContents>. They were two tabs of near-identical rows that largely
+// named the same songs.
+type InfoTab = 'about' | 'contents' | 'transcript';
 function EpisodeInfoPanel({
   description,
   splits,
@@ -74,31 +78,37 @@ function EpisodeInfoPanel({
   const hasDescription = !!description;
   const hasTracks = !!splits?.length;
   const hasChapters = !!chapters?.length;
+  // One tab for both — <EpisodeContents> interleaves them.
+  const hasContents = hasTracks || hasChapters;
+  // The count names what the LABEL names: songs when the episode published
+  // valueTimeSplit windows, chapters when it only has chapters. Deliberately not
+  // the merged row count — "Tracks (31)" on an episode with 14 songs and 17 talk
+  // breaks claims 31 songs.
+  const contentsLabel = hasTracks
+    ? `Tracks (${splits?.length ?? 0})`
+    : `Chapters (${chapters?.length ?? 0})`;
   const hasTranscript = !!transcriptCues?.length;
   const chaptersPending = hasChaptersUrl && chaptersLoading;
   const transcriptPending = hasTranscriptUrl && transcriptLoading;
   if (
-    !hasDescription && !hasTracks && !hasChapters && !hasTranscript
+    !hasDescription && !hasContents && !hasTranscript
     && !chaptersPending && !transcriptPending
   ) {
     return null;
   }
 
   // Only sections with loaded content get a tab; a pending section joins once
-  // it resolves. Tracks sit ahead of Chapters on purpose: where a show has
-  // both, the tracks are what a listener is looking for by name, and the
-  // chapter list is largely the host's own interstitials between them.
+  // it resolves.
   const tabs: InfoTab[] = [];
   if (hasDescription) tabs.push('about');
-  if (hasTracks) tabs.push('tracks');
-  if (hasChapters) tabs.push('chapters');
+  if (hasContents) tabs.push('contents');
   if (hasTranscript) tabs.push('transcript');
 
   const showTabs = tabs.length >= 2;
   const active: InfoTab =
     showTabs && tabs.includes(tab) ? tab
     : tabs.length ? tabs[0]
-    : chaptersPending ? 'chapters'
+    : chaptersPending ? 'contents'
     : 'transcript';
 
   const tabCls = (on: boolean) =>
@@ -108,8 +118,7 @@ function EpisodeInfoPanel({
         : 'text-muted hover:text-bone hover:bg-bone/5'
     }`;
   const label = (t: InfoTab) =>
-    t === 'tracks' ? `Tracks (${splits?.length ?? 0})`
-    : t === 'chapters' ? `Chapters (${chapters?.length ?? 0})`
+    t === 'contents' ? contentsLabel
     : t === 'transcript' ? 'Transcript'
     : 'About this episode';
 
@@ -119,8 +128,7 @@ function EpisodeInfoPanel({
         <div className="inline-flex max-w-full overflow-x-auto gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
           {tabs.map((t) => (
             <button key={t} type="button" onClick={() => setTab(t)} className={tabCls(active === t)}>
-              {t === 'tracks' ? `Tracks (${splits!.length})`
-                : t === 'chapters' ? `Chapters (${chapters!.length})`
+              {t === 'contents' ? contentsLabel
                 : t === 'transcript' ? 'Transcript'
                 : 'About'}
             </button>
@@ -136,68 +144,19 @@ function EpisodeInfoPanel({
         </div>
       )}
 
-      {/* The tracks the show played, each seekable and each favoritable. NOT
-          derived from the chapter list below — see <TrackList>. */}
-      {active === 'tracks' && hasTracks && (
-        <TrackList
-          splits={splits!}
-          currentSec={currentSec}
-          onSeek={onSeek}
-          fallbackImg={chapterFallbackImg}
-        />
-      )}
-
-      {active === 'chapters' &&
-        (hasChapters ? (
-          <ul className="text-xs">
-            {chapters!.map((c, i) => {
-              const next = chapters![i + 1];
-              const on = currentSec >= c.startTime && (!next || currentSec < next.startTime);
-              return (
-                <li
-                  key={`${c.startTime}-${c.title ?? ''}`}
-                  className={`flex items-center gap-1 rounded -mx-2 transition ${on ? 'bg-bolt/10' : ''}`}
-                >
-                  <button
-                    type="button"
-                    onClick={() => onSeek(c.startTime)}
-                    className={`flex-1 min-w-0 flex gap-3 items-center text-left rounded transition py-1.5 px-2 ${
-                      on ? 'text-bolt' : 'text-bone/80 hover:bg-bone/5'
-                    }`}
-                  >
-                    {/* Chapters with no art of their own borrow the episode's,
-                        so the list keeps one left edge instead of alternating
-                        between indented and flush rows. The fallback chain and
-                        the terminating onError live in <RowThumb> — this list,
-                        the episode page's and the track list all had (or would
-                        have had) their own copy of a rule that only works if
-                        every copy has it. */}
-                    <RowThumb
-                      src={c.img}
-                      fallback={chapterFallbackImg}
-                      className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
-                    />
-                    <span className={`tabular-nums w-12 flex-shrink-0 ${on ? 'text-bolt' : 'text-muted'}`}>
-                      {fmt(c.startTime)}
-                    </span>
-                    <span className="break-words min-w-0">{c.title ?? `Chapter ${i + 1}`}</span>
-                  </button>
-                  {c.url && (
-                    <a
-                      href={c.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      title="Open chapter link"
-                      aria-label="Open chapter link"
-                      className="flex-shrink-0 px-2 py-1.5 text-muted hover:text-bolt transition"
-                    >
-                      ↗
-                    </a>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
+      {/* The episode's own timeline — the tracks it played and its chapters, in
+          ONE list, each row seekable and each TRACK row favoritable. The heart
+          rides on the valueTimeSplit window; no chapter is ever mapped to one.
+          See <EpisodeContents>. */}
+      {active === 'contents' &&
+        (hasContents ? (
+          <EpisodeContents
+            splits={splits}
+            chapters={chapters}
+            currentSec={currentSec}
+            onSeek={onSeek}
+            fallbackImg={chapterFallbackImg}
+          />
         ) : (
           <p className="text-xs text-muted">Loading chapters…</p>
         ))}

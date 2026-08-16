@@ -19,19 +19,22 @@ import type { Episode, ValueTimeSplit } from './types';
  *   the artist, not the show (CLAUDE.md boost invariant 0.5) — and showed the
  *   episode cover throughout, so the screen said "the show" while the money
  *   said "the song".
- * - **`<TrackList>`** — the same windows as a list, so the tracks a show played
- *   can be seeked to and favorited individually.
+ * - **`<EpisodeContents>`** — the same windows as rows, so the tracks a show
+ *   played can be seeked to and favorited individually. That list also shows the
+ *   episode's chapters, interleaved by timestamp, but the two are merged and
+ *   never mapped: a heart binds to a window and a chapter row has none.
  *
- * **This list is the episode's tracks; the chapter list is not.** They look
- * alike and they are not the same thing. On *Mutton, Mead & Music* 150 the
- * chapters JSON carries 25 entries against 15 windows: ten are the show's own
- * talk breaks, two songs share a `28:20` start with one of them, and a talk
- * break at `33:49` falls *inside* the 28:21–33:50 window. So there is no
- * reliable chapter→track mapping to hang per-track UI off — and plenty of Split
- * Kit shows publish windows and no chapters JSON at all. The window is also the
- * authoritative one: it is what decides who gets paid, and it is the only one
- * of the two carrying a `feedGuid`/`itemGuid` pair, which is exactly what
- * naming a track on another device takes.
+ * **A window is not a chapter.** They look alike and they are not the same
+ * thing. On *Mutton, Mead & Music* 150 the chapters JSON carries 25 entries
+ * against 15 windows: ten are the show's own talk breaks, two songs share a
+ * `28:20` start with one of them, and a talk break at `33:49` falls *inside* the
+ * 28:21–33:50 window. Homegrown Hits 146 is worse — its windows overlap, so
+ * "the window covering this chapter" hands three named songs another song's
+ * identifiers. So there is no reliable chapter→track mapping to hang per-track
+ * UI off — and plenty of Split Kit shows publish windows and no chapters JSON at
+ * all. The window is also the authoritative one: it is what decides who gets
+ * paid, and it is the only one of the two carrying a `feedGuid`/`itemGuid` pair,
+ * which is exactly what naming a track on another device takes.
  *
  * One fetch per episode. The endpoint is the same one both boost modals use and
  * it answers with a one-hour CDN cache, so opening a played-before episode

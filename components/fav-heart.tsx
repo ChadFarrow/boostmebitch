@@ -301,7 +301,12 @@ export function FavEpisodeHeart({
 
 /**
  * The heart for a TRACK a show played — one `<podcast:valueTimeSplit>` window,
- * as rendered by `<TrackList>`.
+ * as rendered by a track row of `<EpisodeContents>`.
+ *
+ * **It binds to the window, not to the row's position in the list.** That list
+ * interleaves windows with chapters, and a chapter row never gets one of these:
+ * `mergeEpisodeContents` maps nothing between the two, so the `split` handed in
+ * here is always the one the row was built from. See `<EpisodeContents>`.
  *
  * The favorite it writes points at the **artist's own release**, not at the
  * episode that played it: `remoteItem` carries a `feedGuid`/`itemGuid` pair
