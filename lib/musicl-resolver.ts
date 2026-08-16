@@ -15,6 +15,7 @@
 import type { ValueBlock, ValueRecipient } from './types';
 import { safeFetch, readCappedText } from './safe-fetch';
 import { readAttr } from './feed-xml';
+import { createBoundedCache } from './bounded-cache';
 
 const FETCH_TIMEOUT_MS = 5000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -22,22 +23,25 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 // so the same ceiling. Comfortably above any real publisher's catalogue.
 const MAX_ALBUM_FEEDS = 100;
 
-interface CachedFeed {
-  xml: string;
-  expires: number;
-}
 // BOUNDED. Keyed by a feed-supplied URL and holding whole RSS bodies, this was
 // a plain Map with no eviction — expired entries stopped being served but were
-// never deleted, so distinct URLs pinned one body each forever. Same shape and
-// same fix as `rssXmlCache` in lib/pi.ts; the two caches are separate only
-// because the fetch policies differ (5 min vs 60 s, 5 s vs 8 s).
+// never deleted, so distinct URLs pinned one body each forever. `rssXmlCache` in
+// lib/pi.ts had the identical bug for the identical reason, so the bookkeeping
+// now lives once in `createBoundedCache`. The two caches stay SEPARATE
+// INSTANCES because the policies genuinely differ: 5 min vs 60 s freshness,
+// 5 s vs 8 s fetch timeout, and pi.ts additionally serves stale-on-error.
 const FEED_CACHE_MAX = 100;
-const feedCache = new Map<string, CachedFeed>();
+const feedCache = createBoundedCache<string>({
+  maxAgeMs: CACHE_TTL_MS,
+  maxEntries: FEED_CACHE_MAX,
+});
 
 async function fetchFeedXml(url: string): Promise<string | null> {
   const now = Date.now();
-  const cached = feedCache.get(url);
-  if (cached && cached.expires > now) return cached.xml;
+  // Horizon and freshness are the same value here (unlike pi.ts, which has no
+  // stale-serve path), so anything the cache returns is servable as-is.
+  const cached = feedCache.get(url, now);
+  if (cached) return cached.value;
   try {
     const res = await safeFetch(url, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -46,18 +50,7 @@ async function fetchFeedXml(url: string): Promise<string | null> {
     if (!res.ok) return null;
     // Capped for the same reason as lib/pi.ts: the body is retained below.
     const xml = await readCappedText(res);
-    for (const [k, v] of feedCache) {
-      if (v.expires <= now) feedCache.delete(k);
-    }
-    // Delete-then-set so a refreshed entry moves to the back of the eviction
-    // queue; a plain `set` on an existing key keeps its original position.
-    feedCache.delete(url);
-    feedCache.set(url, { xml, expires: now + CACHE_TTL_MS });
-    while (feedCache.size > FEED_CACHE_MAX) {
-      const oldest = feedCache.keys().next();
-      if (oldest.done) break;
-      feedCache.delete(oldest.value);
-    }
+    feedCache.set(url, xml, now);
     return xml;
   } catch {
     return null;
