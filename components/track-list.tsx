@@ -29,9 +29,15 @@ import { FavTrackHeart } from './fav-heart';
  * belt and braces, since it is also used where the row *is* clickable.
  *
  * `currentSec` highlights the playing row through the same `splitAtPosition`
- * the payment path uses, so the highlight and the payee can't disagree. Pass 0
- * where this episode isn't the one playing (the detail view does) and nothing
- * highlights.
+ * the payment path uses, so the highlight and the payee can't disagree.
+ *
+ * **Omit it where this episode isn't the one playing — don't pass 0.** 0 is a
+ * real position, and `splitAtPosition`'s interval is half-open `[start, …)`, so
+ * a window authored at `startTime: 0` — the norm on a Split Kit playlist that
+ * opens straight on a track — MATCHES it. Passing 0 to mean "not playing"
+ * therefore lit the first row as the playing track on a show nobody had
+ * started, which is the one claim this highlight exists to make truthfully.
+ * `undefined` says "inactive" without competing for a value the data can hold.
  */
 export function TrackList({
   splits,
@@ -41,7 +47,9 @@ export function TrackList({
   className = '',
 }: {
   splits: ValueTimeSplit[];
-  currentSec: number;
+  /** Playback position in seconds, or undefined when this episode is not the
+   *  one playing. See the note above — undefined, never 0. */
+  currentSec?: number;
   onSeek: (t: number) => void;
   /** The episode's own art, for a window whose remote item never resolved —
    *  same one-left-edge argument as the chapter lists' `fallbackImg`. */
@@ -51,7 +59,9 @@ export function TrackList({
   // Identity comparison, not an index: `splitAtPosition` returns an element of
   // this very array, and re-deriving "which index is active" with a second rule
   // is how a highlight comes to name a different track than the boost would.
-  const active = splitAtPosition(splits, currentSec);
+  // The undefined check comes FIRST — handing 0 to splitAtPosition is exactly
+  // the bug the prop's doc describes.
+  const active = currentSec === undefined ? null : splitAtPosition(splits, currentSec);
 
   return (
     <ul className={`text-xs ${className}`}>

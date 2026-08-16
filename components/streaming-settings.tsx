@@ -3,7 +3,12 @@ import { useEffect, useRef, useState } from 'react';
 import type { Podcast } from '@/lib/types';
 import { storage, subscribeStreamRate, type StreamedEntry, type StreamMode } from '@/lib/storage';
 import { timeAgo } from '@/lib/format';
-import { streamShowKey, streamingStatus, subscribeStreaming } from '@/lib/v4v/streaming';
+import {
+  streamShowKey,
+  streamingStatus,
+  subscribeStreaming,
+  type StreamingStatus,
+} from '@/lib/v4v/streaming';
 import { STREAM_AMOUNT_MAX_SATS, STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
 
 /**
@@ -422,6 +427,37 @@ export function useStreamPanel(podcast: Podcast | null | undefined, enabled: boo
  * argument: a wallet that can't pay must say so here rather than quietly
  * accruing forever.
  */
+/**
+ * What a failed settle can honestly say about the sats.
+ *
+ * Shared by <StreamMeter> and <StreamPulse> because they make the same claim in
+ * two places, and a claim about money that is maintained twice is one that will
+ * eventually be true in one place and false in the other.
+ *
+ * "nothing was sent" is only available in the third case, and getting there
+ * takes two checks rather than one:
+ *   - Turning streaming off FORCE-settles, and a force settle flushes every
+ *     accrued bucket in one batch. Bucket 1 paying and bucket 2 failing leaves
+ *     an error beside sats that are already gone.
+ *   - A wallet that never answered has not refused (CLAUDE.md's
+ *     NwcIndeterminateError rule). The engine still counts it as a failure, on
+ *     purpose; the copy must not promote that to a statement of fact.
+ * Both are silent by construction — nothing on screen distinguishes them from a
+ * clean failure — which is exactly why the honest wording has to be derived
+ * rather than assumed.
+ */
+function sentClause(s: StreamingStatus): string {
+  if (s.lastErrorSentSats > 0) {
+    return `${s.lastErrorSentSats.toLocaleString()} sat${
+      s.lastErrorSentSats === 1 ? '' : 's'
+    } had already been sent when this failed`;
+  }
+  if (s.lastErrorIndeterminate) {
+    return 'your wallet never answered, so these sats may or may not have been sent';
+  }
+  return 'nothing was sent';
+}
+
 export function StreamMeter({ className = '' }: { className?: string }) {
   const [status, setStatus] = useState(streamingStatus);
 
@@ -501,12 +537,13 @@ export function StreamMeter({ className = '' }: { className?: string }) {
               streaming off there is nothing to remedy, so the retry copy is
               worse than none: it asks the user to re-arm spending they have
               already turned off, over an error they did nothing to cause.
-              What they need to know instead is that no sats left the wallet
-              and nothing further will be attempted. 'rail-cannot-pay' is a
-              capability gap, so "change the rate to retry" would loop the user
-              through the identical failure. */}
+              What they need to know instead is what happened to the sats and
+              that nothing further will be attempted — and the first half is
+              `sentClause`'s job, because a force settle can fail AFTER paying.
+              'rail-cannot-pay' is a capability gap, so "change the rate to
+              retry" would loop the user through the identical failure. */}
           {off
-            ? ' — nothing was sent. Streaming is off for this show, so nothing further will be tried.'
+            ? ` — ${sentClause(status)}. Streaming is off for this show, so nothing further will be tried.`
             : status.stoppedReason === 'failures'
               ? ' — streaming paused for this episode. Change the rate or connect a wallet to retry.'
               : status.stoppedReason === 'rail-cannot-pay'
@@ -550,7 +587,7 @@ export function StreamPulse() {
           // Same distinction <StreamMeter> makes: with streaming off for this
           // show, "stopped" reads as something the user has to go and restart.
           s.ratePerMin === 0
-            ? `Streaming payment failed: ${failure} — nothing was sent, and streaming is off for this show.`
+            ? `Streaming payment failed: ${failure} — ${sentClause(s)}, and streaming is off for this show.`
             : `Streaming stopped: ${failure}`
         }
       >

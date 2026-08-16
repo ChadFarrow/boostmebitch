@@ -146,6 +146,29 @@ function channelScope(xml: string): string {
   return firstItem === -1 ? xml : xml.slice(0, firstItem);
 }
 
+/**
+ * The channel's own `<podcast:guid>` — the album feed's identity.
+ *
+ * Read from the channel scope only, so an `<item>` carrying its own guid can't
+ * be mistaken for the feed's. Element TEXT rather than an attribute, so
+ * `readAttr` doesn't apply — but the decoy rule that shaped `readAttr` does:
+ * the tag name is anchored to the opening `<`, never matched with `\b`, or a
+ * feed writing `<x-podcast:guid>` would satisfy it ahead of the real one.
+ *
+ * Shape-checked as a UUID because that is what the spec says a feed guid is,
+ * and this value's only consumer publishes it to a list other apps read: a
+ * malformed one there is an entry nobody can ever resolve. Checked locally
+ * rather than by importing `looksLikeFeedGuid` — `lib/nostr/favorites-list.ts`
+ * is required to stay import-free and this module is not a dependency it should
+ * acquire in either direction.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function channelGuid(xml: string): string | undefined {
+  const m = /<podcast:guid[^>]*>([^<]+)<\/podcast:guid>/i.exec(channelScope(xml));
+  const v = m?.[1]?.trim();
+  return v && UUID_RE.test(v) ? v : undefined;
+}
+
 function isPublisherFeed(xml: string): boolean {
   return /<podcast:medium>\s*publisher\s*<\/podcast:medium>/i.test(xml);
 }
@@ -174,6 +197,24 @@ export interface ResolvedRemoteItem {
   value: ValueBlock;
   title?: string;
   image?: string;
+  /**
+   * True when the item was reached by WALKING a publisher feed's remoteItems —
+   * i.e. the `feedGuid` the caller resolved from names the publisher, not the
+   * feed the track actually lives in.
+   *
+   * The distinction is invisible in the result otherwise: both branches return
+   * a value block, a title and an image, so a caller recording "the track's
+   * parent feed" from its own `feedGuid` silently records the wrong one. That
+   * matters because a track favorite publishes that guid to a shared list other
+   * apps read, and `/episodes/byguid` can never resolve a publisher guid — the
+   * entry is a placeholder forever, on every device.
+   */
+  viaPublisher?: boolean;
+  /** The `<podcast:guid>` of the album feed the item was actually found in.
+   *  Only set on the publisher walk, and only when that feed declares one —
+   *  a direct hit needs no override, and an album feed with no guid has no
+   *  correct answer to offer. */
+  albumFeedGuid?: string;
 }
 
 /**
@@ -239,13 +280,22 @@ export async function resolveRemoteItemFromRss(
       if (!albumXml) return null;
       const found = findItemByGuid(albumXml, itemGuid);
       if (!found) return null;
+      // Read once, here, where the album feed's own XML is in hand — it is the
+      // only point in the walk that knows which of N feeds the item came from.
+      const albumFeedGuid = channelGuid(albumXml);
       const itemValue = extractValueBlock(found.itemXml);
       if (itemValue) {
-        return { value: itemValue, title: found.title, image: found.image };
+        return {
+          value: itemValue, title: found.title, image: found.image,
+          viaPublisher: true, albumFeedGuid,
+        };
       }
       const channelValue = extractValueBlock(channelScope(albumXml));
       if (channelValue) {
-        return { value: channelValue, title: found.title, image: found.image };
+        return {
+          value: channelValue, title: found.title, image: found.image,
+          viaPublisher: true, albumFeedGuid,
+        };
       }
       return null;
     }),

@@ -41,6 +41,24 @@ export interface ValueTimeSplit {
    *  album name until Podcast Index re-resolves it on some later load. */
   feedTitle?: string;
   episodeGuid?: string;
+  /**
+   * The feed guid that actually CONTAINS this track, when resolution learned
+   * that `remoteItem.feedGuid` isn't it. Three states, and all three are load-
+   * bearing for `<FavTrackHeart>`:
+   *
+   *   - `undefined` — nothing learned. Fall back to `remoteItem.feedGuid`; a
+   *     favorite recorded against it may be a placeholder until Podcast Index
+   *     crawls the item, which is ordinary and self-healing.
+   *   - a string — the real album guid, recovered by walking a publisher feed.
+   *     Use it in place of `remoteItem.feedGuid`.
+   *   - `null` — the host's `feedGuid` points at a PUBLISHER feed and the album
+   *     it led to declares no guid of its own. There is no resolvable parent to
+   *     record, so no favorite may be offered: `/episodes/byguid` needs a real
+   *     `podcastguid`, and a favorite published to the shared kind:10333 list
+   *     without one can never be opened, here or in any other app. Same rule
+   *     `<FavEpisodeHeart>` already applies to an episode with no parent feed.
+   */
+  parentFeedGuid?: string | null;
 }
 
 // A single <podcast:funding> entry — a host's non-Lightning support link
