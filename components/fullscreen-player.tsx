@@ -15,6 +15,7 @@ import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
 import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
 import {
+  episodeContentsLabel,
   hasValueRecipients,
   isMusicMedium,
   showShareUrl,
@@ -82,13 +83,9 @@ function EpisodeInfoPanel({
   const hasChapters = !!chapters?.length;
   // One tab for both — <EpisodeContents> interleaves them.
   const hasContents = hasTracks || hasChapters;
-  // The count names what the LABEL names: songs when the episode published
-  // valueTimeSplit windows, chapters when it only has chapters. Deliberately not
-  // the merged row count — "Tracks (31)" on an episode with 14 songs and 17 talk
-  // breaks claims 31 songs.
-  const contentsLabel = hasTracks
-    ? `Tracks (${splits?.length ?? 0})`
-    : `Chapters (${chapters?.length ?? 0})`;
+  // One label for both sources — chapters win when present. See
+  // `episodeContentsLabel`; the episode page's tab strip shares it.
+  const contentsLabel = episodeContentsLabel(splits, chapters);
   const hasTranscript = !!transcriptCues?.length;
   const chaptersPending = hasChaptersUrl && chaptersLoading;
   const transcriptPending = hasTranscriptUrl && transcriptLoading;

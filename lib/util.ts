@@ -460,6 +460,36 @@ export function mergeEpisodeContents(
 }
 
 /**
+ * The name the merged tracks+chapters tab wears, and the count beside it.
+ *
+ * **Chapters win when the episode has any**, because chapters are what that
+ * list is mostly made of and a window is the rarer thing. The precedence used to
+ * run the other way — any window at all renamed the tab `Tracks` — and on
+ * *Chad and Reeds* 002 that reads as a lie: one `<podcast:valueTimeSplit>`
+ * against a dozen-plus chapters rendered **`TRACKS (1)`** above a list of
+ * chapters, so the count named 1/14th of the rows and the noun named none of
+ * them. A pure music episode publishing windows and no chapters still says
+ * `Tracks`, which is the only case where that word describes the whole list.
+ *
+ * **The count is never the merged row count.** `Chapters (31)` on 14 songs and
+ * 17 talk breaks claims 31 chapters; the label and the number have to name the
+ * same thing or the number is worse than absent.
+ *
+ * Shared by `<EpisodeDetailView>` and `<FullscreenPlayer>`, which held identical
+ * copies of the expression — two tab strips over one `<EpisodeContents>` list is
+ * exactly the shape that drifts into naming the same rows two different ways.
+ */
+export function episodeContentsLabel(
+  splits: readonly ValueTimeSplit[] | null | undefined,
+  chapters: readonly ChapterEntry[] | null | undefined,
+): string {
+  const chapterCount = chapters?.length ?? 0;
+  return chapterCount
+    ? `Chapters (${chapterCount})`
+    : `Tracks (${splits?.length ?? 0})`;
+}
+
+/**
  * Divide a boost between the track a valueTimeSplit redirects to and the show
  * that redirected it.
  *
