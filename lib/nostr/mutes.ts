@@ -19,34 +19,12 @@ import { createScheduledPublish } from './debounced-publish';
 
 export const MUTES_KIND = 10000;
 
-export interface MuteListState {
-  /** `p` tags from the event's plaintext tag array. */
-  publicPubkeys: string[];
-  /** Non-`p` tags from the event's plaintext tag array — preserved verbatim. */
-  publicOtherTags: string[][];
-  /** `p` tags decoded from the encrypted `.content`. Empty if absent or
-   *  unreadable (see `unreadablePrivateContent`). */
-  privatePubkeys: string[];
-  /** Non-`p` tags decoded from the encrypted `.content`. Preserved verbatim. */
-  privateOtherTags: string[][];
-  /** Raw ciphertext we couldn't decrypt (signer doesn't expose nip04, or
-   *  decrypt threw). When set, we treat the private list as opaque and
-   *  preserve the blob byte-for-byte on republish so we don't destroy
-   *  private mutes set in another client. */
-  unreadablePrivateContent?: string;
-  /** unix seconds, from event.created_at. */
-  updatedAt: number;
-}
-
-export function emptyMuteState(): MuteListState {
-  return {
-    publicPubkeys: [],
-    publicOtherTags: [],
-    privatePubkeys: [],
-    privateOtherTags: [],
-    updatedAt: 0,
-  };
-}
+// The shape and its empty constructor live in ./mute-state, an import-free leaf,
+// so lib/storage.ts can share them without closing a storage → mutes → relays →
+// storage cycle. Re-exported here so this module stays the one place the rest of
+// the app imports mute types from.
+export { emptyMuteState, type MuteListState } from './mute-state';
+import type { MuteListState } from './mute-state';
 
 /** Union of public + private p-tags. This is what feed surfaces filter against. */
 export function unionMutedPubkeys(state: MuteListState): Set<string> {

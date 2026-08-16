@@ -3,7 +3,7 @@ import { getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, 
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { isMusicMedium } from '@/lib/util';
+import { isMusicMedium, compareEpisodeOrder } from '@/lib/util';
 
 const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
@@ -122,6 +122,10 @@ export async function GET(req: Request) {
     // Music album feeds (medium=music) sort by disc (podcast:season) then
     // track (podcast:episode) ascending instead of by date.
     const isMusic = isMusicMedium(podcast) || feedMedium === 'music';
+    // Live ranking is this route's own concern; the non-live tail is the shared
+    // rule in lib/util.ts, which lib/pi.ts's raw-RSS path sorts by too. It used
+    // to be a second copy inlined here.
+    const byEpisodeOrder = compareEpisodeOrder(isMusic);
     merged.sort((a, b) => {
       const ra = a.liveStatus ? LIVE_RANK[a.liveStatus] ?? 3 : 3;
       const rb = b.liveStatus ? LIVE_RANK[b.liveStatus] ?? 3 : 3;
@@ -132,12 +136,7 @@ export async function GET(req: Request) {
       if (a.liveStatus && b.liveStatus) {
         return (b.liveStartTime ?? 0) - (a.liveStartTime ?? 0);
       }
-      if (isMusic) {
-        const seasonDiff = (a.season ?? 1) - (b.season ?? 1);
-        if (seasonDiff !== 0) return seasonDiff;
-        return (a.episode ?? 0) - (b.episode ?? 0);
-      }
-      return (b.datePublished ?? 0) - (a.datePublished ?? 0);
+      return byEpisodeOrder(a, b);
     });
     // Backfill the channel-level medium so the client gets the same music
     // signal the sort used (PI doesn't reliably index `medium`).

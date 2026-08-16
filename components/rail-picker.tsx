@@ -14,8 +14,19 @@ import type { Rail } from '@/lib/v4v/boost';
 const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' };
 
 /** Rails with a usable wallet right now, in pickRail()'s own priority order.
- *  Call it during render — both modals re-render on subscribeNwc/subscribeSpark,
- *  so a wallet connected mid-modal shows up without a remount. */
+ *
+ *  Call it during render — both modals re-render via `useWalletChange`, which
+ *  subscribes to all THREE rails, so a wallet connected mid-modal shows up
+ *  without a remount.
+ *
+ *  That used to say "subscribeNwc/subscribeSpark", and it was wrong in a way
+ *  that mattered: this function reads `hasWebln()` as well, but neither modal
+ *  subscribed to `subscribeWebln`. Enabling an Alby extension while the boost
+ *  modal was open therefore produced no re-render at all — the WebLN button
+ *  never appeared, `pickRail()` never re-ran, and the user could not pay from
+ *  the wallet they had just turned on. Any new rail added here needs a matching
+ *  subscription in `lib/use-wallet-change.ts`, or it will be invisible in
+ *  exactly the same way. */
 export function availableRails(): Rail[] {
   const rails: Rail[] = [];
   if (hasNwc()) rails.push('nwc');

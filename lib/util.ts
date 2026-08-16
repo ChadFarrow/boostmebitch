@@ -136,6 +136,42 @@ export function recipientOrder(recipients: readonly Pick<ValueRecipient, 'split'
 }
 
 /**
+ * How a feed's items are ordered for display: a music album sorts by disc
+ * (`<podcast:season>`) then track (`<podcast:episode>`) ASCENDING; everything
+ * else sorts newest-first by `datePublished`.
+ *
+ * Shared because it was written out twice — in `getFeedFromRss` (lib/pi.ts) and
+ * in the merge step of app/api/feed/route.ts — with each copy's comment naming
+ * the other as the authority ("same rule as /api/feed" / "matches /api/feed").
+ * That is two implementations of one rule with no mechanism keeping them equal,
+ * and the failure is quiet rather than loud: the same album served through the
+ * PI-backed route and through the raw-RSS preview would simply list its tracks
+ * in different orders, and nothing would report a fault. Track order is also
+ * what the player's prev/next walks, so on a music feed this is the running
+ * order of the record.
+ *
+ * The defaults are load-bearing and deliberately asymmetric. `season ?? 1`
+ * treats an untagged item as disc 1 (most albums are single-disc and tag no
+ * season at all), while `episode ?? 0` sorts an untagged track to the FRONT of
+ * its disc. Don't "tidy" them to match.
+ *
+ * Returns a comparator rather than sorting, because the API route needs this as
+ * the tail of a larger sort that ranks live items above everything else.
+ */
+export function compareEpisodeOrder(
+  isMusic: boolean,
+): (a: Pick<Episode, 'season' | 'episode' | 'datePublished'>, b: Pick<Episode, 'season' | 'episode' | 'datePublished'>) => number {
+  return (a, b) => {
+    if (isMusic) {
+      const seasonDiff = (a.season ?? 1) - (b.season ?? 1);
+      if (seasonDiff !== 0) return seasonDiff;
+      return (a.episode ?? 0) - (b.episode ?? 0);
+    }
+    return (b.datePublished ?? 0) - (a.datePublished ?? 0);
+  };
+}
+
+/**
  * A sent boost's per-recipient legs for the local log, biggest share first.
  *
  * Ordered rather than feed-ordered because `<BoostCard>` renders `legs`
@@ -508,6 +544,30 @@ export function payableSplit(
 
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
 // IDs (e.g. synthesizing an Episode.id from a guid) that survive reloads.
+/**
+ * Canonical deep link to a show: the current origin + pathname with
+ * `?podcast=<guid>`. Null when there's no guid (nothing stable to link to) or
+ * during SSR.
+ *
+ * Built from `origin + pathname` rather than a bare `${origin}/?podcast=`
+ * template, so the link survives the app being served from anywhere but the
+ * root. Both were in use: `components/lists.tsx` had the URL form and
+ * `components/fullscreen-player.tsx` had the template, in two private
+ * `ShareButton` copies, which meant the same show produced two different links
+ * depending on which screen you pressed SHARE on.
+ *
+ * Lives here rather than in either component because both need it and
+ * `fullscreen-player` importing from `lists` is the component-to-component edge
+ * that already caused one module cycle in this repo (podroll ↔ lists, fixed by
+ * moving <FavHeart> out).
+ */
+export function showShareUrl(podcastGuid: string | undefined): string | null {
+  if (!podcastGuid || typeof window === 'undefined') return null;
+  const url = new URL(window.location.origin + window.location.pathname);
+  url.searchParams.set('podcast', podcastGuid);
+  return url.toString();
+}
+
 export function fnvHash(s: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {

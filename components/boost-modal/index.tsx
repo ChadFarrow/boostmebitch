@@ -1,14 +1,14 @@
 'use client';
+import { useWalletChange } from '@/lib/use-wallet-change';
 import { useEffect, useMemo, useState } from 'react';
 import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { subscribeNwc } from '@/lib/v4v/nwc';
-import { subscribeSpark } from '@/lib/v4v/spark';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
-import { storage, type ShareNostrAs } from '@/lib/storage';
+import { storage } from '@/lib/storage';
+import { useSharePicker } from './use-share-picker';
 import { getErrorMessage, payableSplit, resolveSenderName, splitSats, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -89,8 +89,16 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const [hostErr, setHostErr] = useState<string | null>(null);
   const [paymentDone, setPaymentDone] = useState(false);
 
-  const [shareNostr, setShareNostr] = useState(() => storage.shareNostr.get());
-  const [shareAs, setShareAs] = useState<ShareNostrAs>(() => storage.shareNostrAs.get());
+  // Share picker + the `anonymous` flag derived from it. Shared with
+  // <BoostAllModal> via the hook rather than restated here — see
+  // ./use-share-picker for why one definition of `anonymous` matters.
+  const {
+    shareNostr,
+    setShareNostr: handleShareNostrChange,
+    shareAs,
+    setShareAs: handleShareAsChange,
+    anonymous,
+  } = useSharePicker(identity);
   const [pubState, setPubState] = useState<PublishState>({ kind: 'idle' });
 
   // Portal to <body> so the overlay escapes the layout's `relative z-0` content
@@ -99,47 +107,20 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // its footer. Opening from the player already worked because the player shares
   // the body-level context; portaling makes every entry point behave the same.
 
-  // Keep rail in sync if wallet connects/disconnects while the modal is open.
-  useEffect(() => {
-    const bump = () => setRail(pickRail());
-    const unsubNwc = subscribeNwc(bump);
-    const unsubSpark = subscribeSpark(bump);
-    return () => { unsubNwc(); unsubSpark(); };
-  }, []);
-
-  function handleShareNostrChange(v: boolean) {
-    setShareNostr(v);
-    storage.shareNostr.set(v);
-  }
-
-  function handleShareAsChange(v: ShareNostrAs) {
-    setShareAs(v);
-    storage.shareNostrAs.set(v);
-  }
+  // Keep rail in sync if a wallet connects/disconnects while the modal is open.
+  // This covers WebLN as well as NWC and Spark — it used to watch only the
+  // first two, so enabling a WebLN extension mid-modal never re-rendered
+  // <RailPicker> and the rail the user had just enabled stayed unofferable.
+  useWalletChange(() => setRail(pickRail()));
 
   const relays = useMemo(() => resolvePublishRelays(identity), [identity]);
 
-  // "Anonymous" has to anonymize the PAYMENT too, not just who signs the note:
-  //  - sender_id is the user's nostr pubkey, which recipient aggregators
-  //    (Helipad/Fountain) resolve to their profile — avatar + name.
-  //  - sender_name is the "From" field, which recipients display verbatim AND
-  //    which formatContent turns into "<name> boosted N sats" in the note body,
-  //    so a site-signed "anonymous" note still named the sender.
-  // The pubkey is dropped outright; the name is REPLACED by DEFAULT_SENDER_NAME
-  // rather than omitted, so an anonymous boost still presents consistently
-  // instead of rendering blank in one aggregator and "Unknown" in the next.
-  // Same substitution when a named user just leaves "From" empty.
-  // Computed at component scope (not inside go()) because <SenderName> renders
-  // off it.
-  //
-  // Gated on `identity` to match where the picker offers the choice: signed out
-  // there's only a checkbox, every note is site-signed, and the typed "From"
-  // name is the ONLY attribution it can carry — but `bmb:share_nostr_as` is a
-  // single global key, so a user who picked Anonymous while signed in would
-  // otherwise have their name silently withheld after signing out, with no
-  // control to turn it back on. `sender_id` is unaffected either way (it's
-  // `identity?.pubkey`, already undefined when signed out).
-  const anonymous = !!identity && shareNostr && shareAs === 'site';
+  // `anonymous` comes from useSharePicker above. The NAME stays here because it
+  // needs this modal's own "From" input state; DEFAULT_SENDER_NAME substitutes
+  // rather than omits, so an anonymous boost presents consistently instead of
+  // rendering blank in one aggregator and "Unknown" in the next. Same
+  // substitution when a named user just leaves "From" empty. Computed at
+  // component scope (not inside go()) because <SenderName> renders off it.
   const senderName = resolveSenderName(name, anonymous);
 
   useEffect(() => {

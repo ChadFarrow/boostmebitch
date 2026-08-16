@@ -5,7 +5,8 @@ import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs } from './feed-xm
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder } from './util';
+import { createBoundedCache } from './bounded-cache';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -303,24 +304,15 @@ export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
 const RSS_FRESH_MS = 60_000;
 const RSS_STALE_MS = 10 * 60_000;
 const RSS_CACHE_MAX = 200;
-const rssXmlCache = new Map<string, { xml: string; fetchedAt: number }>();
-
-function rememberFeedXml(rssUrl: string, xml: string, now: number): void {
-  // Drop entries nobody can serve any more before evicting ones that are still
-  // useful — expiry first, capacity second.
-  for (const [k, v] of rssXmlCache) {
-    if (now - v.fetchedAt >= RSS_STALE_MS) rssXmlCache.delete(k);
-  }
-  // Re-setting an existing key keeps its original insertion position, so delete
-  // first to move a refreshed entry to the back of the eviction queue.
-  rssXmlCache.delete(rssUrl);
-  rssXmlCache.set(rssUrl, { xml, fetchedAt: now });
-  while (rssXmlCache.size > RSS_CACHE_MAX) {
-    const oldest = rssXmlCache.keys().next();
-    if (oldest.done) break;
-    rssXmlCache.delete(oldest.value);
-  }
-}
+// The sweep/delete-then-set/cap bookkeeping is `createBoundedCache`, shared with
+// lib/musicl-resolver.ts — both caches shipped the same unbounded-growth bug
+// because the mechanism had been copied. Only the POLICY is local: the horizon
+// here is the stale window (not the fresh one), because a body past 60 s is
+// still servable on a failed refetch and must not be swept until 10 min.
+const rssXmlCache = createBoundedCache<string>({
+  maxAgeMs: RSS_STALE_MS,
+  maxEntries: RSS_CACHE_MAX,
+});
 
 // `maxAgeMs` shortens the fresh window for ONE caller without shortening it for
 // everyone. The live-value poller needs the current "now playing", which turns
@@ -334,8 +326,10 @@ async function fetchFeedXml(
 ): Promise<string | null> {
   const now = Date.now();
   const freshMs = opts?.maxAgeMs ?? RSS_FRESH_MS;
-  const hit = rssXmlCache.get(rssUrl);
-  if (hit && now - hit.fetchedAt < freshMs) return hit.xml;
+  // `hit` is anything inside the 10 min horizon; `freshMs` is this caller's own
+  // (possibly shorter) idea of fresh. The cache deliberately doesn't judge.
+  const hit = rssXmlCache.get(rssUrl, now);
+  if (hit && hit.ageMs < freshMs) return hit.value;
 
   let xml: string | null = null;
   try {
@@ -353,12 +347,13 @@ async function fetchFeedXml(
   }
 
   if (xml != null) {
-    rememberFeedXml(rssUrl, xml, now);
+    rssXmlCache.set(rssUrl, xml, now);
     return xml;
   }
-  // Fetch failed or returned non-2xx — serve the last good copy if it's still
-  // within the hard stale window, otherwise give up.
-  if (hit && now - hit.fetchedAt < RSS_STALE_MS) return hit.xml;
+  // Fetch failed or returned non-2xx — serve the last good copy. `hit` is
+  // already bounded by the stale window (the cache's own horizon), so reaching
+  // here with one in hand means it is still servable.
+  if (hit) return hit.value;
   return null;
 }
 
@@ -939,14 +934,7 @@ export async function getRssEpisodeEnrichment(
     // link-preserving version is strictly better and the detail view prefers it.
     const raw = extractRawContent(inner, 'content:encoded') ?? extractRawContent(inner, 'description');
     const contentEncoded = raw ? sanitizeShowNotes(raw) || undefined : undefined;
-    // podcast:season number attr takes precedence over text content
-    const seasonTagMatch = /<podcast:season\b([^>]*)>/i.exec(inner);
-    const seasonStr = (seasonTagMatch ? readAttr(seasonTagMatch[1], 'number') : undefined)
-      ?? extractText(inner, 'podcast:season');
-    const season = seasonStr != null && seasonStr !== '' ? (Number(seasonStr) || null) : null;
-    // podcast:episode is plain text content per spec
-    const episodeStr = extractText(inner, 'podcast:episode');
-    const episode = episodeStr != null && episodeStr !== '' ? (Number(episodeStr) || null) : null;
+    const { season, episode } = parseSeasonEpisode(inner);
     const { transcriptUrl, transcriptType } = parseTranscripts(inner);
     // Item <link> — the episode web page (RSS <link>, not <atom:link>). Full
     // notes often live here when the feed's <description> is abbreviated.
@@ -978,6 +966,37 @@ export async function getRssEpisodeEnrichment(
 // <itunes:duration>: raw seconds ("1387") OR H:MM:SS / MM:SS clock form. The
 // rest of the app treats Episode.duration as seconds, so a naive Number() on
 // "23:07" (→ NaN) would break the duration display.
+/**
+ * `<podcast:season>` / `<podcast:episode>` for one `<item>`, as the disc/track
+ * pair the rest of the app sorts music feeds by.
+ *
+ * Per spec the season number rides on a `number` ATTRIBUTE and takes precedence
+ * over the tag's text content, while the episode number is plain text — hence
+ * the asymmetry, which is not a bug.
+ *
+ * Shared because this was written out twice in this file, and the two copies
+ * had already DRIFTED: only `getFeedFromRss` carried the `<itunes:episode>`
+ * fallback, so a feed that numbers its items the iTunes way was ordered
+ * correctly in the raw-RSS preview and arbitrarily in the PI-backed path.
+ * `Episode.episode` in lib/types.ts is documented as
+ * "`<podcast:episode>` / `<itunes:episode>` if present", so the enrichment copy
+ * was the one out of step with stated intent — unified onto the fallback.
+ *
+ * `Number(s) || null` deliberately maps both a non-numeric string and a literal
+ * 0 to null; item numbering is 1-based, so a 0 here means the feed wrote
+ * something we can't use.
+ */
+function parseSeasonEpisode(inner: string): { season: number | null; episode: number | null } {
+  const seasonTagMatch = /<podcast:season\b([^>]*)>/i.exec(inner);
+  const seasonStr = (seasonTagMatch ? readAttr(seasonTagMatch[1], 'number') : undefined)
+    ?? extractText(inner, 'podcast:season');
+  const episodeStr = extractText(inner, 'podcast:episode') ?? extractText(inner, 'itunes:episode');
+  return {
+    season: seasonStr != null && seasonStr !== '' ? (Number(seasonStr) || null) : null,
+    episode: episodeStr != null && episodeStr !== '' ? (Number(episodeStr) || null) : null,
+  };
+}
+
 function parseItunesDuration(raw: string | undefined): number | undefined {
   if (!raw) return undefined;
   const s = raw.trim();
@@ -1057,13 +1076,7 @@ export async function getFeedFromRss(
     const raw = extractRawContent(inner, 'content:encoded') ?? extractRawContent(inner, 'description');
     const contentEncoded = raw ? sanitizeShowNotes(raw) || undefined : undefined;
     const itemImage = extractItunesImageHref(inner) ?? extractRssImageUrl(inner);
-    // podcast:season number attr wins over text; podcast:episode is text.
-    const seasonTagMatch = /<podcast:season\b([^>]*)>/i.exec(inner);
-    const seasonStr = (seasonTagMatch ? readAttr(seasonTagMatch[1], 'number') : undefined)
-      ?? extractText(inner, 'podcast:season');
-    const season = seasonStr != null && seasonStr !== '' ? (Number(seasonStr) || null) : null;
-    const episodeStr = extractText(inner, 'podcast:episode') ?? extractText(inner, 'itunes:episode');
-    const episodeNum = episodeStr != null && episodeStr !== '' ? (Number(episodeStr) || null) : null;
+    const { season, episode: episodeNum } = parseSeasonEpisode(inner);
     const { transcriptUrl, transcriptType } = parseTranscripts(inner);
     const chaptersMatch = inner.match(/<podcast:chapters\b([^>]*?)\/?>/i);
     const chaptersUrl = chaptersMatch ? readAttr(chaptersMatch[1], 'url') : undefined;
@@ -1097,16 +1110,10 @@ export async function getFeedFromRss(
   }
 
   // Music album feeds sort by disc (podcast:season) then track (podcast:episode)
-  // ascending; everything else newest-first — same rule as /api/feed.
-  const isMusic = medium === 'music';
-  episodes.sort((a, b) => {
-    if (isMusic) {
-      const seasonDiff = (a.season ?? 1) - (b.season ?? 1);
-      if (seasonDiff !== 0) return seasonDiff;
-      return (a.episode ?? 0) - (b.episode ?? 0);
-    }
-    return (b.datePublished ?? 0) - (a.datePublished ?? 0);
-  });
+  // ascending; everything else newest-first. `compareEpisodeOrder` is shared
+  // with /api/feed rather than restated here — the two used to be separate
+  // copies of this rule, each citing the other.
+  episodes.sort(compareEpisodeOrder(medium === 'music'));
 
   return { podcast, episodes };
 }

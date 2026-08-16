@@ -22,7 +22,14 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 The balance chip renders **no ⚡ of its own**; `<AuthControl>` draws one in the button and that one has to stay, because `<WalletBalanceChip>` returns null whenever the balance is unknown (WebLN exposes none, every rail is null mid-reconnect) and the lone bolt is what still reads as "connected".
 
 
-## Episode list pagination + music-feed behaviors (`components/lists.tsx`)
+## Episode list pagination + music-feed behaviors (`components/lists/episode-list.tsx`)
+
+**`components/lists.tsx` is a BARREL — the implementations live in `components/lists/`.** It reached 1192 lines holding four exported components, fifteen private helpers and two hooks, and is now a 22-line re-export surface over `podcast-results.tsx`, `favorites.tsx`, `episode-list.tsx` and the shared scaffolding in `grouping.tsx` (medium bucketing, the nouns those buckets are labelled with, the collapse state headings persist, the progressive-reveal pager).
+
+Two things about the split are worth keeping:
+
+- **The barrel is why the split cost zero call-site edits.** `home-page.tsx` is the only consumer of the four panels, and several surfaces import the fav hearts from here, so re-exporting kept every import path and made the diff a pure move. Re-growing the barrel into an implementation file is how it got to 1192 lines the first time.
+- **The hearts still live in `components/fav-heart.tsx`** and are only re-exported. `podroll.tsx` importing them from `lists.tsx` while `lists.tsx` imports `<Podroll>` was the original module cycle; that constraint didn't go away, it just moved behind the barrel. The same shape reappeared during this work when `fullscreen-player.tsx` needed the show-share URL builder from `lists.tsx` — resolved by putting `showShareUrl` in `lib/util.ts` instead, not by adding the component-to-component import.
 
 `/api/feed` returns ~50 episodes at once, so pagination is pure client-side slicing. `EpisodeList` holds `visibleCount` (starts at 10, reset in the `[feedId]` effect) and renders `data.episodes.slice(0, visibleCount)`; a **"Load more episodes (N)"** `.btn-ghost` reveals +10 per tap and disappears when all are shown.
 
@@ -174,6 +181,13 @@ The reported symptom was "I'm skipping chapters and the audio isn't playing now"
   What's left is honest and unavoidable: on a feed with 36 MB chapter art you still fetch one per chapter you genuinely listen to. The gate closing is what protects playback if that turns out to hurt.
 - Verified afterwards: unthrottled, chapter art is still used (this must not quietly become "chapter art never loads"); at 1.2 Mbit with 12 rapid skips, playback recovers and then runs in real time with the buffer growing.
 
+**All of the Media Session wiring now lives in `components/player/use-media-session.ts`** — the transport action handlers, the `playbackState` mirror, the `setPositionState` scrub bar, the `lockArt` settle state and the metadata rebuild. It was extracted from `<Player>` as one unit because those four effects and the state between them are entirely about the OS lock screen and touch nothing else in the player except its element refs.
+
+Two things about that boundary:
+
+- **It is called after `nowArt`, not at the top.** The metadata effect consumes the settled artwork, so hook order follows the data. React only requires hook order be *stable across renders*, not that it match any semantic order, so moving the whole cluster down is safe — but moving only part of it back up would not be.
+- **The rest of `<Player>` was deliberately left in place.** The source effect, the `artOk` gate above, the HLS path, the iOS foreground resume and the streaming-engine teardown are entangled with each other and with playback correctness — the gate's reopen path especially (`progress`/`playing` sampling, `Math.min(threshold, timeLeft)`) is subtle enough that a mechanical extraction would hide the reasoning rather than isolate it. `stopStreamingEngine` must also keep *not* settling on Fast Refresh, which is a property of where it is called from.
+
 **A stall is also SAYABLE now.** `onWaiting`/`onStalled` set `stalled`, `onPlaying` clears it, and the mini-bar shows a muted "buffering" line — not an error, and nothing on that path calls `pause()`. Pressing play on a stalled element re-sources it through the same `reloadNonce` the live-resume path uses, resuming from `positionSec`; before this, "the play button does nothing until I reload the page" was the honest description. The readout deliberately names no cause: the artwork case is now mitigated, so a stall that still reaches the user is a plain slow network.
 
 **The fetch goes through `/api/chapters?url=<encoded>`, not directly.** Many chapter hosts (notably `feeds.fountain.fm`) serve the JSON with **no `Access-Control-Allow-Origin`**, so a direct browser fetch is CORS-blocked and the hook's `.catch()` silently rendered no chapters. `app/api/chapters/route.ts` is the proxy: `rateLimit` → `safeFetch` with timeout → upstream JSON verbatim, `Cache-Control` on the 200 only. The client parser stays the single source of truth.
@@ -201,7 +215,11 @@ The reported symptom was "I'm skipping chapters and the audio isn't playing now"
 
 **Every page-level view is URL-restorable on refresh** — `?podcast=<guid>` (detail), **`?feed=<id>`** (detail fallback for shows with no `podcastGuid`, resolved via `/api/feed`), `?episode=<guid>`, **`?discussion=1`** (layered on podcast/feed + episode; needs `socialInteract` from `/api/feed`), and **`?publisher=<feedUrl>`** (reconstructs a minimal stub, so the back-button label reads "Publisher" on a cold restore). Live streams use `/stream/<naddr>`. All restores re-check `useApp.getState()` before `set` and gate on the PI breaker. Audio resume is NOT restored — only the view.
 
-The **SHARE button** (`components/lists.tsx:ShareButton`) copies `origin + ?podcast=<guid>` with a 1.8 s "COPIED" flip. Clipboard-only by design — no Web Share API, no pod.link option (that's what the Nostr boost note links to via `podcastLandingUrl`). Header cluster order: `[♡ FAVORITE] [↗ SHARE] [⊙ SUPPORT] [≋ STREAM] [⚡ BOOST]`; STREAM (toggles the per-show `<StreamRate>` panel, via `useStreamPanel`) and BOOST are gated on `showHasValue`, SUPPORT on `podcast.funding`, the rest always visible.
+The **SHARE button** copies `origin + pathname + ?podcast=<guid>` with a 1.8 s "COPIED" flip. Clipboard-only by design — no Web Share API, no pod.link option (that's what the Nostr boost note links to via `podcastLandingUrl`). Header cluster order: `[♡ FAVORITE] [↗ SHARE] [⊙ SUPPORT] [≋ STREAM] [⚡ BOOST]`; STREAM (toggles the per-show `<StreamRate>` panel, via `useStreamPanel`) and BOOST are gated on `showHasValue`, SUPPORT on `podcast.funding`, the rest always visible.
+
+**The URL is built by `showShareUrl` (`lib/util.ts`) and the button is `<CopyLinkButton>` (`components/copy-link-button.tsx`) — one of each, because there used to be two of each and they disagreed.** The episode list and the fullscreen player each had a private `ShareButton`: same 1.8 s flash, same `btn-ghost` + `<ShareIcon/>` chrome, but one built `new URL(origin + pathname)` and set a search param while the other interpolated `` `${origin}/?podcast=` ``. Those agree only while the app is served from `/`, so the same show handed out two different links depending on which screen you pressed SHARE on — and neither copy cleared its timeout on unmount, which the fullscreen player does on every collapse.
+
+**URL building stays at the call site; only the copy interaction is shared.** The fullscreen player's is genuinely different — a Nostr live stream shares as the permanent per-host `/live/<npub>`, never the per-broadcast `/stream/<naddr>` (see the note on its own `buildUrl`) — so `<CopyLinkButton>` takes a finished string and renders nothing for `null`. `showShareUrl` lives in `lib/util.ts` rather than in either component because `fullscreen-player.tsx` importing from `lists.tsx` is the exact component-to-component edge that produced this repo's original module cycle.
 
 **The show header is `relative sm:sticky` — deliberately NOT pinned on phones.** Sticky, it plus the app header held 282px of an 844px viewport and tracks scrolled under the album art, which read as three stacked layers fighting each other. It's worth the space on desktop (~156px of 900+, against a long tracklist) and isn't on a phone. The `top-[var(--app-header-h)]` offset **must stay `sm:`-prefixed**: `top` on a `relative` element offsets it instead of pinning it, so an unprefixed value shoves the header a header's-height down the page instead of doing nothing.
 
@@ -214,6 +232,30 @@ The **SHARE button** (`components/lists.tsx:ShareButton`) copies `origin + ?podc
 
 **Floating BOOST FAB.** A `fixed right-4 z-40 rounded-full` `⚡ BOOST`, shown when `hasValue`. **Hidden while the now-playing bar is up** (`hasValue && !playerVisible`) — the mini-player carries its own BOOST and the FAB (`z-40`) would just overlap the bar (`z-30`); boosting the viewed episode stays reachable via the inline `SHARE · SUPPORT · BOOST` cluster. Since it only renders with the bar hidden, its `bottom` is a fixed `calc(1.5rem + env(safe-area-inset-bottom))`.
 
+
+## Fonts and first paint
+
+**Both families are self-hosted by `next/font` in `app/layout.tsx` and reached through `var(--font-display)` / `var(--font-mono)`. Never add an `@import` to `app/globals.css`.**
+
+That is what shipped, on line 1 of the main stylesheet, and it is the worst available way to load a webfont. A CSS `@import` there **serializes** the critical path: the browser cannot discover the font until it has fetched and parsed the stylesheet that names it, so first paint waits on
+
+```
+HTML → globals.css → fonts.googleapis.com (CSS) → fonts.gstatic.com (files)
+```
+
+— four hops across **three origins**, each paying its own DNS lookup and TLS handshake, with no `<link rel="preconnect">` to soften any of it. Bricolage Grotesque is requested as a variable font across three weights, so the payload is not small either.
+
+`next/font` fetches both families at build time and emits them as same-origin, cache-immutable assets referenced directly from the initial HTML. The two external origins disappear from the critical path entirely.
+
+Three consequences worth knowing:
+
+- **Naming a family literally anywhere bypasses the fallback.** `next/font` generates a size-adjusted local fallback face and that is what stops `display: swap` shifting layout when the real font lands. A literal `font-family: 'Bricolage Grotesque'` in Tailwind config or raw CSS resolves to the webfont without it.
+- **Three places hold the wiring and they move together:** the two `next/font` calls in `app/layout.tsx` (whose `.variable` class names go on `<html>`), `fontFamily` in `tailwind.config.ts`, and the two raw `font-family` declarations in `globals.css` (the `html, body` mono default and `.headline`). Element classes like `.stamp`/`.btn`/`.input` go through the Tailwind `font-mono` alias and need no edit.
+- **`axes: ['opsz']` on the display face is deliberate.** The old Google URL requested the optical-size axis (`opsz,wght@12..96`), and `next/font` ships only `wght` for a variable font unless the other axes are named. Dropping it would be a smaller download but a visible change to the display face.
+
+**The hero image is the LCP element on every route** — `app/layout.tsx` renders `public/hero.jpg` `fill priority` in the *root* layout — and it sits under a `bg-ink/75` overlay that mutes it to a texture, so it renders at `quality={40}` rather than the default 75. Encoding detail the overlay then discards is the most expensive byte on the page. `next.config.mjs` also enables AVIF, which Next does **not** serve by default (`formats` defaults to webp-only, even when the browser's `Accept` header offers AVIF). Measured on a production server at w=1920: 118,462 bytes before, 24,565 after — a 79% cut, with non-AVIF browsers getting 74,306. If the overlay opacity is ever lowered, revisit the quality; the two are coupled.
+
+**Benchmark image encoding against a real production server, not against sharp directly.** Encoding this image with sharp's own default AVIF options suggested AVIF was 47% *larger* than WebP at q=75 — the opposite of what Next actually ships, because Next drives the encoder with its own effort settings. A local sharp benchmark is not evidence about this pipeline, and acting on one here would have meant leaving a 79% saving on the table while documenting a coupling that does not exist.
 
 ## Theme system (light + dark)
 

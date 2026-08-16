@@ -1,6 +1,6 @@
 # Wallets — the wallet modal and the Spark rail
 
-Read before touching `components/wallet-modal.tsx`, `*-wallet.tsx`, `components/wallet-balance.tsx`, `lib/v4v/nwc.ts`, `spark.ts`, or `webln.ts`.
+Read before touching `components/wallet-modal.tsx`, `*-wallet.tsx`, `components/wallet-balance.tsx`, `lib/v4v/nwc.ts`, `spark.ts`, `webln.ts`, or `lib/use-wallet-change.ts`.
 
 Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning.
 
@@ -23,7 +23,15 @@ Three-view state machine — `WalletView = picker | connecting | connected` — 
 
 It used to live only in `BoostAllModal`, with `BoostModal` picking silently via `pickRail()`. **That asymmetry was a money bug.** `pickRail()` honors `storage.railPref` — the last rail that successfully paid — ahead of the priority fallback, so a user who once boosted through a WebLN extension keeps paying from it forever, *including* after funding a Spark wallet, with nothing on screen naming the rail. Hit live: a freshly funded Spark wallet sat untouched while the boost went out of the extension. The header chip is not a safeguard — `useWalletBalance()` resolves with the same pref-first logic and was faithfully showing the WebLN balance. Keep the picker in both modals; the shared component is what stops them drifting again.
 
-Both modals subscribe to `subscribeNwc`/`subscribeSpark` so a mid-modal connect updates `rail` without remount, and `availableRails()` is called during render for the same reason. WebLN has no subscribe (the extension is injected at load or isn't), so `hasWebln()` is read each render. `<BunkerHealthBanner>` stays in `<AccountMenu>` — signer health, not wallet health.
+**Every surface that renders the picker subscribes to EVERY rail `availableRails()` reads — that is `useWalletChange` (`lib/use-wallet-change.ts`), and a rail with no subscription is UNOFFERABLE, not merely stale.** `availableRails()` is called during render, so the subscription set literally *is* the set of wallets the user can choose from.
+
+Both modals used to hand-roll the effect and watch only `subscribeNwc`/`subscribeSpark`, while `availableRails()` read `hasNwc()`, `hasSpark()` **and** `hasWebln()`. So enabling a WebLN extension with a boost modal open produced no re-render at all: the WebLN button never appeared, `pickRail()` never re-ran, and the boost went out of a different wallet than the one the user had just turned on — the same class of money bug as the missing picker above, arrived at from the other direction.
+
+**Two things kept it alive, and both are worth recognising elsewhere.** The first is that this paragraph used to assert *"WebLN has no subscribe (the extension is injected at load or isn't), so `hasWebln()` is read each render"* — which is false: `subscribeWebln` has existed in `lib/v4v/webln.ts` throughout, and `wallet-modal.tsx`, `auth-control.tsx` and `wallet-balance.tsx` all use it. WebLN availability is not static; `isWeblnEnabled()` flips when the user clicks "Enable for this site". The second is that `rail-picker.tsx`'s own doc comment claimed both modals re-rendered on wallet changes, so the component that *had* the bug documented itself as not having it. A stale doc is not neutral — it is what makes a live bug read as intended behaviour.
+
+The hand-rolled copies had drifted into three different subscription sets across five components (`auth-control` and `wallet-balance` watched all three plus `railPref`; `wallet-modal` all three; both boost modals two). `useWalletChange` collapses them. **`railPref` is opt-in**: pass it on surfaces that *display* the effective rail (the balance chip, the account-menu summary) so they re-resolve when the preference moves with no readiness flag changing; leave it off where the surface owns an explicit per-action override, as the boost modals do through the picker. **Adding a rail means adding it in `useWalletChange` too**, or it is invisible in exactly the way described above.
+
+`<BunkerHealthBanner>` stays in `<AccountMenu>` — signer health, not wallet health.
 
 **Wallet balance display.** Two surfaces, one hook (`components/wallet-balance.tsx`): `<WalletBalanceChip>` in the `<AuthControl>` button (follows priority order) and `<BoostModalBalance rail={rail}>` in the boost-modal footer (tracks the picker; turns nostr-magenta when `amountSats > balance`). `useWalletBalance(railOverride?)` returns `{ balance, rail }`; with no override, priority is **NWC > Spark > WebLN** (matching `pickRail()`), and with one it collapses to null if that rail is disconnected/disabled.
 

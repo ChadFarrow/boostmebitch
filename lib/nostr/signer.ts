@@ -179,3 +179,25 @@ export function requireNip44(): Nip44Api {
   return n44;
 }
 
+// NIP-44 decrypt calls go through the user's signer (extension, Amber,
+// bunker). On iOS, the extension background service worker can be killed
+// between the relay query and the decrypt call, leaving the promise pending
+// forever. Cap every background decrypt so it rejects instead of hanging.
+//
+// This lives here rather than in a caller because it was duplicated verbatim —
+// same body, same 10 s constant — in lib/nostr/wallet-backup.ts and
+// lib/nostr/settings-backup.ts, which are the two background restore paths and
+// so exactly the places a hang is invisible. Both already import from this
+// module, so sharing it adds no import edge. Any new encrypted-to-self backup
+// should use this rather than awaiting requireNip44().decrypt directly.
+const NIP44_DECRYPT_TIMEOUT_MS = 10_000;
+
+export function decryptWithTimeout(pubkey: string, ciphertext: string): Promise<string> {
+  return Promise.race([
+    requireNip44().decrypt(pubkey, ciphertext),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('nip44 decrypt timed out')), NIP44_DECRYPT_TIMEOUT_MS),
+    ),
+  ]);
+}
+

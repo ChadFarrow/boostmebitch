@@ -15,42 +15,17 @@
 import { FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish } from './publish';
 import { fetchLatestEvent } from './event-queries';
-import { DEFAULT_RELAYS, resolvePublishRelays } from './relays';
-import { requireNip44, getNip44 } from './signer';
+import { backupReadRelays, resolvePublishRelays } from './relays';
+import { requireNip44, getNip44, decryptWithTimeout } from './signer';
 import { createScheduledPublish } from './debounced-publish';
 import { storage, type RailPref } from '../storage';
 import type { NostrIdentity } from './auth';
-
-const NIP44_DECRYPT_TIMEOUT_MS = 10_000;
-function decryptWithTimeout(pubkey: string, ciphertext: string): Promise<string> {
-  return Promise.race([
-    requireNip44().decrypt(pubkey, ciphertext),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('nip44 decrypt timed out')), NIP44_DECRYPT_TIMEOUT_MS),
-    ),
-  ]);
-}
 
 export const SETTINGS_KIND = 30078;
 export const SETTINGS_D_TAG = 'boostmebitch:settings';
 
 export interface SyncedSettings {
   railPref?: RailPref;
-}
-
-// Union of intended publish relays + DEFAULT_RELAYS (deduped, capped) so a
-// fresh sign-in that hasn't hydrated NIP-65 yet still finds a backup written
-// from a session that had write relays. Mirrors wallet-backup.ts:readRelays.
-function readRelays(identity: NostrIdentity): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const r of resolvePublishRelays(identity)) {
-    if (!seen.has(r)) { seen.add(r); out.push(r); }
-  }
-  for (const r of DEFAULT_RELAYS) {
-    if (!seen.has(r)) { seen.add(r); out.push(r); }
-  }
-  return out.slice(0, 20);
 }
 
 function isRail(v: unknown): v is RailPref {
@@ -62,7 +37,7 @@ export async function fetchSettings(
   identity: NostrIdentity,
 ): Promise<SyncedSettings | null> {
   const event = await fetchLatestEvent(
-    readRelays(identity),
+    backupReadRelays(identity),
     { kinds: [SETTINGS_KIND], authors: [identity.pubkey], '#d': [SETTINGS_D_TAG], limit: 1 },
     FEED_QUERY_MAX_WAIT_MS,
   );

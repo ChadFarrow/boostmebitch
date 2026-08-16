@@ -83,6 +83,21 @@ Priming routes through the same plan (`'skip'` primes nothing, `'transient'` pri
 
 **`appIsPlaying` must be read live at call time** (`useApp.getState().isPlaying`), never captured during render — the ping fires seconds after the tap, and a stale `false` would retype the session out from under a podcast that started in the meantime.
 
+### The share picker and `anonymous` — one definition, because it has broken twice
+
+The picker state both modals run on — whether to post a Nostr note, whose identity signs it, and the `anonymous` flag derived from those two — lives in `useSharePicker` (`components/boost-modal/use-share-picker.ts`). **A new boost surface uses that hook rather than re-deriving the flag.**
+
+It used to be a verbatim copy in each modal: the same two `useState`s seeded from the same two storage keys, the same two write-through handlers, the same expression. That is not a cosmetic duplication, because `anonymous` is a promise made to the user *on screen* that has to hold across three separate wire sites — the boostagram's `sender_id`, its `sender_name`, and the note body `formatContent` builds. The app has shipped that promise broken twice, and each time the cause was one surface learning a rule the other didn't:
+
+- **`sender_id`** — the user's pubkey, which recipient aggregators resolve to a profile picture and name. It rode along on an "anonymous" boost while the note itself was correctly site-signed, so the PFP leaked despite the promise.
+- **`sender_name`** — leaked the same way afterwards, and then leaked *a second time* through `BoostAllModal`'s hand-built summary `contentOverride`, **after** the single-boost path had already been fixed.
+
+One definition is the structural fix for that class of bug: there is no longer a second place for the rule to be learned late.
+
+**`senderName` deliberately stays at the call site.** It needs each modal's own "From" input state, so `resolveSenderName(name, anonymous)` is computed per modal. The *flag* is the invariant worth centralizing; the string is formatting. Substituting `DEFAULT_SENDER_NAME` rather than omitting the field matters for its own reason — `JSON.stringify` drops an `undefined` key entirely, leaving presentation to each recipient's aggregator, so the same boost renders blank in one and "Unknown" in the next.
+
+**The `!!identity` gate is load-bearing and survives the extraction unchanged.** Signed out, the picker degrades to a bare checkbox with no anonymous option, every note is site-signed, and the typed "From" name is that note's *only* attribution. But `bmb:share_nostr_as` is a single **global** key, not per-identity — so without the gate a user who chose Anonymous while signed in would sign out and silently have their name replaced by the default, with no control anywhere on screen to turn it back on. `sender_id` is unaffected either way: it is `identity?.pubkey`, already absent when signed out.
+
 ### lnaddress → keysend upgrade
 
 **`type="lnaddress"` recipients upgrade to keysend when the address publishes one.** `lookupKeysendTarget` (`lib/v4v/keysend-lookup.ts`) probes `.well-known/keysend/<name>` **through `app/api/keysend/route.ts`, never directly** — `.well-known/lnurlp` is browser-facing so it always sends CORS headers, but the keysend well-known is a server-to-server convention with none, so a direct browser fetch is blocked and the client's catch turns *every* address into "LNURL-only" silently. (Same reason `/api/chapters` exists; this shipped broken once for exactly this.)

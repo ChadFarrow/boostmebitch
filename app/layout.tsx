@@ -1,6 +1,37 @@
 import type { Metadata, Viewport } from 'next';
 import Image from 'next/image';
+import { Bricolage_Grotesque, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
+
+// Self-hosted at build time via next/font, NOT a CSS @import of
+// fonts.googleapis.com. The @import this replaced sat on line 1 of globals.css,
+// which serialized the critical path four hops deep across three origins:
+// HTML → globals.css → fonts.googleapis.com (CSS) → fonts.gstatic.com (files),
+// each with its own DNS + TLS handshake, all of it blocking first paint, and
+// with no preconnect to soften it. next/font emits the font files as
+// same-origin immutable assets referenced directly from the initial HTML, so
+// the two external origins disappear entirely.
+//
+// It also generates a size-adjusted local fallback, which removes the layout
+// shift `display: swap` was causing on every cold load.
+//
+// `axes: ['opsz']` is deliberate: the old URL requested the optical-size axis
+// (opsz,wght@12..96), and next/font ships only `wght` for a variable font
+// unless the other axes are named. Dropping it would be a smaller download but
+// a visible change to the display face, so it stays — the win here is removing
+// the origin chain, not trimming an axis.
+const bricolage = Bricolage_Grotesque({
+  subsets: ['latin'],
+  axes: ['opsz'],
+  display: 'swap',
+  variable: '--font-display',
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-mono',
+});
 import { ServiceWorkerRegister } from '@/components/sw-register';
 import { Player } from '@/components/player';
 import { ErrorBoundary } from '@/components/error-boundary';
@@ -124,17 +155,34 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     // documentElement.dataset.theme before React hydrates. Without this flag
     // React logs a noisy "extra attribute on the server: data-theme" warning.
     // Scoped to <html> so component-level mismatches still surface normally.
-    <html lang="en" suppressHydrationWarning>
+    // The two font variables land on <html> so the --font-display /
+    // --font-mono custom properties are in scope for globals.css and for every
+    // Tailwind font-display / font-mono utility, both of which now resolve
+    // through var() rather than naming the family literally.
+    <html
+      lang="en"
+      suppressHydrationWarning
+      className={`${bricolage.variable} ${jetbrainsMono.variable}`}
+    >
       <head>
         <script dangerouslySetInnerHTML={{ __html: FOUC_BLOCKER }} />
       </head>
       <body className="min-h-screen antialiased">
         <div aria-hidden className="fixed inset-0 pointer-events-none">
+          {/* quality={40}, not the default 75. This is the LCP element on every
+              route, and it renders under the `bg-ink/75` overlay directly
+              below — a 75% wash that mutes it to a texture. Encoding detail the
+              overlay then throws away is the most expensive byte on the page.
+              Measured on a production server at w=1920: 118,462 bytes at the
+              old default (webp q=75) vs 24,565 served now, with the AVIF
+              negotiation in next.config.mjs. If the overlay opacity is ever
+              lowered, revisit this number — the two are coupled. */}
           <Image
             src="/hero.jpg"
             alt=""
             fill
             priority
+            quality={40}
             sizes="100vw"
             className="object-cover object-center"
           />

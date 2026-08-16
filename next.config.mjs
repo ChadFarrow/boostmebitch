@@ -31,6 +31,36 @@ const nextConfig = {
   //
   // If a remote host ever genuinely needs optimizing, add that ONE hostname
   // here. Never restore the `**` wildcard.
+  //
+  // The block below is deliberately format-only and carries NO `remotePatterns`
+  // key, so everything above still holds: the only thing the sharp/libvips
+  // decoder ever sees is our own public/hero.jpg.
+  images: {
+    // Next's default is `['image/webp']` — AVIF is NOT served unless it's named
+    // here, even when the browser's Accept header offers it. The hero is the
+    // LCP element on every route (app/layout.tsx renders it `fill priority` in
+    // the ROOT layout), so this is the one image where the format matters.
+    // Order is preference order: AVIF first, WebP for browsers that refuse it.
+    //
+    // Measured against a real production server (`next build && next start`),
+    // public/hero.jpg at w=1920, bytes actually served:
+    //
+    //     q=75   webp 118,462   avif  97,008   → AVIF 18% smaller
+    //     q=60   webp  97,686   avif  53,224   → AVIF 45% smaller
+    //     q=40   webp  74,306   avif  24,565   → AVIF 66% smaller
+    //
+    // Combined with the hero's own `quality={40}`, the LCP element went from
+    // 118,462 bytes (the pre-change default: webp at q=75) to 24,565 — a 79%
+    // reduction. Browsers without AVIF get the 74,306-byte WebP, still 37%
+    // better than before.
+    //
+    // MEASURE AGAINST A PRODUCTION SERVER, not against sharp directly. Encoding
+    // this image with sharp's own default AVIF options suggested AVIF was 47%
+    // LARGER than WebP at q=75 — the opposite of what Next actually ships,
+    // because Next drives the encoder with its own effort/quality settings.
+    // A local sharp benchmark is not evidence about this pipeline.
+    formats: ['image/avif', 'image/webp'],
+  },
   async headers() {
     return [
       {

@@ -1,10 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useWalletChange } from '@/lib/use-wallet-change';
+import { useState } from 'react';
 import { ModalShell } from './modal-shell';
-import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc';
-import { hasSpark, subscribeSpark } from '@/lib/v4v/spark';
-import { hasWebln, isWeblnEnabled, subscribeWebln, weblnEnable } from '@/lib/v4v/webln';
+import { hasNwc } from '@/lib/v4v/nwc';
+import { hasSpark } from '@/lib/v4v/spark';
+import { hasWebln, isWeblnEnabled, weblnEnable } from '@/lib/v4v/webln';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
@@ -44,25 +45,19 @@ export function WalletModal({ onClose }: Props) {
   const [view, setView] = useState<WalletView>(() =>
     getActiveRail() !== null ? { kind: 'connected' } : { kind: 'picker', switching: false }
   );
-  useEffect(() => {
-    // Sync view when wallet state changes externally (e.g. auto-restore completes
-    // after the modal is already open, or a disconnect fires from outside).
-    const bump = () => {
-      setView((v) => {
-        const active = getActiveRail();
-        if (v.kind === 'connected' && !active) return { kind: 'picker', switching: false };
-        if (v.kind === 'picker' && !v.switching && active) return { kind: 'connected' };
-        // Auto-restore completing while the form for that rail is showing:
-        // flip straight to connected without requiring the user to re-paste.
-        if (v.kind === 'connecting' && active === v.rail) return { kind: 'connected' };
-        return v;
-      });
-    };
-    const unsubNwc = subscribeNwc(bump);
-    const unsubSpark = subscribeSpark(bump);
-    const unsubWebln = subscribeWebln(bump);
-    return () => { unsubNwc(); unsubSpark(); unsubWebln(); };
-  }, []);
+  // Sync view when wallet state changes externally (e.g. auto-restore completes
+  // after the modal is already open, or a disconnect fires from outside).
+  useWalletChange(() => {
+    setView((v) => {
+      const active = getActiveRail();
+      if (v.kind === 'connected' && !active) return { kind: 'picker', switching: false };
+      if (v.kind === 'picker' && !v.switching && active) return { kind: 'connected' };
+      // Auto-restore completing while the form for that rail is showing:
+      // flip straight to connected without requiring the user to re-paste.
+      if (v.kind === 'connecting' && active === v.rail) return { kind: 'connected' };
+      return v;
+    });
+  });
 
 
   async function handleConnected(rail: 'nwc' | 'spark' | 'webln') {

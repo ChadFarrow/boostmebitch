@@ -17,9 +17,14 @@ const config: Config = {
         muted: 'rgb(var(--muted) / <alpha-value>)',
         line: 'rgb(var(--line) / <alpha-value>)',
       },
+      // The families come from next/font (app/layout.tsx), which self-hosts
+      // them and exposes each as a CSS variable on <html>. Naming the family
+      // literally here would bypass next/font's generated size-adjusted
+      // fallback — the thing that keeps the swap from shifting layout — so
+      // these must stay var() references. Fallback stacks are unchanged.
       fontFamily: {
-        display: ['"Bricolage Grotesque"', 'system-ui', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+        display: ['var(--font-display)', 'system-ui', 'sans-serif'],
+        mono: ['var(--font-mono)', 'ui-monospace', 'monospace'],
       },
       keyframes: {
         pulse_bolt: {
