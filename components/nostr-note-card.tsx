@@ -9,7 +9,8 @@ import {
 import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/interactions';
 import { sendZap } from '@/lib/v4v/zap';
 import { useApp } from '@/lib/store';
-import type { Podcast } from '@/lib/types';
+import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
+import type { Episode, Podcast } from '@/lib/types';
 import { getErrorMessage } from '@/lib/util';
 import { linkify, extractImages, stripNostrUris, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
@@ -23,6 +24,13 @@ type ActionState = 'idle' | 'busy' | 'done' | 'error';
  * "→ podcast title" line renders under the author header. The per-podcast
  * feed leaves it out since every card on that surface is about the same show.
  *
+ * `episode` is the item the note's `podcast:item:guid:` tag names, resolved by
+ * the feed surface. It renders to the right of the show on that same line and
+ * opens the episode page, so a boost can be followed to the thing that was
+ * boosted rather than only to its show. Requires `podcast` — the episode is
+ * fetched out of the show's own feed, and the show has to be selected first
+ * either way (see the click handler).
+ *
  * `repostedIds` is the set of note ids the signed-in viewer has previously
  * reposted (kind:6 events) — used to seed the repost button into its "done"
  * state across reloads. The same set is threaded down through nested replies.
@@ -30,11 +38,13 @@ type ActionState = 'idle' | 'busy' | 'done' | 'error';
 function NoteCardImpl({
   note,
   podcast,
+  episode,
   repostedIds,
   depth = 0,
 }: {
   note: DiscoveredNote;
   podcast?: Podcast | null;
+  episode?: Episode | null;
   repostedIds?: Set<string>;
   depth?: number;
 }) {
@@ -42,6 +52,8 @@ function NoteCardImpl({
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
   const mutePubkey = useApp((s) => s.mutePubkey);
   const selectPodcast = useApp((s) => s.selectPodcast);
+  const openEpisode = useApp((s) => s.openEpisode);
+  const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
   const name =
     note.author?.display_name?.trim() ||
     note.author?.name?.trim() ||
@@ -74,6 +86,35 @@ function NoteCardImpl({
   }, [alreadyReposted, repostState]);
 
   const [zapOpen, setZapOpen] = useState(false);
+
+  function openShow(p: Podcast) {
+    selectPodcast(p);
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
+  }
+
+  /**
+   * Open the boosted episode. Deliberately the same three steps
+   * <FavoriteEpisodesList> takes, for the same reasons spelled out there: the
+   * show goes up FIRST (it's what's on screen while the feed loads, it's where
+   * we stay if the guid isn't in the feed, and `selectPodcast` clears
+   * `selectedEpisode` so opening the episode before it would undo itself), the
+   * real Episode comes out of `/api/feed` rather than the PI record this line
+   * was labelled from (only the feed route carries the value block, show notes
+   * and transcripts an episode page needs), and a second tap during the fetch
+   * wins over a slow response.
+   *
+   * `episode` here is PI's indexed record — good enough to print a title and to
+   * name a guid, not good enough to hand to the player or the boost modal.
+   */
+  async function openBoostedEpisode(p: Podcast, guid: string) {
+    openShow(p);
+    const loaded = await loadEpisodeFromFeed(p.id, guid);
+    if (!loaded) return;
+    const selected = useApp.getState().selectedPodcast;
+    if (!selected || selected.id !== p.id) return;
+    syncSelectedPodcast(loaded.podcast);
+    if (loaded.episode) openEpisode(loaded.episode);
+  }
 
   function openComposer(mode: 'reply' | 'quote') {
     setComposerMode((curr) => (curr === mode ? null : mode));
@@ -137,6 +178,11 @@ function NoteCardImpl({
   // NoteCard's reply list) also filters so we usually don't even reach this.
   if (mutedPubkeys.has(note.pubkey)) return null;
 
+  // Hoisted out of the JSX so the guid narrowing survives into the click
+  // handler's closure — TS drops property narrowing on a parameter inside a
+  // callback, and an episode with no guid can't be looked up in the feed.
+  const episodeGuid = episode?.guid;
+
   function onMute() {
     if (!identity) return;
     const ok =
@@ -193,15 +239,30 @@ function NoteCardImpl({
               <span className="text-nostr">→</span>{' '}
               <button
                 type="button"
-                onClick={() => {
-                  selectPodcast(podcast);
-                  if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
-                }}
+                onClick={() => openShow(podcast)}
                 className="text-bone hover:text-bolt hover:underline underline-offset-2"
               >
                 {podcast.title}
               </button>
-              {podcast.author ? <span className="text-muted"> · {podcast.author}</span> : null}
+              {/* The episode replaces the show author rather than joining it:
+                  three parts on one truncating line means the episode — the
+                  more specific of the two, and the only one that's a link —
+                  is the part that gets cut off. */}
+              {episodeGuid && episode?.title ? (
+                <>
+                  {' · '}
+                  <button
+                    type="button"
+                    onClick={() => openBoostedEpisode(podcast, episodeGuid)}
+                    className="text-muted hover:text-bolt hover:underline underline-offset-2"
+                    title={episode.title}
+                  >
+                    {episode.title}
+                  </button>
+                </>
+              ) : podcast.author ? (
+                <span className="text-muted"> · {podcast.author}</span>
+              ) : null}
             </span>
           </div>
         )}
