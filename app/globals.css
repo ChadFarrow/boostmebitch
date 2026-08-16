@@ -1,4 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+/* Fonts are loaded by next/font in app/layout.tsx, NOT by an @import here.
+   An @import on line 1 of this file was render-blocking and serialized:
+   HTML → this file → fonts.googleapis.com → fonts.gstatic.com, three origins
+   deep before first paint. Don't reintroduce one — self-hosted files
+   referenced from the initial HTML are strictly faster, and next/font's
+   size-adjusted fallback is what stops `display: swap` shifting layout. */
 
 @tailwind base;
 @tailwind components;
@@ -42,7 +47,7 @@
 html, body {
   background: rgb(var(--ink));
   color: rgb(var(--bone));
-  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-family: var(--font-mono), ui-monospace, monospace;
   /* `clip` (not `hidden`) prevents sideways scroll WITHOUT making html/body a
      scroll container — `overflow-x: hidden` computes overflow-y to `auto`,
      which traps `position: sticky` descendants (the header) so they scroll
@@ -135,7 +140,7 @@ body::before {
 
 /* Marquee headline */
 .headline {
-  font-family: 'Bricolage Grotesque', system-ui, sans-serif;
+  font-family: var(--font-display), system-ui, sans-serif;
   font-weight: 800;
   letter-spacing: -0.04em;
   line-height: 0.85;
