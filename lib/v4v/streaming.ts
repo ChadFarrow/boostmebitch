@@ -369,6 +369,36 @@ let lastErrorKey: string | null = null;
 let sessionSentSats = 0;
 
 /**
+ * Sats confirmed sent by the settle batch currently running.
+ *
+ * A force settle (`maybeSettle(…, force)`) returns a `runs` array, not one run:
+ * on a music show, turning streaming off flushes every accrued track bucket in
+ * a single batch, chained sequentially. So "this settle failed" and "no sats
+ * left the wallet" are DIFFERENT claims — bucket 1 can pay and bucket 2 fail,
+ * and `lastError` then describes only the last one. The readout used to say
+ * "nothing was sent" over exactly that, which is a false statement about money
+ * the user has already spent.
+ *
+ * Reset in chain order rather than at enqueue time, so a batch queued behind a
+ * still-running one doesn't zero the count the earlier batch is accumulating.
+ */
+let batchSentSats = 0;
+/** `batchSentSats` at the moment `lastError` was recorded — what the failing
+ *  batch had ALREADY paid before it hit the failure the meter is showing. */
+let lastErrorSentSats = 0;
+/**
+ * The failing settle may in fact have paid.
+ *
+ * A NIP-47 reply timeout is not a refusal (CLAUDE.md's `NwcIndeterminateError`
+ * rule): the request was published and the wallet may have settled it. The
+ * ENGINE deliberately keeps treating that as a failure — the safe direction for
+ * an unattended payer, and the ledger was already debited — but the READOUT
+ * must not turn it into "nothing was sent", which is the same false ✗ the boost
+ * modal is forbidden from rendering.
+ */
+let lastErrorIndeterminate = false;
+
+/**
  * Why streaming gave up — which decides what the UI can honestly offer as a fix.
  *
  * `'failures'` is a wallet that couldn't pay right now, so retrying is
@@ -436,6 +466,21 @@ export interface StreamingStatus {
   blockImage: string | null;
   /** Sats settled this session, across items. */
   sessionSentSats: number;
+  /**
+   * Sats the batch that ended in `lastError` had ALREADY paid before it failed.
+   *
+   * Scoped to the current item exactly like `lastError`, and 0 whenever there
+   * is no error to describe. Non-zero means a partial send: the failure is real
+   * and so is the spend, so no surface may say "nothing was sent".
+   */
+  lastErrorSentSats: number;
+  /**
+   * `lastError` came from a wallet that never answered, so the sats it names may
+   * or may not have gone out. Distinct from `lastErrorSentSats`: that one is
+   * about OTHER buckets that definitely paid, this one is about this bucket
+   * being unknowable. Either is enough to make "nothing was sent" a lie.
+   */
+  lastErrorIndeterminate: boolean;
 }
 
 export function streamingStatus(): StreamingStatus {
@@ -468,6 +513,12 @@ export function streamingStatus(): StreamingStatus {
     settling: pendingSettles > 0,
     // Scoped to the item it happened on, exactly like `stopped` below.
     lastError: lastErrorKey && lastErrorKey === currentKey ? lastError : null,
+    // Same scoping as `lastError` itself — they describe one event, so a
+    // partial-send figure must never outlive the error it qualifies and land
+    // beside a different item's failure.
+    lastErrorSentSats: lastErrorKey && lastErrorKey === currentKey ? lastErrorSentSats : 0,
+    lastErrorIndeterminate:
+      lastErrorKey && lastErrorKey === currentKey ? lastErrorIndeterminate : false,
     stopped: isStopped,
     stoppedReason: isStopped ? stoppedReason : null,
     // A live show's target comes from the watcher, not from a position window.
@@ -508,6 +559,10 @@ function notifyIfChanged() {
     // The unit and the amount are both rendered, and `trackModeIdle` is the
     // "nothing will ever be sent" warning — none of them may go stale.
     s.mode, s.amountPerTrack, s.trackModeIdle,
+    // Both qualify the error line's copy, and neither is implied by
+    // `s.lastError`: a batch can fail twice with the identical message while
+    // the sats-already-sent figure changes underneath it.
+    s.lastErrorSentSats, s.lastErrorIndeterminate,
   ].join('|');
   if (sig === lastSig) return;
   lastSig = sig;
@@ -716,10 +771,25 @@ function refund(c: StreamContext, bucket: string, sats: number) {
   if (pending && pending.key === c.key) storage.streamPending.set(credit(pending));
 }
 
-/** Record a failed settle against the item it happened on. */
-function noteFailure(c: StreamContext, message: string, reason: StreamStoppedReason) {
+/**
+ * Record a failed settle against the item it happened on.
+ *
+ * `indeterminate` is carried separately from `message` because the two answer
+ * different questions: the message says what went wrong, this says whether the
+ * sats may have moved anyway. Defaulted to false so the non-payment failures
+ * above (no wallet, rail can't pay) keep their honest "nothing was sent" — a
+ * settle that never reached a wallet definitively didn't spend anything.
+ */
+function noteFailure(
+  c: StreamContext,
+  message: string,
+  reason: StreamStoppedReason,
+  indeterminate = false,
+) {
   lastError = message;
   lastErrorKey = c.key;
+  lastErrorSentSats = batchSentSats;
+  lastErrorIndeterminate = indeterminate;
   consecutiveFailures++;
   // 'rail-cannot-pay' gives up immediately: it's a capability gap, not a bad
   // moment, so a second attempt is guaranteed to fail identically.
@@ -766,6 +836,10 @@ async function runSettle(
     );
     return;
   }
+  // Set before the throw below so the catch can tell a wallet that REFUSED from
+  // one that never answered. It can't be recovered from the Error — the two
+  // arrive as the same string — and `results` is out of scope by then.
+  let indeterminate = false;
   try {
     const results = await sendBoost({
       value,
@@ -774,12 +848,16 @@ async function runSettle(
       rail,
     });
     if (!paidAny(results)) {
+      indeterminate = results.some((r) => r.indeterminate);
       throw new Error(results.find((r) => r.error)?.error || 'no recipient could be paid');
     }
     consecutiveFailures = 0;
     lastError = null;
     lastErrorKey = null;
+    lastErrorSentSats = 0;
+    lastErrorIndeterminate = false;
     sessionSentSats += sats;
+    batchSentSats += sats;
     storage.streamed.add(useApp.getState().identity?.npub, {
       ts: Date.now(),
       sats,
@@ -795,7 +873,7 @@ async function runSettle(
     // re-sending the whole batch to recover one failed leg would pay the
     // others twice.
     refund(c, bucket, sats);
-    noteFailure(c, getErrorMessage(e, 'streaming payment failed'), 'failures');
+    noteFailure(c, getErrorMessage(e, 'streaming payment failed'), 'failures', indeterminate);
   }
 }
 
@@ -831,6 +909,14 @@ function maybeSettle(c: StreamContext, l: StreamLedger, force: boolean): StreamL
   // window in which the same sats are both owed and in flight.
   persist(nextLedger);
   const atPositionSec = nextLedger.lastPositionSec;
+  // "How much did THIS batch already pay before it failed" — so it resets at the
+  // batch boundary, and does so as a link in `chain` rather than here. Enqueue
+  // order is not run order: a batch queued while an earlier one is still
+  // settling would otherwise zero the count mid-flight and the meter would
+  // under-report what the earlier batch had sent.
+  chain = chain.then(() => {
+    batchSentSats = 0;
+  });
   for (const { bucket, sats } of runs) {
     pendingSettles++;
     chain = chain
@@ -1030,6 +1116,10 @@ function clearGiveUp() {
   consecutiveFailures = 0;
   lastError = null;
   lastErrorKey = null;
+  // Cleared with the error they qualify. Leaving them set would caption the
+  // NEXT failure with the previous one's partial-send figure.
+  lastErrorSentSats = 0;
+  lastErrorIndeterminate = false;
   notifyIfChanged();
 }
 
