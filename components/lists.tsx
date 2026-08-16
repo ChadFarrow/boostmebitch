@@ -4,7 +4,7 @@ import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, ValueBlock } f
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium } from '@/lib/util';
-import { resolvePodcastByGuid } from '@/lib/podcast-meta';
+import { loadEpisodeFromFeed, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { storage } from '@/lib/storage';
 import { BoostModal } from './boost-modal';
 import { BoltIcon, ShareIcon, CoinIcon } from './icons';
@@ -514,11 +514,23 @@ function UnresolvedFavoriteRow({ id, kind }: { id: string; kind: 'show' | 'episo
 }
 
 /**
- * Favorited episodes. Selecting one opens its parent SHOW rather than playing
- * inline: a FavoriteEpisode is a display cache, not an Episode — it carries no
- * value block, chapters or transcript — so fabricating one to hand to the
- * player would push a half-formed object into the boost modal and the
- * streaming engine. The show page resolves the real episode for free.
+ * Favorited episodes. Selecting one opens that EPISODE's page.
+ *
+ * It used to stop at the parent show, and the reason was sound as far as it
+ * went: a FavoriteEpisode is a display cache, not an Episode — no value block,
+ * no chapters, no transcript — so fabricating one to hand to the player or the
+ * boost modal would push a half-formed object into the money path. That
+ * argument forbids *inventing* an episode; it never justified making the user
+ * find their own favorite again in a fifty-row list.
+ *
+ * So the show is still selected first, and then the real episode is looked up
+ * out of the show's own feed (`loadEpisodeFromFeed`) and handed to
+ * `openEpisode` — the same object `<EpisodeList>` would have given it, from the
+ * same endpoint. Nothing is fabricated. Selecting the show first is not just
+ * ordering: `selectPodcast` clears `selectedEpisode`, `<EpisodeDetailView>`
+ * reads `selectedPodcast` for the show art and SUPPORT link, and closing the
+ * episode falls back to the show page, so the back chain reads
+ * episode → show → favorites the way it does from anywhere else.
  */
 export function FavoriteEpisodesList({ onSelect }: { onSelect: (p: Podcast) => void }) {
   const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
@@ -584,6 +596,8 @@ function EpisodeGroup({
 }) {
   const { visible, remaining, more } = useRevealed(rows);
   const listId = useId();
+  const openEpisode = useApp((s) => s.openEpisode);
+  const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
   return (
         <div>
           {/* Counted PER MEDIUM so each group can use its own noun — a track on
@@ -624,18 +638,46 @@ function EpisodeGroup({
                     // PI. An entry synced from another app before its backfill ran
                     // has only the guid, so fall back to resolving it on demand.
                     if (!feedGuid) return;
-                    if (ep.feedId) {
-                      onSelect({
-                        id: ep.feedId,
-                        podcastGuid: feedGuid,
-                        title: ep.podcastTitle ?? title,
-                        image: ep.image,
-                        url: ep.feedUrl,
-                      });
-                      return;
-                    }
-                    const podcast = await resolvePodcastByGuid(feedGuid);
-                    if (podcast) onSelect(podcast);
+                    const podcast: Podcast | null = ep.feedId
+                      ? {
+                          id: ep.feedId,
+                          podcastGuid: feedGuid,
+                          title: ep.podcastTitle ?? title,
+                          image: ep.image,
+                          url: ep.feedUrl,
+                        }
+                      : await resolvePodcastByGuid(feedGuid);
+                    if (!podcast) return;
+                    // The show goes up FIRST and unconditionally: it is what the
+                    // user sees while the feed loads, it is where they land if the
+                    // episode can't be found, and `selectPodcast` clears
+                    // `selectedEpisode`, so opening the episode before it would
+                    // immediately undo itself.
+                    //
+                    // It also means <EpisodeList> mounts and fetches the same
+                    // feed alongside this call. That looks like waste and isn't:
+                    // <EpisodeList> is the only writer of `episodeQueue`, which
+                    // is what <TransportControls> computes prev/next from — skip
+                    // it and the transport on the episode we just opened would
+                    // still be pointing at whatever show was loaded last.
+                    onSelect(podcast);
+                    const loaded = await loadEpisodeFromFeed(podcast.id, ep.itemGuid);
+                    if (!loaded) return;
+                    // A second tap (or a tap on BACK) during the fetch must win —
+                    // otherwise a slow response drags the user into an episode of
+                    // a show they already left. Same guard the URL restore in
+                    // <HomePage> makes for the same reason.
+                    const selected = useApp.getState().selectedPodcast;
+                    if (!selected || selected.id !== podcast.id) return;
+                    // Fill in the RSS-derived funding/medium/podroll the by-guid
+                    // resolve doesn't carry, so the episode page shows the same
+                    // SUPPORT link it would if opened from the show.
+                    syncSelectedPodcast(loaded.podcast);
+                    // No episode means the feed doesn't list this guid (PI returns
+                    // the latest 50), which is a real state for an old favorite.
+                    // The show page is already on screen — leave them there rather
+                    // than assembling an episode out of the display cache.
+                    if (loaded.episode) openEpisode(loaded.episode);
                   }}
                 >
                   <PodcastCover

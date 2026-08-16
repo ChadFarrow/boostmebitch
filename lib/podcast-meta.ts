@@ -170,3 +170,42 @@ export async function resolveEpisodeByGuid(
     return null;
   }
 }
+
+/**
+ * Load a show's feed and pick one episode out of it by guid — the only way to
+ * put an episode on screen that this app hasn't already listed.
+ *
+ * **Not `resolveEpisodeByGuid` above, and the difference is not cosmetic.**
+ * That one returns PI's bare indexed record; `/api/feed` is where an episode
+ * becomes the object `<EpisodeDetailView>` renders. Only the feed route applies
+ * the channel value-block fallback (`e.value ?? podcast.value`, boost invariant
+ * 3), and only it carries the RSS-only fields PI indexes none of — the show
+ * notes, `<podcast:socialInteract>`, the transcript set, alternate enclosures
+ * and the episode's own npubs. Opening a favorite with the bare record would
+ * hand the user an episode page whose BOOST button had no recipients and whose
+ * boost note p-tagged nobody, which is worse than the show page it replaced.
+ *
+ * Both halves of the result are wanted. `podcast` is the RSS-enriched show
+ * (funding / medium / podroll), for `syncSelectedPodcast`. `episode` is null
+ * when the feed loaded but doesn't hold that guid — `/api/feed` asks PI for the
+ * latest 50 items, so a favorite older than that legitimately isn't in it, and
+ * the caller should stay on the show page rather than invent one.
+ *
+ * Returns null only when the feed itself couldn't be loaded. Deliberately does
+ * NOT trip the PI breaker: this runs on an explicit navigation, where the cost
+ * of a wrong trip is every subsequent metadata resolve in the tab going dark.
+ */
+export async function loadEpisodeFromFeed(
+  feedId: number,
+  guid: string,
+): Promise<{ podcast: Podcast; episode: Episode | null } | null> {
+  try {
+    const res = await fetch(`/api/feed?id=${feedId}`);
+    const data = await res.json();
+    if (!data?.podcast) return null;
+    const episodes = Array.isArray(data.episodes) ? (data.episodes as Episode[]) : [];
+    return { podcast: data.podcast as Podcast, episode: episodes.find((e) => e.guid === guid) ?? null };
+  } catch {
+    return null;
+  }
+}

@@ -13,10 +13,10 @@ import { ThemeToggle } from '@/components/theme-toggle';
 import { AuthControl } from '@/components/auth-control';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
-import { resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
+import { loadEpisodeFromFeed, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
 
-import type { Episode, Podcast } from '@/lib/types';
+import type { Podcast } from '@/lib/types';
 
 export function HomePage() {
   const [feeds, setFeeds] = useState<Podcast[]>([]);
@@ -81,21 +81,22 @@ export function HomePage() {
       if (!podcast || useApp.getState().selectedPodcast) return;
       setSelected(podcast);
       if (!episodeGuid) return;
-      try {
-        const res = await fetch(`/api/feed?id=${podcast.id}`);
-        const data = await res.json();
-        // Enrich the selection with the RSS-derived funding/medium/podroll (the
-        // by-guid resolve above doesn't carry them), so a cold deep-link to an
-        // episode also shows the SUPPORT link. No-op if it's a different show.
-        if (data.podcast) useApp.getState().syncSelectedPodcast(data.podcast);
-        const ep = (data.episodes as Episode[] | undefined)?.find((e) => e.guid === episodeGuid);
-        if (!ep) return;
-        if (wantDiscussion && ep.socialInteract?.length) {
-          if (!useApp.getState().discussionEpisode) openDiscussion(ep);
-        } else if (!useApp.getState().selectedEpisode) {
-          openEpisode(ep);
-        }
-      } catch { /* ignore — episode just won't auto-open */ }
+      // Same lookup the favorites list makes when a favorited episode is
+      // tapped — see loadEpisodeFromFeed for why the episode comes out of the
+      // feed rather than out of /api/episode-by-guid.
+      const loaded = await loadEpisodeFromFeed(podcast.id, episodeGuid);
+      if (!loaded) return;
+      // Enrich the selection with the RSS-derived funding/medium/podroll (the
+      // by-guid resolve above doesn't carry them), so a cold deep-link to an
+      // episode also shows the SUPPORT link. No-op if it's a different show.
+      useApp.getState().syncSelectedPodcast(loaded.podcast);
+      const ep = loaded.episode;
+      if (!ep) return;
+      if (wantDiscussion && ep.socialInteract?.length) {
+        if (!useApp.getState().discussionEpisode) openDiscussion(ep);
+      } else if (!useApp.getState().selectedEpisode) {
+        openEpisode(ep);
+      }
     })();
   }, [setSelected, openEpisode, openDiscussion]);
 
