@@ -439,13 +439,14 @@ export function EpisodeDetailView() {
 
             {/* The tracks this episode played — driven by its
                 <podcast:valueTimeSplit> windows, never by the chapter list
-                below. See <TrackList>. `currentSec` is 0 unless this is the
-                episode actually playing, so nothing highlights on a list
-                someone is only reading. */}
+                below. See <TrackList>. `currentSec` is UNDEFINED unless this is
+                the episode actually playing, so nothing highlights on a list
+                someone is only reading — 0 would be a real position and would
+                light up any window authored at startTime 0. */}
             {activeInfo === 'tracks' && hasTracks && (
               <TrackList
                 splits={splits!}
-                currentSec={isThisPlaying ? positionSec : 0}
+                currentSec={isThisPlaying ? positionSec : undefined}
                 onSeek={seekEpisodeTo}
                 fallbackImg={episode.image || podcast?.image || podcast?.artwork}
               />
