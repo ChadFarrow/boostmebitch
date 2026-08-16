@@ -7,6 +7,10 @@
 
 import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, StoredBoost } from './types';
 import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
+// Value import, so it must come from the import-free leaf rather than the
+// './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
+// and unlike the type-only line above a value import does NOT erase.
+import { emptyMuteState } from './nostr/mute-state';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -320,16 +324,13 @@ const PROFILE_MISS_TTL_MS = 15 * 60 * 1000;          // 15 min for known-missing
 //   - current: MuteListState directly (object with publicPubkeys etc.)
 //   - legacy:  `{ pubkeys, otherTags, updatedAt }` written before the
 //              public/private split — promoted to public-only.
-function emptyMuteState(): MuteListState {
-  return {
-    publicPubkeys: [],
-    publicOtherTags: [],
-    privatePubkeys: [],
-    privateOtherTags: [],
-    updatedAt: 0,
-  };
-}
-
+//
+// `emptyMuteState` itself is imported from the import-free leaf rather than
+// redefined: it used to be a private copy here, identical to the one in
+// lib/nostr/mutes.ts, and two constructors for one persisted shape is how a
+// field added on one side goes missing on the other. Importing it from
+// ./nostr/mutes instead would close a storage → mutes → relays → storage cycle,
+// which is why the leaf exists.
 function coerceToMuteState(parsed: unknown): MuteListState {
   if (!parsed || typeof parsed !== 'object') return emptyMuteState();
   const p = parsed as Record<string, unknown>;

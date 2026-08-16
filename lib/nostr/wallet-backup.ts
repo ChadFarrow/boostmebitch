@@ -19,47 +19,9 @@
 import { FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { assertPublished, signAndPublish, type PublishedNote } from './publish';
 import { fetchLatestEvent, fetchLatestEventDetailed } from './event-queries';
-import { DEFAULT_RELAYS, resolvePublishRelays } from './relays';
-import { requireNip44 } from './signer';
+import { backupReadRelays, resolvePublishRelays } from './relays';
+import { requireNip44, decryptWithTimeout } from './signer';
 import type { NostrIdentity } from './auth';
-
-// NIP-44 decrypt calls go through the user's signer (extension, Amber,
-// bunker). On iOS, the extension background service worker can be killed
-// between the relay query and the decrypt call, leaving the promise pending
-// forever. Cap every background decrypt so it rejects instead of hanging.
-const NIP44_DECRYPT_TIMEOUT_MS = 10_000;
-function decryptWithTimeout(pubkey: string, ciphertext: string): Promise<string> {
-  return Promise.race([
-    requireNip44().decrypt(pubkey, ciphertext),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('nip44 decrypt timed out')), NIP44_DECRYPT_TIMEOUT_MS),
-    ),
-  ]);
-}
-
-// Read-side relay set for the wallet backup. We always query the union of
-// the user's intended publish relays AND DEFAULT_RELAYS, capped at 20.
-//
-// Why a union (not just resolvePublishRelays): on a fresh sign-in via
-// Amber on Android, NIP-65 (kind:10002) hydrates in parallel with everything
-// else inside `loadProfile`. If the user taps "Restore from Nostr" before
-// that resolves, `identity.writeRelays` is still undefined and
-// resolvePublishRelays falls back to DEFAULT_RELAYS. If the backup was
-// originally published from a session that *had* writeRelays, it might live
-// only on the user's outbox — and we'd miss it. Querying both sides covers
-// either case without weakening the publish path, which still targets only
-// the user's intended write relays.
-function readRelays(identity: NostrIdentity): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const r of resolvePublishRelays(identity)) {
-    if (!seen.has(r)) { seen.add(r); out.push(r); }
-  }
-  for (const r of DEFAULT_RELAYS) {
-    if (!seen.has(r)) { seen.add(r); out.push(r); }
-  }
-  return out.slice(0, 20);
-}
 
 export const WALLET_BACKUP_KIND = 30078;
 export const WALLET_BACKUP_D_TAG = 'boostmebitch:wallet:spark';
@@ -111,7 +73,7 @@ export async function fetchEncryptedMnemonicDetailed(
   identity: NostrIdentity,
 ): Promise<{ mnemonic: string | null; trustworthy: boolean }> {
   const { event, trustworthy } = await fetchLatestEventDetailed(
-    readRelays(identity),
+    backupReadRelays(identity),
     { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_BACKUP_D_TAG], limit: 1 },
     FEED_QUERY_MAX_WAIT_MS,
     { pubkey: identity.pubkey, kinds: [WALLET_BACKUP_KIND], dTag: WALLET_BACKUP_D_TAG },
@@ -175,7 +137,7 @@ export async function fetchEncryptedNwc(
   identity: NostrIdentity,
 ): Promise<string | null> {
   const event = await fetchLatestEvent(
-    readRelays(identity),
+    backupReadRelays(identity),
     { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_NWC_D_TAG], limit: 1 },
     FEED_QUERY_MAX_WAIT_MS,
   );

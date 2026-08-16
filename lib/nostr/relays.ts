@@ -109,3 +109,35 @@ export function resolvePublishRelays(identity: NostrIdentity | null): string[] {
     : sanitizeRelays([...(identity?.writeRelays ?? []), ...DEFAULT_RELAYS]);
   return (chosen.length ? chosen : DEFAULT_RELAYS).slice(0, 20);
 }
+
+/**
+ * READ-side relay set for an encrypted-to-self backup (kind:30078). Always the
+ * union of the user's intended publish relays AND DEFAULT_RELAYS, deduped,
+ * capped at 20.
+ *
+ * Why a union and not just resolvePublishRelays: on a fresh sign-in via Amber
+ * on Android, NIP-65 (kind:10002) hydrates in parallel with everything else
+ * inside `loadProfile`. If the user taps "Restore from Nostr" before that
+ * resolves, `identity.writeRelays` is still undefined and resolvePublishRelays
+ * falls back to DEFAULT_RELAYS. If the backup was originally published from a
+ * session that *had* writeRelays, it might live only on the user's outbox — and
+ * we'd miss it. Querying both sides covers either case without weakening the
+ * publish path, which still targets only the user's intended write relays.
+ *
+ * Shared rather than per-module: this was duplicated byte-for-byte in
+ * wallet-backup.ts and settings-backup.ts, and the second copy's comment
+ * already admitted it ("Mirrors wallet-backup.ts:readRelays"). A backup read
+ * that silently narrows its relay set doesn't error — it reports "no backup
+ * exists", which is the one answer a restore path must never get wrong.
+ */
+export function backupReadRelays(identity: NostrIdentity): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const r of resolvePublishRelays(identity)) {
+    if (!seen.has(r)) { seen.add(r); out.push(r); }
+  }
+  for (const r of DEFAULT_RELAYS) {
+    if (!seen.has(r)) { seen.add(r); out.push(r); }
+  }
+  return out.slice(0, 20);
+}
