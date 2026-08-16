@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration } from '@/lib/format';
-import { hasValueRecipients, httpUrl, stripHtml } from '@/lib/util';
+import { episodeContentsLabel, hasValueRecipients, httpUrl, stripHtml } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
 import { useChapters } from '@/lib/chapters';
 import { useResolvedSplits } from '@/lib/track-art';
@@ -151,13 +151,9 @@ export function EpisodeDetailView() {
   const hasChapters = !!chapters?.length;
   // One tab for both — <EpisodeContents> interleaves them.
   const hasContents = hasTracks || hasChapters;
-  // The count names what the LABEL names: songs when the episode published
-  // valueTimeSplit windows, chapters when it only has chapters. Deliberately not
-  // the merged row count — "Tracks (31)" on an episode with 14 songs and 17 talk
-  // breaks claims 31 songs.
-  const contentsLabel = hasTracks
-    ? `Tracks (${splits?.length ?? 0})`
-    : `Chapters (${chapters?.length ?? 0})`;
+  // One label for both sources — chapters win when present. See
+  // `episodeContentsLabel`; the fullscreen player's tab strip shares it.
+  const contentsLabel = episodeContentsLabel(splits, chapters);
   const hasTranscript = !!transcriptCues?.length;
   const hasBoosts = !!episode.guid; // the feed owns its own loading/empty state
   const chaptersPending = !!episode.chaptersUrl && chaptersLoading;
