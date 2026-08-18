@@ -6,6 +6,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **What lives here vs `docs/`.** This file holds only what must be in mind *before* you know which file you're opening: money-path and security invariants, boundaries, repo-wide conventions, and the stop-ship checks. Everything else — the deep "why the obvious version is wrong" reasoning for each subsystem — lives in `docs/`, indexed below. **When you learn a new rule, it goes in the relevant `docs/` file unless it (a) can lose funds or leak a credential, (b) governs where code may go, or (c) applies to edits in files you haven't opened yet.** Only those three go here. Without that test this file grows back.
 
+## Report in ASD-STE100 Simplified Technical English
+
+Write every chat reply to the user in **ASD-STE100 Simplified Technical English (STE)**. This is a rule about your OUTPUT, not about this codebase.
+
+**It covers the prose you show the user in chat, and nothing else.** Do not apply it to code, code comments, commit messages, PR titles or bodies, or the files in `docs/` — those keep the conventions below. Keep code identifiers, file paths, commands, log lines and quoted tool output verbatim; do not rewrite them into STE. Technical names and technical verbs are permitted, which is what makes the rule workable here: `keysend`, `boostagram`, `valueTimeSplit`, `sanitizer` and every other domain term stay as they are.
+
+- Use the active voice. Use the passive voice only if the active voice is not possible.
+- Write short sentences. Use a maximum of 20 words in an instruction, and 25 in a description.
+- Give one instruction in one sentence.
+- Use the simple tenses: present, past, and future. Do not use the perfect tenses.
+- Do not use the `-ing` form as a noun or as an adjective.
+- Use one word for one meaning, and the same word for the same thing each time. Do not use a synonym for variety.
+- Use articles. Do not omit words to make the text shorter.
+- Write a maximum of six sentences in a paragraph, about one topic.
+- Do not use slang, jargon, idioms, metaphors, or humor.
+- Do not put more than three nouns together.
+- Give the specific fact. Do not use a vague word.
+- Use a list or a table for complex data.
+- Give a warning or a caution before the step that it applies to.
+
 ## Read before you edit
 
 These docs hold the "this shipped broken once" reasoning that is not in the code. **Read the relevant one before editing in its area** — the rules in it are not reconstructible from reading the source.
