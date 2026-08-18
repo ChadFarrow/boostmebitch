@@ -105,7 +105,12 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
   }
 
   return (
-    <div className="flex flex-col gap-1.5">
+    // No gap between the input and the suggestion, and the suggestion carries no
+    // top border of its own: it hangs off the input as one control. The first
+    // version put a full `.card` at the same width and the same height directly
+    // below, separated by a gap — which read as a SECOND SEARCH BOX, i.e. exactly
+    // the two-input design merging them into one was meant to remove.
+    <div className="flex flex-col">
       <div className="relative">
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs">
           {npubHit ? '⚡' : '⌕'}
@@ -133,13 +138,14 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
         <button
           type="button"
           onClick={openBoosts}
-          className="card p-3 text-left hover:border-bolt/60 flex items-center gap-2 text-sm"
+          className="flex items-center gap-2 border border-t-0 border-bone/30 bg-ink/60 px-3 py-2 text-left text-xs hover:border-bolt hover:bg-bolt/5"
         >
-          <span className="text-bolt">⚡</span>
-          <span className="min-w-0 flex-1 truncate">
-            Boosts for <span className="font-mono text-xs">{shortNpub(npubHit.npub)}</span>
+          <span className="text-bolt shrink-0">⚡</span>
+          <span className="min-w-0 flex-1 truncate text-muted">
+            Boosts for{' '}
+            <span className="font-mono text-bone">{shortNpub(npubHit.npub)}</span>
           </span>
-          <span className="text-muted text-xs shrink-0">↵</span>
+          <span className="text-muted shrink-0">↵</span>
         </button>
       )}
     </div>
