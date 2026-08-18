@@ -839,6 +839,61 @@ export function resolveSenderName(typed: string, anonymous: boolean): string {
   return (anonymous ? '' : typed.trim()) || DEFAULT_SENDER_NAME;
 }
 
+// Bare http(s) URLs in running text. `<`, `>`, quotes and backtick terminate a
+// match so this can be run over a segment of already-sanitized show-notes HTML
+// without ever eating into a tag.
+const BARE_URL_RE = /https?:\/\/[^\s<>"'`]+/gi;
+// Sentence punctuation a feed wrote AFTER the URL, not part of it. A closing
+// bracket only counts as punctuation when nothing opened it inside the URL —
+// plenty of real links (Wikipedia, docs anchors) carry balanced pairs.
+const URL_TAIL_RE = /[.,;:!?'"]/;
+
+function trimUrlTail(url: string): string {
+  let end = url.length;
+  for (; end > 0; end--) {
+    const c = url[end - 1];
+    if (URL_TAIL_RE.test(c)) continue;
+    if (c === ')' && !url.slice(0, end).includes('(')) continue;
+    if (c === ']' && !url.slice(0, end).includes('[')) continue;
+    break;
+  }
+  const trimmed = url.slice(0, end);
+  // Require something after the scheme — a lone "https://" is not a link.
+  return /^https?:\/\/[^/?#]/i.test(trimmed) ? trimmed : '';
+}
+
+/**
+ * Split plain text into alternating segments: EVEN indices are the text
+ * between links, ODD indices are bare http(s) URLs. Mirrors the
+ * split-with-capture idiom `linkifyNostrRefs` uses, and is the same shape both
+ * consumers want — `sanitizeShowNotes` wraps the odd segments in `<a>` on the
+ * server, `<LinkedText>` renders them as anchors on the client.
+ *
+ * **It is shared rather than written twice on purpose.** The same episode's
+ * notes reach the screen two ways — as sanitized `contentEncoded` HTML on the
+ * episode page, and as `stripHtml`'d plain `description` in the fullscreen
+ * player's About pane — so two copies of "what counts as a URL" means the same
+ * link is clickable on one screen and dead text on the other, which reads as a
+ * broken app rather than a formatting difference.
+ *
+ * Punctuation the feed wrote after a URL stays in the FOLLOWING text segment,
+ * so nothing is lost: `join('')` reproduces the input exactly.
+ */
+export function splitOnBareUrls(text: string): string[] {
+  const re = new RegExp(BARE_URL_RE.source, 'gi');
+  const out: string[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const url = trimUrlTail(m[0]);
+    if (!url) continue;
+    out.push(text.slice(last, m.index), url);
+    last = m.index + url.length;
+  }
+  out.push(text.slice(last));
+  return out;
+}
+
 // Strip HTML tags and entity-decode. Used by server components (lib/format.tsx
 // is 'use client' so can't be imported on the server side). Pure string regex,
 // no DOM required — isomorphic.

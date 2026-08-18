@@ -5,7 +5,7 @@ import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs } from './feed-xm
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls } from './util';
 import { createBoundedCache } from './bounded-cache';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -683,35 +683,79 @@ function sanitizeShowNotes(html: string): string {
     return `<${tag}>`;
   });
 
+  // Bare URLs FIRST, then nostr refs: a plain-text `https://njump.me/npub1…`
+  // becomes one anchor and the nostr pass then skips it, where the other order
+  // would wrap the npub in the MIDDLE of a text URL and mangle both.
+  out = linkifyBareUrls(out);
   out = linkifyNostrRefs(out);
   return out.trim();
 }
 
+/**
+ * Apply `fn` to the TEXT of already-sanitized notes HTML — never inside a tag,
+ * and never inside an existing `<a>…</a>` block.
+ *
+ * Both linkify passes below go through this. Skipping anchor blocks stops a
+ * feed's own link from being double-wrapped; skipping tags stops a match inside
+ * an attribute (an npub or a URL sitting in an `<img src>`) from splicing an
+ * `<a>` into the middle of the tag, which would corrupt the markup.
+ */
+function mapNotesText(html: string, fn: (text: string) => string): string {
+  return html
+    .split(/(<a\b[^>]*>[\s\S]*?<\/a>)/gi)
+    .map((block, i) =>
+      i % 2 === 1
+        ? block // an existing anchor block — leave verbatim
+        : block
+            .split(/(<[^>]*>)/g)
+            .map((seg, j) => (j % 2 === 1 ? seg : fn(seg)))
+            .join(''),
+    )
+    .join('');
+}
+
+// Turn bare http(s) URLs the feed wrote as plain text into real links — the
+// common shape for a "Links:" block at the foot of the notes, which otherwise
+// renders as unclickable text a phone user can only select and paste.
+//
+// This is the case CLAUDE.md's warning covers: a post-allowlist pass emitting a
+// FEED-DERIVED URL has no sanitizer behind it, so the href goes through
+// safeUrlAttr/escapeHtmlAttr exactly as the tag pass does. The regex already
+// anchors on http(s), so that is belt-and-braces rather than the only check.
+// The LABEL is the matched text verbatim: it came out of the HTML stream, so it
+// is already correctly encoded for a text context, and it cannot contain `<`.
+function linkifyBareUrls(html: string): string {
+  return mapNotesText(html, (text) =>
+    splitOnBareUrls(text)
+      .map((seg, i) => {
+        if (i % 2 === 0) return seg;
+        const href = safeUrlAttr(seg, 'link');
+        return href
+          ? `<a href="${escapeHtmlAttr(href)}" target="_blank" rel="noopener noreferrer">${seg}</a>`
+          : seg;
+      })
+      .join(''),
+  );
+}
+
 // Turn bare nostr identifiers in the (already-sanitized) notes HTML into
 // njump.me links — npubs/nprofiles/etc. that feeds list as plain text. Runs
-// after the allowlist pass so every real <a> is normalized; we split on whole
-// anchor blocks and only linkify the text between them, so an npub already
-// inside a feed link (e.g. an href) isn't double-wrapped. bech32 is [0-9a-z]
+// after the allowlist pass so every real <a> is normalized. bech32 is [0-9a-z]
 // only, so the href/label need no escaping. njump.me is the app's universal
 // nostr link convention (see nostr-note-card.tsx / live-chat.tsx).
 const NOSTR_REF_RE =
   /(?<![\w])((?:nostr:)?n(?:pub|profile|event|ote|addr)1[023456789acdefghjklmnpqrstuvwxyz]{20,})/gi;
 
 function linkifyNostrRefs(html: string): string {
-  return html
-    .split(/(<a\b[^>]*>[\s\S]*?<\/a>)/gi)
-    .map((seg, i) =>
-      i % 2 === 1
-        ? seg // an existing anchor block — leave verbatim
-        : seg.replace(NOSTR_REF_RE, (m) => {
-            const bech = m.replace(/^nostr:/i, '');
-            // Mark person refs (npub/nprofile) so the client can attach a follow
-            // button; events (nevent/note/naddr) aren't people, so no marker.
-            const person = /^n(pub|profile)1/i.test(bech) ? ` data-npub="${bech}"` : '';
-            return `<a href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer"${person}>${m}</a>`;
-          }),
-    )
-    .join('');
+  return mapNotesText(html, (text) =>
+    text.replace(NOSTR_REF_RE, (m) => {
+      const bech = m.replace(/^nostr:/i, '');
+      // Mark person refs (npub/nprofile) so the client can attach a follow
+      // button; events (nevent/note/naddr) aren't people, so no marker.
+      const person = /^n(pub|profile)1/i.test(bech) ? ` data-npub="${bech}"` : '';
+      return `<a href="https://njump.me/${bech}" target="_blank" rel="noopener noreferrer"${person}>${m}</a>`;
+    }),
+  );
 }
 
 interface RssEpisodeEnrichment {
