@@ -3,6 +3,7 @@ import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } 
 import { nip19, type Event } from 'nostr-tools';
 import { subscribeLiveChat, publishLiveChat, LIVE_STREAM_RELAYS } from '@/lib/nostr';
 import { fetchProfile, shortNpub } from '@/lib/nostr';
+import { parseZapReceipt, zapSats } from '@/lib/nostr/zap-receipt';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
@@ -23,31 +24,14 @@ function authorName(p: ProfileMetadata | null | undefined, pubkey: string) {
   return p?.display_name?.trim() || p?.name?.trim() || `${pubkey.slice(0, 8)}…`;
 }
 
-// Parse a kind:9735 zap receipt (a boost from Fountain / zap.stream / any NIP-57
-// client). The zapper, amount, and comment live in the embedded zap request
-// (the `description` tag), not on the receipt itself.
-function zapInfo(e: Event): { pubkey: string; sats: number; comment: string } | null {
-  const desc = e.tags.find((t) => t[0] === 'description')?.[1];
-  if (!desc) return null;
-  try {
-    const req = JSON.parse(desc) as { pubkey?: unknown; content?: unknown; tags?: string[][] };
-    if (typeof req.pubkey !== 'string') return null;
-    const amount = req.tags?.find((t) => t[0] === 'amount')?.[1];
-    const msat = amount ? parseInt(amount, 10) : NaN;
-    return {
-      pubkey: req.pubkey,
-      sats: Number.isFinite(msat) ? Math.floor(msat / 1000) : 0,
-      comment: typeof req.content === 'string' ? req.content : '',
-    };
-  } catch {
-    return null;
-  }
-}
-
 // The display author of a chat item — the zapper for a zap receipt, else the
 // event author. Used for profile resolution and mute filtering.
+//
+// `parseZapReceipt` (lib/nostr/zap-receipt.ts) replaced a private `zapInfo`
+// that lived here: the boost explorer needs the same parse, and a second copy
+// is how one surface comes to name a different sender for the same zap.
 function itemAuthor(e: Event): string {
-  return e.kind === 9735 ? zapInfo(e)?.pubkey ?? e.pubkey : e.pubkey;
+  return e.kind === 9735 ? parseZapReceipt(e)?.zapper ?? e.pubkey : e.pubkey;
 }
 
 // Pubkeys mentioned in a message body (so we can resolve their names too).
@@ -192,8 +176,8 @@ export function LiveChat({ streamId }: { streamId: string }) {
     };
     for (const m of messages) {
       if (m.kind === 9735) {
-        const z = zapInfo(m);
-        if (z) { consider(z.pubkey); for (const pk of mentionedPubkeys(z.comment)) consider(pk); }
+        const z = parseZapReceipt(m);
+        if (z) { consider(z.zapper); for (const pk of mentionedPubkeys(z.comment)) consider(pk); }
       } else {
         consider(m.pubkey);
         for (const pk of mentionedPubkeys(m.content)) consider(pk);
@@ -244,7 +228,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
 
   // Both memoized on `messages`, because they used to be recomputed in the
   // render body and this component re-renders on EVERY KEYSTROKE in the
-  // composer below (setDraft). `zapInfo` runs JSON.parse over a zap request
+  // composer below (setDraft). `parseZapReceipt` runs JSON.parse over a zap request
   // blob, so an untouched typing pass was re-parsing up to MAX_MESSAGES of
   // them, per character, to arrive at the number it already had.
   const visible = useMemo(
@@ -255,7 +239,11 @@ export function LiveChat({ streamId }: { streamId: string }) {
   // Total sats zapped to this stream — sum of every kind:9735 receipt (not the
   // mute-filtered list; muting an author doesn't un-raise the stream's sats).
   const totalSats = useMemo(
-    () => messages.reduce((n, m) => (m.kind === 9735 ? n + (zapInfo(m)?.sats ?? 0) : n), 0),
+    () => messages.reduce((n, m) => {
+      if (m.kind !== 9735) return n;
+      const z = parseZapReceipt(m);
+      return z ? n + zapSats(z) : n;
+    }, 0),
     [messages],
   );
 
@@ -281,17 +269,17 @@ export function LiveChat({ streamId }: { streamId: string }) {
           visible.map((m) => {
             // Zap receipt (boost) — same row with a bolt amount badge.
             if (m.kind === 9735) {
-              const z = zapInfo(m);
+              const z = parseZapReceipt(m);
               if (!z) return null;
               return (
                 <ChatRow
                   key={m.id}
-                  pubkey={z.pubkey}
-                  profile={profiles[z.pubkey]}
+                  pubkey={z.zapper}
+                  profile={profiles[z.zapper]}
                   timestamp={m.created_at}
                   badge={
                     <span className="stamp text-bolt border-bolt/60 bg-bolt/10 text-[10px] px-1 py-0 mr-1.5">
-                      ⚡ {z.sats.toLocaleString()} sats
+                      ⚡ {zapSats(z).toLocaleString()} sats
                     </span>
                   }
                   content={

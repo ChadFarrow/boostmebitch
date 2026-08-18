@@ -5,7 +5,7 @@ import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
 import { collectEventsByAuthors } from './event-queries';
 import { warmRelays } from './relay-health';
-import { bolt11AmountMsat } from '../v4v/bolt11';
+import { zapReceiptAmountMsat } from './zap-receipt';
 import { stripNostrUris, extractImages } from '../format';
 
 export interface DiscoveredNote {
@@ -100,24 +100,6 @@ function parseQuoteRefs(e: Event): { ids: string[]; relayHints: string[] } {
     }
   }
   return { ids: [...ids], relayHints: [...relays] };
-}
-
-// Returns msat amount from a kind:9735 zap receipt. NIP-57 says receipts
-// SHOULD include an `amount` tag and MUST include a `bolt11` tag; many
-// implementations (Fountain among them) skip the explicit `amount` and
-// only ship the invoice. Read `amount` first, fall back to parsing the
-// invoice HRP.
-function zapReceiptAmountMsat(e: Event): number | null {
-  if (e.kind !== 9735) return null;
-  const amountTag = e.tags.find((t) => t[0] === 'amount')?.[1];
-  const fromTag = amountTag ? Number(amountTag) : NaN;
-  if (Number.isFinite(fromTag) && fromTag > 0) return fromTag;
-  const bolt11 = e.tags.find((t) => t[0] === 'bolt11')?.[1];
-  if (typeof bolt11 === 'string' && bolt11.length > 0) {
-    const fromInvoice = bolt11AmountMsat(bolt11);
-    if (fromInvoice !== null) return fromInvoice;
-  }
-  return null;
 }
 
 /**
@@ -385,6 +367,140 @@ export async function fetchAllPodcastNotes(
   });
 }
 
+/**
+ * A boost, judged from the RAW event — before assembleNotes runs.
+ *
+ * Deliberately wider than `buildNote`'s `isBoost`, which can also adopt the
+ * amount off a quoted kind:9735 and therefore needs the assembled note plus a
+ * second relay round-trip. The wrapper notes that do that still carry the
+ * NIP-73 podcast `i` tags, so the third clause below keeps them, and the
+ * `isBoost` post-filter in each fetcher makes the final call.
+ *
+ * Its job is to keep `assembleNotes`' reply-tree BFS off events that were never
+ * going to be shown: a `#p` query returns every ordinary mention and reply
+ * addressed to that person, and running the tree walk over all of them costs a
+ * relay query per depth level for nothing.
+ */
+function eventLooksLikeBoost(e: Event): boolean {
+  if (e.kind !== 1) return false;
+  if (e.tags.some((t) => t[0] === 't' && (t[1] === 'boostagram' || t[1] === 'value4value'))) return true;
+  const amount = Number(e.tags.find((t) => t[0] === 'amount')?.[1]);
+  if (Number.isFinite(amount) && amount > 0) return true;
+  return e.tags.some((t) => t[0] === 'i' && t[1]?.startsWith('podcast:'));
+}
+
+/** How many of an author's own NIP-65 write relays a lookup may add. */
+const MAX_AUTHOR_RELAYS = 6;
+
+/**
+ * Boosts this npub PUBLISHED, newest first.
+ *
+ * **This under-reports, by construction, and the UI must say so.** A boost note
+ * is only authored by the sender when they chose "post to my Nostr feed";
+ * `publishBoostNoteViaSite` signs everything else with the site's own key, and
+ * an anonymous boost drops `sender_id`/`sender_name` on top of that. There is
+ * no filter that recovers those — the sender is not on the wire.
+ *
+ * Takes the author's whole kind:1 timeline rather than filtering by tag at the
+ * relay: `authors` already bounds the scan to one person, and a tag filter
+ * would silently drop any client whose boost tags we haven't thought of.
+ * `eventLooksLikeBoost` then trims it before the reply-tree walk.
+ *
+ * Queries DEFAULT_RELAYS unioned with the author's own NIP-65 write relays —
+ * an artist who publishes to their own relay is exactly the person whose page
+ * this is, and their notes may reach none of the defaults.
+ */
+export async function fetchBoostsSentBy(
+  pubkey: string,
+  opts: FetchOpts = {},
+): Promise<DiscoveredNote[]> {
+  const relays = opts.relays ?? DEFAULT_RELAYS;
+  const limit = opts.limit ?? 100;
+
+  return withPool(relays, async (pool) => {
+    const live = await warmRelays(pool, relays);
+    // QUERY_MAX_WAIT_MS, not the 8 s feed window: this is a single-author
+    // replaceable-event lookup, which is exactly what lib/nostr/pool.ts
+    // documents that constant for. It also runs BEFORE the boost query rather
+    // than as a fallback after one, so every second spent here is a second the
+    // user waits before the real scan even opens.
+    const extras = (await fetchAuthorWriteRelays(pool, live, [pubkey], QUERY_MAX_WAIT_MS))
+      .slice(0, MAX_AUTHOR_RELAYS);
+    let events: Event[] = [];
+    try {
+      ({ events } = await withExtraRelays(pool, live, extras, (queryRelays) =>
+        collectEventsByAuthors(pool, queryRelays, {
+          kinds: [1],
+          authors: [pubkey],
+          limit,
+          ...(opts.since !== undefined ? { since: opts.since } : {}),
+        }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS)));
+    } catch {
+      return [];
+    }
+    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost));
+    return notes.filter((n) => n.isBoost);
+  });
+}
+
+/**
+ * Boosts that `p`-tagged this npub, newest first — "who boosted me".
+ *
+ * Unlike the sent half this is complete: `buildBoostNoteTemplate` writes the
+ * recipient's `p` tag whoever signs the note, deliberately un-gated on the
+ * share picker's Anonymous (an anonymous boost should still reach the artist).
+ * So a site-signed boost lands here even though its sender is unrecoverable.
+ *
+ * TWO filters, unioned, because neither alone is right. A bare
+ * `{kinds:[1], '#p':[pubkey]}` would spend the whole limit on ordinary replies
+ * and mentions before a single boost arrived. The `#k` filter catches every
+ * client following the Podcasting 2.0 NIP-73 convention; the `#t` filter
+ * catches a Helipad-style aggregator that tagged the boost but no podcast.
+ * They run in parallel, so this costs one query window, not two.
+ *
+ * DEFAULT_RELAYS only: these notes are written by OTHER people, so the target's
+ * own write relays are the wrong hint set.
+ */
+export async function fetchBoostsReceivedBy(
+  pubkey: string,
+  opts: FetchOpts = {},
+): Promise<DiscoveredNote[]> {
+  const relays = opts.relays ?? DEFAULT_RELAYS;
+  const limit = opts.limit ?? 100;
+  const since = opts.since !== undefined ? { since: opts.since } : {};
+
+  return withPool(relays, async (pool) => {
+    const live = await warmRelays(pool, relays);
+    let events: Event[] = [];
+    try {
+      const [tagged, boosted] = await Promise.all([
+        collectEventsByAuthors(pool, live, {
+          kinds: [1],
+          '#p': [pubkey],
+          '#k': ['podcast:guid', 'podcast:item:guid'],
+          limit,
+          ...since,
+        }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS),
+        collectEventsByAuthors(pool, live, {
+          kinds: [1],
+          '#p': [pubkey],
+          '#t': ['boostagram', 'value4value'],
+          limit,
+          ...since,
+        }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS),
+      ]);
+      events = [...tagged.events, ...boosted.events];
+    } catch {
+      return [];
+    }
+    // assembleNotes dedupes by id, so the overlap between the two filters —
+    // which is most of a BoostMeBitch note, carrying both `k` and `t` tags —
+    // costs nothing here.
+    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost));
+    return notes.filter((n) => n.isBoost);
+  });
+}
+
 async function assembleNotes(
   pool: import('nostr-tools').SimplePool,
   relays: string[],
@@ -586,13 +702,21 @@ async function fetchAuthorWriteRelays(
   pool: import('nostr-tools').SimplePool,
   relays: string[],
   authors: string[],
+  maxWait = FEED_QUERY_MAX_WAIT_MS,
 ): Promise<string[]> {
   // Stream-collect (early-exit once every author's kind:10002 is in hand) so a
   // dead relay in the union can't pin this fallback at the full maxWait. Health
   // signal is unused here — absent write relays aren't cached, so we just need
   // the events.
+  //
+  // `maxWait` is a parameter because the early exit only fires when the author
+  // HAS a kind:10002. An author with none waits out the whole window, so a
+  // caller that runs this BEFORE its own query (rather than as a fallback
+  // after one) stacks two windows back to back and doubles its worst case.
+  // Measured against a relay that accepts the socket and then says nothing:
+  // 16 s for the sent panel against 8 s for the other two.
   const res = await withExtraRelays(pool, relays, PROFILE_RELAYS, (queryRelays) =>
-    collectEventsByAuthors(pool, queryRelays, { kinds: [10002], authors }, authors),
+    collectEventsByAuthors(pool, queryRelays, { kinds: [10002], authors }, authors, maxWait),
   );
   const newest = new Map<string, Event>();
   for (const e of res.events) {

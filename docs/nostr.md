@@ -566,3 +566,119 @@ Since Lightning and Nostr are independent logins, a signed-out boost would other
 **Substance filter (`noteHasSubstance`, `lib/nostr/discover.ts`).** The feeds are a firehose of *every* kind:1 tagged with NIP-73 `podcast:guid`/`podcast:item:guid`. Some clients (notably **Amplify**) publish an empty kind:1 per listen — `content: ""` plus the podcast tags — which renders as a bare podcast chip; at ~1/3 of all podcast-tagged traffic these drowned out real posts. `noteHasSubstance` keeps boosts always (`isBoost`), otherwise strips `nostr:` refs + image URLs the way `<NoteCard>` does and requires non-empty body text or an image. **Filter on content, not the `client` tag** — real human comments made *via* those same clients survive, and Fountain notes (no `client` tag at all) are unaffected. Applied at render time beside the `mutedPubkeys` filter, so it doesn't touch the `bmb:feed:*` cache and a stale paint can briefly flash filtered cards.
 
 
+
+## Boost explorer (`/npub/<npub>`)
+
+A shareable, read-only page: what one npub boosted, and who boosted it.
+`components/boost-explorer.tsx` renders it and the two fetchers live beside the
+other feed fetchers in `lib/nostr/discover.ts`.
+
+**The way in is the ordinary podcast search box, not a second input.** An npub is
+unmistakable — `npub1…`, 63 characters of bech32, or an `nprofile`/hex/profile
+link — so `<SearchBar>` runs `parseNpubInput` on the query synchronously and
+offers a "Boosts for …" row instead of searching shows. A dedicated box shipped
+first and was worse: two inputs side by side, each silently useless for the
+other's input, and the user made to know which was which. When the query parses
+as an npub the box **skips the `/api/search` fetch entirely** — a 63-character
+bech32 string matches no show, so the call spends Podcast Index quota to return
+nothing and then paints "no results" over the suggestion, which is the answer.
+It also reports an EMPTY query upward, so the page behind it keeps the favorites
+panel rather than flipping into a searching layout for a query about a person.
+
+**Navigation hangs off the suggestion — click or Enter — never off the npub
+merely parsing.** Someone pasting an npub mid-edit, or pasting one they then
+correct, must not have the page moved out from under them; this is the same rule
+`onResults` already follows by refusing to navigate when results arrive.
+
+Nobody has their own npub to hand, so "my boosts" is **not** in that box — it
+sits beside "edit profile" in `<AccountMenu>`, where the rest of the user's
+identity already is.
+
+### Latency
+
+Recognizing an npub is local — no network, tens of microseconds per keystroke —
+so the suggestion row is instant. The page behind it is three relay queries the
+sections fire **independently on mount**, so each paints when its own resolves
+and a revisit paints from `bmb:feed:*` within one frame.
+
+Measured against a local relay (`Promise.all` of all three, 12 sent + 12 received
++ 8 zaps):
+
+| relay behaviour | sent | received | zaps | page |
+|---|---|---|---|---|
+| instant reply + EOSE | 0.6 s | 0.1 s | 0.1 s | **0.6 s** |
+| 120 ms round trip | 0.6 s | 0.5 s | 0.3 s | **0.6 s** |
+| 400 ms round trip | 1.7 s | 1.3 s | 0.9 s | **1.7 s** |
+| answers, never EOSEs | 14.8 s | 10.8 s | 2.8 s | **14.8 s** |
+| accepts the socket, then silence | 12.0 s | 8.0 s | 8.0 s | **12.0 s** |
+
+**The sent panel is the slow one, structurally, and it is worth knowing why.** It
+is the only one that must resolve the author's NIP-65 write relays *before* its
+own query can open — an artist who publishes to their own relay is exactly the
+person whose page this is. That lookup early-exits the moment the kind:10002
+arrives, but an author who has **none** waits out the whole window, so the two
+windows stack. It is therefore capped at `QUERY_MAX_WAIT_MS`, not the 8 s feed
+window — which is what `lib/nostr/pool.ts` documents that constant for anyway
+("single-author / single-event / replaceable-event lookups … kind:10002"). Before
+the cap the silent-relay case measured 16.0 s against the other panels' 8.0 s.
+`fetchAuthorWriteRelays` takes `maxWait` as a parameter for this reason; leave
+its default alone, since `fetchProfiles` calls it as a fallback *after* its own
+query and does not stack.
+
+**The two halves are not symmetric, and the copy on screen is load-bearing.**
+`buildBoostNoteTemplate` writes `['p', <recipient pubkey>]` for every npub the
+feed declared in `<podcast:txt purpose="nostr">`, deliberately un-gated on the
+share picker's Anonymous — an anonymous boost should still reach the artist. So
+**received is complete**: `{kinds:[1], '#p':[pubkey]}` finds a boost whoever
+signed it. **Sent is not, and cannot be.** A boost is authored by the sender only
+when they picked "post to my Nostr feed"; every other boost is signed by the site
+key via `publishBoostNoteViaSite`, and an anonymous one drops `sender_id` and
+`sender_name` on top of that. Nothing on the wire points back at the payer, so no
+better filter recovers them.
+
+That is why the sent section's caveat renders **always**, not only when the list
+is empty, and why every empty message here says "surfaced from these relays"
+rather than making a claim about the person. This is the same rule the favorites
+degraded-read notice exists for, pointed at a read instead of a write: a short
+list that reads as complete is indistinguishable from a correct one, and the
+person who can't tell is the user concluding they boosted less than they did.
+
+**Neither `#p` query may be widened to a bare `{kinds:[1], '#p':[pubkey]}`** —
+that is the person's whole mentions firehose, and the `limit` would be spent on
+ordinary replies before one boost arrived. Received runs two filters in parallel
+and merges: `#k: ['podcast:guid','podcast:item:guid']` for every client following
+the NIP-73 convention, and `#t: ['boostagram','value4value']` for a Helipad-style
+aggregator that tagged the boost but no podcast. Sent takes the author's whole
+timeline instead — `authors` already bounds the scan to one person, and a tag
+filter there would silently drop a client whose tags we hadn't thought of.
+`eventLooksLikeBoost` trims the raw events **before** `assembleNotes`, so the
+reply-tree BFS never walks a mention that was never going to render.
+
+**Bare zap receipts are deliberately NOT read.** This is a boostagram surface:
+both lists are kind:1 boost notes, and a kind:9735 is a different object with a
+different author (the recipient's LNURL server, never the payer) and different
+provenance. An earlier revision merged receipts into the received list and it was
+removed — mixing them put two kinds of evidence under one heading and made the
+list answer a question ("what was I paid") that the page does not actually
+answer.
+
+The coverage cost is smaller than it looks, and worth stating exactly: a
+Fountain-style boost publishes a kind:1 wrapper that quote-references its own
+receipt, and **that wrapper still appears**, with its amount adopted off the
+quoted receipt in `buildNote`. What is no longer shown is a zap that produced no
+kind:1 at all. Dropping receipts also removed the reason `quotedEventIds` existed
+— with only notes in the list, one payment can no longer render as two cards.
+
+**`lib/nostr/zap-receipt.ts` stays regardless**, because two live callers need it:
+`buildNote` reads a quoted receipt's amount through `zapReceiptAmountMsat`, and
+`<LiveChat>` renders receipts in a stream's chat. Its `zapReceiptAmountMsat`
+keeps the original precedence (receipt `amount` → `bolt11` HRP → *then* the
+embedded request's `amount`); the third source was appended, so it can only fire
+where the old function returned `null`, leaving `buildNote` unchanged. And a
+receipt's sender is never `rawEvent.pubkey` — the payer is the kind:9734 author
+inside the `description` tag, which is what `parseZapReceipt` exists to reach.
+
+**The page never reads `storage.boosts`.** That log is this device's, for the
+signed-in user — on someone else's page it would show the viewer their own
+boosts. `<BoostCard>` is unusable here for the same reason: it draws the avatar
+out of `identity`.

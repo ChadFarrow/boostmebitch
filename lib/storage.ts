@@ -47,6 +47,7 @@ const KEYS = {
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
+  sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
   favPanelOpen: 'bmb:fav_panel_open', // '1' when the user EXPANDED the whole favorites panel; absent = collapsed, which is the default. Stores the OPPOSITE sense to favCollapsed above, on purpose — see the accessor. Also a device SETTING, also not evictable.
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
@@ -593,6 +594,34 @@ export const storage = {
     },
     clear: (npub: string | null | undefined) =>
       safeRemove(identityKey(KEYS.walletBalancePrefix, npub)),
+  },
+
+  /**
+   * Which <FeedSection> headings the user has collapsed.
+   *
+   * COLLAPSED keys are stored, never expanded ones — the same rule, and the
+   * same reason, as `favCollapsed` below: a section this device has never seen
+   * must default to VISIBLE. Storing expanded keys would fold away every
+   * section added later, behind a heading the user never touched.
+   *
+   * Keys are caller-chosen and namespaced by surface ('npub:sent',
+   * 'npub:recv'), so two surfaces adding a "received" section don't collapse
+   * each other's. Stale keys are harmless and left alone.
+   */
+  sectionCollapsed: {
+    get: (): string[] => {
+      const raw = safeGet(KEYS.sectionCollapsed);
+      if (!raw) return [];
+      try {
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? arr.filter((k): k is string => typeof k === 'string') : [];
+      } catch {
+        return [];
+      }
+    },
+    /** Empty set removes the key rather than storing '[]' — nothing collapsed is the default. */
+    set: (v: string[]) =>
+      (v.length ? safeSet(KEYS.sectionCollapsed, JSON.stringify(v)) : safeRemove(KEYS.sectionCollapsed)),
   },
 
   /**

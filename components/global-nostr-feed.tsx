@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo } from 'react';
 import {
   fetchAllPodcastNotes,
   noteHasSubstance,
@@ -7,39 +7,13 @@ import {
   useViewerReposts,
   type DiscoveredNote,
 } from '@/lib/nostr';
-import { piMaybeUp, resolveEpisodeByGuid, resolvePodcastByGuid } from '@/lib/podcast-meta';
+import { episodeRefOf, useNoteMeta } from '@/lib/use-note-meta';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
-import type { Episode, Podcast, StoredBoost } from '@/lib/types';
+import type { StoredBoost } from '@/lib/types';
 import { FeedSection } from './feed-section';
 import { NoteCard } from './nostr-note-card';
 import { BoostCard } from './boost-card';
-
-// UUID-shaped podcast:guid filter. Some clients post boost notes with
-// non-UUID values in the i-tag (feed IDs, episode strings); those will
-// never resolve via PI's /podcasts/byguid endpoint, so we drop them at
-// the source instead of round-tripping a 404.
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/**
- * The (show, item) pair a note names, or null when it names no single episode.
- * BOTH halves are required — PI's /episodes/byguid disambiguates an item guid
- * by its podcastguid — and the show guid goes through the same UUID filter the
- * podcast resolve uses, so a client's non-UUID i-tag isn't round-tripped to a
- * 404. Exactly one item guid, deliberately: a note tagging several (a boost-all
- * across an album's tracks) is not about one episode, and picking the first
- * would print a track the user didn't single out and link somewhere they
- * didn't boost. The show line is the honest label there.
- */
-function episodeRefOf(
-  note: DiscoveredNote,
-): { feedGuid: string; itemGuid: string; key: string } | null {
-  const feedGuid = note.podcastGuid;
-  if (note.episodeGuids.length !== 1) return null;
-  const itemGuid = note.episodeGuids[0];
-  if (!feedGuid || !itemGuid || !UUID_RE.test(feedGuid)) return null;
-  return { feedGuid, itemGuid, key: `${feedGuid}:${itemGuid}` };
-}
 
 // Discriminated union of feed items. `ts` is unix ms across both kinds so
 // they sort cleanly. Notes use `createdAt * 1000`; stored boosts use the
@@ -60,17 +34,9 @@ export function GlobalNostrFeed() {
     cacheKey: 'global',
     fetcher: fetchAllPodcastNotes,
   });
-  const [podcasts, setPodcasts] = useState<Record<string, Podcast | null>>({});
-  // Tracks guids we've already kicked off a resolve for. Lives in a ref
-  // (not state) so updating it doesn't re-fire the effect — putting it in
-  // deps with the effect's own setPodcasts created a fetch storm where
-  // cancelled-but-already-in-flight requests kept hitting the network on
-  // every render cycle.
-  const attempted = useRef<Set<string>>(new Set());
-  // Same shape one level down, for the episode each note names. Keyed
-  // `<feedGuid>:<itemGuid>` because PI can't look an item up without its show.
-  const [episodes, setEpisodes] = useState<Record<string, Episode | null>>({});
-  const attemptedEpisodes = useRef<Set<string>>(new Set());
+  // Show + episode titles for every note's NIP-73 guids. Shared with the boost
+  // explorer, which needs the same probe-first-then-batch PI resolution.
+  const { podcasts, episodes } = useNoteMeta(notes);
   const identity = useApp((s) => s.identity);
   const boostsTick = useApp((s) => s.boostsTick);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
@@ -83,71 +49,6 @@ export function GlobalNostrFeed() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [identity?.npub, boostsTick],
   );
-
-  // Resolve podcast metadata for every unique guid in `notes`. Probe-first
-  // pattern: do the first fetch sequentially so the breaker can trip before
-  // the rest of the batch fires in parallel.
-  useEffect(() => {
-    if (!notes) return;
-    const guids = Array.from(
-      new Set(notes.map((n) => n.podcastGuid).filter((g): g is string => !!g)),
-    ).filter((g) => UUID_RE.test(g) && !attempted.current.has(g));
-    if (guids.length === 0) return;
-    for (const g of guids) attempted.current.add(g);
-    let cancelled = false;
-    (async () => {
-      const [first, ...rest] = guids;
-      const firstPodcast = await resolvePodcastByGuid(first);
-      if (cancelled) return;
-      setPodcasts((prev) => ({ ...prev, [first]: firstPodcast }));
-      if (!piMaybeUp()) return;
-      const restPodcasts = await Promise.all(rest.map(resolvePodcastByGuid));
-      if (cancelled) return;
-      setPodcasts((prev) => {
-        const next = { ...prev };
-        rest.forEach((g, i) => { next[g] = restPodcasts[i]; });
-        return next;
-      });
-    })();
-    return () => { cancelled = true; };
-  }, [notes]);
-
-  // Same again for the episode each note was boosted from — probe-first, one
-  // attempt per pair for the life of the tab, breaker-gated. Only the title is
-  // wanted here; opening the row goes back to `/api/feed` for the real episode
-  // (see <NoteCard>'s handler), because PI's indexed record carries no value
-  // block. Misses are ordinary: PI hasn't crawled every independent release,
-  // and the row just falls back to the show author it showed before.
-  useEffect(() => {
-    if (!notes) return;
-    const pending = new Map<string, { feedGuid: string; itemGuid: string }>();
-    for (const n of notes) {
-      const ref = episodeRefOf(n);
-      if (!ref || attemptedEpisodes.current.has(ref.key)) continue;
-      pending.set(ref.key, ref);
-    }
-    if (pending.size === 0) return;
-    for (const key of pending.keys()) attemptedEpisodes.current.add(key);
-    const entries = [...pending.entries()];
-    let cancelled = false;
-    (async () => {
-      const [[firstKey, firstRef], ...rest] = entries;
-      const firstEpisode = await resolveEpisodeByGuid(firstRef.feedGuid, firstRef.itemGuid);
-      if (cancelled) return;
-      setEpisodes((prev) => ({ ...prev, [firstKey]: firstEpisode }));
-      if (!piMaybeUp()) return;
-      const restEpisodes = await Promise.all(
-        rest.map(([, r]) => resolveEpisodeByGuid(r.feedGuid, r.itemGuid)),
-      );
-      if (cancelled) return;
-      setEpisodes((prev) => {
-        const next = { ...prev };
-        rest.forEach(([k], i) => { next[k] = restEpisodes[i]; });
-        return next;
-      });
-    })();
-    return () => { cancelled = true; };
-  }, [notes]);
 
   const merged = useMemo<FeedItem[] | null>(() => {
     if (notes === null) {

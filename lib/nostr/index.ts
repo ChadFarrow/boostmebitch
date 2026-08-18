@@ -46,6 +46,8 @@ export {
   fetchPodcastNotes,
   fetchEpisodeNotes,
   fetchSocialInteractThread,
+  fetchBoostsSentBy,
+  fetchBoostsReceivedBy,
   noteFromEvent,
   noteHasSubstance,
   type DiscoveredNote,

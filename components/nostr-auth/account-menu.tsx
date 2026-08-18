@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { subscribeBunkerHealth, restoreBunkerSigner, isKeyEphemeral, shortNpub, type NostrIdentity } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -78,6 +79,7 @@ export function AccountMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
 
   // Dismiss on click-outside / Escape so the menu doesn't trap focus.
@@ -137,12 +139,24 @@ export function AccountMenu({
           <div className="border-b border-bone/15 pb-3 mb-3">
             <div className="text-sm">{name || 'Anon'}</div>
             <div className="text-[10px] text-muted truncate">{shortNpub(identity.npub, 8)}</div>
-            <button
-              onClick={() => { setEditing(true); setOpen(false); }}
-              className="btn-ghost text-[10px] py-1 px-2 mt-2"
-            >
-              edit profile
-            </button>
+            <div className="flex items-center gap-2 mt-2">
+              <button
+                onClick={() => { setEditing(true); setOpen(false); }}
+                className="btn-ghost text-[10px] py-1 px-2"
+              >
+                edit profile
+              </button>
+              {/* The one place "my boosts" belongs now that the lookup lives in
+                  the podcast search box: that box takes an npub the user has to
+                  have to hand, and nobody has their own npub to hand. This is
+                  where the rest of their identity already is. */}
+              <button
+                onClick={() => { setOpen(false); router.push(`/npub/${identity.npub}`); }}
+                className="btn-ghost text-[10px] py-1 px-2"
+              >
+                my boosts
+              </button>
+            </div>
           </div>
 
           <BunkerHealthBanner />
