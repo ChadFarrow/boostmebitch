@@ -224,6 +224,7 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
         emptyMessage="no boosts from this npub surfaced from these relays — see the note above."
         onRefresh={sent.refresh}
         itemKey={(n) => n.id}
+        collapsibleKey="npub:sent"
         renderNote={(note) => <NoteCard note={note} {...metaFor(note)} />}
       />
 
@@ -252,6 +253,7 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
         emptyMessage="no boosts to this npub surfaced from these relays."
         onRefresh={refreshReceived}
         itemKey={(item) => item.key}
+        collapsibleKey="npub:recv"
         renderNote={(item) =>
           item.kind === 'note' ? (
             <NoteCard note={item.note} {...metaFor(item.note)} />
