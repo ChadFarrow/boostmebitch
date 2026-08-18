@@ -31,14 +31,27 @@ export interface ParsedNpubInput {
  * NIP-05 (`name@domain`) is rejected. Resolving one is a live fetch to a
  * third-party domain, which is a separate feature with its own SSRF surface;
  * the input's placeholder says so rather than failing silently.
+ *
+ * A bare 64-char hex string is taken as a pubkey and CANNOT be told from an
+ * event id — the two are the same shape. So a pasted event id resolves to a
+ * person who does not exist and both panels come back empty. The bech32 forms
+ * (`note1…`, `nevent1…`) are rejected properly; only the hex form is ambiguous,
+ * and there is nothing on the wire to disambiguate it with.
  */
 export function parseNpubInput(raw: string): ParsedNpubInput | null {
   let token = raw.trim();
   if (!token) return null;
-  // Last path segment, so a pasted profile URL works. Harmless for a bare
-  // npub, which contains no slash.
+  // A pasted profile URL: drop the query and hash BEFORE taking the last path
+  // segment, and drop a trailing slash. `primal.net/p/npub1…?ref=x` and
+  // `njump.me/npub1…/` are both ordinary profile links — the first kept the
+  // query string and failed the bech32 decode, the second gave an empty last
+  // segment and returned null. Handling a pasted link is the reason this
+  // function does string surgery at all, so it has to handle the real shapes.
+  token = token.split(/[?#]/)[0].replace(/\/+$/, '');
   const slash = token.lastIndexOf('/');
   if (slash !== -1) token = token.slice(slash + 1);
+  // After the path split, so `…/nostr:npub1…` works as well as a bare
+  // `nostr:npub1…`.
   token = token.trim().replace(/^nostr:/i, '');
   if (!token) return null;
 
@@ -60,4 +73,25 @@ export function parseNpubInput(raw: string): ParsedNpubInput | null {
     return { npub: nip19.npubEncode(pubkey), pubkey };
   }
   return null;
+}
+
+/**
+ * True when the text is, or is trying to be, a SECRET key.
+ *
+ * This exists because `parseNpubInput` returning null is not a safe default at
+ * a call site that falls through to a network request. The home-page box asks
+ * for "an npub", people paste the wrong key, and the miss used to go straight
+ * to `/api/search?q=…` — which reaches this origin's server logs and then
+ * Podcast Index, a third party, with the user's spending and signing key in a
+ * URL. A key that has been mailed to a third party is burnt; there is no
+ * un-sending it, and nothing on screen would have said it happened.
+ *
+ * So the test is a PREFIX, deliberately loose, and it runs before any decode:
+ * a half-typed or truncated `nsec1qq…` is still key material and must not be
+ * sent anywhere either. It matches on the human-readable part alone and never
+ * decodes, so this function never holds the key it is protecting.
+ */
+export function looksLikeSecretKey(raw: string): boolean {
+  const token = raw.trim().replace(/^nostr:/i, '').toLowerCase();
+  return token.startsWith('nsec1') || token.startsWith('ncryptsec1');
 }

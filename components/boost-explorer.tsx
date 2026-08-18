@@ -7,6 +7,7 @@ import {
   noteHasSubstance,
   shortNpub,
   useNostrFeed,
+  useViewerReposts,
   type DiscoveredNote,
 } from '@/lib/nostr';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
@@ -56,6 +57,7 @@ import { NoteCard } from './nostr-note-card';
 export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }) {
   const [profile, setProfile] = useState<ProfileMetadata | null>(null);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  const identity = useApp((s) => s.identity);
 
   // Profile is chrome, so it loads on its own and never blocks either feed.
   useEffect(() => {
@@ -78,6 +80,13 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
     deps: [pubkey],
   });
 
+  // EVERY note in the sent list is authored by the page's subject, so muting
+  // them empties that panel outright — and the empty message blamed
+  // site-signing and anonymity for it, which is the "a guard that silently
+  // withholds must say so" rule in CLAUDE.md, broken. The received list is
+  // written by other people, so the same filter is ordinary there.
+  const subjectMuted = mutedPubkeys.has(pubkey);
+
   const sentVisible = useMemo(
     () => (sent.notes ? sent.notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)) : null),
     [sent.notes, mutedPubkeys],
@@ -89,6 +98,17 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
       : null),
     [received.notes, mutedPubkeys],
   );
+
+  // Which of these the VIEWER has already reposted. Not decoration: without it
+  // `alreadyReposted` is false on every card, the button reads "🔁 repost"
+  // rather than done, and a viewer who already reposted a boost from the global
+  // feed publishes a second kind:6 for the same note from this page. Every
+  // other feed surface passes this; a new one has to, or it can only be wrong.
+  const allNotes = useMemo(
+    () => (sent.notes || received.notes ? [...(sent.notes ?? []), ...(received.notes ?? [])] : null),
+    [sent.notes, received.notes],
+  );
+  const repostedIds = useViewerReposts(allNotes, identity);
 
   // One resolver pass over both lists, so a show boosted in each direction is
   // looked up once.
@@ -117,9 +137,18 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
     profile?.display_name?.trim() || profile?.name?.trim() || shortNpub(npub);
   const shareUrl = mounted ? `${window.location.origin}/npub/${npub}` : null;
 
+  // Sent only. `amountMsat` is the note's `amount` tag, which
+  // `buildBoostNoteTemplate` sets to `value_msat_total` — the WHOLE boost,
+  // before it is divided over the value block. On the sent side that is the
+  // honest number: this npub paid the total.
+  //
+  // On the RECEIVED side it is not, and there is deliberately no sum there. A
+  // boost note `p`-tags every npub the feed declared, so one 1000-sat boost
+  // split 90/10 between an artist and their host would print "1000 sats" on
+  // BOTH their pages — and the note carries no per-payee breakdown to divide
+  // it with, because the splits live in the value block, not on the wire here.
+  // A count is a fact; that sum would be a claim about money nobody can check.
   const sentSats = (sentVisible ?? []).reduce((n, x) => n + Math.floor((x.amountMsat ?? 0) / 1000), 0);
-  const receivedSats = (receivedVisible ?? []).reduce(
-    (n, x) => n + Math.floor((x.amountMsat ?? 0) / 1000), 0);
 
   return (
     <div className="flex flex-col gap-10">
@@ -152,18 +181,23 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
               </span>
             )}
             . Boosts sent without signing in, and anonymous boosts, are signed by
-            boostmebitch.com and carry no sender, so they cannot be listed. This is not a
-            complete record of what this npub has paid.
+            boostmebitch.com and carry no sender, so they cannot be listed. Only this
+            npub&apos;s most recent notes are scanned, so an account that posts a lot may
+            show none. This is not a complete record of what this npub has paid.
           </p>
         }
         notes={sentVisible}
         loading={sent.loading}
         err={sent.err}
-        emptyMessage="no boosts from this npub surfaced from these relays — see the note above."
+        emptyMessage={
+          subjectMuted
+            ? 'you have muted this npub, so its own boosts are hidden here. Unmute to see them.'
+            : 'no boosts from this npub surfaced from these relays — see the note above.'
+        }
         onRefresh={sent.refresh}
         itemKey={(n) => n.id}
         collapsibleKey="npub:sent"
-        renderNote={(note) => <NoteCard note={note} {...metaFor(note)} />}
+        renderNote={(note) => <NoteCard note={note} repostedIds={repostedIds} {...metaFor(note)} />}
       />
 
       <FeedSection<DiscoveredNote>
@@ -179,7 +213,7 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
             tag
             {receivedVisible && receivedVisible.length > 0 && (
               <span className="text-bone/70">
-                {' '}— {receivedVisible.length} here, {receivedSats.toLocaleString()} sats
+                {' '}— {receivedVisible.length} here
               </span>
             )}
             . Unlike the list above, this one does not depend on who signed the boost.
@@ -192,7 +226,7 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
         onRefresh={received.refresh}
         itemKey={(n) => n.id}
         collapsibleKey="npub:recv"
-        renderNote={(note) => <NoteCard note={note} {...metaFor(note)} />}
+        renderNote={(note) => <NoteCard note={note} repostedIds={repostedIds} {...metaFor(note)} />}
       />
     </div>
   );

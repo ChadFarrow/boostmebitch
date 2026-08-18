@@ -33,7 +33,17 @@ export default function NpubPage() {
   const params = useParams();
   const router = useRouter();
   const raw = Array.isArray(params.npub) ? params.npub[0] : (params.npub ?? '');
-  const parsed = useMemo(() => parseNpubInput(decodeURIComponent(raw)), [raw]);
+  // `decodeURIComponent` THROWS on a malformed percent sequence, and this runs
+  // in the render body — so `/npub/50%` took down the whole route through
+  // <ErrorBoundary> instead of reaching the "isn't valid" branch twelve lines
+  // below, which exists for exactly that input. Next already decodes the
+  // segment, so the decode is a second pass for a hand-typed `%25`; keep it,
+  // but let a bad one fall through to the raw string and be rejected normally.
+  const parsed = useMemo(() => {
+    let token = raw;
+    try { token = decodeURIComponent(raw); } catch { /* already decoded, or malformed */ }
+    return parseNpubInput(token);
+  }, [raw]);
 
   // Canonicalize the URL when the visitor arrived on an nprofile / hex / link
   // form, so the address bar always holds the npub worth sharing. `replace`,

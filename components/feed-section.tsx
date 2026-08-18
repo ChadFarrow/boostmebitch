@@ -39,7 +39,12 @@ export function FeedSection<T>({
    * — no toggle, no storage read — so the four existing feeds are untouched.
    *
    * Namespace it by surface ('npub:sent'), never by a value the user or a feed
-   * controls: it is a storage key and an `aria-controls` IDREF stem.
+   * controls: it is a localStorage key. (The `aria-controls` IDREF is `useId`'s,
+   * not this — so a duplicate key collides in storage only, never in the DOM.)
+   *
+   * Collapsing hides the RENDER, not the query: `useNostrFeed` lives in the
+   * parent and still fetches, so opening a folded section shows fresh notes
+   * rather than whatever was on screen when it was closed.
    */
   collapsibleKey?: string;
 }) {

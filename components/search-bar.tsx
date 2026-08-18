@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { shortNpub } from '@/lib/nostr';
-import { parseNpubInput } from '@/lib/nostr/npub-input';
+import { looksLikeSecretKey, parseNpubInput } from '@/lib/nostr/npub-input';
 import type { Podcast } from '@/lib/types';
 
 interface Props {
@@ -41,6 +41,19 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
    */
   const npubHit = useMemo(() => parseNpubInput(q), [q]);
 
+  /**
+   * A pasted SECRET key, which this box now invites by asking for a key at all.
+   *
+   * `parseNpubInput` rejects an nsec by returning null — and null is the same
+   * answer it gives for "bowl after bowl", which falls through to
+   * `/api/search?q=…`. So the rejection quietly put the user's signing key in a
+   * URL, in this origin's server logs, and then in Podcast Index's. Checked
+   * BEFORE the fetch and rendered as a refusal, because a key that has been
+   * sent to a third party cannot be recalled and a silent drop would leave
+   * nobody knowing it went.
+   */
+  const secretHit = useMemo(() => looksLikeSecretKey(q), [q]);
+
   // Every edit goes through here — the input and the clear button both — so the
   // "user is searching" signal can't be attached to one and forgotten on the
   // other. Deliberately not an effect: the point is that it fires on the
@@ -73,7 +86,7 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
     // Reports an EMPTY query rather than `q`, so the page behind the box does
     // not flip into its searching layout and throw away the favorites panel
     // for a query that was never about shows.
-    if (!q.trim() || npubHit) { onResults([], ''); return; }
+    if (!q.trim() || npubHit || secretHit) { onResults([], ''); return; }
     const gen = ++genRef.current;
     const t = setTimeout(async () => {
       onLoading(true);
@@ -93,7 +106,7 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
       }
     }, 280);
     return () => clearTimeout(t);
-  }, [q, npubHit, onResults, onLoading]);
+  }, [q, npubHit, secretHit, onResults, onLoading]);
 
   // Navigation hangs off the suggestion (click or Enter), never off the npub
   // merely PARSING. Someone pasting an npub mid-edit, or pasting one they then
@@ -113,7 +126,7 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
     <div className="flex flex-col">
       <div className="relative">
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs">
-          {npubHit ? '⚡' : '⌕'}
+          {secretHit ? '⚠' : npubHit ? '⚡' : '⌕'}
         </span>
         <input
           ref={inputRef}
@@ -134,6 +147,19 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
           </button>
         )}
       </div>
+      {/* Sits where the npub suggestion sits, and says what was NOT done. A
+          guard that silently withholds is indistinguishable from a broken box —
+          the user retypes, and the second paste is as dangerous as the first. */}
+      {secretHit && (
+        <p className="flex items-start gap-2 border border-t-0 border-red-400/50 bg-red-400/5 px-3 py-2 text-xs text-red-300">
+          <span aria-hidden className="shrink-0">⚠</span>
+          <span>
+            That is a <strong>secret key</strong>. It was not searched for and it was not
+            sent anywhere. Clear the box, and paste your <code className="font-mono">npub</code>{' '}
+            instead — never your <code className="font-mono">nsec</code>.
+          </span>
+        </p>
+      )}
       {npubHit && (
         <button
           type="button"

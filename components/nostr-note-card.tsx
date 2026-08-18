@@ -1,5 +1,6 @@
 'use client';
 import { memo, useEffect, useId, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { ModalShell } from './modal-shell';
 import {
   resolvePublishRelays,
@@ -86,10 +87,19 @@ function NoteCardImpl({
   }, [alreadyReposted, repostState]);
 
   const [zapOpen, setZapOpen] = useState(false);
+  const router = useRouter();
 
   function openShow(p: Podcast) {
     selectPodcast(p);
-    if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
+    if (typeof window === 'undefined') return;
+    // `selectedPodcast` is read by <HomePage>, and <HomePage> renders at `/`
+    // only. This card also renders on /npub/<npub>, where setting the store
+    // changes nothing you can see — the tap scrolled to the top and did
+    // otherwise NOTHING, with no error to notice. The selection is already in
+    // the (in-memory) store and survives a client-side navigation, so go to the
+    // view that reads it.
+    if (window.location.pathname !== '/') router.push('/');
+    window.scrollTo({ top: 0 });
   }
 
   /**
