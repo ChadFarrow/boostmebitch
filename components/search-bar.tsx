@@ -1,9 +1,12 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { shortNpub } from '@/lib/nostr';
+import { fetchProfile, shortNpub } from '@/lib/nostr';
+import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { looksLikeSecretKey, parseNpubInput } from '@/lib/nostr/npub-input';
+import { storage } from '@/lib/storage';
 import type { Podcast } from '@/lib/types';
+import { Avatar } from './avatar';
 
 interface Props {
   /** Both callbacks are effect dependencies — pass referentially stable
@@ -53,6 +56,43 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
    * nobody knowing it went.
    */
   const secretHit = useMemo(() => looksLikeSecretKey(q), [q]);
+
+  /**
+   * The kind:0 behind the pasted npub, so the suggestion names a PERSON.
+   *
+   * `npub177f…yqx0aaq7` is not a thing anyone can check. The row asks the user
+   * to commit to a navigation, and the only way to know it is the right npub is
+   * to see whose it is — which is the same reason the /npub page resolves the
+   * profile for its own header.
+   *
+   * Seeded SYNCHRONOUSLY from `storage.profile` before the relay round-trip, so
+   * a name already in cache paints in the same frame as the row rather than
+   * appearing a second later and pushing the layout. The cache distinguishes
+   * "not cached" (undefined) from a cached MISS (null); both leave the row on
+   * its npub fallback, and only the first is worth a query — but we fetch
+   * either way, because `fetchProfile` is what refreshes an expired entry and
+   * it de-duplicates through the same cache.
+   *
+   * Reading storage in an effect rather than during render is deliberate: this
+   * box is server-rendered at `/`. The row itself can never be in the server
+   * HTML (it needs typed input), but seeding state from localStorage during
+   * render is the habit that breaks hydration on the next surface that isn't
+   * so lucky.
+   */
+  const [npubProfile, setNpubProfile] = useState<ProfileMetadata | null>(null);
+  const hitPubkey = npubHit?.pubkey ?? null;
+  useEffect(() => {
+    if (!hitPubkey) { setNpubProfile(null); return; }
+    setNpubProfile(storage.profile.get(hitPubkey) ?? null);
+    let cancelled = false;
+    fetchProfile(hitPubkey)
+      .then((p) => { if (!cancelled && p) setNpubProfile(p); })
+      .catch(() => { /* the row falls back to shortNpub, which is never wrong */ });
+    return () => { cancelled = true; };
+  }, [hitPubkey]);
+
+  // Never let a half-resolved profile print an empty name where a name goes.
+  const npubName = npubProfile?.display_name?.trim() || npubProfile?.name?.trim() || null;
 
   // Every edit goes through here — the input and the clear button both — so the
   // "user is searching" signal can't be attached to one and forgotten on the
@@ -166,10 +206,26 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
           onClick={openBoosts}
           className="flex items-center gap-2 border border-t-0 border-bone/30 bg-ink/60 px-3 py-2 text-left text-xs hover:border-bolt hover:bg-bolt/5"
         >
-          <span className="text-bolt shrink-0">⚡</span>
+          {/* The avatar replaces the ⚡ rather than joining it — the input's own
+              left icon already carries that, and two bolts in a column read as
+              decoration. <Avatar> falls back to a deterministic colored initial,
+              so the row is never a blank square while the relays answer. */}
+          <Avatar
+            pubkey={npubHit.pubkey}
+            picture={npubProfile?.picture}
+            name={npubName}
+            className="h-7 w-7 shrink-0 rounded-full border border-bone/20 text-[10px]"
+          />
+          {/* One line: the profile name, or the short npub until one resolves.
+              The npub is deliberately NOT kept alongside a resolved name — a
+              display name is self-chosen and not unique, so the row can name
+              the wrong person convincingly, and the full npub is still in the
+              input directly above for anyone checking. */}
           <span className="min-w-0 flex-1 truncate text-muted">
             Boosts for{' '}
-            <span className="font-mono text-bone">{shortNpub(npubHit.npub)}</span>
+            <span className={npubName ? 'text-bone' : 'font-mono text-bone'}>
+              {npubName ?? shortNpub(npubHit.npub)}
+            </span>
           </span>
           <span className="text-muted shrink-0">↵</span>
         </button>
