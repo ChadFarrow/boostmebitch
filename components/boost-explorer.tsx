@@ -1,16 +1,13 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   fetchBoostsReceivedBy,
   fetchBoostsSentBy,
   fetchProfile,
-  fetchZapsReceivedBy,
   noteHasSubstance,
-  quotedEventIds,
   shortNpub,
   useNostrFeed,
   type DiscoveredNote,
-  type ReceivedZap,
 } from '@/lib/nostr';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { useApp } from '@/lib/store';
@@ -19,26 +16,27 @@ import { Avatar } from './avatar';
 import { CopyLinkButton } from './copy-link-button';
 import { FeedSection } from './feed-section';
 import { NoteCard } from './nostr-note-card';
-import { ZapReceiptCard } from './zap-receipt-card';
-
-/**
- * One row of the received list. `ts` is unix ms across both kinds so they sort
- * together — the same discriminated-union shape <GlobalNostrFeed> uses to
- * intermix stored boosts with relay notes.
- */
-type ReceivedItem =
-  | { kind: 'note'; ts: number; key: string; note: DiscoveredNote }
-  | { kind: 'zap'; ts: number; key: string; zap: ReceivedZap };
 
 /**
  * Every boost one npub sent and received, read from relays only.
  *
  * The two halves are NOT symmetric and the copy on screen has to say so:
  *
- *  - **Received is complete.** `buildBoostNoteTemplate` writes the recipient's
- *    `p` tag whoever signs the note — deliberately un-gated on the share
- *    picker's Anonymous, because an anonymous boost should still reach the
- *    artist. So a site-signed boost lands here even though its sender is gone.
+ *  - **Received does not depend on who signed the boost.**
+ *    `buildBoostNoteTemplate` writes the recipient's `p` tag whoever signs the
+ *    note — deliberately un-gated on the share picker's Anonymous, because an
+ *    anonymous boost should still reach the artist. So a site-signed boost
+ *    lands here even though its sender is unrecoverable.
+ *
+ *    It is still a list of **boost NOTES**, not of payments. Bare NIP-57 zap
+ *    receipts (kind:9735) are deliberately not read: this is a boostagram
+ *    surface, and a receipt is a different object with a different sender and a
+ *    different provenance. The overlap is smaller than it looks — a
+ *    Fountain-style boost posts a kind:1 wrapper that quotes its own receipt,
+ *    and that wrapper still appears here with its amount adopted off the quoted
+ *    receipt (`buildNote`). What is not shown is a zap that produced no note at
+ *    all. `lib/nostr/zap-receipt.ts` therefore stays: `buildNote` reads amounts
+ *    through it and `<LiveChat>` still renders receipts.
  *  - **Sent under-reports, permanently.** A boost is only authored by the
  *    sender when they chose "post to my Nostr feed"; every other boost is
  *    signed by the site key, and an anonymous one drops `sender_id` and
@@ -80,82 +78,24 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
     deps: [pubkey],
   });
 
-  // Zaps get a plain effect rather than useNostrFeed: that hook's payload type
-  // is DiscoveredNote[] and it writes the shared bmb:feed cache, so bending it
-  // to hold receipts would change a type two other feeds depend on. The `gen`
-  // ref is the same race guard it uses — a slow fetch for one npub must not
-  // land over a newer one.
-  const [zaps, setZaps] = useState<ReceivedZap[] | null>(null);
-  const zapGen = useRef(0);
-  const refreshZaps = useCallback(() => {
-    const myGen = ++zapGen.current;
-    setZaps(null);
-    fetchZapsReceivedBy(pubkey)
-      .then((z) => { if (myGen === zapGen.current) setZaps(z); })
-      .catch(() => { if (myGen === zapGen.current) setZaps([]); });
-  }, [pubkey]);
-  useEffect(() => {
-    refreshZaps();
-    // Bump the counter on cleanup so an in-flight fetch bails, exactly as
-    // useNostrFeed does. `zapGen` is a plain counter ref (not a DOM node), so
-    // the exhaustive-deps "ref may have changed" heuristic doesn't apply —
-    // changing it is the point.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    return () => { zapGen.current++; };
-  }, [refreshZaps]);
-
-  // The received section's refresh button must re-query BOTH sources. Wiring it
-  // to the notes half alone would leave the zap list frozen behind a control
-  // that says it reloaded the list.
-  const refreshReceived = useCallback(() => {
-    refreshZaps();
-    void received.refresh();
-    // `received.refresh` is redefined on every render of useNostrFeed, so it is
-    // deliberately not a dependency — depending on it would rebuild this
-    // callback each render and defeat the point of having one.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refreshZaps]);
-
   const sentVisible = useMemo(
     () => (sent.notes ? sent.notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)) : null),
     [sent.notes, mutedPubkeys],
   );
 
-  const receivedItems = useMemo<ReceivedItem[] | null>(() => {
-    if (received.notes === null && zaps === null) return null;
-    const notes = (received.notes ?? []).filter(
-      (n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n),
-    );
-    // A Fountain-style boost is TWO events for ONE payment — a kind:9735 and a
-    // kind:1 wrapper quoting it — and both can `p`-tag the recipient. Dropping
-    // the receipt (not the note) keeps the richer card, which carries the
-    // sender's profile, the podcast line and the reply thread.
-    const quoted = quotedEventIds(received.notes ?? []);
-    const items: ReceivedItem[] = notes.map((note) => ({
-      kind: 'note' as const,
-      ts: note.createdAt * 1000,
-      key: `note:${note.id}`,
-      note,
-    }));
-    for (const zap of zaps ?? []) {
-      if (quoted.has(zap.id)) continue;
-      items.push({ kind: 'zap' as const, ts: zap.createdAt * 1000, key: `zap:${zap.id}`, zap });
-    }
-    items.sort((a, b) => b.ts - a.ts);
-    return items;
-  }, [received.notes, zaps, mutedPubkeys]);
+  const receivedVisible = useMemo(
+    () => (received.notes
+      ? received.notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n))
+      : null),
+    [received.notes, mutedPubkeys],
+  );
 
   // One resolver pass over both lists, so a show boosted in each direction is
-  // looked up once. `NoteRefs` is the plain {podcastGuid, episodeGuids} shape,
-  // which a zap receipt carries too (read off its embedded kind:9734).
+  // looked up once.
   const metaRefs = useMemo<NoteRefs[] | null>(() => {
-    if (!sentVisible && !receivedItems) return null;
-    const refs: NoteRefs[] = (sentVisible ?? []).map((n) => n);
-    for (const item of receivedItems ?? []) {
-      refs.push(item.kind === 'note' ? item.note : item.zap);
-    }
-    return refs;
-  }, [sentVisible, receivedItems]);
+    if (!sentVisible && !receivedVisible) return null;
+    return [...(sentVisible ?? []), ...(receivedVisible ?? [])];
+  }, [sentVisible, receivedVisible]);
   const { podcasts, episodes } = useNoteMeta(metaRefs);
 
   function metaFor(refs: NoteRefs) {
@@ -178,10 +118,8 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
   const shareUrl = mounted ? `${window.location.origin}/npub/${npub}` : null;
 
   const sentSats = (sentVisible ?? []).reduce((n, x) => n + Math.floor((x.amountMsat ?? 0) / 1000), 0);
-  const receivedSats = (receivedItems ?? []).reduce(
-    (n, i) => n + Math.floor(((i.kind === 'note' ? i.note.amountMsat : i.zap.msat) ?? 0) / 1000),
-    0,
-  );
+  const receivedSats = (receivedVisible ?? []).reduce(
+    (n, x) => n + Math.floor((x.amountMsat ?? 0) / 1000), 0);
 
   return (
     <div className="flex flex-col gap-10">
@@ -228,7 +166,7 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
         renderNote={(note) => <NoteCard note={note} {...metaFor(note)} />}
       />
 
-      <FeedSection<ReceivedItem>
+      <FeedSection<DiscoveredNote>
         heading={
           <h2 className="font-display text-2xl">
             <span className="text-nostr">#</span> Boosts received
@@ -236,31 +174,25 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
         }
         description={
           <p className="text-xs text-muted leading-relaxed mb-3">
-            Boosts and zaps that name this npub — through a feed&apos;s{' '}
+            Boosts that name this npub, through a feed&apos;s{' '}
             <code className="font-mono text-bone/70">&lt;podcast:txt purpose=&quot;nostr&quot;&gt;</code>{' '}
-            tag, or a Nostr zap receipt
-            {receivedItems && receivedItems.length > 0 && (
+            tag
+            {receivedVisible && receivedVisible.length > 0 && (
               <span className="text-bone/70">
-                {' '}— {receivedItems.length} here, {receivedSats.toLocaleString()} sats
+                {' '}— {receivedVisible.length} here, {receivedSats.toLocaleString()} sats
               </span>
             )}
             . Unlike the list above, this one does not depend on who signed the boost.
           </p>
         }
-        notes={receivedItems}
-        loading={received.loading || zaps === null}
+        notes={receivedVisible}
+        loading={received.loading}
         err={received.err}
         emptyMessage="no boosts to this npub surfaced from these relays."
-        onRefresh={refreshReceived}
-        itemKey={(item) => item.key}
+        onRefresh={received.refresh}
+        itemKey={(n) => n.id}
         collapsibleKey="npub:recv"
-        renderNote={(item) =>
-          item.kind === 'note' ? (
-            <NoteCard note={item.note} {...metaFor(item.note)} />
-          ) : (
-            <ZapReceiptCard zap={item.zap} {...metaFor(item.zap)} />
-          )
-        }
+        renderNote={(note) => <NoteCard note={note} {...metaFor(note)} />}
       />
     </div>
   );

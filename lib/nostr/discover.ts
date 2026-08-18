@@ -5,7 +5,7 @@ import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
 import { collectEventsByAuthors } from './event-queries';
 import { warmRelays } from './relay-health';
-import { parseZapReceipt, zapReceiptAmountMsat, type ZapReceipt } from './zap-receipt';
+import { zapReceiptAmountMsat } from './zap-receipt';
 import { stripNostrUris, extractImages } from '../format';
 
 export interface DiscoveredNote {
@@ -498,90 +498,6 @@ export async function fetchBoostsReceivedBy(
     // costs nothing here.
     const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost));
     return notes.filter((n) => n.isBoost);
-  });
-}
-
-/**
- * Every event id the given notes quote-reference.
- *
- * Exists for one job: a Fountain-style boost is TWO events for ONE payment — a
- * kind:9735 receipt and a kind:1 wrapper that quotes it — and both can `p`-tag
- * the recipient. Without this the same payment renders as two cards on the same
- * page, one saying it came from the sender and one from their LNURL server.
- *
- * Goes through `parseQuoteRefs` rather than an inline `e`/`q` tag scan, because
- * Fountain publishes the reference as a `nostr:nevent1…` URI inside the note
- * body, which a tag scan does not see.
- */
-export function quotedEventIds(notes: DiscoveredNote[]): Set<string> {
-  const out = new Set<string>();
-  for (const n of notes) {
-    for (const id of parseQuoteRefs(n.rawEvent).ids) out.add(id);
-  }
-  return out;
-}
-
-/** A kind:9735 zap to this npub, with its sender's profile already resolved. */
-export interface ReceivedZap extends ZapReceipt {
-  zapperNpub: string;
-  zapperProfile: ProfileMetadata | null;
-}
-
-/**
- * NIP-57 zaps this npub RECEIVED, newest first.
- *
- * The other half of "who boosted me". BoostMeBitch itself pays boostagrams over
- * keysend/LNURL and publishes a kind:1, so almost nothing here comes from this
- * app — these are the Fountain, zap.stream and Wavlake senders, whose payment
- * IS the receipt. Without them an artist's page shows a fraction of what they
- * were actually sent.
- *
- * The zapper is the kind:9734 author inside the receipt's `description`, never
- * `rawEvent.pubkey` (that is the recipient's LNURL server) — see
- * `parseZapReceipt`. A receipt with no usable request is dropped rather than
- * attributed to the server.
- */
-export async function fetchZapsReceivedBy(
-  pubkey: string,
-  opts: FetchOpts = {},
-): Promise<ReceivedZap[]> {
-  const relays = opts.relays ?? DEFAULT_RELAYS;
-  const limit = opts.limit ?? 100;
-
-  return withPool(relays, async (pool) => {
-    const live = await warmRelays(pool, relays);
-    let events: Event[] = [];
-    try {
-      ({ events } = await collectEventsByAuthors(pool, live, {
-        kinds: [9735],
-        '#p': [pubkey],
-        limit,
-        ...(opts.since !== undefined ? { since: opts.since } : {}),
-      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS));
-    } catch {
-      return [];
-    }
-
-    const receipts: ZapReceipt[] = [];
-    for (const e of events) {
-      const parsed = parseZapReceipt(e);
-      if (parsed) receipts.push(parsed);
-    }
-    if (!receipts.length) return [];
-    receipts.sort((a, b) => b.createdAt - a.createdAt);
-
-    // Same batch profile path the feeds use, so zapper avatars come out of the
-    // shared bmb:profile4 cache instead of a second lookup per card.
-    const profiles = await fetchProfiles(
-      pool,
-      live,
-      Array.from(new Set(receipts.map((r) => r.zapper))),
-    );
-    return receipts.map((r) => ({
-      ...r,
-      zapperNpub: nip19.npubEncode(r.zapper),
-      zapperProfile: profiles.get(r.zapper) ?? null,
-    }));
   });
 }
 

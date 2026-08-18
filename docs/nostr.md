@@ -570,7 +570,7 @@ Since Lightning and Nostr are independent logins, a signed-out boost would other
 ## Boost explorer (`/npub/<npub>`)
 
 A shareable, read-only page: what one npub boosted, and who boosted it.
-`components/boost-explorer.tsx` renders it and the three fetchers live beside the
+`components/boost-explorer.tsx` renders it and the two fetchers live beside the
 other feed fetchers in `lib/nostr/discover.ts`.
 
 **The way in is the ordinary podcast search box, not a second input.** An npub is
@@ -654,23 +654,29 @@ filter there would silently drop a client whose tags we hadn't thought of.
 `eventLooksLikeBoost` trims the raw events **before** `assembleNotes`, so the
 reply-tree BFS never walks a mention that was never going to render.
 
-**A Fountain boost is two events for one payment.** The kind:9735 receipt and the
-kind:1 wrapper that quotes it can *both* `p`-tag the recipient, so the same
-payment renders twice unless something drops one. `quotedEventIds(notes)` (over
-`parseQuoteRefs`, which also reads a `nostr:nevent1…` in the body — a tag scan
-misses that, and it is how Fountain publishes it) collects what the notes quote,
-and the receipt is the copy dropped: the note carries the sender's profile, the
-podcast line and the reply thread.
+**Bare zap receipts are deliberately NOT read.** This is a boostagram surface:
+both lists are kind:1 boost notes, and a kind:9735 is a different object with a
+different author (the recipient's LNURL server, never the payer) and different
+provenance. An earlier revision merged receipts into the received list and it was
+removed — mixing them put two kinds of evidence under one heading and made the
+list answer a question ("what was I paid") that the page does not actually
+answer.
 
-**A zap receipt's sender is never `rawEvent.pubkey`.** The receipt is published by
-the recipient's LNURL server; the payer is the kind:9734 author inside the
-`description` tag. `parseZapReceipt` (`lib/nostr/zap-receipt.ts`) is the one
-parser for this, shared with `<LiveChat>` — a receipt with no usable request
-returns `null` and is dropped, because attributing the payment to the server's
-pubkey is worse than showing nothing. `zapReceiptAmountMsat` keeps its original
-precedence (receipt `amount` → `bolt11` HRP → *then* the request's `amount`); the
-third source was appended, so it can only fire where the old function returned
-`null` and `buildNote`'s quoted-receipt branch is unchanged.
+The coverage cost is smaller than it looks, and worth stating exactly: a
+Fountain-style boost publishes a kind:1 wrapper that quote-references its own
+receipt, and **that wrapper still appears**, with its amount adopted off the
+quoted receipt in `buildNote`. What is no longer shown is a zap that produced no
+kind:1 at all. Dropping receipts also removed the reason `quotedEventIds` existed
+— with only notes in the list, one payment can no longer render as two cards.
+
+**`lib/nostr/zap-receipt.ts` stays regardless**, because two live callers need it:
+`buildNote` reads a quoted receipt's amount through `zapReceiptAmountMsat`, and
+`<LiveChat>` renders receipts in a stream's chat. Its `zapReceiptAmountMsat`
+keeps the original precedence (receipt `amount` → `bolt11` HRP → *then* the
+embedded request's `amount`); the third source was appended, so it can only fire
+where the old function returned `null`, leaving `buildNote` unchanged. And a
+receipt's sender is never `rawEvent.pubkey` — the payer is the kind:9734 author
+inside the `description` tag, which is what `parseZapReceipt` exists to reach.
 
 **The page never reads `storage.boosts`.** That log is this device's, for the
 signed-in user — on someone else's page it would show the viewer their own
