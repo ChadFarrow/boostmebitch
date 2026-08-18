@@ -188,7 +188,11 @@ input[type='range'].seek::-moz-range-thumb {
 .show-notes h4, .show-notes h5, .show-notes h6 {
   @apply font-bold mb-1.5 mt-3 first:mt-0;
 }
-.show-notes a { @apply underline underline-offset-2; color: rgb(var(--bolt)); }
+/* break-words because a linkified bare URL has no spaces to wrap at, and the
+   notes container is overflow-x-hidden — an unbroken one is clipped, not
+   scrolled. Not break-all: an anchor whose label is ordinary prose must still
+   wrap between words. */
+.show-notes a { @apply underline underline-offset-2 break-words; color: rgb(var(--bolt)); }
 .show-notes a:hover { opacity: 0.8; }
 .show-notes img { @apply max-w-full rounded my-2; }
 .show-notes pre { @apply rounded p-3 overflow-x-auto text-xs mb-3; background: rgb(var(--bone) / 0.05); }

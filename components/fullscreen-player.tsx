@@ -26,6 +26,7 @@ import {
   exitFullscreen,
 } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
+import { LinkedText } from './linked-text';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
@@ -139,7 +140,10 @@ function EpisodeInfoPanel({
 
       {active === 'about' && hasDescription && (
         <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words">
-          {description}
+          {/* Bare URLs a feed wrote as plain text become real links — this pane
+              renders the stripHtml'd description, so without it a "Links:"
+              block is text you can only select and paste. */}
+          <LinkedText text={description} />
         </div>
       )}
 

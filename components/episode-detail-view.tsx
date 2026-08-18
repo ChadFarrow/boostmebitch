@@ -10,6 +10,7 @@ import { EpisodeContents } from './episode-contents';
 import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
 import { useNotesFollows } from './notes-follows';
+import { LinkedText } from './linked-text';
 import { BoltIcon, ShareIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart } from './fav-heart';
@@ -334,8 +335,8 @@ export function EpisodeDetailView() {
                     dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
                   />
                 ) : description ? (
-                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap overflow-x-hidden">
-                    {description}
+                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words overflow-x-hidden">
+                    <LinkedText text={description} />
                   </div>
                 ) : null}
                 {/* Link out to the episode's own web page (some feeds' pages
