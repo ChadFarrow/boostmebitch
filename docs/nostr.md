@@ -703,3 +703,89 @@ inside the `description` tag, which is what `parseZapReceipt` exists to reach.
 signed-in user — on someone else's page it would show the viewer their own
 boosts. `<BoostCard>` is unusable here for the same reason: it draws the avatar
 out of `identity`.
+
+### What the review pass changed, and why each was wrong
+
+The explorer shipped in six commits and then a seventh (`5165567`) fixing six
+defects a review found. Each is a different way for a read-only page to lie, so
+they are worth keeping separately rather than as "review fixes".
+
+**The received panel printed a sats total it could not support.** It summed
+`DiscoveredNote.amountMsat`, which is the note's `amount` tag, which
+`buildBoostNoteTemplate` sets to `value_msat_total` — **the whole boost, before
+the value block divides it**. A boost note `p`-tags *every* npub the feed
+declared, so one 1000-sat boost split 90/10 between an artist and their host
+printed "1000 sats" on both their pages. There is no fix inside the note: the
+splits live in the value block, not on this wire, so no per-payee number is
+recoverable. The count stayed and the sum went. **The sent side keeps its sum** —
+that npub authored the note and did pay the total, so it is the one place the
+number is honest. This is the boost modal's `?`-not-`✗` rule reaching a
+read-only surface: a number about money that nobody can check is worse than no
+number.
+
+**A store-driven view switch is not a navigation.** `<NoteCard>`'s show and
+episode links call `selectPodcast` / `openEpisode`, which only `<HomePage>` at
+`/` reads. On this route the tap set the store, scrolled to the top, and did
+nothing else — no error, no feedback, indistinguishable from a slow load.
+`openShow` now pushes `/` when it isn't already there. See the cross-cutting rule
+in CLAUDE.md; it binds any future standalone route, not just this one.
+
+**`repostedIds` is not decoration.** `<BoostExplorer>` didn't pass it, so
+`alreadyReposted` was false on every card and a viewer could publish a second
+kind:6 for a note they had already reposted. The prop is optional, so its absence
+type-checks — the only defence is the convention.
+
+**Muting the page's subject emptied the sent panel while the copy blamed
+signing.** Every note in that list is authored by the subject, so the shared
+`!mutedPubkeys.has(n.pubkey)` filter removes all of them at once, and the empty
+message went on to explain site-signing and anonymity — a wrong explanation the
+user has no way to see through. The message now names the mute. The received
+list is written by other people, so the same filter is ordinary there. Same rule
+as the favorites degraded-read notice: a guard that withholds has to say so.
+
+**`decodeURIComponent` in a render body is a crash, not a parse.** Next already
+decodes a route segment, and the function throws `URIError` on a malformed
+percent sequence — so `/npub/50%` reached `app/error.tsx` instead of the route's
+own "isn't valid" branch twelve lines below, which exists for exactly that input.
+It is wrapped now. `app/live/[npub]/page.tsx` doesn't decode at all and is the
+other valid answer.
+
+**Two ordinary profile links didn't parse.** `parseNpubInput` took the text after
+the last `/`, so `njump.me/npub1…/` gave an empty token and
+`primal.net/p/npub1…?ref=x` kept the query string and failed the bech32 decode.
+The query and hash are stripped first now, then the trailing slash, then the path
+segment, then `nostr:` — that order also makes `…/nostr:npub1…` work. Handling a
+pasted link is the entire reason the function does string surgery, so the real
+shapes are the requirement, not an extra.
+
+One thing deliberately **not** fixed: a bare 64-char hex string cannot be told
+from an event id — they are the same shape — so a pasted event id resolves to a
+person who does not exist and both panels come back empty. The bech32 forms
+(`note1…`, `nevent1…`) are rejected properly. The doc comment says so rather than
+claiming note ids are rejected in general.
+
+### The suggestion row names a person, not an npub
+
+`Boosts for npub180c…wsyjh6w6` is not something anyone can check. You pasted a
+string you cannot read, and the row asks you to commit to a navigation on the
+strength of it — **the profile name is the confirmation that you pasted the right
+npub**, which is the whole job of that row.
+
+`<SearchBar>` resolves the kind:0 for `npubHit.pubkey` and renders `<Avatar>`
+plus the display name. Three details are load-bearing:
+
+- **Seed from `storage.profile` synchronously, then fetch.** A name already in
+  cache paints in the same frame as the row; without the seed it arrives a second
+  later and pushes the layout under a cursor that is already moving.
+- **Read that cache in an effect, never during render.** The box is
+  server-rendered at `/`. This row can never be in the server HTML (it needs
+  typed input), so it would get away with it — and that is exactly why the habit
+  is worth refusing here, on the surface where it is free.
+- **The short npub holds the name slot until a profile lands**, and permanently
+  for an npub with no kind:0, so the row never reads "Boosts for" and then
+  nothing. `<Avatar>`'s deterministic colored initial does the same job for the
+  picture. The avatar **replaces** the ⚡ rather than joining it — the input's own
+  left icon already carries that.
+
+The npub is deliberately not kept beside a resolved name. It is one line, and the
+full npub is in the input directly above for anyone who wants to compare it.
