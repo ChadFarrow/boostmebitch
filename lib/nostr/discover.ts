@@ -419,7 +419,12 @@ export async function fetchBoostsSentBy(
 
   return withPool(relays, async (pool) => {
     const live = await warmRelays(pool, relays);
-    const extras = (await fetchAuthorWriteRelays(pool, live, [pubkey]))
+    // QUERY_MAX_WAIT_MS, not the 8 s feed window: this is a single-author
+    // replaceable-event lookup, which is exactly what lib/nostr/pool.ts
+    // documents that constant for. It also runs BEFORE the boost query rather
+    // than as a fallback after one, so every second spent here is a second the
+    // user waits before the real scan even opens.
+    const extras = (await fetchAuthorWriteRelays(pool, live, [pubkey], QUERY_MAX_WAIT_MS))
       .slice(0, MAX_AUTHOR_RELAYS);
     let events: Event[] = [];
     try {
@@ -781,13 +786,21 @@ async function fetchAuthorWriteRelays(
   pool: import('nostr-tools').SimplePool,
   relays: string[],
   authors: string[],
+  maxWait = FEED_QUERY_MAX_WAIT_MS,
 ): Promise<string[]> {
   // Stream-collect (early-exit once every author's kind:10002 is in hand) so a
   // dead relay in the union can't pin this fallback at the full maxWait. Health
   // signal is unused here — absent write relays aren't cached, so we just need
   // the events.
+  //
+  // `maxWait` is a parameter because the early exit only fires when the author
+  // HAS a kind:10002. An author with none waits out the whole window, so a
+  // caller that runs this BEFORE its own query (rather than as a fallback
+  // after one) stacks two windows back to back and doubles its worst case.
+  // Measured against a relay that accepts the socket and then says nothing:
+  // 16 s for the sent panel against 8 s for the other two.
   const res = await withExtraRelays(pool, relays, PROFILE_RELAYS, (queryRelays) =>
-    collectEventsByAuthors(pool, queryRelays, { kinds: [10002], authors }, authors),
+    collectEventsByAuthors(pool, queryRelays, { kinds: [10002], authors }, authors, maxWait),
   );
   const newest = new Map<string, Event>();
   for (const e of res.events) {

@@ -594,6 +594,37 @@ Nobody has their own npub to hand, so "my boosts" is **not** in that box — it
 sits beside "edit profile" in `<AccountMenu>`, where the rest of the user's
 identity already is.
 
+### Latency
+
+Recognizing an npub is local — no network, tens of microseconds per keystroke —
+so the suggestion row is instant. The page behind it is three relay queries the
+sections fire **independently on mount**, so each paints when its own resolves
+and a revisit paints from `bmb:feed:*` within one frame.
+
+Measured against a local relay (`Promise.all` of all three, 12 sent + 12 received
++ 8 zaps):
+
+| relay behaviour | sent | received | zaps | page |
+|---|---|---|---|---|
+| instant reply + EOSE | 0.6 s | 0.1 s | 0.1 s | **0.6 s** |
+| 120 ms round trip | 0.6 s | 0.5 s | 0.3 s | **0.6 s** |
+| 400 ms round trip | 1.7 s | 1.3 s | 0.9 s | **1.7 s** |
+| answers, never EOSEs | 14.8 s | 10.8 s | 2.8 s | **14.8 s** |
+| accepts the socket, then silence | 12.0 s | 8.0 s | 8.0 s | **12.0 s** |
+
+**The sent panel is the slow one, structurally, and it is worth knowing why.** It
+is the only one that must resolve the author's NIP-65 write relays *before* its
+own query can open — an artist who publishes to their own relay is exactly the
+person whose page this is. That lookup early-exits the moment the kind:10002
+arrives, but an author who has **none** waits out the whole window, so the two
+windows stack. It is therefore capped at `QUERY_MAX_WAIT_MS`, not the 8 s feed
+window — which is what `lib/nostr/pool.ts` documents that constant for anyway
+("single-author / single-event / replaceable-event lookups … kind:10002"). Before
+the cap the silent-relay case measured 16.0 s against the other panels' 8.0 s.
+`fetchAuthorWriteRelays` takes `maxWait` as a parameter for this reason; leave
+its default alone, since `fetchProfiles` calls it as a fallback *after* its own
+query and does not stack.
+
 **The two halves are not symmetric, and the copy on screen is load-bearing.**
 `buildBoostNoteTemplate` writes `['p', <recipient pubkey>]` for every npub the
 feed declared in `<podcast:txt purpose="nostr">`, deliberately un-gated on the
