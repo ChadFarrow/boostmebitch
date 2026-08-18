@@ -570,9 +570,29 @@ Since Lightning and Nostr are independent logins, a signed-out boost would other
 ## Boost explorer (`/npub/<npub>`)
 
 A shareable, read-only page: what one npub boosted, and who boosted it.
-`components/boost-explorer.tsx` renders it; the three fetchers live beside the
-other feed fetchers in `lib/nostr/discover.ts`; `components/npub-search.tsx` on
-the home page is the way in.
+`components/boost-explorer.tsx` renders it and the three fetchers live beside the
+other feed fetchers in `lib/nostr/discover.ts`.
+
+**The way in is the ordinary podcast search box, not a second input.** An npub is
+unmistakable — `npub1…`, 63 characters of bech32, or an `nprofile`/hex/profile
+link — so `<SearchBar>` runs `parseNpubInput` on the query synchronously and
+offers a "Boosts for …" row instead of searching shows. A dedicated box shipped
+first and was worse: two inputs side by side, each silently useless for the
+other's input, and the user made to know which was which. When the query parses
+as an npub the box **skips the `/api/search` fetch entirely** — a 63-character
+bech32 string matches no show, so the call spends Podcast Index quota to return
+nothing and then paints "no results" over the suggestion, which is the answer.
+It also reports an EMPTY query upward, so the page behind it keeps the favorites
+panel rather than flipping into a searching layout for a query about a person.
+
+**Navigation hangs off the suggestion — click or Enter — never off the npub
+merely parsing.** Someone pasting an npub mid-edit, or pasting one they then
+correct, must not have the page moved out from under them; this is the same rule
+`onResults` already follows by refusing to navigate when results arrive.
+
+Nobody has their own npub to hand, so "my boosts" is **not** in that box — it
+sits beside "edit profile" in `<AccountMenu>`, where the rest of the user's
+identity already is.
 
 **The two halves are not symmetric, and the copy on screen is load-bearing.**
 `buildBoostNoteTemplate` writes `['p', <recipient pubkey>]` for every npub the

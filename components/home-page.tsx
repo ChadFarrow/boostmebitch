@@ -5,7 +5,6 @@ import { PodcastResults, EpisodeList, FavoritesList, FavoriteEpisodesList } from
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
-import { NpubSearch } from '@/components/npub-search';
 import { NostrLiveStreams } from '@/components/nostr-live-streams';
 import { DiscussionView } from '@/components/discussion-view';
 import { EpisodeDetailView } from '@/components/episode-detail-view';
@@ -461,18 +460,7 @@ export function HomePage() {
           <section className="max-w-7xl mx-auto px-4 pt-8">
             <NostrLiveStreams />
           </section>
-          <section className="max-w-7xl mx-auto px-4 pt-12 flex flex-col gap-6">
-            {/* Sits above the global feed rather than in the hero: the hero's
-                <SearchBar> finds shows, this finds a person's boost history,
-                and two boxes side by side at the top of the page made neither
-                obvious. Here it reads as "or look someone up" against a feed of
-                exactly the cards it leads to. */}
-            <div className="max-w-xl">
-              <p className="text-[11px] uppercase tracking-widest text-muted mb-2">
-                Look up an npub&apos;s boosts
-              </p>
-              <NpubSearch />
-            </div>
+          <section className="max-w-7xl mx-auto px-4 pt-12">
             <GlobalNostrFeed />
           </section>
         </>

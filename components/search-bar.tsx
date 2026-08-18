@@ -1,5 +1,8 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { shortNpub } from '@/lib/nostr';
+import { parseNpubInput } from '@/lib/nostr/npub-input';
 import type { Podcast } from '@/lib/types';
 
 interface Props {
@@ -23,6 +26,20 @@ interface Props {
 export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
   const [q, setQ] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
+  const router = useRouter();
+
+  /**
+   * One box, two kinds of thing to find. An npub is unmistakable — `npub1…`,
+   * 63 characters of bech32, or an `nprofile`/hex/profile link — so the box can
+   * tell which the user meant instead of making them know which box to use.
+   * That was the alternative and it was worse: a second input beside this one,
+   * each silently useless for the other's input.
+   *
+   * Memoized on `q` so the object identity is stable per query — it is an
+   * effect dependency below, and a fresh object every render would restart the
+   * debounce on every keystroke of an ordinary podcast search.
+   */
+  const npubHit = useMemo(() => parseNpubInput(q), [q]);
 
   // Every edit goes through here — the input and the clear button both — so the
   // "user is searching" signal can't be attached to one and forgotten on the
@@ -48,7 +65,15 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
   const genRef = useRef(0);
 
   useEffect(() => {
-    if (!q.trim()) { onResults([], ''); return; }
+    // An npub never needs the podcast API. Skipping the fetch is not just an
+    // optimisation: a 63-character bech32 string matches no show, so the call
+    // spends Podcast Index quota to return nothing and then paints "no results"
+    // over the suggestion below, which IS the answer.
+    //
+    // Reports an EMPTY query rather than `q`, so the page behind the box does
+    // not flip into its searching layout and throw away the favorites panel
+    // for a query that was never about shows.
+    if (!q.trim() || npubHit) { onResults([], ''); return; }
     const gen = ++genRef.current;
     const t = setTimeout(async () => {
       onLoading(true);
@@ -68,26 +93,53 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
       }
     }, 280);
     return () => clearTimeout(t);
-  }, [q, onResults, onLoading]);
+  }, [q, npubHit, onResults, onLoading]);
+
+  // Navigation hangs off the suggestion (click or Enter), never off the npub
+  // merely PARSING. Someone pasting an npub mid-edit, or pasting one they then
+  // correct, must not have the page moved out from under them — the same reason
+  // `onResults` deliberately doesn't navigate.
+  function openBoosts() {
+    if (!npubHit) return;
+    router.push(`/npub/${npubHit.npub}`);
+  }
 
   return (
-    <div className="relative">
-      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs">⌕</span>
-      <input
-        ref={inputRef}
-        className="input pl-8 pr-8"
-        value={q}
-        onChange={(e) => edit(e.target.value)}
-        placeholder="search podcasts… (try ‘bowl after bowl’)"
-      />
-      {q && (
+    <div className="flex flex-col gap-1.5">
+      <div className="relative">
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs">
+          {npubHit ? '⚡' : '⌕'}
+        </span>
+        <input
+          ref={inputRef}
+          className="input pl-8 pr-8"
+          value={q}
+          onChange={(e) => edit(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && npubHit) { e.preventDefault(); openBoosts(); } }}
+          placeholder="search podcasts, or paste an npub…"
+        />
+        {q && (
+          <button
+            type="button"
+            onClick={() => edit('')}
+            aria-label="Clear search"
+            className="absolute right-2 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-full text-muted hover:bg-line hover:text-bone"
+          >
+            ×
+          </button>
+        )}
+      </div>
+      {npubHit && (
         <button
           type="button"
-          onClick={() => edit('')}
-          aria-label="Clear search"
-          className="absolute right-2 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-full text-muted hover:bg-line hover:text-bone"
+          onClick={openBoosts}
+          className="card p-3 text-left hover:border-bolt/60 flex items-center gap-2 text-sm"
         >
-          ×
+          <span className="text-bolt">⚡</span>
+          <span className="min-w-0 flex-1 truncate">
+            Boosts for <span className="font-mono text-xs">{shortNpub(npubHit.npub)}</span>
+          </span>
+          <span className="text-muted text-xs shrink-0">↵</span>
         </button>
       )}
     </div>
