@@ -566,3 +566,62 @@ Since Lightning and Nostr are independent logins, a signed-out boost would other
 **Substance filter (`noteHasSubstance`, `lib/nostr/discover.ts`).** The feeds are a firehose of *every* kind:1 tagged with NIP-73 `podcast:guid`/`podcast:item:guid`. Some clients (notably **Amplify**) publish an empty kind:1 per listen — `content: ""` plus the podcast tags — which renders as a bare podcast chip; at ~1/3 of all podcast-tagged traffic these drowned out real posts. `noteHasSubstance` keeps boosts always (`isBoost`), otherwise strips `nostr:` refs + image URLs the way `<NoteCard>` does and requires non-empty body text or an image. **Filter on content, not the `client` tag** — real human comments made *via* those same clients survive, and Fountain notes (no `client` tag at all) are unaffected. Applied at render time beside the `mutedPubkeys` filter, so it doesn't touch the `bmb:feed:*` cache and a stale paint can briefly flash filtered cards.
 
 
+
+## Boost explorer (`/npub/<npub>`)
+
+A shareable, read-only page: what one npub boosted, and who boosted it.
+`components/boost-explorer.tsx` renders it; the three fetchers live beside the
+other feed fetchers in `lib/nostr/discover.ts`; `components/npub-search.tsx` on
+the home page is the way in.
+
+**The two halves are not symmetric, and the copy on screen is load-bearing.**
+`buildBoostNoteTemplate` writes `['p', <recipient pubkey>]` for every npub the
+feed declared in `<podcast:txt purpose="nostr">`, deliberately un-gated on the
+share picker's Anonymous — an anonymous boost should still reach the artist. So
+**received is complete**: `{kinds:[1], '#p':[pubkey]}` finds a boost whoever
+signed it. **Sent is not, and cannot be.** A boost is authored by the sender only
+when they picked "post to my Nostr feed"; every other boost is signed by the site
+key via `publishBoostNoteViaSite`, and an anonymous one drops `sender_id` and
+`sender_name` on top of that. Nothing on the wire points back at the payer, so no
+better filter recovers them.
+
+That is why the sent section's caveat renders **always**, not only when the list
+is empty, and why every empty message here says "surfaced from these relays"
+rather than making a claim about the person. This is the same rule the favorites
+degraded-read notice exists for, pointed at a read instead of a write: a short
+list that reads as complete is indistinguishable from a correct one, and the
+person who can't tell is the user concluding they boosted less than they did.
+
+**Neither `#p` query may be widened to a bare `{kinds:[1], '#p':[pubkey]}`** —
+that is the person's whole mentions firehose, and the `limit` would be spent on
+ordinary replies before one boost arrived. Received runs two filters in parallel
+and merges: `#k: ['podcast:guid','podcast:item:guid']` for every client following
+the NIP-73 convention, and `#t: ['boostagram','value4value']` for a Helipad-style
+aggregator that tagged the boost but no podcast. Sent takes the author's whole
+timeline instead — `authors` already bounds the scan to one person, and a tag
+filter there would silently drop a client whose tags we hadn't thought of.
+`eventLooksLikeBoost` trims the raw events **before** `assembleNotes`, so the
+reply-tree BFS never walks a mention that was never going to render.
+
+**A Fountain boost is two events for one payment.** The kind:9735 receipt and the
+kind:1 wrapper that quotes it can *both* `p`-tag the recipient, so the same
+payment renders twice unless something drops one. `quotedEventIds(notes)` (over
+`parseQuoteRefs`, which also reads a `nostr:nevent1…` in the body — a tag scan
+misses that, and it is how Fountain publishes it) collects what the notes quote,
+and the receipt is the copy dropped: the note carries the sender's profile, the
+podcast line and the reply thread.
+
+**A zap receipt's sender is never `rawEvent.pubkey`.** The receipt is published by
+the recipient's LNURL server; the payer is the kind:9734 author inside the
+`description` tag. `parseZapReceipt` (`lib/nostr/zap-receipt.ts`) is the one
+parser for this, shared with `<LiveChat>` — a receipt with no usable request
+returns `null` and is dropped, because attributing the payment to the server's
+pubkey is worse than showing nothing. `zapReceiptAmountMsat` keeps its original
+precedence (receipt `amount` → `bolt11` HRP → *then* the request's `amount`); the
+third source was appended, so it can only fire where the old function returned
+`null` and `buildNote`'s quoted-receipt branch is unchanged.
+
+**The page never reads `storage.boosts`.** That log is this device's, for the
+signed-in user — on someone else's page it would show the viewer their own
+boosts. `<BoostCard>` is unusable here for the same reason: it draws the avatar
+out of `identity`.

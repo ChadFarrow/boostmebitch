@@ -5,7 +5,7 @@ import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
 import { collectEventsByAuthors } from './event-queries';
 import { warmRelays } from './relay-health';
-import { bolt11AmountMsat } from '../v4v/bolt11';
+import { parseZapReceipt, zapReceiptAmountMsat, type ZapReceipt } from './zap-receipt';
 import { stripNostrUris, extractImages } from '../format';
 
 export interface DiscoveredNote {
@@ -100,24 +100,6 @@ function parseQuoteRefs(e: Event): { ids: string[]; relayHints: string[] } {
     }
   }
   return { ids: [...ids], relayHints: [...relays] };
-}
-
-// Returns msat amount from a kind:9735 zap receipt. NIP-57 says receipts
-// SHOULD include an `amount` tag and MUST include a `bolt11` tag; many
-// implementations (Fountain among them) skip the explicit `amount` and
-// only ship the invoice. Read `amount` first, fall back to parsing the
-// invoice HRP.
-function zapReceiptAmountMsat(e: Event): number | null {
-  if (e.kind !== 9735) return null;
-  const amountTag = e.tags.find((t) => t[0] === 'amount')?.[1];
-  const fromTag = amountTag ? Number(amountTag) : NaN;
-  if (Number.isFinite(fromTag) && fromTag > 0) return fromTag;
-  const bolt11 = e.tags.find((t) => t[0] === 'bolt11')?.[1];
-  if (typeof bolt11 === 'string' && bolt11.length > 0) {
-    const fromInvoice = bolt11AmountMsat(bolt11);
-    if (fromInvoice !== null) return fromInvoice;
-  }
-  return null;
 }
 
 /**
@@ -382,6 +364,219 @@ export async function fetchAllPodcastNotes(
       return [];
     }
     return await assembleNotes(pool, live, events);
+  });
+}
+
+/**
+ * A boost, judged from the RAW event — before assembleNotes runs.
+ *
+ * Deliberately wider than `buildNote`'s `isBoost`, which can also adopt the
+ * amount off a quoted kind:9735 and therefore needs the assembled note plus a
+ * second relay round-trip. The wrapper notes that do that still carry the
+ * NIP-73 podcast `i` tags, so the third clause below keeps them, and the
+ * `isBoost` post-filter in each fetcher makes the final call.
+ *
+ * Its job is to keep `assembleNotes`' reply-tree BFS off events that were never
+ * going to be shown: a `#p` query returns every ordinary mention and reply
+ * addressed to that person, and running the tree walk over all of them costs a
+ * relay query per depth level for nothing.
+ */
+function eventLooksLikeBoost(e: Event): boolean {
+  if (e.kind !== 1) return false;
+  if (e.tags.some((t) => t[0] === 't' && (t[1] === 'boostagram' || t[1] === 'value4value'))) return true;
+  const amount = Number(e.tags.find((t) => t[0] === 'amount')?.[1]);
+  if (Number.isFinite(amount) && amount > 0) return true;
+  return e.tags.some((t) => t[0] === 'i' && t[1]?.startsWith('podcast:'));
+}
+
+/** How many of an author's own NIP-65 write relays a lookup may add. */
+const MAX_AUTHOR_RELAYS = 6;
+
+/**
+ * Boosts this npub PUBLISHED, newest first.
+ *
+ * **This under-reports, by construction, and the UI must say so.** A boost note
+ * is only authored by the sender when they chose "post to my Nostr feed";
+ * `publishBoostNoteViaSite` signs everything else with the site's own key, and
+ * an anonymous boost drops `sender_id`/`sender_name` on top of that. There is
+ * no filter that recovers those — the sender is not on the wire.
+ *
+ * Takes the author's whole kind:1 timeline rather than filtering by tag at the
+ * relay: `authors` already bounds the scan to one person, and a tag filter
+ * would silently drop any client whose boost tags we haven't thought of.
+ * `eventLooksLikeBoost` then trims it before the reply-tree walk.
+ *
+ * Queries DEFAULT_RELAYS unioned with the author's own NIP-65 write relays —
+ * an artist who publishes to their own relay is exactly the person whose page
+ * this is, and their notes may reach none of the defaults.
+ */
+export async function fetchBoostsSentBy(
+  pubkey: string,
+  opts: FetchOpts = {},
+): Promise<DiscoveredNote[]> {
+  const relays = opts.relays ?? DEFAULT_RELAYS;
+  const limit = opts.limit ?? 100;
+
+  return withPool(relays, async (pool) => {
+    const live = await warmRelays(pool, relays);
+    const extras = (await fetchAuthorWriteRelays(pool, live, [pubkey]))
+      .slice(0, MAX_AUTHOR_RELAYS);
+    let events: Event[] = [];
+    try {
+      ({ events } = await withExtraRelays(pool, live, extras, (queryRelays) =>
+        collectEventsByAuthors(pool, queryRelays, {
+          kinds: [1],
+          authors: [pubkey],
+          limit,
+          ...(opts.since !== undefined ? { since: opts.since } : {}),
+        }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS)));
+    } catch {
+      return [];
+    }
+    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost));
+    return notes.filter((n) => n.isBoost);
+  });
+}
+
+/**
+ * Boosts that `p`-tagged this npub, newest first — "who boosted me".
+ *
+ * Unlike the sent half this is complete: `buildBoostNoteTemplate` writes the
+ * recipient's `p` tag whoever signs the note, deliberately un-gated on the
+ * share picker's Anonymous (an anonymous boost should still reach the artist).
+ * So a site-signed boost lands here even though its sender is unrecoverable.
+ *
+ * TWO filters, unioned, because neither alone is right. A bare
+ * `{kinds:[1], '#p':[pubkey]}` would spend the whole limit on ordinary replies
+ * and mentions before a single boost arrived. The `#k` filter catches every
+ * client following the Podcasting 2.0 NIP-73 convention; the `#t` filter
+ * catches a Helipad-style aggregator that tagged the boost but no podcast.
+ * They run in parallel, so this costs one query window, not two.
+ *
+ * DEFAULT_RELAYS only: these notes are written by OTHER people, so the target's
+ * own write relays are the wrong hint set.
+ */
+export async function fetchBoostsReceivedBy(
+  pubkey: string,
+  opts: FetchOpts = {},
+): Promise<DiscoveredNote[]> {
+  const relays = opts.relays ?? DEFAULT_RELAYS;
+  const limit = opts.limit ?? 100;
+  const since = opts.since !== undefined ? { since: opts.since } : {};
+
+  return withPool(relays, async (pool) => {
+    const live = await warmRelays(pool, relays);
+    let events: Event[] = [];
+    try {
+      const [tagged, boosted] = await Promise.all([
+        collectEventsByAuthors(pool, live, {
+          kinds: [1],
+          '#p': [pubkey],
+          '#k': ['podcast:guid', 'podcast:item:guid'],
+          limit,
+          ...since,
+        }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS),
+        collectEventsByAuthors(pool, live, {
+          kinds: [1],
+          '#p': [pubkey],
+          '#t': ['boostagram', 'value4value'],
+          limit,
+          ...since,
+        }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS),
+      ]);
+      events = [...tagged.events, ...boosted.events];
+    } catch {
+      return [];
+    }
+    // assembleNotes dedupes by id, so the overlap between the two filters —
+    // which is most of a BoostMeBitch note, carrying both `k` and `t` tags —
+    // costs nothing here.
+    const notes = await assembleNotes(pool, live, events.filter(eventLooksLikeBoost));
+    return notes.filter((n) => n.isBoost);
+  });
+}
+
+/**
+ * Every event id the given notes quote-reference.
+ *
+ * Exists for one job: a Fountain-style boost is TWO events for ONE payment — a
+ * kind:9735 receipt and a kind:1 wrapper that quotes it — and both can `p`-tag
+ * the recipient. Without this the same payment renders as two cards on the same
+ * page, one saying it came from the sender and one from their LNURL server.
+ *
+ * Goes through `parseQuoteRefs` rather than an inline `e`/`q` tag scan, because
+ * Fountain publishes the reference as a `nostr:nevent1…` URI inside the note
+ * body, which a tag scan does not see.
+ */
+export function quotedEventIds(notes: DiscoveredNote[]): Set<string> {
+  const out = new Set<string>();
+  for (const n of notes) {
+    for (const id of parseQuoteRefs(n.rawEvent).ids) out.add(id);
+  }
+  return out;
+}
+
+/** A kind:9735 zap to this npub, with its sender's profile already resolved. */
+export interface ReceivedZap extends ZapReceipt {
+  zapperNpub: string;
+  zapperProfile: ProfileMetadata | null;
+}
+
+/**
+ * NIP-57 zaps this npub RECEIVED, newest first.
+ *
+ * The other half of "who boosted me". BoostMeBitch itself pays boostagrams over
+ * keysend/LNURL and publishes a kind:1, so almost nothing here comes from this
+ * app — these are the Fountain, zap.stream and Wavlake senders, whose payment
+ * IS the receipt. Without them an artist's page shows a fraction of what they
+ * were actually sent.
+ *
+ * The zapper is the kind:9734 author inside the receipt's `description`, never
+ * `rawEvent.pubkey` (that is the recipient's LNURL server) — see
+ * `parseZapReceipt`. A receipt with no usable request is dropped rather than
+ * attributed to the server.
+ */
+export async function fetchZapsReceivedBy(
+  pubkey: string,
+  opts: FetchOpts = {},
+): Promise<ReceivedZap[]> {
+  const relays = opts.relays ?? DEFAULT_RELAYS;
+  const limit = opts.limit ?? 100;
+
+  return withPool(relays, async (pool) => {
+    const live = await warmRelays(pool, relays);
+    let events: Event[] = [];
+    try {
+      ({ events } = await collectEventsByAuthors(pool, live, {
+        kinds: [9735],
+        '#p': [pubkey],
+        limit,
+        ...(opts.since !== undefined ? { since: opts.since } : {}),
+      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS));
+    } catch {
+      return [];
+    }
+
+    const receipts: ZapReceipt[] = [];
+    for (const e of events) {
+      const parsed = parseZapReceipt(e);
+      if (parsed) receipts.push(parsed);
+    }
+    if (!receipts.length) return [];
+    receipts.sort((a, b) => b.createdAt - a.createdAt);
+
+    // Same batch profile path the feeds use, so zapper avatars come out of the
+    // shared bmb:profile4 cache instead of a second lookup per card.
+    const profiles = await fetchProfiles(
+      pool,
+      live,
+      Array.from(new Set(receipts.map((r) => r.zapper))),
+    );
+    return receipts.map((r) => ({
+      ...r,
+      zapperNpub: nip19.npubEncode(r.zapper),
+      zapperProfile: profiles.get(r.zapper) ?? null,
+    }));
   });
 }
 
