@@ -1,0 +1,219 @@
+# Builds the Trusted Web Activity, proves it will actually verify against the
+# live origin, and publishes it to Zapstore.
+#
+# The web app deploys through Vercel and is not built here — this workflow only
+# wraps it. Reasoning and the first-release runbook are in docs/android.md.
+#
+# Nothing publishes without a tag. `workflow_dispatch` builds, checks and
+# uploads the APK as an artifact so the whole path can be exercised before any
+# tag exists, and before the Zapstore signing key does.
+name: Android release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish to Zapstore (off = build and verify only)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.ref }}
+  # Never cancel: a half-published release is worse than a queued one.
+  cancel-in-progress: false
+
+env:
+  # Pinned for the same reason nostr-tools is pinned to an exact version: a tool
+  # that regenerates the entire Android project from a manifest is exactly where
+  # @latest silently changes the output between two releases of the same app.
+  BUBBLEWRAP_VERSION: 1.25.0
+  ZSP_VERSION: v0.4.9
+  ORIGIN: https://www.boostmebitch.com
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Bubblewrap drives Gradle. It will otherwise download its own JDK and
+      # Android SDK into ~/.bubblewrap on first run, which is slow and
+      # interactive; `updateConfig` below points it at the runner's instead.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Derive the version from the tag
+        id: version
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+            if ! [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+              echo "::error::Tag '$TAG' is not vMAJOR.MINOR.PATCH — refusing to build."
+              exit 1
+            fi
+            NAME="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
+            # Deterministic, monotonic and readable: 0.1.0 -> 100, 1.2.3 -> 10203.
+            # Derived from the tag rather than from github.run_number, which is
+            # monotonic but meaningless and would change the version code on a
+            # plain re-run of the same release.
+            CODE=$(( 10#${BASH_REMATCH[1]} * 10000 + 10#${BASH_REMATCH[2]} * 100 + 10#${BASH_REMATCH[3]} ))
+          else
+            # A dry run keeps whatever the manifest already carries.
+            NAME=$(jq -r .appVersion android/twa-manifest.json)
+            CODE=$(jq -r .appVersionCode android/twa-manifest.json)
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "code=$CODE" >> "$GITHUB_OUTPUT"
+          echo "Building $NAME (versionCode $CODE)"
+
+      - name: Write the version into the TWA manifest
+        run: |
+          set -euo pipefail
+          jq --arg v '${{ steps.version.outputs.name }}' \
+             --argjson c '${{ steps.version.outputs.code }}' \
+             '.appVersion = $v | .appVersionCode = $c' \
+             android/twa-manifest.json > android/twa-manifest.tmp
+          mv android/twa-manifest.tmp android/twa-manifest.json
+
+      - name: Materialize the signing keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KEYSTORE_B64:-}" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 is empty. Create the release keystore and add it as a repository secret — see docs/android.md."
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_B64" | base64 -d > android/android.keystore
+          chmod 600 android/android.keystore
+
+      - name: Build the signed APK
+        env:
+          BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd android
+          BW="npx --yes @bubblewrap/cli@${BUBBLEWRAP_VERSION}"
+          $BW updateConfig --jdkPath "$JAVA_HOME" --androidSdkPath "$ANDROID_HOME"
+          # `update`, not `init`: it regenerates the Android project from
+          # twa-manifest.json, which is what lets one JSON file be the only
+          # source in git. --skipVersionUpgrade because the step above already
+          # set both version fields; letting Bubblewrap auto-increment would
+          # make the version code depend on how many times this workflow ran.
+          $BW update --skipVersionUpgrade
+          # --skipPwaValidation has a repo-specific reason, not a lazy one:
+          # Bubblewrap's Quality Criteria check evaluates offline support, and
+          # public/sw.js deliberately precaches nothing (see docs/ui.md). The
+          # validation would fail on a property this app has consciously chosen.
+          $BW build --skipPwaValidation
+
+      - name: Read the certificate out of what was actually built
+        id: cert
+        run: |
+          set -euo pipefail
+          FP=$(keytool -printcert -jarfile android/app-release-signed.apk \
+               | grep -i 'SHA256:' | head -1 | sed 's/.*SHA256: *//' | tr -d '[:space:]')
+          PKG=$(jq -r .packageId android/twa-manifest.json)
+          echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
+          echo "package=$PKG" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Android build"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| package | \`$PKG\` |"
+            echo "| version | ${{ steps.version.outputs.name }} (${{ steps.version.outputs.code }}) |"
+            echo "| SHA-256 | \`$FP\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app-release-signed-${{ steps.version.outputs.name }}
+          # Named explicitly, never a glob over android/ — the keystore is in
+          # that directory and must not be swept into an artifact.
+          path: android/app-release-signed.apk
+          if-no-files-found: error
+
+      # The best guard in this workflow. A statement list that does not name
+      # this exact certificate is invisible from the web side — Chrome logs
+      # nothing, returns nothing, and simply declines to verify — so without
+      # this check the first sign of trouble is a URL bar on somebody's phone
+      # after the app has already been published.
+      #
+      # It compares against the DEPLOYED route rather than a repo variable,
+      # because a repo variable is a second copy that drifts. This catches "the
+      # Vercel env var was never set", "the key was rotated but the env wasn't"
+      # and "Vercel hasn't redeployed yet" alike.
+      #
+      # On the first release this will fail, by design: the fingerprint does not
+      # exist until the keystore does. The APK is already uploaded by then and
+      # the message prints exactly what to paste into ANDROID_CERT_SHA256, so
+      # nothing is lost — set it, redeploy, re-run.
+      - name: Verify the origin will accept this certificate
+        run: |
+          set -euo pipefail
+          FP='${{ steps.cert.outputs.fingerprint }}'
+          PKG='${{ steps.cert.outputs.package }}'
+          LIVE=$(curl -fsS "$ORIGIN/.well-known/assetlinks.json")
+          if echo "$LIVE" | jq -e --arg pkg "$PKG" --arg fp "$FP" \
+               'any(.[]; .target.package_name == $pkg and (.target.sha256_cert_fingerprints | index($fp)))' > /dev/null; then
+            echo "$ORIGIN vouches for $PKG with this certificate."
+          else
+            echo "::error::$ORIGIN does not vouch for this build, so the app would open with a URL bar."
+            echo "Live statement list:"
+            echo "$LIVE"
+            echo ""
+            echo "Set ANDROID_PACKAGE_ID=$PKG and add this fingerprint to ANDROID_CERT_SHA256 in Vercel"
+            echo "(comma-separate to keep an outgoing key live during a rotation), redeploy, then re-run:"
+            echo "  $FP"
+            exit 1
+          fi
+
+      - name: Attach the APK to the GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF#refs/tags/}" --generate-notes --verify-tag 2>/dev/null || true
+          gh release upload "${GITHUB_REF#refs/tags/}" android/app-release-signed.apk --clobber
+
+      - name: Publish to Zapstore
+        if: startsWith(github.ref, 'refs/tags/') || inputs.publish
+        env:
+          SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Skipped rather than failed when the key is absent: a repository
+          # without it should still build and verify. The publish is the only
+          # step that needs an identity.
+          if [ -z "${SIGN_WITH:-}" ]; then
+            echo "::notice::ZAPSTORE_SIGN_WITH is not set — built and verified, nothing published."
+            exit 0
+          fi
+          go install github.com/zapstore/zsp@${ZSP_VERSION}
+          "$(go env GOPATH)/bin/zsp" publish -y zapstore.yaml
+
+      - name: Remove the keystore
+        if: always()
+        run: rm -f android/android.keystore
