@@ -23,6 +23,7 @@
     "check:nwcerror": "node --experimental-strip-types scripts/check-nwcerror.mjs",
     "check:vts": "node --experimental-strip-types scripts/check-value-time-split.mjs",
     "check:feedxml": "node --experimental-strip-types scripts/check-feedxml.mjs",
+    "check:assetlinks": "node --experimental-strip-types scripts/check-assetlinks.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs"
