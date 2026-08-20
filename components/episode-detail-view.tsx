@@ -7,6 +7,7 @@ import { ValueSplitRows } from './value-split-rows';
 import { useChapters } from '@/lib/chapters';
 import { useResolvedSplits } from '@/lib/track-art';
 import { EpisodeContents } from './episode-contents';
+import { LivePlayedTracks } from './live-played-tracks';
 import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
 import { useNotesFollows } from './notes-follows';
@@ -307,6 +308,19 @@ export function EpisodeDetailView() {
         )}
 
         {streamPanel && <div className="border-t border-bone/10 pt-4">{streamPanel}</div>}
+
+        {/* The songs a live broadcast has played so far, each favoritable — the
+            live twin of the contents tab below, which has no timeline to list on
+            a live item. Above the tabs rather than inside them: the log only
+            exists while the show is on air, and a tab is a thing you have to
+            know to open. Renders nothing on an ordinary episode, and nothing on
+            a live item that is not the one playing — the log belongs to the
+            broadcast being listened to, not to whichever page is open. */}
+        <LivePlayedTracks
+          episode={episode}
+          fallbackImg={episode.image || podcast.image || podcast.artwork}
+          className="border-t border-bone/10 pt-4"
+        />
 
         {/* Show notes / Chapters / Transcript — tabbed so they don't all stack. */}
         {anyInfo && (

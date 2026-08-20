@@ -10,6 +10,7 @@ import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import type { TranscriptCue } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
 import { EpisodeContents } from './episode-contents';
+import { LivePlayedTracks } from './live-played-tracks';
 import type { Podcast, ValueTimeSplit } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
@@ -760,6 +761,16 @@ export function FullscreenPlayer({
 
           {/* Scrollable body — About / Chapters / Transcript (+ discussion). */}
           <div className="flex-1 sm:min-h-0 sm:overflow-y-auto">
+            {/* What this broadcast has played, with a heart on each song.
+                <EpisodeContents> has nothing to list on a live item — there are
+                no valueTimeSplit windows to enumerate, only the blocks that have
+                already gone by — so this is its live twin and sits above it.
+                Renders nothing on an ordinary episode. */}
+            <LivePlayedTracks
+              episode={episode}
+              fallbackImg={episode.image || podcast.image || podcast.artwork}
+              className="border-t border-bone/10 pt-5"
+            />
             <EpisodeInfoPanel
               description={description}
               splits={splits}

@@ -48,11 +48,20 @@ export function useLiveBlockImage(episodeGuid?: string): string | null {
  * Never the address — a row that reads "paying artist@fountain.fm" tells the
  * user where the sats go but not who gets them, which is the question this line
  * exists to answer.
+ *
+ * `fallback` names a block that offers neither — the played-track list wants a
+ * noun for a row that has already been heard, where "the current track" would be
+ * a claim about now. One function rather than two, so the ranking above cannot
+ * come to differ between the surface deciding a payment and the surface listing
+ * what played.
  */
-export function splitTargetLabel(split: { title?: string; value?: ValueBlock | null }): string {
+export function splitTargetLabel(
+  split: { title?: string; value?: ValueBlock | null },
+  fallback = 'the current track',
+): string {
   return split.title
     || split.value?.recipients?.find((r) => r.name)?.name
-    || 'the current track';
+    || fallback;
 }
 
 /**

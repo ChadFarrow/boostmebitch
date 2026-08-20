@@ -28,6 +28,7 @@ import type { Episode, Podcast, ValueBlock, ValueTimeSplit } from '../types';
 import { useApp } from '../store';
 import { createObservable } from '../pubsub';
 import { hasValueRecipients, fnvHash } from '../util';
+import { recordLivePlay, livePlayedSnapshot } from '../live-played';
 import { trackBucket } from './stream-ledger';
 import { connectLiveValue, type LiveBlock } from './live-block';
 
@@ -185,6 +186,12 @@ function setTarget(next: LiveTarget | null) {
   const prev = targetSig(target);
   if (sig === prev) return;
   target = next;
+  // Remember the block for as long as the broadcast lasts, so a listener can
+  // still favorite a song after the DJ has moved on. Recording here rather than
+  // at each signal is what makes it exhaustive: this is the one funnel every
+  // target change goes through, whatever produced it. The log is a plain
+  // observer — it holds no payment state and cannot alter a target.
+  recordLivePlay(next);
   if (process.env.NODE_ENV !== 'production') {
     const n = next?.split?.value?.recipients?.length ?? 0;
     console.debug(
@@ -450,6 +457,11 @@ function installDiagnostic() {
         ? { opened: !!watching.closeSocket, delivering: watching.socketOwns }
         : null,
       pollFailures: watching?.failures ?? 0,
+      // How many blocks this broadcast has logged for <LivePlayedTracks>. A
+      // moving target with this stuck at 0 is the tell that every block is
+      // being skipped as unnameable — the list is empty for a reason, not
+      // because nothing played.
+      playedCount: livePlayedSnapshot(cur?.episode.guid).length,
       target: target ? {
         signal: target.signal,
         payingTitle: target.split?.title ?? null,

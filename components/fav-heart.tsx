@@ -347,6 +347,15 @@ export function FavEpisodeHeart({
  * The heart for a TRACK a show played — one `<podcast:valueTimeSplit>` window,
  * as rendered by a track row of `<EpisodeContents>`.
  *
+ * **Two surfaces build one of these, and the second has no timeline.**
+ * `<LivePlayedTracks>` renders the blocks a LIVE show has put on air, which
+ * `lib/v4v/live-value.ts` normalizes into this same synthetic window shape — so
+ * favoriting a song off a live broadcast, off a DJ set's track list, or off the
+ * artist's own album all produce the *same entry*, which is the point. Nothing
+ * below needs to know which one it is, and nothing below should learn: a rule
+ * that reads the show doing the playing is a rule that would have to be told
+ * about the next surface too.
+ *
  * **It binds to the window, not to the row's position in the list.** That list
  * interleaves windows with chapters, and a chapter row never gets one of these:
  * `mergeEpisodeContents` maps nothing between the two, so the `split` handed in
