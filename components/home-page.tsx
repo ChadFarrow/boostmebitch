@@ -8,6 +8,7 @@ import { NostrLiveStreams } from '@/components/nostr-live-streams';
 import { DiscussionView } from '@/components/discussion-view';
 import { EpisodeDetailView } from '@/components/episode-detail-view';
 import { AppHeader } from '@/components/app-header';
+import Link from 'next/link';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
@@ -243,6 +244,7 @@ export function HomePage() {
   // <FavoritesLink>, which are the surfaces that actually read those maps.
   const showLeftRightLayout = loading || feeds.length > 0 || selected || !!publisherSource;
   const inDetailView = !!selected;
+  const showOrigin = useApp((s) => s.showOrigin);
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
   const inEpisodeDetail = useApp((s) => !!s.selectedEpisode);
 
@@ -268,13 +270,22 @@ export function HomePage() {
             landing copy rather than a permanent banner — deliberately NOT gated
             on `showLeftRightLayout`, because that flips on stored favorites and
             a compliance-critical string shouldn't disappear based on
-            localStorage. Keep this in sync with app/privacy/page.tsx. */}
+            localStorage.
+
+            REMOVED ON REQUEST, 2026-08-20: a second sentence naming the
+            optional Google sign-in, the Nostr identity it mints, the encrypted
+            Drive backup, and that we never see the key or the PIN. That
+            sentence was the "purpose for which your app requests user data"
+            half of the requirement above, and the app still requests the Drive
+            scope — so this page now satisfies the functionality half only.
+            app/privacy/page.tsx still carries the full disclosure, which meets
+            the separate privacy-policy-URL requirement but is NOT the home-page
+            one. If Google re-reviews the consent screen (a re-submission or a
+            scope change triggers one), restore it here first. */}
         {!inDetailView && !inEpisodeDetail && !inDiscussion && (
           <p className="mt-4 max-w-xl text-sm leading-relaxed text-bone/80">
             Search Podcasting 2.0 shows, stream episodes, and send Lightning boosts straight
-            to creators — no account, no middleman. Optional Google sign-in generates a Nostr
-            identity for you and keeps an encrypted backup of it in your own Google Drive; we
-            never see the key or your PIN.
+            to creators — no account, no middleman.
           </p>
         )}
         <div className="mt-8 max-w-xl">
@@ -304,19 +315,36 @@ export function HomePage() {
         ) : inEpisodeDetail ? (
           <EpisodeDetailView />
         ) : inDetailView ? (
-          // Detail "page" — once a podcast is picked, the search/favorites
-          // aside hides so the episode list + per-podcast Nostr feed get the
-          // full viewport. The back button returns the user to whatever
-          // panel they were on (search results or favorites are preserved
-          // in state).
+          // Detail "page" — once a podcast is picked, the search aside hides so
+          // the episode list + per-podcast Nostr feed get the full viewport.
+          //
+          // The back control has TWO forms, because a show is no longer only
+          // ever opened from this page. `/favorites` and `/npub/<npub>` open
+          // one by setting the store and navigating here, and for them
+          // "← back to results" named a results list the visitor had never seen
+          // while offering no way back to the page they actually came from — a
+          // dead end that reads as a broken button. `showOrigin` (lib/store.ts)
+          // carries the answer; it is null for every ordinary selection, since
+          // `selectPodcast` clears it.
+          //
+          // The origin form is a real <Link>, so the browser gets a real
+          // navigation, and it deliberately does NOT clear the selection: the
+          // store is what makes stepping back into the show cheap, and
+          // <AppHeader>'s wordmark already clears it on that route.
           <div>
-            <button
-              onClick={() => setSelected(null)}
-              className="btn-ghost text-xs mb-3"
-              aria-label="Back"
-            >
-              ← back to results
-            </button>
+            {showOrigin ? (
+              <Link href={showOrigin.path} className="btn-ghost text-xs mb-3 w-fit" aria-label="Back">
+                ← back to {showOrigin.label}
+              </Link>
+            ) : (
+              <button
+                onClick={() => setSelected(null)}
+                className="btn-ghost text-xs mb-3"
+                aria-label="Back"
+              >
+                ← back to results
+              </button>
+            )}
             <section className="card p-4 min-h-[40vh]">
               <EpisodeList feedId={selected!.id} feedUrl={selected!.isPreview ? selected!.url : undefined} />
             </section>
@@ -361,9 +389,7 @@ export function HomePage() {
               />
             ) : null}
           </aside>
-        ) : (
-          <EmptyState />
-        )}
+        ) : null}
       </section>
 
       {!inDetailView && (
@@ -377,23 +403,5 @@ export function HomePage() {
         </>
       )}
     </main>
-  );
-}
-
-function EmptyState() {
-  return (
-    <div className="grid sm:grid-cols-3 gap-4 mt-6">
-      {[
-        { n: '01', t: 'Search', d: 'Powered by the Podcast Index. V4V-enabled feeds get a yellow stamp.' },
-        { n: '02', t: 'Listen', d: 'Full-fidelity playback from the original enclosure URL.' },
-        { n: '03', t: 'Boost', d: 'Send sats to the show — auto-split across every value-block recipient, with your message and an optional Nostr post attached.' },
-      ].map((step) => (
-        <article key={step.n} className="card p-4">
-          <div className="font-mono text-bolt text-sm">{step.n}</div>
-          <div className="font-display text-xl mt-1">{step.t}</div>
-          <p className="text-xs text-muted mt-1.5 leading-relaxed">{step.d}</p>
-        </article>
-      ))}
-    </div>
   );
 }

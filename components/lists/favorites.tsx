@@ -17,9 +17,9 @@
 
 import type { FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
 import { PodcastCover } from '../podcast-cover';
-import { FavEpisodeRowHeart } from '../fav-heart';
+import { FavEpisodeRowHeart, FavFeedRowHeart } from '../fav-heart';
 import { PodcastRow } from './podcast-results';
-import { useRevealed, ShowMore } from './grouping';
+import { useRevealed, useAutoReveal, ShowMore } from './grouping';
 
 export type FavSort = 'recent' | 'az';
 
@@ -53,9 +53,32 @@ export function sortFavorites<T extends Sortable>(rows: T[], sort: FavSort): T[]
  *
  * It exists because the favorite is the guid, not the metadata: an entry
  * Podcast Index doesn't know is not an entry we may drop, so it has to have
- * somewhere to go on screen. Deliberately inert — there is nothing to open.
+ * somewhere to go on screen. Nothing to OPEN — there is no show and no episode
+ * behind it — but it must still carry its heart.
+ *
+ * **The heart is the whole reason this row is rendered rather than hidden, and
+ * it shipped without one.** The argument for showing an unresolvable entry has
+ * always been "a row they can see is one they can clean up", and without a
+ * control on it that sentence is false: the entry is unremovable through the
+ * UI, permanently, and rides through every republish to a list other apps read.
+ * `bmbCleanFavorites()` does not reach it either — that purges malformed
+ * `podcast:guid:` nodes, and these are well-formed identifiers for something PI
+ * has simply never indexed. Nothing else on any screen can remove them.
+ *
+ * Both hearts are the row-shaped variants, which take the STORED entry and
+ * re-add it verbatim. That matters most here: an unresolved entry's `medium`
+ * hint is the only description of it that exists, and rebuilding the favorite
+ * from a synthesized `Podcast` / `Episode` would drop it.
  */
-export function UnresolvedFavoriteRow({ id, kind }: { id: string; kind: 'show' | 'episode' }) {
+export function UnresolvedFavoriteRow({
+  id,
+  kind,
+  heart,
+}: {
+  id: string;
+  kind: 'show' | 'episode';
+  heart: React.ReactNode;
+}) {
   return (
     <li className="flex gap-3 py-3 px-1 items-center">
       <div className="w-14 h-14 border border-bone/20 flex-shrink-0 grid place-items-center text-muted text-xl">
@@ -67,6 +90,7 @@ export function UnresolvedFavoriteRow({ id, kind }: { id: string; kind: 'show' |
         </div>
         <div className="text-[11px] font-mono text-muted/70 truncate">{id}</div>
       </div>
+      <div className="flex-shrink-0 self-center">{heart}</div>
     </li>
   );
 }
@@ -128,6 +152,11 @@ export function FavoriteItemRow({
  * the `id` prop, because `aria-controls` must point at an element that exists
  * even while the section is folded — which is why the `<ul>` is `hidden`
  * rather than unrendered, while its ROWS are unmounted.
+ *
+ * `noun` is a FUNCTION of a count, not a string, because the only number the
+ * caller has is the section total and the only number the label is read
+ * against is `remaining` — which lives in here. Handing a finished string
+ * across that gap is how "show 1 more singles" gets printed.
  */
 function PagedList<T>({
   id,
@@ -141,10 +170,17 @@ function PagedList<T>({
   rows: T[];
   resetKey: string;
   hidden: boolean;
-  noun: string;
+  noun: (n: number) => string;
   render: (row: T) => React.ReactNode;
 }) {
   const { visible, remaining, more } = useRevealed(rows, resetKey);
+  // The next page reveals itself when the control below scrolls into view; the
+  // control stays a real button so a missing IntersectionObserver still leaves
+  // the rows reachable. Passed `hidden ? 0 : remaining` rather than gated by an
+  // early return, because a hook may not be conditional — and a folded section
+  // must not auto-reveal rows nobody can see, which would spend the whole bytes
+  // budget on artwork behind a closed heading.
+  const sentinel = useAutoReveal(hidden ? 0 : remaining, more);
   return (
     <>
       <ul id={id} className="divide-y divide-bone/10" hidden={hidden}>
@@ -152,7 +188,9 @@ function PagedList<T>({
       </ul>
       {/* Suppressed while folded, or a closed section still offers to reveal
           twelve more of the rows it is currently hiding. */}
-      {!hidden && <ShowMore remaining={remaining} onClick={more} noun={noun} />}
+      {!hidden && (
+        <ShowMore remaining={remaining} onClick={more} noun={noun(remaining)} innerRef={sentinel} />
+      )}
     </>
   );
 }
@@ -170,7 +208,7 @@ export function FavoriteFeedRows({
   rows: FavoritePodcast[];
   resetKey: string;
   hidden: boolean;
-  noun: string;
+  noun: (n: number) => string;
   onSelect: (p: Podcast) => void;
 }) {
   return (
@@ -187,7 +225,14 @@ export function FavoriteFeedRows({
         // than hiding it: it is still the user's favorite and is still
         // republished, and a row they can see is one they can clean up.
         if (!title) {
-          return <UnresolvedFavoriteRow key={p.podcastGuid} id={p.podcastGuid} kind="show" />;
+          return (
+            <UnresolvedFavoriteRow
+              key={p.podcastGuid}
+              id={p.podcastGuid}
+              kind="show"
+              heart={<FavFeedRowHeart favorite={p} />}
+            />
+          );
         }
         // FavoritePodcast → Podcast: the cache doesn't carry the value block,
         // so the value-aware stamp is hidden via showV4VStamp.
@@ -227,7 +272,7 @@ export function FavoriteItemRows({
   rows: FavoriteEpisode[];
   resetKey: string;
   hidden: boolean;
-  noun: string;
+  noun: (n: number) => string;
   onOpen: (ep: FavoriteEpisode) => void;
 }) {
   return (
@@ -243,7 +288,14 @@ export function FavoriteItemRows({
         // <UnresolvedFavoriteRow>.
         ep.title
           ? <FavoriteItemRow key={ep.itemGuid} ep={ep} onOpen={onOpen} />
-          : <UnresolvedFavoriteRow key={ep.itemGuid} id={ep.itemGuid} kind="episode" />
+          : (
+            <UnresolvedFavoriteRow
+              key={ep.itemGuid}
+              id={ep.itemGuid}
+              kind="episode"
+              heart={<FavEpisodeRowHeart favorite={ep} />}
+            />
+          )
       }
     />
   );

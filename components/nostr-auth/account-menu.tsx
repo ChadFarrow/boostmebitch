@@ -7,6 +7,7 @@ import { getErrorMessage } from '@/lib/util';
 import { MutedAccountsSection } from './muted-accounts';
 import { ExportKeySection } from './export-key';
 import { ProfileEditor } from '../profile-editor';
+import { ThemeMenuLink } from '../theme-toggle';
 
 // Surfaced inside AccountMenu when the NIP-46 bunker subscription has
 // gone stale (typically because iOS suspended the PWA's WebSocket while
@@ -166,13 +167,20 @@ export function AccountMenu({
 
           <ExportKeySection />
 
-          <div className="border-t border-bone/15 mt-4 pt-3">
+          {/* The theme control lives here now rather than in the page header,
+              where a rarely-touched preference sat among primary actions as
+              the one bare icon in a row of bordered chips. It does NOT close
+              the menu: flipping the palette is something you want to see land,
+              and closing the thing you are looking at to show you the result
+              hides half of it. "sign out" closes because it has to. */}
+          <div className="border-t border-bone/15 mt-4 pt-3 flex items-center justify-between gap-3">
             <button
               onClick={() => { onSignOut(); setOpen(false); }}
               className="text-[11px] text-muted hover:text-nostr"
             >
               sign out
             </button>
+            <ThemeMenuLink />
           </div>
         </div>
       )}

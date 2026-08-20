@@ -2,10 +2,10 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { BoltIcon } from '@/components/icons';
-import { ThemeToggle } from '@/components/theme-toggle';
 import { AuthControl } from '@/components/auth-control';
 import { NostrAuth } from '@/components/nostr-auth';
 import { FavoritesLink } from '@/components/favorites-link';
+import { clearShowSelection } from '@/lib/store';
 
 /**
  * The app header, shared by `/` and `/favorites`.
@@ -65,14 +65,27 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
       <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-1 sm:gap-4">
         {/* A button on the home page, because "home" there means clearing the
             search and the selection in place — a <Link href="/"> would leave
-            all of it standing. Everywhere else there is nothing to clear and a
-            real link is what the browser deserves. */}
+            all of it standing.
+            Everywhere else it is a real link, but it still has to CLEAR THE
+            SELECTION, and that is not symmetry for its own sake. The store is
+            module-level and survives a route change on purpose — it is what
+            <FavoritesPage>'s store-then-navigate handoff runs on — so a user
+            who opened one favorite has a selection standing when they come
+            back here. <HomePage> never clears it on mount, so without this the
+            control labelled "Go to home" re-opens the last show and the
+            selection-to-URL mirror rewrites the address bar to `?podcast=<old>`
+            with nothing on screen saying why. See `clearShowSelection`. */}
         {onHome ? (
           <button type="button" onClick={onHome} className={wordmarkClass} aria-label="Go to home">
             {wordmark}
           </button>
         ) : (
-          <Link href="/" className={wordmarkClass} aria-label="Go to home">
+          <Link
+            href="/"
+            onClick={clearShowSelection}
+            className={wordmarkClass}
+            aria-label="Go to home"
+          >
             {wordmark}
           </Link>
         )}
@@ -81,8 +94,21 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
             on desktop — an auto margin and a flex-1 spacer lay out the same
             wherever there is slack. */}
         <div className="ml-auto flex items-center gap-1 sm:gap-4 shrink-0">
+          {/* The theme control is NOT here. It was, as the one bare 32px
+              icon in a row of 38px bordered chips, and it read as a control
+              dropped in rather than placed — a rarely-touched preference
+              sitting among the primary actions. It lives in the menus now:
+              <ThemeMenuLink> in <AccountMenu> (rendered by <NostrAuth>) and
+              <ThemeMenuRow> in <AuthControl>'s signed-out dropdown. One state
+              has neither menu — a wallet connected with no Nostr identity —
+              and <AuthControl> renders the bare icon itself for exactly that
+              case, because it is the component that knows.
+              The two names mislead about what they draw, which is worth
+              knowing before you move anything else in this row: <AuthControl>
+              is the WALLET half (balance chip, connect / sign-in buttons) and
+              <NostrAuth> draws <AccountMenu> as well as owning identity
+              hydration. */}
           <FavoritesLink current={pathname === '/favorites'} />
-          <ThemeToggle />
           <AuthControl />
           <NostrAuth />
         </div>

@@ -2,13 +2,14 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useApp } from '@/lib/store';
+import { clearShowSelection, useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
 import {
-  groupByMedium, feedNoun, itemNoun, useCollapsedGroups, CollapsibleHeading,
+  groupByMedium, feedNoun, itemNoun, splitLabels, crossSplitLabel,
+  useCollapsedGroups, CollapsibleHeading,
 } from '@/components/lists/grouping';
 import type { FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
 
@@ -37,7 +38,13 @@ export function FavoritesPage() {
   const favorites = useApp((s) => s.favorites);
   const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
   const identity = useApp((s) => s.identity);
+  // Signed in AND the relay read came back untrustworthy. Same expression
+  // <FavoritesSyncNotice> gates itself on — 'idle' is the pre-hydration and
+  // signed-out state, never a failure. Read here too because the EMPTY branch
+  // below must not describe a degraded read as an empty library.
+  const degraded = useApp((s) => !!s.identity && s.favoritesSync === 'degraded');
   const selectPodcast = useApp((s) => s.selectPodcast);
+  const setShowOrigin = useApp((s) => s.setShowOrigin);
   const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
   const openEpisode = useApp((s) => s.openEpisode);
   const router = useRouter();
@@ -76,11 +83,18 @@ export function FavoritesPage() {
   // findable only by accident.
   const tabs = useMemo(() => {
     const merged = [
-      ...feedRows.map((r) => ({ medium: r.medium })),
-      ...itemRows.map((r) => ({ medium: r.medium })),
+      ...feedRows.map((r) => ({ medium: r.medium, kind: 'feeds' as const })),
+      ...itemRows.map((r) => ({ medium: r.medium, kind: 'items' as const })),
     ];
+    // Counted per HALF as well as per medium, because the mixed tab offers one
+    // chip per (medium, half) pair and a chip that filters to nothing is worse
+    // than no chip — `~unknown` routinely holds items and no feeds.
     return groupByMedium(merged, (r) => r.medium).map((g) => ({
-      key: g.key, label: g.label, count: g.rows.length,
+      key: g.key,
+      label: g.label,
+      count: g.rows.length,
+      feedCount: g.rows.filter((r) => r.kind === 'feeds').length,
+      itemCount: g.rows.filter((r) => r.kind === 'items').length,
     }));
   }, [feedRows, itemRows]);
 
@@ -88,6 +102,19 @@ export function FavoritesPage() {
   // and a tab that no longer exists would filter everything away with no way
   // back. Fall through to All rather than showing an empty page.
   const tab = tabs.some((t) => t.key === view.tab) ? view.tab : 'all';
+
+  // DERIVED, not stored, and that is what keeps the two rows honest. On the
+  // mixed tab a split chip names a medium as well as a half, so pressing one
+  // moves the tab too — which leaves 'all' as the only split state that tab can
+  // display. Reading `view.split` there instead would render five chips with
+  // none of them active over a list silently filtered to half of it, reachable
+  // by picking MUSIC + ALBUMS and then pressing ALL.
+  //
+  // Kept even though every tab press now writes `split: 'all'` itself: the
+  // stored tab can also stop existing under the user (the last album of a
+  // medium unfavorited), and that path falls through to ALL without any click
+  // to reset the half.
+  const split = tab === 'all' ? 'all' : view.split;
 
   const query = q.trim().toLowerCase();
   const feeds = useMemo(
@@ -131,6 +158,13 @@ export function FavoritesPage() {
    */
   function openFeed(p: Podcast) {
     selectPodcast(p);
+    // AFTER selectPodcast, never before: that action clears `showOrigin` so an
+    // ordinary selection resets it without knowing the field exists. The show
+    // page's back control reads this to offer a return HERE — it used to say
+    // "← back to results" and clear the selection in place, which on this path
+    // named a results list the visitor had never seen and left no way back to
+    // the library they came from.
+    setShowOrigin(FAVORITES_ORIGIN);
     router.push('/');
   }
 
@@ -162,6 +196,7 @@ export function FavoritesPage() {
       : await resolvePodcastByGuid(feedGuid);
     if (!podcast) return;
     selectPodcast(podcast);
+    setShowOrigin(FAVORITES_ORIGIN); // see openFeed
     router.push('/');
     const loaded = await loadEpisodeFromFeed(podcast.id, ep.itemGuid);
     if (!loaded) return;
@@ -184,11 +219,73 @@ export function FavoritesPage() {
   // Nouns follow the tab, because that is the only place this page knows a
   // medium from. Under All it has a mixed list and has to pick a generic word,
   // which is the trade MEDIUM_ORDER's own note describes.
-  const feedWord = tab === 'all' ? 'favorites' : feedNoun(tab, feeds.length);
-  const itemWord = tab === 'all' ? 'favorites' : itemNoun(tab, items.length);
+  //
+  // Passed as FUNCTIONS: <PagedList> labels a "show N more …" control and the
+  // only number that word is read against is what remains, which the page does
+  // not know. `feedNoun`/`itemNoun` own the whole vocabulary now, including the
+  // two keys that name no medium — 'all' and '~unknown' both resolve to the
+  // generic word rather than asserting "show"/"episode" over a bucket that
+  // exists precisely because nobody told us.
+  const feedWord = (n: number) => feedNoun(tab, n);
+  const itemWord = (n: number) => itemNoun(tab, n);
 
-  const showFeeds = view.split !== 'items';
-  const showItems = view.split !== 'feeds';
+  // The split chips and the two section headings share ONE pair of words. They
+  // sit one row apart, so a chip reading ALBUMS above a heading reading
+  // "albums & shows" is the same confusion the compound caused in the first
+  // place — the label has to say what the control did. See `splitLabels` for
+  // why 'all' and '~unknown' keep the compound instead of guessing a noun.
+  const half = splitLabels(tab);
+
+  /**
+   * The second row: EVERYTHING, then one chip per half.
+   *
+   * Under a medium tab that is two chips and each sets the half alone. Under
+   * ALL a single word for a half would have to be a compound — "albums &
+   * shows" — which is two concepts in one box on a library that is nearly all
+   * one medium, so the row offers one chip per (medium, half) PAIR instead and
+   * each chip sets both. Pressing SHOWS moves the tab above to PODCAST, which
+   * is the point: the two rows describe one filter and must never disagree
+   * about it.
+   *
+   * Built from `tabs`, so only media the user actually has appear — there is no
+   * hand-written list of media here for the same reason the tab strip has none.
+   * Feed chips first, then item chips: grouping by half reads as two ranks
+   * (things you play through, things you play) where interleaving by medium
+   * reads as an arbitrary order.
+   *
+   * A pair with no rows gets no chip. `~unknown` typically holds items and no
+   * feeds, and a chip that filters to an empty section is worse than an absent
+   * one.
+   */
+  const splitChips = useMemo(() => {
+    if (tab !== 'all') {
+      return [
+        { id: 'feeds', label: half.feeds, tab, split: 'feeds' as const },
+        { id: 'items', label: half.items, tab, split: 'items' as const },
+      ];
+    }
+    return [
+      ...tabs
+        .filter((t) => t.feedCount > 0)
+        .map((t) => ({
+          id: `${t.key}|feeds`,
+          label: crossSplitLabel(t.key, t.label, 'feeds'),
+          tab: t.key,
+          split: 'feeds' as const,
+        })),
+      ...tabs
+        .filter((t) => t.itemCount > 0)
+        .map((t) => ({
+          id: `${t.key}|items`,
+          label: crossSplitLabel(t.key, t.label, 'items'),
+          tab: t.key,
+          split: 'items' as const,
+        })),
+    ];
+  }, [tabs, tab, half.feeds, half.items]);
+
+  const showFeeds = split !== 'items';
+  const showItems = split !== 'feeds';
 
   return (
     <div className="flex flex-col gap-4">
@@ -210,7 +307,7 @@ export function FavoritesPage() {
       {!mounted ? (
         <p className="text-muted text-sm py-8">loading your favorites…</p>
       ) : total === 0 ? (
-        <EmptyLibrary signedIn={!!identity} />
+        <EmptyLibrary signedIn={!!identity} degraded={degraded} />
       ) : (
         <>
           <div className="flex flex-col gap-3">
@@ -222,19 +319,38 @@ export function FavoritesPage() {
               className="input"
             />
             <div className="flex flex-wrap items-center gap-2">
-              <Chip active={tab === 'all'} onClick={() => update({ tab: 'all' })}>
+              {/* A tab press clears the half back to EVERYTHING. The two rows
+                  are one filter, and this is the row that names the WIDER of
+                  the two axes — pressing it reads as "show me this medium",
+                  not "show me this medium, still narrowed to whatever half I
+                  was in three clicks ago". Carrying the half over is defensible
+                  and was worse in practice: press SHOWS, then press MUSIC, and
+                  you land on albums with no tracks and nothing on screen
+                  saying a second filter is still on. */}
+              <Chip active={tab === 'all'} onClick={() => update({ tab: 'all', split: 'all' })}>
                 all <span className="opacity-60">{total}</span>
               </Chip>
               {tabs.map((t) => (
-                <Chip key={t.key} active={tab === t.key} onClick={() => update({ tab: t.key })}>
+                <Chip
+                  key={t.key}
+                  active={tab === t.key}
+                  onClick={() => update({ tab: t.key, split: 'all' })}
+                >
                   {t.label} <span className="opacity-60">{t.count}</span>
                 </Chip>
               ))}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Chip active={view.split === 'all'} onClick={() => update({ split: 'all' })}>everything</Chip>
-              <Chip active={view.split === 'feeds'} onClick={() => update({ split: 'feeds' })}>albums &amp; shows</Chip>
-              <Chip active={view.split === 'items'} onClick={() => update({ split: 'items' })}>tracks &amp; episodes</Chip>
+              <Chip active={split === 'all'} onClick={() => update({ split: 'all' })}>everything</Chip>
+              {splitChips.map((c) => (
+                <Chip
+                  key={c.id}
+                  active={tab === c.tab && split === c.split}
+                  onClick={() => update({ tab: c.tab, split: c.split })}
+                >
+                  {c.label}
+                </Chip>
+              ))}
               <span className="ml-auto flex items-center gap-2">
                 <Chip active={view.sort === 'recent'} onClick={() => update({ sort: 'recent' })}>recent</Chip>
                 <Chip active={view.sort === 'az'} onClick={() => update({ sort: 'az' })}>a–z</Chip>
@@ -258,7 +374,7 @@ export function FavoritesPage() {
               {showFeeds && (
                 <Section
                   listId={feedsListId}
-                  heading="albums & shows"
+                  heading={half.feeds}
                   shown={feeds.length}
                   ofTotal={query || tab !== 'all' ? feedRows.length : null}
                   collapsed={collapsed.has('favpage:feeds')}
@@ -277,7 +393,7 @@ export function FavoritesPage() {
               {showItems && (
                 <Section
                   listId={itemsListId}
-                  heading="tracks & episodes"
+                  heading={half.items}
                   shown={items.length}
                   ofTotal={query || tab !== 'all' ? itemRows.length : null}
                   collapsed={collapsed.has('favpage:items')}
@@ -300,6 +416,9 @@ export function FavoritesPage() {
     </div>
   );
 }
+
+/** Read by `<HomePage>`'s back control — see `showOrigin` in lib/store.ts. */
+const FAVORITES_ORIGIN = { path: '/favorites', label: 'favorites' };
 
 function inTab(row: { medium?: string }, tab: string): boolean {
   if (tab === 'all') return true;
@@ -383,20 +502,44 @@ function Section({
 }
 
 /**
- * Nothing saved. Three states share this component and only two of them are
- * this one — a degraded read renders <FavoritesSyncNotice> above and must not
- * be told its library is empty, which is why that notice is outside this
- * branch and this copy never claims the relay agreed.
+ * Nothing to show. TWO different claims share this component, and telling them
+ * apart is the whole reason it takes `degraded`.
+ *
+ * `total === 0` is reached in two ways, and only one of them is an empty
+ * library. The other is a degraded relay read on a device with no cache — a new
+ * browser, a private tab, a second device — which is precisely the case
+ * <FavoritesSyncNotice> exists for. "Nothing saved yet." is a positive claim
+ * about the user's library, in the largest type on the page, and in that case
+ * it is false: the list may be full and unreadable.
+ *
+ * Putting the notice above this branch is necessary and was not sufficient.
+ * Two elements on one screen made opposite claims and the louder one was wrong,
+ * which is the same failure as the silent guard this repo already paid for
+ * once, one step further along: it no longer withholds silently, it withholds
+ * while asserting the opposite. So the headline changes with the read, and the
+ * degraded copy never says "saved" — it says what this DEVICE holds and points
+ * at the retry.
+ *
+ * The signed-out half is unaffected: with no key there is no relay read to
+ * degrade, so `degraded` is false and the onboarding copy stands.
  */
-function EmptyLibrary({ signedIn }: { signedIn: boolean }) {
+function EmptyLibrary({ signedIn, degraded }: { signedIn: boolean; degraded: boolean }) {
   return (
     <div className="card p-6 flex flex-col gap-3 items-start">
-      <p className="font-display text-xl">Nothing saved yet.</p>
+      <p className="font-display text-xl">
+        {degraded ? 'Nothing on this device.' : 'Nothing saved yet.'}
+      </p>
       <p className="text-sm text-muted leading-relaxed max-w-prose">
-        Tap ♡ on any show, album, episode or track and it lands here.
+        {degraded
+          ? 'Your favorites could not be read from the relays, so anything saved in another app or on another device is not shown. Use retry above once you are back online.'
+          : 'Tap ♡ on any show, album, episode or track and it lands here.'}
         {!signedIn && ' Favorites are stored on this device — sign in with Nostr to sync them across apps.'}
       </p>
-      <Link href="/" className="btn-ghost text-xs">← back to search</Link>
+      {/* Clears the selection for the same reason <AppHeader>'s wordmark does
+          on this route — see `clearShowSelection`. */}
+      <Link href="/" onClick={clearShowSelection} className="btn-ghost text-xs">
+        ← back to search
+      </Link>
     </div>
   );
 }

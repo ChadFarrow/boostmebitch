@@ -303,12 +303,17 @@ local removal and published the deletion. One outage plus one reload.
 `addedAt: 0` means "not known yet", so a first real resolve stamps its own rather
 than inheriting a placeholder's and sinking to the bottom forever.
 
-**Medium sorts the list, and absent is its own bucket.** `<FavoritesList>` and
-`<FavoriteEpisodesList>` group via `groupByMedium` (`components/lists.tsx`) in
-`MEDIUM_ORDER` with medium-unknown last and never folded into `podcast`.
-Headings only appear when there's more than one group; case is folded for
-bucketing only, and an unrecognized value keeps its own label because the
-vocabulary is open. Precedence is `resolved ?? wire hint`: PI wins where we have
+**Medium sorts the list, and absent is its own bucket.** `<FavoritesPage>`
+(`components/favorites-page.tsx`) builds its tab strip out of `groupByMedium`'s
+own output (`components/lists/grouping.tsx`) rather than a hand-written list of
+media, which is what keeps `MEDIUM_ORDER`'s ordering, medium-unknown last and
+never folded into `podcast`, and a feed-supplied label that is never normalized
+beyond lowercasing for the bucket key. Case is folded for bucketing only, and an
+unrecognized value keeps its own label because the vocabulary is open. `'all'`
+and `'~unknown'` are the two tab keys that name no medium, so `feedNoun` /
+`itemNoun` give both the generic word: calling an undeclared-medium row a "show"
+makes exactly the claim that keeping the bucket separate exists to refuse.
+Precedence is `resolved ?? wire hint`: PI wins where we have
 it, the hint fills the gap, and **a disagreement is a stale hint, not an error —
 render your own value and never republish to correct the wire.** The hint is what
 makes the split possible on first paint at all: resolution is one PI request per

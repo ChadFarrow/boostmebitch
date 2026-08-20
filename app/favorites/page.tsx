@@ -17,7 +17,12 @@ export default function Page() {
   return (
     <>
       <AppHeader />
-      <main className="max-w-5xl mx-auto px-4 pt-8 pb-32">
+      {/* `max-w-7xl px-4` — the same measure every <section> in <HomePage>
+          uses. It was `max-w-5xl`, which reads fine for a column of prose and
+          wrong for a library: the two routes share a header pinned to the wider
+          measure, so the content below it started at a different left edge on
+          each and the page looked inset by mistake rather than by design. */}
+      <main className="max-w-7xl mx-auto px-4 pt-8 pb-32">
         <FavoritesPage />
       </main>
     </>

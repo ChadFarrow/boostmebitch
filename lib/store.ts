@@ -90,6 +90,26 @@ interface AppState {
   // card) can navigate to a show without prop-drilling.
   selectedPodcast: Podcast | null;
   selectPodcast: (p: Podcast | null) => void;
+  /**
+   * Where the show on screen was opened FROM, when that was another route.
+   *
+   * The detail view lives on `/` and its back control used to be unconditional
+   * — "← back to results", clearing the selection in place. That was true while
+   * every way into a show was on `/`. It is not true now: `/favorites` and
+   * `/npub/<npub>` both open a show by setting this store and navigating here,
+   * so the back control offered a return to a results list the user had never
+   * seen and no way at all back to the page they actually came from.
+   *
+   * `label` rides along rather than being derived from `path`, because
+   * `/npub/<npub>` cannot be turned into "boosts" by inspection and a route
+   * that names itself is one fewer thing to keep in sync.
+   *
+   * In-memory like the rest of the navigation state, so a reload of
+   * `/?podcast=…` correctly forgets it — that visitor arrived by URL and has no
+   * origin to go back to.
+   */
+  showOrigin: { path: string; label: string } | null;
+  setShowOrigin: (o: { path: string; label: string } | null) => void;
   // Refresh selectedPodcast with a fresher/enriched copy of the SAME show —
   // e.g. the RSS-enriched podcast from /api/feed, which carries funding /
   // medium / podroll that PI's by-guid lookup doesn't index — WITHOUT touching
@@ -236,7 +256,18 @@ export const useApp = create<AppState>((set, get) => ({
   selectedPodcast: null,
   // Leaving the detail view (or switching shows) also drops any open
   // discussion and episode detail so stale views can't outlive their podcast.
-  selectPodcast: (p) => set({ selectedPodcast: p, discussionEpisode: null, selectedEpisode: null }),
+  // Clearing `showOrigin` here rather than at each call site is what makes the
+  // default safe: an ordinary selection — a search result, a podroll card, a
+  // deep link — resets the origin without knowing the field exists, and only
+  // the two handoffs that genuinely came from elsewhere set it back, right
+  // after this call. The inverse (set everywhere, clear at the exits) is the
+  // shape that leaves one exit forgotten and sends the user to a page they were
+  // never on.
+  selectPodcast: (p) =>
+    set({ selectedPodcast: p, discussionEpisode: null, selectedEpisode: null, showOrigin: null }),
+
+  showOrigin: null,
+  setShowOrigin: (o) => set({ showOrigin: o }),
   syncSelectedPodcast: (p) =>
     set((s) => {
       if (!p || !s.selectedPodcast) return {};
@@ -348,4 +379,28 @@ function persistMuted(identity: NostrIdentity | null, state: MuteListState) {
     () => storage.muted.get(identity.npub),
     resolvePublishRelays(identity),
   );
+}
+
+/**
+ * Clear the show/episode/discussion selection, for a plain `<Link href="/">`.
+ *
+ * `selectedPodcast` is module-level and deliberately SURVIVES a client route
+ * change — that is the whole mechanism `<FavoritesPage>`'s store-then-navigate
+ * handoff runs on, and `<HomePage>`'s mount-time restore early-returns on
+ * `if (useApp.getState().selectedPodcast) return;` so the handoff can't be
+ * overwritten by a stale URL param.
+ *
+ * The cost is that a page which ALSO offers an ordinary link back to `/` hands
+ * the user their last-opened show instead of the home page: `<HomePage>` never
+ * clears the selection on mount, so a link labelled "Go to home" re-enters the
+ * detail view and the selection-to-URL mirror then writes `?podcast=<old>` into
+ * the address bar. Nothing on screen says why. `goHome()` on the home route
+ * clears it in place; every other route needs this on the link itself.
+ *
+ * Lives here rather than in a component because both `<AppHeader>` and
+ * `<FavoritesPage>` need it, and `components/` importing from `components/` is
+ * the edge that already produced one module cycle in this repo.
+ */
+export function clearShowSelection() {
+  useApp.getState().selectPodcast(null);
 }
