@@ -575,25 +575,31 @@ export function payableSplit(
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
 // IDs (e.g. synthesizing an Episode.id from a guid) that survive reloads.
 /**
- * Canonical deep link to a show: the current origin + pathname with
- * `?podcast=<guid>`. Null when there's no guid (nothing stable to link to) or
- * during SSR.
+ * Canonical deep link to a show: the site ROOT with `?podcast=<guid>`. Null
+ * when there's no guid (nothing stable to link to) or during SSR.
  *
- * Built from `origin + pathname` rather than a bare `${origin}/?podcast=`
- * template, so the link survives the app being served from anywhere but the
- * root. Both were in use: `components/lists.tsx` had the URL form and
- * `components/fullscreen-player.tsx` had the template, in two private
- * `ShareButton` copies, which meant the same show produced two different links
- * depending on which screen you pressed SHARE on.
+ * **The root, not the current pathname**, and that distinction is the whole
+ * function. `?podcast=` is restored by exactly one thing — `<HomePage>`'s
+ * mount effect, which only ever runs on `/`. Every other route ignores it. So
+ * `origin + pathname`, which is what this shipped as, produces a link that
+ * opens the page the sharer happened to be standing on and silently drops the
+ * show: `/npub/<npub>?podcast=…` renders a boost explorer, `/favorites?podcast=…`
+ * renders a favorites list. The bug is invisible to the person sharing,
+ * because the copy succeeds and the URL looks right.
+ *
+ * It reaches every route, not just the one you would guess: `<FullscreenPlayer>`
+ * is mounted in `app/layout.tsx`, so its SHARE button is live wherever the user
+ * is while something plays.
  *
  * Lives here rather than in either component because both need it and
  * `fullscreen-player` importing from `lists` is the component-to-component edge
  * that already caused one module cycle in this repo (podroll ↔ lists, fixed by
- * moving <FavHeart> out).
+ * moving <FavHeart> out). Two private `ShareButton` copies had already drifted
+ * into two different URLs for the same show before it was centralized here.
  */
 export function showShareUrl(podcastGuid: string | undefined): string | null {
   if (!podcastGuid || typeof window === 'undefined') return null;
-  const url = new URL(window.location.origin + window.location.pathname);
+  const url = new URL('/', window.location.origin);
   url.searchParams.set('podcast', podcastGuid);
   return url.toString();
 }

@@ -173,9 +173,38 @@ export function CollapsibleHeading({
  */
 const FAV_PAGE = 12;
 
-/** Reveal a list in FAV_PAGE-sized steps. Returns the visible slice + control. */
-export function useRevealed<T>(rows: T[]) {
-  const [shown, setShown] = useState(FAV_PAGE);
+/**
+ * Reveal a list in FAV_PAGE-sized steps. Returns the visible slice + control.
+ *
+ * `resetKey` is what makes this usable behind a filter, and the failure it
+ * prevents runs the OPPOSITE way to the obvious one. Narrowing is already
+ * safe: `slice(0, 12)` over three matches shows three. The expensive
+ * direction is widening — reveal sixty rows, type a query, clear it, and
+ * `shown` is still sixty, so sixty <PodcastCover>s mount in one commit
+ * against arbitrary third-party artwork. That is the 55.6 MB page load the
+ * cap above exists to stop, arrived at through the control that was supposed
+ * to make the list smaller.
+ *
+ * Callers pass a string built from every control that changes WHICH rows
+ * these are — query, medium tab, sort. Sort belongs in it even though it
+ * changes no count: after a re-sort, "revealed sixty" names a different sixty.
+ *
+ * Adjusted during RENDER rather than in an effect, which is React's documented
+ * pattern for state derived from changing props. **Do not "simplify" it into a
+ * `useEffect`.** That version looks identical on screen and fixes nothing: the
+ * over-large slice renders once before the effect trims it, and by then the
+ * browser has already issued every image request this exists to prevent.
+ *
+ * Clamping alone is not enough and never was: a SHORTER list (an unfavorite)
+ * still needs `remaining` floored at 0, which is why that stays.
+ */
+export function useRevealed<T>(rows: T[], resetKey?: string) {
+  const [state, setState] = useState({ shown: FAV_PAGE, key: resetKey });
+  let shown = state.shown;
+  if (state.key !== resetKey) {
+    shown = FAV_PAGE;
+    setState({ shown: FAV_PAGE, key: resetKey });
+  }
   // A shorter list (an unfavorite, a medium filter change) must not leave the
   // counter stranded above it, or "show more" renders with nothing to add.
   const visible = rows.slice(0, shown);
@@ -183,7 +212,7 @@ export function useRevealed<T>(rows: T[]) {
   return {
     visible,
     remaining,
-    more: () => setShown((n) => n + FAV_PAGE),
+    more: () => setState((s) => ({ ...s, shown: s.shown + FAV_PAGE })),
   };
 }
 

@@ -1,18 +1,14 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
-import { PodcastResults, EpisodeList, FavoritesList, FavoriteEpisodesList } from '@/components/lists';
+import { PodcastResults, EpisodeList } from '@/components/lists';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
-import { NostrAuth } from '@/components/nostr-auth';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { NostrLiveStreams } from '@/components/nostr-live-streams';
 import { DiscussionView } from '@/components/discussion-view';
 import { EpisodeDetailView } from '@/components/episode-detail-view';
-import { BoltIcon } from '@/components/icons';
-import { ThemeToggle } from '@/components/theme-toggle';
-import { AuthControl } from '@/components/auth-control';
+import { AppHeader } from '@/components/app-header';
 import { useApp } from '@/lib/store';
-import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
 
@@ -22,19 +18,6 @@ export function HomePage() {
   const [feeds, setFeeds] = useState<Podcast[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
-  // Collapsed by default, and remembered. A long favorites list pushes every
-  // section below it — the live streams, the global feed — off the first screen
-  // before the user has chosen anything, and the panel is a browse aid rather
-  // than the reason the page exists.
-  //
-  // Initialized LAZILY from storage rather than in an effect, for the reason
-  // `useCollapsedGroups` spells out in components/lists.tsx: an effect paints the
-  // panel open for a frame and then snaps it shut, which is the exact flash that
-  // persisting the value is meant to avoid. Safe against SSR because none of this
-  // subtree reaches the server render — `showLeftRightLayout` is false on the
-  // first pass (see `mounted` below), so the whole <aside> is <EmptyState /> until
-  // after hydration, and `safeGet` returns null off-browser anyway.
-  const [favoritesCollapsed, setFavoritesCollapsed] = useState(() => !storage.favPanelOpen.get());
   const [searchKey, setSearchKey] = useState(0);
   const [publisherSource, setPublisherSource] = useState<Podcast | null>(null);
   const [publisherAlbums, setPublisherAlbums] = useState<Podcast[] | null>(null);
@@ -249,75 +232,26 @@ export function HomePage() {
     clearPublisher();
     if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
   }
-  const favorites = useApp((s) => s.favorites);
-  const favoriteEpisodes = useApp((s) => s.favoriteEpisodes);
-  const episodeCount = Object.keys(favoriteEpisodes).length;
-  // `mounted` gate, for the reason <AuthControl> already documents at the top
-  // of its own: lib/store.ts hydrates `favorites` from localStorage at MODULE
-  // scope, which is `{}` on the server but already populated on the client
-  // before React hydrates. This value decides `showFavoritesPanel` and through
-  // it `showLeftRightLayout`, i.e. the whole page's layout — so a returning
-  // user's first client render disagreed with the server HTML and React 19
-  // threw the homepage subtree away and rebuilt it. First client render now
-  // matches SSR; the favorites panel paints one tick later.
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
-  const hasFavorites = mounted && (Object.keys(favorites).length > 0 || episodeCount > 0);
-
-  // A degraded relay read opens the panel even with nothing to put in it —
-  // otherwise the notice has nowhere to render, and a device with no cached
-  // favorites (new browser, private tab, second device) is exactly the case
-  // where "we couldn't ask" is indistinguishable from "your favorites are
-  // gone". The genuinely-empty case is left alone: <EmptyState>'s onboarding
-  // cards are already the right "you have nothing saved yet" affordance, and
-  // because degraded now always opens the panel, seeing them positively means
-  // the read worked.
-  // 'idle' is not a failure — it is the pre-hydration and signed-out state.
-  const favoritesDegraded = useApp((s) => !!s.identity && s.favoritesSync === 'degraded');
-  const showFavoritesPanel = !query && (hasFavorites || favoritesDegraded);
-  const showLeftRightLayout = loading || feeds.length > 0 || selected || showFavoritesPanel || !!publisherSource;
+  // Favorites moved to `/favorites`, and the `mounted` gate this page used to
+  // carry went with them: it existed solely because `hasFavorites` fed
+  // `showLeftRightLayout`, and lib/store.ts hydrates `favorites` from
+  // localStorage at MODULE scope — `{}` on the server, already populated on the
+  // client before React hydrates — so a returning user's first client render
+  // disagreed with the server HTML and React 19 threw this subtree away. Every
+  // term below is in-memory and null on both sides, so the hazard is gone
+  // rather than merely moved. The gate now lives in <FavoritesPage> and
+  // <FavoritesLink>, which are the surfaces that actually read those maps.
+  const showLeftRightLayout = loading || feeds.length > 0 || selected || !!publisherSource;
   const inDetailView = !!selected;
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
   const inEpisodeDetail = useApp((s) => !!s.selectedEpisode);
 
   return (
     <main className="min-h-screen pb-32">
-      {/* Header */}
-      <header className="border-b border-bone/15 sticky top-0 z-20 bg-ink/90 backdrop-blur pt-[env(safe-area-inset-top)]">
-        {/* `truncate` on the wordmark is load-bearing, and so is the `min-w-0`
-            beside it. A flex item's min-width is `auto`, i.e. min-content, which
-            for this button is its widest WORD — so without them "Boost Me Bitch"
-            broke onto three lines at 390px, tripling the header and pushing the
-            show header's own `sticky top-[var(--app-header-h)]` underneath it.
-            `shrink-0` is NOT the fix: signed in with a wallet the right-hand
-            cluster is ~230px, leaving ~128px for a ~200px title, and
-            `html { overflow-x: clip }` (below) CLIPS rather than scrolls — the
-            account menu would be silently cut off. An ellipsis is the better
-            failure. `--app-header-h` assumes this can't wrap. */}
-        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center gap-2 sm:gap-4">
-          <button
-            type="button"
-            onClick={goHome}
-            className="flex items-center gap-2 min-w-0 hover:opacity-80 transition"
-            aria-label="Go to home"
-          >
-            <BoltIcon className="w-6 h-6 text-bolt shrink-0" />
-            <span className="font-display text-xl sm:text-2xl truncate">Boost Me Bitch</span>
-            <span className="text-[10px] text-muted uppercase tracking-widest hidden sm:inline shrink-0">
-              podcasting 2.0
-            </span>
-          </button>
-          {/* `ml-auto` rather than a `flex-1` spacer: the spacer sat between two
-              gaps and cost a whole gap of width on mobile for nothing. Identical
-              on desktop — an auto margin and a flex-1 spacer lay out the same
-              wherever there is slack. */}
-          <div className="ml-auto flex items-center gap-2 sm:gap-4 shrink-0">
-            <ThemeToggle />
-            <AuthControl />
-            <NostrAuth />
-          </div>
-        </div>
-      </header>
+      {/* Shared with /favorites — see <AppHeader> for why the wordmark is a
+          button here and a link everywhere else, and for the 71px it owes
+          `--app-header-h`. */}
+      <AppHeader onHome={goHome} />
 
       {/* Hero */}
       <section className="max-w-7xl mx-auto px-4 pt-10 pb-6">
@@ -350,6 +284,16 @@ export function HomePage() {
             onLoading={setLoading}
             onQueryChange={handleQueryChange}
           />
+          {/* Still here after the favorites panel moved to /favorites, and it
+              has to be: hearts render all over this page — search results, the
+              podroll, the episode detail view, the layout-mounted fullscreen
+              player — so a user toggling one during a degraded read is being
+              silently withheld from right here. Its old slot was inside the
+              panel that just went away. Unconditional now rather than gated on
+              a panel; the component self-hides unless signed in AND degraded. */}
+          <div className="mt-3">
+            <FavoritesSyncNotice />
+          </div>
         </div>
       </section>
 
@@ -382,10 +326,6 @@ export function HomePage() {
           // (`inDetailView` branch above) so this layer never needs to host
           // an episode pane.
           <aside className="card p-3 max-h-[70vh] overflow-y-auto">
-            {/* Above the collapse toggle, not inside it — collapsing the list
-                must not hide the reason the list might be short. Self-hiding
-                unless signed in AND degraded. */}
-            {!publisherSource && <FavoritesSyncNotice />}
             {publisherSource ? (
               <>
                 <button
@@ -404,50 +344,21 @@ export function HomePage() {
                   <PodcastResults feeds={publisherAlbums} selected={null} onSelect={(p) => { clearPublisher(); setSelected(p); }} />
                 )}
               </>
-            ) : showFavoritesPanel && !query && !loading ? (
-              <button
-                type="button"
-                // Write-through, computed OUTSIDE the setter: StrictMode
-                // double-invokes an updater, so a storage write in there runs
-                // twice. A click handler already closes over a fresh value each
-                // render, so there is no staleness to route around — same shape
-                // as `useCollapsedGroups`' read-modify-write in lists.tsx.
-                onClick={() => {
-                  const next = !favoritesCollapsed;
-                  setFavoritesCollapsed(next);
-                  storage.favPanelOpen.set(!next);
-                }}
-                aria-expanded={!favoritesCollapsed}
-                className="w-full text-[11px] uppercase tracking-widest text-muted mb-2 px-1 flex items-center justify-between gap-2 hover:text-bone"
-              >
-                {/* Total across both maps — with only episodes favorited, a
-                    show-only count reads "0 favorites" above a populated list. */}
-                <span>
-                  {Object.keys(favorites).length + episodeCount} favorites
-                </span>
-                <span aria-hidden className="text-bone/60">
-                  {favoritesCollapsed ? '▸' : '▾'}
-                </span>
-              </button>
             ) : (
               <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
                 {loading ? 'searching…' : query ? `${feeds.length} feeds` : 'feeds'}
               </div>
             )}
+            {/* Search results only, now that favorites have their own route.
+                `showLeftRightLayout` no longer flips on stored favorites, so
+                reaching this branch means the user is searching or browsing a
+                publisher — there is no third thing for the aside to hold. */}
             {!publisherSource && (query || feeds.length > 0 || loading) ? (
               <PodcastResults
                 feeds={feeds}
                 selected={null}
                 onSelect={handleSelect}
               />
-            ) : !publisherSource && !query && !loading && !favoritesCollapsed ? (
-              <>
-                <FavoritesList
-                  selected={null}
-                  onSelect={setSelected}
-                />
-                <FavoriteEpisodesList onSelect={setSelected} />
-              </>
             ) : null}
           </aside>
         ) : (
