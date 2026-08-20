@@ -31,7 +31,7 @@ npm run dev
 
 Get Podcast Index keys at <https://api.podcastindex.org/>.
 
-**Checks — there is no test runner.** `npm run typecheck` (`tsc --noEmit`, strict) · `npm run lint` (ESLint 9 flat config) · `npm run build`, plus five scripts that stand in for the tests this repo doesn't have. Each imports the **real** module (`node --experimental-strip-types`) and pins a function whose silent breakage costs a user something irreversible — treat a failure as a stop, and fix the code rather than the vector:
+**Checks — there is no test runner.** `npm run typecheck` (`tsc --noEmit`, strict) · `npm run lint` (ESLint 9 flat config) · `npm run build`, plus fifteen scripts that stand in for the tests this repo doesn't have (six of them below; `package.json` has the rest). Each imports the **real** module (`node --experimental-strip-types`) and pins a function whose silent breakage costs a user something irreversible — treat a failure as a stop, and fix the code rather than the vector:
 
 | Command | Guards |
 | --- | --- |
@@ -40,6 +40,7 @@ Get Podcast Index keys at <https://api.podcastindex.org/>.
 | `npm run check:ssrf` | `assertSafeFetchUrl` — server-side fetch guard, including the ALLOWED half so it can't start rejecting real podcast hosts |
 | `npm run check:liveblock` | `parseLiveBlock` — the Split Kit live-value payload → value block |
 | `npm run check:stream` | the streaming ledger's arithmetic, settle batching, and every money constant |
+| `npm run check:assetlinks` | `buildAssetLinks` — the Digital Asset Links statement that lets the Android app represent this origin, and so reach the Chrome profile holding the wallet credential |
 
 `npm run probe:live -- <feedUrl>` is a discovery tool, not a check: it polls a feed and reports which live-value signal that publisher actually moves.
 
@@ -58,9 +59,22 @@ vercel
 #                                      boosts post a note from the app's Nostr identity)
 #   NEXT_PUBLIC_GOOGLE_CLIENT_ID      (optional — unset, the Google onboarding
 #                                      entry point doesn't render at all)
+#   ANDROID_PACKAGE_ID                (optional — com.boostmebitch.app)
+#   ANDROID_CERT_SHA256               (optional — the APK signing certificate's
+#                                      SHA-256; unset, the statement list is
+#                                      empty and no Android app verifies)
 ```
 
 Podcast Index credentials live only in API routes (`app/api/*`) so they never reach the browser. The Spark SDK talks straight to Spark's signing operators, so it needs no key. `vercel.json` also carries the LNURL rewrite for our own Lightning address (see below) — **`next dev` does not apply `vercel.json`**, so that path only exists on a deploy.
+
+## Android app (Zapstore)
+
+The Android build is a **Trusted Web Activity** — a signed shell around `https://www.boostmebitch.com`, built by Bubblewrap from the web manifest and published to [Zapstore](https://zapstore.dev), the Nostr-native app store. There is no second copy of the app: a Vercel deploy updates the Android app at the same moment it updates the site. It fits this audience — Zapstore users sign with **Amber** (already supported over NIP-55, and Android-only) and pay over **NWC**.
+
+`android/twa-manifest.json` is the only source file; `zapstore.yaml` is the listing; `.github/workflows/android-release.yml` builds, signs and publishes on a `v*` tag. Chrome only drops the browser URL bar if `/.well-known/assetlinks.json` names the exact package and signing certificate, which is what `ANDROID_PACKAGE_ID` and `ANDROID_CERT_SHA256` above are for — unset, that document is an empty list and no app verifies. The release workflow refuses to publish a build the live origin does not vouch for.
+
+**The keystore and the Zapstore publishing key are not in this repo and cannot be.** [`docs/android.md`](docs/android.md) has the first-release runbook, why the origin must be `www` and not the apex, and what still needs testing on a real device.
+
 
 ---
 
