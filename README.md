@@ -59,7 +59,7 @@ vercel
 #                                      boosts post a note from the app's Nostr identity)
 #   NEXT_PUBLIC_GOOGLE_CLIENT_ID      (optional — unset, the Google onboarding
 #                                      entry point doesn't render at all)
-#   ANDROID_PACKAGE_ID                (optional — com.boostmebitch.app)
+#   ANDROID_PACKAGE_ID                (optional — com.boostmebitch)
 #   ANDROID_CERT_SHA256               (optional — the APK signing certificate's
 #                                      SHA-256; unset, the statement list is
 #                                      empty and no Android app verifies)

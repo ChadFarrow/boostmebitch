@@ -10,6 +10,16 @@ A **Trusted Web Activity**: a signed Android shell that opens `https://www.boost
 
 **Why not a bundled native shell.** The app cannot be statically exported. `next.config.mjs` has no `output: 'export'`, `app/page.tsx` reads `searchParams` in `generateMetadata` and so renders dynamically, and thirteen `app/api/*` routes hold the Podcast Index credentials plus every payment-critical lookup — `/api/value-splits`, `/api/keysend`, `/api/lightning/boostbox`, `/api/live-value`. Bundling the assets would still leave every one of those calls pointed at the live origin, so it would buy an offline splash screen and a second build system, and cost the guarantee that the credential never leaves the server.
 
+**Why not Capacitor, given the sibling app uses it.** [`ChadFarrow/stablekraft-app`](https://github.com/ChadFarrow/stablekraft-app) ships to Zapstore as a Capacitor app: `capacitor.config.ts` with `server.url` pointed at the live site, a committed `android/` project, gradle signing from `STABLEKRAFT_KEYSTORE_*` environment variables, and a local `npm run android:release`. It is the working precedent for this repo's `zapstore.yaml` and for the keystore convention below.
+
+The packaging itself is where the two apps diverge, for three reasons specific to this one. A Capacitor app runs an Android **WebView**; a TWA runs **Chrome**.
+
+- **Google blocks OAuth inside embedded WebViews** (`disallowed_useragent`). "Continue with Google" is this app's onboarding for people with no Nostr key, and it would have to be hidden on Android.
+- **Amber's NIP-55 round trip already works in Chrome.** `lib/nostr/amber.ts` navigates to `nostrsigner:` and reads the reply off the system clipboard — both are the everyday Android-Chrome path this app is used on today. A WebView needs the bridge to launch the intent and needs its own clipboard permission story.
+- **Background audio comes free in Chrome.** StableKraft needed a foreground-service keepalive *and* a native lockscreen MediaSession plugin to get it, which is exactly the work a WebView imposes.
+
+So the TWA costs a Digital Asset Links statement — the whole next section — and saves porting three native subsystems. If this app ever needs a capability Chrome cannot give it, Capacitor is the migration, and StableKraft is the reference for how.
+
 **Why Zapstore.** It is a Nostr-native app store, and its publishing tool `zsp` handles APKs exclusively — there is no web-app listing type, so an Android package is the only shape this can take. The audience fit is the reason it is worth doing: Zapstore users overwhelmingly sign with **Amber**, which this app already supports over NIP-55 and which exists only on Android, and pay over **NWC**.
 
 ## The origin must be `www`, and this is not a style preference
@@ -40,7 +50,7 @@ There is no `public/.well-known/` in this repo; both existing entries (`nostr.js
 
 Bubblewrap regenerates the entire Gradle project from this file on every `update` and overwrites manual edits, which is exactly the property that lets one JSON file be the only thing in git. Everything else under `android/` is ignored.
 
-- **`packageId: com.boostmebitch.app` is permanent.** Zapstore keys an app on package name plus signing certificate; changing it later is a brand-new app with no upgrade path for anyone who installed the old one. `.app` rather than `.twa` so today's packaging choice is not baked into a forever-identifier that should survive a future native rewrite.
+- **`packageId: com.boostmebitch` is permanent.** Zapstore keys an app on package name plus signing certificate; changing it later is a brand-new app with no upgrade path for anyone who installed the old one, and the listing starts from zero. It is the domain reversed, which is the same rule that gave the sibling app `app.stablekraft` for `stablekraft.app` — no extra segment naming today's packaging choice, since the id has to outlive it.
 - **`fallbackType: customtabs`.** The `webview` fallback runs in a WebView with **its own storage jar**, where the NWC credential and any local nsec held in Chrome would be invisible, and `nostrsigner:` dispatch behaves differently. Custom Tabs keeps the same Chrome profile. Do not switch this.
 - **`orientation: default` diverges from the web manifest's `portrait`, on purpose.** `<FullscreenPlayer>` plays HLS live streams in a `<video>`, and a portrait-locked activity would stop that rotating. The web manifest is unchanged — an installed PWA has no video-rotation problem worth changing site-wide behaviour for.
 - **`enableNotifications: false`.** `true` adds `POST_NOTIFICATIONS` and the notification-delegation service. The app sends no Web Push, and Zapstore surfaces the permission list prominently. Flip it when Web Push actually ships, not before.
@@ -81,12 +91,12 @@ None of this can live in the repository.
    ```
    **CAUTION: losing this file means never updating the app again** — not on Zapstore, not anywhere. Zapstore identifies an app by package name *and* signing certificate, so a replacement key is a different app.
 2. **Add the repository secrets:** `ANDROID_KEYSTORE_BASE64` (`base64 -w0 boostmebitch-release.jks`), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, and `ZAPSTORE_SIGN_WITH` (an `nsec1…` or a `bunker://…` URL). The key alias is not a secret and lives in `twa-manifest.json`.
-   **CAUTION: `ZAPSTORE_SIGN_WITH` becomes the app's publisher identity on Zapstore permanently.** Decide it deliberately; a bunker URL is the safer form.
+   **CAUTION: `ZAPSTORE_SIGN_WITH` becomes the app's publisher identity on Zapstore permanently.** It is not a fresh decision — `zapstore.yaml` declares `pubkey: npub177fz…`, the same publisher StableKraft uses, so both apps sit under one identity. Use the key for that npub; a bunker URL is the safer form. Because the pubkey is declared in the file, a mismatched signing key is caught rather than quietly publishing under a second identity.
 3. **Print the fingerprint** and set the Vercel production environment:
    ```bash
    keytool -list -v -keystore boostmebitch-release.jks -alias boostmebitch | grep SHA256
    ```
-   `ANDROID_PACKAGE_ID=com.boostmebitch.app`, `ANDROID_CERT_SHA256=<that value>`. Redeploy, then confirm the live document with no redirect:
+   `ANDROID_PACKAGE_ID=com.boostmebitch`, `ANDROID_CERT_SHA256=<that value>`. Redeploy, then confirm the live document with no redirect:
    ```bash
    curl -sI https://www.boostmebitch.com/.well-known/assetlinks.json   # 200, no 30x
    curl -s  https://www.boostmebitch.com/.well-known/assetlinks.json | jq .
@@ -101,6 +111,28 @@ None of this can live in the repository.
    zsp apk --extract android/app-release-signed.apk # the permission list zsp will publish
    ```
 6. **Tag it:** `git tag v0.1.0 && git push origin v0.1.0`.
+
+### Releasing locally instead
+
+CI is the normal path, but the sibling app releases by hand and the same shape works here. The npm scripts are the same commands CI runs, so a local build cannot silently differ from a published one.
+
+Keep the keystore and its passwords outside the repo, the way StableKraft does — `~/keystores/boostmebitch-release.jks` and `~/.boostmebitch-android.env`, neither ever committed:
+
+```bash
+# ~/.boostmebitch-android.env
+export BUBBLEWRAP_KEYSTORE_PASSWORD=…
+export BUBBLEWRAP_KEY_PASSWORD=…
+```
+
+```bash
+source ~/.boostmebitch-android.env
+ln -sf ~/keystores/boostmebitch-release.jks android/android.keystore   # android/* is gitignored
+npm run android:config      # points Bubblewrap at your JDK and Android SDK
+npm run android:update      # regenerate the project from twa-manifest.json
+npm run android:release     # signed APK at android/app-release-signed.apk
+```
+
+Bump `appVersion` and `appVersionCode` in `android/twa-manifest.json` by hand first — CI does that from the tag, and nothing does it for you here.
 
 Installing the result:
 

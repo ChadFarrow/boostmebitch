@@ -28,10 +28,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Pinned for the same reason nostr-tools is pinned to an exact version: a tool
-  # that regenerates the entire Android project from a manifest is exactly where
-  # @latest silently changes the output between two releases of the same app.
-  BUBBLEWRAP_VERSION: 1.25.0
+  # zsp is pinned for the same reason nostr-tools is pinned to an exact version.
+  # Bubblewrap is pinned too, but in package.json's android:* scripts — CI runs
+  # the same commands a local release does, so the version lives in one place
+  # and a local build cannot silently differ from the published one.
   ZSP_VERSION: v0.4.9
   ORIGIN: https://www.boostmebitch.com
 
@@ -111,20 +111,18 @@ jobs:
           BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          cd android
-          BW="npx --yes @bubblewrap/cli@${BUBBLEWRAP_VERSION}"
-          $BW updateConfig --jdkPath "$JAVA_HOME" --androidSdkPath "$ANDROID_HOME"
+          npm run android:config
           # `update`, not `init`: it regenerates the Android project from
           # twa-manifest.json, which is what lets one JSON file be the only
           # source in git. --skipVersionUpgrade because the step above already
           # set both version fields; letting Bubblewrap auto-increment would
           # make the version code depend on how many times this workflow ran.
-          $BW update --skipVersionUpgrade
+          npm run android:update
           # --skipPwaValidation has a repo-specific reason, not a lazy one:
           # Bubblewrap's Quality Criteria check evaluates offline support, and
           # public/sw.js deliberately precaches nothing (see docs/ui.md). The
           # validation would fail on a property this app has consciously chosen.
-          $BW build --skipPwaValidation
+          npm run android:release
 
       - name: Read the certificate out of what was actually built
         id: cert

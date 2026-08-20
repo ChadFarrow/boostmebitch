@@ -55,7 +55,7 @@ function section(name) {
 // production key — 32 arbitrary bytes, which is all the format is.
 const FP = '9A:C1:0E:57:3B:44:F8:21:6D:90:5C:E3:07:B2:48:1F:AA:36:D5:69:C4:12:8E:70:5B:33:E9:07:1D:64:A2:FC';
 const FP2 = '01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF';
-const PKG = 'com.boostmebitch.app';
+const PKG = 'com.boostmebitch';
 const RELATION = 'delegate_permission/common.handle_all_urls';
 
 /** The exact object Chrome expects, written out longhand rather than built. */

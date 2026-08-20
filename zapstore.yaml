@@ -50,7 +50,7 @@ description: |
 license: MIT
 website: https://www.boostmebitch.com
 
-icon: ./public/icons/icon-512.png
+icon: https://www.boostmebitch.com/icons/icon-512.png
 
 # Captured by `node scripts/shoot-screenshots.mjs`. Uncomment once the PNGs are
 # committed — zsp fails on a path that does not resolve, and a listing that
@@ -64,7 +64,7 @@ release_notes: ./CHANGELOG.md
 
 tags:
   - podcast
-  - podcasting20
+  - podcasting-2.0
   - value4value
   - lightning
   - nostr
@@ -77,18 +77,29 @@ tags:
 # mutes), 53 (live streams, kind 30311/1311), 55 (amber.ts), 57 (zap.ts),
 # 65 (relays.ts), 73 (podcast refs on boost notes).
 supported_nips:
-  - "01"
-  - "02"
-  - "04"
-  - "05"
-  - "07"
-  - "19"
-  - "44"
-  - "46"
-  - "47"
-  - "51"
-  - "53"
-  - "55"
-  - "57"
-  - "65"
-  - "73"
+  - 01
+  - 02
+  - 04
+  - 05
+  - 07
+  - 19
+  - 44
+  - 46
+  - 47
+  - 51
+  - 53
+  - 55
+  - 57
+  - 65
+  - 73
+
+# Enriches the listing from the GitHub repo, and the publisher identity these
+# apps share. Both are lifted from ChadFarrow/stablekraft-app's zapstore.yaml,
+# which is the working precedent for this whole file — one developer, one
+# Zapstore publisher, two apps under it. zsp signs with SIGN_WITH from the
+# environment; declaring the pubkey here means a mismatched signing key is
+# caught rather than quietly publishing the app under a second identity.
+metadata_sources:
+  - github
+
+pubkey: npub177fz5zkm87jdmf0we2nz7mm7uc2e7l64uzqrv6rvdrsg8qkrg7yqx0aaq7
