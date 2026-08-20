@@ -285,4 +285,8 @@ Don't introduce a token whose name implies a fixed color (avoid `dark-gray`); fo
 
 Those two purposes want different artwork. Android crops a maskable icon to a platform-chosen shape (circle, squircle, teardrop) and only guarantees the **inner 80%** — the "safe zone" — survives; art drawn to the edges gets its edges cut. Declaring an `any` icon as maskable therefore doesn't add support, it opts into having the icon clipped on every Android launcher, which is strictly worse than the fallback (Android shrinks a non-maskable icon inside a white plate instead).
 
-So the declaration is **removed** rather than repaired. Restoring it means exporting a genuinely padded variant — the same logo at ~66% scale on the `#0a0a08` background, saved as its own file — and pointing `purpose: "maskable"` at *that*. Don't point it back at the shared asset.
+So the declaration was **removed** rather than repaired, and has since been restored the only way it should be: `public/icons/icon-512-maskable.png` is a genuinely padded variant — the same logo at 66% scale on the `#0a0a08` background, its own file — and `purpose: "maskable"` points at *that*. **Don't point it back at the shared asset.**
+
+The arithmetic behind the 66%: the bolt in `public/icon.svg` spans x 128–384 and y 96–416, so its half-diagonal from the centre is **204.9px**, against a safe-zone radius of 0.4 × 512 = **204.8px**. It sat exactly on the boundary, which is why the unpadded asset was unusable rather than merely risky. 66% puts the half-diagonal at 135px.
+
+`scripts/make-maskable-icon.mjs` regenerates the file (it renders the SVG in Playwright's Chromium — Playwright is deliberately not a dependency; the script finds a global install). Run it if the logo changes, and commit the PNG. The same asset is the TWA's `maskableIconUrl`, so it is now what Android draws on the launcher for the Zapstore build too — see [`android.md`](android.md).
