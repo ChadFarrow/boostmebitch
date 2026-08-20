@@ -238,6 +238,50 @@ export function FavEpisodeRowHeart({
   );
 }
 
+/**
+ * The feed-row twin of {@link FavEpisodeRowHeart}, for a row on the favorites
+ * list that is ALREADY a `FavoritePodcast`.
+ *
+ * Separate from {@link FavHeart} for the same reason the episode pair is split:
+ * that one builds a favorite out of a `Podcast`, and an unresolved row has no
+ * `Podcast` — it has a guid, an `addedAt`, and possibly a `medium` hint another
+ * app wrote, which is a field `Podcast` has no home for and `declaredMedium`
+ * cannot recover. Round-tripping through `<FavHeart>` would therefore let an
+ * unfavorite-then-refavorite silently downgrade the entry to a bare guid, and
+ * for a feed Podcast Index has never indexed that hint is the ONLY description
+ * of it that will ever exist. Re-adding the stored object verbatim is lossless.
+ *
+ * `addedAt` is deliberately NOT restamped, so a misfired toggle leaves the row
+ * where it was instead of bubbling it to the top of a recent-sorted list.
+ */
+export function FavFeedRowHeart({
+  favorite,
+  size = 'sm',
+}: {
+  favorite: FavoritePodcast;
+  size?: Size;
+}) {
+  const isFav = useApp((s) => s.isFavorite(favorite.podcastGuid));
+  const addFavorite = useApp((s) => s.addFavorite);
+  const removeFavorite = useApp((s) => s.removeFavorite);
+  const identity = useApp((s) => s.identity);
+
+  function toggle(e: React.MouseEvent) {
+    // The row may be clickable (it opens the show), so the toggle must not
+    // bubble — the unresolved row is inert today, but that is not a property
+    // this component should depend on its caller keeping.
+    e.stopPropagation();
+    e.preventDefault();
+    if (isFav) removeFavorite(favorite.podcastGuid);
+    else addFavorite(favorite);
+    requestFavoritesSync(identity);
+  }
+
+  return (
+    <HeartButton isFav={isFav} size={size} synced={!!identity} onToggle={toggle} label="podcast" />
+  );
+}
+
 export function FavEpisodeHeart({
   episode,
   podcast,

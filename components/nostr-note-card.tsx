@@ -98,7 +98,14 @@ function NoteCardImpl({
     // otherwise NOTHING, with no error to notice. The selection is already in
     // the (in-memory) store and survives a client-side navigation, so go to the
     // view that reads it.
-    if (window.location.pathname !== '/') router.push('/');
+    if (window.location.pathname !== '/') {
+      // Record where we're leaving from, AFTER selectPodcast (which clears it),
+      // so the show page's back control offers a return here instead of "back
+      // to results" — a results list a visitor who arrived on /npub/<npub> has
+      // never seen. The label can't be derived from the path, so it's named.
+      useApp.getState().setShowOrigin({ path: window.location.pathname, label: 'boosts' });
+      router.push('/');
+    }
     window.scrollTo({ top: 0 });
   }
 

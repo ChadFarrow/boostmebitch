@@ -48,7 +48,7 @@ const KEYS = {
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
-  favPanelOpen: 'bmb:fav_panel_open', // '1' when the user EXPANDED the whole favorites panel; absent = collapsed, which is the default. Stores the OPPOSITE sense to favCollapsed above, on purpose — see the accessor. Also a device SETTING, also not evictable.
+  favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
   favBaselinePrefix: 'bmb:favbaseline', // + ':<npub>' — {feeds,items} of NIP-73 ids this device last agreed with the kind:10333 list on. NOT a cache: without it a shared, replaceable, many-writer event can't tell "another app added this" from "I removed this". See lib/nostr/favorites-list.ts.
@@ -112,6 +112,25 @@ export interface StreamedEntry {
 }
 
 export type SignerKind = 'amber' | 'bunker' | 'local';
+
+/**
+ * The `/favorites` control row. `tab` is a `groupByMedium` bucket key — a
+ * lowercased `<podcast:medium>`, or `'~unknown'`, or `'all'` — and is a plain
+ * string on purpose: the medium vocabulary is open, so a closed union here
+ * would reject exactly the media a newer app introduces.
+ */
+export interface FavView {
+  tab: string;
+  sort: 'recent' | 'az';
+  split: 'all' | 'feeds' | 'items';
+}
+
+/**
+ * `recent` rather than `az`, because "what did I just save" is the question a
+ * library page gets asked. It also puts the unresolved placeholders last —
+ * `addedAt: 0` means "not known yet" — which is where they belong.
+ */
+const DEFAULT_FAV_VIEW: FavView = { tab: 'all', sort: 'recent', split: 'all' };
 
 const BOOSTS_CAP = 200;
 const STREAMED_CAP = 100;
@@ -659,27 +678,44 @@ export const storage = {
   },
 
   /**
-   * Whether the whole favorites panel is expanded. Absent = collapsed.
+   * How the user last left the `/favorites` controls: medium tab, sort order,
+   * and which half of the library is on screen.
    *
-   * This stores OPEN where its neighbour above stores COLLAPSED, and the
-   * inconsistency is the point rather than a slip to be tidied away. Both keys
-   * hold the same invariant — **absent means the default** — and they differ
-   * only because their defaults differ. `favCollapsed` must default to *visible*
-   * because the medium vocabulary is open-ended, so an unseen medium would
-   * otherwise hide behind a heading nobody touched. The panel is one fixed
-   * control with no vocabulary and defaults to *closed* (a long favorites list
-   * pushes the rest of the page off the first screen), so the exception worth
-   * naming is "the user opened it".
+   * One key rather than three, because the three are read together on every
+   * render of that page and written together by one handler — three keys would
+   * be three `safeSet` calls that can independently fail on a full store,
+   * leaving a control row in a state the user never chose.
    *
-   * Keeping absent == default is also what lets `set` remove the key instead of
-   * writing '0', which matters on a full store: the fewer bytes a setting needs,
-   * the likelier `safeSet` lands it.
+   * **Every field falls back on its own.** A value from a newer build (a tab
+   * naming a medium this build doesn't render, a sort we dropped) must not
+   * take the other two down with it, so each is validated separately and a bad
+   * one resolves to the default rather than discarding the object. The tab is
+   * deliberately NOT validated against the medium vocabulary here — that
+   * vocabulary is open and lives in `groupByMedium`; the page falls through to
+   * `all` when the tab names a medium the user no longer has anything under.
    *
-   * A device view setting, not per-npub, and not evictable.
+   * A device view setting, not per-npub, and not evictable — a cache may never
+   * displace a setting.
    */
-  favPanelOpen: {
-    get: (): boolean => safeGet(KEYS.favPanelOpen) === '1',
-    set: (v: boolean) => (v ? safeSet(KEYS.favPanelOpen, '1') : safeRemove(KEYS.favPanelOpen)),
+  favView: {
+    get: (): FavView => {
+      const raw = safeGet(KEYS.favView);
+      if (!raw) return { ...DEFAULT_FAV_VIEW };
+      try {
+        const v = JSON.parse(raw);
+        return {
+          tab: typeof v?.tab === 'string' ? v.tab : DEFAULT_FAV_VIEW.tab,
+          sort: v?.sort === 'az' || v?.sort === 'recent' ? v.sort : DEFAULT_FAV_VIEW.sort,
+          split:
+            v?.split === 'feeds' || v?.split === 'items' || v?.split === 'all'
+              ? v.split
+              : DEFAULT_FAV_VIEW.split,
+        };
+      } catch {
+        return { ...DEFAULT_FAV_VIEW };
+      }
+    },
+    set: (v: FavView) => safeSet(KEYS.favView, JSON.stringify(v)),
   },
 
   /** User's publish-relay override (manual, rare). null = no override set. */

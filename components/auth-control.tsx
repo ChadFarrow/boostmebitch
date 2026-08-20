@@ -6,6 +6,7 @@ import { isGoogleAuthConfigured } from '@/lib/nostr/google-auth';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
 import { WalletModal } from './wallet-modal';
 import { WalletBalanceChip } from './wallet-balance';
+import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
 
 // The header auth control — one entry point for two independent logins.
 // Lightning (wallet) and Nostr are separate: a wallet connects without any
@@ -152,6 +153,16 @@ export function AuthControl() {
                   <span className="text-[11px] text-muted">Boost with Lightning — no Nostr needed</span>
                 </span>
               </button>
+              {/* Below a rule, because it is not a fourth way to sign in. It is
+                  here at all because search, playback and favorites all work
+                  signed out, so hosting the theme control only where an
+                  identity exists would take it away from every visitor who
+                  hasn't got one — the same reason <FavoritesLink> is not gated
+                  on `identity`. Leaves the menu open: you want to see the
+                  palette land. */}
+              <div className="border-t border-bone/15 mt-1 pt-1">
+                <ThemeMenuRow />
+              </div>
             </div>
           )}
         </>
@@ -176,15 +187,23 @@ export function AuthControl() {
         </button>
       )}
 
-      {/* Only Nostr is missing → direct sign-in button. */}
+      {/* Only Nostr is missing → direct sign-in button.
+          This is the ONE state with no dropdown anywhere in the header:
+          <AccountMenu> needs an identity and the combined sign-in menu only
+          renders when nothing at all is connected. So the bare theme icon
+          comes back here, and only here — moving a control into a menu is an
+          improvement only where the menu exists. */}
       {walletConnected && needNostr && (
-        <button
-          onClick={() => setSignInOpen(true)}
-          className="btn-ghost flex items-center gap-2"
-        >
-          <span className="text-nostr">◆</span>
-          <span className="hidden sm:inline">Sign in</span>
-        </button>
+        <>
+          <button
+            onClick={() => setSignInOpen(true)}
+            className="btn-ghost flex items-center gap-2"
+          >
+            <span className="text-nostr">◆</span>
+            <span className="hidden sm:inline">Sign in</span>
+          </button>
+          <ThemeToggle />
+        </>
       )}
 
       {walletOpen && <WalletModal onClose={() => setWalletOpen(false)} />}

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { parseNpubInput } from '@/lib/nostr/npub-input';
 import { NostrAuth } from '@/components/nostr-auth';
 import { BoostExplorer } from '@/components/boost-explorer';
+import { clearShowSelection } from '@/lib/store';
 
 /**
  * Permanent per-npub boost page: `/npub/<npub>`.
@@ -59,7 +60,10 @@ export default function NpubPage() {
     return (
       <main className="max-w-2xl mx-auto px-4 py-16 flex flex-col items-center gap-4 text-center text-muted">
         <span className="text-sm">That npub link isn&apos;t valid.</span>
-        <Link href="/" className="btn-ghost">← Go home</Link>
+        {/* Clears the show selection — see `clearShowSelection`. The store is
+            module-level and outlives a route change, so a plain link here lands
+            the visitor in whatever show they last opened. */}
+        <Link href="/" onClick={clearShowSelection} className="btn-ghost">← Go home</Link>
       </main>
     );
   }
@@ -74,7 +78,14 @@ export default function NpubPage() {
         <NostrAuth />
       </div>
       <main className="max-w-3xl mx-auto px-4 py-10 pb-32 flex flex-col gap-8">
-        <Link href="/" className="text-xs text-muted hover:text-bone w-fit">
+        {/* Same clear as the invalid-npub branch above — a <NoteCard> on this
+            page opens a show through the store, so by the time anyone reaches
+            this link there is very likely a selection standing. */}
+        <Link
+          href="/"
+          onClick={clearShowSelection}
+          className="text-xs text-muted hover:text-bone w-fit"
+        >
           ← back to Boost Me Bitch
         </Link>
         <BoostExplorer pubkey={parsed.pubkey} npub={parsed.npub} />
