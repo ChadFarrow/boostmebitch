@@ -57,6 +57,25 @@ export function resetPiBreaker() {
  * query string. Misses are cached as null so a guid PI can't resolve is
  * attempted at most once per page.
  */
+// "We were refused, so we never asked" — distinct from both "PI is down" and
+// "PI says no", and it used to be filed under the last of those.
+//
+//   429  our OWN rate limiter (lib/rate-limit.ts), not Podcast Index at all
+//   408  the request timed out before anything answered
+//
+// `if (!r.ok)` swallowed both and negative-cached them for the life of the tab,
+// under a comment that says "404 IS an answer". A 429 is not an answer about a
+// feed; it is this origin declining to look. And it arrives in bursts, because
+// favorites hydration is exactly the traffic shape that trips a per-IP limit —
+// so the entries poisoned are never one or two, they are whatever half of the
+// list ran after the budget ran out.
+//
+// Deliberately NOT `tripPiBreaker()`. The breaker means "PI is down, stop
+// asking for the rest of this tab's life", and firing it over our own limiter
+// would turn a delay into a tab-wide outage. Uncached null lets the next page
+// load resolve the entry normally.
+const COULD_NOT_ASK = new Set([408, 429]);
+
 async function resolveVia(cacheKey: string, query: string): Promise<Podcast | null> {
   if (podcastMem.has(cacheKey)) return podcastMem.get(cacheKey) ?? null;
   const cached = storage.podcastMeta.get(cacheKey);
@@ -76,6 +95,9 @@ async function resolveVia(cacheKey: string, query: string): Promise<Podcast | nu
       tripPiBreaker();
       return null;
     }
+    // Nothing was asked — leave the entry UNCACHED so a later load can resolve
+    // it. See COULD_NOT_ASK above.
+    if (COULD_NOT_ASK.has(r.status)) return null;
     // 404 IS an answer: PI has been asked and does not hold this feed. Cache it.
     if (!r.ok) {
       podcastMem.set(cacheKey, null);
@@ -153,6 +175,10 @@ export async function resolveEpisodeByGuid(
       tripPiBreaker();
       return null;
     }
+    // Same rule as resolveVia, and it matters more here: an episode lookup runs
+    // once per favorited track, so this is the endpoint a large list exhausts
+    // first.
+    if (COULD_NOT_ASK.has(r.status)) return null;
     if (!r.ok) {
       episodeMem.set(cacheKey, null);
       return null;

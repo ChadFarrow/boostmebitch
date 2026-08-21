@@ -1262,9 +1262,10 @@ export const storage = {
         return {};
       }
     },
-    set: (npub: string | null | undefined, v: Record<string, FavoritePodcast>) => {
-      safeSet(identityKey(KEYS.favoritesPrefix, npub), JSON.stringify(v));
-    },
+    /** Returns whether the value reached DISK. See `persistFavorites` in
+     *  lib/store.ts for why a caller must not drop that answer. */
+    set: (npub: string | null | undefined, v: Record<string, FavoritePodcast>): boolean =>
+      safeSet(identityKey(KEYS.favoritesPrefix, npub), JSON.stringify(v)),
   },
 
   /** Favorited episodes, keyed by item guid. Same npub namespacing as favorites. */
@@ -1281,9 +1282,9 @@ export const storage = {
         return {};
       }
     },
-    set: (npub: string | null | undefined, v: Record<string, FavoriteEpisode>) => {
-      safeSet(identityKey(KEYS.favoriteEpisodesPrefix, npub), JSON.stringify(v));
-    },
+    /** Returns whether the value reached DISK — same contract as `favorites`. */
+    set: (npub: string | null | undefined, v: Record<string, FavoriteEpisode>): boolean =>
+      safeSet(identityKey(KEYS.favoriteEpisodesPrefix, npub), JSON.stringify(v)),
   },
 
   /**
