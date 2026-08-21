@@ -154,8 +154,11 @@ an empty library rather than as an error.
 
 Opening a group is the only way to name an item's parent, so **a group appears
 whether or not the user favorited the feed**. On the live list this was built
-against, 197 groups carry 38 unambiguous favorites; the other 159 exist so a
-favorited track can name its album.
+against, 211 groups carry 50 unambiguous favorites; the other 161 exist so a
+favorited track can name its album. (Measured 2026-08-20 with `npm run
+probe:favorites`; it was 197/38 when this was written. The ratio is what
+matters and it has held — roughly three-quarters of the groups are there to
+place a track, not because anyone favorited the album.)
 
 **Only an *itemless* group reads back as a feed favorite** (`partitionList`
 reports `itemless`). Treating every `podcast:guid:` as one manufactures albums

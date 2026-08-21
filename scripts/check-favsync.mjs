@@ -434,6 +434,37 @@ section('The baseline — foreign entry vs. one we removed');
   check('...but a removed feed with nothing new under it still stays gone',
     emit(parseFavoritesList([]), localOnly, { feeds: [showId(F_MUSIC)], items: [] })
       .some((t) => t[1] === `podcast:guid:${F_MUSIC}`), false);
+
+  // The SAME rule one level in, and the half that shipped missing: an item
+  // another writer removed, under a group that SURVIVED because other tracks
+  // are still on it. The absent-group branch above filters these; the
+  // present-group branch appended every local item it did not already see, so
+  // whether a removal stuck depended on whether its album happened to have a
+  // second track on the list. Two writers is enough to see it — a phone and a
+  // laptop, or this app and StableKraft — and the loser is whoever pressed the
+  // heart last: their unfavorite is undone silently, on someone else's device.
+  const survivingGroup = [
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`],
+    ['i', itemId(I_C)],            // a sibling track keeps the group alive
+  ];
+  const stillHoldsRemoved = groupLocalFavorites([
+    { id: showId(F_MUSIC), medium: 'music' },
+    { id: itemId(I_A), feedRef: F_MUSIC, medium: 'music' },   // published, then removed elsewhere
+    { id: itemId(I_C), feedRef: F_MUSIC, medium: 'music' },
+  ]);
+  check('an item another app removed is not resurrected under a surviving group',
+    emit(parseFavoritesList(survivingGroup), stillHoldsRemoved,
+      { feeds: [showId(F_MUSIC)], items: [itemId(I_A), itemId(I_C)] })
+      .some((t) => t[1] === itemId(I_A)), false);
+
+  // The mirror, and the reason the test is the BASELINE and not mere absence
+  // from the read: a track the user has just favorited here has never been
+  // published, so it is not a removal and must go up.
+  check('...but a genuinely new track under that group IS published',
+    emit(parseFavoritesList(survivingGroup), stillHoldsRemoved,
+      { feeds: [showId(F_MUSIC)], items: [itemId(I_C)] })
+      .some((t) => t[1] === itemId(I_A)), true);
 }
 
 // ---------------------------------------------------------------------------
