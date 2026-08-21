@@ -19,6 +19,14 @@ import {
   type LocalList,
   type SyncOptions,
 } from './favorites';
+// Straight from the import-free leaf rather than through './favorites': the
+// predicate is pure and pinned by check:favsync, and routing it through the
+// module that owns the network calls would only widen what this file depends on.
+import {
+  baselineIsTrustworthy,
+  EMPTY_BASELINE,
+  type FavoritesBaseline,
+} from './favorites-list';
 import type { NostrIdentity } from './auth';
 
 /**
@@ -52,6 +60,27 @@ export function localFavoriteList(): LocalList {
   return groupLocalFavorites(localFavoriteEntries());
 }
 
+/**
+ * The stored baseline, or an empty one when it cannot be believed.
+ *
+ * Both reads are per-npub localStorage. See `baselineIsTrustworthy` for why the
+ * pair can fall out of step and why the empty answer is the safe one.
+ */
+export function trustedBaseline(npub: string): FavoritesBaseline {
+  const baseline = storage.favBaseline.get(npub);
+  const localHasEntries =
+    Object.keys(storage.favorites.get(npub)).length > 0
+    || Object.keys(storage.favoriteEpisodes.get(npub)).length > 0;
+  if (baselineIsTrustworthy(baseline, localHasEntries)) return baseline;
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[favorites] ignoring the baseline this cycle — it names '
+    + `${baseline.feeds.length + baseline.items.length} id(s) while this device caches none. `
+    + 'Treating every entry on the relay as another writer\'s rather than as our removal.',
+  );
+  return EMPTY_BASELINE;
+}
+
 export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
   return {
     pubkey: identity.pubkey,
@@ -59,7 +88,7 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // Getters, not values: the debounce re-reads at fire time, so a burst of
     // heart-taps publishes once with the final set.
     local: localFavoriteList,
-    baseline: () => storage.favBaseline.get(identity.npub),
+    baseline: () => trustedBaseline(identity.npub),
     // Both callbacks also move `favoritesSync`, so the whole feature reports its
     // relay health from one place: hydration routes its own success through this
     // same `onSynced` (see favorites-hydrator.ts), and a publish that lands is

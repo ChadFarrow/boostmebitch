@@ -62,6 +62,7 @@ import {
   parseItemGuid,
   parseShowGuid,
   partitionList,
+  baselineIsTrustworthy,
   planFavoritesPublish,
   showId,
   tagsFromList,
@@ -253,6 +254,56 @@ section('Spec vector 2b — an unhydrated store must not read as "remove everyth
       merged: parseFavoritesList(altOnly), readTags: altOnly, exists: true, trustworthy: true, local: NO_LOCAL,
     }).reason !== 'wholesale-delete',
     true);
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 2c — a baseline the local cache cannot back is not believed');
+// ---------------------------------------------------------------------------
+{
+  // The baseline and the favourites it speaks for are separate localStorage
+  // keys of wildly different size — bare ids against hundreds of KB of titles
+  // and artwork URLs. `safeSet` mirrors a write it cannot land into memory, and
+  // that mirror does not survive a reload. So the small one persists and the
+  // large one does not, and the next load reads a baseline naming everything
+  // beside a cache holding nothing.
+  check('a baseline claiming ids with nothing cached is NOT trusted',
+    baselineIsTrustworthy({ feeds: [showId(F_MUSIC)], items: [itemId(I_A)] }, false), false);
+
+  // MUST STILL WORK — all three of these are ordinary states, and refusing any
+  // of them stops unfavouriting propagating, which is its own silent data bug.
+  check('...but it is trusted the moment this device caches anything',
+    baselineIsTrustworthy({ feeds: [showId(F_MUSIC)], items: [itemId(I_A)] }, true), true);
+  check('an empty baseline on a device with favourites is fine (first sign-in)',
+    baselineIsTrustworthy({ feeds: [], items: [] }, true), true);
+  check('an empty baseline on an empty device is fine (fresh install)',
+    baselineIsTrustworthy({ feeds: [], items: [] }, false), true);
+
+  // Non-vacuity: the implementation this replaces read the baseline straight
+  // off disk and believed it unconditionally.
+  const alwaysTrust = () => true;
+  check('the pre-fix implementation trusted the dangerous case',
+    alwaysTrust() !== baselineIsTrustworthy({ feeds: [showId(F_MUSIC)], items: [] }, false), true);
+
+  // And the point of refusing: with the baseline dropped, nothing on the wire
+  // reads as our removal, so the list survives the cycle intact.
+  const wire = [
+    ['alt', 'PC 2.0 Favorites'],
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`],
+    ['i', `podcast:item:guid:${I_A}`],
+  ];
+  const read = parseFavoritesList(wire);
+  const fullBaseline = { feeds: [showId(F_MUSIC)], items: [itemId(I_A)] };
+  check('believing it empties the list',
+    mergeFavoritesList({ read, local: NO_LOCAL, baseline: fullBaseline }).nodes.length, 0);
+  // Compared on the ENTRIES, not byte-for-byte: `tagsFromList` also appends the
+  // `k` tags that declare which identifier kinds the list uses, and those are
+  // emitter output rather than anything the merge decided.
+  const keptTags = tagsFromList(mergeFavoritesList({ read, local: NO_LOCAL, baseline: EMPTY_BASELINE }));
+  check('refusing it keeps every entry',
+    keptTags.filter((t) => t[0] === 'i'), wire.filter((t) => t[0] === 'i'));
+  check('...and their order and medium block with them',
+    keptTags.slice(0, wire.length), wire);
 }
 
 // ---------------------------------------------------------------------------
