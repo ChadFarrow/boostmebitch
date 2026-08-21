@@ -49,7 +49,7 @@ jobs:
 
       # Bubblewrap drives Gradle. It will otherwise download its own JDK and
       # Android SDK into ~/.bubblewrap on first run, which is slow and
-      # interactive; `updateConfig` below points it at the runner's instead.
+      # interactive; the config written below points it at the runner's instead.
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -159,24 +159,55 @@ jobs:
           printf '%s' "$KEYSTORE_B64" | base64 -d > android/android.keystore
           chmod 600 android/android.keystore
 
+      # WRITE THE CONFIG FILE RATHER THAN ASKING BUBBLEWRAP TO CREATE IT.
+      #
+      # `bubblewrap updateConfig --jdkPath … --androidSdkPath …` looks like the
+      # non-interactive way to do this and is not. On a runner there is no
+      # ~/.bubblewrap/config.json at all, so the CLI enters its first-run setup
+      # BEFORE it considers either flag, and asks:
+      #
+      #   ? Do you want Bubblewrap to install the JDK (recommended)?
+      #     (Enter "No" to use your own JDK 17 installation) (Y/n)
+      #
+      # With no TTY that exits 130 (SIGINT) about twelve seconds in, and the
+      # log shows a half-drawn prompt rather than an error — it reads like the
+      # job was cancelled. Observed on run 32486514158, the first ever run.
+      #
+      # The file is two fields and is exactly what `updateConfig` would have
+      # written, so writing it costs nothing and removes the question. It also
+      # has to exist BEFORE `updateConfig` runs, which is why this is its own
+      # step rather than a line inside the build.
+      - name: Point Bubblewrap at the runner's JDK and Android SDK
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.bubblewrap"
+          jq -n --arg jdk "$JAVA_HOME" --arg sdk "$ANDROID_HOME" \
+             '{jdkPath: $jdk, androidSdkPath: $sdk}' \
+             > "$HOME/.bubblewrap/config.json"
+          cat "$HOME/.bubblewrap/config.json"
+
       - name: Build the signed APK
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          npm run android:config
+          # Redirect stdin from /dev/null throughout. Every Bubblewrap
+          # subcommand can prompt, and a prompt with a TTY-less stdin that is
+          # still OPEN hangs the job for six hours instead of failing; closed,
+          # it fails in seconds with the question visible in the log.
+          npm run android:config < /dev/null
           # `update`, not `init`: it regenerates the Android project from
           # twa-manifest.json, which is what lets one JSON file be the only
           # source in git. --skipVersionUpgrade because the step above already
           # set both version fields; letting Bubblewrap auto-increment would
           # make the version code depend on how many times this workflow ran.
-          npm run android:update
+          npm run android:update < /dev/null
           # --skipPwaValidation has a repo-specific reason, not a lazy one:
           # Bubblewrap's Quality Criteria check evaluates offline support, and
           # public/sw.js deliberately precaches nothing (see docs/ui.md). The
           # validation would fail on a property this app has consciously chosen.
-          npm run android:release
+          npm run android:release < /dev/null
 
       - name: Read the certificate out of what was actually built
         id: cert
