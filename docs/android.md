@@ -111,7 +111,7 @@ None of this can live in the repository.
    curl -s 'https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://www.boostmebitch.com&relation=delegate_permission/common.handle_all_urls'
    ```
    The last one is Google's own parser and reports a `debugString` on failure.
-4. **Capture the screenshots** (`node scripts/shoot-screenshots.mjs`), commit them, and uncomment `images:` in `zapstore.yaml`.
+4. **Re-capture the screenshots if the UI has moved** (`node scripts/shoot-screenshots.mjs`) and commit them. `images:` in `zapstore.yaml` already names the three paths, so a renamed or missing file fails the publish rather than dropping an image — re-shoot and re-commit together. Use `--manual` when a shot needs a specific show; the boost modal in particular shows whatever wallet state the test browser is in.
 5. **Dry-run zsp** before the first real publish, and read the output as a Zapstore user would:
    ```bash
    zsp publish --check zapstore.yaml

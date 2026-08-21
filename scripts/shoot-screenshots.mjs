@@ -10,12 +10,13 @@
 // site with real Podcast Index results behind it, and which episode looks good
 // in a store listing is a human judgement call, not something to assert.
 //
-// Output lands in public/screenshots/. NOTHING REFERENCES THOSE FILES YET, and
-// that is deliberate: `images:` in zapstore.yaml is commented out because zsp
-// fails on a path that does not resolve, and public/manifest.json declares no
-// `screenshots` member for the same reason — a manifest naming a 404 is worse
-// than a manifest naming nothing. Wire both up in the same commit that adds the
-// PNGs, and keep it to those two places so there is no third copy to drift.
+// Output lands in public/screenshots/, and `images:` in zapstore.yaml names
+// those three paths. RE-SHOOT AND RE-COMMIT TOGETHER: zsp fails on a path that
+// does not resolve, so renaming a shot here without editing zapstore.yaml
+// breaks the publish rather than dropping an image. public/manifest.json
+// deliberately declares no `screenshots` member — that file is read by
+// Bubblewrap as well as by browsers, so adding one changes what the next
+// Android build wraps, and it is a separate decision from the store listing.
 //
 // WHY --manual EXISTS AND IS NOT A FALLBACK: the automated path below drives
 // real, live podcast data. A feed can go away, a search can rank differently,

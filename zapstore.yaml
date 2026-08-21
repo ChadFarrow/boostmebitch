@@ -52,13 +52,15 @@ website: https://www.boostmebitch.com
 
 icon: https://www.boostmebitch.com/icons/icon-512.png
 
-# Captured by `node scripts/shoot-screenshots.mjs`. Uncomment once the PNGs are
-# committed — zsp fails on a path that does not resolve, and a listing that
-# references nothing is worse than one with no images.
-# images:
-#   - ./public/screenshots/01-browse.png
-#   - ./public/screenshots/02-episodes.png
-#   - ./public/screenshots/03-boost.png
+# Captured by `node scripts/shoot-screenshots.mjs` against production, at a
+# 412x915 phone viewport with deviceScaleFactor 2. Every path here must resolve
+# from the repo root: zsp fails on one that does not, and a listing that
+# references nothing is worse than one with no images. Re-shoot and re-commit
+# together — a path listed here with no file behind it breaks the publish.
+images:
+  - ./public/screenshots/01-browse.png
+  - ./public/screenshots/02-episodes.png
+  - ./public/screenshots/03-boost.png
 
 release_notes: ./CHANGELOG.md
 
