@@ -1241,6 +1241,44 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
   }
 }
 
+/** The parent-feed verdict for one remote item, and nothing else. */
+export interface RemoteItemParent {
+  /** See {@link ValueTimeSplit.parentFeedGuid} — the same three states. */
+  parentFeedGuid?: string | null;
+  /** The ALBUM's title, when the direct lookup supplied one. */
+  feedTitle?: string;
+}
+
+/**
+ * Answer `parentFeedGuid` for one remote item, for a caller that already has a
+ * payable value block and needs only the favorite verdict.
+ *
+ * This exists for the live SOCKET path. A `<podcast:liveValue>` block arrives
+ * over a websocket carrying its own recipients, so `lib/v4v/live-value.ts`
+ * builds the split client-side and never passes through `resolveOneSplit` the
+ * way every RSS signal does. That is correct for the payment — the block is the
+ * payment — but it leaves `parentFeedGuid` permanently `undefined`, and a heart
+ * offered on that block trusts the host's `feedGuid` verbatim. When the host
+ * pointed it at a PUBLISHER feed, the favorite it writes is one no app can ever
+ * open, on a shared list with no undo.
+ *
+ * **It deliberately returns the verdict, not the split.** Handing a resolved
+ * `value` block back to a client that already holds the authoritative one is an
+ * invitation to pay the wrong thing; there is nothing in this shape a payment
+ * could be built from.
+ */
+export async function resolveRemoteItemParent(
+  feedGuid: string,
+  itemGuid: string,
+): Promise<RemoteItemParent> {
+  const split = await resolveOneSplit({
+    startTime: 0,
+    duration: 0,
+    remoteItem: { feedGuid, itemGuid },
+  });
+  return { parentFeedGuid: split.parentFeedGuid, feedTitle: split.feedTitle };
+}
+
 /** Which "now playing" convention a live item turned out to be using. */
 export type LiveValueSignal = 'remote-item' | 'value-time-split' | 'value' | 'none';
 

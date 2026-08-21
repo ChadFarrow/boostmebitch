@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import type { Episode } from '@/lib/types';
-import { livePlayedSnapshot, subscribeLivePlayed, type PlayedTrack } from '@/lib/live-played';
+import { livePlayedKey, livePlayedSnapshot, subscribeLivePlayed, type PlayedTrack } from '@/lib/live-played';
+import { useApp } from '@/lib/store';
 import { liveTargetSnapshot, subscribeLiveTarget } from '@/lib/v4v/live-value';
 import { splitTargetLabel } from './live-now-playing';
 import { FavTrackHeart } from './fav-heart';
@@ -33,6 +34,13 @@ import { fmtClock } from '@/lib/format';
  * write — same `remoteItem`, same kind:10333 entry, same refusal when the block
  * names no resolvable parent feed. Nothing about the show doing the playing is
  * recorded, and nothing should be: a song is a song wherever it was heard.
+ *
+ * **A row waits for its parent-feed verdict before offering that heart.** A
+ * socket block is built client-side and reaches the log with `parentFeedGuid`
+ * still `undefined`, which reads as "the wire guid stands" and is exactly what
+ * a host pointing `feedGuid` at a PUBLISHER feed also looks like. The log
+ * resolves it and flips `PlayedTrack.parentResolved`; until then there is no
+ * control to press. A failed lookup flips it too — see there.
  *
  * Renders nothing at all unless this item is the one being logged, so it is
  * safe to place unconditionally beside an ordinary episode's panels.
@@ -65,8 +73,18 @@ export function LivePlayedTracks({
   const [target, setTarget] = useState(liveTargetSnapshot);
   useEffect(() => subscribeLiveTarget(() => setTarget(liveTargetSnapshot())), []);
 
+  // Feed-supplied artwork must never outrank the enclosure, and this list is
+  // behind no tab: it is the first thing in the fullscreen player's scroll body
+  // and it sits above the episode page's tabs, so <RowThumb>'s lazy/low/async —
+  // "the whole mitigation" only for a list someone has to open — is not enough
+  // on its own. <Player> publishes the same one verdict both art surfaces use.
+  // The show's own art still renders, so a row keeps its left edge.
+  const artOk = useApp((s) => s.artOk);
+
   if (!guid || !played.length) return null;
-  const nowKey = target?.guid === guid ? target.bucketKey : '';
+  // Derived through the log's own key function, never off `bucketKey` directly:
+  // the two must agree about what makes a row, or the marker sits on no row.
+  const nowKey = target?.guid === guid ? livePlayedKey(target) : '';
   // Newest first: on a three-hour set the song someone wants is the one that
   // just finished, and a list that grows downward would push it off the screen.
   const rows = [...played].reverse();
@@ -86,7 +104,7 @@ export function LivePlayedTracks({
             >
               <div className="flex-1 min-w-0 flex gap-3 items-center py-1.5 px-2">
                 <RowThumb
-                  src={p.split.image}
+                  src={artOk ? p.split.image : undefined}
                   fallback={fallbackImg}
                   className="w-9 h-9 rounded object-cover flex-shrink-0 border border-bone/15"
                 />
@@ -102,10 +120,11 @@ export function LivePlayedTracks({
                   </span>
                 </span>
               </div>
-              {/* Declines on its own for a block that names no track — a host
+              {/* Waits for the parent-feed verdict on a socket block, then
+                  declines on its own for a block that names no track — a host
                   segment, or a song whose parent feed can never resolve. */}
               <div className="flex-shrink-0 pr-1">
-                <FavTrackHeart split={p.split} />
+                {p.parentResolved && <FavTrackHeart split={p.split} />}
               </div>
             </li>
           );
