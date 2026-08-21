@@ -179,6 +179,25 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     return null;
   }
 
+  // Withheld, and it MUST be reported like a degraded read rather than falling
+  // through to the `!plan.publish` branch below. That branch records the
+  // baseline, and recording an empty baseline here is what would make the
+  // refusal useless: the next cycle would diff against "we published nothing",
+  // conclude there is nothing to remove, and quietly agree with the empty list
+  // it just declined to write. `onDegraded` also surfaces <FavoritesSyncNotice>,
+  // because a guard that silently withholds is indistinguishable from a broken
+  // one — that is the same rule the degraded branch above exists for.
+  if (plan.reason === 'wholesale-delete') {
+    opts.onDegraded?.();
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[favorites] REFUSING to publish — the merge came out empty over a list that is not. '
+      + 'This device is holding no favorites while the relay holds some, which is what an '
+      + 'unhydrated store looks like as much as a real "remove everything".',
+    );
+    return null;
+  }
+
   if (!plan.publish) {
     // Nothing to say: the relay already holds exactly these bytes. Still record
     // the baseline — without it the first unfavorite on this device has nothing

@@ -176,6 +176,86 @@ section('Spec vector 2 — an empty list is distinguishable from a read that nev
 }
 
 // ---------------------------------------------------------------------------
+section('Spec vector 2b — an unhydrated store must not read as "remove everything"');
+// ---------------------------------------------------------------------------
+{
+  // THE REGRESSION THIS SECTION EXISTS FOR. On 2026-08-21 a live account lost
+  // 213 groups and 232 items in one publish. The read was healthy, so
+  // `trustworthy` was true and the degraded branch never fired.
+  //
+  // Wire shape lifted from the live event: a group, its items, a second group.
+  const wire = [
+    ['alt', 'PC 2.0 Favorites'],
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`],
+    ['i', `podcast:item:guid:${I_A}`],
+    ['i', `podcast:item:guid:${I_B}`],
+    ['i', `podcast:guid:${F_MUSIC2}`],
+  ];
+  const read = parseFavoritesList(wire);
+
+  // The baseline says THIS device published every one of them, which is true —
+  // it did, on a previous load. `local` is empty because the store is rebuilt
+  // from scratch on every page load and has not hydrated yet.
+  const baseline = {
+    feeds: [showId(F_MUSIC), showId(F_MUSIC2)],
+    items: [itemId(I_A), itemId(I_B)],
+  };
+  const merged = mergeFavoritesList({ read, local: NO_LOCAL, baseline });
+
+  // The precondition, asserted rather than assumed: the merge really does come
+  // out empty. `mergeFavoritesList` is not wrong here — "ours, and we no longer
+  // hold it" is satisfied by every entry at once.
+  check('an empty store against a full baseline merges to nothing',
+    merged.nodes.length, 0);
+
+  const plan = planFavoritesPublish({
+    merged, readTags: wire, exists: true, trustworthy: true, local: NO_LOCAL,
+  });
+  check('...and that is REFUSED, not published', plan.publish, false);
+  check('...with a reason that is not "degraded"', plan.reason, 'wholesale-delete');
+
+  // Proof the vector is not vacuous. The implementation this replaced had no
+  // such branch, so with `exists` true and the bytes differing it fell straight
+  // through to `publish: true`. Assert those conditions hold, or the vector
+  // above would pass against the broken code too.
+  const wouldHavePublishedBefore =
+    merged.nodes.length === 0
+    && JSON.stringify(tagsFromList(merged)) !== JSON.stringify(wire);
+  check('the pre-fix implementation would have published this', wouldHavePublishedBefore, true);
+
+  // MUST STILL WORK — over-blocking here means unfavoriting stops propagating,
+  // which is its own silent data bug.
+  const oneLeft = groupLocalFavorites([{ id: showId(F_MUSIC2) }]);
+  const partial = planFavoritesPublish({
+    merged: mergeFavoritesList({ read, local: oneLeft, baseline }),
+    readTags: wire,
+    exists: true,
+    trustworthy: true,
+    local: oneLeft,
+  });
+  check('removing all but one still publishes', partial.publish, true);
+  check('...as an ordinary publish', partial.reason, 'publish');
+
+  // The guard keys on the RELAY holding real entries, so a list that never had
+  // any is untouched by it — that case still belongs to `nothing-to-create`.
+  check('an absent event with nothing local is still nothing-to-create',
+    planFavoritesPublish({
+      merged: parseFavoritesList([]), readTags: [], exists: false, trustworthy: true, local: NO_LOCAL,
+    }).reason,
+    'nothing-to-create');
+
+  // An event carrying only its `alt` tag has nothing to lose, so refusing there
+  // would strand a user whose list is legitimately empty.
+  const altOnly = [['alt', 'PC 2.0 Favorites']];
+  check('an alt-only event is not treated as a wholesale delete',
+    planFavoritesPublish({
+      merged: parseFavoritesList(altOnly), readTags: altOnly, exists: true, trustworthy: true, local: NO_LOCAL,
+    }).reason !== 'wholesale-delete',
+    true);
+}
+
+// ---------------------------------------------------------------------------
 section('Spec vector 3 — idempotence');
 // ---------------------------------------------------------------------------
 {
