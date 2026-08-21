@@ -518,7 +518,23 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
         feedGuid: group.feedGuid,
         // Fill a gap, never overwrite a value another writer set.
         medium: group.medium ?? mine.medium,
-        itemGuids: [...kept, ...mine.itemGuids.filter((g) => !kept.includes(g))],
+        // Local items the read didn't carry are either NEW here, or ones we
+        // published that another writer has since removed. Only the first may
+        // go up: re-adding the second is the resurrection loop, the same one
+        // `fresh` guards against below for a group absent from the read.
+        //
+        // **This is the branch that shipped without the filter**, and the
+        // asymmetry is why it hid: whether an unfavorite stuck depended on
+        // whether its album happened to still have a second track on the list,
+        // which is invisible from the device doing the removing. The baseline
+        // is the discriminator — absence from the read alone would suppress a
+        // favorite the user just made.
+        itemGuids: [
+          ...kept,
+          ...mine.itemGuids.filter(
+            (g) => !kept.includes(g) && !publishedItems.has(itemId(g)),
+          ),
+        ],
       },
     });
   }

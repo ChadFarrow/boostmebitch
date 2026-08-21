@@ -28,6 +28,7 @@ import type { Episode, Podcast, ValueBlock, ValueTimeSplit } from '../types';
 import { useApp } from '../store';
 import { createObservable } from '../pubsub';
 import { hasValueRecipients, fnvHash } from '../util';
+import { recordLivePlay, livePlayedSnapshot } from '../live-played';
 import { trackBucket } from './stream-ledger';
 import { connectLiveValue, type LiveBlock } from './live-block';
 
@@ -118,6 +119,15 @@ let watching: {
   /** Set once that block has been seen to CHANGE. See the comment below. */
   valueIsLive: boolean;
   failures: number;
+  /**
+   * The feed guid of the SHOW being listened to, captured at attach.
+   *
+   * Only the played log reads it, and only to tell the show's own default block
+   * from an episode of a DIFFERENT podcast the hosts put on air — Split Kit
+   * types both `'podcast'`. Captured here rather than read at record time for
+   * the same reason `baseValue` is: the store moves on and this must not.
+   */
+  showFeedGuid?: string;
   /** Disposer for a <podcast:liveValue> socket, when the show publishes one. */
   closeSocket?: () => void;
   /** True once the socket has delivered a block. The RSS poll stops writing a
@@ -185,6 +195,16 @@ function setTarget(next: LiveTarget | null) {
   const prev = targetSig(target);
   if (sig === prev) return;
   target = next;
+  // Remember the block for as long as the broadcast lasts, so a listener can
+  // still favorite a song after the DJ has moved on. Recording here rather than
+  // at each signal is what makes it exhaustive: this is the one funnel every
+  // target change goes through, whatever produced it. The log is a plain
+  // observer — it holds no payment state and cannot alter a target.
+  // `showFeedGuid` rides from the WATCHER, not from whatever built the target:
+  // it is a fact about the show being listened to, and the log needs it to tell
+  // the show's own default block from an episode of a different podcast the
+  // hosts put on air. Split Kit types both `'podcast'`.
+  recordLivePlay(next && { ...next, showFeedGuid: watching?.showFeedGuid });
   if (process.env.NODE_ENV !== 'production') {
     const n = next?.split?.value?.recipients?.length ?? 0;
     console.debug(
@@ -304,6 +324,7 @@ async function poll(force = false) {
     watching = {
       guid,
       feedId: episode.feedId,
+      showFeedGuid: cur!.podcast.podcastGuid,
       baseValue: episode.value ?? null,
       baselineSig: null,
       valueIsLive: false,
@@ -450,6 +471,11 @@ function installDiagnostic() {
         ? { opened: !!watching.closeSocket, delivering: watching.socketOwns }
         : null,
       pollFailures: watching?.failures ?? 0,
+      // How many blocks this broadcast has logged for <LivePlayedTracks>. A
+      // moving target with this stuck at 0 is the tell that every block is
+      // being skipped as unnameable — the list is empty for a reason, not
+      // because nothing played.
+      playedCount: livePlayedSnapshot(cur?.episode.guid).length,
       target: target ? {
         signal: target.signal,
         payingTitle: target.split?.title ?? null,

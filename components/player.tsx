@@ -567,6 +567,12 @@ export function Player() {
   // sample left to reopen it with. Computed once here and passed to
   // <FullscreenPlayer> so both surfaces still share ONE verdict.
   const artUsable = artOk || !isPlaying;
+  // Published so surfaces this component cannot reach by prop share the same
+  // one verdict — <LivePlayedTracks> renders on the episode page too. In an
+  // effect, never during render: a store write while rendering re-enters every
+  // subscriber mid-pass.
+  const setArtOkShared = useApp((s) => s.setArtOk);
+  useEffect(() => { setArtOkShared(artUsable); }, [artUsable, setArtOkShared]);
   const nowArt = nowPlayingArt({
     liveBlockImage,
     splitImage: splitArt,

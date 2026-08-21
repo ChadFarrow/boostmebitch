@@ -54,6 +54,19 @@ interface AppState {
   playerExpanded: boolean;
   setPlayerExpanded: (b: boolean) => void;
 
+  // Whether the buffer can currently afford heavy third-party artwork —
+  // <Player>'s `artOk` gate, after the "nothing is playing, so there is no
+  // enclosure to outrank" allowance. Chapter and live-block art is arbitrary
+  // media, routinely on the same origin as the audio and routinely enormous,
+  // and one ungated surface starves the element just as thoroughly as two.
+  //
+  // Lifted into the store because the gate now has a consumer <Player> cannot
+  // reach by prop: <LivePlayedTracks> renders on the episode page as well as
+  // inside <FullscreenPlayer>. True by default so a surface that mounts before
+  // playback starts is not blank. <Player> is the only writer.
+  artOk: boolean;
+  setArtOk: (b: boolean) => void;
+
   // Whether the Nostr sign-in modal is open. Lifted into the store so surfaces
   // other than the header (e.g. the fullscreen player / live chat) can open it
   // without leaving the page. <NostrAuth> owns the modal render.
@@ -240,6 +253,9 @@ export const useApp = create<AppState>((set, get) => ({
 
   playerExpanded: false,
   setPlayerExpanded: (b) => set({ playerExpanded: b }),
+
+  artOk: true,
+  setArtOk: (b) => set({ artOk: b }),
 
   signInOpen: false,
   signInIntent: 'default',
