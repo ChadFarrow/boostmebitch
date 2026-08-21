@@ -44,6 +44,7 @@ import {
   localFavoriteList,
   requestFavoritesSync,
   serializeFavoritesCycle,
+  trustedBaseline,
   syncOptionsFor,
 } from './favorites-sync';
 import { resolvePublishRelays } from './relays';
@@ -194,7 +195,9 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // push them up. This is why nostr-auth must clear favorites on an account
   // switch — otherwise account A's list gets published under account B's key.
   const local = groupLocalFavorites(localFavoriteEntries());
-  const baseline = storage.favBaseline.get(identity.npub);
+  // Same guard the publish path uses. Read directly and this function becomes
+  // the one place that still believes a baseline no other caller does.
+  const baseline = trustedBaseline(identity.npub);
   const merged = mergeFavoritesList({ read: read.list, local, baseline });
   const part = partitionList(merged);
 

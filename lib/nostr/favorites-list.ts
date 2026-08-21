@@ -211,6 +211,39 @@ export interface FavoritesBaseline {
 
 export const EMPTY_BASELINE: FavoritesBaseline = { feeds: [], items: [] };
 
+/**
+ * May this baseline be believed?
+ *
+ * The baseline is a PROMISE that local state will keep asserting these ids, and
+ * it is the only thing that tells a foreign entry from one this device removed.
+ * It lives in one localStorage key; the favourites it speaks for live in
+ * others. Nothing makes those writes atomic, and they are wildly different
+ * sizes — bare ids against hundreds of KB of titles, authors and artwork URLs.
+ *
+ * So the small one can reach disk while the large one does not. `safeSet` falls
+ * back to an in-memory mirror when a write cannot land, and that mirror does not
+ * survive a reload. The next load then reads a baseline naming every favourite
+ * and a local cache holding none, which satisfies `mergeFavoritesList`'s
+ * removal test — *ours, and we no longer hold it* — for all of them at once.
+ *
+ * A baseline that claims ids while this device holds NOTHING is therefore not
+ * evidence of a removal; it is evidence that the pair fell out of step. Refuse
+ * it and every entry on the relay reads as another writer's, which is the safe
+ * direction: the worst case is that one genuine unfavourite waits for the next
+ * cycle, against a device that by definition has no favourites to unfavourite.
+ *
+ * Deliberately NOT a size comparison. "The baseline names more than we hold" is
+ * the ordinary state mid-removal and must stay publishable, so this asks only
+ * the one question that has no innocent answer.
+ */
+export function baselineIsTrustworthy(
+  baseline: FavoritesBaseline,
+  localHasEntries: boolean,
+): boolean {
+  const claimsSomething = baseline.feeds.length > 0 || baseline.items.length > 0;
+  return !claimsSomething || localHasEntries;
+}
+
 // ---------------------------------------------------------------------------
 // Reading
 // ---------------------------------------------------------------------------
