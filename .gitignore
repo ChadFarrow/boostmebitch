@@ -12,3 +12,10 @@ tsconfig.tsbuildinfo
 
 # Libre LDK wasm — copied into public/ by postinstall, not source
 /public/liblightningjs.wasm
+
+# Bubblewrap regenerates the ENTIRE Android project from android/twa-manifest.json
+# on every `update` and overwrites manual edits, so that one file is the only
+# source here. Everything else — the Gradle skeleton, the built APK, and above
+# all the signing keystore CI materializes from a secret — stays out of git.
+/android/*
+!/android/twa-manifest.json

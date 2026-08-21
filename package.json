@@ -9,6 +9,9 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "android:config": "cd android && npx --yes @bubblewrap/cli@1.25.0 updateConfig --jdkPath \"$JAVA_HOME\" --androidSdkPath \"$ANDROID_HOME\"",
+    "android:update": "cd android && npx --yes @bubblewrap/cli@1.25.0 update --skipVersionUpgrade",
+    "android:release": "cd android && npx --yes @bubblewrap/cli@1.25.0 build --skipPwaValidation",
     "check:spark": "node --experimental-strip-types scripts/check-spark-derivation.mjs",
     "check:sanitizer": "node --experimental-strip-types scripts/check-sanitizer.mjs",
     "check:ssrf": "node --experimental-strip-types scripts/check-ssrf-guard.mjs",
@@ -23,6 +26,7 @@
     "check:nwcerror": "node --experimental-strip-types scripts/check-nwcerror.mjs",
     "check:vts": "node --experimental-strip-types scripts/check-value-time-split.mjs",
     "check:feedxml": "node --experimental-strip-types scripts/check-feedxml.mjs",
+    "check:assetlinks": "node --experimental-strip-types scripts/check-assetlinks.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs"

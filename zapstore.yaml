@@ -1,0 +1,107 @@
+# Zapstore listing — https://zapstore.dev
+#
+# `zsp publish -y zapstore.yaml` reads this, parses the APK named by
+# release_source, uploads the media to Blossom and signs the NIP-82 app
+# (32267), release (30063) and file-metadata (3063) events. The publishing
+# identity comes from SIGN_WITH in the environment, never from this file.
+#
+# Reasoning, the release runbook and everything this file cannot say in YAML
+# are in docs/android.md.
+
+repository: https://github.com/ChadFarrow/boostmebitch
+
+# The APK the release workflow just built and signed. zsp reads the package
+# id, version code and signing certificate straight out of it, so nothing
+# about the build is restated here and nothing can drift from it.
+release_source: ./android/app-release-signed.apk
+
+name: Boost Me Bitch
+summary: Boost Podcasting 2.0 shows over Lightning, with Nostr.
+
+# The last paragraph is deliberate, not filler. Zapstore's audience is wary of
+# undisclosed web wrappers, and saying it up front is cheaper than a review
+# thread — along with the two facts a cautious reader actually wants: where the
+# keys live, and that the app needs a network.
+description: |
+  Search, listen and boost Podcasting 2.0 shows over Lightning — and watch and
+  boost Nostr live streams.
+
+  Lightning and Nostr are two independent logins. Connect a wallet (NWC, Spark,
+  WebLN or a Lightning address) and boost with no Nostr account, or sign in with
+  Nostr — Amber over NIP-55, a NIP-46 bunker, NIP-07, or a generated key — for
+  the social layer.
+
+  All three Podcasting 2.0 payment modes ship: the BOOST button, boost-all
+  across a music episode's tracks, and streaming sats — a per-minute rate or a
+  fixed amount per track, batched and paid unattended, following
+  podcast:valueTimeSplit and, on a live show, the artist on stage right now.
+
+  Boosts publish a kind:1 note with NIP-73 podcast refs. Live-stream boosts go
+  out as real NIP-57 zaps, so they appear as boosts in Fountain, tunestr and
+  zap.stream. Favorites, mutes and follows sync over NIP-51 and NIP-02 and are
+  shared with other Podcasting 2.0 Nostr apps.
+
+  Wallet credentials and any generated key stay on your device. Nothing
+  wallet-related reaches the app's server.
+
+  This app is a Trusted Web Activity around www.boostmebitch.com — the same
+  code the web app runs, in an Android shell. It needs a network connection.
+
+license: MIT
+website: https://www.boostmebitch.com
+
+icon: https://www.boostmebitch.com/icons/icon-512.png
+
+# Captured by `node scripts/shoot-screenshots.mjs` against production, at a
+# 412x915 phone viewport with deviceScaleFactor 2. Every path here must resolve
+# from the repo root: zsp fails on one that does not, and a listing that
+# references nothing is worse than one with no images. Re-shoot and re-commit
+# together — a path listed here with no file behind it breaks the publish.
+images:
+  - ./public/screenshots/01-browse.png
+  - ./public/screenshots/02-episodes.png
+  - ./public/screenshots/03-boost.png
+
+release_notes: ./CHANGELOG.md
+
+tags:
+  - podcast
+  - podcasting-2.0
+  - value4value
+  - lightning
+  - nostr
+  - music
+  - boost
+
+# Read off the code, not off a wishlist: 01, 02 (follows), 04 and 44 (Amber and
+# NWC payloads, backup crypto), 05 (.well-known/nostr.json), 07 (window.nostr),
+# 19 (nip19), 46 (bunker.ts), 47 (lib/v4v/nwc.ts), 51 (kind:10333 favorites,
+# mutes), 53 (live streams, kind 30311/1311), 55 (amber.ts), 57 (zap.ts),
+# 65 (relays.ts), 73 (podcast refs on boost notes).
+supported_nips:
+  - 01
+  - 02
+  - 04
+  - 05
+  - 07
+  - 19
+  - 44
+  - 46
+  - 47
+  - 51
+  - 53
+  - 55
+  - 57
+  - 65
+  - 73
+
+# Enriches the listing from the GitHub repo, and the publisher identity these
+# apps share. Both are lifted from ChadFarrow/stablekraft-app's zapstore.yaml,
+# which is the working precedent for this whole file — one developer, one
+# Zapstore publisher, two apps under it. zsp signs with SIGN_WITH from the
+# environment; declaring the pubkey here means a mismatched signing key is
+# caught rather than quietly publishing the app under a second identity.
+metadata_sources:
+  - github
+
+pubkey: npub177fz5zkm87jdmf0we2nz7mm7uc2e7l64uzqrv6rvdrsg8qkrg7yqx0aaq7
