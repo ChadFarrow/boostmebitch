@@ -59,9 +59,10 @@ export interface PlayedTrack {
    *
    * Recorded per row rather than only consulted, because it cannot be recovered
    * afterwards: the target that carried it is gone the moment the next one
-   * arrives. Nothing renders it today — see `recordLivePlay` for why it filters
-   * one kind and keeps the rest — and a surface that later wants to label or
-   * hide host segments needs it to have been kept from the start.
+   * arrives. Nothing renders it today — see {@link isNotPlayed} for which
+   * blocks it keeps out and why the test is never the type alone — and a
+   * surface that later wants to LABEL a host segment rather than drop it needs
+   * the type to have been kept from the start.
    */
   blockType?: string;
   /** When the block went on air, by this device's clock. There is no playback
@@ -161,6 +162,8 @@ export interface LiveTargetShape {
   blockType?: string;
   signal?: string;
   event?: { eventGuid?: string };
+  /** The feed guid of the show being listened to. See `recordLivePlay`. */
+  showFeedGuid?: string;
 }
 
 /**
@@ -214,19 +217,49 @@ export function livePlayedKey(t: LiveTargetShape): string {
  * - **A block needs a name or an identifier.** The weakest RSS signal is a bare
  *   rewritten `<podcast:value>`: payees and nothing else. It is a real payment
  *   target and a useless row — no title to read, no `remoteItem` to favorite.
- * - **The show's own default block is not a song.** Split Kit stamps it
- *   `'podcast'`, and it is what a host returns to BETWEEN tracks, so listing it
- *   would put "back to the show" between every pair of songs.
- *
- * **`'chapter'` blocks are kept, and that is the deliberate half.** They are the
- * host's own segments — a promo, a photo, a phone number — so they are usually
- * noise in this list. But the type is the host's typing, not a fact, and the
- * cost of the two mistakes is not symmetric: an unwanted row is a row someone
- * ignores, while a mistyped song is a song with no heart anywhere in the app
- * and no way to tell that one is missing. Most of them carry no `remoteItem`
- * and so render without a heart of their own. This mirrors the same call
- * `lib/v4v/streaming.ts` made when a block-type filter was built and removed.
+ * - **The show's own furniture is not something the listener heard.** Its
+ *   default block between tracks, and its own segments — see
+ *   {@link isNotPlayed}, which decides both on the block's IDENTIFIERS rather
+ *   than on its type, because the type is the host's typing and each of Split
+ *   Kit's two non-music types covers two different things.
  */
+/**
+ * Is this block something the listener HEARD, or the show's own furniture?
+ *
+ * **Filter on identity, never on `blockType` alone.** The type is the host's
+ * typing rather than a fact, and both of Split Kit's non-music types carry two
+ * different things:
+ *
+ * - **`'chapter'`** is a host segment — a promo, a phone number, a PayPal QR.
+ *   Homegrown Hits 147 pushed six, every one of them paying the show's own
+ *   three recipients with no `remoteItem` at all, against six songs: half the
+ *   list was rows that could never carry a heart. **They are dropped on the
+ *   MISSING IDENTIFIER, not on the type**, and that is what makes it safe:
+ *   `<FavTrackHeart>` needs an `itemGuid`, so a block without one is
+ *   unfavoritable by construction and this can only remove a row that never had
+ *   a heart. A mistyped SONG — the case the keep-`chapter` rule exists for —
+ *   still names its track and still gets its row.
+ * - **`'podcast'`** is the show's own default block, what a host returns to
+ *   between tracks... except when it is an episode of a DIFFERENT podcast the
+ *   hosts put on air. Of the three HGH 147 pushed, only one was its own; the
+ *   others were `Rollz Radio` and `ABS n' a 6-Pack`, each with a full
+ *   `feedGuid`/`itemGuid` pair that resolves. Skipping every `'podcast'` block
+ *   made those unfavoritable, which is the bug this feature exists to fix,
+ *   pointed at a podcast instead of a song. So the show's OWN feed is skipped
+ *   and everyone else's is kept.
+ */
+function isNotPlayed(t: LiveTargetShape, split: ValueTimeSplit): boolean {
+  if (t.blockType === 'chapter' && !split.remoteItem?.itemGuid) return true;
+  if (t.blockType === 'podcast') {
+    // No `showFeedGuid` means we can't tell whose episode it is. Keep the old
+    // behaviour there — a wrongly-kept default block is a row between every
+    // pair of songs, which is the noise this function exists to remove.
+    if (!t.showFeedGuid) return true;
+    return split.remoteItem?.feedGuid === t.showFeedGuid;
+  }
+  return false;
+}
+
 export function recordLivePlay(t: LiveTargetShape | null): void {
   if (!t) return;
   const eventGuid = t.event?.eventGuid;
@@ -238,7 +271,7 @@ export function recordLivePlay(t: LiveTargetShape | null): void {
   }
   const split = t.split;
   if (!split) return;
-  if (t.blockType === 'podcast') return;
+  if (isNotPlayed(t, split)) return;
   if (!split.title && !split.remoteItem?.itemGuid) return;
   const key = livePlayedKey(t);
   if (!key) return;
