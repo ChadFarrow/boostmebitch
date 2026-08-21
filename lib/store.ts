@@ -206,6 +206,40 @@ interface AppState {
   bumpBoosts: () => void;
 }
 
+
+// A FAVORITES WRITE THAT DID NOT REACH DISK MUST NOT LEAVE ITS BASELINE BEHIND.
+//
+// `storage.favBaseline` is a promise that this device's local state will keep
+// asserting those ids, and it is what tells another app's entry from one the
+// user removed here. It is a few hundred bytes. The favourites it speaks for
+// are hundreds of KB of titles, authors and artwork URLs, written to a
+// different key with no atomicity between them.
+//
+// So the small one lands and the large one does not. `safeSet` falls back to an
+// in-memory mirror it cannot persist, and the next page load reads a baseline
+// naming every favourite beside a cache holding none — which reads as "this
+// device removed all of them". That is how a live account lost 213 groups and
+// 232 items on 2026-08-21.
+//
+// `trustedBaseline` (lib/nostr/favorites-sync.ts) already refuses a baseline on
+// a device caching NOTHING. This covers the case it cannot see: a STALE cache,
+// where an older, smaller write persisted and the newer one did not. Non-empty,
+// so it looks believable, and the difference between the two is a silent
+// partial delete.
+//
+// Clearing costs one delayed unfavourite; the next successful cycle rewrites
+// both keys together. Both callers pass the npub they just wrote under, so a
+// signed-out (guest) write has no baseline to drop.
+function dropBaselineIfWriteFailed(landed: boolean, npub: string | undefined, what: string) {
+  if (landed || !npub) return;
+  storage.favBaseline.set(npub, { feeds: [], items: [] });
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[favorites] the ${what} cache did not reach disk — dropping this device's baseline so it `
+    + 'cannot be read as a removal on the next load. Local state is intact for this session only.',
+  );
+}
+
 export const useApp = create<AppState>((set, get) => ({
   identity: null,
   setIdentity: (i) => set({ identity: i }),
@@ -307,18 +341,18 @@ export const useApp = create<AppState>((set, get) => ({
   isFavorite: (guid) => !!guid && !!get().favorites[guid],
   addFavorite: (p) => set((s) => {
     const next = { ...s.favorites, [p.podcastGuid]: p };
-    storage.favorites.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(storage.favorites.set(s.identity?.npub, next), s.identity?.npub, 'favorites');
     return { favorites: next };
   }),
   removeFavorite: (guid) => set((s) => {
     if (!s.favorites[guid]) return s;
     const next = { ...s.favorites };
     delete next[guid];
-    storage.favorites.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(storage.favorites.set(s.identity?.npub, next), s.identity?.npub, 'favorites');
     return { favorites: next };
   }),
   setFavorites: (next) => set((s) => {
-    storage.favorites.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(storage.favorites.set(s.identity?.npub, next), s.identity?.npub, 'favorites');
     return { favorites: next };
   }),
 
@@ -326,18 +360,18 @@ export const useApp = create<AppState>((set, get) => ({
   isFavoriteEpisode: (itemGuid) => !!itemGuid && !!get().favoriteEpisodes[itemGuid],
   addFavoriteEpisode: (e) => set((s) => {
     const next = { ...s.favoriteEpisodes, [e.itemGuid]: e };
-    storage.favoriteEpisodes.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(storage.favoriteEpisodes.set(s.identity?.npub, next), s.identity?.npub, 'favorite-episodes');
     return { favoriteEpisodes: next };
   }),
   removeFavoriteEpisode: (itemGuid) => set((s) => {
     if (!s.favoriteEpisodes[itemGuid]) return s;
     const next = { ...s.favoriteEpisodes };
     delete next[itemGuid];
-    storage.favoriteEpisodes.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(storage.favoriteEpisodes.set(s.identity?.npub, next), s.identity?.npub, 'favorite-episodes');
     return { favoriteEpisodes: next };
   }),
   setFavoriteEpisodes: (next) => set((s) => {
-    storage.favoriteEpisodes.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(storage.favoriteEpisodes.set(s.identity?.npub, next), s.identity?.npub, 'favorite-episodes');
     return { favoriteEpisodes: next };
   }),
 

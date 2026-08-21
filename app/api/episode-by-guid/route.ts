@@ -14,7 +14,11 @@ import { rateLimit } from '@/lib/rate-limit';
 export async function GET(req: Request) {
   // Same allowance as /api/by-guid: favorites hydration fans out across a
   // whole list on a fresh device.
-  const limited = rateLimit(req, 'episode-by-guid', 300);
+  // One request per favorited TRACK, so this is the endpoint a large list
+  // exhausts first — 232 on the list this was measured against, against 213
+  // feeds. Same reasoning and the same number as /api/by-guid; see the comment
+  // there for why 300 no longer fits and why going over is not graceful.
+  const limited = rateLimit(req, 'episode-by-guid', 900);
   if (limited) return limited;
   const { searchParams } = new URL(req.url);
   const feedGuid = searchParams.get('feedGuid')?.trim();
