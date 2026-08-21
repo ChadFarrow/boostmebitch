@@ -4,9 +4,11 @@
 # The web app deploys through Vercel and is not built here — this workflow only
 # wraps it. Reasoning and the first-release runbook are in docs/android.md.
 #
-# Nothing publishes without a tag. `workflow_dispatch` builds, checks and
-# uploads the APK as an artifact so the whole path can be exercised before any
-# tag exists, and before the Zapstore signing key does.
+# Nothing publishes without a tag, and the `publish` toggle cannot override
+# that — it only decides whether a run ALREADY on a tag ref publishes.
+# `workflow_dispatch` on a branch builds, checks and uploads the APK as an
+# artifact, so the whole path can be exercised before any tag exists and before
+# the Zapstore signing key does.
 name: Android release
 
 on:
@@ -15,7 +17,7 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish to Zapstore (off = build and verify only)
+        description: Publish to Zapstore — requires a vMAJOR.MINOR.PATCH tag as the ref (off = build and verify only)
         type: boolean
         default: false
 
@@ -59,30 +61,82 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Derive the version from the tag
+      - name: Derive the version, and decide whether this run may publish
         id: version
         run: |
           set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ]; then
+          # Branch on the REF, never on the event. A workflow_dispatch can be
+          # launched against a tag ref, and deriving the version from the event
+          # then builds that tag carrying whatever version the COMMITTED
+          # manifest happens to hold — so a run that looks like "release
+          # v1.2.3" publishes 0.1.0/100 and the tag's own version never ships.
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             TAG="${GITHUB_REF#refs/tags/}"
             if ! [[ "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
               echo "::error::Tag '$TAG' is not vMAJOR.MINOR.PATCH — refusing to build."
               exit 1
             fi
             NAME="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.${BASH_REMATCH[3]}"
-            # Deterministic, monotonic and readable: 0.1.0 -> 100, 1.2.3 -> 10203.
-            # Derived from the tag rather than from github.run_number, which is
-            # monotonic but meaningless and would change the version code on a
-            # plain re-run of the same release.
-            CODE=$(( 10#${BASH_REMATCH[1]} * 10000 + 10#${BASH_REMATCH[2]} * 100 + 10#${BASH_REMATCH[3]} ))
+            MAJOR=$(( 10#${BASH_REMATCH[1]} ))
+            MINOR=$(( 10#${BASH_REMATCH[2]} ))
+            PATCH=$(( 10#${BASH_REMATCH[3]} ))
+            # Each component gets its own THOUSAND-wide block, so no two tags
+            # can land on the same code. The first shape here was
+            # major*10000 + minor*100 + patch, which collides as soon as a
+            # component reaches 100: v0.1.100 and v0.2.0 both produce 200, and
+            # v1.0.100 collides with v1.1.0. Android refuses to install an
+            # update whose versionCode is not STRICTLY greater than the
+            # installed one and Zapstore keys releases on it, so the second of
+            # a colliding pair can never ship as an upgrade to the first.
+            #
+            # The block width is bounded on the other side too: Android's
+            # versionCode is a signed 32-bit int capped at 2100000000, so the
+            # tag components are refused at 1000 rather than silently wrapping.
+            for COMPONENT in "$MAJOR" "$MINOR" "$PATCH"; do
+              if [ "$COMPONENT" -ge 1000 ]; then
+                echo "::error::Tag '$TAG' has a component of 1000 or more, which the version code cannot encode."
+                exit 1
+              fi
+            done
+            # Deterministic, monotonic and readable: 0.1.0 -> 1000,
+            # 1.2.3 -> 1002003. Derived from the tag rather than from
+            # github.run_number, which is monotonic but meaningless and would
+            # change the version code on a plain re-run of the same release.
+            CODE=$(( MAJOR * 1000000 + MINOR * 1000 + PATCH ))
+            IS_TAG=true
           else
             # A dry run keeps whatever the manifest already carries.
             NAME=$(jq -r .appVersion android/twa-manifest.json)
             CODE=$(jq -r .appVersionCode android/twa-manifest.json)
+            IS_TAG=false
           fi
+
+          # One decision, computed once, read by every step that ships
+          # something. Both publishing steps used to test the REF alone, which
+          # is true of a workflow_dispatch launched against a tag — so the
+          # `publish` toggle read "off = build and verify only" and published
+          # anyway.
+          #
+          # `inputs.publish` is null on a push, so the `|| false` is what keeps
+          # `set -u` and the string compare honest.
+          REQUESTED='${{ inputs.publish || false }}'
+          PUBLISH=false
+          if [ "$IS_TAG" = true ]; then
+            if [ "${{ github.event_name }}" = "push" ] || [ "$REQUESTED" = "true" ]; then
+              PUBLISH=true
+            fi
+          elif [ "$REQUESTED" = "true" ]; then
+            # Refuse rather than skip. A guard that silently withholds reads as
+            # a broken workflow: the run goes green, the APK is attached to
+            # nothing, and the reason is nowhere on screen.
+            echo "::error::publish was requested, but $GITHUB_REF is not a tag. Nothing publishes without a vMAJOR.MINOR.PATCH tag — re-run this workflow with the tag selected as the ref."
+            exit 1
+          fi
+
           echo "name=$NAME" >> "$GITHUB_OUTPUT"
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
-          echo "Building $NAME (versionCode $CODE)"
+          echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
+          echo "Building $NAME (versionCode $CODE), publish=$PUBLISH"
 
       - name: Write the version into the TWA manifest
         run: |
@@ -187,7 +241,7 @@ jobs:
           fi
 
       - name: Attach the APK to the GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.version.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -196,7 +250,7 @@ jobs:
           gh release upload "${GITHUB_REF#refs/tags/}" android/app-release-signed.apk --clobber
 
       - name: Publish to Zapstore
-        if: startsWith(github.ref, 'refs/tags/') || inputs.publish
+        if: steps.version.outputs.publish == 'true'
         env:
           SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
           GITHUB_TOKEN: ${{ github.token }}

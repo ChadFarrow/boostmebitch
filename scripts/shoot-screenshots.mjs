@@ -1,5 +1,4 @@
-// Captures the phone screenshots the Zapstore listing and the web manifest
-// both render.
+// Captures the phone screenshots the Zapstore listing renders.
 //
 // Usage:
 //   node scripts/shoot-screenshots.mjs                       # against production
@@ -11,9 +10,12 @@
 // site with real Podcast Index results behind it, and which episode looks good
 // in a store listing is a human judgement call, not something to assert.
 //
-// Output lands in public/screenshots/ and is referenced from exactly one place
-// each by public/manifest.json (`screenshots`) and zapstore.yaml (`images`), so
-// there is no second copy of these files to drift.
+// Output lands in public/screenshots/. NOTHING REFERENCES THOSE FILES YET, and
+// that is deliberate: `images:` in zapstore.yaml is commented out because zsp
+// fails on a path that does not resolve, and public/manifest.json declares no
+// `screenshots` member for the same reason — a manifest naming a 404 is worse
+// than a manifest naming nothing. Wire both up in the same commit that adds the
+// PNGs, and keep it to those two places so there is no third copy to drift.
 //
 // WHY --manual EXISTS AND IS NOT A FALLBACK: the automated path below drives
 // real, live podcast data. A feed can go away, a search can rank differently,
@@ -46,20 +48,91 @@ const OUT = 'public/screenshots';
 const VIEWPORT = { width: 412, height: 915 };
 const SCALE = 2;
 
+const titleRe = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
+// NEVER `page.locator('img').first()` ANYWHERE IN THIS FILE. app/layout.tsx
+// renders public/hero.jpg as a fixed full-viewport layer that is the FIRST
+// <img> in the DOM on every route, and it sits inside an aria-hidden,
+// pointer-events-none div. Both uses that follow from it are silently wrong:
+//
+//   - as a "wait for artwork" signal it is already satisfied on first paint, so
+//     the shot is taken before /api/search has returned and captures an empty
+//     result list;
+//   - as a click target it can never resolve, because Playwright's
+//     actionability check waits for pointer events that layer will never
+//     accept — a 30 s timeout, then a WARN, on every run.
+//
+// Match the result ROW by the title text instead. It is also the only signal
+// that actually means "the search came back".
+const resultRow = (page) => page.locator('ul > li').filter({ hasText: titleRe }).first();
+const boostButton = (page) => page.getByLabel(/Boost this (episode|track)/i).first();
+
+// TYPE, THEN CHECK THE TEXT SURVIVED. <SearchBar>'s input is a controlled React
+// component on a server-rendered page, so the box is present and accepts
+// keystrokes for several seconds BEFORE React attaches to it, and everything
+// typed in that window is thrown away on hydration. Measured against
+// production, both obvious forms fail there and neither says so:
+//
+//   - `fill(query)` leaves the box EMPTY and never calls /api/search at all,
+//     because React re-renders from its own state and that state is '';
+//   - `type(query)` loses the first character, so the search runs for
+//     "omegrown Hits" and the row this script looks for never appears.
+//
+// Both then surface as "the results never came back", which reads as a slow
+// site rather than an early script. Polling the value is the only form that is
+// self-verifying: it asserts the app actually accepted the query.
+async function fillWhenHydrated(input, text) {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    await input.fill(text);
+    await input.page().waitForTimeout(400);
+    if ((await input.inputValue()) === text) return;
+  }
+  throw new Error(`the search box never kept "${text}" — the page may not have hydrated`);
+}
+
+/** Search, and leave the results on screen. Idempotent: re-used by later shots. */
+async function ensureResults(page) {
+  const row = resultRow(page);
+  if (await row.count()) return row;
+  await page.goto(base, { waitUntil: 'domcontentloaded' });
+  const search = page.getByPlaceholder(/search podcasts/i);
+  await search.waitFor({ timeout: 30_000 });
+  await fillWhenHydrated(search, query);
+  // Results resolve through /api/search and then per-podcast metadata. Waiting
+  // for the row is what says the search came back; `networkidle` would never
+  // fire, because this app keeps relay sockets open.
+  await row.waitFor({ timeout: 30_000 });
+  // Artwork is best-effort on purpose: <PodcastCover> falls back to a
+  // colored-initial <div> when every candidate URL fails, so a row can
+  // legitimately never hold an <img> and waiting hard for one would strand a
+  // shot that was ready.
+  await row.locator('img').first().waitFor({ timeout: 10_000 }).catch(() => {});
+  return row;
+}
+
+/** Open the show, and leave its episode list on screen. Idempotent. */
+async function ensureEpisodes(page) {
+  if (await boostButton(page).count()) return;
+  const row = await ensureResults(page);
+  // Click the TITLE, not the row box and not the cover. <FavHeart> sits in the
+  // same row and calls stopPropagation, so a click that lands on it toggles a
+  // favorite — which for a signed-in user writes to the shared kind:10333 list
+  // — instead of opening the show.
+  await row.getByText(titleRe).first().click();
+  await boostButton(page).waitFor({ timeout: 30_000 });
+}
+
+// Each shot brings the page to the state it needs rather than inheriting it
+// from the shot before, so `--only 03` works on its own. The helpers above
+// short-circuit when the state is already there, so a full run still navigates
+// once.
 const shots = [
   {
     id: '01',
     name: 'browse',
     label: 'Search Podcasting 2.0 shows',
     async run(page) {
-      await page.goto(base, { waitUntil: 'domcontentloaded' });
-      const search = page.getByPlaceholder(/search podcasts/i);
-      await search.waitFor({ timeout: 30_000 });
-      await search.fill(query);
-      // Results resolve through /api/search and then per-podcast metadata, so
-      // wait for artwork rather than for the network to go idle — this app
-      // keeps relay sockets open and `networkidle` would never fire.
-      await page.locator('img').first().waitFor({ timeout: 30_000 });
+      await ensureResults(page);
       await page.waitForTimeout(1500);
     },
   },
@@ -68,8 +141,7 @@ const shots = [
     name: 'episodes',
     label: 'An episode, its tracks and who they pay',
     async run(page) {
-      await page.locator('img').first().click();
-      await page.getByLabel(/Boost this (episode|track)/i).first().waitFor({ timeout: 30_000 });
+      await ensureEpisodes(page);
       await page.waitForTimeout(1500);
     },
   },
@@ -78,7 +150,8 @@ const shots = [
     name: 'boost',
     label: 'The boost modal with a real split',
     async run(page) {
-      await page.getByLabel(/Boost this (episode|track)/i).first().click();
+      await ensureEpisodes(page);
+      await boostButton(page).click();
       await page.getByRole('dialog').waitFor({ timeout: 20_000 });
       await page.waitForTimeout(1500);
     },

@@ -26,25 +26,53 @@
 // stay green while the shipping code drifted, which is the exact failure the
 // arrangement exists to prevent.
 //
-// The `naive()` implementation at the foot is the obvious wrong version — it
-// trusts its input and splits on commas. Every vector below is asserted to
-// FAIL against it, so a vector that proves nothing can't sit here looking green.
+// EVERY VECTOR IS A RECORDED CALL, NOT A BARE ASSERTION, AND THAT IS LOAD
+// BEARING. `naiveNormalize` and `naiveBuild` at the foot are the obvious wrong
+// versions — they trust their input and split on commas — and the whole vector
+// list is replayed against them, because a vector that passes the moment it is
+// written has proved nothing. The first shape of this file declared that in its
+// header and then hand-listed six of about thirty vectors in the comparison, so
+// the entire normalizeFingerprint section sat green having never been tested
+// against anything. Recording the ARGUMENTS is what makes the replay total: a
+// vector cannot be added without also being proved.
+//
+// The exceptions are named, one at a time, by `alsoNaive: true`: the
+// must-still-work half. `keytool` form in and the same string out is a real
+// requirement AND something the wrong implementation gets right, which is a
+// property of that input rather than a hole in the suite. Marking it beats
+// dropping it — over-blocking a legitimate fingerprint is its own regression —
+// but it has to be marked deliberately, one vector at a time, so the exemption
+// can never be the default.
 
 import { buildAssetLinks, normalizeFingerprint } from '../lib/assetlinks.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 let failures = 0;
 
-function check(label, actual, expected) {
+/** Every recorded call, replayed against the wrong implementations below. */
+const vectors = [];
+
+function compare(label, actual, expected) {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
   if (a === e) {
     console.log(`  ok    ${label}`);
-    return true;
+    return;
   }
   failures += 1;
   console.error(`  FAIL  ${label}\n          expected ${e}\n          actual   ${a}`);
-  return false;
+}
+
+/** A normalizeFingerprint vector. `alsoNaive` marks a must-still-work input. */
+function checkFp(label, input, expected, { alsoNaive = false } = {}) {
+  compare(label, normalizeFingerprint(input), expected);
+  vectors.push({ label, kind: 'fp', args: [input], alsoNaive });
+}
+
+/** A buildAssetLinks vector. `alsoNaive` marks a must-still-work input. */
+function checkLinks(label, pkg, fps, expected, { alsoNaive = false } = {}) {
+  compare(label, buildAssetLinks(pkg, fps), expected);
+  vectors.push({ label, kind: 'links', args: [pkg, fps], alsoNaive });
 }
 
 function section(name) {
@@ -69,14 +97,17 @@ section('A fingerprint normalizes to the one form Chrome compares against');
 // ---------------------------------------------------------------------------
 {
   // `keytool -list -v` prints uppercase colon-separated; this is the round trip.
-  check('keytool form is unchanged', normalizeFingerprint(FP), FP);
+  checkFp('keytool form is unchanged', FP, FP, { alsoNaive: true });
   // `apksigner` and most CI snippets print bare lowercase hex. Accepting it is
   // the difference between a working deploy and a silently empty file that
   // looks configured — the env var is set, and nothing says why it didn't take.
-  check('bare lowercase hex gains colons and case', normalizeFingerprint(FP.replace(/:/g, '').toLowerCase()), FP);
-  check('lowercase colon form is upcased', normalizeFingerprint(FP.toLowerCase()), FP);
+  checkFp('bare lowercase hex gains colons and case', FP.replace(/:/g, '').toLowerCase(), FP);
+  checkFp('lowercase colon form is upcased', FP.toLowerCase(), FP, { alsoNaive: true });
   // Copy-paste out of a terminal or a YAML block brings whitespace with it.
-  check('surrounding whitespace and a newline are tolerated', normalizeFingerprint(`\n  ${FP} \t`), FP);
+  checkFp('surrounding whitespace and a newline are tolerated', `\n  ${FP} \t`, FP, { alsoNaive: true });
+  // Whitespace INSIDE the value is the one a wrapped terminal paste produces,
+  // and it is where trim-and-upcase stops being enough.
+  checkFp('a line break inside the value is closed up', `${FP.slice(0, 47)}\n${FP.slice(47)}`, FP);
 }
 
 // ---------------------------------------------------------------------------
@@ -85,27 +116,27 @@ section('...and anything that is not one is null, never a shortened string');
 {
   // 31 bytes: the shape a truncated paste has. It cannot match any
   // certificate, so serving it only makes the file look configured.
-  check('31 bytes', normalizeFingerprint(FP.slice(0, -3)), null);
-  check('33 bytes', normalizeFingerprint(`${FP}:AB`), null);
-  check('non-hex', normalizeFingerprint(FP.replace('9A', 'ZZ')), null);
-  check('empty', normalizeFingerprint(''), null);
-  check('an npub pasted into the wrong variable', normalizeFingerprint('npub1abcdef'), null);
+  checkFp('31 bytes', FP.slice(0, -3), null);
+  checkFp('33 bytes', `${FP}:AB`, null);
+  checkFp('non-hex', FP.replace('9A', 'ZZ'), null);
+  checkFp('empty', '', null);
+  checkFp('an npub pasted into the wrong variable', 'npub1abcdef', null);
 }
 
 // ---------------------------------------------------------------------------
 section('The statement is exactly what Digital Asset Links specifies');
 // ---------------------------------------------------------------------------
 {
-  check('single fingerprint', buildAssetLinks(PKG, FP), statementFor(PKG, [FP]));
+  checkLinks('single fingerprint', PKG, FP, statementFor(PKG, [FP]), { alsoNaive: true });
   // A rotation needs both keys live at once: the build already on people's
   // phones is signed by the outgoing one.
-  check('two, comma separated, order preserved', buildAssetLinks(PKG, `${FP},${FP2}`), statementFor(PKG, [FP, FP2]));
-  check('an array is accepted too', buildAssetLinks(PKG, [FP, FP2]), statementFor(PKG, [FP, FP2]));
-  check('whitespace around a comma', buildAssetLinks(PKG, ` ${FP} , ${FP2} `), statementFor(PKG, [FP, FP2]));
-  check('the same key twice in two spellings is one entry', buildAssetLinks(PKG, `${FP},${FP.toLowerCase()}`), statementFor(PKG, [FP]));
+  checkLinks('two, comma separated, order preserved', PKG, `${FP},${FP2}`, statementFor(PKG, [FP, FP2]), { alsoNaive: true });
+  checkLinks('an array is accepted too', PKG, [FP, FP2], statementFor(PKG, [FP, FP2]), { alsoNaive: true });
+  checkLinks('whitespace around a comma', PKG, ` ${FP} , ${FP2} `, statementFor(PKG, [FP, FP2]));
+  checkLinks('the same key twice in two spellings is one entry', PKG, `${FP},${FP.toLowerCase()}`, statementFor(PKG, [FP]));
   // Mid-rotation the list is edited by hand. Losing verification for the key
   // that IS valid because the second one was mistyped is the worse outcome.
-  check('a mistyped second entry does not take the good one down', buildAssetLinks(PKG, `${FP},nonsense`), statementFor(PKG, [FP]));
+  checkLinks('a mistyped second entry does not take the good one down', PKG, `${FP},nonsense`, statementFor(PKG, [FP]));
 }
 
 // ---------------------------------------------------------------------------
@@ -114,32 +145,38 @@ section('An unconfigured or malformed input grants NOTHING');
 {
   // This is the case a fresh deploy is in, and it must be a well-formed
   // "nobody is authorized" rather than a half-filled grant.
-  check('no fingerprint at all', buildAssetLinks(PKG, undefined), []);
-  check('empty string', buildAssetLinks(PKG, ''), []);
-  check('only commas', buildAssetLinks(PKG, ',,'), []);
-  check('every entry malformed', buildAssetLinks(PKG, 'abc,def'), []);
-  check('no package id', buildAssetLinks(undefined, FP), []);
-  check('package id with no dot', buildAssetLinks('boostmebitch', FP), []);
-  check('trailing dot', buildAssetLinks('com.boostmebitch.', FP), []);
-  check('leading dot', buildAssetLinks('.com.boostmebitch', FP), []);
-  check('a segment starting with a digit', buildAssetLinks('com.1boost.app', FP), []);
-  check('an embedded space', buildAssetLinks('com.boost mebitch.app', FP), []);
+  checkLinks('no fingerprint at all', PKG, undefined, []);
+  checkLinks('empty string', PKG, '', []);
+  checkLinks('only commas', PKG, ',,', []);
+  checkLinks('every entry malformed', PKG, 'abc,def', []);
+  checkLinks('no package id', undefined, FP, []);
+  checkLinks('package id with no dot', 'boostmebitch', FP, []);
+  checkLinks('trailing dot', 'com.boostmebitch.', FP, []);
+  checkLinks('leading dot', '.com.boostmebitch', FP, []);
+  checkLinks('a segment starting with a digit', 'com.1boost.app', FP, []);
+  checkLinks('an embedded space', 'com.boost mebitch.app', FP, []);
   // The package id is interpolated into a JSON grant. A shape we didn't expect
   // produces no statement rather than a statement about something else.
-  check('a quote', buildAssetLinks('com.x".app', FP), []);
-  check('a newline', buildAssetLinks('com.x\n.app', FP), []);
-  check('absurd length', buildAssetLinks(`com.${'a'.repeat(300)}.app`, FP), []);
+  checkLinks('a quote', 'com.x".app', FP, []);
+  checkLinks('a newline', 'com.x\n.app', FP, []);
+  checkLinks('absurd length', `com.${'a'.repeat(300)}.app`, FP, []);
 }
 
 // ---------------------------------------------------------------------------
-section('Every vector above fails against the obvious wrong implementation');
+section('Every vector above is replayed against the obvious wrong implementations');
 // ---------------------------------------------------------------------------
 {
-  // The version someone writes when this looks like string formatting: trust
-  // the input, split on commas, ship it. It is green on the happy path and
-  // wrong on every case that matters — which is why the vectors are checked
-  // against it rather than only against the real module.
-  const naive = (pkg, fps) => [{
+  // What someone writes when a fingerprint looks like a formatting problem:
+  // tidy the whitespace, fix the case, ship it. Right on the three inputs that
+  // were already in canonical form, wrong on every input that is not — and it
+  // never returns null, so nothing malformed is ever refused.
+  const naiveNormalize = (raw) => raw.trim().toUpperCase();
+
+  // What someone writes when the statement looks like string formatting: trust
+  // the input, split on commas, ship it. Green on the happy path and wrong on
+  // every case that matters, including the one that grants a package id nobody
+  // validated.
+  const naiveBuild = (pkg, fps) => [{
     relation: [RELATION],
     target: {
       namespace: 'android_app',
@@ -148,23 +185,38 @@ section('Every vector above fails against the obvious wrong implementation');
     },
   }];
 
-  const differs = (label, pkg, fps) => {
-    const real = JSON.stringify(buildAssetLinks(pkg, fps));
-    const bad = JSON.stringify(naive(pkg, fps));
-    if (real !== bad) {
-      console.log(`  ok    naive() gets "${label}" wrong`);
-      return;
+  const call = (impl, v) => {
+    try {
+      return JSON.stringify(
+        v.kind === 'fp'
+          ? (impl === 'real' ? normalizeFingerprint(...v.args) : naiveNormalize(...v.args))
+          : (impl === 'real' ? buildAssetLinks(...v.args) : naiveBuild(...v.args)),
+      );
+      // A wrong implementation is allowed to throw where the real one returns.
+      // That still counts as differing — it is the loudest way to be wrong.
+    } catch (e) {
+      return `threw ${(e && e.message) || e}`;
     }
-    failures += 1;
-    console.error(`  FAIL  "${label}" passes against naive() too — the vector proves nothing`);
   };
 
-  differs('bare hex', PKG, FP.replace(/:/g, '').toLowerCase());
-  differs('a mistyped second entry', PKG, `${FP},nonsense`);
-  differs('no fingerprint at all', PKG, undefined);
-  differs('every entry malformed', PKG, 'abc,def');
-  differs('a package id with a quote', 'com.x".app', FP);
-  differs('duplicate spellings of one key', PKG, `${FP},${FP.toLowerCase()}`);
+  let exempt = 0;
+  for (const v of vectors) {
+    const differs = call('real', v) !== call('naive', v);
+    if (v.alsoNaive) {
+      exempt += 1;
+      console.log(`  ok    "${v.label}" is must-still-work — naive() may get it right`);
+      continue;
+    }
+    if (differs) {
+      console.log(`  ok    naive() gets "${v.label}" wrong`);
+      continue;
+    }
+    failures += 1;
+    console.error(`  FAIL  "${v.label}" passes against naive() too — the vector proves nothing.`);
+    console.error('          Either it is a must-still-work input (mark it { alsoNaive: true })');
+    console.error('          or it does not exercise anything the real module adds.');
+  }
+  console.log(`  ${vectors.length} vector(s) replayed, ${exempt} exempt as must-still-work`);
 }
 
 // ---------------------------------------------------------------------------

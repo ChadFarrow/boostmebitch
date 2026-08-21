@@ -38,7 +38,11 @@ There is no `public/.well-known/` in this repo; both existing entries (`nostr.js
 
 **Unset serves `[]`, not a 404 or an error.** An empty statement list is a valid document that truthfully says "no app is delegated". A 404 is indistinguishable to Chrome from a broken deploy, and an error object would leak which environment variables exist. It is also what makes the route shippable before any keystore does.
 
-**`rateLimit(req, …)` is load-bearing beyond rate limiting.** Reading the request is what keeps the route dynamic. Remove the limiter as pointless on a static JSON document and Next may prerender the handler, baking the *build-time* environment into a static asset — after which rotating `ANDROID_CERT_SHA256` in the dashboard changes nothing until the next deploy, silently.
+**`export const dynamic = 'force-dynamic'` states the property outright, and the rate limit does not.** The route must run per request, or Next may prerender the handler and bake the *build-time* environment into a static asset — after which rotating `ANDROID_CERT_SHA256` in the dashboard changes nothing until the next deploy, silently. That used to be a side effect of the limiter reading `req`, which made a correctness property depend on an unrelated line: tidy the limiter away as pointless on a static JSON document and the route goes static without a word. Declare it instead.
+
+**The rate limit is far looser here than on the two documents beside it, and that is deliberate.** `nostr.json` and `keysend/[name]` run at 120/min; this one runs at 6000. The caller is not a browser — Chrome does not fetch this from the device, verification goes through Google's Digital Asset Links service, so every request arrives from a small shared pool of Google IPs and buckets into **one** `assetlinks:<ip>` key. A 429 there is a third silent way to fail verification, alongside the two this file already guards, and it produces the same URL bar. The limiter stays as abuse damping on an unauthenticated endpoint; it must never be the thing that decides whether the app verifies.
+
+**`Cache-Control` is `no-store`, where the two sibling documents cache for an hour.** They answer a question whose answer is stable. This one is the live statement of which certificate may speak for this origin, so an hour of downstream caching works directly against the rotation the environment-driven design buys — a **removed** fingerprint keeps verifying, and a newly **added** one may not. The release workflow curls this same document to decide whether an APK is safe to publish, so a cached copy can also fail a correct rotation or pass a stale one.
 
 **Validation happens on the way out**, in `lib/assetlinks.ts`, the same fail-closed discipline `app/.well-known/keysend` already follows: a malformed package id or a fingerprint that is not exactly 32 bytes of hex produces **no statement**, never a guess. One bad entry among several is dropped on its own rather than failing the list, because mid-rotation that list is edited by hand and losing verification for the key that *is* valid is the worse outcome.
 
@@ -63,7 +67,9 @@ Bubblewrap regenerates the entire Gradle project from this file on every `update
 ## Versions — there are three, and they are not wired together
 
 1. `package.json`'s `0.1.0` — the npm package.
-2. The Android `appVersion` / `appVersionCode`, written by CI from the git tag: `v1.2.3` → `1.2.3` and `10203`. Derived from the tag rather than `github.run_number` so a plain re-run of a release produces the same number.
+2. The Android `appVersion` / `appVersionCode`, written by CI from the git tag: `v1.2.3` → `1.2.3` and `1002003`. Derived from the tag rather than `github.run_number` so a plain re-run of a release produces the same number.
+
+   **Each component gets a THOUSAND-wide block, and the tag regex refuses a component of 1000 or more.** The first shape was `major*10000 + minor*100 + patch`, which collides as soon as a component reaches 100: `v0.1.100` and `v0.2.0` both produce `200`, and `v1.0.100` collides with `v1.1.0`. Android refuses to install an update whose `versionCode` is not **strictly greater** than the installed one, and Zapstore keys releases on it, so the second of a colliding pair can never ship as an upgrade to the first — with nothing saying why beyond a failed install. The upper bound is real too: `versionCode` is a signed 32-bit value capped at 2100000000, so a component is refused rather than silently wrapped.
 3. `app_version: '0.1.0'`, hard-coded at six boostagram TLV call sites (`components/boost-modal/index.tsx`, `components/boost-all-modal.tsx` ×3, `lib/v4v/streaming.ts`).
 
 **Unifying them is a separate change.** Six of those call sites are on the money path, and an Android packaging change is the wrong place to touch them. A single `APP_VERSION` in `lib/util.ts` would be the shape — that file is import-free enough to stay pinnable — but it needs its own review.
@@ -73,6 +79,8 @@ Bubblewrap regenerates the entire Gradle project from this file on every `update
 ## The release path
 
 `.github/workflows/android-release.yml`, on a `v*` tag. `workflow_dispatch` builds, signs and verifies without publishing, so the whole path can be walked before any tag or Zapstore identity exists.
+
+**Both publishing steps read one output, `steps.version.outputs.publish`, and nothing else.** They used to test `startsWith(github.ref, 'refs/tags/')` on their own, which is also true of a `workflow_dispatch` **launched against a tag ref** — so a run with the `publish` toggle left off, whose own description reads "off = build and verify only", published to Zapstore anyway. The version step compounded it by branching on `github.event_name` instead of the ref, so that same run shipped the version the *committed* manifest carried rather than the tag's. One decision, computed once from the ref and the toggle together, is what stops the two halves disagreeing. `publish` requested on a non-tag ref **fails the run** rather than being skipped: a silent refusal there reads as a broken workflow, since the run goes green and nothing on screen says why nothing shipped.
 
 **`bubblewrap update`, not `init`.** `update` regenerates the project from `twa-manifest.json`; `init` is interactive and has no `--yes`. `--skipVersionUpgrade` because CI has already written both version fields, and letting Bubblewrap auto-increment would make the version code depend on how many times the workflow ran.
 
