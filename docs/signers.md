@@ -15,6 +15,25 @@ The whole codebase reads `window.nostr`. Four paths feed it, swapped by `lib/nos
 
 > **`nostr-tools` is pinned to exact `2.19.4` — do NOT bump or relax the caret.** The `2.20.0+` NIP-46 rewrite added `limit: 0` to the `nostrconnect`/bunker subscription filters (`fromURI` + `setupSubscription`), which on our relays silently drops the remote signer's connect-ack, so **Primal's `nostrconnect://` login hangs and times out**. Latest (`2.23.5`) and `master` still carry it; `npm update` or a `^`/`~` range reintroduces the break. `NOSTRCONNECT_RELAYS` is a 4-relay set (nsec.app/damus/primal/nos.lol) for ack redundancy — a single relay loses the ack when iOS Safari suspends the WebSocket during the app-switch.
 
+### Amber's round trip does not return by itself — measured, not assumed
+
+`amber.ts`'s header describes the flow as: navigate to `nostrsigner:`, the user approves, "Amber writes the result to the clipboard **and returns focus**", the tab fires `visibilitychange`, we read the clipboard. **The last two steps did not happen on a real device.**
+
+Measured 2026-08-21 on a Pixel 6 (Android 17, no Chrome installed at all — 298 packages, zero matching `chrome`; Brave is the default browser and the only Custom Tabs provider). Brave dispatches the `nostrsigner:` intent with `LAUNCH_SINGLE_TASK`, so Amber opens in **its own task**. Approving finishes that task, and Android returns to the **launcher** — not to the page. The tab never sees `visibilitychange`, the request never resolves, the caller retries, and the prompt comes straight back.
+
+**This is not a Trusted Web Activity problem.** The first sighting was in the TWA, which made it look like packaging. Opening the identical site as an *ordinary Brave tab* reproduced it exactly: same prompt, same approval, same launcher. The TWA only removes the last escape hatch, because its task closes and there is no tab left to switch back to.
+
+Read NIP-55 carefully and it never promised otherwise: with no `callbackUrl` the spec says only that the signer "will copy the result to the clipboard". Returning is the **user's** job. That is what the capture-phase `pointerdown`/`touchstart`/`keydown` listeners in `invokeAmber` are for, and they are the load-bearing half of that design — not a fallback.
+
+**`callbackUrl` is not a drop-in replacement, and reaching for it as a quick fix is the trap.** Amber returns a `callbackUrl` by **navigating** to it. That reloads the page, which destroys the promise the caller is awaiting, so it needs the pending request to survive a load and the result to be matched back to a re-issued call. And it makes *every* signature a page reload — tolerable for a load-time decrypt, unacceptable during a boost, where `publishBoostNote` signs **after** the sats have already gone out (invariant 1 in [`../CLAUDE.md`](../CLAUDE.md)). Any design here has to answer that case before it answers the easy one.
+
+**Which is why the first fix was to stop asking.** `hydrateMutes` ran on every page load and decrypted the private half of the kind:10000 mute list, so a signed-in Amber user was sent to another app **before touching anything**. It now passes `decryptPrivate: false` when `storage.signer.get() === 'amber'`, and the parked ciphertext still round-trips verbatim. Amber only, deliberately: an extension and a bunker answer inside the browser and the local signer is in-process, so skipping there would cost a fresh device its private mutes for nothing.
+
+Two consequences to keep in mind, because neither is free:
+
+- **On Amber, the private mute list is now never decrypted** — `hydrateMutes` is its only caller. Private mutes come from this device's cache, so a *fresh* Amber device applies none of them until something decrypts. That is a silent withholding of the kind [`../CLAUDE.md`](../CLAUDE.md) says must be visible, and it is **not** yet surfaced. A user-initiated "load my private mutes" action is the missing piece.
+- **The `nostrNewer` branch had a latent bug of its own**, independent of Amber: an undecryptable private section made `privatePubkeys` `[]`, and adopting the relay state wholesale overwrote the cached list — silently un-muting everyone the user had muted privately, with no error. It now keeps the cached private entries and takes only the relay's public tags and its newer ciphertext.
+
 ### `lib/nostr/signer.ts` — the swap point
 
 One polyfill active at a time. `captureOriginal()` snapshots the underlying NIP-07 extension on first activation so deactivation restores it. `bmb:signer` holds `'amber' | 'bunker' | 'local' | absent` so the page-load fast path knows what to restore. Capability accessors live here: `getNip04()`/`getNip44()` (API or null), `requireNip44()` (throws). Use them instead of inlining `typeof window !== 'undefined' && window.nostr?.nipXX`.

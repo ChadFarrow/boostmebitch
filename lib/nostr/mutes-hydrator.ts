@@ -30,7 +30,24 @@ import type { NostrIdentity } from './auth';
 export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
   const setMutedPubkeys = useApp.getState().setMutedPubkeys;
   const cached = storage.muted.get(identity.npub);
-  const muteEvent = await fetchMutedPubkeys(identity.pubkey);
+  // DO NOT SPEND AN AMBER PROMPT HERE. This runs on every page load, before
+  // the user has touched anything, and decrypting the private half of the
+  // mute list is a NIP-04 call — which on Amber leaves the browser for
+  // another app. Measured on a Pixel 6: the app opened, demanded
+  // `nip04_decrypt`, and approving returned the user to the LAUNCHER rather
+  // than to the page, so the request never resolved and the prompt came
+  // straight back. That happened in an ordinary Brave tab as much as in the
+  // Trusted Web Activity, so it is not a packaging problem — see
+  // docs/signers.md.
+  //
+  // Amber only, deliberately. A NIP-07 extension and a bunker answer inside
+  // the browser, and the local signer is in-process, so for them the decrypt
+  // is cheap and skipping it would cost a fresh device its private mutes for
+  // no benefit. The cost of skipping is bounded: the parked ciphertext still
+  // round-trips verbatim on republish, and the branch below keeps applying
+  // whatever private list this device already cached.
+  const decryptPrivate = storage.signer.get() !== 'amber';
+  const muteEvent = await fetchMutedPubkeys(identity.pubkey, undefined, { decryptPrivate });
 
   if (!muteEvent) {
     // No Nostr event yet; if we have a local cache, push it up so the user's
@@ -55,8 +72,25 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
 
   const nostrNewer = muteEvent.updatedAt >= cached.updatedAt;
   if (nostrNewer) {
-    storage.muted.set(identity.npub, muteEvent);
-    setMutedPubkeys(unionMutedPubkeys(muteEvent));
+    // A private section we could not read must NOT take the cached one down
+    // with it. `muteEvent.privatePubkeys` is `[]` whenever the content stayed
+    // encrypted — because we declined the prompt above, because the signer
+    // has no NIP-04, or because the decrypt threw — and adopting that
+    // wholesale silently un-mutes everyone the user muted privately, on a
+    // path with no error and nothing on screen. Take the relay's public tags
+    // and its (newer) ciphertext, keep this device's decoded private entries
+    // for filtering. Nothing is lost on republish either: publishMuteList
+    // passes `unreadablePrivateContent` through verbatim and ignores
+    // `privatePubkeys` when it is set.
+    const adopted: MuteListState = muteEvent.unreadablePrivateContent
+      ? {
+          ...muteEvent,
+          privatePubkeys: cached.privatePubkeys,
+          privateOtherTags: cached.privateOtherTags,
+        }
+      : muteEvent;
+    storage.muted.set(identity.npub, adopted);
+    setMutedPubkeys(unionMutedPubkeys(adopted));
   } else {
     // Local is ahead. Keep our pubkeys + non-`p` tags, but adopt the relay's
     // non-`p` tags too so cross-client hashtag mutes survive.

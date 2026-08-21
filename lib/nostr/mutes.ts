@@ -57,11 +57,22 @@ function partitionTags(tags: string[][]): { pubkeys: string[]; other: string[][]
  * ciphertext is parked in `unreadablePrivateContent` so a future republish
  * can preserve it verbatim instead of clobbering the user's private mutes
  * set in another client (e.g. Damus).
+ *
+ * `decryptPrivate: false` parks the blob WITHOUT asking the signer, and is
+ * not an optimization — it is how a caller declines to spend a user-facing
+ * approval prompt. A NIP-04 decrypt is a signer round trip, and on Amber that
+ * round trip leaves the browser entirely. Callers that run without the user
+ * having asked for anything (page-load hydration) pass `false`; callers
+ * acting on something the user just did pass the default `true`. The parked
+ * blob is the same first-class state the no-NIP-04 path already produces, so
+ * a later republish still round-trips the private list verbatim.
  */
 export async function fetchMutedPubkeys(
   pubkey: string,
   queryRelays?: string[],
+  opts?: { decryptPrivate?: boolean },
 ): Promise<MuteListState | null> {
+  const decryptPrivate = opts?.decryptPrivate ?? true;
   const useRelays = queryRelays ?? DEFAULT_RELAYS;
   try {
     const newest = await fetchLatestEvent(useRelays, {
@@ -78,12 +89,14 @@ export async function fetchMutedPubkeys(
     let unreadablePrivateContent: string | undefined;
 
     if (newest.content) {
-      const nip04 = getNip04();
+      const nip04 = decryptPrivate ? getNip04() : null;
       if (!nip04) {
         unreadablePrivateContent = newest.content;
         // eslint-disable-next-line no-console
-        console.warn(
-          '[mutes] kind:10000 has encrypted content but signer has no NIP-04 — private mutes will round-trip opaquely',
+        console.info(
+          decryptPrivate
+            ? '[mutes] kind:10000 has encrypted content but signer has no NIP-04 — private mutes will round-trip opaquely'
+            : '[mutes] not spending a signer prompt to decrypt private mutes here — parked, and the local cache still filters',
         );
       } else {
         try {
