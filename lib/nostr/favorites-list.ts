@@ -594,7 +594,7 @@ export function baselineFrom(local: LocalList): FavoritesBaseline {
 // Planning a publish
 // ---------------------------------------------------------------------------
 
-export type PublishReason = 'degraded' | 'unchanged' | 'nothing-to-create' | 'publish';
+export type PublishReason = 'degraded' | 'unchanged' | 'nothing-to-create' | 'wholesale-delete' | 'publish';
 
 export interface FavoritesPlanInput {
   merged: ParsedList;
@@ -642,6 +642,35 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // signed-in visitor gets a kind:10333 they never asked for.
   if (!input.exists && input.merged.nodes.length === 0) {
     return { publish: false, reason: 'nothing-to-create', tags, baseline };
+  }
+
+  // A MERGE THAT COMES OUT EMPTY OVER A LIST THAT IS NOT IS NEVER A USER ACTION.
+  //
+  // This is the hole the guard above only half covered: it declines to CREATE
+  // an empty event and says nothing about replacing a full one with an empty
+  // one. On 2026-08-21 that cost a live account 213 groups and 232 items in a
+  // single publish, and the read was perfectly healthy, so `trustworthy` was
+  // true and the degraded branch never fired.
+  //
+  // The mechanism is `mergeFavoritesList`'s removal test, which is correct in
+  // isolation:
+  //
+  //     ours, and we no longer hold it  ⇒  the user removed it here
+  //
+  // `local` empty with a populated baseline satisfies that for EVERY entry at
+  // once, so the merge dutifully removes all of them. But "this device holds
+  // nothing" is not the same claim as "the user cleared their favorites" — it
+  // is also what an unhydrated store looks like, and the store is rebuilt from
+  // scratch on every page load while the baseline is read from disk.
+  //
+  // Refusing costs a user who genuinely emptied their list one extra action.
+  // Publishing costs every favorite they have, on every device, with no undo,
+  // and a replaceable event keeps no history to recover from. That trade is not
+  // close. Deliberately keyed on the RELAY's tags rather than on the baseline:
+  // it is the thing about to be overwritten, and it is true even if the baseline
+  // is itself corrupt.
+  if (input.merged.nodes.length === 0 && input.readTags.some((t) => t[0] === 'i')) {
+    return { publish: false, reason: 'wholesale-delete', tags, baseline };
   }
 
   return { publish: true, reason: 'publish', tags, baseline };
