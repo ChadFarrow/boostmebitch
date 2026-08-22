@@ -96,7 +96,20 @@ interface AppState {
   // genuinely expected (see doLoadProfile) — never speculatively, or it just
   // relabels the button for people who have no wallet at all.
   walletRestoring: boolean;
+  /**
+   * True when a page load DELIBERATELY did not read this account's
+   * encrypted-to-self backups (Spark seed, NWC URI, synced settings).
+   *
+   * Set on Amber only. Amber's approval sheet renders decrypted plaintext, so
+   * an unattended decrypt on page load puts a **seed phrase** on screen before
+   * the user has touched anything — see `doLoadProfile`. Refusing is right; a
+   * user whose wallet then does not come back on a new device, with nothing
+   * explaining why, is not. CLAUDE.md: a guard that silently withholds must say
+   * so, and this flag is how.
+   */
+  walletBackupWithheld: boolean;
   setWalletRestoring: (b: boolean) => void;
+  setWalletBackupWithheld: (b: boolean) => void;
 
   // The podcast currently shown in the detail view. Lifted into the store so
   // surfaces outside `app/page.tsx` (e.g. a podcast-name link in a Nostr note
@@ -302,6 +315,8 @@ export const useApp = create<AppState>((set, get) => ({
 
   walletRestoring: false,
   setWalletRestoring: (b) => set({ walletRestoring: b }),
+  walletBackupWithheld: false,
+  setWalletBackupWithheld: (b) => set({ walletBackupWithheld: b }),
 
   selectedPodcast: null,
   // Leaving the detail view (or switching shows) also drops any open

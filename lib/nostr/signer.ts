@@ -192,7 +192,62 @@ export function requireNip44(): Nip44Api {
 // should use this rather than awaiting requireNip44().decrypt directly.
 const NIP44_DECRYPT_TIMEOUT_MS = 10_000;
 
-export function decryptWithTimeout(pubkey: string, ciphertext: string): Promise<string> {
+/**
+ * Why a decrypt is happening. REQUIRED, so a new caller has to decide rather
+ * than inherit a permissive default.
+ *
+ *  - `'user-initiated'` — someone pressed something and is watching.
+ *  - `'unattended'` — page-load hydration. Nobody asked for it and nobody is
+ *    expecting a signer prompt.
+ */
+export type DecryptPurpose = 'user-initiated' | 'unattended';
+
+/** Thrown instead of dispatching an unattended decrypt to an external signer. */
+export class UnattendedDecryptRefused extends Error {
+  constructor() {
+    super('refusing to ask an external signer to decrypt without the user asking');
+    this.name = 'UnattendedDecryptRefused';
+  }
+}
+
+/**
+ * NIP-44 decrypt with a timeout, and a refusal.
+ *
+ * **On Amber, an `'unattended'` decrypt is refused before it is dispatched, and
+ * that is a privacy decision rather than a UX one.** Amber's approval sheet
+ * renders the DECRYPTED PLAINTEXT so the user can see what they are approving.
+ * That is reasonable of Amber. It is not reasonable of us to trigger it on
+ * page load, because of what this app stores encrypted-to-self:
+ *
+ *   - `boostmebitch:wallet` is the Spark **seed phrase**. Observed on a Pixel 6:
+ *     launching the app put twelve BIP-39 words full-screen and unmasked, before
+ *     the user had touched anything.
+ *   - `boostmebitch:wallet:nwc` is an NWC URI — a budgeted **spending
+ *     credential**.
+ *   - `boostmebitch:settings` is harmless in content, but still an uninvited
+ *     trip to another app.
+ *
+ * A seed on screen at a moment the user did not choose is a shoulder, a
+ * screenshot, or a screen recording away from being someone else's. The three
+ * cold-start callers therefore do not ask at all on Amber (see
+ * `doLoadProfile`); this refusal is the backstop that makes a FOURTH one, added
+ * later by someone who never read this, fail loudly instead of quietly showing
+ * a seed.
+ *
+ * Amber only, deliberately, and for the same reason
+ * [`hydrateMutes`](./mutes-hydrator.ts) is: a NIP-07 extension and a bunker
+ * answer inside the browser and the local signer is in-process, so none of them
+ * render anything and refusing there would cost a fresh device its wallet for
+ * nothing.
+ */
+export function decryptWithTimeout(
+  pubkey: string,
+  ciphertext: string,
+  purpose: DecryptPurpose,
+): Promise<string> {
+  if (purpose === 'unattended' && isAmberActive()) {
+    return Promise.reject(new UnattendedDecryptRefused());
+  }
   return Promise.race([
     requireNip44().decrypt(pubkey, ciphertext),
     new Promise<never>((_, reject) =>

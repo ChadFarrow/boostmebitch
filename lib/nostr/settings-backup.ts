@@ -43,7 +43,7 @@ export async function fetchSettings(
   );
   if (!event || !event.content) return null;
   try {
-    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content));
+    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content, 'unattended'));
     return { railPref: isRail(parsed?.railPref) ? parsed.railPref : undefined };
   } catch {
     return null;
