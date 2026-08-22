@@ -61,7 +61,7 @@ import {
   newAmberRequestId,
   parseAmberCallback,
 } from '../lib/nostr/amber-callback-url.ts';
-import { importFreeProblems, explainImportFree } from './import-free.mjs';
+import { importFreeProblems, explainImportFree, valueImportPath } from './import-free.mjs';
 
 let failures = 0;
 
@@ -456,6 +456,34 @@ console.log('\nrequest ids');
   // navigation to /amber-callback inert.
   check('500 ids are distinct', ids.size, 500);
   check('buildAmberCallbackUrl refuses an id it did not make', threw(() => buildAmberCallbackUrl('https://x.test', 'nope')), true);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nlib/storage.ts stays out of lib/nostr/\'s import graph');
+// ---------------------------------------------------------------------------
+{
+  // amber.ts imports lib/storage.ts to park a pending request across the reload
+  // a callbackUrl causes. That is legal ONLY while storage.ts has no value
+  // import back into lib/nostr/ — otherwise this closes:
+  //
+  //   storage.ts -> nostr/auth.ts -> nostr/signer.ts -> nostr/amber.ts -> storage.ts
+  //
+  // which does not fail the build. It surfaces as a module-init order bug: an
+  // export that plainly exists reads as undefined at a call site that looks
+  // correct. Asserted here rather than remembered.
+  for (const target of ['lib/nostr/amber.ts', 'lib/nostr/auth.ts', 'lib/nostr/signer.ts']) {
+    const cycle = valueImportPath('lib/storage.ts', target);
+    if (cycle) {
+      failures++;
+      console.error(`  FAIL  lib/storage.ts has a value-import path back into ${target}:`);
+      for (const step of cycle) console.error(`          ${step}`);
+      console.error('\n        Push whatever both sides need DOWN into an import-free leaf'
+        + '\n        (lib/nostr/profile-metadata.ts is why this passes today), rather'
+        + '\n        than importing sideways.\n');
+    } else {
+      console.log(`  ok    no value-import path lib/storage.ts -> ${target}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
