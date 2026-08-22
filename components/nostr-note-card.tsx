@@ -15,6 +15,7 @@ import type { Episode, Podcast } from '@/lib/types';
 import { getErrorMessage } from '@/lib/util';
 import { linkify, extractImages, stripNostrUris, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
+import { PodcastCover } from './podcast-cover';
 import { FollowButton } from './follow-button';
 
 type ActionState = 'idle' | 'busy' | 'done' | 'error';
@@ -244,14 +245,20 @@ function NoteCardImpl({
 
         {podcast && (
           <div className="flex items-center gap-2 mt-1.5 text-[11px] text-muted">
-            {podcast.image ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={podcast.image}
-                alt=""
-                className="w-4 h-4 object-cover border border-bone/20 flex-shrink-0"
-              />
-            ) : null}
+            {/* Both URLs, via <PodcastCover> — a bare <img src={podcast.image}>
+                is the shape this component exists to replace. PI mirrors RSS
+                `<image><url>` as `image` and `<itunes:image>` as `artwork`, and
+                they routinely disagree: Homegrown Hits' `image` is a 404 on a
+                domain that still resolves, so this slot rendered an empty
+                square in the one feed surface that shows a boost note. */}
+            <PodcastCover
+              image={podcast.image}
+              artwork={podcast.artwork}
+              title={podcast.title}
+              seed={podcast.podcastGuid ?? String(podcast.id)}
+              className="w-4 h-4 object-cover border border-bone/20 flex-shrink-0"
+              lowPriority
+            />
             <span className="truncate">
               <span className="text-nostr">→</span>{' '}
               <button
