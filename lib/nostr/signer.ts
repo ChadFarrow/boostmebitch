@@ -234,6 +234,14 @@ export class UnattendedDecryptRefused extends Error {
  * later by someone who never read this, fail loudly instead of quietly showing
  * a seed.
  *
+ * **`'user-initiated'` is the escape hatch, and it has to reach here from the
+ * CALL, never from the function.** `fetchEncryptedMnemonic` is used by both the
+ * page-load restore and the wallet modal's "Restore from Nostr" button, so a
+ * purpose hardcoded inside it is wrong for one of them — and the first version
+ * of this guard hardcoded `'unattended'`, which refused the button too. The
+ * user pressed it, was expecting the prompt, and got nothing. So every backup
+ * reader takes `purpose` as a required argument and passes it straight down.
+ *
  * Amber only, deliberately, and for the same reason
  * [`hydrateMutes`](./mutes-hydrator.ts) is: a NIP-07 extension and a bunker
  * answer inside the browser and the local signer is in-process, so none of them

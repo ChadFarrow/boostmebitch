@@ -48,7 +48,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
     try {
       // Replaceable kind:30078 — creating a new wallet overwrites any existing backup.
       // Force the user to acknowledge before destroying the old one.
-      const existing = await fetchEncryptedMnemonic(identity).catch(() => null);
+      const existing = await fetchEncryptedMnemonic(identity, 'user-initiated').catch(() => null);
       if (existing) {
         const ok = window.confirm(
           'A Spark wallet backup already exists on your relays.\n\n' +
@@ -98,7 +98,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
     setInternalMode('restoring');
     try {
       storage.sparkOptOut.clear(identity?.npub);
-      const m = await fetchEncryptedMnemonic(identity);
+      const m = await fetchEncryptedMnemonic(identity, 'user-initiated');
       if (!m) {
         setErr('No backup found on your write relays.');
         setInternalMode('idle');
@@ -127,7 +127,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
     try {
       // kind:30078 is replaceable — only confirm an overwrite when a DIFFERENT
       // wallet is already backed up. Re-pasting the same seed is harmless.
-      const existing = await fetchEncryptedMnemonic(identity).catch(() => null);
+      const existing = await fetchEncryptedMnemonic(identity, 'user-initiated').catch(() => null);
       if (existing && existing.trim().replace(/\s+/g, ' ') !== trimmed) {
         const ok = window.confirm(
           'A different Spark wallet backup already exists on your relays.\n\n' +
