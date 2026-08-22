@@ -2,21 +2,45 @@
 
 // NIP-55 Amber signer (Android).
 //
-// Production Nostr web apps that target Amber use this flow:
+// Two ways a result can come back, and the app uses both:
 //
-//   1. Same-tab navigation to `nostrsigner:<payload>?type=…&returnType=…`
-//      with NO callbackUrl. Per NIP-55: "If you don't send a callback url,
-//      Signer Application will copy the result to the clipboard."
-//   2. Android's intent system hijacks the navigation; the browser tab stays
-//      on the original page while Amber comes to foreground.
-//   3. User approves; Amber writes the result (pubkey / signed event /
-//      ciphertext / plaintext) to the system clipboard and returns focus.
-//   4. The browser tab fires `visibilitychange` (visible again); we read the
-//      clipboard and resolve the pending request.
+//   CLIPBOARD (the original, still the default). Same-tab navigation to
+//   `nostrsigner:<payload>?type=…&returnType=…` with NO callbackUrl. Per
+//   NIP-55: "If you don't send a callback url, Signer Application will copy
+//   the result to the clipboard." Returning to the page is then the USER's
+//   job, which is what the capture-phase pointer/touch/key listeners below are
+//   for — they are the load-bearing half of that design, not a fallback.
 //
-// This is what the user means when they describe other apps "switching to
-// Amber and back" seamlessly. There's no popup tab, no callback URL, no
-// cross-tab message passing — just a URL-scheme dispatch and a clipboard read.
+//   CALLBACK (new, `get_public_key` only). Amber navigates to a `callbackUrl`
+//   with the result appended. That RELOADS the page, so the promise the caller
+//   is awaiting dies with it; the request is parked in sessionStorage and the
+//   result is picked up when the caller asks again.
+//
+// WHY BOTH, AND WHY THE CALLBACK IS NOT USED EVERYWHERE:
+//
+// The clipboard flow's premise — "Amber returns focus, the tab fires
+// `visibilitychange`, we read the clipboard" — DOES NOT HOLD on a real device.
+// Measured 2026-08-21 on a Pixel 6 (Android 17, Brave default, no Chrome):
+// Brave dispatches the intent with LAUNCH_SINGLE_TASK, so Amber opens in its
+// own task, and approving finishes that task and drops the user on the
+// LAUNCHER. The tab never sees `visibilitychange`, the request never resolves,
+// the caller retries, and the prompt comes straight back. Reproduced in an
+// ordinary Brave tab as much as in the Trusted Web Activity, so it is not a
+// packaging problem. A `callbackUrl` is what makes Amber come back at all.
+//
+// But a callback costs a page reload, and a reload is not free everywhere.
+// `get_public_key` is the only request in this app with NO page state attached
+// to it: it is user-initiated from a modal, its result feeds `completeSignIn`,
+// and there is nothing on screen a reload destroys. Every other request has
+// something to lose, and one of them has money on screen —
+// `publishBoostNote` signs AFTER the sats have gone out, and the per-leg
+// results it would destroy are the only record the user has of which
+// recipients were paid. So the rule is:
+//
+//   A request may use `callbackUrl` only if losing every byte of page state
+//   costs the user nothing. Today exactly one request qualifies.
+//
+// See RESUMABLE_TYPES below, and docs/signers.md for the rest of the reasoning.
 //
 // Trade-off worth knowing: each signEvent / nip04.* / nip44.* call shows the
 // Amber prompt. Background-published events that the rest of the app debounces
@@ -27,67 +51,34 @@
 // the result by hand.
 
 import { nip19, verifyEvent, type Event, type EventTemplate } from 'nostr-tools';
+import {
+  AMBER_CALLBACK_PATH,
+  buildAmberCallbackUrl,
+  buildSignerUrl,
+  looksLikeAmberResult,
+  newAmberRequestId,
+  amberRecordIsFresh,
+  type AmberRequestType,
+  type AmberUrlOptions,
+} from './amber-callback-url';
+// A VALUE import of lib/storage.ts from inside lib/nostr/ used to be a cycle
+// (storage -> auth -> signer -> amber -> storage). It is not any more: the one
+// edge that made it real, `coerceProfileMetadata`, moved down into the
+// import-free leaf lib/nostr/profile-metadata.ts. Keep it that way — see the
+// header of that file.
+import { storage } from '../storage';
 
-export type AmberRequestType =
-  | 'get_public_key'
-  | 'sign_event'
-  | 'nip04_encrypt'
-  | 'nip04_decrypt'
-  | 'nip44_encrypt'
-  | 'nip44_decrypt';
+// The wire format itself lives in ./amber-callback-url, an import-free leaf so
+// `npm run check:amber` can load the REAL shipping bytes under plain Node.
+// Re-exported here so every existing import site is unchanged.
+export type { AmberRequestType } from './amber-callback-url';
+export { looksLikeAmberResult } from './amber-callback-url';
 
 // 60s — long enough for the Amber approve flow on a slow phone, short enough
 // that a forgotten request doesn't pin the busy state forever.
 const AMBER_TIMEOUT_MS = 60_000;
 
-interface InvokeOptions {
-  type: AmberRequestType;
-  /** event JSON, plaintext, or ciphertext — encoded after `nostrsigner:`. */
-  payload?: string;
-  /** Peer pubkey for nip04/nip44 operations. */
-  pubkey?: string;
-  /** Amber's returnType param. `event` returns the signed event JSON for
-   *  sign_event; `signature` returns just the bare signature. We always use
-   *  `event` for sign_event so the caller gets a complete `Event`. */
-  returnType?: 'signature' | 'event';
-}
-
-function buildSignerUrl(opts: InvokeOptions): string {
-  // Match the NIP-55 spec example byte-for-byte. Params written raw, payload
-  // URI-encoded after the colon. NO callbackUrl → Amber uses clipboard for
-  // the return value.
-  let url = `nostrsigner:${encodeURIComponent(opts.payload ?? '')}`;
-  url += `?compressionType=none`;
-  url += `&returnType=${opts.returnType ?? 'signature'}`;
-  url += `&type=${opts.type}`;
-  if (opts.pubkey) url += `&pubkey=${opts.pubkey}`;
-  return url;
-}
-
-// Best-effort sanity check on a clipboard read so we don't accidentally
-// resolve with an unrelated string the user happened to copy. Different
-// types have different shapes:
-//   - get_public_key: 64-hex-char or starts with `npub1`
-//   - sign_event: JSON object with a `sig` field
-//   - nip04/nip44: opaque ciphertext/plaintext — can't validate, accept anything
-function looksLikeAmberResult(text: string, type: AmberRequestType): boolean {
-  const t = text.trim();
-  if (!t) return false;
-  if (type === 'get_public_key') {
-    return /^[0-9a-f]{64}$/i.test(t) || t.startsWith('npub1');
-  }
-  if (type === 'sign_event') {
-    if (!t.startsWith('{')) return false;
-    try {
-      const parsed = JSON.parse(t);
-      return typeof parsed === 'object' && parsed && typeof parsed.sig === 'string';
-    } catch {
-      return false;
-    }
-  }
-  // nip04/nip44 — no reliable shape check. Trust the caller.
-  return true;
-}
+type InvokeOptions = AmberUrlOptions;
 
 // In-flight Amber requests, exposed so a manual-paste UI can resolve them
 // without going through the clipboard. Single-flight FIFO: there's no need
@@ -140,10 +131,75 @@ export function subscribeAmberStage(fn: (s: AmberStage) => void): () => void {
   return () => { stageListeners.delete(fn); };
 }
 
+// Which requests may return through a callbackUrl, i.e. which ones can afford
+// to have the page reloaded underneath them.
+//
+// `get_public_key` ONLY, and this list is not a default to be widened casually.
+// Adding a type here means asserting that losing every byte of page state costs
+// the user nothing for that request. Two specific things it must never contain:
+//
+//   `sign_event`, because `publishBoostNote` signs AFTER `sendBoost` has already
+//   moved sats (CLAUDE.md boost invariant 1). A reload there destroys the
+//   per-leg results — the only screen telling the user which recipients were
+//   paid — while the modal is deliberately `dismissable={false}` for exactly
+//   that reason. It is also unmatchable on resume: the template carries
+//   `created_at: Date.now()/1000`, so a caller that re-asks builds a DIFFERENT
+//   request, and resolving it with a parked result would publish an event
+//   signed over a template nobody built.
+//
+//   The decrypts, for now. They ARE deterministic — the ciphertext is the
+//   payload, so a re-issued request is byte-identical and a parked result
+//   matches exactly — which makes them the obvious next step. They are left out
+//   here only because nothing yet re-issues them after a reload; see
+//   docs/signers.md.
+const RESUMABLE_TYPES: ReadonlySet<AmberRequestType> = new Set(['get_public_key']);
+
+// Both sides of the round trip share one freshness window — see
+// AMBER_PENDING_TTL_MS in ./amber-callback-url for why it is defined there.
+const fresh = (ts: number) => amberRecordIsFresh(ts, Date.now());
+
+/**
+ * A result Amber already handed back, if it answers THIS request.
+ *
+ * The callback navigation reloads the page, so by the time a caller asks again
+ * the answer may already be sitting in sessionStorage. Consuming it here is
+ * what makes `invokeAmber` idempotent across that reload — the caller re-issues
+ * normally and gets an immediate answer with no second trip to Amber.
+ *
+ * Strict on purpose, and `take()` is single-use:
+ *  - the type must match, so a parked pubkey cannot answer a decrypt;
+ *  - the type must be one we actually send through a callback, so a stale
+ *    record can never satisfy a request that never used this path;
+ *  - the shape must pass `looksLikeAmberResult`;
+ *  - it must be fresh.
+ * Anything else is dropped rather than returned, because a wrong answer here is
+ * indistinguishable from a right one at the call site.
+ */
+function takeParkedResult(type: AmberRequestType): string | null {
+  if (!RESUMABLE_TYPES.has(type)) return null;
+  const parked = storage.amberResult.take();
+  if (!parked) return null;
+  if (parked.type !== type) return null;
+  if (!fresh(parked.ts)) return null;
+  if (!looksLikeAmberResult(parked.value, type)) return null;
+  return parked.value.trim();
+}
+
 async function invokeAmber(opts: InvokeOptions): Promise<string> {
   if (typeof window === 'undefined') {
     throw new Error('Amber signer requires a browser environment');
   }
+  // Did Amber already answer this, before the callback navigation reloaded us?
+  // Checked BEFORE anything else so a resumed request never dispatches a second
+  // prompt for a question that has been answered.
+  const parked = takeParkedResult(opts.type);
+  if (parked) {
+    // eslint-disable-next-line no-console
+    console.info('[amber] ✓', opts.type, '(resumed from callback)');
+    storage.amberPending.clear();
+    return parked;
+  }
+
   // Cancel any prior pending request — the user has restarted the flow.
   if (pendingResolver) {
     pendingResolver.reject(new Error('Amber request superseded'));
@@ -151,9 +207,39 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
   }
   setStage('awaiting');
 
-  const signerUrl = buildSignerUrl(opts);
+  // A callbackUrl is what makes Amber navigate back at all, but it costs a page
+  // reload — so only the types that can afford one get it. See RESUMABLE_TYPES.
+  const rid = newAmberRequestId();
+  const useCallback = RESUMABLE_TYPES.has(opts.type) && typeof location !== 'undefined';
+  const callbackUrl = useCallback ? buildAmberCallbackUrl(location.origin, rid) : undefined;
+  const signerUrl = buildSignerUrl(opts, callbackUrl);
+
+  if (useCallback) {
+    // Park what the callback page needs to recognise the answer. No payload and
+    // no secret — a request id, the method, and where to send the user back to.
+    // Written BEFORE dispatch: Android can foreground Amber faster than a
+    // `finally` would run, and a callback arriving before the record exists is
+    // a round trip thrown away.
+    storage.amberPending.set({
+      rid,
+      type: opts.type,
+      ts: Date.now(),
+      origin: `${location.pathname}${location.search}`,
+    });
+  } else {
+    // Clipboard path. Drop an EXPIRED record so a callback arriving long after
+    // the fact cannot park a result nothing will consume — but leave a fresh
+    // one alone. A background publish (favorites, mutes) can fire while the
+    // user is still standing in Amber approving a callback request, and
+    // clearing unconditionally would make that unrelated request destroy the
+    // record the callback is about to match. The two paths share this key and
+    // only one of them can be answered by a navigation.
+    const held = storage.amberPending.get();
+    if (held && !fresh(held.ts)) storage.amberPending.clear();
+  }
+
   // eslint-disable-next-line no-console
-  console.info('[amber] →', opts.type);
+  console.info('[amber] →', opts.type, useCallback ? `(callback ${AMBER_CALLBACK_PATH})` : '(clipboard)');
 
   return new Promise<string>((resolve, reject) => {
     let settled = false;
@@ -164,10 +250,25 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       settled = true;
       cleanup();
       if (error) {
+        // The pending record survives a FAILED callback request on purpose.
+        // This promise timing out means the caller stopped waiting; it does not
+        // mean Amber will never navigate back. AMBER_TIMEOUT_MS is 60 s and the
+        // record is matchable for AMBER_PENDING_TTL_MS, because a cold Amber
+        // approve can outrun the shorter clock — and if the callback then lands,
+        // the caller re-asks and gets its answer with no second prompt. Clearing
+        // here would throw that away and send the user back to Amber for a
+        // question they already approved.
+        //
+        // A clipboard request has no such second chance, so its record goes.
+        if (!useCallback) storage.amberPending.clear();
         // eslint-disable-next-line no-console
         console.warn('[amber] ✗', opts.type, error);
         return reject(new Error(error));
       }
+      // Answered here, through the clipboard or a manual paste. Drop the record
+      // so a callback arriving late for the same request cannot park a result
+      // that nothing will ever consume.
+      storage.amberPending.clear();
       if (!raw) return reject(new Error('Amber returned no result'));
       // eslint-disable-next-line no-console
       console.info('[amber] ✓', opts.type, 'len=', raw.length);
@@ -293,6 +394,32 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
   });
 }
 
+/**
+ * Amber may answer `get_public_key` as 64-char hex or as an npub. Both are
+ * valid; this is the one place that decides what they mean.
+ *
+ * Exported because the callback path has a SECOND consumer: after Amber
+ * navigates back, the page reloads and `<NostrAuth>` picks the parked result up
+ * on mount rather than through `AmberSigner`. Two copies of this would be two
+ * places to disagree about what a returned key is — and the disagreement would
+ * be silent, because both branches produce a plausible 64-char string.
+ *
+ * Throws on anything else rather than guessing. A wrong pubkey here is an
+ * account the user does not own.
+ */
+export function normalizeAmberPubkey(raw: string): string {
+  const trimmed = raw.trim();
+  if (/^[0-9a-f]{64}$/i.test(trimmed)) return trimmed.toLowerCase();
+  if (trimmed.startsWith('npub1')) {
+    const decoded = nip19.decode(trimmed);
+    if (decoded.type !== 'npub') {
+      throw new Error(`Amber returned unexpected pubkey shape: ${trimmed.slice(0, 24)}…`);
+    }
+    return decoded.data;
+  }
+  throw new Error(`Amber returned unexpected pubkey shape: ${trimmed.slice(0, 24)}…`);
+}
+
 export interface AmberSignerInterface {
   getPublicKey(): Promise<string>;
   signEvent(template: EventTemplate): Promise<Event>;
@@ -315,19 +442,7 @@ export class AmberSigner implements AmberSignerInterface {
 
   async getPublicKey(): Promise<string> {
     if (this.cachedPubkey) return this.cachedPubkey;
-    const raw = await invokeAmber({ type: 'get_public_key' });
-    const trimmed = raw.trim();
-    if (/^[0-9a-f]{64}$/i.test(trimmed)) {
-      this.cachedPubkey = trimmed.toLowerCase();
-    } else if (trimmed.startsWith('npub1')) {
-      const decoded = nip19.decode(trimmed);
-      if (decoded.type !== 'npub') {
-        throw new Error(`Amber returned unexpected pubkey shape: ${trimmed.slice(0, 24)}…`);
-      }
-      this.cachedPubkey = decoded.data;
-    } else {
-      throw new Error(`Amber returned unexpected pubkey shape: ${trimmed.slice(0, 24)}…`);
-    }
+    this.cachedPubkey = normalizeAmberPubkey(await invokeAmber({ type: 'get_public_key' }));
     return this.cachedPubkey;
   }
 

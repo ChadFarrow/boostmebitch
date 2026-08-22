@@ -26,7 +26,7 @@ export { isAmberActive, isBunkerActive, isLocalActive, getNip44 } from './signer
 export { deactivateLocalSigner } from './signer';
 export { isKeyEphemeral } from './local-key-store';
 export { isGoogleAuthConfigured } from './google-auth';
-export { isLikelyAndroid, isLikelyIOS } from './amber';
+export { isLikelyAndroid, isLikelyIOS, normalizeAmberPubkey } from './amber';
 export {
   isBunkerStale,
   subscribeBunkerHealth,

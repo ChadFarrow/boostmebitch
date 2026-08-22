@@ -27,6 +27,7 @@ import {
   type BunkerAdapter,
 } from './bunker';
 import { storage } from '../storage';
+import type { ProfileMetadata } from './profile-metadata';
 
 declare global {
   interface Window {
@@ -55,16 +56,6 @@ declare global {
       lnurl?: (lnurl: string) => Promise<any>;
     };
   }
-}
-
-export interface ProfileMetadata {
-  name?: string;
-  display_name?: string;
-  picture?: string;
-  nip05?: string;
-  about?: string;
-  lud16?: string;        // Lightning address (user@domain) — used by NIP-57 zaps
-  lud06?: string;        // bech32-encoded LNURL — older spec, fallback when lud16 is absent
 }
 
 export interface NostrIdentity {
@@ -264,37 +255,13 @@ export function shortNpub(npub: string, len = 8) {
   return `${npub.slice(0, len)}…${npub.slice(-len)}`;
 }
 
-// Drop fields that aren't strings (some kind:0 events in the wild ship `name`
-// as a number, `picture` as null, etc., and the `as ProfileMetadata` cast at
-// JSON.parse-time hides that — until a `.trim()` or `.toLowerCase()` blows up
-// during render and takes the whole feed surface down with it).
-const PROFILE_STRING_FIELDS = [
-  'name',
-  'display_name',
-  'picture',
-  'nip05',
-  'about',
-  'lud16',
-  'lud06',
-] as const;
-
-export function coerceProfileMetadata(value: unknown): ProfileMetadata | null {
-  if (!value || typeof value !== 'object') return null;
-  const v = value as Record<string, unknown>;
-  const out: ProfileMetadata = {};
-  for (const key of PROFILE_STRING_FIELDS) {
-    const raw = v[key];
-    if (typeof raw === 'string') out[key] = raw;
-  }
-  return out;
-}
-
-/** Parse a kind:0 event's `content` and return a sanitized ProfileMetadata.
- *  Returns null if the content isn't valid JSON or isn't an object. */
-export function parseProfileContent(content: string): ProfileMetadata | null {
-  try {
-    return coerceProfileMetadata(JSON.parse(content));
-  } catch {
-    return null;
-  }
-}
+// `ProfileMetadata`, `coerceProfileMetadata` and `parseProfileContent` moved to
+// ./profile-metadata, an import-free leaf, so `lib/storage.ts` can reach them
+// without importing this file — that one edge was what made
+// storage → auth → signer → amber → storage a real cycle. Re-exported here so
+// every existing import site (and the `lib/nostr` barrel) is unchanged.
+export {
+  coerceProfileMetadata,
+  parseProfileContent,
+  type ProfileMetadata,
+} from './profile-metadata';

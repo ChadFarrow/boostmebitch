@@ -3,6 +3,7 @@ import { useEffect, startTransition } from 'react';
 import { nip19 } from 'nostr-tools';
 import {
   loginWithExtension,
+  normalizeAmberPubkey,
   restoreAmberSigner,
   restoreBunkerSigner,
   restoreLocalSigner,
@@ -270,6 +271,49 @@ export function NostrAuth() {
     // only needed when an action requires signing and we lazy-call it then.
     // `loadProfile` then runs in the background to refresh from relays.
     if (identity || typeof window === 'undefined') return;
+
+    // AMBER CALLBACK RESUME. Runs before the `bmb:npub` fast path, because on a
+    // first Amber sign-in there IS no stored npub — the whole point of this
+    // branch is that the answer arrived by navigation and nothing on this load
+    // knows who the user is yet.
+    //
+    // Amber returns a `callbackUrl` result by navigating, which reloads the page
+    // and destroys the promise `loginWithAmber` was awaiting. /amber-callback
+    // parks the value; this picks it up. Without it the round trip still
+    // completes, but only if the user taps "Sign in with Amber" a second time —
+    // `invokeAmber` would find the same parked result and resolve without a
+    // second prompt. This is what makes it automatic.
+    const parkedAmber = storage.amberResult.get();
+    if (parkedAmber && parkedAmber.type === 'get_public_key') {
+      // Consume FIRST, act second. A result that throws must not sit in
+      // sessionStorage replaying its failure on every subsequent load.
+      storage.amberResult.clear();
+      try {
+        const pk = normalizeAmberPubkey(parkedAmber.value);
+        const npub = nip19.npubEncode(pk);
+        const already = storage.npub.get();
+        if (already && already !== npub) {
+          // Never switch accounts on the strength of a navigation. A stale or
+          // forged callback answering with a different key would otherwise
+          // silently re-point the session — and every subsequent publish — at
+          // an identity the user did not choose. Dropping it is the safe
+          // direction: they can sign in again deliberately.
+          // eslint-disable-next-line no-console
+          console.warn('[amber] callback returned a different account than the signed-in one; ignoring');
+        } else {
+          storage.signer.set('amber');
+          restoreAmberSigner(pk);
+          storage.npub.set(npub);
+          // Fall through: the fast path below now finds `bmb:npub` and paints
+          // the session exactly as it does for any other restored signer. No
+          // second sign-in code path to keep in step with this one.
+        }
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn('[amber] parked callback result was unusable:', (e as Error)?.message ?? e);
+      }
+    }
+
     const stored = storage.npub.get();
     if (!stored) return;
     let pubkey: string;
