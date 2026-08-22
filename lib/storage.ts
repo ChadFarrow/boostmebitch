@@ -18,7 +18,7 @@ import {
   STREAM_AMOUNT_MAX_SATS,
   STREAM_RATE_MAX_PER_MIN,
 } from './v4v/stream-ledger';
-import { coerceProfileMetadata } from './nostr/auth';
+import { coerceProfileMetadata } from './nostr/profile-metadata';
 import { createObservable } from './pubsub';
 
 // Rail-pref changes need to reach live UI (account-menu summary, balance
