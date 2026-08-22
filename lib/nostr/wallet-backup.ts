@@ -140,22 +140,55 @@ export async function fetchEncryptedNwc(
   identity: NostrIdentity,
   purpose: DecryptPurpose,
 ): Promise<string | null> {
+  return (await fetchEncryptedNwcDetailed(identity, purpose)).uri;
+}
+
+/**
+ * As {@link fetchEncryptedNwc}, but separates the three answers a caller with a
+ * screen has to tell apart. All three used to be `null`.
+ *
+ *  - `{ uri: null, unreadable: false }` — nobody published a backup, or the
+ *    latest event at the coordinate is `deleteEncryptedNwc`'s tombstone.
+ *  - `{ uri: null, unreadable: true }` — an event IS there, it decrypted, and
+ *    no connection string came out of it. That is a backup this account owns
+ *    and cannot use, and the only repair is to publish over it.
+ *  - a **throw** — the decrypt failed or timed out, so we learned nothing at
+ *    all. Swallowing it into `null` reports a backup as absent on the strength
+ *    of a signer that never answered, which is the general "never record an
+ *    absence you didn't reliably observe" rule one layer down. Both unattended
+ *    callers already `.catch`, so nothing regresses.
+ *
+ * The middle state is not hypothetical. Amber truncates a payload at the first
+ * `?`, an NWC connection string always has one, and the encrypt step still
+ * SUCCEEDS on the truncated text — so backups written from an Android device
+ * before `encodeAmberSafe` shipped hold a prefix like
+ * `{"uri":"nostr+walletconnect://<pubkey>` and nothing more. Reported as "no
+ * backup found", that reads as the feature never having run; reported as
+ * unreadable, it names the repair.
+ */
+export async function fetchEncryptedNwcDetailed(
+  identity: NostrIdentity,
+  purpose: DecryptPurpose,
+): Promise<{ uri: string | null; unreadable: boolean }> {
   const event = await fetchLatestEvent(
     backupReadRelays(identity),
     { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_NWC_D_TAG], limit: 1 },
     FEED_QUERY_MAX_WAIT_MS,
   );
-  if (!event || !event.content) return null;
+  if (!event || !event.content) return { uri: null, unreadable: false };
+  // Deliberately outside the try below: a decrypt that fails or times out is
+  // not a finding about the backup, so it propagates.
+  const plaintext = await decryptWithTimeout(identity.pubkey, event.content, purpose);
   try {
-    const plaintext = await decryptWithTimeout(identity.pubkey, event.content, purpose);
     // Backups written before `encodeAmberSafe` shipped hold bare JSON, and they
     // are the ones a returning user has. `decodeAmberSafe` returns null for
     // anything without its prefix, which is the signal to read the plaintext
     // as-is — so both formats round-trip and no existing backup is orphaned.
     const parsed = JSON.parse(decodeAmberSafe(plaintext) ?? plaintext);
-    return typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
+    const uri = typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
+    return { uri, unreadable: uri === null };
   } catch {
-    return null;
+    return { uri: null, unreadable: true };
   }
 }
 

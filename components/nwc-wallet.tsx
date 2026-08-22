@@ -5,7 +5,10 @@ import {
   hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate,
   nwcFetchCapabilities, nwcGetMethods,
 } from '@/lib/v4v/nwc';
-import { publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, getNip44, isAmberActive } from '@/lib/nostr';
+import {
+  publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, fetchEncryptedNwcDetailed,
+  getNip44, isAmberActive,
+} from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 
@@ -81,6 +84,10 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   const [, setTick] = useState(0);
   const [draft, setDraft] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  // Confirmation for an action whose whole result is invisible — the backup
+  // lives on a relay, so "it worked" has nothing on screen to point at. The
+  // checkbox cannot carry it: it is already checked before the tap.
+  const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [autoChecking, setAutoChecking] = useState(false);
   const identity = useApp((s) => s.identity);
@@ -152,9 +159,15 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      const uri = await fetchEncryptedNwc(identity, 'user-initiated');
+      const { uri, unreadable } = await fetchEncryptedNwcDetailed(identity, 'user-initiated');
       if (!uri) {
-        setErr('No backup found on Nostr for this account.');
+        // Two different facts, and the second one names its own repair. An
+        // unreadable backup is one this account owns and cannot use — the shape
+        // Amber wrote for every Android backup made before `encodeAmberSafe`,
+        // since it truncated the connection string at its own `?relay=`.
+        setErr(unreadable
+          ? 'The backup on Nostr could not be read. Connect this wallet again with the backup box ticked to replace it.'
+          : 'No backup found on Nostr for this account.');
         return;
       }
       saveNwcUri(uri);
@@ -226,6 +239,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     if (identity && storage.nwcBackup.get(identity.npub) && getNip44()) {
       setBusy(true);
       setErr(null);
+      setNote(null);
       try {
         await deleteEncryptedNwc(identity);
         storage.nwcBackup.clear(identity.npub);
@@ -245,12 +259,50 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     onDisconnected?.();
   }
 
+  /**
+   * Publish this device's connection over whatever sits at the backup
+   * coordinate, without reading it first.
+   *
+   * It exists because the checkbox is not evidence. It records that a publish
+   * once resolved, and two things it cannot see make that a weak claim: a
+   * backup written from Amber before `encodeAmberSafe` shipped holds a
+   * connection string truncated at its own `?relay=`, and the same-tab
+   * sign-out/sign-in fast path in `doLoadProfile` sets the flag from a
+   * sessionStorage stash that never went near a relay. Neither is visible from
+   * this card, and the user's only symptom arrives on a different device, weeks
+   * later, as a connection that does not come back.
+   *
+   * Deliberately a blind write and not a verify-then-repair. kind:30078 is
+   * replaceable and this app is the only writer at this coordinate, so
+   * overwriting costs nothing when the backup was already fine — while reading
+   * first would cost a THIRD Amber approval to answer a question whose every
+   * answer leads to the same publish.
+   */
+  async function republishBackup() {
+    if (!canBackup || !identity || busy) return;
+    const uri = loadNwcUri();
+    if (!uri) return;
+    setBusy(true);
+    setErr(null);
+    setNote(null);
+    try {
+      await publishEncryptedNwc(identity, uri);
+      storage.nwcBackup.set(identity.npub);
+      setNote('✓ Backup replaced with this connection.');
+    } catch (e) {
+      setErr(`Backup failed: ${e instanceof Error ? e.message : 'unknown error'}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function toggleBackup(next: boolean) {
     if (!canBackup || !identity || busy) return;
     const uri = loadNwcUri();
     if (next && !uri) return;
     setBusy(true);
     setErr(null);
+    setNote(null);
     try {
       if (next) {
         await publishEncryptedNwc(identity, uri!);
@@ -312,14 +364,26 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
           amber={isAmberActive()}
           onToggle={toggleBackup}
         />
+        {note && <div className="text-[11px] text-bolt break-words">{note}</div>}
         {err && <div className="text-[11px] text-nostr/80 break-words">{err}</div>}
-        <button
-          onClick={disconnect}
-          disabled={busy}
-          className="text-[11px] text-muted hover:text-nostr disabled:opacity-40"
-        >
-          {busy ? 'Working…' : 'Disconnect'}
-        </button>
+        <div className="flex gap-3">
+          <button
+            onClick={disconnect}
+            disabled={busy}
+            className="text-[11px] text-muted hover:text-nostr disabled:opacity-40"
+          >
+            {busy ? 'Working…' : 'Disconnect'}
+          </button>
+          {cardBackup && canBackup && (
+            <button
+              onClick={republishBackup}
+              disabled={busy}
+              className="text-[11px] text-muted hover:text-bone disabled:opacity-40"
+            >
+              ↻ Back up again
+            </button>
+          )}
+        </div>
       </div>
     );
   }
