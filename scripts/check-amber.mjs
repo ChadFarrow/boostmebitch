@@ -34,6 +34,14 @@
 // same hidden-anchor click lib/nostr/amber.ts uses. They are what Amber
 // actually sent, not what we think it sends.
 //
+// THEY ARE VERSION-PINNED CAPTURES, and that is a property to maintain rather
+// than a caveat. Amber moved to 6.5.2 the same day and the format was
+// re-measured unchanged — the `?` and `&` truncations, the fragment survival,
+// and the silent rejection all still hold. A future bump deserves the same
+// treatment: re-measure, then update these strings from the new capture. Do NOT
+// regenerate them from this repo's own builder, which is the vacuous-fixture
+// trap CLAUDE.md describes. The procedure is in docs/signers.md.
+//
 // That matters most for ENCODE_REPLAY. The synthetic stress vectors need to
 // escape a string the way Android's `Uri.encode` does, and a hand-rolled
 // encoder that merely looks right would make every one of them vacuous. So the
