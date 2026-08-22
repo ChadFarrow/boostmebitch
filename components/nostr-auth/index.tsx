@@ -2,6 +2,7 @@
 import { useEffect, startTransition } from 'react';
 import { nip19 } from 'nostr-tools';
 import {
+  isAmberActive,
   loginWithExtension,
   normalizeAmberPubkey,
   restoreAmberSigner,
@@ -60,6 +61,7 @@ export function NostrAuth() {
   const modalOpen = useApp((s) => s.signInOpen);
   const setModalOpen = useApp((s) => s.setSignInOpen);
   const setWalletRestoring = useApp((s) => s.setWalletRestoring);
+  const setWalletBackupWithheld = useApp((s) => s.setWalletBackupWithheld);
 
   async function loadProfile(id: NostrIdentity) {
     // Dedupe across remounts (StrictMode runs effects twice in dev; Fast
@@ -117,7 +119,26 @@ export function NostrAuth() {
     // `hasSpark()` flips true, so re-evaluating it below would skip the backup
     // check that exists to notice a user's own pasted seed differing from the
     // derived default.
-    const shouldRestoreSpark = !hasSpark() && !storage.sparkOptOut.get(id.npub);
+    // DO NOT SPEND AN UNATTENDED SIGNER PROMPT ON AMBER. Everything this app
+    // stores encrypted-to-self is read here, on page load, before the user has
+    // touched anything — and Amber's approval sheet renders the DECRYPTED
+    // PLAINTEXT so they can see what they are approving. Observed on a Pixel 6:
+    // launching the app put the Spark **seed phrase** on screen, twelve BIP-39
+    // words, full-screen and unmasked, uninvited. The NWC backup is a spending
+    // credential and would do the same.
+    //
+    // So on Amber we do not ask. `decryptWithTimeout` refuses an `'unattended'`
+    // decrypt as a backstop, but refusing there alone would mean querying the
+    // relays and then throwing, and the throw would land in an outer
+    // `.catch(() => {})` — invisible. Not asking is both cheaper and honest,
+    // and `walletBackupWithheld` is what puts it on screen.
+    //
+    // Same shape and same reasoning as `hydrateMutes`' `decryptPrivate: false`.
+    // Amber only: an extension and a bunker answer inside the browser and the
+    // local signer is in-process, so none of them render anything.
+    const unattendedDecryptOk = !isAmberActive();
+    setWalletBackupWithheld(!unattendedDecryptOk);
+    const shouldRestoreSpark = unattendedDecryptOk && !hasSpark() && !storage.sparkOptOut.get(id.npub);
 
     // Tell the header a wallet is on its way, so it shows "connecting…" rather
     // than offering "Connect wallet" for one the user already has —
@@ -242,12 +263,14 @@ export function NostrAuth() {
         })().catch(() => {}).finally(() => { if (expectWallet) setWalletRestoring(false); })
       : Promise.resolve();
     // Synced settings: apply the last-used boost rail.
-    const settingsPromise = fetchSettings(enriched)
-      .then((s) => { if (s?.railPref) storage.railPref.set(s.railPref); })
-      .catch(() => {});
+    const settingsPromise = unattendedDecryptOk
+      ? fetchSettings(enriched)
+          .then((s) => { if (s?.railPref) storage.railPref.set(s.railPref); })
+          .catch(() => {})
+      : Promise.resolve();
     // NWC backup: restore the encrypted connection string if this device has
     // no NWC URI yet.
-    const nwcPromise = !hasNwc()
+    const nwcPromise = unattendedDecryptOk && !hasNwc()
       ? fetchEncryptedNwc(enriched)
           .then((uri) => {
             if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); markNwcRestored(id.npub); }

@@ -42,6 +42,7 @@ interface Props {
 
 export function WalletModal({ onClose }: Props) {
   const identity = useApp((s) => s.identity);
+  const backupWithheld = useApp((s) => s.walletBackupWithheld);
   const [view, setView] = useState<WalletView>(() =>
     getActiveRail() !== null ? { kind: 'connected' } : { kind: 'picker', switching: false }
   );
@@ -190,6 +191,21 @@ export function WalletModal({ onClose }: Props) {
 
     return (
       <div className="p-5 space-y-3">
+        {/* A withholding the user cannot otherwise account for. On Amber the
+            page-load restore of the Spark seed and the NWC backup is skipped on
+            purpose — Amber renders decrypted plaintext in its approval sheet, so
+            reading them uninvited puts a SEED PHRASE on screen before the user
+            has touched anything. Refusing is right; leaving someone to wonder
+            why their wallet did not come back is not, which is why this says so
+            here, where they look when it is missing. */}
+        {backupWithheld && !activeRail && (
+          <div className="text-[11px] text-muted border border-bone/15 rounded p-3">
+            Your wallet backup was <strong className="text-bone">not</strong> read
+            automatically, because Amber shows the decrypted text on screen — and
+            for the Spark wallet that text is your seed phrase. Connect below to
+            restore it when you are ready.
+          </div>
+        )}
         {switching && (
           <>
             <button

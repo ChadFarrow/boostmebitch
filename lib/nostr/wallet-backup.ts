@@ -85,7 +85,7 @@ export async function fetchEncryptedMnemonicDetailed(
   // once an event is in hand.
   if (!event || !event.content) return { mnemonic: null, trustworthy };
 
-  return { mnemonic: await decryptWithTimeout(identity.pubkey, event.content), trustworthy };
+  return { mnemonic: await decryptWithTimeout(identity.pubkey, event.content, 'unattended'), trustworthy };
 }
 
 /**
@@ -143,7 +143,7 @@ export async function fetchEncryptedNwc(
   );
   if (!event || !event.content) return null;
   try {
-    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content));
+    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content, 'unattended'));
     return typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
   } catch {
     return null;
