@@ -1,8 +1,9 @@
 // Shared guard for the modules that must stay loadable by a `check:*` script.
 //
-// Four modules are deliberately import-free — `lib/nostr/favorites-list.ts`,
-// `lib/nostr/read-trust.ts`, `lib/v4v/lease.ts`, `lib/assetlinks.ts` — and one
-// is allowed bare npm specifiers only (`lib/v4v/nwc-errors.ts`). The rule exists because the check
+// Five modules are deliberately import-free — `lib/nostr/favorites-list.ts`,
+// `lib/nostr/read-trust.ts`, `lib/v4v/lease.ts`, `lib/assetlinks.ts`,
+// `lib/nostr/amber-callback-url.ts` — and one is allowed bare npm specifiers
+// only (`lib/v4v/nwc-errors.ts`). The rule exists because the check
 // scripts import the REAL shipping module under
 // `node --experimental-strip-types`; a reimplemented copy in the script would
 // stay green while the shipping code drifted, which is the exact failure being
