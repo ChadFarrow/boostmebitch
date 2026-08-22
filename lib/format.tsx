@@ -6,6 +6,7 @@ import {
   isExclusiveAudioPlatform,
   type BoostSoundPlan,
 } from './boost-sound';
+import { isImageUrl } from './util';
 
 // ─── Time formatting ──────────────────────────────────────────────────────────
 
@@ -70,7 +71,6 @@ export function timeAgo(unixSec: number): string {
 const LINK_RE = /(https?:\/\/[^\s]+)/gi;
 const NOSTR_URI_RE =
   /nostr:n(?:event|ote|pub|profile|addr)1[023456789acdefghjklmnpqrstuvwxyz]+/gi;
-const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|avif|bmp)(\?[^\s]*)?$/i;
 
 /** Peel trailing grammar punctuation off a URL token. */
 export function splitTrailingPunct(token: string): { token: string; trailing: string } {
@@ -126,7 +126,7 @@ export function extractImages(text: string): { body: string; images: string[] } 
   const images: string[] = [];
   const body = text.replace(LINK_RE, (m) => {
     const { token, trailing } = splitTrailingPunct(m);
-    if (IMAGE_EXT_RE.test(token)) {
+    if (isImageUrl(token)) {
       if (!images.includes(token)) images.push(token);
       return trailing;
     }

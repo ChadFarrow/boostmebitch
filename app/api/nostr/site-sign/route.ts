@@ -54,7 +54,13 @@ const BOOST_CONTENT_PREFIX = '⚡ Boost ⚡';
 //
 // If buildBoostNoteTemplate ever emits a new tag, add it here in the same
 // change or site-signed notes start failing.
-const ALLOWED_TAG_NAMES = new Set(['i', 'k', 'r', 'p', 'amount', 'client', 't']);
+const ALLOWED_TAG_NAMES = new Set(['i', 'k', 'r', 'p', 'amount', 'client', 't', 'imeta']);
+
+// One `imeta` (NIP-92), because the note names one piece of artwork. The cap is
+// the same reasoning as MAX_P_TAGS one level down: the tag carries a URL a
+// client will FETCH, so an unbounded list turns one unauthed POST into a signed
+// instruction to load N attacker-chosen hosts from every reader's device.
+const MAX_IMETA_TAGS = 1;
 
 // A real boost `p`-tags the artists a feed names — one to a few, and a
 // compilation is still nowhere near this. The cap is what stops one unauthed
@@ -93,6 +99,9 @@ function validateBoostTemplate(body: unknown): EventTemplate {
   }
   if (strTags.filter((tag) => tag[0] === 'p').length > MAX_P_TAGS) {
     throw new Error('too many p tags');
+  }
+  if (strTags.filter((tag) => tag[0] === 'imeta').length > MAX_IMETA_TAGS) {
+    throw new Error('too many imeta tags');
   }
   const hasT = (v: string) => strTags.some((tag) => tag[0] === 't' && tag[1] === v);
   // The two markers publishBoostNote always emits — proves this is a boost note.

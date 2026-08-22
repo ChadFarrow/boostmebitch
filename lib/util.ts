@@ -795,6 +795,25 @@ export function getErrorMessage(e: unknown, fallback: string): string {
 }
 
 /**
+ * Extensions a Nostr client will render inline when it meets a bare URL in a
+ * note body. The list is the intersection of what the common clients accept;
+ * `?query` is tolerated because CDNs sign and size artwork that way.
+ *
+ * **This lives here, not in `lib/format.tsx`, because `lib/nostr/boost-notes.ts`
+ * needs it too** — that module writes the note, `format.tsx` reads it back, and
+ * a second copy is how the writer comes to emit a URL the reader renders as a
+ * plain link. `format.tsx` is a `'use client'` React module, so importing it
+ * from inside the Nostr boundary would drag React into it (the same inversion
+ * `DEFAULT_SENDER_NAME` caused before it moved here).
+ */
+const IMAGE_EXT_RE = /\.(jpe?g|png|gif|webp|avif|bmp)(\?[^\s]*)?$/i;
+
+/** True when a URL ends in an image extension a note reader will render. */
+export function isImageUrl(url: string): boolean {
+  return IMAGE_EXT_RE.test(url);
+}
+
+/**
  * A feed-supplied URL, validated as http(s) — else null. Same allowlist
  * direction as `safeUrlAttr`: it resolves what a browser would actually see
  * (the WHATWG parser normalizes entity/whitespace obfuscation and decimal host

@@ -1,6 +1,6 @@
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
-import { httpUrl } from '../util';
+import { httpUrl, isImageUrl } from '../util';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
 
@@ -66,6 +66,57 @@ function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
   if (!podcast.podcastGuid) return null;
   const url = `https://www.boostmebitch.com/?podcast=${podcast.podcastGuid}`;
   return episode?.guid ? `${url}&episode=${encodeURIComponent(episode.guid)}` : url;
+}
+
+/**
+ * The artwork this boost note shows, in preference order: the episode's own
+ * image, the show image the feed put on the item, then the show's two
+ * channel-level images (RSS `<image><url>` first, `<itunes:image>` second — the
+ * same pair, in the same order, that `<PodcastCover>` tries on screen).
+ *
+ * A boost note is a public post about one track, and without art it is a wall
+ * of text beside every other client's: the reader cannot see WHAT was boosted
+ * without opening a link. A bare image URL in the body is how a Nostr client is
+ * told to render a picture, so the art goes in the TEXT rather than in a tag
+ * alone — an `imeta` tag describes an image the body already names, it does not
+ * add one.
+ *
+ * **Gated on `isImageUrl`, not on `httpUrl` alone.** A URL no client recognizes
+ * as an image is not neutral: it renders as a third bare link under the two the
+ * note already carries, which reads worse than no picture at all. Feed artwork
+ * is nearly always `.jpg`/`.png`, so this drops few real images, and when it
+ * drops one the note is exactly what it was before.
+ */
+function boostArtUrl(podcast: Podcast, episode?: Episode): string | null {
+  for (const c of [episode?.image, episode?.feedImage, podcast.image, podcast.artwork]) {
+    const url = httpUrl(c);
+    if (url && isImageUrl(url)) return url;
+  }
+  return null;
+}
+
+/** `imeta` (NIP-92) MIME type for an image URL, for clients that want one. */
+function imageMime(url: string): string | null {
+  const ext = url.split('?')[0].split('.').pop()?.toLowerCase();
+  if (ext === 'jpg' || ext === 'jpeg') return 'image/jpeg';
+  if (ext === 'png' || ext === 'gif' || ext === 'webp' || ext === 'avif' || ext === 'bmp') {
+    return `image/${ext}`;
+  }
+  return null;
+}
+
+/**
+ * Append the artwork URL to a note body.
+ *
+ * Applied to the FINAL content for the same reason `withMentions` is:
+ * boost-all-modal hand-builds its summary body and passes it as a
+ * `contentOverride`, so art added inside `formatContent` would be silently
+ * missing from every boost-all note. It sits ABOVE the mentions because a
+ * trailing `nostr:npub…` run is what every compose box writes last, and a URL
+ * after it reads as part of that line.
+ */
+function withArt(content: string, art: string | null): string {
+  return art ? `${content}\n\n${art}` : content;
 }
 
 /** Cap on how many people one boost note tags. */
@@ -160,6 +211,20 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
   // still reach the artist.
   const npubs = noteNpubs(podcast, episode);
   for (const n of npubs) tags.push(['p', n.pubkey]);
+  // NIP-92: describe the image the body already names, so a client that renders
+  // from tags shows the same picture as one that scans the text.
+  //
+  // The length test mirrors the site-sign route's MAX_TAG_ITEM_LEN. That route
+  // rejects the WHOLE template when one tag item is too long, so a single
+  // signed-image CDN URL past 512 characters would stop a signed-out user's
+  // note being published at all. Dropping the tag is the soft failure: the
+  // body still names the image, and every client that scans text still renders
+  // it. Keep the two numbers together if either moves.
+  const art = boostArtUrl(podcast, episode);
+  if (art && `url ${art}`.length <= 512) {
+    const mime = imageMime(art);
+    tags.push(mime ? ['imeta', `url ${art}`, `m ${mime}`] : ['imeta', `url ${art}`]);
+  }
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
   tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);
   tags.push(['t', 'boostagram']);
@@ -169,7 +234,7 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
     kind: 1,
     created_at: Math.floor(Date.now() / 1000),
     tags,
-    content: withMentions(args.contentOverride ?? formatContent(args), npubs),
+    content: withMentions(withArt(args.contentOverride ?? formatContent(args), art), npubs),
   };
 }
 
