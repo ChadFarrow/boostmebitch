@@ -69,6 +69,14 @@ const KEYS = {
   // the pre-per-npub code. It is deliberately never read or written — see the
   // long note in sparkOptOut.get. It still sits in the localStorage of anyone
   // who used the app before that refactor; leave it there, it is inert.
+  // Amber's NIP-55 callback round trip. localStorage, NOT sessionStorage, and
+  // that is a measurement rather than a preference: Brave opens Amber's callback
+  // in a NEW TAB (Pixel 6, real https origin, tab count 15 -> 16), and
+  // sessionStorage is per-tab, so a tab-scoped record is never there when the
+  // callback lands. Neither key may ever hold a secret — see the accessors and
+  // AMBER_PERSISTABLE_TYPES.
+  amberPending: 'bmb:amber_pending',  // the NIP-55 request we dispatched and are waiting on: a random request id, the method, a timestamp, and the route to return to. No payload, no key material.
+  amberResult: 'bmb:amber_result',    // the result Amber handed back, parked until the caller re-asks. ONLY ever a get_public_key result, i.e. a PUBLIC key — a decrypt result is a plaintext and is refused rather than written here.
   theme: 'bmb:theme',                 // 'light' when user chose light mode; absent = dark (default). FOUC-blocker in app/layout.tsx reads this synchronously to set data-theme on <html> before paint.
   // ── sessionStorage, NOT localStorage ──────────────────────────────────────
   // Both die with the tab, which is exactly why they're allowed to hold what
@@ -78,8 +86,6 @@ const KEYS = {
   // safe.
   nwcUriSessPrefix: 'bmb:nwc_uri_sess', // + ':<npub>' — NWC URI parked across a same-account sign-out → sign-in in one tab. A SPENDING CREDENTIAL; tab-scoped on purpose.
   piDead: 'bmb:pi:dead',              // '1' while the Podcast Index breaker is tripped. Survives a reload (an outage doesn't end because someone refreshed), not the tab.
-  amberPending: 'bmb:amber_pending',  // the NIP-55 request we dispatched and are waiting on. Carries NO secret — a request id, the method, and a timestamp. Must survive the reload Amber's callbackUrl navigation causes, and must NOT survive the tab.
-  amberResult: 'bmb:amber_result',    // the result Amber handed back, parked until the caller re-asks. HOLDS A SECRET: for nip04_decrypt/nip44_decrypt this is the user's PLAINTEXT. Tab-scoped for that reason, and consumed on first read.
   // Streaming rate and streaming on/off are SEPARATE keys, at both scopes, so
   // switching streaming off doesn't destroy the number the user typed. Also the
   // prefixes for the per-show overrides `…:<podcastGuid|feedId>`.
@@ -106,6 +112,22 @@ export interface AmberPending {
   /** Where the user was, so the callback can send them back rather than to `/`. */
   origin?: string;
 }
+
+/**
+ * Which Amber results may be written to disk at all.
+ *
+ * `bmb:amber_result` is localStorage (see the accessor for why), so this is the
+ * line between "a public key waiting to be picked up" and "the user's decrypted
+ * private data sitting in a browser profile". `get_public_key` returns a PUBLIC
+ * key and is safe. `nip04_decrypt` / `nip44_decrypt` return plaintext and are
+ * not; `sign_event` returns an event the user may not have published yet.
+ *
+ * Adding a type here is a security decision, not a feature flag. It is also NOT
+ * the same list as `RESUMABLE_TYPES` in lib/nostr/amber.ts, which answers a
+ * different question — whether a request can afford a page reload. A type must
+ * satisfy BOTH to round-trip through a callback.
+ */
+export const AMBER_PERSISTABLE_TYPES: ReadonlySet<string> = new Set(['get_public_key']);
 
 /** A result Amber handed back, parked until the caller re-issues its request. */
 export interface AmberParkedResult {
@@ -1410,18 +1432,19 @@ export const storage = {
    * is awaiting. Nothing in memory survives that, so the request has to be
    * recognisable on the other side of the load.
    *
-   * sessionStorage, and both halves of that matter:
+   * localStorage, NOT sessionStorage, and that was decided by measurement
+   * rather than taste. The first version used sessionStorage, reasoning a
+   * request should die with the tab. On a Pixel 6 against a real https origin,
+   * **Brave opens Amber's callback in a NEW TAB** — tab count went 15 to 16 —
+   * and sessionStorage is per-tab, so the pending record was never there. The
+   * callback page said so honestly and offered a manual paste, which is the
+   * right failure, but it is still a failure: the automatic path never ran.
    *
-   *  - It must SURVIVE the reload, or the callback has nothing to match against
-   *    and the round trip cannot complete at all.
-   *  - It must NOT outlive the tab. `amberResult` holds whatever Amber returned,
-   *    and for `nip04_decrypt` / `nip44_decrypt` that is the user's PLAINTEXT.
-   *    Parking a decrypted secret on disk to save a signer prompt is not a
-   *    trade worth making.
-   *
-   * Like the two above, they bypass safeGet/safeSet on purpose: those are
-   * localStorage, and the memory mirror would outlive the tab lifetime that is
-   * the whole reason a plaintext is allowed to sit here.
+   * THE PRICE OF localStorage IS THAT THIS REACHES DISK, so the rule that
+   * replaces the tab lifetime is: **neither key may ever hold a secret.**
+   * `amberPending` carries no payload at all, and `amberResult` is gated by
+   * `AMBER_PERSISTABLE_TYPES` — a decrypt result is the user's PLAINTEXT and is
+   * refused rather than written.
    *
    * `get` is defensive in the `streamPending` style — every field is checked and
    * anything malformed reads as absent. The input is attacker-reachable: any
@@ -1430,9 +1453,7 @@ export const storage = {
    */
   amberPending: {
     get: (): AmberPending | null => {
-      if (!isBrowser()) return null;
-      let raw: string | null = null;
-      try { raw = sessionStorage.getItem(KEYS.amberPending); } catch { return null; }
+      const raw = safeGet(KEYS.amberPending);
       if (!raw) return null;
       try {
         const v = JSON.parse(raw) as Record<string, unknown>;
@@ -1448,27 +1469,21 @@ export const storage = {
         return null;
       }
     },
-    set: (pending: AmberPending) => {
-      if (!isBrowser()) return;
-      try { sessionStorage.setItem(KEYS.amberPending, JSON.stringify(pending)); } catch { /* blocked */ }
-    },
-    clear: () => {
-      if (!isBrowser()) return;
-      try { sessionStorage.removeItem(KEYS.amberPending); } catch { /* blocked */ }
-    },
+    set: (pending: AmberPending) => { safeSet(KEYS.amberPending, JSON.stringify(pending)); },
+    clear: () => { safeRemove(KEYS.amberPending); },
   },
 
   amberResult: {
     get: (): AmberParkedResult | null => {
-      if (!isBrowser()) return null;
-      let raw: string | null = null;
-      try { raw = sessionStorage.getItem(KEYS.amberResult); } catch { return null; }
+      const raw = safeGet(KEYS.amberResult);
       if (!raw) return null;
       try {
         const v = JSON.parse(raw) as Record<string, unknown>;
         const { rid, type, value, ts } = v;
         if (typeof rid !== 'string' || !/^[0-9a-f]{32}$/.test(rid)) return null;
-        if (typeof type !== 'string' || !type) return null;
+        // Re-checked on the way OUT as well as in: a value already on disk from
+        // an older build must not become readable by widening the set later.
+        if (typeof type !== 'string' || !AMBER_PERSISTABLE_TYPES.has(type)) return null;
         if (typeof value !== 'string' || !value) return null;
         if (typeof ts !== 'number' || !Number.isFinite(ts) || ts <= 0) return null;
         return { rid, type: type as AmberPending['type'], value, ts };
@@ -1476,22 +1491,26 @@ export const storage = {
         return null;
       }
     },
-    set: (result: AmberParkedResult) => {
-      if (!isBrowser()) return;
-      try { sessionStorage.setItem(KEYS.amberResult, JSON.stringify(result)); } catch { /* blocked */ }
+    /**
+     * Park a result. Returns false — and writes NOTHING — for a type whose
+     * result is not safe to put on disk. This is the guard that keeps the
+     * localStorage decision honest; do NOT move it to the call site, because
+     * the caller that gets it wrong will be a future one adding a type to
+     * RESUMABLE_TYPES without reading any of this.
+     */
+    set: (result: AmberParkedResult): boolean => {
+      if (!AMBER_PERSISTABLE_TYPES.has(result.type)) return false;
+      safeSet(KEYS.amberResult, JSON.stringify(result));
+      return true;
     },
     /** Read and delete in one step. A parked result is single-use: leaving it
-     *  behind would let a stale answer resolve a later request, and for a
-     *  decrypt it would leave a plaintext sitting around after it was needed. */
+     *  behind would let a stale answer resolve a later request. */
     take: (): AmberParkedResult | null => {
       const got = storage.amberResult.get();
       storage.amberResult.clear();
       return got;
     },
-    clear: () => {
-      if (!isBrowser()) return;
-      try { sessionStorage.removeItem(KEYS.amberResult); } catch { /* blocked */ }
-    },
+    clear: () => { safeRemove(KEYS.amberResult); },
   },
 
   piBreaker: {

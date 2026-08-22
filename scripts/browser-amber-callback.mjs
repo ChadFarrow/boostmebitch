@@ -28,7 +28,7 @@
 //      fragment is a SAME-DOCUMENT navigation. The page does not reload, the
 //      effect does not re-run, and every assertion fails in a way that looks
 //      exactly like the page ignoring the fragment. Hence the bounce through
-//      /privacy before each callback URL. sessionStorage survives it.
+//      /privacy before each callback URL.
 //   2. Asserting before React has hydrated reads as "the page did nothing".
 //      `settled()` waits for the effect to have run rather than sleeping a
 //      guessed interval.
@@ -128,58 +128,90 @@ const CB = (rid) => `${ORIGIN}/amber-callback#r=${rid};event=${PUBKEY}`;
 
 console.log('\n1. a callback with NO pending record refuses, visibly, and shows the value');
 await goto(`${ORIGIN}/amber-callback`);
-await evaluate('sessionStorage.clear(); localStorage.clear(); true');
+await evaluate('localStorage.clear(); sessionStorage.clear(); true');
 await goto(CB(RID));
 await settled();
 check('the fragment is gone from the address bar', await evaluate('location.hash'), '');
 check('...and from the history entry', await evaluate('location.pathname + location.search + location.hash'), '/amber-callback');
 check('it says so on screen', await evaluate("document.body.innerText.includes('was not waiting')"), true);
 check('and hands the value back for a manual paste', await evaluate(`document.body.innerText.includes('${PUBKEY}')`), true);
-check('nothing was parked', await evaluate("sessionStorage.getItem('bmb:amber_result')"), null);
+check('nothing was parked', await evaluate("localStorage.getItem('bmb:amber_result')"), null);
 
 console.log('\n2. a callback whose id does not match the pending record refuses');
-await evaluate(`sessionStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${OTHER_RID}', type: 'get_public_key', ts: Date.now(), origin: '/' })); true`);
+await evaluate(`localStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${OTHER_RID}', type: 'get_public_key', ts: Date.now(), origin: '/' })); true`);
 await goto(CB(RID));
 await settled();
 check('it names the mismatch', await evaluate("document.body.innerText.includes('different request')"), true);
-check('nothing was parked', await evaluate("sessionStorage.getItem('bmb:amber_result')"), null);
-check('the pending record is left alone for the real answer', await evaluate("JSON.parse(sessionStorage.getItem('bmb:amber_pending')).rid"), OTHER_RID);
+check('nothing was parked', await evaluate("localStorage.getItem('bmb:amber_result')"), null);
+check('the pending record is left alone for the real answer', await evaluate("JSON.parse(localStorage.getItem('bmb:amber_pending')).rid"), OTHER_RID);
 
 console.log('\n3. an EXPIRED pending record refuses');
-await evaluate(`sessionStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${RID}', type: 'get_public_key', ts: Date.now() - 6*60*1000, origin: '/' })); true`);
+await evaluate(`localStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${RID}', type: 'get_public_key', ts: Date.now() - 6*60*1000, origin: '/' })); true`);
 await goto(CB(RID));
 await settled();
 check('it says the request is too old', await evaluate("document.body.innerText.includes('too old')"), true);
-check('nothing was parked', await evaluate("sessionStorage.getItem('bmb:amber_result')"), null);
+check('nothing was parked', await evaluate("localStorage.getItem('bmb:amber_result')"), null);
 
 console.log('\n4. a result of the wrong SHAPE refuses');
-await evaluate(`sessionStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${RID}', type: 'get_public_key', ts: Date.now(), origin: '/' })); true`);
+await evaluate(`localStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${RID}', type: 'get_public_key', ts: Date.now(), origin: '/' })); true`);
 await goto(`${ORIGIN}/amber-callback#r=${RID};event=${encodeURIComponent('{"sig":"aa"}')}`);
 await settled();
 check('it says the shape is wrong', await evaluate("document.body.innerText.includes('does not look like')"), true);
-check('nothing was parked', await evaluate("sessionStorage.getItem('bmb:amber_result')"), null);
+check('nothing was parked', await evaluate("localStorage.getItem('bmb:amber_result')"), null);
 
 console.log('\n5. the happy path parks the result and redirects');
-await evaluate(`sessionStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${RID}', type: 'get_public_key', ts: Date.now(), origin: '/favorites' })); true`);
+await evaluate(`localStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${RID}', type: 'get_public_key', ts: Date.now(), origin: '/favorites' })); true`);
 await goto(CB(RID));
 await settled();
 await sleep(2500);
 check('it went back to where the user was, not to /', await evaluate('location.pathname + location.search'), '/favorites');
-check('the pending record was consumed', await evaluate("sessionStorage.getItem('bmb:amber_pending')"), null);
+check('the pending record was consumed', await evaluate("localStorage.getItem('bmb:amber_pending')"), null);
 check('bmb:signer says amber', await evaluate("localStorage.getItem('bmb:signer')"), 'amber');
 check('bmb:npub was written', await evaluate("(localStorage.getItem('bmb:npub')||'').startsWith('npub1')"), true);
-check('the parked result was consumed by the resume', await evaluate("sessionStorage.getItem('bmb:amber_result')"), null);
+check('the parked result was consumed by the resume', await evaluate("localStorage.getItem('bmb:amber_result')"), null);
+
+console.log('\n5b. THE CASE THIS DESIGN EXISTS FOR: the callback lands in a DIFFERENT tab');
+{
+  // Measured on a Pixel 6: Brave opens Amber's callback in a NEW TAB rather
+  // than reusing the one that dispatched. sessionStorage is per-tab, so the
+  // first version of this feature found no pending record and fell back to a
+  // manual paste every time. The records are localStorage for exactly this, and
+  // a second CDP target is the only honest way to assert it — a second tab has
+  // its own sessionStorage and shares localStorage, same as the phone.
+  await evaluate("localStorage.clear(); sessionStorage.clear(); true");
+  await evaluate(`localStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${RID}', type: 'get_public_key', ts: Date.now(), origin: '/favorites' })); true`);
+  // Prove the premise rather than assuming it: the dispatching tab's
+  // sessionStorage must NOT be visible to the tab the callback lands in.
+  await evaluate("sessionStorage.setItem('probe', 'dispatching-tab'); true");
+
+  const fresh = await (await fetch(`http://127.0.0.1:${PORT}/json/new?${encodeURIComponent(CB(RID))}`, { method: 'PUT' })).json();
+  const ws2 = new WebSocket(fresh.webSocketDebuggerUrl);
+  await new Promise((res, rej) => { ws2.onopen = res; ws2.onerror = rej; });
+  let id2 = 0; const calls2 = new Map();
+  ws2.onmessage = (msg) => { const d = JSON.parse(msg.data); if (d.id && calls2.has(d.id)) { calls2.get(d.id)(d); calls2.delete(d.id); } };
+  const send2 = (method, params = {}) => new Promise((res) => { const i = ++id2; calls2.set(i, res); ws2.send(JSON.stringify({ id: i, method, params })); });
+  const ev2 = async (x) => (await send2('Runtime.evaluate', { expression: x, returnByValue: true, awaitPromise: true })).result?.result?.value;
+  await send2('Runtime.enable'); await send2('Page.enable');
+  for (let i = 0; i < 60; i++) { await sleep(250); if (await ev2("location.pathname !== '/amber-callback'")) break; }
+  await sleep(1200);
+
+  check('the new tab really has its own sessionStorage', await ev2("sessionStorage.getItem('probe')"), null);
+  check('the callback completed in the tab it landed in', await ev2('location.pathname'), '/favorites');
+  check('and signed the user in there', await ev2("localStorage.getItem('bmb:signer')"), 'amber');
+  check('the pending record was consumed', await ev2("localStorage.getItem('bmb:amber_pending')"), null);
+  ws2.close();
+}
 
 console.log('\n6. a callback naming a DIFFERENT account than the signed-in one is refused');
 const otherPk = 'a'.repeat(64);
-await evaluate(`sessionStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${RID}', type: 'get_public_key', ts: Date.now(), origin: '/' })); true`);
+await evaluate(`localStorage.setItem('bmb:amber_pending', JSON.stringify({ rid: '${RID}', type: 'get_public_key', ts: Date.now(), origin: '/' })); true`);
 await goto(`${ORIGIN}/amber-callback#r=${RID};event=${otherPk}`);
 await settled();
 await sleep(2500);
 const npubAfter = await evaluate("localStorage.getItem('bmb:npub')");
 check('bmb:npub was NOT switched to the other account', npubAfter?.startsWith('npub1') && !(await evaluate(`'${otherPk}'`)) === false, true);
 check('the signed-in npub is unchanged', await evaluate("localStorage.getItem('bmb:npub')"), npubAfter);
-check('the stale result was consumed, not left to replay', await evaluate("sessionStorage.getItem('bmb:amber_result')"), null);
+check('the stale result was consumed, not left to replay', await evaluate("localStorage.getItem('bmb:amber_result')"), null);
 
 ws.close();
 chrome.kill();
