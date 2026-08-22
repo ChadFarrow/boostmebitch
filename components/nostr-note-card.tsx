@@ -308,16 +308,21 @@ function NoteCardImpl({
                   // A boost note's image is ARTWORK, not a photo the author
                   // chose to show: every boost carries one (lib/nostr/
                   // boost-notes.ts names a 4:1 banner, and other boost clients
-                  // do the same), so it is sized to the COLUMN — full width,
-                  // short — rather than to itself. Left at the 320px cap a
-                  // hand-written note gets, a scrolling feed becomes a stack of
-                  // squares with the sats, the show and the message pushed
-                  // apart. `object-contain` keeps a foreign client's
-                  // differently-shaped banner from being cropped, and the cap
-                  // still bounds a square one. A note somebody wrote by hand
-                  // keeps the large size — there the picture IS the post.
-                  className={`rounded-lg border border-bone/15 object-contain ${
-                    note.isBoost ? 'w-full max-h-56' : 'max-w-full w-auto max-h-80'
+                  // do the same), so left at the 320px cap a hand-written note
+                  // gets, a scrolling feed becomes a stack of squares with the
+                  // sats, the show and the message pushed apart.
+                  //
+                  // **Cap the HEIGHT and let the width follow — never `w-full`.**
+                  // Our banner is 4:1, so a height cap alone already spends the
+                  // whole column. `w-full` looks equivalent and is not: it
+                  // stretches the box to the column for EVERY shape, and a
+                  // square (every boost note published before the banner, and
+                  // every other client's cover-art boost) then sits in the
+                  // middle of two wide black bars. object-contain is what keeps
+                  // it from being cropped instead — the bars are the honest
+                  // outcome of a box that was the wrong shape to begin with.
+                  className={`rounded-lg border border-bone/15 max-w-full w-auto object-contain ${
+                    note.isBoost ? 'max-h-56' : 'max-h-80'
                   }`}
                 />
               </a>
