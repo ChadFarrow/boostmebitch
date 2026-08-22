@@ -79,13 +79,30 @@ function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  * banner route as a parameter, and that route fetches it and checks the real
  * `Content-Type`, which is the honest test. An extension only matters for a URL
  * a CLIENT must recognize on sight, and the client only ever sees the banner.
+ *
+ * **Every candidate is sent, not just the first, because the first one is
+ * routinely unusable and nothing here can tell.** `<PodcastCover>` already
+ * carries this rule on screen ("Always pass both"), and Homegrown Hits is the
+ * feed that proves it twice over: its channel `image` is a **404** on a domain
+ * that still resolves, and its episode art is a **19 MB animated GIF** — over
+ * the route's 2 MB ceiling, which is the same ceiling that stops a feed
+ * starving the renderer. One dead, one too big, one fine, and the difference is
+ * only visible after a fetch the note-builder never makes. Sending one URL
+ * meant a boost to that show drew a bannner with an empty left third.
+ *
+ * Capped at three: the fourth is a fourth sequential fetch inside a request
+ * that has to answer, and the list has only four entries anyway.
  */
-function boostArtUrl(podcast: Podcast, episode?: Episode): string | null {
+const MAX_ART_CANDIDATES = 3;
+
+function boostArtUrls(podcast: Podcast, episode?: Episode): string[] {
+  const out: string[] = [];
   for (const c of [episode?.image, episode?.feedImage, podcast.image, podcast.artwork]) {
     const url = httpUrl(c);
-    if (url) return url;
+    if (url && !out.includes(url)) out.push(url);
+    if (out.length >= MAX_ART_CANDIDATES) break;
   }
-  return null;
+  return out;
 }
 
 /** Where a published note's links and banner must point. */
@@ -125,8 +142,12 @@ function boostBannerUrl(
   boostagram: Boostagram,
 ): string {
   const params = new URLSearchParams();
-  const art = boostArtUrl(podcast, episode);
-  if (art) params.set('art', art);
+  // `art`, then `art2`, then `art3` — the route tries them in order and keeps
+  // the first that answers with something it can draw. New names rather than a
+  // repeated key: the route's parameters are a permanent public contract, and
+  // every note already published names `art` alone.
+  const arts = boostArtUrls(podcast, episode);
+  arts.forEach((url, i) => params.set(i === 0 ? 'art' : `art${i + 1}`, url));
   if (podcast.title) params.set('title', podcast.title);
   if (episode?.title) params.set('ep', episode.title);
   const sats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
