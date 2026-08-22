@@ -1,7 +1,8 @@
 import { ImageResponse } from 'next/og';
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch, readCappedBytes } from '@/lib/safe-fetch';
+import { safeFetch, readCappedBytes, readBytesUpTo } from '@/lib/safe-fetch';
+import { firstGifFrame } from '@/lib/gif-first-frame';
 
 /**
  * The picture a boost note shows: the show's artwork beside the sats, the
@@ -91,6 +92,33 @@ async function coverDataUri(url: string): Promise<string | null> {
     if (!res.ok) return null;
     const type = (res.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
     if (!RASTERIZABLE.has(type)) return null;
+
+    // A GIF is read as a bounded PREFIX and cut to its first frame, rather than
+    // refused for being over the ceiling.
+    //
+    // An animated cover is not a rare shape here — Homegrown Hits ships 19 MB
+    // of episode art, and docs/ui.md records 20–36 MB GIFs per chapter on that
+    // same feed. Refusing it fell through to a channel-level URL, which on that
+    // show is a DIFFERENT (older) cover, so the banner quietly advertised the
+    // wrong artwork. Frame one is at the front of the file: measured at 606 KB
+    // of that 19 MB, so the existing ceiling is already generous for it and
+    // `readBytesUpTo` cancels the rest of the transfer.
+    //
+    // Rejecting a GIF outright would be simpler and worse, and raising the
+    // ceiling would be simpler and much worse — the point of the ceiling is
+    // that a request which has to answer must not decode 19 MB.
+    if (type === 'image/gif') {
+      const { bytes, truncated } = await readBytesUpTo(res, MAX_ART_BYTES);
+      if (!bytes.byteLength) return null;
+      const frame = firstGifFrame(bytes);
+      // An untruncated GIF we could not cut is used whole: it fits the ceiling
+      // by definition, and a parse failure here means our walk did not
+      // recognize the file, not that a decoder won't.
+      const usable = frame ?? (truncated ? null : bytes);
+      if (!usable) return null;
+      return `data:image/gif;base64,${Buffer.from(usable).toString('base64')}`;
+    }
+
     const bytes = await readCappedBytes(res, MAX_ART_BYTES);
     if (!bytes.byteLength) return null;
     return `data:${type};base64,${Buffer.from(bytes).toString('base64')}`;
