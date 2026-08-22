@@ -58,6 +58,7 @@ import {
   looksLikeAmberResult,
   newAmberRequestId,
   amberRecordIsFresh,
+  payloadSurvivesAmber,
   type AmberRequestType,
   type AmberUrlOptions,
 } from './amber-callback-url';
@@ -239,7 +240,16 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
   }
 
   // eslint-disable-next-line no-console
-  console.info('[amber] →', opts.type, useCallback ? `(callback ${AMBER_CALLBACK_PATH})` : '(clipboard)');
+  console.info(
+    '[amber] →', opts.type,
+    useCallback ? `(callback ${AMBER_CALLBACK_PATH})` : '(clipboard)',
+    // Both of these turn a device report of "Amber didn't come back" into a
+    // readable line. A hostile payload never reaches a prompt at all; a
+    // dispatch with no transient activation is one Chrome may decline to hand
+    // to the intent picker, which looks identical from here.
+    payloadSurvivesAmber(opts.payload ?? '') ? '' : '(payload contains "?" — Amber will reject it)',
+    navigator.userActivation && !navigator.userActivation.isActive ? '(no user activation)' : '',
+  );
 
   return new Promise<string>((resolve, reject) => {
     let settled = false;
@@ -358,10 +368,22 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       type: opts.type,
     };
 
+    // Name the one cause the user cannot otherwise see. Amber rejects a request
+    // whose payload contains `?` before it ever shows a prompt, and from this
+    // side that is byte-for-byte the same silence as Amber not being installed
+    // — which is why docs/signers.md warns not to read this symptom as evidence
+    // about the callback code. It stays a MESSAGE and not a pre-dispatch throw:
+    // `publishBoostNote` signs after the sats have moved, so refusing to try
+    // would turn an Amber limitation into a boost the user paid for and cannot
+    // post. A plaintext this app chooses avoids the character instead — see
+    // ./amber-safe-text.
+    const hostile = !payloadSurvivesAmber(opts.payload ?? '');
     timer = setTimeout(() => {
       finish(
         null,
-        'Amber did not respond. Make sure Amber is installed, or paste the result manually.',
+        hostile
+          ? 'Amber rejects requests whose content contains a question mark ("?"), so it never showed a prompt. Remove the "?" and try again.'
+          : 'Amber did not respond. Make sure Amber is installed, or paste the result manually.',
       );
     }, AMBER_TIMEOUT_MS);
 
