@@ -1248,6 +1248,15 @@ export const storage = {
           typeof v.posCarryMs === 'number' && Number.isFinite(v.posCarryMs) && v.posCarryMs >= 0
             ? v.posCarryMs
             : 0;
+        // billedMs — the payout clock — is normalized on exactly the same terms
+        // and for the same reason. Every ledger written before it existed lacks
+        // the field, and rejecting those would discard real accrued sats in
+        // `buckets` on the first load after the update. Starting the clock at 0
+        // costs at most one deferred payout; dropping the ledger costs money.
+        const billedMs =
+          typeof v.billedMs === 'number' && Number.isFinite(v.billedMs) && v.billedMs >= 0
+            ? v.billedMs
+            : 0;
         // The per-track double-pay guards. Normalized like posCarryMs rather
         // than rejected — a record predating them must not throw away real sats
         // in `buckets`. Losing them errs toward paying a track twice, so they
@@ -1259,7 +1268,7 @@ export const storage = {
             if (typeof ms === 'number' && Number.isFinite(ms)) creditedAt[bucket] = ms;
           }
         }
-        return { ...v, buckets, posCarryMs, creditedRun, creditedAt } as StreamLedger;
+        return { ...v, buckets, posCarryMs, billedMs, creditedRun, creditedAt } as StreamLedger;
       } catch {
         return null;
       }
