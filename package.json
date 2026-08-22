@@ -29,6 +29,7 @@
     "check:assetlinks": "node --experimental-strip-types scripts/check-assetlinks.mjs",
     "check:gif": "node --experimental-strip-types scripts/check-gif.mjs",
     "check:amber": "node --experimental-strip-types scripts/check-amber.mjs",
+    "check:ambersafe": "node --experimental-strip-types scripts/check-amber-safe-text.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs"

@@ -5,7 +5,7 @@ import {
   hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate,
   nwcFetchCapabilities, nwcGetMethods,
 } from '@/lib/v4v/nwc';
-import { publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, getNip44 } from '@/lib/nostr';
+import { publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, getNip44, isAmberActive } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 
@@ -19,11 +19,13 @@ interface Props {
 // Module-scope (not nested in NwcWallet) so it keeps a stable identity across
 // the parent's busy/state re-renders — a nested component would remount the
 // <input> on every render.
-function BackupToggle({ checked, disabled, canBackup, signedIn, onToggle }: {
+function BackupToggle({ checked, disabled, canBackup, signedIn, amber, onToggle }: {
   checked: boolean;
   disabled: boolean;
   canBackup: boolean;
   signedIn: boolean;
+  /** Amber is the active signer, so this costs two approvals — see below. */
+  amber: boolean;
   onToggle: (next: boolean) => void;
 }) {
   return (
@@ -40,6 +42,13 @@ function BackupToggle({ checked, disabled, canBackup, signedIn, onToggle }: {
         {canBackup ? (
           <span className="block text-muted">
             Restores automatically when you sign in on another device. Removed from Nostr if you turn this off or disconnect.
+            {/* One backup is TWO NIP-55 round trips — nip44_encrypt, then
+                sign_event — and Amber returns by clipboard, so the user has to
+                come back and tap the page between them. Unannounced, the second
+                prompt reads as the first one repeating, which is exactly the
+                "the prompt comes straight back" failure docs/signers.md
+                describes people giving up on. */}
+            {amber && ' Amber asks twice: once to encrypt, once to sign. Approve both, and return to this app after each.'}
           </span>
         ) : (
           <span className="block text-muted">
@@ -300,6 +309,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
           disabled={!canBackup || busy}
           canBackup={canBackup}
           signedIn={!!identity}
+          amber={isAmberActive()}
           onToggle={toggleBackup}
         />
         {err && <div className="text-[11px] text-nostr/80 break-words">{err}</div>}
@@ -333,6 +343,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
         disabled={!canBackup || busy}
         canBackup={canBackup}
         signedIn={!!identity}
+        amber={isAmberActive()}
         onToggle={setFormBackup}
       />
       <div className="flex gap-2">
