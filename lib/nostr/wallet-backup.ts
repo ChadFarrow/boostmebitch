@@ -20,7 +20,7 @@ import { FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { assertPublished, signAndPublish, type PublishedNote } from './publish';
 import { fetchLatestEvent, fetchLatestEventDetailed } from './event-queries';
 import { backupReadRelays, resolvePublishRelays } from './relays';
-import { requireNip44, decryptWithTimeout } from './signer';
+import { requireNip44, decryptWithTimeout, type DecryptPurpose } from './signer';
 import type { NostrIdentity } from './auth';
 
 export const WALLET_BACKUP_KIND = 30078;
@@ -29,8 +29,9 @@ export const WALLET_BACKUP_D_TAG = 'boostmebitch:wallet:spark';
 /** Decrypt the user's stored mnemonic, or null if no backup exists yet. */
 export async function fetchEncryptedMnemonic(
   identity: NostrIdentity,
+  purpose: DecryptPurpose,
 ): Promise<string | null> {
-  return (await fetchEncryptedMnemonicDetailed(identity)).mnemonic;
+  return (await fetchEncryptedMnemonicDetailed(identity, purpose)).mnemonic;
 }
 
 /**
@@ -71,6 +72,7 @@ export async function fetchEncryptedMnemonic(
  */
 export async function fetchEncryptedMnemonicDetailed(
   identity: NostrIdentity,
+  purpose: DecryptPurpose,
 ): Promise<{ mnemonic: string | null; trustworthy: boolean }> {
   const { event, trustworthy } = await fetchLatestEventDetailed(
     backupReadRelays(identity),
@@ -85,7 +87,7 @@ export async function fetchEncryptedMnemonicDetailed(
   // once an event is in hand.
   if (!event || !event.content) return { mnemonic: null, trustworthy };
 
-  return { mnemonic: await decryptWithTimeout(identity.pubkey, event.content, 'unattended'), trustworthy };
+  return { mnemonic: await decryptWithTimeout(identity.pubkey, event.content, purpose), trustworthy };
 }
 
 /**
@@ -135,6 +137,7 @@ export const WALLET_NWC_D_TAG = 'boostmebitch:wallet:nwc';
 /** Decrypt the user's stored NWC URI, or null if no backup exists. */
 export async function fetchEncryptedNwc(
   identity: NostrIdentity,
+  purpose: DecryptPurpose,
 ): Promise<string | null> {
   const event = await fetchLatestEvent(
     backupReadRelays(identity),
@@ -143,7 +146,7 @@ export async function fetchEncryptedNwc(
   );
   if (!event || !event.content) return null;
   try {
-    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content, 'unattended'));
+    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content, purpose));
     return typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
   } catch {
     return null;

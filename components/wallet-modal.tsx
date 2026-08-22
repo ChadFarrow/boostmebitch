@@ -202,8 +202,10 @@ export function WalletModal({ onClose }: Props) {
           <div className="text-[11px] text-muted border border-bone/15 rounded p-3">
             Your wallet backup was <strong className="text-bone">not</strong> read
             automatically, because Amber shows the decrypted text on screen — and
-            for the Spark wallet that text is your seed phrase. Connect below to
-            restore it when you are ready.
+            for the Spark wallet that text is your seed phrase. To restore it,
+            pick <strong className="text-bone">Spark</strong> below and tap{' '}
+            <strong className="text-bone">Restore from Nostr</strong>; Amber will
+            ask once, and this time you are expecting it.
           </div>
         )}
         {switching && (

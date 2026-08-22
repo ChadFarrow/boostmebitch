@@ -214,7 +214,7 @@ export function NostrAuth() {
           // win. Only re-init when it actually disagrees, so the common case
           // (never changed wallets) costs nothing beyond the query we were
           // already making.
-          const { mnemonic, trustworthy } = await fetchEncryptedMnemonicDetailed(enriched);
+          const { mnemonic, trustworthy } = await fetchEncryptedMnemonicDetailed(enriched, 'unattended');
           if (mnemonic && mnemonic !== derived) {
             await sparkInitFromMnemonic({ mnemonic, ownerPubkey: id.pubkey });
             return;
@@ -264,14 +264,14 @@ export function NostrAuth() {
       : Promise.resolve();
     // Synced settings: apply the last-used boost rail.
     const settingsPromise = unattendedDecryptOk
-      ? fetchSettings(enriched)
+      ? fetchSettings(enriched, 'unattended')
           .then((s) => { if (s?.railPref) storage.railPref.set(s.railPref); })
           .catch(() => {})
       : Promise.resolve();
     // NWC backup: restore the encrypted connection string if this device has
     // no NWC URI yet.
     const nwcPromise = unattendedDecryptOk && !hasNwc()
-      ? fetchEncryptedNwc(enriched)
+      ? fetchEncryptedNwc(enriched, 'unattended')
           .then((uri) => {
             if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); markNwcRestored(id.npub); }
           })

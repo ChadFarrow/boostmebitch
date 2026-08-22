@@ -16,7 +16,7 @@ import { FEED_QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish } from './publish';
 import { fetchLatestEvent } from './event-queries';
 import { backupReadRelays, resolvePublishRelays } from './relays';
-import { requireNip44, getNip44, decryptWithTimeout } from './signer';
+import { requireNip44, getNip44, decryptWithTimeout, type DecryptPurpose } from './signer';
 import { createScheduledPublish } from './debounced-publish';
 import { storage, type RailPref } from '../storage';
 import type { NostrIdentity } from './auth';
@@ -35,6 +35,7 @@ function isRail(v: unknown): v is RailPref {
 /** Decrypt the user's synced settings, or null if none exist / unreadable. */
 export async function fetchSettings(
   identity: NostrIdentity,
+  purpose: DecryptPurpose,
 ): Promise<SyncedSettings | null> {
   const event = await fetchLatestEvent(
     backupReadRelays(identity),
@@ -43,7 +44,7 @@ export async function fetchSettings(
   );
   if (!event || !event.content) return null;
   try {
-    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content, 'unattended'));
+    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content, purpose));
     return { railPref: isRail(parsed?.railPref) ? parsed.railPref : undefined };
   } catch {
     return null;

@@ -96,7 +96,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     autoCheckedNpubs.add(identity.npub);
     let cancelled = false;
     setAutoChecking(true);
-    fetchEncryptedNwc(identity)
+    fetchEncryptedNwc(identity, 'user-initiated')
       .then((uri) => {
         if (!uri) return;
         // Save even if the modal closed mid-fetch — the restore is global.
@@ -143,7 +143,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     setBusy(true);
     setErr(null);
     try {
-      const uri = await fetchEncryptedNwc(identity);
+      const uri = await fetchEncryptedNwc(identity, 'user-initiated');
       if (!uri) {
         setErr('No backup found on Nostr for this account.');
         return;
