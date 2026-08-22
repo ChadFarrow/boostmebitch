@@ -15,7 +15,7 @@ import {
   NwcNotAttemptedError,
   NwcIndeterminateError,
 } from './nwc';
-import { hasWebln, weblnKeysend, weblnPayInvoice } from './webln';
+import { hasWebln, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
 import {
@@ -186,8 +186,9 @@ async function payKeysend(
  *              nothing for a feature they can't use.
  * - `'yes'`  — provably can. Upgrade, and if the keysend then errors, fail the
  *              leg (it may already have paid — no LNURL retry).
- * - `'unknown'` — the wallet never told us. **Attempt it anyway**, and fall
- *              back to LNURL only on a NOT_IMPLEMENTED refusal (see payOne).
+ * - `'unknown'` — the wallet never told us, or told us something that isn't an
+ *              answer. **Attempt it anyway**, and fall back to LNURL only on a
+ *              refusal that proves nothing was sent (see payOne).
  *
  * That last arm is why this isn't a boolean. Plenty of NWC wallets simply omit
  * `methods` from `get_info`, or grant `get_balance` but not `get_info` — and
@@ -206,11 +207,19 @@ async function railCanKeysend(rail: Rail): Promise<KeysendCapability> {
   if (rail === 'spark') return 'no'; // BOLT11-only by design
   if (rail === 'webln') {
     // Reading the method off the provider doesn't require wl.enable(), so this
-    // costs no permission prompt. The provider either exposes keysend or it
-    // doesn't — there's no unknown here.
-    const ok =
+    // costs no permission prompt.
+    //
+    // **Its absence is an answer; its presence is not.** The Alby extension
+    // defines `keysend` on the provider object regardless of what the connected
+    // account can do, so the method being there says only that the extension
+    // implements WebLN — the account behind it may refuse the call. Reporting
+    // `'yes'` claimed a capability nothing had checked; `'unknown'` is the
+    // honest answer and behaves identically here (both attempt), which is what
+    // makes the correction free. `WeblnNotAttemptedError` is what makes
+    // attempting safe, exactly as NOT_IMPLEMENTED does on the NWC rail.
+    const has =
       typeof window !== 'undefined' && typeof window.webln?.keysend === 'function';
-    return ok ? 'yes' : 'no';
+    return has ? 'unknown' : 'no';
   }
   // nwcGetMethods() returns null for both "never asked" and "asked, got an
   // empty list" — an empty list is no evidence either way.
@@ -307,7 +316,15 @@ async function payOne(
       // re-pays anything, which is what lets it be this liberal. See
       // failureBlamesDestination for why a wallet-side or socket failure is
       // excluded — those say nothing about the recipient.
-      if (failureBlamesDestination(e)) {
+      //
+      // A refusal is neither: nothing was sent, so it is evidence about the
+      // WALLET and must not be filed against the recipient. `failureBlames-
+      // Destination` already excludes the NIP-47 half; the WebLN half cannot
+      // reach it, because `nwc-errors.ts` has to stay loadable under plain Node
+      // and so cannot import a browser-only module. Hence the union here rather
+      // than one predicate — and hence the ordering: read the refusal first.
+      const refused = e instanceof NwcNotAttemptedError || e instanceof WeblnNotAttemptedError;
+      if (!refused && failureBlamesDestination(e)) {
         noteKeysendFailure(recipient.address);
         console.warn(
           `[keysend] ${recipient.address} keysend FAILED at ` +
@@ -316,9 +333,10 @@ async function payOne(
         );
       }
       // SECOND: may THIS leg be paid again, right now, over LNURL? Only when the
-      // wallet refused the request *instead of* executing it — NOT_IMPLEMENTED,
-      // UNAUTHORIZED, RESTRICTED — because then nothing left the wallet and
-      // LNURL cannot double-pay. Every other failure stays fatal to the leg: a
+      // wallet refused the request *instead of* executing it — NIP-47
+      // NOT_IMPLEMENTED, UNAUTHORIZED or RESTRICTED, or a WebLN provider that
+      // never reached its own `keysend` — because then nothing left the wallet
+      // and LNURL cannot double-pay. Every other failure stays fatal to the leg: a
       // keysend that errors after the money moved (see the Zeus no-preimage case
       // in nwcKeysend) would otherwise pay twice, and a failed leg is the
       // cheaper wrong answer. `PAYMENT_FAILED` is deliberately NOT in the class,
@@ -329,9 +347,11 @@ async function payOne(
       // Deliberately not gated on `canKeysend === 'unknown'`: a wallet that
       // advertised pay_keysend and then refuses it has simply mis-advertised,
       // and the refusal is equally proof-of-no-payment either way.
-      if (!(e instanceof NwcNotAttemptedError)) throw e;
+      if (!refused) throw e;
       console.info(
-        `[keysend] ${recipient.address} → LNURL (wallet refused keysend: ${e.code})`,
+        `[keysend] ${recipient.address} → LNURL (wallet refused keysend: ${
+          e instanceof NwcNotAttemptedError ? e.code : e.message
+        })`,
       );
       return await payLnurl(recipient, sats, rail, boostagram);
     }
