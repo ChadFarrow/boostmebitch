@@ -64,8 +64,97 @@ function podcastLandingUrl(podcast: Podcast, episode?: Episode): string | null {
  */
 function bmbLandingUrl(podcast: Podcast, episode?: Episode): string | null {
   if (!podcast.podcastGuid) return null;
-  const url = `https://www.boostmebitch.com/?podcast=${podcast.podcastGuid}`;
+  const url = `${SITE_ORIGIN}/?podcast=${podcast.podcastGuid}`;
   return episode?.guid ? `${url}&episode=${encodeURIComponent(episode.guid)}` : url;
+}
+
+/**
+ * The artwork this boost note shows, in preference order: the episode's own
+ * image, the show image the feed put on the item, then the show's two
+ * channel-level images (RSS `<image><url>` first, `<itunes:image>` second — the
+ * same pair, in the same order, that `<PodcastCover>` tries on screen).
+ *
+ * Feed-supplied, so http(s)-validated before it goes anywhere public. It is
+ * deliberately NOT gated on an image extension here: this URL is handed to the
+ * banner route as a parameter, and that route fetches it and checks the real
+ * `Content-Type`, which is the honest test. An extension only matters for a URL
+ * a CLIENT must recognize on sight, and the client only ever sees the banner.
+ */
+function boostArtUrl(podcast: Podcast, episode?: Episode): string | null {
+  for (const c of [episode?.image, episode?.feedImage, podcast.image, podcast.artwork]) {
+    const url = httpUrl(c);
+    if (url) return url;
+  }
+  return null;
+}
+
+/** Where a published note's links and banner must point. */
+const SITE_ORIGIN = 'https://www.boostmebitch.com';
+
+/**
+ * The origin the banner URL is built against.
+ *
+ * Production is always {@link SITE_ORIGIN} — the note is signed and immutable,
+ * so the host is permanent, exactly as `bmbLandingUrl` documents.
+ *
+ * **Under `next dev` it is this dev server instead.** Otherwise a boost sent
+ * while developing names a production route that does not exist yet, and the
+ * picture cannot be seen until after it ships — which is precisely when a
+ * design change is cheap. The cost is worth knowing: a note published from a
+ * dev server carries a `localhost` banner URL forever and nobody else can load
+ * it. Test boosts only.
+ */
+function bannerOrigin(): string {
+  if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
+    return window.location.origin;
+  }
+  return SITE_ORIGIN;
+}
+
+/**
+ * The picture the note shows: `/api/og/boost.png`, drawn from the artwork, the
+ * sats and the titles.
+ *
+ * **A bare image URL in the BODY is what renders a picture** — an `imeta` tag
+ * describes one the body already names, it does not add one.
+ *
+ * Why not name the artwork URL directly: a cover is square, and a square in a
+ * note column is a tall block that pushes the sats, the show and the message
+ * apart. The banner is 4:1 and spends the width the column has. It also removes
+ * two dependencies on the feed's own URL — one carrying no image extension is
+ * invisible to every client, and a feed with no artwork has nothing to show;
+ * both still get a branded banner.
+ *
+ * The route's path and parameter names are a permanent public contract, because
+ * every note ever published names them. See the route for what that forbids.
+ */
+function boostBannerUrl(
+  podcast: Podcast,
+  episode: Episode | undefined,
+  boostagram: Boostagram,
+): string {
+  const params = new URLSearchParams();
+  const art = boostArtUrl(podcast, episode);
+  if (art) params.set('art', art);
+  if (podcast.title) params.set('title', podcast.title);
+  if (episode?.title) params.set('ep', episode.title);
+  const sats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
+  if (sats > 0) params.set('sats', String(sats));
+  return `${bannerOrigin()}/api/og/boost.png?${params.toString()}`;
+}
+
+/**
+ * Append the artwork URL to a note body.
+ *
+ * Applied to the FINAL content for the same reason `withMentions` is:
+ * boost-all-modal hand-builds its summary body and passes it as a
+ * `contentOverride`, so art added inside `formatContent` would be silently
+ * missing from every boost-all note. It sits ABOVE the mentions because a
+ * trailing `nostr:npub…` run is what every compose box writes last, and a URL
+ * after it reads as part of that line.
+ */
+function withArt(content: string, art: string | null): string {
+  return art ? `${content}\n\n${art}` : content;
 }
 
 /** Cap on how many people one boost note tags. */
@@ -160,6 +249,22 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
   // still reach the artist.
   const npubs = noteNpubs(podcast, episode);
   for (const n of npubs) tags.push(['p', n.pubkey]);
+  // NIP-92: describe the image the body already names, so a client that renders
+  // from tags shows the same picture as one that scans the text. `dim` lets it
+  // reserve the space before the bytes arrive, which is why the banner has one
+  // fixed size rather than the artwork's.
+  //
+  // The length test mirrors the site-sign route's MAX_TAG_ITEM_LEN. That route
+  // rejects the WHOLE template when one tag item is too long, and this URL
+  // carries the artwork address and both titles, so a long one is reachable —
+  // it would stop a signed-out user's note being published at all. Dropping the
+  // tag is the soft failure: the body still names the banner, and every client
+  // that scans text still renders it. Keep the two numbers together if either
+  // moves.
+  const banner = boostBannerUrl(podcast, episode, boostagram);
+  if (`url ${banner}`.length <= 512) {
+    tags.push(['imeta', `url ${banner}`, 'm image/png', 'dim 1200x300']);
+  }
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
   tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);
   tags.push(['t', 'boostagram']);
@@ -169,7 +274,7 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
     kind: 1,
     created_at: Math.floor(Date.now() / 1000),
     tags,
-    content: withMentions(args.contentOverride ?? formatContent(args), npubs),
+    content: withMentions(withArt(args.contentOverride ?? formatContent(args), banner), npubs),
   };
 }
 

@@ -182,11 +182,26 @@ export async function readCappedText(
   res: Response,
   maxBytes: number = MAX_BODY_BYTES,
 ): Promise<string> {
+  return new TextDecoder().decode(await readCappedBytes(res, maxBytes));
+}
+
+/**
+ * {@link readCappedText}'s byte half — the same streaming cap, without the
+ * decode. Artwork is binary, and `TextDecoder` over a PNG returns replacement
+ * characters, so a caller that needs the bytes cannot go through the text
+ * reader and must not fall back to a bare `res.arrayBuffer()`: that buffers the
+ * whole body first and measures after, which is the behaviour this module
+ * exists to prevent. One capping loop, two shapes on top of it.
+ */
+export async function readCappedBytes(
+  res: Response,
+  maxBytes: number = MAX_BODY_BYTES,
+): Promise<Uint8Array> {
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
     throw new Error(`response too large (${declared} bytes, max ${maxBytes})`);
   }
-  if (!res.body) return res.text();
+  if (!res.body) return new Uint8Array(await res.arrayBuffer());
 
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -212,7 +227,7 @@ export async function readCappedText(
     joined.set(c, at);
     at += c.byteLength;
   }
-  return new TextDecoder().decode(joined);
+  return joined;
 }
 
 /** {@link readCappedText}, then `JSON.parse`. */
