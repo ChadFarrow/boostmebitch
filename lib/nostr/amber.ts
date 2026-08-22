@@ -57,6 +57,7 @@ import {
   buildSignerUrl,
   looksLikeAmberResult,
   newAmberRequestId,
+  amberRecordIsFresh,
   type AmberRequestType,
   type AmberUrlOptions,
 } from './amber-callback-url';
@@ -153,17 +154,9 @@ export function subscribeAmberStage(fn: (s: AmberStage) => void): () => void {
 //   docs/signers.md.
 const RESUMABLE_TYPES: ReadonlySet<AmberRequestType> = new Set(['get_public_key']);
 
-// How long a dispatched request may still be answered by a callback.
-//
-// Deliberately NOT the same clock as AMBER_TIMEOUT_MS, and much longer. That
-// one is how long the in-memory promise waits before telling the caller it gave
-// up; this one is how long the record stays matchable. The Amber approve flow
-// on a cold app can take longer than a minute, and the promise giving up is not
-// the same event as the request becoming unmatchable — conflating them would
-// throw away a result that is about to arrive.
-const AMBER_PENDING_TTL_MS = 5 * 60_000;
-
-const fresh = (ts: number) => Date.now() - ts < AMBER_PENDING_TTL_MS;
+// Both sides of the round trip share one freshness window — see
+// AMBER_PENDING_TTL_MS in ./amber-callback-url for why it is defined there.
+const fresh = (ts: number) => amberRecordIsFresh(ts, Date.now());
 
 /**
  * A result Amber already handed back, if it answers THIS request.
@@ -401,6 +394,32 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
   });
 }
 
+/**
+ * Amber may answer `get_public_key` as 64-char hex or as an npub. Both are
+ * valid; this is the one place that decides what they mean.
+ *
+ * Exported because the callback path has a SECOND consumer: after Amber
+ * navigates back, the page reloads and `<NostrAuth>` picks the parked result up
+ * on mount rather than through `AmberSigner`. Two copies of this would be two
+ * places to disagree about what a returned key is — and the disagreement would
+ * be silent, because both branches produce a plausible 64-char string.
+ *
+ * Throws on anything else rather than guessing. A wrong pubkey here is an
+ * account the user does not own.
+ */
+export function normalizeAmberPubkey(raw: string): string {
+  const trimmed = raw.trim();
+  if (/^[0-9a-f]{64}$/i.test(trimmed)) return trimmed.toLowerCase();
+  if (trimmed.startsWith('npub1')) {
+    const decoded = nip19.decode(trimmed);
+    if (decoded.type !== 'npub') {
+      throw new Error(`Amber returned unexpected pubkey shape: ${trimmed.slice(0, 24)}…`);
+    }
+    return decoded.data;
+  }
+  throw new Error(`Amber returned unexpected pubkey shape: ${trimmed.slice(0, 24)}…`);
+}
+
 export interface AmberSignerInterface {
   getPublicKey(): Promise<string>;
   signEvent(template: EventTemplate): Promise<Event>;
@@ -423,19 +442,7 @@ export class AmberSigner implements AmberSignerInterface {
 
   async getPublicKey(): Promise<string> {
     if (this.cachedPubkey) return this.cachedPubkey;
-    const raw = await invokeAmber({ type: 'get_public_key' });
-    const trimmed = raw.trim();
-    if (/^[0-9a-f]{64}$/i.test(trimmed)) {
-      this.cachedPubkey = trimmed.toLowerCase();
-    } else if (trimmed.startsWith('npub1')) {
-      const decoded = nip19.decode(trimmed);
-      if (decoded.type !== 'npub') {
-        throw new Error(`Amber returned unexpected pubkey shape: ${trimmed.slice(0, 24)}…`);
-      }
-      this.cachedPubkey = decoded.data;
-    } else {
-      throw new Error(`Amber returned unexpected pubkey shape: ${trimmed.slice(0, 24)}…`);
-    }
+    this.cachedPubkey = normalizeAmberPubkey(await invokeAmber({ type: 'get_public_key' }));
     return this.cachedPubkey;
   }
 

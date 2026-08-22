@@ -103,6 +103,28 @@ export const AMBER_CALLBACK_PATH = '/amber-callback';
  *  Amber's `Uri.encode` escapes `;` in whatever it appends. */
 export const AMBER_RESULT_SEPARATOR = ';event=';
 
+/**
+ * How long a dispatched request may still be answered by a callback.
+ *
+ * Deliberately NOT the same clock as `AMBER_TIMEOUT_MS` in amber.ts, and much
+ * longer. That one is how long the in-memory promise waits before telling the
+ * caller it gave up; this one is how long the record stays matchable. A cold
+ * Amber approve can take longer than a minute, and the promise giving up is not
+ * the same event as the request becoming unmatchable — conflating them throws
+ * away a result that is about to arrive.
+ *
+ * It lives here rather than in amber.ts because BOTH sides of the round trip
+ * enforce it — the dispatcher when it resumes, and /amber-callback when it
+ * decides whether to park a result — and two copies of a freshness window is
+ * how one side comes to accept what the other has already discarded.
+ */
+export const AMBER_PENDING_TTL_MS = 5 * 60_000;
+
+/** True while a record stamped at `ts` may still be answered. */
+export function amberRecordIsFresh(ts: number, now: number): boolean {
+  return Number.isFinite(ts) && ts > 0 && now - ts >= 0 && now - ts < AMBER_PENDING_TTL_MS;
+}
+
 /** Request ids are exactly this many lowercase hex characters. */
 const RID_HEX_LENGTH = 32;
 

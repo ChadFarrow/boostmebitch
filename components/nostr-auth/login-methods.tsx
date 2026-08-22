@@ -92,10 +92,19 @@ export function AmberCompletion({ onSubmit }: { onSubmit: (value: string) => boo
   // running the PWA.
   return (
     <div className="flex flex-col items-end gap-1 mt-1 max-w-[280px]">
+      {/* Sign-in now goes out with a callbackUrl, so the ordinary outcome is
+          that Amber navigates back and the PAGE RELOADS. Telling the user that
+          is the difference between the reload reading as progress and reading
+          as a crash — and the old copy ("sign-in will finish on your next tap")
+          described the clipboard path, which for this request is no longer what
+          normally happens. It is still what happens if the callback cannot land
+          (the user backs out of Amber, or the result reaches the installed app
+          instead of this tab), which is why the tap-to-finish line survives as
+          the `returned` branch and the manual paste stays below it. */}
       <span className="text-[10px] text-muted text-right">
         {returned
           ? "If sign-in didn't complete, tap below."
-          : 'Approve in Amber, then come back — sign-in will finish on your next tap.'}
+          : 'Approve in Amber. The app reloads when it comes back.'}
       </span>
       <button onClick={readClipboard} className="btn-ghost text-[10px] py-1 px-2">
         ◆ Read clipboard manually
