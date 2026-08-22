@@ -26,12 +26,16 @@
 //    So each refusal names itself and hands back the raw value, which
 //    <AmberCompletion>'s manual paste can still consume.
 //
-// 3. There is a real case where the honest answer is "not for this tab", and it
-//    is not rare. With the Android app installed and verified, Amber's
-//    ACTION_VIEW on this origin can resolve to the TWA rather than to the
-//    browser tab the request came from. Different sessionStorage, no pending
-//    record, nothing to match — and the right thing to do is say so and let the
-//    user paste, not to guess.
+// 3. THE CALLBACK USUALLY LANDS IN A DIFFERENT TAB. Measured on a Pixel 6
+//    against a real https origin: Brave opens Amber's ACTION_VIEW in a NEW TAB
+//    (count went 15 to 16) rather than reusing the one that made the request.
+//    That is why the pending record and the parked result are localStorage —
+//    sessionStorage is per-tab and was never there. See lib/storage.ts.
+//
+//    "Not for this tab" is still reachable and still gets a screen: with the
+//    Android app installed and verified, the callback can resolve to the TWA
+//    rather than to a browser at all, which is a different storage partition
+//    entirely. The right thing there is to say so and let the user paste.
 
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
@@ -151,12 +155,28 @@ export default function AmberCallbackPage() {
       return;
     }
 
-    storage.amberResult.set({
+    // `set` refuses a type whose result is not safe to put on disk — the guard
+    // lives in lib/storage.ts, not here, so a future type added to
+    // RESUMABLE_TYPES cannot start writing plaintext by accident. If it says no,
+    // the round trip stops and the user is told, rather than being left on a
+    // page that quietly did nothing.
+    const parked = storage.amberResult.set({
       rid: parsed.rid,
       type: pending.type,
       value: parsed.raw,
       ts: Date.now(),
     });
+    if (!parked) {
+      storage.amberPending.clear();
+      setOutcome({
+        kind: 'refused',
+        why: `A ${pending.type} result cannot be handed over this way.`,
+        detail:
+          'This kind of result is not safe to store, so it was not kept. Paste it by hand where you started, or try again.',
+        raw: parsed.raw,
+      });
+      return;
+    }
     storage.amberPending.clear();
     setOutcome({ kind: 'ok' });
 
