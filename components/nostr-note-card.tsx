@@ -305,7 +305,18 @@ function NoteCardImpl({
                   src={src}
                   alt=""
                   loading="lazy"
-                  className="rounded-lg border border-bone/15 max-h-80 max-w-full w-auto object-contain"
+                  // A boost note's image is ARTWORK, not a photo the author
+                  // chose to show: every boost carries one (lib/nostr/
+                  // boost-notes.ts puts the album art in the body, and other
+                  // boost clients do the same with a banner), so at the
+                  // full 320px a scrolling feed becomes a column of covers
+                  // with the sats, the show and the message pushed apart.
+                  // Half height keeps it recognisable at a glance and still
+                  // opens full-size on a click. A note somebody wrote by hand
+                  // keeps the large size — there the picture IS the post.
+                  className={`rounded-lg border border-bone/15 max-w-full w-auto object-contain ${
+                    note.isBoost ? 'max-h-40' : 'max-h-80'
+                  }`}
                 />
               </a>
             ))}
