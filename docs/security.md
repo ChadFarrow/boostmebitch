@@ -97,3 +97,49 @@ Reachability, which is what actually matters here:
 - **`GHSA-p9j2-gv94-2wf4` (SSRF in rewrites via attacker-controlled destination hostname)** — `vercel.json` has exactly one rewrite, to a hardcoded host, with the user-supplied segment only in the path.
 
 Re-check this list when the Next 16 branch lands; do not let it rot into a reason to ignore `npm audit`.
+
+### A secret key must be refused at the input, not by a parser returning `null`
+
+`components/search-bar.tsx` invites a key. Its placeholder used to read "search
+podcasts…" and now reads "search podcasts, or paste an npub…" — before that
+change, nobody had a reason to paste key material into it. That is the setup.
+
+The trap is that `parseNpubInput` **does** reject an `nsec`: `nip19.decode`
+returns type `nsec`, which isn't `npub` or `nprofile`, so the function returns
+`null`. But `null` is the same answer it gives for "bowl after bowl", and the
+call site read:
+
+```ts
+if (!q.trim() || npubHit) { onResults([], ''); return; }   // ← nsec falls through
+const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+```
+
+So a rejected secret key went to `/api/search`, into this origin's server logs,
+and on to Podcast Index — a third party — in a URL. Silently. Confirmed by
+reading `app/api/search/route.ts`, which passes the query to `searchPodcasts`.
+
+**A key that has been sent to a third party is burnt.** There is no un-sending
+it, no rotation for a Nostr identity that already has a follow graph and a
+signed history, and no log to check. The failure is also self-repeating: with no
+message on screen, the user assumes the box is broken and pastes again.
+
+`looksLikeSecretKey` (`lib/nostr/npub-input.ts`) is the guard, and its shape is
+deliberate:
+
+- **A prefix test, not a decode.** `nsec1` / `ncryptsec1`, lowercased, after a
+  `nostr:` strip. A truncated or half-typed `nsec1qq…` is still key material and
+  must not be sent anywhere either, and a decode-based test would let exactly
+  those through. It also means the function never holds the key it protects.
+- **Checked before the fetch**, in the same expression that already suppresses
+  the search for a valid npub.
+- **Rendered as a refusal**, never a silent drop, for the reason above — the same
+  "a guard that withholds must say so" rule the favorites notice exists for.
+
+Verified by driving a real browser over CDP and recording every request the page
+issued while an `nsec` sat in the box: **zero requests carrying the key, zero
+calls to `/api/search`**, warning shown, suggestion row absent.
+
+The general rule, which is in `CLAUDE.md` because it reaches files this doc
+doesn't name: **a parser's `null` is a "no" about parsing, not a decision about
+safety.** Any input accepting a Nostr identifier — npub, nprofile, hex pubkey —
+needs the explicit secret-key refusal before whatever the miss falls through to.
