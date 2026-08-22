@@ -61,6 +61,37 @@ const nextConfig = {
     // A local sharp benchmark is not evidence about this pipeline.
     formats: ['image/avif', 'image/webp'],
   },
+  // Which user agents get the Open Graph tags in the `<head>`.
+  //
+  // Next 15 STREAMS metadata: `generateMetadata` runs while the shell is
+  // already flushing, so for an ordinary user agent the `<meta>` tags land in
+  // the BODY and the browser hoists them. Only a user agent matching Next's
+  // built-in list gets a blocking render with the tags in the head. Measured on
+  // the production deploy, same URL, one request each:
+  //
+  //     UA `Twitterbot/1.0`   og:title at byte  5761, </head> at 7398  → in head
+  //     UA curl's default     og:title at byte 22251, </head> at 4024  → in body
+  //
+  // A link-preview fetcher reads the head and stops. So a boost note's
+  // `?podcast=&episode=` deep link unfurled as a blank card with the hostname
+  // for its title — in jumble, whose fetcher is `scout.jumble.social`; calling
+  // that service directly returned `title: null, description: null, image:
+  // null` beside our favicon, which is what "reached the site, read the wrong
+  // part" looks like. Clients whose fetcher sends a listed UA were unaffected
+  // the whole time, which is what made it look like one client's bug.
+  //
+  // The setting REPLACES Next's list rather than extending it, so the built-in
+  // pattern is copied verbatim (from
+  // `next/dist/shared/lib/router/utils/html-bots.js`, Next 15.5.20) and the
+  // generic-fetcher words are appended. **Re-copy it when Next is upgraded** —
+  // dropping a bot from this list costs a preview card nobody will report.
+  //
+  // The appended words are safe against a real browser: no Chrome, Safari,
+  // Firefox or Edge UA contains any of them. The cost of a match is a blocking
+  // render — slower first byte for that request, and nothing at all for a
+  // browser, which matches none of them.
+  htmlLimitedBots:
+    /[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight|bot|crawler|spider|preview|unfurl|scout|curl|wget|axios|undici|node-fetch|got |okhttp|python-requests|aiohttp|go-http-client|java\/|libwww|httpx/i,
   async headers() {
     return [
       {
