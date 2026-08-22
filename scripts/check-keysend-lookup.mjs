@@ -5,9 +5,9 @@
 //
 // Run it after ANY edit to lib/v4v/keysend-lookup.ts.
 //
-// Why this earns a check script: `isLnurlOnlyAddress` decides, per recipient,
-// which of two payment rails a boost leg leaves on, and both directions are
-// silent and cost someone something.
+// Why this earns a check script: `isLnurlOnlyAddress` and the failure demotion
+// decide, per recipient, which of two payment rails a boost leg leaves on, and
+// every direction is silent and costs someone something.
 //
 //   Under-match — fountain.fm stops matching and every @fountain.fm leg goes
 //   back to being a keysend. Fountain ACCEPTS keysend; it just never shows the
@@ -30,7 +30,9 @@
 
 import {
   isLnurlOnlyAddress,
+  keysendRecentlyFailed,
   lookupKeysendTarget,
+  noteKeysendFailure,
   parseKeysendResponse,
   clearKeysendLookupCache,
 } from '../lib/v4v/keysend-lookup.ts';
@@ -106,6 +108,110 @@ console.log('\nlookupKeysendTarget — a diverted address never reaches the netw
     check('…and resolves to null when the probe throws', other, null);
   } finally {
     globalThis.fetch = realFetch;
+    clearKeysendLookupCache();
+  }
+}
+
+console.log('\nnoteKeysendFailure — a target that does not pay is demoted, once');
+{
+  // The case: an address publishing a valid .well-known/keysend whose node
+  // cannot actually be paid. The document keeps saying yes, so without a memory
+  // the same leg fails on every boost and every track of a boost-all, forever —
+  // and a value block's fee recipients ride on all of them.
+  //
+  // What it must NOT do is rescue the leg that failed. That leg was attempted
+  // and may have paid; see failureBlamesDestination and payOne. This is only
+  // about where the NEXT leg goes, which is what makes it safe to be liberal.
+  const realFetch = globalThis.fetch;
+  const realNow = Date.now;
+  let calls = 0;
+  globalThis.fetch = () => {
+    calls += 1;
+    throw new Error('lookupKeysendTarget must not probe a demoted address');
+  };
+  try {
+    clearKeysendLookupCache();
+    check('an untouched address is not demoted', keysendRecentlyFailed('pi@example.com'), false);
+
+    noteKeysendFailure('pi@example.com');
+    check('a failed keysend demotes the address', keysendRecentlyFailed('pi@example.com'), true);
+
+    calls = 0;
+    check('a demoted address resolves to no keysend target',
+      await lookupKeysendTarget('pi@example.com'), null);
+    check('…without any fetch', calls, 0);
+
+    // The address is a value-block string, so it arrives in whatever case and
+    // spacing the feed author used — and app/api/keysend lowercases on its side.
+    check('the demotion is case-insensitive', keysendRecentlyFailed('PI@Example.com'), true);
+    check('…and survives surrounding whitespace', keysendRecentlyFailed(' pi@example.com '), true);
+
+    // The must-still-work half. Over-demoting is a real regression: it costs
+    // every other recipient the inline boostagram, silently, on a payment that
+    // still succeeds.
+    check('an unrelated address is untouched', keysendRecentlyFailed('artist@getalby.com'), false);
+    calls = 0;
+    check('…and still attempts its probe', await lookupKeysendTarget('artist@getalby.com'), null);
+    check('…having actually fetched', calls, 1);
+
+    // It lapses on its own. A wrong demotion — a wallet fault misread as the
+    // recipient's — must not need a user to find a setting to undo it.
+    let clock = realNow();
+    Date.now = () => clock;
+    clearKeysendLookupCache();
+    noteKeysendFailure('pi@example.com');
+    clock += 6 * 60 * 60 * 1000 - 1000;
+    check('the demotion holds just inside its window',
+      keysendRecentlyFailed('pi@example.com'), true);
+    clock += 2000;
+    check('…and lapses just outside it', keysendRecentlyFailed('pi@example.com'), false);
+    Date.now = realNow;
+
+    // An empty address is not a demotion of every empty-ish string.
+    clearKeysendLookupCache();
+    noteKeysendFailure('   ');
+    check('a blank address records nothing', keysendRecentlyFailed(''), false);
+
+    // THE vector, and the one a cold cache cannot express. Same placement rule
+    // as the LNURL-only divert: the short-circuit sits ahead of the CACHE, not
+    // just ahead of the fetch. A demoted address still publishes a valid
+    // document, so by the time it fails we are already holding a cached hit for
+    // it — and this is the ordinary state, not an edge case. It is precisely
+    // the boost-all shape: leg 1 probes the address, caches the target, pays it
+    // and fails; every later leg reads that cached hit. Check the demotion
+    // after the cache instead of before and each of them keysends again, which
+    // is the bug this whole memory exists to end, still passing every cold-cache
+    // assertion above.
+    clearKeysendLookupCache();
+    const doc = {
+      status: 'OK',
+      tag: 'keysend',
+      pubkey: '03ae9f91a0cb8ff43840e3c322c4c61f019d8c1c3cea15a25cfc425ac605e61a4a',
+      customData: [{ customKey: '906608', customValue: '1a2b3c' }],
+    };
+    globalThis.fetch = async () => {
+      calls += 1;
+      return { ok: true, json: async () => doc };
+    };
+    calls = 0;
+    check('a live address resolves to its published target', await lookupKeysendTarget('pi@example.com'), {
+      pubkey: '03ae9f91a0cb8ff43840e3c322c4c61f019d8c1c3cea15a25cfc425ac605e61a4a',
+      customKey: '906608',
+      customValue: '1a2b3c',
+    });
+    check('…having probed once', calls, 1);
+    check('…and the second leg is served from cache, still upgraded',
+      (await lookupKeysendTarget('pi@example.com'))?.pubkey,
+      '03ae9f91a0cb8ff43840e3c322c4c61f019d8c1c3cea15a25cfc425ac605e61a4a');
+    check('…without probing again', calls, 1);
+
+    noteKeysendFailure('pi@example.com');
+    check('after the keysend fails, the WARM cache no longer serves the target',
+      await lookupKeysendTarget('pi@example.com'), null);
+    check('…and it did not re-probe to find that out', calls, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    Date.now = realNow;
     clearKeysendLookupCache();
   }
 }

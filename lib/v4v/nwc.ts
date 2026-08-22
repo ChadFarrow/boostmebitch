@@ -15,12 +15,26 @@ export { subscribeNwc };
 
 // The NIP-47 error classification lives in `nwc-errors.ts` so it can load under
 // plain Node and be pinned by `npm run check:nwcerror` — this module imports
-// `../storage` and cannot. Both classes are RE-EXPORTED here so every existing
-// import site (`boost.ts` keys its one permitted keysend→LNURL fallback off
-// `instanceof NwcMethodUnsupportedError`) is unchanged.
-import { mapNwcError, NwcIndeterminateError, NwcMethodUnsupportedError } from './nwc-errors';
+// `../storage` and cannot. Every name is RE-EXPORTED here so import sites keep
+// one path: `boost.ts` keys its only permitted keysend→LNURL fallback off
+// `instanceof NwcNotAttemptedError` and its address demotion off
+// `failureBlamesDestination`. `isSocketSuspect` is used below and not
+// re-exported — nothing outside this module has a lease to discard.
+import {
+  failureBlamesDestination,
+  isSocketSuspect,
+  mapNwcError,
+  NwcIndeterminateError,
+  NwcMethodUnsupportedError,
+  NwcNotAttemptedError,
+} from './nwc-errors';
 
-export { NwcIndeterminateError, NwcMethodUnsupportedError };
+export {
+  failureBlamesDestination,
+  NwcIndeterminateError,
+  NwcMethodUnsupportedError,
+  NwcNotAttemptedError,
+};
 
 // Cached methods list from the last successful get_info call. Populated by
 // nwcValidate (at connect time) and nwcFetchCapabilities (lazy on card mount).
@@ -179,21 +193,6 @@ function acquire(): Lease<nwc.NWCClient> {
   const uri = loadNwcUri();
   if (!uri) throw new Error('No NWC URI configured');
   return pool.acquire(uri);
-}
-
-/**
- * True when a failure suggests the SOCKET is bad rather than the wallet
- * declining. A publish timeout means the request never reached the relay, which
- * is exactly what a dead or refused connection looks like.
- *
- * Deliberately does NOT include a reply timeout: that one means the request WAS
- * published and the wallet may have paid, so the socket is fine and the leg is
- * indeterminate — see `NwcIndeterminateError`.
- */
-function isSocketSuspect(e: unknown): boolean {
-  if (e instanceof nwc.Nip47PublishTimeoutError) return true;
-  const msg = e instanceof Error ? e.message : '';
-  return /not connected|connection|websocket|socket closed/i.test(msg);
 }
 
 /**
@@ -384,10 +383,11 @@ export async function nwcKeysend(args: {
     // IS the valid proof of payment. Re-throw anything else (routing failures,
     // method-not-supported, timeout) so the caller sees the real error.
     if (e instanceof nwc.Nip47ResponseValidationError) return preimage;
-    // NOT_IMPLEMENTED becomes a typed NwcMethodUnsupportedError: the wallet
-    // returned it *instead of* paying, which is the one keysend failure
-    // boost.ts is allowed to retry over LNURL. Everything else stays opaque
-    // precisely because it may have paid already.
+    // The permission refusals become a typed NwcNotAttemptedError: the wallet
+    // returned them *instead of* paying, which is the only class of keysend
+    // failure boost.ts is allowed to retry over LNURL. Everything else stays
+    // opaque precisely because it may have paid already — PAYMENT_FAILED
+    // included, however final it reads.
     throw mapNwcError(e);
   }
 }

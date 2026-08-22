@@ -11,9 +11,12 @@
 // Everything here is best-effort: any failure returns null and the caller
 // falls back to the LNURL path that has always worked.
 //
-// One deliberate exception runs the other way — see LNURL_ONLY_DOMAINS. A few
-// providers accept keysend perfectly well but never show the recipient what
-// rode in the TLV, so the upgrade's whole justification is void for them.
+// Two deliberate exceptions run the other way, both sending an address BACK to
+// LNURL after it qualified for the upgrade. LNURL_ONLY_DOMAINS is knowledge we
+// hold in advance: a few providers accept keysend perfectly well but never show
+// the recipient what rode in the TLV, so the upgrade's whole justification is
+// void for them. `noteKeysendFailure` is knowledge we learn: a published target
+// that does not actually pay.
 
 export interface KeysendTarget {
   pubkey: string;
@@ -30,9 +33,64 @@ const LOOKUP_TIMEOUT_MS = 4500;
 const HIT_TTL_MS = 6 * 60 * 60 * 1000;
 const MISS_TTL_MS = 15 * 60 * 1000;
 
+// How long one failed keysend keeps an address on LNURL. Matches the hit TTL
+// because it answers the same question with the same shelf life — "is this
+// address's keysend target usable right now" — and because the cost of holding
+// it too long is one lost inline boostagram per leg, while the cost of dropping
+// it too early is the failed leg coming back.
+const FAILURE_TTL_MS = 6 * 60 * 60 * 1000;
+
 // Module-scope so a boost-all run over 20 tracks sharing an artist address
 // probes it once, not twice per track.
 const cache = new Map<string, { value: KeysendTarget | null; expires: number }>();
+
+// Addresses whose keysend target has been TRIED and failed, with the time the
+// demotion lapses. Separate from `cache` on purpose: `cache` answers "does this
+// address publish a keysend target", which is a fact about the document, and
+// this answers "did paying that target work", which is a fact about the node.
+// Folding the failure back in as a cached null would erase the difference, and
+// the log in `payOne` could then no longer say why a leg went to LNURL.
+const failedTargets = new Map<string, number>();
+
+function addressKey(address: string): string {
+  return address.trim().toLowerCase();
+}
+
+/**
+ * Remember that a keysend to `address`'s published target failed, so later legs
+ * pay it over LNURL instead.
+ *
+ * This is the fix for a recipient whose `.well-known/keysend` is published and
+ * correct while the node behind it cannot be reached — an unreachable node, a
+ * node with `accept-keysend` off, or one no route reaches from this wallet.
+ * Nothing in the document says so, the probe succeeds, and every boost pays a
+ * failed leg to that recipient forever. A value block's fee recipients are the
+ * common case, because they ride on EVERY show and every track: a boost-all
+ * over 20 tracks failed the same leg 20 times.
+ *
+ * **It does not, and must not, rescue the leg that failed.** That leg has
+ * already been attempted and may have paid — see `failureBlamesDestination` and
+ * `payOne`. This only changes where the NEXT one goes, which is why it can be
+ * this liberal: it costs at most the inline boostagram, never a second payment.
+ *
+ * Deliberately memory-only, and so lost on reload. A wrong demotion should
+ * expire on its own rather than needing a user to find a setting, and the case
+ * it exists for reproduces on the first leg of the next boost anyway.
+ */
+export function noteKeysendFailure(address: string): void {
+  const key = addressKey(address);
+  if (!key) return;
+  failedTargets.set(key, Date.now() + FAILURE_TTL_MS);
+}
+
+/** Whether a keysend to `address` failed recently enough to still skip it. */
+export function keysendRecentlyFailed(address: string): boolean {
+  const until = failedTargets.get(addressKey(address));
+  if (until == null) return false;
+  if (until > Date.now()) return true;
+  failedTargets.delete(addressKey(address));
+  return false;
+}
 
 // Lightning node ids are compressed secp256k1 pubkeys: 33 bytes hex-encoded,
 // always prefixed 02 or 03. Validating strictly here is load-bearing — we
@@ -140,6 +198,11 @@ export async function lookupKeysendTarget(address: string): Promise<KeysendTarge
   // to get wrong.
   if (isLnurlOnlyAddress(address)) return null;
 
+  // Same placement, and for the same reason: a demoted address still publishes
+  // a perfectly valid keysend document, so a cached hit would be a real target
+  // that every reader then has to remember not to use. One refusal, one place.
+  if (keysendRecentlyFailed(address)) return null;
+
   const key = address.toLowerCase();
   const hit = cache.get(key);
   if (hit && hit.expires > Date.now()) return hit.value;
@@ -162,7 +225,8 @@ export async function lookupKeysendTarget(address: string): Promise<KeysendTarge
   return value;
 }
 
-/** Test seam — drops the memoized lookups. */
+/** Test seam — drops the memoized lookups AND the failure demotions. */
 export function clearKeysendLookupCache(): void {
   cache.clear();
+  failedTargets.clear();
 }
