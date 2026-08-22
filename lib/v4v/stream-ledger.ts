@@ -88,10 +88,42 @@ export interface StreamLedger {
    * under-payment that never self-corrects.
    */
   posCarryMs: number;
+  /**
+   * The payout clock: playback time (ms) accrued since the last paying settle.
+   *
+   * **Playback time, deliberately, because that is what the money is measured
+   * in.** The settle used to fire on wall clock while `accrue` charged
+   * `min(wall delta, position delta)`, so every second the audio did not advance
+   * through — a stall, a re-source, a `timeupdate` gap wider than the carry —
+   * was a second the timer counted and the ledger did not. The batch then paid
+   * whatever fraction of ten minutes had genuinely played, which is why a
+   * 10 sats/min rate settled 97 rather than 100.
+   *
+   * Advanced by `accrue` in BOTH units — including at `ratePerMin: 0`, which is
+   * how per-track mode ticks — and consumed one interval at a time by
+   * `settleBatch`, never by `settlePlan`. Subtracting rather than zeroing is
+   * what keeps payouts on exact interval boundaries instead of drifting into a
+   * 99/101 alternation.
+   */
+  billedMs: number;
 }
 
-/** How often accrued sats are actually paid out. */
-export const STREAM_SETTLE_INTERVAL_MS = 600_000; // 10 minutes
+/**
+ * How much LISTENING accumulates between payouts — playback time, not wall time.
+ *
+ * The two are different clocks and running the payout on the wrong one is what
+ * made a 10 sats/min rate pay 97. `accrue` charges `min(wall delta, position
+ * delta)`, so a buffer stall, an HLS re-source or a hidden-tab gap accrues
+ * nothing; a wall-clock timer counted those seconds anyway and settled whatever
+ * fraction of ten minutes the audio had actually advanced through. Measured
+ * against the shipping module: an 18-second stall in the window settled 97.
+ *
+ * Counting the same thing the money counts makes a full window exactly
+ * `ratePerMin x 10`, and a stalling or paused session simply takes longer to
+ * reach the mark instead of paying short. `StreamLedger.billedMs` is the clock;
+ * `settleBatch` consumes one interval of it per paying batch.
+ */
+export const STREAM_SETTLE_INTERVAL_MS = 600_000; // 10 minutes of playback
 
 /**
  * Floor for a payment run. Below this the batch is carried, not sent.
@@ -229,6 +261,7 @@ export function createLedger(key: string, nowMs: number): StreamLedger {
     lastPositionSec: 0,
     lastSettleMs: nowMs,
     posCarryMs: 0,
+    billedMs: 0,
   };
 }
 
@@ -311,6 +344,12 @@ function distribute(
  * forward seek funding later idle ticks would reintroduce the exact failure the
  * min() rule exists to prevent.
  *
+ * **The same elapsed time advances `billedMs`, the payout clock**, and it does
+ * so whether or not a rate is being charged — per-track mode ticks this with
+ * `ratePerMin: 0`. Settling on played time rather than wall time is what makes
+ * a full window exactly `ratePerMin x STREAM_SETTLE_INTERVAL_MS`; see that
+ * constant for what the wall-clock version cost.
+ *
  * Always returns a ledger stamped with the current tick, even when nothing
  * accrued — a paused stretch must not become a giant delta the moment playback
  * resumes.
@@ -349,7 +388,7 @@ export function accrue(
     lastPositionSec: pos,
     posCarryMs: 0,
   };
-  if (!playing || !(ratePerMin > 0) || !finite) return stamped;
+  if (!playing || !finite) return stamped;
 
   // The carry is added BEFORE the wall clip, never after — that ordering is
   // what guarantees a tick can't bill more time than actually passed.
@@ -363,10 +402,23 @@ export function accrue(
     : Math.min(Math.max(0, carryIn + posMs - elapsedMs), STREAM_POS_CARRY_MAX_MS);
   if (elapsedMs <= 0) return { ...stamped, posCarryMs };
 
+  // The payout clock advances on time PLAYED, and it advances in both units —
+  // the rate check below gates only the money. Per-track mode ticks this
+  // function with `ratePerMin: 0`, so a clock gated on the rate would never
+  // reach an interval settle at all: a show sitting on one long track would
+  // wait for a boundary that never comes.
+  const billedMs = ledger.billedMs + elapsedMs;
+  // Rate 0 still clears the carry (it is `stamped`'s 0 that survives here, not
+  // the one computed above). The carry corrects a per-minute under-payment, and
+  // there is no per-minute payment to correct in track mode — banking it there
+  // would hand a unit switch a free head start.
+  if (!(ratePerMin > 0)) return { ...stamped, billedMs };
+
   const msat = (elapsedMs / 60_000) * ratePerMin * 1000;
   return {
     ...stamped,
     posCarryMs,
+    billedMs,
     buckets: distribute(ledger.buckets, msat, allocation ?? [{ bucket: HOST_BUCKET, fraction: 1 }]),
   };
 }
@@ -452,23 +504,77 @@ export function settlePlan(
   args: { bucket: string; nowMs: number; recipientCount: number; force?: boolean },
 ): { sats: number; nextLedger: StreamLedger } | null {
   const { bucket, nowMs, recipientCount, force = false } = args;
-  const sats = accruedSats(ledger, bucket);
-  const floor = Math.max(STREAM_MIN_SETTLE_SATS, Math.max(1, recipientCount));
-  if (sats < floor) return null;
-  if (!force && nowMs - ledger.lastSettleMs < STREAM_SETTLE_INTERVAL_MS) return null;
-  // Clamped at 0: the epsilon in accruedSats can round the last sat up out of a
-  // balance a hair under it, and a negative accrual would be read back as a
-  // corrupt ledger (storage.streamPending rejects one) and dropped.
+  // The eligibility test reads the HONEST floored amount, never the payable one
+  // — a track bucket rounds up, and testing the rounded figure would quietly
+  // lift a 9.2-sat bucket over a 10-sat gate that exists because a 3-sat
+  // payment costs the same routing fee as a 300-sat one.
+  if (accruedSats(ledger, bucket) < bucketFloor(recipientCount)) return null;
+  if (!force && ledger.billedMs < STREAM_SETTLE_INTERVAL_MS) return null;
+  const sats = payableSats(ledger, bucket);
+  // `lastSettleMs` no longer gates anything — `billedMs` does — but it is still
+  // stamped: `storage.streamPending` requires the field, and it is the only
+  // record of when money last moved for this item.
+  return { sats, nextLedger: { ...drain(ledger, bucket, sats), lastSettleMs: nowMs } };
+}
+
+/** The dust floor a bucket must clear before it is worth a Lightning payment. */
+function bucketFloor(recipientCount: number): number {
+  return Math.max(STREAM_MIN_SETTLE_SATS, Math.max(1, recipientCount));
+}
+
+/**
+ * Whole sats a bucket pays when it settles — and the two bucket kinds get
+ * OPPOSITE rules, because they have opposite lifetimes.
+ *
+ * **The host bucket floors and carries.** It accumulates across the whole
+ * episode and is paid again and again, so a sub-sat remainder left behind is
+ * genuinely carried and reaches the next batch. This is also what keeps a clean
+ * window exact: an ordinary podcast has only this bucket, and ten minutes at
+ * 10 sats/min must settle 100, not 101.
+ *
+ * **A track bucket rounds UP and is drained to nothing.** Its key is the
+ * track's guid, a `<podcast:valueTimeSplit>` boundary force-settles it, and the
+ * track does not play again — so "carry the remainder" means "drop it at the
+ * next item change", which is what it did: six tracks sharing a clean 100 sent
+ * 96 and the missing 4 were discarded with the pending ledger. Rounding up
+ * hands the artist the whole window instead.
+ *
+ * **The accepted cost, so nobody quietly reverts it to a floor:** this spends
+ * up to 1 sat per track more than the meter accrued — roughly 15 sats over an
+ * hour-long music show, unattended. That runs against this area's usual
+ * direction and is a deliberate product decision, not an oversight.
+ *
+ * The epsilon is not decoration on either side. A clean 100-sat window holds
+ * 100000.00000000063 msat, so a bare `Math.ceil` returns 101 and destroys the
+ * exactness the payout clock exists to give.
+ */
+function payableSats(ledger: StreamLedger, bucket: string): number {
+  const msat = ledger.buckets[bucket] ?? 0;
+  if (bucket === HOST_BUCKET) return accruedSats(ledger, bucket);
+  return Math.max(0, Math.ceil((msat - FLOOR_EPSILON_MSAT) / 1000));
+}
+
+/**
+ * Take `sats` out of one bucket.
+ *
+ * Clamped at 0 because a rounded-up track bucket owes more than it holds, and
+ * because the epsilon in `accruedSats` can round the last sat up out of a
+ * balance a hair under it. A negative balance is not merely untidy:
+ * `storage.streamPending` rejects the WHOLE ledger over one, so it would
+ * silently discard every other bucket's real sats too.
+ *
+ * The key is dropped once spent, so a fifty-track show doesn't persist fifty
+ * dead entries for the rest of the episode. The threshold is the flooring
+ * epsilon, not zero: an exactly-drained bucket lands a few parts in 10¹³ above
+ * it in binary, and `> 0` would keep that float dust — and its key — alive
+ * forever.
+ */
+function drain(ledger: StreamLedger, bucket: string, sats: number): StreamLedger {
   const left = Math.max(0, (ledger.buckets[bucket] ?? 0) - sats * 1000);
   const buckets = { ...ledger.buckets };
-  // Drop the key once it's spent, so a fifty-track show doesn't persist fifty
-  // dead entries for the rest of the episode. The threshold is the flooring
-  // epsilon, not zero: an exactly-drained bucket lands a few parts in 10¹³
-  // above it in binary, and `> 0` would keep that float dust — and its key —
-  // alive forever.
   if (left > FLOOR_EPSILON_MSAT) buckets[bucket] = left;
   else delete buckets[bucket];
-  return { sats, nextLedger: { ...ledger, buckets, lastSettleMs: nowMs } };
+  return { ...ledger, buckets };
 }
 
 /**
@@ -575,7 +681,7 @@ export function settleBatch(
   },
 ): { runs: SettleRun[]; nextLedger: StreamLedger } {
   const { nowMs, force = false, recipientCountFor } = args;
-  const due = force || nowMs - ledger.lastSettleMs >= STREAM_SETTLE_INTERVAL_MS;
+  const due = force || ledger.billedMs >= STREAM_SETTLE_INTERVAL_MS;
   if (!due) return { runs: [], nextLedger: ledger };
 
   let next = ledger;
@@ -594,7 +700,22 @@ export function settleBatch(
     next = plan.nextLedger;
     runs.push({ bucket, sats: plan.sats });
   }
-  return { runs, nextLedger: next };
+  // The payout clock is consumed by the BATCH, and only when the batch actually
+  // paid. A batch where every bucket sat under its floor is a genuine no-op —
+  // the same reason it must not restamp anything else — so the clock stays
+  // where it is and the next tick tries again.
+  //
+  // SUBTRACTED, not zeroed: the tick that crosses the mark overshoots it by up
+  // to a tick's worth of playback, and discarding that overshoot every window
+  // makes each one bill a little over ten minutes, which surfaces as an
+  // occasional 101 among the 100s. Carrying it keeps payouts on exact interval
+  // boundaries. A force settle mid-window is below one interval and floors to 0
+  // by the same expression, restarting the clock, which is what it should do.
+  if (!runs.length) return { runs, nextLedger: next };
+  return {
+    runs,
+    nextLedger: { ...next, billedMs: Math.max(0, next.billedMs - STREAM_SETTLE_INTERVAL_MS) },
+  };
 }
 
 /**
@@ -620,9 +741,16 @@ export function accruedSats(ledger: StreamLedger, bucket?: string): number {
   return Math.floor((msat + FLOOR_EPSILON_MSAT) / 1000);
 }
 
-/** Ms until the next scheduled settle; 0 once it's due. For the UI readout. */
-export function msUntilSettle(ledger: StreamLedger, nowMs: number): number {
-  return Math.max(0, ledger.lastSettleMs + STREAM_SETTLE_INTERVAL_MS - nowMs);
+/**
+ * Ms of PLAYBACK until the next scheduled settle; 0 once it's due. For the UI
+ * readout.
+ *
+ * It counts listening, not clock, so it freezes while playback is paused —
+ * which is the honest answer, since a paused window accrues nothing and its
+ * payout genuinely is not approaching.
+ */
+export function msUntilSettle(ledger: StreamLedger): number {
+  return Math.max(0, STREAM_SETTLE_INTERVAL_MS - ledger.billedMs);
 }
 
 /**

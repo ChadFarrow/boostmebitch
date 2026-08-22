@@ -484,7 +484,6 @@ export interface StreamingStatus {
 }
 
 export function streamingStatus(): StreamingStatus {
-  const now = Date.now();
   const cur = useApp.getState().current;
   const currentKey = cur ? itemKey(cur.episode, cur.podcast) : null;
   const isStopped = !!disabledKey && disabledKey === currentKey;
@@ -509,7 +508,7 @@ export function streamingStatus(): StreamingStatus {
     // become current, so the fixed amount has nothing to attach to.
     trackModeIdle: ctx?.mode === 'track' && !ctx.liveBucket && ctx.splits.size === 0,
     accruedSats: ledger ? accruedSats(ledger) : 0,
-    msUntilSettle: ledger ? msUntilSettle(ledger, now) : 0,
+    msUntilSettle: ledger ? msUntilSettle(ledger) : 0,
     settling: pendingSettles > 0,
     // Scoped to the item it happened on, exactly like `stopped` below.
     lastError: lastErrorKey && lastErrorKey === currentKey ? lastError : null,
@@ -979,8 +978,13 @@ function openContext(c: StreamContext) {
   }
   const pending = storage.streamPending.get();
   if (pending && pending.key === c.key && !isStaleLedger(pending, now)) {
-    // Re-stamp the clocks: the gap since the tab closed is neither listening
-    // time nor a settle interval the user waited through.
+    // Re-stamp the tick clocks: the gap since the tab closed is not listening
+    // time, and a stale lastTickMs would bill it as one giant catch-up tick.
+    // `billedMs` is deliberately NOT reset — it is the listener's progress
+    // toward the next payout and it pairs with the sats already sitting in
+    // `buckets`. Zeroing it would restart the countdown while the balance
+    // stayed, so a reload nine minutes in would pay 200 twenty minutes later
+    // instead of 100 in one.
     ledger = { ...pending, lastTickMs: now, lastPositionSec: useApp.getState().positionSec, lastSettleMs: now };
   } else {
     if (pending) storage.streamPending.clear();

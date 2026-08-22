@@ -22,6 +22,34 @@
 // stripping) and the "Reparsing as ES module" notice. Do NOT silence the second
 // by adding "type": "module" to package.json — that reinterprets
 // postcss.config.js / tailwind.config.js and can break the build.
+//
+// ---------------------------------------------------------------------------
+// A vector that passes the moment it is written has proved nothing, so every
+// vector added for the playback-clock / track-round-up change was replayed
+// against the implementation it replaced and against the obvious wrong version
+// of the new one. Reproduce either by checking out the previous
+// lib/v4v/stream-ledger.ts, or by deleting FLOOR_EPSILON_MSAT from payableSats,
+// and re-running.
+//
+// Thirteen fail against the PRE-CHANGE ledger (wall-clock gate, floor-only
+// rounding): the two interval-gate vectors, "wall clock alone does not settle",
+// "a track bucket rounds up to its artist", "…and the track bucket is drained,
+// not carried", "…but the payout clock still advances", "before the interval
+// nothing settles", "…and the ledger is returned untouched", "the batch
+// consumes exactly one interval of the payout clock", "a stalled window does
+// not settle short", and all four countdown vectors.
+//
+// One fails against a bare `Math.ceil` with no epsilon, and ONLY that one:
+// "float dust above a whole sat does not round a track up". It is the single
+// thing standing between an exact 100-sat window and a 101.
+//
+// The rest are the must-still-work half and legitimately pass against both —
+// "the host bucket floors", the clean (unstalled) 100-sat window, "round-up
+// does not lift a sub-floor track bucket over the gate", the two conservation
+// bounds, "a batch that pays nothing consumes no clock". An input the older
+// implementation also handled is a property of that input, not a hole; those
+// guard the new code against the next edit, not against the last one.
+// ---------------------------------------------------------------------------
 
 import {
   accrue,
@@ -113,6 +141,17 @@ function driftListen(ledger, { steps, ratePerMin, startMs = T0, startPos = 0 }) 
     l = accrue(l, { nowMs: ms, positionSec: pos, playing: true, ratePerMin });
   }
   return l;
+}
+
+/**
+ * A ledger with the payout clock parked at `billedMs`.
+ *
+ * The clock counts PLAYBACK, so a vector can no longer fake an un-elapsed
+ * interval by rewinding `lastSettleMs` or by choosing a small `nowMs` — those
+ * gate nothing now. This is the knob that does.
+ */
+function withBilled(ledger, billedMs) {
+  return { ...ledger, billedMs };
 }
 
 /** Stand-in for the engine's allocationAt over a fixed track list. */
@@ -417,7 +456,19 @@ console.log('\nsettlePlan — thresholds');
   const now = T0 + 600_000;
   check(
     'below the interval, no settle',
-    settlePlan({ ...l, lastSettleMs: now - 1000 }, { bucket: HOST_BUCKET, nowMs: now, recipientCount: 3 }),
+    settlePlan(withBilled(l, STREAM_SETTLE_INTERVAL_MS - 1000), {
+      bucket: HOST_BUCKET, nowMs: now, recipientCount: 3,
+    }),
+    null,
+  );
+  // The gate is PLAYBACK time, so ten minutes of wall clock with the clock
+  // unmoved settles nothing. This is the whole 97-instead-of-100 fix: a window
+  // that stalled has not earned its payout yet, and waiting is the honest
+  // answer. Rewinding lastSettleMs, which is how this vector used to fake an
+  // un-elapsed interval, now gates nothing at all.
+  check(
+    'wall clock alone does not settle — only playback does',
+    settlePlan(withBilled(l, 0), { bucket: HOST_BUCKET, nowMs: now + 3_600_000, recipientCount: 3 }),
     null,
   );
   const plan = settlePlan(l, { bucket: HOST_BUCKET, nowMs: now, recipientCount: 3 });
@@ -425,7 +476,7 @@ console.log('\nsettlePlan — thresholds');
   // Spent to zero, so the key is dropped rather than left as a 0 entry — a
   // fifty-track show would otherwise persist fifty dead buckets.
   check('…and the emptied bucket is dropped', plan?.nextLedger.buckets[HOST_BUCKET], undefined);
-  check('…leaving nothing owed', accruedSats(plan.nextLedger), 0);
+  check('…leaving nothing owed', plan && accruedSats(plan.nextLedger), 0);
   check('…and the settle clock resets', plan?.nextLedger.lastSettleMs, now);
 }
 {
@@ -452,8 +503,67 @@ console.log('\nsettlePlan — thresholds');
   const l = listen(createLedger('k', T0), { seconds: 100, ratePerMin: 10 });
   const plan = settlePlan(l, { bucket: HOST_BUCKET, nowMs: T0 + 100_000, recipientCount: 1, force: true });
   check('forced settle skips the interval wait', plan?.sats, 16);
-  // 16.666 sats accrued, 16 sent — the remainder is the user's, not the void.
-  checkClose('…and carries the sub-sat remainder', plan?.nextLedger.buckets[HOST_BUCKET], l.buckets[HOST_BUCKET] - 16_000);
+  // 16.666 sats accrued, 16 sent — the HOST bucket carries the remainder,
+  // because it accumulates all episode and is paid again and again.
+  checkClose('…and the host carries the sub-sat remainder', plan?.nextLedger.buckets[HOST_BUCKET], l.buckets[HOST_BUCKET] - 16_000);
+}
+
+// The two bucket kinds get OPPOSITE rounding, because they have opposite
+// lifetimes. Getting this backwards is worth real money in both directions: a
+// flooring track bucket drops its remainder at the next item change (six tracks
+// sharing a clean 100 sent 96), and a rounding host bucket turns an exact
+// 100-sat window into 101 for every listener on an ordinary podcast.
+console.log('\nsettlePlan — a track rounds up, the host floors');
+{
+  // The identical balance, 16.666 sats, in each kind of bucket.
+  const track = 't:feed-a:item-1';
+  const l = {
+    ...createLedger('k', T0),
+    buckets: { [HOST_BUCKET]: 16_666.6667, [track]: 16_666.6667 },
+    billedMs: STREAM_SETTLE_INTERVAL_MS,
+  };
+  const host = settlePlan(l, { bucket: HOST_BUCKET, nowMs: T0, recipientCount: 1, force: true });
+  const trk = settlePlan(l, { bucket: track, nowMs: T0, recipientCount: 1, force: true });
+  check('the host bucket floors', host?.sats, 16);
+  check('a track bucket rounds up to its artist', trk?.sats, 17);
+  // A track plays once. "Carry the remainder" means "drop it when the item
+  // changes", so the bucket is drained to nothing and its key goes.
+  check('…and the track bucket is drained, not carried', trk?.nextLedger.buckets[track], undefined);
+  // storage.streamPending rejects the WHOLE ledger over one negative balance,
+  // which would discard every other bucket's real sats along with it.
+  check(
+    'a rounded-up bucket never leaves a negative balance',
+    !!trk && Object.values(trk.nextLedger.buckets).every((v) => v >= 0),
+    true,
+  );
+  // The epsilon, on the round-up side. A clean window holds a few parts in 10¹³
+  // ABOVE its whole sat, so a bare Math.ceil returns 101 for an exact 100 and
+  // destroys the property the payout clock exists to give.
+  const clean = listen(createLedger('k', T0), { seconds: 600, ratePerMin: 10 });
+  const exact = {
+    ...clean,
+    buckets: { [track]: clean.buckets[HOST_BUCKET] },
+    billedMs: STREAM_SETTLE_INTERVAL_MS,
+  };
+  check(
+    'float dust above a whole sat does not round a track up',
+    settlePlan(exact, { bucket: track, nowMs: T0, recipientCount: 1, force: true })?.sats,
+    100,
+  );
+}
+{
+  // The round-up must not be applied to the ELIGIBILITY test. 9.5 sats ceils to
+  // 10, and testing the payable figure instead of the honest one would lift it
+  // over a floor that exists because a 3-sat payment costs the same routing fee
+  // as a 300-sat one.
+  const l = {
+    ...createLedger('k', T0),
+    buckets: { 't:short:1': 9_500 },
+    billedMs: STREAM_SETTLE_INTERVAL_MS,
+  };
+  check('round-up does not lift a sub-floor track bucket over the gate', settlePlan(l, {
+    bucket: 't:short:1', nowMs: T0, recipientCount: 2, force: true,
+  }), null);
 }
 
 // --- valueTimeSplits: a music show that changes artist mid-batch ------------
@@ -783,6 +893,12 @@ console.log('\naccrue — rate 0 is the per-track mode\'s clock');
   let l = createLedger('ep', T0);
   l = accrue(l, { nowMs: T0 + 60_000, positionSec: 60, playing: true, ratePerMin: 0 });
   check('a rate of 0 charges nothing', accruedSats(l), 0);
+  // …but the payout CLOCK still runs. Per-track mode ticks accrue() with a rate
+  // of 0, so a clock gated on the rate never reaches an interval settle at all:
+  // a show sitting on one long track would wait for a boundary that never
+  // comes, and everything would bunch into the force settle at the end.
+  checkClose('…but the payout clock still advances, which is track mode\'s timer', l.billedMs, 60_000);
+  check('…and no bucket was created', Object.keys(l.buckets).length, 0);
   check('…but still stamps the wall clock', l.lastTickMs, T0 + 60_000);
   check('…and still stamps the position', l.lastPositionSec, 60);
 }
@@ -869,8 +985,10 @@ function batchLedger() {
 const anyRecipients = () => 2;
 
 {
-  const l = batchLedger();
-  const early = settleBatch(l, { nowMs: T0 + 60_000, recipientCountFor: anyRecipients });
+  // One minute of playback into a ten-minute window. `nowMs` is deliberately
+  // far in the future: the gate is the payout clock, not the wall clock.
+  const l = withBilled(batchLedger(), 60_000);
+  const early = settleBatch(l, { nowMs: T0 + 3_600_000, recipientCountFor: anyRecipients });
   check('before the interval nothing settles', early.runs.length, 0);
   // Reference identity: an untouched batch must not churn the ledger, or the
   // engine would persist a new object every tick.
@@ -884,7 +1002,7 @@ const anyRecipients = () => 2;
   });
   // The pin the bug walked straight past.
   check('past the interval EVERY funded bucket settles in one batch', due.runs.length, 4);
-  check('…the host is settled first', due.runs[0].bucket, HOST_BUCKET);
+  check('…the host is settled first', due.runs[0]?.bucket, HOST_BUCKET);
   check(
     '…and the second bucket is NOT blocked by the first bucket\'s settle stamp',
     due.runs[1] !== undefined && due.runs[1].sats > 0,
@@ -892,11 +1010,29 @@ const anyRecipients = () => 2;
   );
   check('…the settle clock is stamped once, for the whole batch',
     due.nextLedger.lastSettleMs, T0 + STREAM_SETTLE_INTERVAL_MS);
-  // Conservation across the batch: nothing paid twice, nothing vanished.
+  // Conservation across the batch, in the one direction that can still hold.
+  // Nothing is paid twice and nothing vanishes, but a track bucket rounds UP,
+  // so the batch may pay a little more than accrued — bounded at one sat per
+  // track bucket, and never more.
   const before = Object.values(l.buckets).reduce((s, v) => s + v, 0);
   const after = Object.values(due.nextLedger.buckets).reduce((s, v) => s + v, 0);
   const paid = due.runs.reduce((s, r) => s + r.sats, 0) * 1000;
-  checkClose('the batch conserves — paid + remaining === accrued', paid + after, before);
+  const trackRuns = due.runs.filter((r) => r.bucket !== HOST_BUCKET).length;
+  check('the batch never pays LESS than it accrued', paid + after >= before - 1e-6, true);
+  check(
+    '…and never more than one sat per track bucket over it',
+    paid + after < before + trackRuns * 1000,
+    true,
+  );
+  // The clock is consumed by the batch, exactly one interval of it, so the
+  // overshoot from the tick that crossed the mark carries into the next window
+  // instead of being discarded. Discarding it makes every window bill a little
+  // over ten minutes, which surfaces as an occasional 101 among the 100s.
+  checkClose(
+    'the batch consumes exactly one interval of the payout clock',
+    due.nextLedger.billedMs,
+    l.billedMs - STREAM_SETTLE_INTERVAL_MS,
+  );
 }
 {
   // A short track under its floor must be LEFT BEHIND while its siblings pay,
@@ -904,13 +1040,14 @@ const anyRecipients = () => 2;
   const l = {
     ...createLedger('k', T0),
     buckets: { [HOST_BUCKET]: 90_000, 't:short:1': 4_000 },
+    billedMs: STREAM_SETTLE_INTERVAL_MS,
   };
   const due = settleBatch(l, {
     nowMs: T0 + STREAM_SETTLE_INTERVAL_MS,
     recipientCountFor: anyRecipients,
   });
   check('a bucket under its floor is left behind while its siblings settle', due.runs.length, 1);
-  check('…and it is the funded one that paid', due.runs[0].bucket, HOST_BUCKET);
+  check('…and it is the funded one that paid', due.runs[0]?.bucket, HOST_BUCKET);
   check('…with the short bucket still carrying its balance',
     due.nextLedger.buckets['t:short:1'], 4_000);
 }
@@ -926,12 +1063,77 @@ const anyRecipients = () => 2;
   const forced = settleBatch(l, { nowMs: T0 + 1000, force: true, recipientCountFor: () => 5 });
   check('force still respects the per-bucket floor', forced.runs.length, 0);
 }
+{
+  // A due batch where every bucket sits under its floor is a genuine no-op, so
+  // it must NOT consume the payout clock. Spending the clock on a batch that
+  // paid nobody pushes the real payout ten more minutes of listening away,
+  // every time, and the accrual just keeps climbing.
+  const l = {
+    ...createLedger('k', T0),
+    buckets: { [HOST_BUCKET]: 2_000 },
+    billedMs: STREAM_SETTLE_INTERVAL_MS + 900,
+  };
+  const dry = settleBatch(l, { nowMs: T0 + 1000, recipientCountFor: () => 5 });
+  check('a batch that pays nothing consumes no clock', dry.runs.length, 0);
+  check('…and returns the ledger untouched', dry.nextLedger, l);
+}
+{
+  // Two windows back to back each pay exactly the rate x the interval. This is
+  // the headline property of the whole change, and the reason the clock is
+  // SUBTRACTED rather than zeroed — a zeroing version alternates 100/101.
+  let l = createLedger('k', T0);
+  const sent = [];
+  for (let w = 0; w < 2; w++) {
+    l = listen(l, {
+      seconds: 600,
+      ratePerMin: DEFAULT_STREAM_RATE_PER_MIN,
+      startMs: T0 + w * 600_000,
+      startPos: w * 600,
+    });
+    const batch = settleBatch(l, { nowMs: T0 + (w + 1) * 600_000, recipientCountFor: () => 2 });
+    sent.push(batch.runs.reduce((sum, r) => sum + r.sats, 0));
+    l = batch.nextLedger;
+  }
+  check('ten minutes of playback at the default rate settles exactly 100', sent[0], 100);
+  check('…and so does the next ten minutes, with no 99/101 drift', sent[1], 100);
+  check('…leaving the host bucket drained', l.buckets[HOST_BUCKET], undefined);
+}
+{
+  // A stalled window is the case that used to pay 97. The wall clock runs the
+  // whole ten minutes while the position sticks, so the ledger holds less than
+  // a full window — and the payout now WAITS rather than paying short.
+  const stalled = driftListen(createLedger('k', T0), {
+    // 582 seconds of real playback, then 18 seconds where the position does not
+    // move: a buffer stall, an HLS re-source, a hidden-tab gap.
+    steps: [...Array(582).fill(1), ...Array(18).fill(0)],
+    ratePerMin: DEFAULT_STREAM_RATE_PER_MIN,
+  });
+  const batch = settleBatch(stalled, { nowMs: T0 + 600_000, recipientCountFor: () => 2 });
+  check('a stalled window does not settle short', batch.runs.length, 0);
+  // Play the missing 18 seconds and it pays the full 100, not 97.
+  const finished = listen(stalled, {
+    seconds: 18,
+    ratePerMin: DEFAULT_STREAM_RATE_PER_MIN,
+    startMs: T0 + 600_000,
+    startPos: 582,
+  });
+  const paid = settleBatch(finished, { nowMs: T0 + 618_000, recipientCountFor: () => 2 });
+  check('…it settles 100 once the listening is actually done', paid.runs[0]?.sats, 100);
+}
 
 console.log('\nreadouts');
 {
   const l = createLedger('k', T0);
-  check('countdown starts at the full interval', msUntilSettle(l, T0), STREAM_SETTLE_INTERVAL_MS);
-  check('countdown floors at 0 when overdue', msUntilSettle(l, T0 + 900_000), 0);
+  check('countdown starts at the full interval', msUntilSettle(l), STREAM_SETTLE_INTERVAL_MS);
+  check('countdown floors at 0 when overdue',
+    msUntilSettle(withBilled(l, STREAM_SETTLE_INTERVAL_MS + 300_000)), 0);
+  // It counts LISTENING, so wall clock does not move it. On screen this means
+  // the countdown freezes while playback is paused, which is the honest answer:
+  // a paused window accrues nothing and its payout is not approaching.
+  check('wall clock alone does not move the countdown',
+    msUntilSettle(withBilled(l, 0)), STREAM_SETTLE_INTERVAL_MS);
+  check('half a window listened leaves half the countdown',
+    msUntilSettle(withBilled(l, 300_000)), 300_000);
   check('fresh ledger is not stale', isStaleLedger(l, T0 + 3600_000), false);
   check('a day-old ledger is stale', isStaleLedger(l, T0 + 86_400_001), true);
 }
