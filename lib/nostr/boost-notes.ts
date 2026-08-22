@@ -92,26 +92,6 @@ function boostArtUrl(podcast: Podcast, episode?: Episode): string | null {
 const SITE_ORIGIN = 'https://www.boostmebitch.com';
 
 /**
- * The origin the banner URL is built against.
- *
- * Production is always {@link SITE_ORIGIN} — the note is signed and immutable,
- * so the host is permanent, exactly as `bmbLandingUrl` documents.
- *
- * **Under `next dev` it is this dev server instead.** Otherwise a boost sent
- * while developing names a production route that does not exist yet, and the
- * picture cannot be seen until after it ships — which is precisely when a
- * design change is cheap. The cost is worth knowing: a note published from a
- * dev server carries a `localhost` banner URL forever and nobody else can load
- * it. Test boosts only.
- */
-function bannerOrigin(): string {
-  if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') {
-    return window.location.origin;
-  }
-  return SITE_ORIGIN;
-}
-
-/**
  * The picture the note shows: `/api/og/boost.png`, drawn from the artwork, the
  * sats and the titles.
  *
@@ -127,6 +107,17 @@ function bannerOrigin(): string {
  *
  * The route's path and parameter names are a permanent public contract, because
  * every note ever published names them. See the route for what that forbids.
+ *
+ * **Always {@link SITE_ORIGIN}, even under `next dev`.** Building it against
+ * the dev server so the picture can be previewed before deploy is the obvious
+ * convenience and it is wrong twice: the URL is `http://localhost:3000`, which
+ * nobody else can resolve, and every serious Nostr client is served over HTTPS,
+ * so the browser blocks it as mixed content and shows nothing even on the
+ * machine that published it. Measured on jumble.social. Naming the production
+ * route instead means a note published before this ships is blank only until
+ * the deploy, and correct forever after — the note cannot be edited, so that is
+ * the only version of "later" that exists. Preview a design change by fetching
+ * the local route directly, not by publishing a note.
  */
 function boostBannerUrl(
   podcast: Podcast,
@@ -140,7 +131,7 @@ function boostBannerUrl(
   if (episode?.title) params.set('ep', episode.title);
   const sats = Math.round((boostagram.value_msat_total ?? 0) / 1000);
   if (sats > 0) params.set('sats', String(sats));
-  return `${bannerOrigin()}/api/og/boost.png?${params.toString()}`;
+  return `${SITE_ORIGIN}/api/og/boost.png?${params.toString()}`;
 }
 
 /**
