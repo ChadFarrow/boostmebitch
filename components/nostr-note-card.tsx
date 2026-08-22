@@ -305,6 +305,16 @@ function NoteCardImpl({
                   src={src}
                   alt=""
                   loading="lazy"
+                  // A URL in a note is a promise nobody keeps: the host dies,
+                  // the file moves, an ad blocker refuses it — and a note is
+                  // immutable, so it names that address forever. Hide the
+                  // element rather than leave a broken-image icon standing in
+                  // the middle of the card. Hiding is terminal by construction
+                  // (no second src to try, so no re-error), which is the loop
+                  // `<RowThumb>`'s fallback has to work to avoid.
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                  }}
                   // A boost note's image is ARTWORK, not a photo the author
                   // chose to show: every boost carries one (lib/nostr/
                   // boost-notes.ts names a 4:1 banner, and other boost clients
