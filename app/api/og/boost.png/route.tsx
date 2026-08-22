@@ -7,7 +7,8 @@ import { safeFetch, readCappedBytes } from '@/lib/safe-fetch';
  * The picture a boost note shows: the show's artwork beside the sats, the
  * titles and the BMB wordmark, on one wide banner.
  *
- * GET /api/og/boost.png?art=<url>&title=<show>&ep=<episode>&sats=<n> → image/png
+ * GET /api/og/boost.png?art=<url>[&art2=<url>&art3=<url>]&title=<show>&ep=<episode>&sats=<n>
+ *   → image/png
  *
  * **The URL of this route is written into signed, immutable kind:1 notes**, the
  * same permanence rule `bmbLandingUrl`'s `www` host already carries. So the
@@ -119,10 +120,29 @@ export async function GET(req: Request) {
   const ep = line(searchParams.get('ep'), 52);
   const satsRaw = searchParams.get('sats') ?? '';
   const sats = /^\d{1,12}$/.test(satsRaw) ? Number(satsRaw).toLocaleString('en-US') : '';
-  const artParam = searchParams.get('art');
-  // Length-capped before any network call: an over-long URL is not a real
-  // artwork address, and the fetch is the expensive half of this route.
-  const art = artParam && artParam.length <= 600 ? await coverDataUri(artParam) : null;
+  // `art`, `art2`, `art3` — the caller's preference order, tried until one
+  // answers with something drawable.
+  //
+  // **The first candidate is routinely unusable and the caller cannot tell.**
+  // Homegrown Hits proves it twice: its channel `image` is a 404 on a domain
+  // that still resolves, and its episode art is a 19 MB animated GIF, over the
+  // ceiling above. Only a fetch separates those from a working URL, and the
+  // note-builder makes no fetches — so it sends the whole list and this decides.
+  //
+  // Sequential, under ONE deadline rather than three independent timeouts: this
+  // request has to answer, and three dead hosts at 4 s each is a request that
+  // outlives the platform's own limit and returns nothing at all.
+  const deadline = Date.now() + 6000;
+  let art: string | null = null;
+  for (const param of ['art', 'art2', 'art3']) {
+    const raw = searchParams.get(param);
+    // Length-capped before any network call: an over-long URL is not a real
+    // artwork address, and the fetch is the expensive half of this route.
+    if (!raw || raw.length > 600) continue;
+    if (Date.now() >= deadline) break;
+    art = await coverDataUri(raw);
+    if (art) break;
+  }
 
   try {
     return new ImageResponse(
