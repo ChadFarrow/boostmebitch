@@ -186,6 +186,63 @@ export async function readCappedText(
 }
 
 /**
+ * Read at most `maxBytes` and **stop**, rather than refusing the response.
+ *
+ * The distinction from {@link readCappedBytes} is the whole point: that one
+ * throws past the cap, which is right when a partial body is worthless (a
+ * half-read feed is not a feed). Here a prefix is exactly what the caller
+ * wants — `/api/og/boost.png` needs the first frame of an animated GIF, which
+ * sits at the front of the file, and a real one measured 606 KB inside a 19 MB
+ * episode artwork. Reading the prefix and cancelling costs 0.6 MB instead of 19.
+ *
+ * `truncated` says whether more was available, so a caller can tell "the whole
+ * file, which happens to be small" from "as much as you allowed" — those need
+ * different handling and the byte count alone cannot separate them.
+ *
+ * Cancelling the reader is what actually aborts the transfer; without it the
+ * rest of the body keeps arriving on a socket nobody reads.
+ */
+export async function readBytesUpTo(
+  res: Response,
+  maxBytes: number,
+): Promise<{ bytes: Uint8Array; truncated: boolean }> {
+  if (!res.body) {
+    const all = new Uint8Array(await res.arrayBuffer());
+    return all.byteLength > maxBytes
+      ? { bytes: all.subarray(0, maxBytes), truncated: true }
+      : { bytes: all, truncated: false };
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  let truncated = false;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const room = maxBytes - total;
+      if (value.byteLength >= room) {
+        chunks.push(value.subarray(0, room));
+        total += room;
+        truncated = true;
+        break;
+      }
+      chunks.push(value);
+      total += value.byteLength;
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
+  const joined = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    joined.set(c, at);
+    at += c.byteLength;
+  }
+  return { bytes: joined, truncated };
+}
+
+/**
  * {@link readCappedText}'s byte half — the same streaming cap, without the
  * decode. Artwork is binary, and `TextDecoder` over a PNG returns replacement
  * characters, so a caller that needs the bytes cannot go through the text

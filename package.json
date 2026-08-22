@@ -27,6 +27,7 @@
     "check:vts": "node --experimental-strip-types scripts/check-value-time-split.mjs",
     "check:feedxml": "node --experimental-strip-types scripts/check-feedxml.mjs",
     "check:assetlinks": "node --experimental-strip-types scripts/check-assetlinks.mjs",
+    "check:gif": "node --experimental-strip-types scripts/check-gif.mjs",
     "check:amber": "node --experimental-strip-types scripts/check-amber.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
