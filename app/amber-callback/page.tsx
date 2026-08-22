@@ -48,12 +48,45 @@ type Outcome =
   | { kind: 'ok' }
   | { kind: 'refused'; why: string; detail: string; raw?: string };
 
+// THE FRAGMENT IS A ONE-SHOT INPUT AND THIS EFFECT DESTROYS IT. So it is read
+// once per page load and the work happens once, and both are held at module
+// scope rather than in component state or a ref, neither of which survives a
+// remount.
+//
+// This is defensive, and the honest version of why: MEASURED on this app's dev
+// server (Next 15.5, no `reactStrictMode` set), the effect runs exactly ONCE, so
+// there is no bug here today. But an effect that reads `window.location.hash`
+// and calls `history.replaceState` two lines later is one config flag from
+// breaking — React StrictMode double-invokes effects on mount (run, clean up,
+// run again), and the second pass would see an empty hash, take the "there is no
+// Amber result in this address" branch, and overwrite a sign-in that had already
+// succeeded. The page would report failure for a round trip that worked.
+//
+// That failure mode is why the shape is worth fixing before it is reachable
+// rather than after: it is silent, it inverts the truth, and it would surface on
+// someone's phone rather than here. `handled` and `captureHash` cost two lines
+// and make the effect idempotent regardless.
+let capturedHash: string | null = null;
+let handled = false;
+
+function captureHash(): string {
+  if (capturedHash === null) capturedHash = window.location.hash;
+  return capturedHash;
+}
+
 export default function AmberCallbackPage() {
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'working' });
 
   useEffect(() => {
-    // Read BEFORE the rewrite. Order is the point.
-    const hash = window.location.hash;
+    // A second invocation must not redo the work: by then the pending record is
+    // consumed, and re-running would report "this tab was not waiting for
+    // anything" over a result it just parked successfully.
+    if (handled) return;
+    handled = true;
+
+    // Read BEFORE the rewrite. Order is the point, and `captureHash` is what
+    // makes the order survive being run twice.
+    const hash = captureHash();
     try {
       window.history.replaceState(null, '', AMBER_CALLBACK_PATH);
     } catch {
