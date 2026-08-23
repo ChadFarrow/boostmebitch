@@ -61,14 +61,25 @@ export function privateFavoritesEnabled(): boolean {
  * not. Defaulting it would publish a list before the user was ever offered the
  * choice — the one ordering this feature exists to get right.
  *
- * A recorded 'private' on a build where the gate is off reads back as 'public',
- * so turning the gate off is a real off switch rather than a UI change with a
- * live publish path behind it.
+ * THE GATE DOES NOT REACH THIS FUNCTION, AND MUST NOT.
+ *
+ * It shipped downgrading a recorded 'private' to 'public' when
+ * `privateFavoritesEnabled()` was false, on the reasoning that the flag should
+ * be a real off switch. That is a plaintext leak: a device that already keeps
+ * its favorites in `content` — one that used the hatch, or a second device the
+ * choice synced to — would read 'public', put `localFavoriteList()` in the
+ * PUBLIC half, and republish the user's whole library as indexed `i` tags,
+ * beside the encrypted half it was quietly ignoring. The user chose private and
+ * a build that cannot offer private must not silently do the opposite.
+ *
+ * What the gate actually governs is whether you can CHOOSE private — the
+ * control offers it, and `<FavoritesPrivacyModal>` accepts it — which is the
+ * whole safety property: no new private half is created until every writer
+ * carries `content`. One that already exists keeps working, because abandoning
+ * it is worse than maintaining it.
  */
 export function favoritesMode(npub: string): FavoritesPrivacy | null {
-  const stored = storage.favPrivacy.get(npub);
-  if (stored === 'private' && !privateFavoritesEnabled()) return 'public';
-  return stored;
+  return storage.favPrivacy.get(npub);
 }
 
 /** Record the choice. Returns whether it reached disk. */
@@ -97,7 +108,10 @@ export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesP
   // it would move the whole list into plaintext on the next toggle.
   const hasPrivate = read.privateUnreadable || read.privateTags.some((t) => t[0] === 'i');
   if (hasPublic) { setFavoritesMode(npub, 'public'); return 'public'; }
-  if (hasPrivate && privateFavoritesEnabled()) { setFavoritesMode(npub, 'private'); return 'private'; }
+  // Ungated, for the reason on `favoritesMode`: if the wire says this account
+  // keeps its favorites encrypted, adopting anything else republishes them in
+  // plaintext. Seeding follows the data, never the build flag.
+  if (hasPrivate) { setFavoritesMode(npub, 'private'); return 'private'; }
   return null;
 }
 

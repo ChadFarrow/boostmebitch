@@ -144,7 +144,11 @@ export function FavoritesPrivacyControl() {
             className="inline-flex items-center gap-0.5 p-0.5 rounded-full border border-bone/15 bg-bone/5"
           >
             {MODES.map((m) => {
-              const disabled = m === 'private' && gated;
+              // Never disable the mode the account is ALREADY in. The gate stops
+              // you choosing private; it does not retire a private list that
+              // exists, and a control showing the current state as unavailable
+              // reads as a broken app rather than a withheld feature.
+              const disabled = m === 'private' && gated && current !== 'private';
               return (
                 <button
                   key={m}
@@ -229,6 +233,19 @@ export function FavoritesPrivacyModal({
 
   const apply = useCallback(async () => {
     if (!identity) return;
+    // The gate, enforced where a HUMAN chooses — not in `favoritesMode`, which
+    // must report an existing private list honestly or it gets republished in
+    // plaintext (see that function). The disabled radio and the disabled
+    // segment are the visible half; this is the one that matters, because the
+    // property being protected is "no NEW private half until every writer
+    // carries `content`", and only this path creates one.
+    //
+    // `current !== 'private'` mirrors the control: an account already private
+    // may re-confirm it, since the harm was done before the gate could help.
+    if (choice === 'private' && gated && favoritesMode(identity.npub) !== 'private') {
+      setError(GATE_REASON);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -254,7 +271,7 @@ export function FavoritesPrivacyModal({
     } finally {
       setBusy(false);
     }
-  }, [identity, choice, withdraw, published, onClose]);
+  }, [identity, choice, withdraw, published, gated, onClose]);
 
   const leaving = choice === 'off' && published > 0;
 
