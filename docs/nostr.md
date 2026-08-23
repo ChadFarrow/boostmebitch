@@ -93,9 +93,142 @@ stub pointing at it. The kind is **self-assigned, not NIP-allocated** — relay
 filters are kind-scoped, so a later NIP landing on 10333 would put two unrelated
 event types into every query either app makes.
 
-`content` stays empty and public, unlike `settings-backup.ts`/`wallet-backup.ts`
-which NIP-44 encrypt their 30078 payloads — a second app has to be able to read
-this one.
+### `content` — the private half, and the carry rule
+
+`content` used to be empty and public, on the reasoning that a second app has to
+be able to read this list. Half of that is still true, and the other half was
+always wrong: `i` is a **single-letter tag**, so relays index it, and a `#i`
+filter answers *which pubkeys favorited this feed*. The list is searchable in
+reverse, not merely readable by someone who already has the pubkey. `content` is
+the only free slot in the event, and the spec now specifies NIP-51's split for
+it — public entries in tags, private entries in `content` as a stringified tag
+array, NIP-44 encrypted to the author's own key.
+
+**Two switched pieces, and the order is not ours to choose.**
+
+**1. The carry rule is ON, unconditionally, and it has nothing to do with
+whether this app uses a private half.** The spec's rule 4 — *carry what you
+can't read* — covers TAGS and says nothing about `content`, so a writer
+following the document to the letter republishes the empty string the format has
+specified from the start, and erases every private entry another app wrote:
+silently, on someone else's device, with no undo, while behaving correctly by
+the document it was written against. `publishFavoritesTags` therefore **takes**
+`content` rather than hardcoding `''`, and the only two sources are the read
+(verbatim) or an encryption the plan asked for. A `''` written by habit is
+another app's private favorites deleted.
+
+**2. The private half is behind `PRIVATE_FAVORITES_ENABLED`, false**, because
+StableKraft does not carry `content` yet. `storage.favPrivateOptIn` (set by
+`window.bmbEnablePrivateFavorites()`) is the per-machine hatch for testing it
+first. Flipping the constant is a one-line commit once the other writers ship.
+
+**ONE choice for the whole list, not one per entry.** The spec permits a split;
+this app deliberately does not offer one. `localFavoriteList()` goes wholly into
+one half and the other is still read, merged and carried, so another app's
+entries survive either way — and one choice is the difference between two merges
+per cycle and 2N of them.
+
+Four things break under a private half, and none of them is optional:
+
+- **Idempotence, immediately.** NIP-44 draws a fresh nonce per encryption, so
+  the same entries produce different bytes every time. Compare ciphertext and
+  `planFavoritesPublish` can never report `'unchanged'` — every page load
+  republishes and two apps rewrite the event at each other forever,
+  self-inflicted. The comparison is on the **decrypted arrays**, and the
+  ciphertext is compared only where we could not decrypt it. `encryptPrivate` on
+  the plan is false in the common case and that is the point.
+- **The baseline gains a half.** Moving an entry public→private is a removal on
+  one side and an addition on the other. Against one shared baseline those
+  cancel destructively: the public merge sees *ours, and we no longer hold it*
+  and drops it, and the private append pass sees the same id in the baseline and
+  skips it as *another app removed this*. Gone from both halves, one publish,
+  every other guard satisfied. `privateFeeds`/`privateItems` are optional and
+  absent reads as `[]`, so a baseline written before this shipped reads as
+  all-public — which is what it is. `baselineHalf` is the only way either merge
+  should reach one.
+- **`wholesale-delete` had to widen, and only to the UNION.** Its test is *the
+  merge came out empty over a read that is not*, and switching to private is
+  exactly that shape — so a per-half test would refuse the feature it exists to
+  protect. The union is the honest question because both halves are fed from one
+  local list: an unhydrated store empties them together, while a switch moves
+  entries across and the total never drops. Pinned both ways in `check:favsync`.
+- **Amber.** `nip44_encrypt` reaches it through the `nostrsigner:` URI, which it
+  URL-decodes whole and only then splits on `?` — and item guids are routinely
+  permalink URLs, which is exactly why `parseItemGuid` is not UUID-gated. One
+  favorited track with a query string in its guid would make every private
+  publish on Android fail forever, with a message that reads as *"Amber isn't
+  installed"*. `encodeAmberSafe` is the usual answer and is **wrong here**: it
+  would put `bmb1.…` inside the ciphertext and the other app would find
+  something it has never been told about. `encodePrivateFavorites` writes `?` as
+  the JSON escape `\u003f` instead — an escape every JSON reader already
+  understands, so interop is untouched.
+
+**A private half we could not open is not a private half that is empty.** Four
+causes collapse to one `privateUnreadable` state: the caller declined to spend a
+prompt, the signer has no NIP-44, the decrypt threw or timed out, and the
+plaintext was not a tag array. Downstream they mean the same thing — carry the
+ciphertext, derive nothing from it, report it — and collapsing them here is what
+stops a fifth being handled differently by accident. That last cause is the hole
+`lib/nostr/mutes.ts` still has: a `JSON.parse` succeeding on a non-array leaves
+the blob marked readable and empty, and the next republish rewrites `content`
+from those empty lists.
+
+**The cold start never asks Amber to decrypt.** Its approval sheet renders the
+plaintext, and `mutes-hydrator.ts` measured approving one on a Pixel 6 returning
+the user to the launcher, so the request never resolved and the prompt came
+straight back. `hydrateFavorites` gates on `unattendedDecryptOk()` as well as on
+`decryptWithTimeout`'s own refusal — the library one arrives as a rejection
+inside a `.catch(() => {})`, which is invisible. `syncFavoritesNow(identity,
+'user-initiated')`, behind the sync notice's **unlock**, is the route in.
+
+**Size.** `PRIVATE_PLAINTEXT_MAX` is 60 KB. NIP-44 v2 as originally published
+capped plaintext at 65535 bytes; a library built to that text rejects anything
+past it, and an unreadable private list is indistinguishable from an empty one.
+Ciphertext runs 1.5–1.9× the plaintext after padding and base64.
+
+### Where a favorite goes — public, private, or nowhere
+
+`storage.favPrivacy:<npub>` holds `'public' | 'private' | 'off'`, and **absent is
+a real fourth state** meaning *never chosen*. Flattening it to `'public'` would
+publish a list before the user was ever offered the choice, which is the one
+ordering this feature exists to get right.
+
+- **Existing accounts are seeded, never interrogated.** `seedFavoritesMode` reads
+  the answer off the wire during hydration: public `i` entries ⇒ `'public'`, a
+  non-empty `content` with none ⇒ `'private'`, both empty ⇒ leave it unset. A
+  prompt aimed at someone with 200 favorites is a question about a decision made
+  long ago, and answering it wrong is a publish.
+- **The question is asked in `requestFavoritesSync`**, the one funnel all five
+  hearts reach across thirteen render sites — the same reasoning that puts
+  `recordLivePlay` in `setTarget`. A check at the toggle is five places to
+  forget. The favorite is applied to the store *first*, so the heart fills on the
+  tap and the question comes after: publishing publicly and then asking "public
+  or private?" is backwards, and a relay that has the bytes cannot be asked to
+  forget them.
+- **`'off'` reads and publishes nothing**, and leaves what is already on the
+  relay exactly where it is — we do not delete on someone's behalf from a
+  settings change. `withdrawThisDevice` is the explicit route, and it is the only
+  caller allowed past `wholesale-delete`, via `userConfirmedWithdrawal`. It
+  removes only what this device's **baseline** claims, so another app's entries
+  — and a group of ours that is the only thing naming a surviving foreign item's
+  parent — are untouched.
+- **The offer to withdraw is gated on the BASELINE, not on the mode.** They come
+  apart: seeding only runs off a trustworthy read, so bad relays leave the mode
+  unset on a device with a full baseline, and gating on the mode hid the one
+  control that removes your entries from exactly the person whose entries were
+  out there. When the baseline really is empty the offer is dropped but the
+  silence is not — "not on Nostr" reads as a promise about the past as much as
+  the future.
+- **The choice follows the npub** through `SyncedSettings.favPrivacy` on the
+  existing kind:30078 `boostmebitch:settings` event, so a phone set to Private
+  stops a laptop publishing the same list in plaintext. It is a *corroborator*,
+  not the authority — the kind:10333 event itself says which half the entries are
+  in. It carries the two answers the wire cannot state: `'off'`, and the choice
+  of an account whose list is still empty. **`publishSettings` sends this
+  device's whole view, never one field**: it used to write `{ railPref }`
+  wholesale, which was correct only while `railPref` was the only field there
+  could ever be — the moment a second one exists, the next boost un-sets the
+  privacy choice on every other device.
 
 **A track favorite is an ordinary item favorite, and it names the artist's
 release rather than the show that played it.** `<FavTrackHeart>` builds its
@@ -418,8 +551,10 @@ silent, so both report through one in-memory `favoritesSync` flag (`lib/store.ts
 
 ### Module split
 
-`lib/nostr/favorites-list.ts` is the wire format and the merge, and has **zero
-imports** so `npm run check:favsync` can load the real thing under plain Node — a
+`lib/nostr/favorites-list.ts` is the wire format, the merge, **and the private
+half's plaintext** (`encodePrivateFavorites` / `decodePrivateFavorites`), and has
+**zero imports** so `npm run check:favsync` can load the real thing under plain
+Node — a
 reimplemented copy in the check script would stay green while the shipping merge
 drifted, the exact failure being guarded. `favorites-legacy.ts` is import-free
 for the same reason. `lib/nostr/favorites.ts` holds the I/O and re-exports both.
