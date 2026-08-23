@@ -43,6 +43,17 @@ const LABEL: Record<FavoritesPrivacy, string> = {
 };
 
 /**
+ * The confirmation's headline.
+ *
+ * NOT `Switch to ${LABEL[choice]}?` — that reads "Switch to Not on Nostr?",
+ * which is a sentence nobody writes. The segment label has to be a short noun
+ * for the control; the question has to be a question.
+ */
+function switchHeading(choice: FavoritesPrivacy): string {
+  return choice === 'off' ? 'Stop syncing to Nostr?' : `Switch to ${LABEL[choice]}?`;
+}
+
+/**
  * What this mode actually means for the user, in one sentence naming the
  * consequence rather than the mechanism.
  *
@@ -291,14 +302,17 @@ export function FavoritesPrivacyModal({
   return (
     <ModalShell
       onClose={onClose}
-      label={asking ? 'Where should your favorites be stored?' : `Switch favorites to ${LABEL[choice]}`}
+      label={asking ? 'Where should your favorites be stored?' : switchHeading(choice)}
       className="w-full max-w-md"
       dismissable={!busy}
     >
       <div className="p-5 border-b border-bone/15">
         <div className="stamp text-nostr border-nostr/60 mb-2">◆ FAVORITES</div>
         <h3 className="font-display text-2xl leading-tight">
-          {asking ? 'Where should this live?' : `Switch to ${LABEL[choice]}?`}
+          {/* "Where should THIS live?" read as a question about the one favorite
+              just made. The choice governs the whole list, and a user who takes
+              it as per-item will expect a control that does not exist. */}
+          {asking ? 'Where should your favorites live?' : switchHeading(choice)}
         </h3>
         <p className="text-xs text-muted mt-1">
           {asking
