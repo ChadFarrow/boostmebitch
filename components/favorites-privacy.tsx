@@ -274,7 +274,21 @@ export function FavoritesPrivacyModal({
       if (choice === 'off' && withdraw && published > 0) {
         await withdrawThisDevice(identity);
       }
-      recordFavoritesPrivacy(identity.npub, choice, identity);
+      // A choice that did not reach DISK must not be reported as saved.
+      // `safeSet` falls back to an in-memory mirror when localStorage is full
+      // or blocked — both documented as real on iOS Safari — and that mirror
+      // does not survive a reload. The setting would work for the rest of the
+      // session and then be gone, dropping the account back into the
+      // never-chosen path where the mode is inferred from a shared event that
+      // may not be able to say. Closing the dialog on that is the app telling
+      // the user their privacy choice is recorded when it is not.
+      if (!recordFavoritesPrivacy(identity.npub, choice, identity)) {
+        setError(
+          'Could not save that choice on this device — storage is full or blocked. '
+          + 'Nothing was changed. Free up space, or allow site data, and try again.',
+        );
+        return;
+      }
       if (choice === 'off') {
         // The status is normally set by `runHydrate`, and turning sync off is
         // the one transition that stops it running — so nothing else would move

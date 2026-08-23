@@ -158,9 +158,21 @@ export function recordFavoritesPrivacy(
   privacy: FavoritesPrivacy,
   identity: NostrIdentity | null,
 ): boolean {
+  const previous = storage.favPrivacy.get(npub);
   const landed = storage.favPrivacy.set(npub, privacy);
+  if (!landed) {
+    // Put it back, and publish nothing. `safeSet` mirrors a write it cannot
+    // land into memory, so without this the choice silently applies for the
+    // rest of the session and is gone on the next reload — and the caller has
+    // just told the user nothing was changed. A half-applied privacy setting is
+    // worse than a refused one: it is the state where the app and the user
+    // disagree about where the next favorite goes.
+    if (previous) storage.favPrivacy.set(npub, previous);
+    else storage.favPrivacy.clear(npub);
+    return false;
+  }
   if (identity && identity.npub === npub && getNip44()) {
     scheduleFavPrivacy(() => publishSettings(identity, { favPrivacy: privacy }));
   }
-  return landed;
+  return true;
 }

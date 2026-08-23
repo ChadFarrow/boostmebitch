@@ -26,6 +26,7 @@ import {
 // module that owns the network calls would only widen what this file depends on.
 import {
   baselineIsTrustworthy,
+  seedModeFromWire,
   EMPTY_BASELINE,
   PRIVATE_FAVORITES_ENABLED,
   type FavoritesBaseline,
@@ -95,9 +96,11 @@ export function setFavoritesMode(npub: string, mode: FavoritesPrivacy): boolean 
  * ago, and answering it wrong is a publish. The wire says which half they are
  * in, so ask the wire.
  *
- * Runs only on a TRUSTWORTHY read, and only when nothing is recorded yet. Both
- * halves empty leaves it null on purpose — that account genuinely has not
- * chosen, and the prompt is the right place for it.
+ * Runs only on a TRUSTWORTHY read, and only when nothing is recorded yet. The
+ * rule itself is `seedModeFromWire` in the import-free leaf, so `check:favsync`
+ * can hold it — this half only supplies the two booleans and persists the
+ * answer. Null means the wire could not say, and a null mode publishes nothing
+ * at all, so the safe state is also the default one.
  */
 export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesPrivacy | null {
   const existing = favoritesMode(npub);
@@ -106,13 +109,13 @@ export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesP
   // An opaque `content` counts: we cannot read it, but its presence is still
   // evidence that this account keeps a private half, and seeding 'public' over
   // it would move the whole list into plaintext on the next toggle.
+  //
+  // Ungated, for the reason on `favoritesMode`: seeding follows the data, never
+  // the build flag.
   const hasPrivate = read.privateUnreadable || read.privateTags.some((t) => t[0] === 'i');
-  if (hasPublic) { setFavoritesMode(npub, 'public'); return 'public'; }
-  // Ungated, for the reason on `favoritesMode`: if the wire says this account
-  // keeps its favorites encrypted, adopting anything else republishes them in
-  // plaintext. Seeding follows the data, never the build flag.
-  if (hasPrivate) { setFavoritesMode(npub, 'private'); return 'private'; }
-  return null;
+  const seeded = seedModeFromWire(hasPublic, hasPrivate);
+  if (seeded) setFavoritesMode(npub, seeded);
+  return seeded;
 }
 
 /**

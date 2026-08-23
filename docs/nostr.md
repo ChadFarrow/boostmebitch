@@ -238,11 +238,29 @@ a real fourth state** meaning *never chosen*. Flattening it to `'public'` would
 publish a list before the user was ever offered the choice, which is the one
 ordering this feature exists to get right.
 
-- **Existing accounts are seeded, never interrogated.** `seedFavoritesMode` reads
-  the answer off the wire during hydration: public `i` entries ⇒ `'public'`, a
-  non-empty `content` with none ⇒ `'private'`, both empty ⇒ leave it unset. A
-  prompt aimed at someone with 200 favorites is a question about a decision made
-  long ago, and answering it wrong is a publish.
+- **Existing accounts are seeded, never interrogated — but only when the wire can
+  actually say.** `seedFavoritesMode` reads the answer off the wire during
+  hydration, and the rule is `seedModeFromWire` in the import-free leaf so
+  `check:favsync` can hold it: only-public ⇒ `'public'`, only-private ⇒
+  `'private'`, **both or neither ⇒ null, and the user is asked**. A prompt aimed
+  at someone with 200 favorites is a question about a decision made long ago, and
+  answering it wrong is a publish.
+
+  **THE AMBIGUOUS CASE MUST NOT GUESS, AND THE TWO WRONG GUESSES ARE NOT
+  SYMMETRICAL.** This is one shared multi-writer event, so a plaintext `i` tag
+  from any other writer sits happily beside an encrypted half. Testing `hasPublic`
+  first — which is what shipped — fails OPEN: a device seeded `'public'` over a
+  private account paints the decrypted entries into its store, and the next
+  publish emits every one as a plaintext, relay-indexed, `#i`-searchable tag, on
+  a replaceable event with no history and with nothing on screen. Reversing it
+  fails differently: a genuinely public account beside another app's private half
+  would be moved INTO `content` — no disclosure, but a real edit that an app
+  without NIP-44 reads as an empty list. So each half answers only for itself.
+  A null mode publishes nothing at all, so the safe state is also the default.
+
+  Found by `/security-review` on this branch and reproduced end to end against a
+  mixed event; the old ordering published a private entry in plaintext on the
+  first heart tap.
 - **The question is asked in `requestFavoritesSync`**, the one funnel all five
   hearts reach across thirteen render sites — the same reasoning that puts
   `recordLivePlay` in `setTarget`. A check at the toggle is five places to

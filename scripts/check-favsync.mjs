@@ -71,6 +71,7 @@ import {
   parseItemGuid,
   parseShowGuid,
   partitionList,
+  seedModeFromWire,
   baselineIsTrustworthy,
   planFavoritesPublish,
   showId,
@@ -1056,6 +1057,43 @@ section('The private half — an ADOPTED list must enter the baseline');
     tagsFromList(mergeFavoritesList({
       read: withForeign, local: EMPTY_LOCAL, baseline: baselineHalf(b2, 'public'),
     })).some((t) => t[1] === 'something:else:entirely'), true);
+}
+
+// ---------------------------------------------------------------------------
+section('The private half — an ambiguous wire is a QUESTION, never a guess');
+// ---------------------------------------------------------------------------
+{
+  // Found by a security review of this branch. `seedFavoritesMode` decides
+  // which half an account keeps its favorites in when this device has no
+  // recorded choice, and it tested the PUBLIC half first — which fails OPEN.
+  //
+  // kind:10333 is one shared, multi-writer event, so a single plaintext `i`
+  // tag from any other writer sits happily beside an encrypted half. Nothing
+  // makes them exclusive. A device seeded 'public' over a private account
+  // paints the decrypted entries into its store (the app renders the union),
+  // and the next publish emits every one of them as a plaintext `i` tag —
+  // relay-indexed, reverse-searchable by `#i`, on a replaceable event that
+  // keeps no history. No retraction, nothing on screen.
+  check('only a private half ⇒ private', seedModeFromWire(false, true), 'private');
+  check('only a public half ⇒ public', seedModeFromWire(true, false), 'public');
+  check('nothing at all ⇒ ask', seedModeFromWire(false, false), null);
+  check('BOTH ⇒ ask, never guess', seedModeFromWire(true, true), null);
+
+  // (naive) the ordering that shipped, and the one a reader will reach for
+  // again because it looks like a harmless preference for the common case.
+  const naivePublicFirst = (pub, priv) => (pub ? 'public' : priv ? 'private' : null);
+  check('(naive) public-first hands a private account to plaintext',
+    naivePublicFirst(true, true), 'public');
+  check('...where the real rule refuses to answer', seedModeFromWire(true, true), null);
+
+  // AND NOT SIMPLY REVERSED. Private-first is safe against disclosure and
+  // unsafe against a different thing: an account that is genuinely public,
+  // beside another app's private half, would be moved INTO `content` — no
+  // leak, but a real edit to a shared event that an app without NIP-44 then
+  // reads as an empty list. Each half answers only for itself.
+  const naivePrivateFirst = (pub, priv) => (priv ? 'private' : pub ? 'public' : null);
+  check('(naive) private-first moves a public account into content',
+    naivePrivateFirst(true, true), 'private');
 }
 
 // ---------------------------------------------------------------------------

@@ -319,6 +319,41 @@ export function baselineHalf(baseline: FavoritesBaseline, half: ListHalf): Favor
  * what reaches disk. Callers pass the local list they actually published into
  * each half — which, under one whole-list choice, means one of them is empty.
  */
+/**
+ * Which half an account keeps its favorites in, read off the wire — or null
+ * when the wire cannot say.
+ *
+ * THE AMBIGUOUS CASE IS THE WHOLE POINT, AND IT MUST NOT GUESS. kind:10333 is
+ * one shared, multi-writer event, so a single plaintext `i` tag from any other
+ * writer — StableKraft, or this user's own second device still on Public —
+ * sits happily beside an encrypted half. Nothing makes the two exclusive.
+ *
+ * Testing `hasPublic` first therefore fails OPEN. A device seeded 'public' over
+ * a private account paints the decrypted entries into its store (the app
+ * renders the union of both halves), and the next publish emits every one of
+ * them as a plaintext `i` tag. `i` is a single-letter tag, so relays index it
+ * and a `#i` filter answers *which pubkeys favorited this feed* — the list
+ * becomes searchable in reverse, which is exactly the property the private half
+ * exists to remove. kind:10333 is replaceable and keeps no history, relays keep
+ * what they were sent, and nothing on screen changes. There is no retraction.
+ *
+ * Seeding the other way round is not symmetrical, so this does not simply
+ * reverse the tests: an account that is genuinely public, beside another app's
+ * private half, would be moved INTO `content` — no disclosure, but a real edit
+ * to a shared event that an app without NIP-44 then reads as an empty list.
+ *
+ * So each half answers only for itself, and BOTH answers together mean
+ * "unknowable from here" — which is a question for the user, not a coin toss.
+ * A null mode publishes nothing at all (`requestFavoritesSync`), so the safe
+ * state is also the default one.
+ */
+export function seedModeFromWire(hasPublic: boolean, hasPrivate: boolean): FavoritesPrivacy | null {
+  if (hasPublic && hasPrivate) return null;
+  if (hasPrivate) return 'private';
+  if (hasPublic) return 'public';
+  return null;
+}
+
 export function baselineOfList(list: ParsedList | null | undefined): FavoritesBaseline {
   if (!list) return EMPTY_BASELINE;
   return baselineFrom(groupLocalFavorites(entriesFromList(list)));
