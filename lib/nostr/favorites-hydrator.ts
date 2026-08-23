@@ -470,7 +470,31 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     // The relay already agrees with us. Record the baseline: without it the
     // first unfavorite on this device has nothing to diff against and silently
     // fails to propagate.
-    syncOptionsFor(identity).onSynced(plan.baseline);
+    //
+    // RECOMPUTED FROM THE PAINTED STORE, not `plan.baseline`. The plan is built
+    // BEFORE the paint, on purpose, so its `local` is whatever this device held
+    // when it walked in — which on a device seeing this account for the first
+    // time is NOTHING. The list it then adopts off the relay would therefore be
+    // recorded as "I published none of this".
+    //
+    // Harmless while a list has only a public half: an empty baseline yields no
+    // removals, so the next publish is a pure union, and the spec says so
+    // outright. It stops being harmless the moment there are two halves. A mode
+    // switch expresses itself as a REMOVAL from one half and an addition to the
+    // other, and a baseline naming nothing cannot remove anything — so the
+    // switch copies instead of moving, and the favorites the user just asked to
+    // hide stay in plaintext `i` tags beside the encrypted copy. Reported from a
+    // real account: 12 entries, public and private at once.
+    //
+    // Recording it is truthful rather than optimistic: this ran on a
+    // TRUSTWORTHY read, and every id came off the relay a moment ago. "I agree
+    // with the relay about these" is exactly what a baseline claims.
+    const adopted = localFavoriteList();
+    syncOptionsFor(identity).onSynced(
+      mode === 'private'
+        ? baselineForHalves(EMPTY_LOCAL, adopted)
+        : baselineForHalves(adopted, EMPTY_LOCAL),
+    );
   } else {
     // A REFUSAL. Record nothing, and say so.
     //

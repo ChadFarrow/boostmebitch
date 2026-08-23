@@ -929,6 +929,77 @@ section('The private half — a move is a removal AND an addition');
 }
 
 // ---------------------------------------------------------------------------
+section('The private half — an ADOPTED list must enter the baseline');
+// ---------------------------------------------------------------------------
+{
+  // Reported from a real account, on a device seeing it for the first time:
+  // switching to Private left all 12 favorites in the public tags AND wrote an
+  // encrypted copy beside them. Both halves, at once — the opposite of what the
+  // switch promises, and a leak rather than a display bug.
+  //
+  // The cause is a baseline that names nothing. `runHydrate` plans BEFORE it
+  // paints (deliberately), so its `local` is what the device held on the way in
+  // — nothing, on a fresh device. The list it then adopts off the relay was
+  // recorded as "I published none of this".
+  //
+  // That is harmless with one half: an empty baseline yields no removals, so
+  // the next publish is a pure union, and the spec says so outright. With two
+  // halves it is a leak, because a MOVE is expressed as a removal from one half
+  // plus an addition to the other, and a baseline naming nothing cannot remove.
+  const wire = [
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC)],
+    ['i', showId(F_MUSIC2)],
+    ['k', 'podcast:guid'],
+  ];
+  const read = parseFavoritesList(wire);
+  // The device adopted the wire, so this is exactly what it now holds.
+  const adopted = groupLocalFavorites(entriesFromList(read));
+  check('the adopted list round-trips to the same wire', tagsFromList(
+    mergeFavoritesList({ read: EMPTY_PARSED, local: adopted, baseline: EMPTY_BASELINE }),
+  ), wire);
+
+  const switchTo = (baseline) => ({
+    pub: tagsFromList(mergeFavoritesList({
+      read: parseFavoritesList(wire), local: EMPTY_LOCAL, baseline: baselineHalf(baseline, 'public'),
+    })),
+    priv: tagsFromList(mergeFavoritesList({
+      read: EMPTY_PARSED, local: adopted, baseline: baselineHalf(baseline, 'private'),
+    })),
+  });
+
+  // THE BUG, stated as a vector: nothing recorded ⇒ the entries end up in BOTH.
+  const blind = switchTo(EMPTY_BASELINE);
+  check('(naive) an empty baseline leaves them in the public half', blind.pub.filter((t) => t[0] === 'i').length, 2);
+  check('(naive) ...while also writing them into the private half', blind.priv.filter((t) => t[0] === 'i').length, 2);
+
+  // THE FIX: record what the device adopted, then the switch is a move.
+  const recorded = baselineForHalves(adopted, EMPTY_LOCAL);
+  check('an adopted list names every entry it took on', recorded.feeds.length, 2);
+  const moved = switchTo(recorded);
+  check('the public half empties', moved.pub.filter((t) => t[0] === 'i').length, 0);
+  check('...and the private half holds them', moved.priv.filter((t) => t[0] === 'i').length, 2);
+
+  // MUST STILL WORK: adopting does not claim another writer's entries as ours
+  // to delete — only what `entriesFromList` says this device can represent.
+  const withForeign = parseFavoritesList([
+    ...wire.slice(0, 3),
+    ['i', 'something:else:entirely'],
+    ['i', showId(F_MUSIC2)],
+    ['k', 'podcast:guid'],
+  ]);
+  const adoptedForeign = groupLocalFavorites(entriesFromList(withForeign));
+  const b2 = baselineForHalves(adoptedForeign, EMPTY_LOCAL);
+  check('an unreadable entry is never entered into the baseline',
+    b2.feeds.concat(b2.items).some((x) => x === 'something:else:entirely'), false);
+  check('...and it survives the switch untouched',
+    tagsFromList(mergeFavoritesList({
+      read: withForeign, local: EMPTY_LOCAL, baseline: baselineHalf(b2, 'public'),
+    })).some((t) => t[1] === 'something:else:entirely'), true);
+}
+
+// ---------------------------------------------------------------------------
 section('The private half — wholesale-delete spans BOTH halves');
 // ---------------------------------------------------------------------------
 {
