@@ -805,6 +805,87 @@ section('The private half — idempotence is on the DECRYPTED array');
 }
 
 // ---------------------------------------------------------------------------
+section('The private half — the SECOND publish is the one that breaks');
+// ---------------------------------------------------------------------------
+{
+  // A regression pin for a real bug on this branch: `cycleOptionsFor` passed a
+  // bare `purpose`, undefined on every background cycle, so `syncFavorites`
+  // read with `decryptPrivate: false`. The FIRST private publish worked — an
+  // empty `content` needs no decrypt — and every one after it silently refused,
+  // because the planner (correctly) will not write over a blob it cannot read.
+  //
+  // Hearts fill, nothing propagates, one console warn. This is what that looks
+  // like as a sequence, and it is why "did we decrypt" is not a performance
+  // question in private mode.
+  const one = groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]);
+  const two = groupLocalFavorites([
+    { id: showId(F_MUSIC), medium: 'music' },
+    { id: showId(F_POD), medium: 'podcast' },
+  ]);
+  const pubWire = [['alt', LIST_ALT]];
+
+  // Publish 1: nothing encrypted yet, so there is nothing to decrypt.
+  const first = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: parseFavoritesList(pubWire), local: EMPTY_LOCAL, baseline: EMPTY_BASELINE }),
+    readTags: pubWire,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    privateMerged: mergeFavoritesList({ read: EMPTY_PARSED, local: one, baseline: EMPTY_BASELINE }),
+    readPrivateTags: [],
+    readContent: '',
+    privateUnreadable: false,
+    privateLocal: one,
+  });
+  check('the first private publish goes out', first.reason, 'publish');
+  check('...and encrypts', first.encryptPrivate, true);
+
+  const onWire = first.privateTags;
+  const baseline = baselineForHalves(EMPTY_LOCAL, one);
+
+  // Publish 2, THE BUG: `content` is now a ciphertext, and this cycle did not
+  // decrypt it.
+  const blind = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: parseFavoritesList(pubWire), local: EMPTY_LOCAL, baseline: baselineHalf(baseline, 'public') }),
+    readTags: pubWire,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    privateMerged: null,          // <- did not decrypt
+    readPrivateTags: [],
+    readContent: 'nip44:…',
+    privateUnreadable: true,
+    privateLocal: two,            // the user just favorited a second thing
+  });
+  check('a private cycle that did NOT decrypt refuses the second publish', blind.reason, 'private-unreadable');
+  check('...so the new favorite never reaches a relay', blind.publish, false);
+
+  // Publish 2, FIXED: the same cycle, having decrypted.
+  const seeing = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: parseFavoritesList(pubWire), local: EMPTY_LOCAL, baseline: baselineHalf(baseline, 'public') }),
+    readTags: pubWire,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    privateMerged: mergeFavoritesList({
+      read: parseFavoritesList(onWire), local: two, baseline: baselineHalf(baseline, 'private'),
+    }),
+    readPrivateTags: onWire,
+    readContent: 'nip44:…',
+    privateUnreadable: false,
+    privateLocal: two,
+  });
+  check('having decrypted, the same cycle publishes', seeing.reason, 'publish');
+  check('...and the new favorite is in the tags it will encrypt',
+    seeing.privateTags.some((t) => t[1] === showId(F_POD)), true);
+  check('...and the one already there survived',
+    seeing.privateTags.some((t) => t[1] === showId(F_MUSIC)), true);
+}
+
+// ---------------------------------------------------------------------------
 section('The private half — a move is a removal AND an addition');
 // ---------------------------------------------------------------------------
 {

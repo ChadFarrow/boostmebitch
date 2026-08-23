@@ -296,7 +296,21 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // also missing (a narrowed read, another app's delete). Both refuse the same
   // way a degraded read does: keep what is on screen, publish nothing, and
   // record NO baseline — `onSynced` here would make the next cycle agree.
-  //
+  // A private half we could not open is not a private half that is empty, and
+  // painting from the public half alone would show the user a list missing
+  // everything they chose to hide. Keep what is on screen and say why. The
+  // planner has already refused the publish for the same reason; this is the
+  // rendering half of the same decision.
+  if (plan.reason === 'private-unreadable') {
+    setFavoritesSync('degraded', 'private-unreadable');
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[favorites] this list has an encrypted half we could not read — keeping local '
+      + 'favorites as-is and carrying the ciphertext untouched',
+    );
+    return;
+  }
+
   // BOTH halves count here, for the same reason they do in the planner: a mode
   // switch legitimately empties one of them, so a per-half test would refuse
   // the feature it exists to protect. The pair is fed from ONE local list, so
@@ -318,20 +332,6 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     return;
   }
 
-  // A private half we could not open is not a private half that is empty, and
-  // painting from the public half alone would show the user a list missing
-  // everything they chose to hide. Keep what is on screen and say why. The
-  // planner has already refused the publish for the same reason; this is the
-  // rendering half of the same decision.
-  if (plan.reason === 'private-unreadable') {
-    setFavoritesSync('degraded', 'private-unreadable');
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[favorites] this list has an encrypted half we could not read — keeping local '
-      + 'favorites as-is and carrying the ciphertext untouched',
-    );
-    return;
-  }
 
   // Set here rather than at the end of the function: everything below is
   // Podcast Index resolution, which fails for its own unrelated reasons and must
@@ -466,10 +466,28 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // nothing. The plan is the one computed above, before the store was touched.
   if (plan.publish) {
     requestFavoritesSync(identity);
-  } else {
-    // Still record the baseline: without it the first unfavorite on this device
-    // has nothing to diff against and silently fails to propagate.
+  } else if (plan.reason === 'unchanged' || plan.reason === 'nothing-to-create') {
+    // The relay already agrees with us. Record the baseline: without it the
+    // first unfavorite on this device has nothing to diff against and silently
+    // fails to propagate.
     syncOptionsFor(identity).onSynced(plan.baseline);
+  } else {
+    // A REFUSAL. Record nothing, and say so.
+    //
+    // This branch used to be the `else` above, so every reason that is not a
+    // publish recorded a baseline — including the two the planner invents to
+    // refuse one. A baseline is a promise that these ids are already asserted,
+    // so recording it for entries that never left the device makes `local −
+    // baseline` empty for them from then on and they are NEVER PUBLISHED
+    // AGAIN, while the UI reports success. That is the same permanent loss
+    // `assertPublished` exists to prevent.
+    //
+    // Reached today by 'private-too-large' — the read was fine and the rows are
+    // painted, so this deliberately does not return early; only the promise is
+    // withheld.
+    setFavoritesSync('degraded', plan.reason);
+    // eslint-disable-next-line no-console
+    console.warn(`[favorites] not recording a baseline — the planner refused this publish (${plan.reason})`);
   }
 }
 

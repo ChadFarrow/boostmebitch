@@ -948,10 +948,6 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // bad read, republished, is the entire list gone.
   if (!input.trustworthy) return plan(false, 'degraded');
 
-  if (privateSame && JSON.stringify(tags) === JSON.stringify(input.readTags)) {
-    return plan(false, 'unchanged');
-  }
-
   // A CIPHERTEXT WE COULD NOT READ IS NOT A CIPHERTEXT WE MAY WRITE OVER.
   //
   // Carrying it verbatim is always safe, so a publish that only touches the
@@ -971,6 +967,24 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // and "this app cannot read it" both render as a shorter list.
   const wantsPrivateWrite = mode === 'private' || !!input.userConfirmedWithdrawal;
   if (privateUnreadable && wantsPrivateWrite) return plan(false, 'private-unreadable');
+
+  // ONLY NOW may we say "nothing changed", and the order is the whole point.
+  //
+  // `privateSame` is TRUE when the private half is unreadable — it has to be,
+  // because a ciphertext we carry verbatim cannot differ from itself. Ask this
+  // question first and a private-mode cycle that failed to decrypt reports
+  // 'unchanged' rather than refusing: `syncFavorites` then calls `onSynced`,
+  // and the baseline it records claims the favorite the user just made was
+  // published. `local − baseline` is empty for that id from then on, so it is
+  // NEVER PUBLISHED AGAIN, while the UI reports success — the same permanent
+  // loss `assertPublished` exists to prevent, arriving through a door it does
+  // not watch.
+  //
+  // Found by writing the sequence out as a check vector: the first private
+  // publish works, and the second one silently swallows the entry.
+  if (privateSame && JSON.stringify(tags) === JSON.stringify(input.readTags)) {
+    return plan(false, 'unchanged');
+  }
 
   const publicNodes = input.merged.nodes.length;
   const privateNodes = input.privateMerged ? input.privateMerged.nodes.length : 0;

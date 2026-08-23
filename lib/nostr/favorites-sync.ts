@@ -221,7 +221,26 @@ function cycleOptionsFor(
     // before that — so treating it as 'public' here only affects the paths that
     // have already established one.
     mode: mode ?? 'public',
-    purpose,
+    // IN PRIVATE MODE THE DECRYPT IS NOT OPTIONAL, AND THE DEFAULT MUST NOT BE
+    // "don't spend a prompt".
+    //
+    // This shipped as a bare `purpose`, which is undefined on every background
+    // cycle — so `syncFavorites` read with `decryptPrivate: false`, got
+    // `privateUnreadable`, and the planner correctly refused to write over a
+    // blob it could not read. The FIRST private publish worked (an empty
+    // `content` needs no decrypt) and every one after it silently refused. The
+    // symptom is the worst kind: hearts fill, nothing propagates, and the only
+    // sign is a console warn.
+    //
+    // A public-mode cycle still does not decrypt, and that is not laziness —
+    // it carries `content` verbatim, so it has nothing to learn from opening
+    // it, and the cheapest correct read is the one that asks for nothing.
+    //
+    // 'unattended' rather than 'user-initiated' because a heart toggle is not a
+    // request to decrypt: on Amber this refuses, parks the ciphertext, and
+    // surfaces the notice with its "unlock" button. That is the intended
+    // degradation, not a failure to work around here.
+    purpose: purpose ?? (mode === 'private' ? 'unattended' : undefined),
   };
 }
 
