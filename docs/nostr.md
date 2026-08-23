@@ -198,6 +198,39 @@ capped plaintext at 65535 bytes; a library built to that text rejects anything
 past it, and an unreadable private list is indistinguishable from an empty one.
 Ciphertext runs 1.5–1.9× the plaintext after padding and base64.
 
+### Testing it without touching a real relay
+
+"Testing locally" and "testing against local data" are different things, and
+the gap is the hazard: a dev server on localhost still publishes to
+damus.io / primal.net / nos.lol under your real npub, to the event StableKraft
+shares. A replaceable event keeps no history, so a bug found that way is found
+in production, on someone else's device too.
+
+Three scripts close it:
+
+- **`npm run relay`** — ~40 lines of NIP-01 on `ws://127.0.0.1:7447`, in-memory,
+  with replaceable-event semantics (which is the behaviour under test). Point
+  the app at it with `bmb:relays`, which REPLACES the default set rather than
+  joining it:
+  `localStorage.setItem('bmb:relays', JSON.stringify(['ws://127.0.0.1:7447']))`.
+  Note this covers the favorites read and write; `PROFILE_RELAYS` is a separate
+  fixed list and still reads other people's kind:0 from the public network.
+- **`npm run seed:relay -- <npub>`** — copies that account's real kind:10333 off
+  the public relays into the local one, strictly read-only. An empty relay is a
+  real state and worth testing, but it is the EASY one; the states that have
+  cost this repo data need a list with history in it — another app's entries, a
+  group that exists only to place a track, a non-UUID item guid.
+- **`npm run e2e:favorites`** — the whole loop with no account involved at all: a
+  throwaway key in the test process reached from the page over a CDP binding, so
+  `window.nostr` is indistinguishable from an extension and the NIP-44 is the
+  real one. It pins the public publish, the move into `content`, a `?`-bearing
+  item guid surviving, **idempotence across two reloads**, and that the library
+  still renders. `--headed` to watch it.
+
+That last one exists because everything else guarding this feature is either a
+pure function or a DOM assertion, and neither can see the wiring between them —
+which is where this feature kept breaking.
+
 ### Where a favorite goes — public, private, or nowhere
 
 `storage.favPrivacy:<npub>` holds `'public' | 'private' | 'off'`, and **absent is

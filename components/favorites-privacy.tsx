@@ -180,7 +180,13 @@ export function FavoritesPrivacyControl() {
       </div>
 
       {pending && (
-        <FavoritesPrivacyModal to={pending} onClose={() => setPending(null)} />
+        // Keyed by the target, so changing it REMOUNTS. `choice` is seeded from
+        // `to` with useState, which ignores every later value — so without the
+        // key a second target arriving while the dialog is open leaves the
+        // heading, the copy and the action all describing the first one. The
+        // backdrop makes that hard to reach by hand and trivial to reach from a
+        // script, which is how it turned up.
+        <FavoritesPrivacyModal key={pending} to={pending} onClose={() => setPending(null)} />
       )}
     </>
   );

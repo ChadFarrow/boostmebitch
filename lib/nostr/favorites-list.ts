@@ -915,14 +915,23 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   const privateUnreadable = !!input.privateUnreadable;
 
   const tags = tagsFromList(input.merged);
-  const privateTags = input.privateMerged ? tagsFromList(input.privateMerged) : null;
   const baseline = baselineForHalves(input.local, input.privateLocal ?? { groups: [], loose: [] });
 
   // A private half with nothing in it is an EMPTY `content`, never an encrypted
   // empty array — otherwise every list that has never used one carries a couple
   // of hundred bytes of ciphertext for the rest of its life, and the comparison
   // below has to spend a signer round trip to learn nothing.
-  const privateEmpty = privateTags === null || privateTags.length === 0;
+  //
+  // EMPTINESS IS A COUNT OF NODES, NOT OF TAGS, and the difference is not
+  // pedantic: `tagsFromList` always emits `['alt', LIST_ALT]`, so an empty list
+  // serialises to ONE tag, never zero. Testing the tag array made every
+  // ordinary public-mode publish encrypt an alt-only array into `content` —
+  // caught end to end, where a public list came back carrying 132 bytes of
+  // ciphertext holding no entries. It cost a signer round trip per publish and
+  // put a private half on the wire for users who had never asked for one.
+  const privateNodes = input.privateMerged ? input.privateMerged.nodes.length : 0;
+  const privateTags = input.privateMerged && privateNodes > 0 ? tagsFromList(input.privateMerged) : null;
+  const privateEmpty = privateTags === null;
   const privateSame = privateUnreadable
     ? true // carried verbatim, so by definition nothing about it changes
     : JSON.stringify(privateTags ?? []) === JSON.stringify(readPrivateTags);
@@ -987,7 +996,6 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   }
 
   const publicNodes = input.merged.nodes.length;
-  const privateNodes = input.privateMerged ? input.privateMerged.nodes.length : 0;
 
   // Don't mint an empty event for a user who has no favorites — otherwise every
   // signed-in visitor gets a kind:10333 they never asked for.
