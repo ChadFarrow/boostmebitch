@@ -171,6 +171,19 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   const cachedEpisodes = storage.favoriteEpisodes.get(identity.npub);
   const relays = resolvePublishRelays(identity);
 
+  // 'off' is this device only: no read, no publish, and nothing on a relay is
+  // touched. Returning BEFORE the query is the point — a read here would be
+  // harmless but the status it sets would not, and an 'ok' on a list we have
+  // stopped syncing invites the next surface to believe it.
+  //
+  // What is already on the relay stays there. We do not delete on someone's
+  // behalf from a settings change; `withdrawThisDevice` is the explicit route,
+  // and the dialog that offers it says what happens either way.
+  if (favoritesMode(identity.npub) === 'off') {
+    setFavoritesSync('idle');
+    return;
+  }
+
   setFavoritesSync('loading');
 
   // The read, and only the read, decides the status. A throw anywhere in here

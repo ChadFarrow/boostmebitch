@@ -1,0 +1,417 @@
+'use client';
+
+// WHERE this account's favorites go: public tags on the shared kind:10333
+// event, an encrypted half inside it, or nowhere at all.
+//
+// Two surfaces, one vocabulary, one file:
+//
+//   <FavoritesPrivacyControl>  the segmented control on /favorites
+//   <FavoritesPrivacyModal>    the first-favorite question, and every
+//                              confirmation for a switch
+//
+// They share `MODES` and `describe()` deliberately. The consequence sentence is
+// the whole point of the feature — "private" and "not on Nostr" are both
+// invisible from the outside, and a user who cannot tell which one they are in
+// has no way to find out — so two surfaces disagreeing about what a mode means
+// would be worse than either wording alone.
+
+import { useCallback, useEffect, useState } from 'react';
+import { useApp } from '@/lib/store';
+import { storage, subscribeFavPrivacy } from '@/lib/storage';
+import { ModalShell } from './modal-shell';
+import {
+  favoritesMode,
+  hydrateFavorites,
+  onFavoritesModeNeeded,
+  privateFavoritesEnabled,
+  recordFavoritesPrivacy,
+  syncFavoritesNow,
+  withdrawThisDevice,
+  type FavoritesPrivacy,
+} from '@/lib/nostr';
+
+// ---------------------------------------------------------------------------
+// Vocabulary
+// ---------------------------------------------------------------------------
+
+const MODES: FavoritesPrivacy[] = ['public', 'private', 'off'];
+
+const LABEL: Record<FavoritesPrivacy, string> = {
+  public: 'Public',
+  private: 'Private',
+  off: 'Not on Nostr',
+};
+
+/**
+ * What this mode actually means for the user, in one sentence naming the
+ * consequence rather than the mechanism.
+ *
+ * 'public' says "anyone" rather than "readable" on purpose: `i` is a
+ * single-letter tag, so relays index it and a `#i` filter answers *which
+ * pubkeys favorited this feed*. The list is searchable in reverse, not merely
+ * readable by someone who already has the pubkey, and "public" alone does not
+ * convey that.
+ */
+function describe(mode: FavoritesPrivacy): string {
+  if (mode === 'public') {
+    return 'Synced across your apps. Anyone can look up who favorited a show.';
+  }
+  if (mode === 'private') {
+    return 'Synced across your apps, encrypted so only you can read them.';
+  }
+  return 'Kept on this device only. Nothing is sent to Nostr.';
+}
+
+/** The one thing privacy does NOT hide, said out loud. */
+const PRIVATE_CAVEAT =
+  'Your pubkey, and roughly how many favorites you keep, stay visible either way.';
+
+const GATE_REASON =
+  'Waiting on the other apps that share this list. Turning it on before they update '
+  + 'would let one of them erase your private favorites, with no undo.';
+
+// ---------------------------------------------------------------------------
+// Reading the current mode
+// ---------------------------------------------------------------------------
+
+/**
+ * This account's mode, or null when it has never chosen.
+ *
+ * Null is a real third state — it is what makes the first-favorite prompt fire
+ * — so it is never flattened to 'public' here. `mounted` gates the first render
+ * because the value lives in localStorage and the server has no idea what it
+ * is.
+ */
+export function useFavoritesMode(): { mode: FavoritesPrivacy | null; mounted: boolean } {
+  const identity = useApp((s) => s.identity);
+  const [mode, setMode] = useState<FavoritesPrivacy | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    const read = () => setMode(identity ? favoritesMode(identity.npub) : null);
+    read();
+    setMounted(true);
+    // Subscribed rather than read once: the modal and the control are separate
+    // trees, and a write from either has to move the other.
+    return subscribeFavPrivacy(read);
+  }, [identity]);
+
+  return { mode, mounted };
+}
+
+// ---------------------------------------------------------------------------
+// The segmented control
+// ---------------------------------------------------------------------------
+
+const seg = (on: boolean, disabled: boolean) =>
+  'px-3 py-1.5 text-xs font-semibold uppercase tracking-widest rounded-full transition '
+  + 'min-h-[44px] sm:min-h-0 flex items-center justify-center '
+  + (disabled
+    ? 'text-bone/30 cursor-not-allowed'
+    : on
+      ? 'bg-bolt text-ink shadow-sm'
+      : 'text-bone/70 hover:text-bone');
+
+/**
+ * The control on /favorites.
+ *
+ * Renders nothing signed out: favorites are already local-only then, so all
+ * three options describe the same behaviour and offering a choice between them
+ * would be a lie.
+ */
+export function FavoritesPrivacyControl() {
+  const identity = useApp((s) => s.identity);
+  const { mode, mounted } = useFavoritesMode();
+  const [pending, setPending] = useState<FavoritesPrivacy | null>(null);
+  const gated = mounted && !privateFavoritesEnabled();
+
+  if (!identity || !mounted) return null;
+
+  // Null is rendered as "nothing pressed", never as Public. Public is a real
+  // claim — it means a relay can be asked who favorited a show — and showing it
+  // selected for an account that has not chosen tells the user something about
+  // their data that is not true yet.
+  const current = mode;
+
+  return (
+    <>
+      <div className="mb-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[11px] uppercase tracking-widest text-muted">Favorites</span>
+          <div
+            role="group"
+            aria-label="Where your favorites are stored"
+            className="inline-flex items-center gap-0.5 p-0.5 rounded-full border border-bone/15 bg-bone/5"
+          >
+            {MODES.map((m) => {
+              const disabled = m === 'private' && gated;
+              return (
+                <button
+                  key={m}
+                  type="button"
+                  className={seg(current === m, disabled)}
+                  aria-pressed={current === m}
+                  disabled={disabled}
+                  title={disabled ? GATE_REASON : describe(m)}
+                  // A switch is never applied straight from the control. Each
+                  // one moves entries on a shared event — into the encrypted
+                  // half, into plaintext, or off the relays entirely — and two
+                  // of the three are not undoable by pressing the button again.
+                  onClick={() => { if (m !== current) setPending(m); }}
+                >
+                  {LABEL[m]}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <p className="text-[11px] text-muted mt-1.5">
+          {current
+            ? describe(current)
+            : 'Not set yet — you will be asked when you save your first favorite.'}
+        </p>
+        {gated && (
+          <p className="text-[11px] text-muted/70 mt-1">Private: {GATE_REASON}</p>
+        )}
+      </div>
+
+      {pending && (
+        <FavoritesPrivacyModal
+          from={mode}
+          to={pending}
+          onClose={() => setPending(null)}
+        />
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The dialog
+// ---------------------------------------------------------------------------
+
+/**
+ * Asks the question, then does the work.
+ *
+ * Two entry modes, one component. `to` unset is the FIRST-FAVORITE prompt —
+ * the user has just favorited something, it is already in the store, and the
+ * question is where it should live. `to` set is a switch confirmation from the
+ * control above.
+ *
+ * The favorite is applied before this opens, deliberately: the heart fills on
+ * the tap and the question comes after. Publishing publicly and THEN asking
+ * "public or private?" is backwards, and a relay that has the bytes cannot be
+ * asked to forget them.
+ */
+export function FavoritesPrivacyModal({
+  from,
+  to,
+  onClose,
+}: {
+  from: FavoritesPrivacy | null;
+  to?: FavoritesPrivacy;
+  onClose: () => void;
+}) {
+  const identity = useApp((s) => s.identity);
+  const [choice, setChoice] = useState<FavoritesPrivacy>(to ?? 'public');
+  const [withdraw, setWithdraw] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const asking = !to;
+  const gated = !privateFavoritesEnabled();
+
+  const apply = useCallback(async () => {
+    if (!identity) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Withdrawing runs BEFORE the mode is recorded. `withdrawThisDevice`
+      // still reads the list first and still refuses on an untrustworthy read,
+      // so it can decline — and recording 'off' first would leave a device that
+      // has stopped syncing with entries it promised to remove and now never
+      // will.
+      if (choice === 'off' && withdraw && from && from !== 'off') {
+        await withdrawThisDevice(identity);
+      }
+      recordFavoritesPrivacy(identity.npub, choice, identity);
+      if (choice !== 'off') {
+        // Re-read and republish under the new mode. This is the move: the half
+        // being left drops what this device's baseline claims, and the half
+        // being joined gains it, in one publish.
+        await syncFavoritesNow(identity, 'user-initiated');
+        await hydrateFavorites(identity);
+      }
+      onClose();
+    } catch (e) {
+      setError((e as Error)?.message ?? 'Something went wrong.');
+    } finally {
+      setBusy(false);
+    }
+  }, [identity, choice, withdraw, from, onClose]);
+
+  const leaving = from && from !== 'off' && choice === 'off';
+
+  return (
+    <ModalShell
+      onClose={onClose}
+      label={asking ? 'Where should your favorites be stored?' : `Switch favorites to ${LABEL[choice]}`}
+      className="w-full max-w-md"
+      dismissable={!busy}
+    >
+      <div className="p-5 border-b border-bone/15">
+        <div className="stamp text-nostr border-nostr/60 mb-2">◆ FAVORITES</div>
+        <h3 className="font-display text-2xl leading-tight">
+          {asking ? 'Where should this live?' : `Switch to ${LABEL[choice]}?`}
+        </h3>
+        <p className="text-xs text-muted mt-1">
+          {asking
+            ? 'Your favorites sync between apps over Nostr. You choose how.'
+            : describe(choice)}
+        </p>
+      </div>
+
+      <div className="p-5 space-y-3">
+        {asking && MODES.map((m) => {
+          const disabled = m === 'private' && gated;
+          return (
+            <label
+              key={m}
+              className={`flex items-start gap-2 text-sm ${disabled ? 'opacity-50' : 'cursor-pointer'}`}
+            >
+              <input
+                type="radio"
+                name="fav-privacy"
+                className="mt-1"
+                checked={choice === m}
+                disabled={disabled || busy}
+                onChange={() => setChoice(m)}
+              />
+              <span>
+                <span className="font-semibold">{LABEL[m]}</span>
+                <span className="block text-[11px] text-muted">
+                  {disabled ? GATE_REASON : describe(m)}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+
+        {!asking && choice === 'private' && (
+          <p className="text-xs text-muted">
+            Everything you have already favorited moves into the encrypted half,
+            in one update. {PRIVATE_CAVEAT}
+          </p>
+        )}
+
+        {!asking && choice === 'public' && (
+          <p className="text-xs text-muted">
+            Everything you have already favorited moves into the public half, in
+            one update. Anyone can then look up who favorited a show.
+          </p>
+        )}
+
+        {leaving && (
+          <div className="space-y-2 text-sm">
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="fav-withdraw"
+                className="mt-1"
+                checked={withdraw}
+                disabled={busy}
+                onChange={() => setWithdraw(true)}
+              />
+              <span>
+                Also remove my entries from Nostr
+                <span className="block text-[11px] text-muted">
+                  Takes down only what this device put there. Favorites another
+                  app added are left alone.
+                </span>
+              </span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="fav-withdraw"
+                className="mt-1"
+                checked={!withdraw}
+                disabled={busy}
+                onChange={() => setWithdraw(false)}
+              />
+              <span>
+                Just stop syncing from now on
+                <span className="block text-[11px] text-muted">
+                  What you have already synced stays on Nostr, and stays public.
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
+
+        {asking && choice === 'private' && !gated && (
+          <p className="text-[11px] text-muted">{PRIVATE_CAVEAT}</p>
+        )}
+
+        {error && (
+          <p className="text-xs text-nostr" role="alert">{error}</p>
+        )}
+      </div>
+
+      <div className="p-5 pt-0 flex items-center gap-2">
+        <button type="button" className="btn-bolt" onClick={apply} disabled={busy}>
+          {busy ? 'working…' : asking ? 'Save' : 'Switch'}
+        </button>
+        <button type="button" className="btn-ghost" onClick={onClose} disabled={busy}>
+          Cancel
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+/**
+ * Mounted once, in <AppHeader>, so `/` and /favorites both have it.
+ *
+ * Opened by `requestFavoritesSync` through `onFavoritesModeNeeded` — the one
+ * funnel every heart passes through. Closes itself if a mode arrives from
+ * somewhere else while it is open (the synced settings event landing, or
+ * another tab), because the question is then already answered.
+ */
+export function FavoritesPrivacyPrompt() {
+  const open = useApp((s) => s.favPrivacyPrompt);
+  const setOpen = useApp((s) => s.setFavPrivacyPrompt);
+  const identity = useApp((s) => s.identity);
+  const { mode } = useFavoritesMode();
+
+  // Registered once, from the component that draws the dialog, so the engine
+  // never has to know a React tree exists. `useApp.getState()` rather than the
+  // bound `setOpen` because this callback outlives any one render.
+  useEffect(() => {
+    onFavoritesModeNeeded(() => useApp.getState().setFavPrivacyPrompt(true));
+    installPrivateFavoritesHook();
+    return () => onFavoritesModeNeeded(null);
+  }, []);
+
+  useEffect(() => {
+    if (open && (mode || !identity)) setOpen(false);
+  }, [open, mode, identity, setOpen]);
+
+  if (!open || !identity) return null;
+  return <FavoritesPrivacyModal from={null} onClose={() => setOpen(false)} />;
+}
+
+/**
+ * The device escape hatch for the private half, ahead of
+ * `PRIVATE_FAVORITES_ENABLED`. Deliberately a console call and not a control:
+ * turning it on before the other apps carry `content` is a data-loss decision,
+ * not a preference.
+ */
+export function installPrivateFavoritesHook() {
+  if (typeof window === 'undefined') return;
+  (window as unknown as Record<string, unknown>).bmbEnablePrivateFavorites = (on = true) => {
+    storage.favPrivateOptIn.set(on);
+    return on
+      ? 'private favorites enabled on this device — other apps may still erase them'
+      : 'private favorites disabled on this device';
+  };
+}

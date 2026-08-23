@@ -5,6 +5,7 @@ import { BoltIcon } from '@/components/icons';
 import { AuthControl } from '@/components/auth-control';
 import { NostrAuth } from '@/components/nostr-auth';
 import { FavoritesLink } from '@/components/favorites-link';
+import { FavoritesPrivacyPrompt } from '@/components/favorites-privacy';
 import { clearShowSelection } from '@/lib/store';
 
 /**
@@ -113,6 +114,12 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
           <NostrAuth />
         </div>
       </div>
+      {/* Portals to document.body, so it adds nothing to the 71px this header
+          is measured at. Mounted HERE because this is the one component `/` and
+          /favorites share, and the thing that opens it is
+          `requestFavoritesSync` — the funnel behind thirteen heart render
+          sites, none of which can own a dialog. */}
+      <FavoritesPrivacyPrompt />
     </header>
   );
 }

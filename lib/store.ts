@@ -216,6 +216,17 @@ interface AppState {
    *  call so the three places that clear it can't drift. */
   resetFavoritesSync: () => void;
 
+  /**
+   * The "where should these go?" dialog is open.
+   *
+   * Lifted for the same reason `signInOpen` and `walletOpen` are: the thing
+   * that decides it has to open is `requestFavoritesSync`, the one funnel every
+   * heart goes through, and the thing that renders it is a modal mounted once
+   * in <AppHeader>. Thirteen heart render sites cannot each own a dialog.
+   */
+  favPrivacyPrompt: boolean;
+  setFavPrivacyPrompt: (open: boolean) => void;
+
   // NIP-51 kind:10000 mute list, hydrated on login from the user's relay
   // event. Filter is applied at render time in NoteCard and feed surfaces.
   mutedPubkeys: Set<string>;
@@ -410,6 +421,9 @@ export const useApp = create<AppState>((set, get) => ({
   setFavoritesSync: (s, reason) =>
     set({ favoritesSync: s, favoritesSyncReason: s === 'degraded' ? (reason ?? null) : null }),
   resetFavoritesSync: () => set({ favoritesSync: 'idle', favoritesSyncReason: null }),
+
+  favPrivacyPrompt: false,
+  setFavPrivacyPrompt: (open) => set({ favPrivacyPrompt: open }),
 
   // Hydrate from the guest cache; once the user signs in, hydrateMutes
   // replaces this with their NIP-51 set reconciled against the relay event.

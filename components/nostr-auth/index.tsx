@@ -18,6 +18,7 @@ import {
   publishEncryptedMnemonic,
   fetchEncryptedNwc,
   fetchSettings,
+  applySyncedSettings,
   hydrateFavorites,
   hydrateMutes,
   unionMutedPubkeys,
@@ -292,10 +293,13 @@ export function NostrAuth() {
           });
         })().catch(() => {}).finally(() => { if (expectWallet) setWalletRestoring(false); })
       : Promise.resolve();
-    // Synced settings: apply the last-used boost rail.
+    // Synced settings: the last-used boost rail, and where this account's
+    // favorites go. The second is why this is applied through one helper rather
+    // than field by field — a privacy choice made on a phone has to reach this
+    // device before it publishes the same list in plaintext.
     const settingsPromise = unattendedDecryptOk
       ? fetchSettings(enriched, 'unattended')
-          .then((s) => { if (s?.railPref) storage.railPref.set(s.railPref); })
+          .then((s) => applySyncedSettings(id.npub, s))
           .catch(() => {})
       : Promise.resolve();
     // NWC backup: restore the encrypted connection string if this device has

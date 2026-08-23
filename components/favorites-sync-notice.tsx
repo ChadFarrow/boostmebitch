@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useApp } from '@/lib/store';
-import { hydrateFavorites } from '@/lib/nostr';
+import { hydrateFavorites, syncFavoritesNow } from '@/lib/nostr';
 import { resetPiBreaker } from '@/lib/podcast-meta';
 
 // "We couldn't reach the relays" made visible.
@@ -18,14 +18,26 @@ import { resetPiBreaker } from '@/lib/podcast-meta';
 // an hour of production debugging and nearly a revert of the address gate that
 // would have re-exposed every user to the shared list.
 //
-// The wording names the CONSEQUENCE, not one cause, because there are now two
-// and they are indistinguishable from here. A degraded read is one: nothing
+// The DEFAULT wording names the CONSEQUENCE, not one cause, because two of the
+// causes are indistinguishable from here. A degraded read is one: nothing
 // answered. The other is a merge that came out empty over a list that is not —
 // `planFavoritesPublish`'s `wholesale-delete`, or the same shape caught against
 // this device's own cache — where the relays answered fine and the answer is
 // still one we refuse to adopt. "Couldn't reach the relays" would be a lie in
 // the second case, and the user's action is identical in both: retry, and until
 // then trust what is on screen.
+//
+// THE PRIVATE HALF BREAKS THAT TIE, and gets its own sentence. A list this
+// signer cannot decrypt renders exactly like a shorter list — so the user
+// cannot tell "hidden here by choice" from "this app has not been able to open
+// it", and the retry means something different: it is the one place an Amber
+// user can spend a decrypt prompt on purpose, because the cold start
+// deliberately never asks. `favoritesSyncReason` carries which case it is.
+//
+// The size refusal is separate again, and is the one case where retrying is
+// NOT the answer — nothing about the relays or the signer will change, and
+// telling someone to retry a thing that cannot succeed is worse than saying
+// nothing.
 //
 // Signed out is deliberately not a case this handles: favorites are local by
 // design with no key to sync them under, so there is no relay failure to
@@ -40,12 +52,22 @@ import { resetPiBreaker } from '@/lib/podcast-meta';
 export function FavoritesSyncNotice() {
   const identity = useApp((s) => s.identity);
   const degraded = useApp((s) => s.favoritesSync === 'degraded');
+  const reason = useApp((s) => s.favoritesSyncReason);
   const [retrying, setRetrying] = useState(false);
 
   // 'idle' is NOT a failure — it is the pre-hydration and signed-out state, and
   // treating it as one would show a relay warning to every visitor before
   // anything had even been attempted.
   if (!identity || !degraded) return null;
+
+  const privateUnreadable = reason === 'private-unreadable';
+  const tooLarge = reason === 'private-too-large';
+
+  const message = privateUnreadable
+    ? "⚠ Your signer couldn't open the private half of your list — showing what's on this device."
+    : tooLarge
+      ? '⚠ Your private favorites are too large to store safely. Nothing was changed; make some public to fit.'
+      : "⚠ Couldn't confirm your list — showing what's on this device.";
 
   async function retry() {
     setRetrying(true);
@@ -62,6 +84,12 @@ export function FavoritesSyncNotice() {
       // rather than starting a second read-merge-publish cycle. A success
       // flips `favoritesSync` and unmounts this component from under us.
       await hydrateFavorites(identity!);
+      // The hydrator's own read is deliberately unattended, so on a signer that
+      // refuses one it will not have touched the private half. This second pass
+      // is the explicit ask: 'user-initiated' is what spends the prompt, and the
+      // user pressing "retry" under a message naming their signer is what makes
+      // that honest.
+      if (privateUnreadable) await syncFavoritesNow(identity!, 'user-initiated');
     } catch {
       // The hydrator already set 'degraded'; the notice simply stays up.
     } finally {
@@ -74,15 +102,17 @@ export function FavoritesSyncNotice() {
       role="status"
       className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5 mb-2 flex items-center justify-between gap-2"
     >
-      <span>⚠ Couldn&apos;t confirm your list — showing what&apos;s on this device.</span>
-      <button
-        type="button"
-        onClick={retry}
-        disabled={retrying}
-        className="underline underline-offset-2 hover:text-nostr disabled:opacity-40 flex-shrink-0"
-      >
-        {retrying ? 'retrying…' : 'retry'}
-      </button>
+      <span>{message}</span>
+      {!tooLarge && (
+        <button
+          type="button"
+          onClick={retry}
+          disabled={retrying}
+          className="underline underline-offset-2 hover:text-nostr disabled:opacity-40 flex-shrink-0"
+        >
+          {retrying ? 'retrying…' : privateUnreadable ? 'unlock' : 'retry'}
+        </button>
+      )}
     </div>
   );
 }

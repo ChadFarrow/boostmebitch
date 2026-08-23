@@ -29,6 +29,18 @@ import { createObservable } from './pubsub';
 const railPrefObservable = createObservable();
 export const subscribeRailPref = railPrefObservable.subscribe;
 
+/**
+ * Where this account's favorites go changed.
+ *
+ * Two surfaces render it — the /favorites control and the first-favorite
+ * prompt — and a third (the sync notice) changes its wording by it, so a write
+ * has to reach all of them. Without this the control the user just pressed
+ * shows the old value until something else re-renders the page, which reads as
+ * a control that does not work.
+ */
+const favPrivacyObservable = createObservable();
+export const subscribeFavPrivacy = favPrivacyObservable.subscribe;
+
 // Streaming-rate changes reach three live surfaces that don't share a parent:
 // the wallet modal's global control, the per-show chip in the episode list, and
 // the streaming engine itself (which reads the rate every tick but must react
@@ -1470,10 +1482,15 @@ export const storage = {
       const v = safeGet(identityKey(KEYS.favPrivacyPrefix, npub));
       return v === 'public' || v === 'private' || v === 'off' ? v : null;
     },
-    set: (npub: string | null | undefined, v: FavoritesPrivacy): boolean =>
-      safeSet(identityKey(KEYS.favPrivacyPrefix, npub), v),
-    clear: (npub: string | null | undefined) =>
-      safeRemove(identityKey(KEYS.favPrivacyPrefix, npub)),
+    set: (npub: string | null | undefined, v: FavoritesPrivacy): boolean => {
+      const landed = safeSet(identityKey(KEYS.favPrivacyPrefix, npub), v);
+      favPrivacyObservable.notify();
+      return landed;
+    },
+    clear: (npub: string | null | undefined) => {
+      safeRemove(identityKey(KEYS.favPrivacyPrefix, npub));
+      favPrivacyObservable.notify();
+    },
   },
 
   /**
@@ -1485,6 +1502,7 @@ export const storage = {
     set: (on: boolean) => {
       if (on) safeSet(KEYS.favPrivateOptIn, '1');
       else safeRemove(KEYS.favPrivateOptIn);
+      favPrivacyObservable.notify();
     },
   },
 

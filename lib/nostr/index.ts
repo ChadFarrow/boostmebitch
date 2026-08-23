@@ -107,12 +107,19 @@ export {
 // cycle has to be both debounced and queued, and a scheduler that skipped the
 // queue was a second way in. Use `requestFavoritesSync`.
 export {
+  favoritesMode,
+  setFavoritesMode,
+  seedFavoritesMode,
+  privateFavoritesEnabled,
+  unattendedDecryptOk,
+  onFavoritesModeNeeded,
   localFavoriteEntries,
   localFavoriteList,
   requestFavoritesSync,
   serializeFavoritesCycle,
   syncFavoritesNow,
   syncOptionsFor,
+  withdrawThisDevice,
 } from './favorites-sync';
 
 export {
@@ -132,7 +139,9 @@ export {
   SETTINGS_D_TAG,
   fetchSettings,
   publishSettings,
+  applySyncedSettings,
   recordLastRail,
+  recordFavoritesPrivacy,
   type SyncedSettings,
 } from './settings-backup';
 

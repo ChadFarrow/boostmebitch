@@ -6,6 +6,7 @@ import { clearShowSelection, useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
+import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
 import {
   groupByMedium, feedNoun, itemNoun, splitLabels, crossSplitLabel,
@@ -315,6 +316,13 @@ export function FavoritesPage() {
           hide the reason the list is short. Self-hiding unless signed in AND
           degraded. */}
       <FavoritesSyncNotice />
+
+      {/* Above the loading/empty/rows split on purpose, so it is reachable in
+          every one of them. A signed-in user with nothing saved yet is exactly
+          who most wants to set this BEFORE their first favorite, and putting it
+          inside the rows branch would hide it from them. Self-hiding signed
+          out, where all three options describe the same behaviour. */}
+      <FavoritesPrivacyControl />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
