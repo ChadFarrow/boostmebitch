@@ -35,7 +35,7 @@
 //      — the first thing the spec says a private half breaks.
 //   4. The library still renders, decrypted, with no "nothing saved yet".
 
-import { WebSocketServer } from 'ws';
+import { createRelay } from './local-relay.mjs';
 import { spawn } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -78,32 +78,20 @@ const npub = nip19.npubEncode(pk);
 const convo = nip44.v2.utils.getConversationKey(sk, pk);
 
 // ---- relay ---------------------------------------------------------------
-const events = new Map();
-const slot = (e) => (e.kind === 0 || e.kind === 3 || (e.kind >= 10000 && e.kind < 20000))
-  ? `${e.kind}:${e.pubkey}`
-  : (e.kind >= 30000 && e.kind < 40000)
-    ? `${e.kind}:${e.pubkey}:${e.tags.find((t) => t[0] === 'd')?.[1] ?? ''}` : null;
+// The SAME relay `npm run relay` starts, not a second copy of it. This test
+// asserts on replacement — one publish superseding another is the whole
+// mechanism the favorites feature rests on — so a reimplemented relay here
+// would let the test and the tool a human runs by hand drift apart, and the
+// test would keep passing while proving something else.
+//
+// It already had: the inline copy deleted whatever occupied a slot without
+// comparing `created_at`, so an OLDER event replaced a newer one — the exact
+// opposite of NIP-01, in the file whose job is to prove replacement works.
 const published = [];
-new WebSocketServer({ host: '127.0.0.1', port: PORT }).on('connection', (ws) => {
-  ws.on('message', (raw) => {
-    const m = JSON.parse(raw.toString());
-    if (m[0] === 'EVENT') {
-      const e = m[1], s = slot(e);
-      if (s) for (const [id, p] of events) if (slot(p) === s) events.delete(id);
-      events.set(e.id, e);
-      if (e.kind === 10333) published.push(e);
-      ws.send(JSON.stringify(['OK', e.id, true, '']));
-    } else if (m[0] === 'REQ') {
-      const f = m.slice(2);
-      for (const e of [...events.values()].sort((a, b) => b.created_at - a.created_at)) {
-        if (f.some((x) => (!x.kinds || x.kinds.includes(e.kind)) && (!x.authors || x.authors.includes(e.pubkey))
-          && (!x['#d'] || x['#d'].includes(e.tags.find((t) => t[0] === 'd')?.[1])))) {
-          ws.send(JSON.stringify(['EVENT', m[1], e]));
-        }
-      }
-      ws.send(JSON.stringify(['EOSE', m[1]]));
-    }
-  });
+createRelay({
+  port: PORT,
+  log: null, // this script's own output is the report
+  onEvent: (e) => { if (e.kind === 10333) published.push(e); },
 });
 
 // ---- CDP -----------------------------------------------------------------

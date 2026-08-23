@@ -210,17 +210,31 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // fail independently, and a single flag across them let a good read on one
     // clear a notice the other's failure had raised. There is one event now, so
     // a partial failure is not expressible and a single flag cannot lie.
-    onSynced: (baseline) => {
-      storage.favBaseline.set(identity.npub, baseline);
-      // The removal has now reached a relay, so the marker has done its job.
-      // Leaving it set would let a LATER empty merge — an unhydrated store on
-      // the next load — ride through the guard on a permission granted for a
-      // different act.
-      storage.favCleared.set(identity.npub, false);
-      useApp.getState().setFavoritesSync('ok');
-    },
+    onSynced: (baseline) => recordFavoritesBaseline(identity, baseline),
     onDegraded: (reason) => useApp.getState().setFavoritesSync('degraded', reason),
   };
+}
+
+/**
+ * Agree with the relay: record what this device is now asserting, retire the
+ * deliberate-clear marker, and clear the notice.
+ *
+ * Named rather than inlined in `onSynced` because the hydrator needs the same
+ * three steps on a cycle that did not publish, and reached them by building a
+ * whole `SyncOptions` — relays, both getters, mode, purpose — to call one
+ * callback off it. That reads as though the options mattered, and it put the
+ * definition of "we agree with the relay" one indirection away from both
+ * callers.
+ *
+ * The marker retires HERE, with the publish, and not on a timer or a reload:
+ * left set, a later empty merge — an unhydrated store on the next load — would
+ * ride through the wholesale-delete guard on a permission granted for a
+ * different act.
+ */
+export function recordFavoritesBaseline(identity: NostrIdentity, baseline: FavoritesBaseline): void {
+  storage.favBaseline.set(identity.npub, baseline);
+  storage.favCleared.set(identity.npub, false);
+  useApp.getState().setFavoritesSync('ok');
 }
 
 /**

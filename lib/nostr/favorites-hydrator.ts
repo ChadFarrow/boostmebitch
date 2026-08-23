@@ -53,7 +53,7 @@ import {
   seedFavoritesMode,
   serializeFavoritesCycle,
   trustedBaseline,
-  syncOptionsFor,
+  recordFavoritesBaseline,
   unattendedDecryptOk,
 } from './favorites-sync';
 import { resolvePublishRelays } from './relays';
@@ -505,7 +505,7 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     // adopted — in the half each entry actually lives in. Recomputing it here
     // from the store would put everything in the current mode's half and
     // disown the other, which is the bug this replaced.
-    syncOptionsFor(identity).onSynced(plan.baseline);
+    recordFavoritesBaseline(identity, plan.baseline);
   } else {
     // A REFUSAL. Record nothing, and say so.
     //

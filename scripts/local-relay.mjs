@@ -24,19 +24,16 @@
 // Replaceable-event semantics ARE implemented (kinds 0, 3, 10000-19999 and
 // parameterized 30000-39999), because that is the behaviour under test: the
 // whole favorites feature turns on one event replacing another.
+//
+// `createRelay` is exported so `e2e-favorites.mjs` runs against THIS relay
+// rather than a second copy of it. That matters more than it looks: the e2e
+// asserts on replacement — one publish superseding another is the entire
+// mechanism the favorites feature rests on — so a reimplemented relay in the
+// test would let the test and the tool a human runs by hand drift apart, and
+// the test would keep passing while proving something else. Same reason
+// `check:favsync` imports the shipping module instead of a copy.
 
 import { WebSocketServer } from 'ws';
-
-const argv = process.argv.slice(2);
-const arg = (name, fallback) => {
-  const i = argv.indexOf(`--${name}`);
-  return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
-};
-const PORT = Number(arg('port', 7447));
-const VERBOSE = argv.includes('--verbose');
-
-/** id -> event */
-const events = new Map();
 
 const isReplaceable = (k) => k === 0 || k === 3 || (k >= 10000 && k < 20000);
 const isAddressable = (k) => k >= 30000 && k < 40000;
@@ -64,60 +61,91 @@ function matches(filter, e) {
   return true;
 }
 
-const wss = new WebSocketServer({ host: '127.0.0.1', port: PORT });
+/**
+ * Start the relay. Returns `{ events, close }` — `events` is the live id→event
+ * map, so a caller can seed it directly instead of dialling itself.
+ *
+ * `onEvent(e)` fires for every accepted EVENT and `onReq(filters, hits)` for
+ * every REQ, which is how a test builds a timeline without parsing log lines.
+ * `log` defaults to `console.log` for the CLI and is passed `null` by the e2e,
+ * whose own output is the report.
+ */
+export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, log = console.log, verbose = false } = {}) {
+  /** id -> event */
+  const events = new Map();
+  const say = log ?? (() => {});
+  const wss = new WebSocketServer({ host, port });
 
-wss.on('connection', (ws) => {
-  ws.on('message', (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw.toString()); } catch { return; }
-    if (!Array.isArray(msg)) return;
-    const [verb] = msg;
+  wss.on('connection', (ws) => {
+    ws.on('message', (raw) => {
+      let msg;
+      try { msg = JSON.parse(raw.toString()); } catch { return; }
+      if (!Array.isArray(msg)) return;
+      const [verb] = msg;
 
-    if (verb === 'EVENT') {
-      const e = msg[1];
-      if (!e?.id || !e?.pubkey) return;
-      // Deliberately NOT verifying the signature. This is a test fixture, not a
-      // relay, and a signature check here would only ever fail for a reason
-      // that has nothing to do with what is being tested.
-      const slot = slotOf(e);
-      if (slot) {
-        for (const [id, prev] of events) {
-          if (slotOf(prev) !== slot) continue;
-          // NIP-01: the newer created_at wins; ties break on the lower id.
-          if (prev.created_at > e.created_at
-            || (prev.created_at === e.created_at && prev.id < e.id)) {
-            ws.send(JSON.stringify(['OK', e.id, false, 'replaced: a newer version is stored']));
-            return;
+      if (verb === 'EVENT') {
+        const e = msg[1];
+        if (!e?.id || !e?.pubkey) return;
+        // Deliberately NOT verifying the signature. This is a test fixture, not
+        // a relay, and a signature check here would only ever fail for a reason
+        // that has nothing to do with what is being tested. It cannot become an
+        // injection path either: SimplePool verifies every relay-fetched event
+        // client-side, so a forged one is dropped before the app's merge sees it.
+        const slot = slotOf(e);
+        if (slot) {
+          for (const [id, prev] of events) {
+            if (slotOf(prev) !== slot) continue;
+            // NIP-01: the newer created_at wins; ties break on the lower id.
+            if (prev.created_at > e.created_at
+              || (prev.created_at === e.created_at && prev.id < e.id)) {
+              ws.send(JSON.stringify(['OK', e.id, false, 'replaced: a newer version is stored']));
+              return;
+            }
+            events.delete(id);
           }
-          events.delete(id);
         }
+        events.set(e.id, e);
+        ws.send(JSON.stringify(['OK', e.id, true, '']));
+        onEvent?.(e);
+        const priv = typeof e.content === 'string' && e.content.length ? ` content=${e.content.length}B` : '';
+        say(`  EVENT  kind ${e.kind}  ${e.tags.length} tags${priv}  ${e.id.slice(0, 8)}  (${events.size} stored)`);
+        if (verbose) say(`         ${JSON.stringify(e.tags)}`);
+        return;
       }
-      events.set(e.id, e);
-      ws.send(JSON.stringify(['OK', e.id, true, '']));
-      const priv = typeof e.content === 'string' && e.content.length ? ` content=${e.content.length}B` : '';
-      console.log(`  EVENT  kind ${e.kind}  ${e.tags.length} tags${priv}  ${e.id.slice(0, 8)}  (${events.size} stored)`);
-      if (VERBOSE) console.log(`         ${JSON.stringify(e.tags)}`);
-      return;
-    }
 
-    if (verb === 'REQ') {
-      const sub = msg[1];
-      const filters = msg.slice(2);
-      const hits = [...events.values()]
-        .filter((e) => filters.some((f) => matches(f, e)))
-        .sort((a, b) => b.created_at - a.created_at);
-      for (const e of hits) ws.send(JSON.stringify(['EVENT', sub, e]));
-      ws.send(JSON.stringify(['EOSE', sub]));
-      console.log(`  REQ    ${JSON.stringify(filters.map((f) => ({ kinds: f.kinds, authors: f.authors?.map((a) => a.slice(0, 8)) })))} -> ${hits.length}`);
-      return;
-    }
+      if (verb === 'REQ') {
+        const sub = msg[1];
+        const filters = msg.slice(2);
+        const hits = [...events.values()]
+          .filter((e) => filters.some((f) => matches(f, e)))
+          .sort((a, b) => b.created_at - a.created_at);
+        for (const e of hits) ws.send(JSON.stringify(['EVENT', sub, e]));
+        ws.send(JSON.stringify(['EOSE', sub]));
+        onReq?.(filters, hits);
+        say(`  REQ    ${JSON.stringify(filters.map((f) => ({ kinds: f.kinds, authors: f.authors?.map((a) => a.slice(0, 8)) })))} -> ${hits.length}`);
+        return;
+      }
 
-    if (verb === 'CLOSE') ws.send(JSON.stringify(['CLOSED', msg[1], '']));
+      if (verb === 'CLOSE') ws.send(JSON.stringify(['CLOSED', msg[1], '']));
+    });
   });
-});
 
-console.log(`local relay listening on ws://127.0.0.1:${PORT}  (in-memory; Ctrl-C forgets everything)`);
-console.log('point the app at it from the browser console:');
-console.log(`  localStorage.setItem('bmb:relays', JSON.stringify(['ws://127.0.0.1:${PORT}']))`);
-console.log('and back to the real ones with:');
-console.log("  localStorage.removeItem('bmb:relays')\n");
+  return { events, close: () => wss.close() };
+}
+
+// --- CLI ---------------------------------------------------------------------
+// `npm run relay`. Guarded so importing this module starts nothing.
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  const argv = process.argv.slice(2);
+  const arg = (name, fallback) => {
+    const i = argv.indexOf(`--${name}`);
+    return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
+  };
+  const port = Number(arg('port', 7447));
+  createRelay({ port, verbose: argv.includes('--verbose') });
+  console.log(`local relay listening on ws://127.0.0.1:${port}  (in-memory; Ctrl-C forgets everything)`);
+  console.log('point the app at it from the browser console:');
+  console.log(`  localStorage.setItem('bmb:relays', JSON.stringify(['ws://127.0.0.1:${port}']))`);
+  console.log('and back to the real ones with:');
+  console.log("  localStorage.removeItem('bmb:relays')\n");
+}
