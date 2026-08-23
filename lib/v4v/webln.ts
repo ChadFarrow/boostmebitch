@@ -35,6 +35,32 @@ async function ensureWebln(): Promise<Webln> {
   return wl;
 }
 
+/**
+ * Thrown when the WebLN provider refused a request INSTEAD of executing it —
+ * the rail's counterpart to NIP-47's `NwcNotAttemptedError`, and load-bearing
+ * for the same reason: nothing left the wallet, so `payOne` may retry the leg
+ * over LNURL and must NOT record the failure against the recipient.
+ *
+ * WebLN has no error codes, so this is raised only from the two paths **this
+ * module controls**, both of which run before any payment is attempted: the
+ * provider being absent or refusing `enable()`, and a provider that exposes no
+ * `keysend` method. Anything `wl.keysend()` itself rejects with stays a plain
+ * Error and stays fatal to the leg — the extension may already have paid, and a
+ * message heuristic is not proof that it didn't.
+ *
+ * `railCanKeysend('webln')` cannot answer this in advance: the Alby extension
+ * defines `keysend` on the provider object whatever the connected account
+ * supports, so the method's presence is not a capability. That is why that arm
+ * reports `'unknown'` rather than `'yes'`, and this class is what makes
+ * attempting anyway safe.
+ */
+export class WeblnNotAttemptedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WeblnNotAttemptedError';
+  }
+}
+
 /** Public alias for the gated enable so the wallet sub-card can drive state. */
 export async function weblnEnable(): Promise<void> {
   await ensureWebln();
@@ -90,8 +116,18 @@ export async function weblnKeysend(args: {
   amount_sat: number;
   customRecords?: Record<string, string>;
 }): Promise<string> {
-  const wl = await ensureWebln();
-  if (!wl.keysend) throw new Error('Wallet does not support keysend');
+  // Both of these are refusals, not failures: neither reaches `wl.keysend`, so
+  // no payment can have been attempted. Typing them is what stops `payOne`
+  // blaming the recipient's node for a locked extension or an account with no
+  // keysend support — and what lets the leg fall back to LNURL, which is the
+  // rail every WebLN wallet does implement.
+  let wl: Webln;
+  try {
+    wl = await ensureWebln();
+  } catch (e) {
+    throw new WeblnNotAttemptedError(e instanceof Error ? e.message : String(e));
+  }
+  if (!wl.keysend) throw new WeblnNotAttemptedError('This WebLN wallet does not support keysend');
   const r = await wl.keysend({
     destination: args.pubkey,
     amount: args.amount_sat,
