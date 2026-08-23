@@ -119,11 +119,30 @@ export async function storeBoostMetadata(args: {
       ),
       signal: AbortSignal.timeout(BOOSTBOX_TIMEOUT_MS),
     });
-    if (!res.ok) return null;
+    if (!res.ok) return noDesc(args.recipient.address, `proxy returned ${res.status}`);
     const data = (await res.json()) as Partial<BoostBoxResponse>;
-    if (!data?.desc || !data?.url) return null;
+    if (!data?.desc || !data?.url) return noDesc(args.recipient.address, 'no desc in response');
     return { desc: data.desc, url: data.url };
-  } catch {
-    return null;
+  } catch (e) {
+    return noDesc(args.recipient.address, e instanceof Error ? e.message : String(e));
   }
+}
+
+/**
+ * Non-fatal, but never silent again.
+ *
+ * On an LNURL leg the descriptor is the ONLY machine-readable metadata the
+ * recipient gets — there is no TLV boostagram on that rail — so losing it is
+ * the difference between a boost and an anonymous 1-sat payment. Every failure
+ * path here returned a bare `null`, so a rate limit, a dead upstream and a
+ * malformed response all looked identical to a leg that simply never asked:
+ * the payment succeeded, `<BoostCard>` still rendered fine from the sender's own
+ * history, and nothing anywhere said the recipient had got nothing.
+ */
+function noDesc(address: string, reason: string): null {
+  console.warn(
+    `[boostbox] ${address} — metadata NOT stored, so this LNURL leg carries no ` +
+      `rss::payment descriptor: ${reason}`,
+  );
+  return null;
 }

@@ -122,6 +122,12 @@ console.log('\nnoteKeysendFailure — a target that does not pay is demoted, onc
   // What it must NOT do is rescue the leg that failed. That leg was attempted
   // and may have paid; see failureBlamesDestination and payOne. This is only
   // about where the NEXT leg goes, which is what makes it safe to be liberal.
+  //
+  // Rescuing the failed leg is a different decision behind a far stricter
+  // predicate — routingFailureProvesUnpaid, pinned by check:nwcerror, which
+  // fires only when the wallet reported a finished route search that found
+  // nothing. Nothing here may widen into it: this function's evidence is an
+  // unexplained failure, which proves nothing about where the sats went.
   const realFetch = globalThis.fetch;
   const realNow = Date.now;
   let calls = 0;

@@ -12,12 +12,18 @@ const MAX_KEYSEND_BYTES = 64 * 1024;
 // Server-side proxy for a lightning address's `.well-known/keysend` document.
 //
 // This MUST be proxied, unlike `.well-known/lnurlp`. LNURL is browser-facing
-// by design so those endpoints universally send Access-Control-Allow-Origin;
+// by design so those endpoints NEARLY always send Access-Control-Allow-Origin;
 // the keysend well-known is a server-to-server convention (podcast apps doing
 // the lookup from their backend) and providers generally set no CORS headers
 // on it. A direct browser fetch is therefore CORS-blocked, which the client's
 // catch turns into "no keysend endpoint" — silently downgrading every boost
 // back to LNURL. Same reason /api/chapters exists.
+//
+// "Nearly" is a correction, not hedging: this comment used to say
+// "universally". livewire.io 302s its lnurlp to a host with no CORS header,
+// which failed that leg on every rail. `/api/lnurl` is the fallback for those,
+// and it differs from this route on purpose — it is a POST, it is not cached,
+// and it is tried only after a direct fetch throws.
 //
 // Returns the upstream JSON verbatim so the client parser
 // (lib/v4v/keysend-lookup.ts) stays the single source of truth.

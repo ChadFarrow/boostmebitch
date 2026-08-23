@@ -16,10 +16,11 @@ export { subscribeNwc };
 // The NIP-47 error classification lives in `nwc-errors.ts` so it can load under
 // plain Node and be pinned by `npm run check:nwcerror` — this module imports
 // `../storage` and cannot. Every name is RE-EXPORTED here so import sites keep
-// one path: `boost.ts` keys its only permitted keysend→LNURL fallback off
-// `instanceof NwcNotAttemptedError` and its address demotion off
-// `failureBlamesDestination`. `isSocketSuspect` is used below and not
-// re-exported — nothing outside this module has a lease to discard.
+// one path: `boost.ts` keys the two arms of its keysend→LNURL retry off
+// `instanceof NwcNotAttemptedError` and `routingFailureProvesUnpaid`, and its
+// address demotion off `failureBlamesDestination`. `isSocketSuspect` is used
+// below and not re-exported — nothing outside this module has a lease to
+// discard.
 import {
   failureBlamesDestination,
   isSocketSuspect,
@@ -27,6 +28,8 @@ import {
   NwcIndeterminateError,
   NwcMethodUnsupportedError,
   NwcNotAttemptedError,
+  routingFailureProvesUnpaid,
+  shouldDemoteAddress,
 } from './nwc-errors';
 
 export {
@@ -34,6 +37,8 @@ export {
   NwcIndeterminateError,
   NwcMethodUnsupportedError,
   NwcNotAttemptedError,
+  routingFailureProvesUnpaid,
+  shouldDemoteAddress,
 };
 
 // Cached methods list from the last successful get_info call. Populated by

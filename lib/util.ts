@@ -56,14 +56,46 @@ export function isLnAddressRecipient(r: Pick<ValueRecipient, 'type' | 'address'>
  * So: keep `desc` only if it fits whole, spend what's left on `message`, and if
  * `desc` cannot fit, drop it entirely rather than send a broken URL — a clipped
  * message alone is strictly more use to the recipient than a link that 404s.
+ *
+ * **`desc` arrives with the message already appended, so it is normalised
+ * first.** Measured against the live service: BoostBox returns
+ * `rss::payment::boost <url> <message>`, not the bare descriptor this once
+ * assumed. Appending the prose again printed it TWICE to the recipient, which is
+ * the cheap half. The expensive half is that a padded `desc` is longer than the
+ * descriptor, so it crosses a 255-char budget at roughly a 182-character
+ * message, hits the drop-it-entirely branch above, and the leg goes out with **no
+ * machine-readable metadata at all** — the exact failure this function exists to
+ * prevent, arriving from the far side. Only this app knows `commentAllowed`,
+ * which is why composing the comment is its job and not the metadata service's.
  */
+/**
+ * Reduce whatever the metadata service returned to the descriptor ITSELF.
+ *
+ * The spec is two whitespace-separated tokens — `rss::payment::<action>` and a
+ * URL — so anything after the URL is padding somebody else added, and today
+ * that is reliably the user's own message. Cutting on the SHAPE rather than
+ * detecting the message is deliberate: `desc.endsWith(message)` looks simpler
+ * and fails the moment the service truncates its copy, which would then emit a
+ * clipped duplicate beside a whole one. This is also why the check is not
+ * `includes` — a one-character message matches almost anywhere.
+ *
+ * Unrecognised input is returned UNCHANGED. A future descriptor format is a
+ * thing to carry, not to mangle; the cost of leaving it alone is the
+ * duplication we already had, and the cost of trimming it wrongly is a dead URL.
+ */
+function descriptorOnly(desc: string | undefined): string | undefined {
+  if (!desc) return undefined;
+  const m = /^(rss::payment::\S+[ \t]+\S+)/.exec(desc);
+  return m ? m[1] : desc;
+}
+
 export function buildLnurlComment(
   args: { desc?: string; message?: string },
   commentAllowed: number | undefined,
 ): string | undefined {
   const budget = commentAllowed ?? 0;
   if (budget <= 0) return undefined;
-  const desc = args.desc?.trim() || undefined;
+  const desc = descriptorOnly(args.desc?.trim() || undefined);
   const message = args.message?.trim() || undefined;
 
   if (!desc) return message?.slice(0, budget) || undefined;
