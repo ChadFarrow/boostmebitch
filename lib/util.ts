@@ -58,15 +58,24 @@ export function isLnAddressRecipient(r: Pick<ValueRecipient, 'type' | 'address'>
  * message alone is strictly more use to the recipient than a link that 404s.
  *
  * **`desc` arrives with the message already appended, so it is normalised
- * first.** Measured against the live service: BoostBox returns
- * `rss::payment::boost <url> <message>`, not the bare descriptor this once
- * assumed. Appending the prose again printed it TWICE to the recipient, which is
- * the cheap half. The expensive half is that a padded `desc` is longer than the
- * descriptor, so it crosses a 255-char budget at roughly a 182-character
- * message, hits the drop-it-entirely branch above, and the leg goes out with **no
- * machine-readable metadata at all** — the exact failure this function exists to
- * prevent, arriving from the far side. Only this app knows `commentAllowed`,
- * which is why composing the comment is its job and not the metadata service's.
+ * first — and that is BoostBox working correctly, not a fault.** It returns
+ * `rss::payment::<action> <url> <message>`: a pre-formatted **BOLT11
+ * description**, truncated against Lightning's 639-char limit with `...` marking
+ * the cut. Deliberate and documented — `noblepayne/boostbox`
+ * `src/boostbox/boostbox.clj:371-391` builds it that way and pins it in its own
+ * unit test, and its README says to use the field as the description when
+ * paying. **There is nothing to fix on that side.** This app appended a message
+ * the server had already included, and recipients read the prose twice. That was
+ * ours.
+ *
+ * Why we still take it apart rather than forwarding it: the service budgets
+ * against **BOLT11's 639**, and it has no way to know the recipient's LNURL
+ * `commentAllowed`, which is routinely 255 and sometimes 32. Forwarded whole, a
+ * padded `desc` crosses 255 at roughly a 182-character message, hits the
+ * drop-it-entirely branch above, and the leg goes out with **no machine-readable
+ * metadata at all** — the exact failure this function exists to prevent,
+ * arriving from the far side. So `descriptorOnly` recovers the two spec tokens
+ * and the prose is refitted against the budget that actually applies.
  */
 /**
  * Reduce whatever the metadata service returned to the descriptor ITSELF.

@@ -1,12 +1,24 @@
-// BoostBox client — stores Podcasting 2.0 boost metadata over HTTP and
-// returns a short `desc` string ("rss::payment::boost <url>") suitable for
-// the LUD-21 comment field on an LNURL invoice.
+// BoostBox client — stores Podcasting 2.0 boost metadata over HTTP and returns
+// a pre-formatted BOLT11 description for the LUD-21 comment field on an LNURL
+// invoice.
+//
+// **`desc` is the SERVER'S composition and INCLUDES the message we POSTed** —
+// `rss::payment::<action> <url> <message>`, truncated against Lightning's
+// 639-char limit. That is its documented contract, not a quirk, so do not
+// append the message to it here or anywhere else: this app did, and recipients
+// read the prose twice. `buildLnurlComment` (`lib/util.ts`) takes the descriptor
+// back out with `descriptorOnly` and refits the prose against the recipient's
+// `commentAllowed`, which BoostBox cannot see — it budgets against 639 while an
+// LNURL allowance is routinely 255 and sometimes 32.
 //
 // Used only on the LNURL leg of the boost flow: keysend carries the same
 // metadata inline as TLV 7629169, so BoostBox is unnecessary there. Failure
 // is non-fatal — callers fall back to the user's plain-text message.
 //
-// @see https://github.com/ChadFarrow/boostbox
+// @see https://github.com/noblepayne/boostbox — the service and its spec;
+//      `src/boostbox/boostbox.clj:371-391` is where `desc` is built
+// @see https://github.com/ChadFarrow/boostbox — the fork deployed at tardbox.com
+//      (33 commits ahead, 0 behind; that function is byte-identical)
 
 import { nip19 } from 'nostr-tools';
 import type { Boostagram, ValueRecipient } from '@/lib/types';
