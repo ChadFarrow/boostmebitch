@@ -261,7 +261,11 @@ export function LiveChat({ streamId }: { streamId: string }) {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="flex-1 min-h-0 overflow-y-auto space-y-3 pr-1"
+        // `overscroll-contain`: on mobile the live layout makes the overlay's
+        // own row `overflow-hidden`, so this list is the outermost scroller in
+        // the player and a swipe past its end would chain straight to the
+        // document — which on iOS drags the fixed overlay off the screen.
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain space-y-3 pr-1"
       >
         {visible.length === 0 ? (
           <p className="text-xs text-muted">No messages yet.</p>
