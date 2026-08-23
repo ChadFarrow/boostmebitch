@@ -18,7 +18,7 @@
 // parse into this app's model. A probe that reimplemented the parser would be a
 // second implementation to keep in sync, and the one place it disagreed with
 // the real one is exactly the place it would tell you everything was fine.
-// `--dump` writes the raw tags to a file, which is where check:favsync's
+// `--dump` writes the raw tags AND `content` to a file, which is where check:favsync's
 // fixtures should come from: the repo rule is that a vector is built from a
 // literal WIRE tag array and never from the struct you parse it into.
 //
@@ -314,7 +314,21 @@ for (const addr of ADDRESSES) {
   console.log(`  created_at           ${best.created_at}  (${new Date(best.created_at * 1000).toISOString()})`);
   console.log(`  size                 ${(bytes / 1024).toFixed(1)} KB of ~128 KB relay cap  (${(bytes / 1024 / 128 * 100).toFixed(0)}% used)`);
   console.log(`  tags                 ${best.tags.length}`);
-  console.log(`  content              ${best.content === '' ? 'empty (correct)' : `${best.content.length} chars — NOT empty`}`);
+  // A non-empty `content` used to be printed as "NOT empty", i.e. as a fault.
+  // It is now the PRIVATE HALF, and reporting it as wrong is exactly backwards:
+  // the fault is a writer that BLANKS it. What this can say from outside is
+  // whether something is there and roughly how big — reading it needs the
+  // author's key, which this script does not have and should not want.
+  if (best.content === '') {
+    console.log('  content              empty — no private half on this list');
+  } else {
+    const kb = (Buffer.byteLength(best.content) / 1024).toFixed(1);
+    const looksNip44 = /^[A-Za-z0-9+/=]+$/.test(best.content) && best.content.startsWith('A');
+    console.log(`  content              ${kb} KB — a PRIVATE HALF${looksNip44 ? ' (NIP-44 v2 base64)' : ' (unrecognised shape)'}`);
+    console.log('                       CARRY IT VERBATIM. A writer that republishes `content: \'\''
+      + ' erases it,');
+    console.log('                       silently, with no undo. Decrypting needs the author\'s key.');
+  }
   if (versions.size > 1) {
     console.log(`  ⚠ VERSION SKEW       ${versions.size} different created_at across relays:`);
     for (const [url, e] of byRelay) console.log(`      ${e.created_at}  ${url}`);
@@ -323,8 +337,12 @@ for (const addr of ADDRESSES) {
   console.log(addr.dTag === null ? describe10333(best.tags) : describeOld(best.tags));
   console.log('');
 
+  // `content` goes into the dump too. Without it a fixture built from a real
+  // event loses the half that is hardest to reason about, and a round trip
+  // asserted against that fixture proves the carry rule works on a list that
+  // never had anything to carry.
   dump[addr.dTag === null ? 'kind10333' : `kind${best.kind}:${addr.dTag}`] = {
-    created_at: best.created_at, id: best.id, tags: best.tags,
+    created_at: best.created_at, id: best.id, tags: best.tags, content: best.content,
   };
 }
 

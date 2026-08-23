@@ -44,6 +44,8 @@ export function FavoritesPage() {
   // signed-out state, never a failure. Read here too because the EMPTY branch
   // below must not describe a degraded read as an empty library.
   const degraded = useApp((s) => !!s.identity && s.favoritesSync === 'degraded');
+  // "Not on Nostr" — chosen, not pending. See `favoritesSync` in lib/store.ts.
+  const syncOff = useApp((s) => !!s.identity && s.favoritesSync === 'off');
   // Signed in and the relay read has not answered yet — 'idle' is the state
   // before `runHydrate` starts, 'loading' is while it runs, and BOTH have to
   // count. Hydration no longer begins on the same tick as the mount (it waits
@@ -339,7 +341,7 @@ export function FavoritesPage() {
       {!mounted || (total === 0 && checking) ? (
         <p className="text-muted text-sm py-8">loading your favorites…</p>
       ) : total === 0 ? (
-        <EmptyLibrary signedIn={!!identity} degraded={degraded} />
+        <EmptyLibrary signedIn={!!identity} degraded={degraded} off={syncOff} />
       ) : (
         <>
           <div className="flex flex-col gap-3">
@@ -555,7 +557,11 @@ function Section({
  * The signed-out half is unaffected: with no key there is no relay read to
  * degrade, so `degraded` is false and the onboarding copy stands.
  */
-function EmptyLibrary({ signedIn, degraded }: { signedIn: boolean; degraded: boolean }) {
+function EmptyLibrary({
+  signedIn,
+  degraded,
+  off,
+}: { signedIn: boolean; degraded: boolean; off: boolean }) {
   return (
     <div className="card p-6 flex flex-col gap-3 items-start">
       <p className="font-display text-xl">
@@ -565,6 +571,11 @@ function EmptyLibrary({ signedIn, degraded }: { signedIn: boolean; degraded: boo
         {degraded
           ? 'Your favorites could not be read from the relays, so anything saved in another app or on another device is not shown. Use retry above once you are back online.'
           : 'Tap ♡ on any show, album, episode or track and it lands here.'}
+        {/* Signed in but not syncing is its own sentence. Without it the line
+            below fires instead — "sign in with Nostr to sync them" — told to
+            somebody who IS signed in and turned syncing off on purpose. */}
+        {signedIn && off && !degraded
+          && ' Favorites are set to stay on this device, so nothing saved in another app is shown here.'}
         {!signedIn && ' Favorites are stored on this device — sign in with Nostr to sync them across apps.'}
       </p>
       {/* Clears the selection for the same reason <AppHeader>'s wordmark does

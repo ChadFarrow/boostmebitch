@@ -10,7 +10,7 @@ import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from '
 export type SignInIntent = 'default' | 'google';
 
 /** See `favoritesSync` below. */
-export type FavoritesSyncStatus = 'idle' | 'loading' | 'ok' | 'degraded';
+export type FavoritesSyncStatus = 'idle' | 'loading' | 'ok' | 'degraded' | 'off';
 
 interface AppState {
   identity: NostrIdentity | null;
@@ -199,6 +199,13 @@ interface AppState {
   // 'idle' still is not a failure: it is the pre-hydration and signed-out
   // state, and a consumer that treats it as one shows every visitor a relay
   // warning before anything has been attempted.
+  //
+  // 'off' is NOT 'idle', and the difference is a whole render state. Both mean
+  // "no read has happened", but 'idle' means *not yet* and 'off' means *not
+  // ever* — the user chose "not on Nostr". A surface that folds them together
+  // sits on "loading your favorites…" forever, because the thing it is waiting
+  // for is never going to start. Anything that treats 'idle' as in-flight has
+  // to exclude 'off' explicitly.
   favoritesSync: FavoritesSyncStatus;
   /**
    * WHY the last cycle withheld, when it did.

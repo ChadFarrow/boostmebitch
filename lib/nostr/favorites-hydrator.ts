@@ -179,8 +179,13 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // What is already on the relay stays there. We do not delete on someone's
   // behalf from a settings change; `withdrawThisDevice` is the explicit route,
   // and the dialog that offers it says what happens either way.
+  //
+  // 'off' rather than 'idle': both mean "no read happened", but a surface
+  // waiting on 'idle' is waiting for something that will never start, and
+  // <FavoritesPage> renders that as "loading your favorites…" with nothing
+  // behind it.
   if (favoritesMode(identity.npub) === 'off') {
-    setFavoritesSync('idle');
+    setFavoritesSync('off');
     return;
   }
 
@@ -340,9 +345,14 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // exists only to place a track. `partitionList` is run per half rather than
   // over a spliced node list, because splicing two ordered lists would put an
   // item under whichever group happened to precede it after the join.
-  const part = joinPartitions(partitionList(merged), privateMerged ? partitionList(privateMerged) : null);
+  const publicPart = partitionList(merged);
+  const part = joinPartitions(publicPart, privateMerged ? partitionList(privateMerged) : null);
 
-  if (part.malformed.length > 0) installCleanupHook(identity, part.malformed);
+  // PUBLIC malformed only. `bmbCleanFavorites` edits `event.tags` and carries
+  // `content` verbatim — it has to, since it never decrypts — so offering to
+  // remove a malformed entry that lives in the private half would print a
+  // count and take nothing away.
+  if (publicPart.malformed.length > 0) installCleanupHook(identity, publicPart.malformed);
 
   // Paint from cache immediately, queue the rest. Cached entries missing
   // `artwork` are re-resolved too, so caches written before that field existed
