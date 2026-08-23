@@ -43,6 +43,18 @@ export function FavoritesPage() {
   // signed-out state, never a failure. Read here too because the EMPTY branch
   // below must not describe a degraded read as an empty library.
   const degraded = useApp((s) => !!s.identity && s.favoritesSync === 'degraded');
+  // Signed in and the relay read has not answered yet — 'idle' is the state
+  // before `runHydrate` starts, 'loading' is while it runs, and BOTH have to
+  // count. Hydration no longer begins on the same tick as the mount (it waits
+  // for this account's NIP-65 write set when the device has none cached), so
+  // 'idle' is a real window rather than a theoretical one.
+  //
+  // Signed out is excluded on purpose: favorites are local with no key to sync
+  // them under, so there is no read in flight and an empty list is known
+  // immediately and honestly.
+  const checking = useApp(
+    (s) => !!s.identity && (s.favoritesSync === 'idle' || s.favoritesSync === 'loading'),
+  );
   const selectPodcast = useApp((s) => s.selectPodcast);
   const setShowOrigin = useApp((s) => s.setShowOrigin);
   const syncSelectedPodcast = useApp((s) => s.syncSelectedPodcast);
@@ -304,7 +316,19 @@ export function FavoritesPage() {
           degraded. */}
       <FavoritesSyncNotice />
 
-      {!mounted ? (
+      {/* `checking` shares this branch with the pre-mount gate, and it is not
+          cosmetic. Without it a signed-in user whose read was still in flight
+          fell straight through to <EmptyLibrary>, which says "Nothing saved
+          yet." in the largest type on the page — a positive claim about their
+          library, made while the app did not yet know. That is the exact
+          failure the comment on <EmptyLibrary> describes for a degraded read,
+          one state earlier: it does not withhold silently, it withholds while
+          asserting the opposite. Reported from a phone — the favorites button
+          showed an empty library on the first press and the real list on the
+          second, because the read landed in between. It self-corrects, which
+          is what makes it worse: nobody presses twice after being told there
+          is nothing there. */}
+      {!mounted || (total === 0 && checking) ? (
         <p className="text-muted text-sm py-8">loading your favorites…</p>
       ) : total === 0 ? (
         <EmptyLibrary signedIn={!!identity} degraded={degraded} />
