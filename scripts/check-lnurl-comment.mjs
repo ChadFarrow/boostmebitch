@@ -61,6 +61,14 @@ const DESC = 'rss::payment::boost https://tardbox.com/boost/01M005ZZ2JE2J9BPVYVN
 // the streaming path is the one that runs unattended.
 const DESC_STREAM = 'rss::payment::stream https://tardbox.com/boost/01M005ZZ2JE2J9BPVYVN2F3K0K';
 const MSG = 'great episode, thanks for the show';
+// What BoostBox ACTUALLY returns, measured against the live service on
+// 2026-08-23: the descriptor with the typed message already appended, separated
+// by a plain space. Lifted from a real receipt — the wire read
+// `…X90JV helipad test — helipad test`, and the plain space before the first
+// copy against the ` — ` before the second is what proves which side added
+// which. Do not "correct" this fixture to a bare descriptor: the bare form is
+// DESC above, and this file needs both.
+const PADDED = `${DESC} ${MSG}`;
 
 console.log('buildLnurlComment — the descriptor survives whole or not at all');
 {
@@ -176,6 +184,66 @@ console.log('\nbuildLnurlComment — never exceeds the budget');
     if (out?.startsWith('rss::payment') && !out.startsWith(DESC)) { clipped = { budget, out }; break; }
   }
   check('a descriptor is never emitted truncated', clipped, null);
+}
+
+console.log('\nthe descriptor is normalised — a padded desc must not duplicate the message');
+{
+  // The bug: BoostBox pads `desc` with the message, this appended it again, and
+  // the recipient read the prose twice.
+  check(
+    'a padded descriptor emits the message exactly once',
+    buildLnurlComment({ desc: PADDED, message: MSG }, 255),
+    `${DESC} — ${MSG}`,
+  );
+  check(
+    'and matches what a bare descriptor would have produced',
+    buildLnurlComment({ desc: PADDED, message: MSG }, 255),
+    buildLnurlComment({ desc: DESC, message: MSG }, 255),
+  );
+
+  // THE expensive half, and the reason this is a check and not a tidy-up. A
+  // padded desc is longer than the descriptor, so it crosses the budget early,
+  // hits the drop-it-entirely branch, and the leg goes out with NO
+  // machine-readable metadata — precisely the failure this file exists for,
+  // arriving from the far side.
+  const LONG = 'x'.repeat(200);
+  const withGuard = buildLnurlComment({ desc: `${DESC} ${LONG}`, message: LONG }, 255);
+  check(
+    'a long message no longer destroys the descriptor',
+    withGuard.startsWith(DESC),
+    true,
+  );
+  check('...and the descriptor is still whole', withGuard.includes(DESC), true);
+
+  // Must-still-work: the bare form, the streaming verb, and anything we do not
+  // recognise. An unknown descriptor format belongs to a writer newer than us
+  // and rides through untouched — mangling it would be a dead URL, which is
+  // strictly worse than the duplication being fixed here.
+  check('a bare descriptor is unchanged', buildLnurlComment({ desc: DESC }, 255), DESC);
+  check('the streaming verb normalises too',
+    buildLnurlComment({ desc: `${DESC_STREAM} ${MSG}`, message: MSG }, 255),
+    `${DESC_STREAM} — ${MSG}`);
+  check('an unrecognised descriptor is carried verbatim',
+    buildLnurlComment({ desc: 'something-else-entirely' }, 255), 'something-else-entirely');
+  check('a descriptor with no URL is carried verbatim',
+    buildLnurlComment({ desc: 'rss::payment::boost' }, 255), 'rss::payment::boost');
+
+  // The tempting wrong implementation: strip by detecting the message. It works
+  // on the vector above and breaks the moment the service truncates its copy,
+  // emitting a clipped duplicate beside a whole one.
+  const naiveStrip = (desc, message) =>
+    message && desc.endsWith(message) ? desc.slice(0, -message.length).trimEnd() : desc;
+  const TRUNCATED = `${DESC} ${MSG.slice(0, 10)}`;
+  check(
+    '(naive endsWith) disagrees when the service truncated its copy',
+    naiveStrip(TRUNCATED, MSG) !== DESC,
+    true,
+  );
+  check(
+    '...while the shipping rule still recovers the descriptor',
+    buildLnurlComment({ desc: TRUNCATED, message: MSG }, 255),
+    `${DESC} — ${MSG}`,
+  );
 }
 
 console.log('\n(naive) the join-then-slice this replaced');
