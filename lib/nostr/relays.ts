@@ -99,14 +99,47 @@ export async function fetchRelayList(
  * or AUTH-gated, which produced "published to 0/N relays" even though the boost
  * itself paid. Always including the known-good, write-accepting defaults
  * (damus/primal/nos.lol/fountain) guarantees the note has somewhere to land.
+ *
+ * **An identity with no `writeRelays` falls back to this account's CACHED
+ * kind:10002 write set before it falls back to the bare defaults.** `writeRelays`
+ * is populated by `loadProfile`, which fetches kind:10002 in PARALLEL with the
+ * favorites and mute-list hydrations, so on a cold load those two read from
+ * `DEFAULT_RELAYS` alone while their own republish targeted the full union.
+ *
+ * **Be precise about what that does and does not cost, because the union above
+ * absorbs most of it.** `DEFAULT_RELAYS` is always part of the publish set, so
+ * for an event THIS APP wrote a defaults-only read is a SUBSET of where it was
+ * sent, and normally finds it. The gap is real in four narrower cases:
+ *
+ *   1. **Another app is the writer.** Nothing guarantees a third-party client
+ *      publishes to our five defaults — it publishes to the user's own outbox.
+ *      This is the ORDINARY case for `kind:10000`, which Damus, Amethyst and
+ *      Coracle write and this app never creates, and a live one for `kind:10333`,
+ *      which is shared by design.
+ *   2. **The 20 cap.** `writeRelays` are listed FIRST, so an account with 20 or
+ *      more of them slices every default off the publish set entirely.
+ *   3. **Partial acceptance.** `assertPublished` requires only ONE relay, so an
+ *      event whose five defaults all refused (AUTH-gated, rate-limited, down)
+ *      lives on a write relay alone and is still recorded as published.
+ *   4. **An override.** `bmb:relays` replaces the defaults rather than joining
+ *      them. Nothing in the UI sets it today, so this one is theoretical.
+ *
+ * So this is the invariant "read from where you write" rather than a fix for an
+ * observed disappearance — see docs/nostr.md, which used to claim the latter.
+ * The cache is written by `loadProfile` once the real kind:10002 lands; an
+ * account that has never resolved one reads `[]` here and behaves as before.
  */
 export function resolvePublishRelays(identity: NostrIdentity | null): string[] {
   const override = storage.relays.get();
+  // The live NIP-65 answer wins; the cache only stands in for "not fetched
+  // yet". Never the other way round — a user who narrows their write set must
+  // not keep publishing to the relays they just dropped.
+  const write = identity?.writeRelays ?? (identity ? storage.writeRelays.get(identity.npub) : []);
   // Sanitize regardless of source: an override or a peer's NIP-65 list can carry
   // a malformed entry. If sanitizing empties the list, fall back to defaults.
   const chosen = override
     ? sanitizeRelays(override)
-    : sanitizeRelays([...(identity?.writeRelays ?? []), ...DEFAULT_RELAYS]);
+    : sanitizeRelays([...write, ...DEFAULT_RELAYS]);
   return (chosen.length ? chosen : DEFAULT_RELAYS).slice(0, 20);
 }
 

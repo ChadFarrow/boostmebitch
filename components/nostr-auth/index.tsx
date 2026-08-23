@@ -166,15 +166,45 @@ export function NostrAuth() {
         })()
       : Promise.resolve(null);
 
-    // Fire profile, relay list, favorites, and mutes in parallel. Each has
-    // a 4s QUERY_MAX_WAIT_MS bound, so total wall time for this phase is ~4s.
-    // Mute/favorites tolerate the bare identity (no writeRelays yet) because
-    // resolvePublishRelays falls back to DEFAULT_RELAYS, which is fine for
-    // the rare debounced republish path.
+    // Fire profile and the relay list in parallel. Each has a 4s
+    // QUERY_MAX_WAIT_MS bound, so this phase is ~4s of wall time.
     const profilePromise = fetchProfile(id.pubkey).catch(() => null);
     const relayListPromise = fetchRelayList(id.pubkey).catch(() => null);
-    const favoritesPromise = hydrateFavorites(id).catch(() => {});
-    const mutesPromise = hydrateMutes(id).catch(() => {});
+
+    // THE SHARED LISTS ARE READ FROM THE RELAYS THEY ARE WRITTEN TO, and that
+    // is why hydration is no longer simply fired alongside the relay-list
+    // query. Favorites (kind:10333) and mutes (kind:10000) both read, merge and
+    // republish; the republish goes to `resolvePublishRelays`, the user's NIP-65
+    // write set unioned with DEFAULT_RELAYS. Started in parallel with the query
+    // that PRODUCES that write set, the read saw only the defaults.
+    //
+    // How much that costs depends on WHO wrote the event, and the union absorbs
+    // most of it: the defaults are always in our publish set, so a defaults-only
+    // read is a subset of where WE sent it and normally finds it. It is the
+    // third-party writers that are not covered — this app never creates a
+    // kind:10000 at all, and kind:10333 is shared by design, and neither Damus
+    // nor StableKraft has any reason to publish to our five. `resolvePublishRelays`
+    // lists the remaining holes (the 20 cap, partial acceptance, an override).
+    // So this is the invariant, not a fix for an observed disappearance.
+    //
+    // The cached write set is what keeps this cheap. When we have one,
+    // `resolvePublishRelays` picks it up from the bare identity and hydration
+    // starts immediately, exactly as before. Only an account this device has
+    // never resolved a kind:10002 for waits, once, for the query already in
+    // flight.
+    const writeRelaysPromise = relayListPromise.then((rl) => {
+      const write = rl?.write ?? [];
+      // Never cache an empty answer: "no kind:10002" and "nothing answered" are
+      // the same `null` here, and adopting the second would drop a good hint.
+      if (write.length) storage.writeRelays.set(id.npub, write);
+      return write;
+    });
+    const hydrateIdentity: Promise<NostrIdentity> = storage.writeRelays.get(id.npub).length
+      ? Promise.resolve(id)
+      : writeRelaysPromise.then((write) => (write.length ? { ...id, writeRelays: write } : id));
+
+    const favoritesPromise = hydrateIdentity.then((hid) => hydrateFavorites(hid)).catch(() => {});
+    const mutesPromise = hydrateIdentity.then((hid) => hydrateMutes(hid)).catch(() => {});
 
     // Apply profile + relay list as soon as both land. Both feed the
     // identity object, so we wait for them together to avoid two re-renders.
@@ -606,6 +636,52 @@ export function NostrAuth() {
     else if (kind === 'bunker') storage.signer.set('bunker');
     else if (kind === 'local') storage.signer.set('local');
     else storage.signer.clear();
+
+    // PAINT THIS ACCOUNT'S CACHES BEFORE HYDRATION RUNS. The page-load restore
+    // effect above does this and an explicit sign-in did not, and the gap was
+    // not cosmetic — it fed `hydrateFavorites` a false premise.
+    //
+    // `localFavoriteEntries()` reads the STORE, and the store is seeded from the
+    // `:guest` bucket. `storage.favBaseline` is read from disk and names every
+    // id this device last agreed with the relay on. So a sign-in on a device
+    // that already had favorites handed the merge an empty `local` beside a full
+    // baseline — which is `mergeFavoritesList`'s removal test ("ours, and we no
+    // longer hold it") satisfied for every entry at once. The merge came out
+    // empty, and `setFavorites` writes THROUGH to localStorage, so the device's
+    // own cache went with it. `planFavoritesPublish` refused the publish, so the
+    // relay copy survived; the local one did not, and it is the cache that tells
+    // a real album favorite from a group opened only to place a track. Losing it
+    // downgrades every one of those to placement-only on the next load, for good.
+    //
+    // Mutes had the milder half of the same gap: the store kept the `:guest` set
+    // until `hydrateMutes` resolved, so a hydration that hung left the account's
+    // mute list empty for the whole session instead of falling back to the cache
+    // it already had on disk.
+    //
+    // Favorites UNION rather than replace, unlike the restore path. A signed-out
+    // user's favorites live in the store and are adopted on first sign-in, on
+    // purpose — replacing would delete them. The identity-switch block above has
+    // already cleared the store when this is a switch, so nothing leaks from A
+    // into B. Mutes replace, matching the restore effect: there is no guest-mute
+    // adoption path, and showing a `:guest` mute the account's own state doesn't
+    // carry would render a control the user cannot turn off.
+    const cachedProfileOnSignIn = storage.profile.get(id.pubkey);
+    if (cachedProfileOnSignIn && !id.profile) {
+      startTransition(() => setIdentity({ ...id, profile: cachedProfileOnSignIn }));
+    }
+    const cachedFavs = storage.favorites.get(id.npub);
+    if (Object.keys(cachedFavs).length > 0) {
+      setFavorites({ ...cachedFavs, ...useApp.getState().favorites });
+    }
+    const cachedFavEps = storage.favoriteEpisodes.get(id.npub);
+    if (Object.keys(cachedFavEps).length > 0) {
+      setFavoriteEpisodes({ ...cachedFavEps, ...useApp.getState().favoriteEpisodes });
+    }
+    const cachedMuteState = storage.muted.get(id.npub);
+    if (cachedMuteState.publicPubkeys.length || cachedMuteState.privatePubkeys.length) {
+      setMutedPubkeys(unionMutedPubkeys(cachedMuteState));
+    }
+
     loadProfile(id);
   }
 

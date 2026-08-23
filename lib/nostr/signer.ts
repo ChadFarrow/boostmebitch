@@ -193,6 +193,32 @@ export function requireNip44(): Nip44Api {
 const NIP44_DECRYPT_TIMEOUT_MS = 10_000;
 
 /**
+ * Cap any signer decrypt so a signer that never answers rejects instead of
+ * hanging.
+ *
+ * Exported because NIP-04 needs it too, and for the same measured reason: a
+ * Safari extension's background is killed while a relay query is in flight, and
+ * the decrypt issued after it comes back never settles. There is no rejection
+ * to catch and no timeout of its own — the promise simply stays pending, which
+ * silently wedges whatever awaited it. `hydrateMutes` is exactly that shape:
+ * `fetchMutedPubkeys` awaits up to 4 s of relay time and then decrypts, and its
+ * caller swallows failures with `.catch(() => {})`, so a hang there costs the
+ * user their whole mute list with nothing on screen and nothing in the console.
+ *
+ * The bound is the same 10 s the NIP-44 path uses. A decrypt is local work in
+ * every signer that answers at all; ten seconds is generous for the ones that
+ * are merely slow and finite for the ones that are gone.
+ */
+export function withDecryptTimeout<T>(p: Promise<T>, what: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${what} timed out`)), NIP44_DECRYPT_TIMEOUT_MS),
+    ),
+  ]);
+}
+
+/**
  * Why a decrypt is happening. REQUIRED, so a new caller has to decide rather
  * than inherit a permissive default.
  *
@@ -256,11 +282,6 @@ export function decryptWithTimeout(
   if (purpose === 'unattended' && isAmberActive()) {
     return Promise.reject(new UnattendedDecryptRefused());
   }
-  return Promise.race([
-    requireNip44().decrypt(pubkey, ciphertext),
-    new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('nip44 decrypt timed out')), NIP44_DECRYPT_TIMEOUT_MS),
-    ),
-  ]);
+  return withDecryptTimeout(requireNip44().decrypt(pubkey, ciphertext), 'nip44 decrypt');
 }
 

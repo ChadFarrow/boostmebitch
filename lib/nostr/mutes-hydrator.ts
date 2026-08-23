@@ -47,7 +47,20 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
   // round-trips verbatim on republish, and the branch below keeps applying
   // whatever private list this device already cached.
   const decryptPrivate = storage.signer.get() !== 'amber';
-  const muteEvent = await fetchMutedPubkeys(identity.pubkey, undefined, { decryptPrivate });
+  // READ FROM THE RELAYS WE WRITE TO. This used to pass `undefined`, which
+  // `fetchMutedPubkeys` reads as DEFAULT_RELAYS, while the republish below has
+  // always targeted `resolvePublishRelays` — the user's NIP-65 write set unioned
+  // with those defaults.
+  //
+  // The union means a defaults-only read still finds anything WE published, so
+  // this matters most for the case that is normal here and not for favorites:
+  // this app never CREATES a kind:10000. Damus, Amethyst and Coracle do, and
+  // they publish to the user's own outbox, which need not intersect our five
+  // defaults at all. A device with a local cache hides that; a fresh one reads
+  // an empty mute list. Same fix, same reason, as `fetchFavoritesList` requiring
+  // its relay set rather than defaulting to one.
+  const relays = resolvePublishRelays(identity);
+  const muteEvent = await fetchMutedPubkeys(identity.pubkey, relays, { decryptPrivate });
 
   if (!muteEvent) {
     // No Nostr event yet; if we have a local cache, push it up so the user's
@@ -61,7 +74,7 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
       schedulePublishMuteList(
         identity.pubkey,
         () => storage.muted.get(identity.npub),
-        resolvePublishRelays(identity),
+        relays,
       );
     } else {
       // Make sure the store reflects an empty state for this identity.
@@ -107,7 +120,7 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
     schedulePublishMuteList(
       identity.pubkey,
       () => storage.muted.get(identity.npub),
-      resolvePublishRelays(identity),
+      relays,
     );
   }
 }
