@@ -176,11 +176,7 @@ export function FavoritesPrivacyControl() {
       </div>
 
       {pending && (
-        <FavoritesPrivacyModal
-          from={mode}
-          to={pending}
-          onClose={() => setPending(null)}
-        />
+        <FavoritesPrivacyModal to={pending} onClose={() => setPending(null)} />
       )}
     </>
   );
@@ -204,11 +200,10 @@ export function FavoritesPrivacyControl() {
  * asked to forget them.
  */
 export function FavoritesPrivacyModal({
-  from,
   to,
   onClose,
 }: {
-  from: FavoritesPrivacy | null;
+  /** Unset = the first-favorite question. Set = confirming a switch to it. */
   to?: FavoritesPrivacy;
   onClose: () => void;
 }) {
@@ -220,6 +215,18 @@ export function FavoritesPrivacyModal({
   const asking = !to;
   const gated = !privateFavoritesEnabled();
 
+  // "Is there anything of ours up there to take down?" is a question about this
+  // device's BASELINE, not about the mode it is in. The mode can be unset on a
+  // device that has published plenty — seeding only runs off a trustworthy
+  // read, so a spell of bad relays leaves it null with a full baseline — and
+  // gating the offer on `from` meant the one control that removes your entries
+  // was hidden from exactly the person whose entries were out there.
+  const baseline = identity ? storage.favBaseline.get(identity.npub) : null;
+  const published = baseline
+    ? baseline.feeds.length + baseline.items.length
+      + (baseline.privateFeeds?.length ?? 0) + (baseline.privateItems?.length ?? 0)
+    : 0;
+
   const apply = useCallback(async () => {
     if (!identity) return;
     setBusy(true);
@@ -230,7 +237,7 @@ export function FavoritesPrivacyModal({
       // so it can decline — and recording 'off' first would leave a device that
       // has stopped syncing with entries it promised to remove and now never
       // will.
-      if (choice === 'off' && withdraw && from && from !== 'off') {
+      if (choice === 'off' && withdraw && published > 0) {
         await withdrawThisDevice(identity);
       }
       recordFavoritesPrivacy(identity.npub, choice, identity);
@@ -247,9 +254,9 @@ export function FavoritesPrivacyModal({
     } finally {
       setBusy(false);
     }
-  }, [identity, choice, withdraw, from, onClose]);
+  }, [identity, choice, withdraw, published, onClose]);
 
-  const leaving = from && from !== 'off' && choice === 'off';
+  const leaving = choice === 'off' && published > 0;
 
   return (
     <ModalShell
@@ -310,8 +317,24 @@ export function FavoritesPrivacyModal({
           </p>
         )}
 
+        {/* Nothing of ours is up there, so there is nothing to offer — but the
+            silence still has to be broken. "Not on Nostr" reads as a promise
+            about the past as much as the future, and letting someone infer that
+            when it is not what happened is the same silent-guard failure the
+            sync notice exists for, pointed the other way. */}
+        {choice === 'off' && !leaving && (
+          <p className="text-xs text-muted">
+            Favorites stay on this device from now on. This device has not put
+            anything on Nostr, so there is nothing to take down.
+          </p>
+        )}
+
         {leaving && (
           <div className="space-y-2 text-sm">
+            <p className="text-xs text-muted">
+              {published} {published === 1 ? 'entry' : 'entries'} from this
+              device {published === 1 ? 'is' : 'are'} on Nostr right now.
+            </p>
             <label className="flex items-start gap-2 cursor-pointer">
               <input
                 type="radio"
@@ -397,7 +420,7 @@ export function FavoritesPrivacyPrompt() {
   }, [open, mode, identity, setOpen]);
 
   if (!open || !identity) return null;
-  return <FavoritesPrivacyModal from={null} onClose={() => setOpen(false)} />;
+  return <FavoritesPrivacyModal onClose={() => setOpen(false)} />;
 }
 
 /**
