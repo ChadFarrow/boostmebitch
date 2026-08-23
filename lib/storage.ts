@@ -64,6 +64,7 @@ const KEYS = {
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
   followsPrefix: 'bmb:follows',       // per-npub last-known-good kind:3 follow set (hex[]) — a nuke-guard signal, see lib/nostr/follows.ts
+  writeRelaysPrefix: 'bmb:wrelays',   // + ':<npub>' — that account's NIP-65 (kind:10002) WRITE relays, cached so the next load can read the shared lists from the same relays it publishes them to. NOT evictable: losing it re-opens the read-narrower-than-write window, see lib/nostr/relays.ts.
   sparkOptOutPrefix: 'bmb:spark:opted_out', // + ':<npub>' — set when THAT account explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on its next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
   // NOTE: the bare `bmb:spark:opted_out` (no npub suffix) is a DEAD key from
   // the pre-per-npub code. It is deliberately never read or written — see the
@@ -618,6 +619,48 @@ export const storage = {
       safeSet(identityKey(KEYS.followsPrefix, npub), JSON.stringify(hexes)),
     clear: (npub: string | null | undefined) =>
       safeRemove(identityKey(KEYS.followsPrefix, npub)),
+  },
+
+  /**
+   * That account's NIP-65 kind:10002 WRITE relays, from the last load that
+   * resolved them.
+   *
+   * This is a routing hint, not content, and it exists because the read and the
+   * write of every shared list must target the SAME relay set. `loadProfile`
+   * fetches kind:10002 in parallel with the favorites and mute-list hydrations,
+   * so on a cold load those two ran against `DEFAULT_RELAYS` alone while every
+   * publish went to `resolvePublishRelays` — the user's write relays UNIONED
+   * with the defaults. A read narrower than its write is how you overwrite data
+   * you never saw, and on a device with no local cache it renders as the list
+   * simply not being there. Caching the set is what lets the next load start
+   * wide instead of paying a second relay round trip for it.
+   *
+   * Deliberately absent from `EVICTABLE_PREFIXES`. It is a few hundred bytes,
+   * and the cost of dropping it is not a refetch — it is one cold load reading
+   * the narrow set again. Same reasoning as `favBaselinePrefix` and
+   * `followsPrefix`, which are also small, also regenerable in principle, and
+   * also load-bearing for a write decision.
+   *
+   * Never written from an empty result: "this account has no kind:10002" and
+   * "nothing answered" are the same `null` out of `fetchRelayList`, and
+   * adopting the second would wipe a good hint on one bad query.
+   */
+  writeRelays: {
+    get: (npub: string | null | undefined): string[] => {
+      const raw = safeGet(identityKey(KEYS.writeRelaysPrefix, npub));
+      if (!raw) return [];
+      try {
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? (arr as string[]).filter((r) => typeof r === 'string') : [];
+      } catch { return []; }
+    },
+    /** No-op for an empty list — see the note above. */
+    set: (npub: string | null | undefined, relays: string[]) => {
+      if (!relays.length) return false;
+      return safeSet(identityKey(KEYS.writeRelaysPrefix, npub), JSON.stringify(relays));
+    },
+    clear: (npub: string | null | undefined) =>
+      safeRemove(identityKey(KEYS.writeRelaysPrefix, npub)),
   },
 
   /** Per-device theme preference. Absent = dark (the app default). Only

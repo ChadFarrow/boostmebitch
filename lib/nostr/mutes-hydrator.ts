@@ -47,7 +47,17 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
   // round-trips verbatim on republish, and the branch below keeps applying
   // whatever private list this device already cached.
   const decryptPrivate = storage.signer.get() !== 'amber';
-  const muteEvent = await fetchMutedPubkeys(identity.pubkey, undefined, { decryptPrivate });
+  // READ FROM THE RELAYS WE WRITE TO. This used to pass `undefined`, which
+  // `fetchMutedPubkeys` reads as DEFAULT_RELAYS — while the republish below has
+  // always targeted `resolvePublishRelays`, the user's NIP-65 write set unioned
+  // with those defaults. So the read was strictly narrower than the write, and
+  // a kind:10000 written by another client (Damus and Amethyst publish to the
+  // user's own outbox, not to ours) was simply never found. On a device with a
+  // local cache that is invisible; on a fresh one the whole mute list reads as
+  // empty and every muted account comes back. Same fix, same reason, as
+  // `fetchFavoritesList` requiring its relay set rather than defaulting.
+  const relays = resolvePublishRelays(identity);
+  const muteEvent = await fetchMutedPubkeys(identity.pubkey, relays, { decryptPrivate });
 
   if (!muteEvent) {
     // No Nostr event yet; if we have a local cache, push it up so the user's
@@ -61,7 +71,7 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
       schedulePublishMuteList(
         identity.pubkey,
         () => storage.muted.get(identity.npub),
-        resolvePublishRelays(identity),
+        relays,
       );
     } else {
       // Make sure the store reflects an empty state for this identity.
@@ -107,7 +117,7 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
     schedulePublishMuteList(
       identity.pubkey,
       () => storage.muted.get(identity.npub),
-      resolvePublishRelays(identity),
+      relays,
     );
   }
 }

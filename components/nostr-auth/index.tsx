@@ -166,15 +166,46 @@ export function NostrAuth() {
         })()
       : Promise.resolve(null);
 
-    // Fire profile, relay list, favorites, and mutes in parallel. Each has
-    // a 4s QUERY_MAX_WAIT_MS bound, so total wall time for this phase is ~4s.
-    // Mute/favorites tolerate the bare identity (no writeRelays yet) because
-    // resolvePublishRelays falls back to DEFAULT_RELAYS, which is fine for
-    // the rare debounced republish path.
+    // Fire profile and the relay list in parallel. Each has a 4s
+    // QUERY_MAX_WAIT_MS bound, so this phase is ~4s of wall time.
     const profilePromise = fetchProfile(id.pubkey).catch(() => null);
     const relayListPromise = fetchRelayList(id.pubkey).catch(() => null);
-    const favoritesPromise = hydrateFavorites(id).catch(() => {});
-    const mutesPromise = hydrateMutes(id).catch(() => {});
+
+    // THE SHARED LISTS ARE READ FROM THE RELAYS THEY ARE WRITTEN TO, and that
+    // is why hydration is no longer simply fired alongside the relay-list
+    // query. Favorites (kind:10333) and mutes (kind:10000) both read, merge and
+    // republish; the republish goes to `resolvePublishRelays`, the user's NIP-65
+    // write set unioned with DEFAULT_RELAYS. Started in parallel with the query
+    // that PRODUCES that write set, the read saw only the defaults — narrower
+    // than the write, which is how a shared replaceable event gets merged
+    // against a version that never included half the relays.
+    //
+    // On a device with a local cache the two lists still paint, so the gap is
+    // invisible there. On a fresh one it is the whole feature: signing in on a
+    // second browser showed no favorites at all and a mute list that filtered
+    // nobody, because both events lived on the user's own write relays and the
+    // defaults had never been asked. A kind:10000 makes that the common case
+    // rather than the exotic one — Damus and Amethyst write it to the user's
+    // outbox, not to ours.
+    //
+    // The cached write set is what keeps this cheap. When we have one,
+    // `resolvePublishRelays` picks it up from the bare identity and hydration
+    // starts immediately, exactly as before. Only an account this device has
+    // never resolved a kind:10002 for waits, once, for the query already in
+    // flight.
+    const writeRelaysPromise = relayListPromise.then((rl) => {
+      const write = rl?.write ?? [];
+      // Never cache an empty answer: "no kind:10002" and "nothing answered" are
+      // the same `null` here, and adopting the second would drop a good hint.
+      if (write.length) storage.writeRelays.set(id.npub, write);
+      return write;
+    });
+    const hydrateIdentity: Promise<NostrIdentity> = storage.writeRelays.get(id.npub).length
+      ? Promise.resolve(id)
+      : writeRelaysPromise.then((write) => (write.length ? { ...id, writeRelays: write } : id));
+
+    const favoritesPromise = hydrateIdentity.then((hid) => hydrateFavorites(hid)).catch(() => {});
+    const mutesPromise = hydrateIdentity.then((hid) => hydrateMutes(hid)).catch(() => {});
 
     // Apply profile + relay list as soon as both land. Both feed the
     // identity object, so we wait for them together to avoid two re-renders.

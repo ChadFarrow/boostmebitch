@@ -1,7 +1,7 @@
 import type { EventTemplate } from 'nostr-tools';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, type PublishedNote } from './publish';
-import { getNip04 } from './signer';
+import { getNip04, withDecryptTimeout } from './signer';
 import { fetchLatestEvent } from './event-queries';
 import { createScheduledPublish } from './debounced-publish';
 
@@ -100,7 +100,18 @@ export async function fetchMutedPubkeys(
         );
       } else {
         try {
-          const plaintext = await nip04.decrypt(pubkey, newest.content);
+          // Bounded, not bare. A NIP-07 extension in Safari can have its
+          // background killed while the relay query above is in flight, and the
+          // decrypt issued afterwards then never settles — no rejection, no
+          // error, just a promise that stays pending. `hydrateMutes` awaits
+          // this, and its caller swallows failures, so the whole mute list is
+          // lost in silence. A timeout turns that into the branch below, which
+          // parks the ciphertext verbatim and keeps this device's cached
+          // private entries.
+          const plaintext = await withDecryptTimeout(
+            nip04.decrypt(pubkey, newest.content),
+            'nip04 decrypt',
+          );
           const parsed = JSON.parse(plaintext);
           if (Array.isArray(parsed)) {
             const tagArrays = parsed.filter((t): t is string[] => Array.isArray(t));

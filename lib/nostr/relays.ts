@@ -99,14 +99,33 @@ export async function fetchRelayList(
  * or AUTH-gated, which produced "published to 0/N relays" even though the boost
  * itself paid. Always including the known-good, write-accepting defaults
  * (damus/primal/nos.lol/fountain) guarantees the note has somewhere to land.
+ *
+ * **An identity with no `writeRelays` falls back to this account's CACHED
+ * kind:10002 write set before it falls back to the bare defaults, and that is a
+ * correctness fix rather than a speed one.** `writeRelays` is populated by
+ * `loadProfile`, which fetches kind:10002 in PARALLEL with the favorites and
+ * mute-list hydrations — so on every cold load those two read from
+ * `DEFAULT_RELAYS` alone while their own republish, moments later, targeted the
+ * full union. A read narrower than its write is exactly how a shared
+ * replaceable event gets overwritten with a version that never saw half the
+ * relays, and on a device with no local cache it renders as the list simply not
+ * being there: signing in on a second browser showed no favorites and an inert
+ * mute list, because the events lived on the user's own write relays and the
+ * defaults had never been asked. The cache is written by `loadProfile` once the
+ * real kind:10002 lands; an account that has never resolved one reads `[]` here
+ * and behaves exactly as before.
  */
 export function resolvePublishRelays(identity: NostrIdentity | null): string[] {
   const override = storage.relays.get();
+  // The live NIP-65 answer wins; the cache only stands in for "not fetched
+  // yet". Never the other way round — a user who narrows their write set must
+  // not keep publishing to the relays they just dropped.
+  const write = identity?.writeRelays ?? (identity ? storage.writeRelays.get(identity.npub) : []);
   // Sanitize regardless of source: an override or a peer's NIP-65 list can carry
   // a malformed entry. If sanitizing empties the list, fall back to defaults.
   const chosen = override
     ? sanitizeRelays(override)
-    : sanitizeRelays([...(identity?.writeRelays ?? []), ...DEFAULT_RELAYS]);
+    : sanitizeRelays([...write, ...DEFAULT_RELAYS]);
   return (chosen.length ? chosen : DEFAULT_RELAYS).slice(0, 20);
 }
 
