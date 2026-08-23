@@ -8,14 +8,23 @@ import {
 import { fetchLatestEventDetailed } from './event-queries';
 import { QUERY_MAX_WAIT_MS } from './pool';
 import {
+  EMPTY_LOCAL,
+  EMPTY_PARSED,
   FAVORITES_KIND,
+  baselineHalf,
+  decodePrivateFavorites,
+  encodePrivateFavorites,
   mergeFavoritesList,
   parseFavoritesList,
   planFavoritesPublish,
   type FavoritesBaseline,
+  type FavoritesPrivacy,
   type LocalList,
   type ParsedList,
+  type PublishReason,
 } from './favorites-list';
+import { decryptWithTimeout, getNip44, requireNip44, type DecryptPurpose } from './signer';
+import { payloadSurvivesAmber } from './amber-callback-url';
 // ---------------------------------------------------------------------------
 // Cross-app favorites — the I/O half. The wire format and the merge live in
 // `favorites-list.ts`, which is import-free so scripts/check-favsync.mjs can
@@ -55,6 +64,56 @@ export interface FavoritesRead {
    * read, republished, is the entire list gone.
    */
   trustworthy: boolean;
+
+  // -- the private half -----------------------------------------------------
+
+  /**
+   * `event.content` EXACTLY as it arrived, always.
+   *
+   * This is the carry rule and it is not optional, whatever this app does with
+   * a private half of its own. The spec's rule 4 ("carry what you can't read")
+   * covers tags and says nothing about `content`, so a writer following the
+   * document to the letter republishes the empty string the format has
+   * specified from the start — and erases every private entry another app
+   * wrote, silently, on someone else's device, with no undo. There is nothing
+   * to decrypt and nothing to understand: keep the bytes.
+   */
+  content: string;
+  /** The decrypted private half, parsed. Null when absent or unreadable. */
+  privateList: ParsedList | null;
+  /** The decrypted private half's raw tags. [] when absent or unreadable. */
+  privateTags: string[][];
+  /**
+   * `content` is non-empty and we did not turn it into tags.
+   *
+   * ONE state for four different causes, deliberately: the caller declined to
+   * spend a signer prompt, the signer exposes no NIP-44, the decrypt threw or
+   * timed out, or the plaintext was not a tag array. Downstream they mean the
+   * same thing — carry the ciphertext, derive nothing from it — and collapsing
+   * them here is what stops a fifth cause being handled differently by
+   * accident. `lib/nostr/mutes.ts` treats the fourth as readable-and-empty,
+   * which is how a blob gets rewritten out of existence.
+   */
+  privateUnreadable: boolean;
+}
+
+export interface FavoritesReadOptions {
+  /**
+   * Spend a signer call on the private half. Default false.
+   *
+   * Off is the honest default: this read runs on every page load, and a signer
+   * prompt on a cold start is not something the user asked for. See
+   * `hydrateFavorites`, which additionally refuses on Amber for the reason
+   * `mutes-hydrator.ts` spells out.
+   */
+  decryptPrivate?: boolean;
+  /**
+   * Whether the user asked for this. REQUIRED when decrypting, and PASSED
+   * THROUGH from the call — never hardcoded here. Hardcoding it one level up is
+   * how `fetchEncryptedMnemonic` silently overrode every caller and broke the
+   * wallet modal's own restore button for a release.
+   */
+  purpose?: DecryptPurpose;
 }
 
 const EMPTY_READ: FavoritesRead = {
@@ -63,7 +122,69 @@ const EMPTY_READ: FavoritesRead = {
   updatedAt: 0,
   exists: false,
   trustworthy: true,
+  content: '',
+  privateList: null,
+  privateTags: [],
+  privateUnreadable: false,
 };
+
+
+/**
+ * Turn `event.content` into tags, or decide we cannot.
+ *
+ * Every failure lands on the same answer — park the ciphertext, report
+ * `privateUnreadable`, derive nothing from it — which is what lets every caller
+ * downstream have one branch instead of four. The shape is lifted from
+ * `lib/nostr/mutes.ts`, with the hole that file has closed: a `JSON.parse` that
+ * succeeds on something that is not a tag array leaves the blob marked readable
+ * and empty there, and the next republish rewrites `content` from those empty
+ * lists and destroys it. `decodePrivateFavorites` returns null for that case.
+ */
+async function readPrivateHalf(
+  pubkey: string,
+  content: string,
+  opts: FavoritesReadOptions,
+): Promise<Pick<FavoritesRead, 'privateList' | 'privateTags' | 'privateUnreadable'>> {
+  // A function, not a shared constant: each caller gets its own array, so
+  // nothing downstream can mutate the "no private half" answer for everyone.
+  const unreadable = () => ({ privateList: null, privateTags: [], privateUnreadable: true });
+  if (!content) return { privateList: null, privateTags: [], privateUnreadable: false };
+
+  if (!opts.decryptPrivate || !opts.purpose) {
+    // eslint-disable-next-line no-console
+    console.info(
+      '[favorites] kind:10333 carries an encrypted half and we are not spending a signer '
+      + 'call to read it here — carried verbatim, and the local cache still renders',
+    );
+    return unreadable();
+  }
+  if (!getNip44()) {
+    // eslint-disable-next-line no-console
+    console.info(
+      '[favorites] kind:10333 carries an encrypted half but this signer has no NIP-44 — '
+      + 'private favorites will round-trip opaquely',
+    );
+    return unreadable();
+  }
+
+  try {
+    const plaintext = await decryptWithTimeout(pubkey, content, opts.purpose);
+    const tags = decodePrivateFavorites(plaintext);
+    if (!tags) {
+      // eslint-disable-next-line no-console
+      console.warn('[favorites] private half decrypted to something that is not a tag array — preserving as an opaque blob');
+      return unreadable();
+    }
+    return { privateList: parseFavoritesList(tags), privateTags: tags, privateUnreadable: false };
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[favorites] private half decrypt failed — preserving as an opaque blob:',
+      (e as Error)?.message ?? e,
+    );
+    return unreadable();
+  }
+}
 
 /**
  * Read this account's favorites list.
@@ -78,6 +199,7 @@ const EMPTY_READ: FavoritesRead = {
 export async function fetchFavoritesList(
   pubkey: string,
   queryRelays: string[],
+  opts: FavoritesReadOptions = {},
 ): Promise<FavoritesRead> {
   const { event, trustworthy } = await fetchLatestEventDetailed(
     queryRelays,
@@ -94,7 +216,12 @@ export async function fetchFavoritesList(
     { pubkey, kinds: [FAVORITES_KIND], dTag: '' },
   );
   if (!event) return { ...EMPTY_READ, trustworthy };
+
+  const priv = await readPrivateHalf(pubkey, event.content, opts);
+
   return {
+    ...priv,
+    content: event.content,
     list: parseFavoritesList(event.tags),
     tags: event.tags,
     updatedAt: event.created_at,
@@ -111,6 +238,13 @@ export async function fetchFavoritesList(
  * `tagsFromList`. Everything that reaches this point has been through the
  * merge.
  *
+ * `content` is REQUIRED and has no default, for the same reason `queryRelays`
+ * above has none. It used to be hardcoded to `''`, which is correct only while
+ * no app in the world puts anything there — and one now does. Whatever reaches
+ * this function must have come from the read, verbatim, or from an encryption
+ * the plan asked for. A `''` written by habit is another app's private
+ * favorites deleted.
+ *
  * Throws {@link NoRelayAcceptedError} when the event reached nobody. The assert
  * lives HERE rather than at each call site because every writer records a
  * baseline immediately afterwards, and a baseline written for an event that
@@ -120,13 +254,14 @@ export async function fetchFavoritesList(
  */
 export async function publishFavoritesTags(
   tags: string[][],
+  content: string,
   relays: string[],
 ): Promise<PublishedNote> {
   const template: EventTemplate = {
     kind: FAVORITES_KIND,
     created_at: Math.floor(Date.now() / 1000),
     tags,
-    content: '',
+    content,
   };
   return assertPublished(await signAndPublish(template, relays), 'favorites');
 }
@@ -147,7 +282,76 @@ export interface SyncOptions {
    * `onSynced` rather than reaching for the store here, which keeps this module
    * free of React and browser globals.
    */
-  onDegraded?: () => void;
+  onDegraded?: (reason: PublishReason) => void;
+
+  // -- the private half -----------------------------------------------------
+
+  /**
+   * Where this device puts the favorites it owns. Defaults to 'public'.
+   *
+   * ONE choice for the whole list: `local()` goes wholly into one half, and the
+   * other half is still read, merged and carried so another app's entries
+   * survive. 'off' never reaches here — `requestFavoritesSync` returns before
+   * a cycle starts.
+   */
+  mode?: FavoritesPrivacy;
+  /**
+   * Whether the user asked for this, for the private half's decrypt. Passed
+   * through to `fetchFavoritesList`; omitted, the private half is not decrypted
+   * at all and is carried opaquely.
+   */
+  purpose?: DecryptPurpose;
+  /**
+   * Take this device's entries OFF the relays and publish nothing further.
+   *
+   * Both halves get an empty local list, so the merge drops exactly what this
+   * device's baseline claims and carries everything else — another app's
+   * entries are untouched, including a group of ours that is the only thing
+   * naming a surviving foreign item's parent. It is also the one caller allowed
+   * past the wholesale-delete refusal, because here the empty merge IS the
+   * request.
+   */
+  withdraw?: boolean;
+}
+
+/**
+ * Encrypt the private half to the author's own key.
+ *
+ * The `payloadSurvivesAmber` check is a backstop for a bug, not a user-facing
+ * state, which is why it throws rather than becoming a plan reason.
+ * `encodePrivateFavorites` writes `?` as `\u003f` precisely so this can never
+ * fire; if it ever does, the escaping has regressed and the alternative is
+ * handing Amber a URI it will silently truncate at the first `?`, encrypting
+ * the truncated text, and storing a private favorites list that is missing
+ * everything after one item guid. A throw reaches the debounce's warn. A
+ * truncated publish reaches the relays.
+ */
+async function encryptPrivateHalf(pubkey: string, tags: string[][]): Promise<string> {
+  const plaintext = encodePrivateFavorites(tags);
+  if (!payloadSurvivesAmber(plaintext)) {
+    throw new Error(
+      'favorites: private plaintext contains "?" after encoding — refusing to hand an '
+      + 'external signer a payload it will truncate. encodePrivateFavorites has regressed.',
+    );
+  }
+  return requireNip44().encrypt(pubkey, plaintext);
+}
+
+/**
+ * Take this device's favorites off the relays, and leave every other writer's
+ * alone.
+ *
+ * Deliberately a separate export rather than a flag on the sync options the UI
+ * can reach: it is the one path allowed past the wholesale-delete refusal, and
+ * a caller that could set that flag by accident is a caller that can empty a
+ * shared list. It still reads first, and it still refuses on an untrustworthy
+ * read — "remove my entries" is not a licence to publish over a list we could
+ * not see.
+ */
+export async function withdrawFavorites(
+  opts: Omit<SyncOptions, 'withdraw'>,
+): Promise<PublishedNote | null> {
+  return syncFavorites({ ...opts, withdraw: true });
 }
 
 /**
@@ -161,19 +365,53 @@ export interface SyncOptions {
  * publishing over a list we couldn't read is not.
  */
 export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | null> {
-  const read = await fetchFavoritesList(opts.pubkey, opts.relays);
-  const local = opts.local();
+  const mode: FavoritesPrivacy = opts.mode ?? 'public';
+  const read = await fetchFavoritesList(opts.pubkey, opts.relays, {
+    decryptPrivate: !!opts.purpose,
+    purpose: opts.purpose,
+  });
+
+  // ONE local list, split by the mode. Withdrawal empties both, which is what
+  // makes it a removal of exactly this device's baseline rather than of the
+  // event: `mergeFavoritesList` only drops what the baseline claims.
+  const all = opts.local();
+  const publicLocal = opts.withdraw || mode === 'private' ? EMPTY_LOCAL : all;
+  const privateLocal = opts.withdraw || mode !== 'private' ? EMPTY_LOCAL : all;
+
+  const baseline = opts.baseline();
+  const merged = mergeFavoritesList({
+    read: read.list,
+    local: publicLocal,
+    baseline: baselineHalf(baseline, 'public'),
+  });
+  // Null, not an empty merge, when we could not read it — the difference is
+  // "carry these bytes" versus "there is nothing there", and only one of those
+  // is safe to act on.
+  const privateMerged = read.privateUnreadable
+    ? null
+    : mergeFavoritesList({
+      read: read.privateList ?? EMPTY_PARSED,
+      local: privateLocal,
+      baseline: baselineHalf(baseline, 'private'),
+    });
 
   const plan = planFavoritesPublish({
-    merged: mergeFavoritesList({ read: read.list, local, baseline: opts.baseline() }),
+    merged,
     readTags: read.tags,
     exists: read.exists,
     trustworthy: read.trustworthy,
-    local,
+    local: publicLocal,
+    mode,
+    privateMerged,
+    readPrivateTags: read.privateTags,
+    readContent: read.content,
+    privateUnreadable: read.privateUnreadable,
+    privateLocal,
+    userConfirmedWithdrawal: opts.withdraw,
   });
 
   if (plan.reason === 'degraded') {
-    opts.onDegraded?.();
+    opts.onDegraded?.(plan.reason);
     // eslint-disable-next-line no-console
     console.warn('[favorites] skipping publish — could not read the current list');
     return null;
@@ -188,12 +426,38 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
   // because a guard that silently withholds is indistinguishable from a broken
   // one — that is the same rule the degraded branch above exists for.
   if (plan.reason === 'wholesale-delete') {
-    opts.onDegraded?.();
+    opts.onDegraded?.(plan.reason);
     // eslint-disable-next-line no-console
     console.warn(
       '[favorites] REFUSING to publish — the merge came out empty over a list that is not. '
       + 'This device is holding no favorites while the relay holds some, which is what an '
       + 'unhydrated store looks like as much as a real "remove everything".',
+    );
+    return null;
+  }
+
+  // The private half is a blob we never decoded, and this publish would have to
+  // write over it. Same shape as a degraded read — keep local state, publish
+  // nothing, record NO baseline — and the same reason for reporting it: the
+  // user cannot otherwise tell "hidden here by choice" from "this app has not
+  // been able to open it", and both render as a shorter list.
+  if (plan.reason === 'private-unreadable') {
+    opts.onDegraded?.(plan.reason);
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[favorites] REFUSING to publish — this list has an encrypted half we could not read, '
+      + 'and this change would replace it. Carried verbatim instead.',
+    );
+    return null;
+  }
+
+  if (plan.reason === 'private-too-large') {
+    opts.onDegraded?.(plan.reason);
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[favorites] REFUSING to publish — the private half is over the NIP-44 plaintext '
+      + 'ceiling, and a payload past it reads back as EMPTY on an older signer rather than '
+      + 'as an error.',
     );
     return null;
   }
@@ -207,7 +471,10 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
   }
 
   try {
-    const published = await publishFavoritesTags(plan.tags, opts.relays);
+    const content = plan.encryptPrivate && plan.privateTags
+      ? await encryptPrivateHalf(opts.pubkey, plan.privateTags)
+      : plan.content;
+    const published = await publishFavoritesTags(plan.tags, content, opts.relays);
     // This line is why `assertPublished` exists: the baseline is a promise that
     // `local` will keep asserting these ids, and it may only be made about an
     // event that actually landed.
@@ -218,7 +485,7 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     // the user saying no, and reporting that as "couldn't reach the relays"
     // would be a lie — it rethrows to the debounce's own warn instead.
     if (!(e instanceof NoRelayAcceptedError)) throw e;
-    opts.onDegraded?.();
+    opts.onDegraded?.('degraded');
     // eslint-disable-next-line no-console
     console.warn('[favorites] publish reached no relay — baseline unchanged, next toggle retries');
     return null;

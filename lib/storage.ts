@@ -6,7 +6,7 @@
 // duplicated across components.
 
 import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, StoredBoost } from './types';
-import type { DiscoveredNote, MuteListState, ProfileMetadata } from './nostr';
+import type { DiscoveredNote, FavoritesBaseline, FavoritesPrivacy, MuteListState, ProfileMetadata } from './nostr';
 // Value import, so it must come from the import-free leaf rather than the
 // './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
 // and unlike the type-only line above a value import does NOT erase.
@@ -51,6 +51,8 @@ const KEYS = {
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
+  favPrivacyPrefix: 'bmb:fav_privacy', // + ':<npub>' — 'public' | 'private' | 'off'. WHERE this account's favorites go, not a cache: absent means "never chosen", which is a third state the hydrator seeds from the wire and the first-favorite prompt asks about. Deliberately absent from EVICTABLE_PREFIXES — evicting it would silently republish a private list in plaintext.
+  favPrivateOptIn: 'bmb:fav_private_optin', // device-wide '1' — the escape hatch for testing the private half before PRIVATE_FAVORITES_ENABLED goes true. Not per-npub: it is a build switch a human flips on their own machine, not a user preference.
   favBaselinePrefix: 'bmb:favbaseline', // + ':<npub>' — {feeds,items} of NIP-73 ids this device last agreed with the kind:10333 list on. NOT a cache: without it a shared, replaceable, many-writer event can't tell "another app added this" from "I removed this". See lib/nostr/favorites-list.ts.
   podcastMetaPrefix: 'bmb:pmeta',     // /api/by-guid result, keyed by guid
   episodeMetaPrefix: 'bmb:epmeta',    // /api/episode-by-guid result, keyed by '<feedGuid>:<itemGuid>'
@@ -1421,20 +1423,68 @@ export const storage = {
    * deleting another app's entry is not.
    */
   favBaseline: {
-    get: (npub: string | null | undefined): { feeds: string[]; items: string[] } => {
+    get: (npub: string | null | undefined): FavoritesBaseline => {
       const raw = safeGet(identityKey(KEYS.favBaselinePrefix, npub));
       if (!raw) return { feeds: [], items: [] };
       const strings = (v: unknown): string[] =>
         (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []);
       try {
         const parsed = JSON.parse(raw);
-        return { feeds: strings(parsed?.feeds), items: strings(parsed?.items) };
+        // The two private arrays are read back as [] when absent rather than
+        // left undefined, so a baseline written before the private half existed
+        // reads as all-public — which is exactly what it is. Reading them as
+        // "unknown" instead would make the first private cycle on an upgraded
+        // device treat every entry as another app's.
+        return {
+          feeds: strings(parsed?.feeds),
+          items: strings(parsed?.items),
+          privateFeeds: strings(parsed?.privateFeeds),
+          privateItems: strings(parsed?.privateItems),
+        };
       } catch {
         return { feeds: [], items: [] };
       }
     },
-    set: (npub: string | null | undefined, v: { feeds: string[]; items: string[] }) => {
+    set: (npub: string | null | undefined, v: FavoritesBaseline) => {
       safeSet(identityKey(KEYS.favBaselinePrefix, npub), JSON.stringify(v));
+    },
+  },
+
+  /**
+   * Where this account's favorites go: public tags, encrypted `content`, or
+   * nowhere.
+   *
+   * THREE states plus absent, and absent is load-bearing — it means "never
+   * chosen", which is what the first-favorite prompt asks about and what the
+   * hydrator seeds from the wire. Collapsing it to a 'public' default would
+   * publish a list before the user was ever offered the choice, which is the
+   * one ordering this feature exists to get right.
+   *
+   * Per-npub, because it describes an identity's list rather than this machine.
+   * `'off'` is the exception in spirit — it stops THIS device syncing — but it
+   * still keys by npub so signing into a second account on the same browser
+   * does not inherit a decision made about the first.
+   */
+  favPrivacy: {
+    get: (npub: string | null | undefined): FavoritesPrivacy | null => {
+      const v = safeGet(identityKey(KEYS.favPrivacyPrefix, npub));
+      return v === 'public' || v === 'private' || v === 'off' ? v : null;
+    },
+    set: (npub: string | null | undefined, v: FavoritesPrivacy): boolean =>
+      safeSet(identityKey(KEYS.favPrivacyPrefix, npub), v),
+    clear: (npub: string | null | undefined) =>
+      safeRemove(identityKey(KEYS.favPrivacyPrefix, npub)),
+  },
+
+  /**
+   * The device escape hatch for the private half, ahead of
+   * `PRIVATE_FAVORITES_ENABLED`. Set by `window.bmbEnablePrivateFavorites()`.
+   */
+  favPrivateOptIn: {
+    get: (): boolean => safeGet(KEYS.favPrivateOptIn) === '1',
+    set: (on: boolean) => {
+      if (on) safeSet(KEYS.favPrivateOptIn, '1');
+      else safeRemove(KEYS.favPrivateOptIn);
     },
   },
 

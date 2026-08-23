@@ -1,7 +1,7 @@
 'use client';
 import { create } from 'zustand';
 import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, ValueBlock } from './types';
-import type { NostrIdentity } from './nostr';
+import type { NostrIdentity, PublishReason } from './nostr';
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
@@ -200,7 +200,18 @@ interface AppState {
   // state, and a consumer that treats it as one shows every visitor a relay
   // warning before anything has been attempted.
   favoritesSync: FavoritesSyncStatus;
-  setFavoritesSync: (s: FavoritesSyncStatus) => void;
+  /**
+   * WHY the last cycle withheld, when it did.
+   *
+   * `favoritesSync` alone says "we didn't write", which was enough while every
+   * withholding had the same cause and the same sentence. It no longer is: a
+   * private half this signer cannot decrypt and a relay set that never answered
+   * both render as a shorter list, and the user cannot tell "hidden here by
+   * choice" from "this app has not been able to open it" without being told
+   * which. Null while the status is anything but 'degraded'.
+   */
+  favoritesSyncReason: PublishReason | null;
+  setFavoritesSync: (s: FavoritesSyncStatus, reason?: PublishReason) => void;
   /** Back to 'idle', for the identity teardowns in nostr-auth. Kept as its own
    *  call so the three places that clear it can't drift. */
   resetFavoritesSync: () => void;
@@ -391,8 +402,14 @@ export const useApp = create<AppState>((set, get) => ({
   }),
 
   favoritesSync: 'idle',
-  setFavoritesSync: (s) => set({ favoritesSync: s }),
-  resetFavoritesSync: () => set({ favoritesSync: 'idle' }),
+  favoritesSyncReason: null,
+  // The reason is cleared on every non-degraded status rather than left behind:
+  // a stale "your signer couldn't decrypt this" sitting under a healthy 'ok' is
+  // a notice about a problem that is over, which is the same lie as a silent
+  // withholding pointed the other way.
+  setFavoritesSync: (s, reason) =>
+    set({ favoritesSync: s, favoritesSyncReason: s === 'degraded' ? (reason ?? null) : null }),
+  resetFavoritesSync: () => set({ favoritesSync: 'idle', favoritesSyncReason: null }),
 
   // Hydrate from the guest cache; once the user signs in, hydrateMutes
   // replaces this with their NIP-51 set reconciled against the relay event.

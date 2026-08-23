@@ -51,8 +51,16 @@
 
 import {
   EMPTY_BASELINE,
+  EMPTY_LOCAL,
+  EMPTY_PARSED,
   LIST_ALT,
+  PRIVATE_PLAINTEXT_MAX,
+  baselineForHalves,
   baselineFrom,
+  baselineHalf,
+  decodePrivateFavorites,
+  encodePrivateFavorites,
+  plaintextBytes,
   entriesFromList,
   groupLocalFavorites,
   identifierKind,
@@ -695,6 +703,339 @@ section('The store projection is a fixed point');
   const local = groupLocalFavorites(entriesFromList(read));
   check('render → regroup → merge reproduces the wire',
     tagsFromList(mergeFavoritesList({ read, local, baseline: baselineFrom(local) })), wire);
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 4b — an opaque `content` survives a republish');
+// ---------------------------------------------------------------------------
+{
+  // The spec's sibling to vector 4, and the reason the carry rule ships ahead
+  // of the private half: rule 4 covers TAGS and says nothing about `content`,
+  // so a writer following the document to the letter republishes the empty
+  // string the format has specified from the start — and erases every private
+  // entry another app wrote, silently, with no undo.
+  const wire = [['alt', LIST_ALT], ['i', showId(F_MUSIC)]];
+  const local = groupLocalFavorites([{ id: showId(F_POD) }]);
+  const CIPHER = 'AkVn3xQ==someoneElsesPrivateFavorites';
+
+  const p = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: parseFavoritesList(wire), local, baseline: EMPTY_BASELINE }),
+    readTags: wire,
+    exists: true,
+    trustworthy: true,
+    local,
+    readContent: CIPHER,
+    privateMerged: null,
+    privateUnreadable: true,
+  });
+
+  check('a public-half change still publishes over an unreadable private half', p.publish, true);
+  check('...and the ciphertext is carried byte for byte', p.content, CIPHER);
+  check('...and nothing is re-encrypted', p.encryptPrivate, false);
+
+  // The control is the shipping behaviour of every writer that has never heard
+  // of a private half — including this app until now.
+  const naiveContent = () => '';
+  check('(naive) blanking `content` on republish destroys it', naiveContent() !== p.content, true);
+
+  // And a change we cannot express is refused rather than guessed at.
+  const priv = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: parseFavoritesList(wire), local, baseline: EMPTY_BASELINE }),
+    readTags: wire,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    privateLocal: local,
+    readContent: CIPHER,
+    privateMerged: null,
+    privateUnreadable: true,
+  });
+  check('a PRIVATE-half change over a blob we cannot read is refused', priv.publish, false);
+  check('...and says so', priv.reason, 'private-unreadable');
+}
+
+// ---------------------------------------------------------------------------
+section('The private half — idempotence is on the DECRYPTED array');
+// ---------------------------------------------------------------------------
+{
+  // NIP-44 draws a fresh nonce per encryption, so the same entries produce
+  // different bytes every time. Compare ciphertext and the byte test can never
+  // report 'unchanged': every page load republishes and two apps rewrite the
+  // event at each other forever, this time self-inflicted.
+  const privLocal = groupLocalFavorites([
+    { id: itemId(I_A), feedRef: F_MUSIC, medium: 'music' },
+  ]);
+  // What this device would have written the first time.
+  const onWire = tagsFromList(
+    mergeFavoritesList({ read: EMPTY_PARSED, local: privLocal, baseline: EMPTY_BASELINE }),
+  );
+  const baseline = baselineForHalves(EMPTY_LOCAL, privLocal);
+  const pubWire = [['alt', LIST_ALT]];
+
+  const p = planFavoritesPublish({
+    merged: mergeFavoritesList({
+      read: parseFavoritesList(pubWire), local: EMPTY_LOCAL, baseline: baselineHalf(baseline, 'public'),
+    }),
+    readTags: pubWire,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    privateMerged: mergeFavoritesList({
+      read: parseFavoritesList(onWire), local: privLocal, baseline: baselineHalf(baseline, 'private'),
+    }),
+    readPrivateTags: onWire,
+    readContent: 'nip44:nonce-from-last-time:…',
+    privateLocal: privLocal,
+  });
+
+  check('reading our own private half back publishes nothing', p.reason, 'unchanged');
+  check('...and does not spend an encryption to find that out', p.encryptPrivate, false);
+  check('...and leaves `content` exactly as it was', p.content, 'nip44:nonce-from-last-time:…');
+
+  // The control: encrypt first, compare the result.
+  const naiveEncrypt = (plaintext, nonce) => `nip44:${nonce}:${plaintext}`;
+  const pt = encodePrivateFavorites(onWire);
+  check(
+    '(naive) comparing ciphertext republishes an unchanged list',
+    naiveEncrypt(pt, 'a') !== naiveEncrypt(pt, 'b'),
+    true,
+  );
+}
+
+// ---------------------------------------------------------------------------
+section('The private half — a move is a removal AND an addition');
+// ---------------------------------------------------------------------------
+{
+  // This is the spec's "the baseline gains a job too". Against ONE shared
+  // baseline the two steps of a move cancel destructively and the entry is
+  // deleted outright, with every other guard satisfied.
+  const mine = groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]);
+  const wire = tagsFromList(
+    mergeFavoritesList({ read: EMPTY_PARSED, local: mine, baseline: EMPTY_BASELINE }),
+  );
+  // We published it, publicly. Now the user switches to private.
+  const split = baselineForHalves(mine, EMPTY_LOCAL);
+
+  const movedOut = tagsFromList(mergeFavoritesList({
+    read: parseFavoritesList(wire), local: EMPTY_LOCAL, baseline: baselineHalf(split, 'public'),
+  }));
+  const movedIn = tagsFromList(mergeFavoritesList({
+    read: EMPTY_PARSED, local: mine, baseline: baselineHalf(split, 'private'),
+  }));
+
+  check('the public half drops it', movedOut, [['alt', LIST_ALT]]);
+  check('the private half gains it', movedIn, [
+    ['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC)], ['k', 'podcast:guid'],
+  ]);
+
+  // THE CONTROL. One baseline, no halves — which is what this app shipped
+  // before, and what the spec warns costs the entry.
+  const shared = baselineFrom(mine);
+  const movedInShared = tagsFromList(mergeFavoritesList({
+    read: EMPTY_PARSED, local: mine, baseline: shared,
+  }));
+  check('(naive) one shared baseline eats the entry it was moving', movedInShared, [['alt', LIST_ALT]]);
+
+  // And the round trip survives a SECOND cycle: the new baseline names it on
+  // the private side only, so the next read does not read it back as a removal.
+  const after = baselineForHalves(EMPTY_LOCAL, mine);
+  const second = tagsFromList(mergeFavoritesList({
+    read: parseFavoritesList(movedIn), local: mine, baseline: baselineHalf(after, 'private'),
+  }));
+  check('...and the next cycle is a fixed point', second, movedIn);
+}
+
+// ---------------------------------------------------------------------------
+section('The private half — wholesale-delete spans BOTH halves');
+// ---------------------------------------------------------------------------
+{
+  const mine = groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]);
+  const wire = tagsFromList(
+    mergeFavoritesList({ read: EMPTY_PARSED, local: mine, baseline: EMPTY_BASELINE }),
+  );
+  const split = baselineForHalves(mine, EMPTY_LOCAL);
+
+  const emptiedPublic = mergeFavoritesList({
+    read: parseFavoritesList(wire), local: EMPTY_LOCAL, baseline: baselineHalf(split, 'public'),
+  });
+  const filledPrivate = mergeFavoritesList({
+    read: EMPTY_PARSED, local: mine, baseline: baselineHalf(split, 'private'),
+  });
+
+  // MUST STILL WORK: a switch to private empties the public merge over a
+  // non-empty read — the exact shape the guard refuses — and must go through,
+  // because the entry moved rather than vanished.
+  const move = planFavoritesPublish({
+    merged: emptiedPublic,
+    readTags: wire,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    privateMerged: filledPrivate,
+    readPrivateTags: [],
+    readContent: '',
+    privateLocal: mine,
+  });
+  check('switching to private is not a wholesale delete', move.reason, 'publish');
+  check('...and it does encrypt, because the private half genuinely changed', move.encryptPrivate, true);
+
+  // The naive fix is a per-half test, and it refuses the feature it protects.
+  const perHalf = emptiedPublic.nodes.length === 0 && wire.some((t) => t[0] === 'i');
+  check('(naive) a per-half test refuses a legitimate switch', perHalf, true);
+
+  // AND THE REAL THING IS STILL CAUGHT: an unhydrated store empties both halves
+  // at once, because both are fed from one local list.
+  const bothEmpty = planFavoritesPublish({
+    merged: emptiedPublic,
+    readTags: wire,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    privateMerged: mergeFavoritesList({
+      read: EMPTY_PARSED, local: EMPTY_LOCAL, baseline: baselineHalf(split, 'private'),
+    }),
+    readPrivateTags: [],
+    readContent: '',
+    privateLocal: EMPTY_LOCAL,
+  });
+  check('both halves empty over a list that is not is still refused', bothEmpty.reason, 'wholesale-delete');
+  check('...and publishes nothing', bothEmpty.publish, false);
+
+  // ...unless the user asked for exactly that, in as many words.
+  const withdrawn = planFavoritesPublish({
+    merged: emptiedPublic,
+    readTags: wire,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    privateMerged: EMPTY_PARSED,
+    readPrivateTags: [],
+    readContent: '',
+    privateLocal: EMPTY_LOCAL,
+    userConfirmedWithdrawal: true,
+  });
+  check('a confirmed withdrawal is allowed past it', withdrawn.reason, 'publish');
+  check('...and records an empty baseline once it lands', withdrawn.baseline, {
+    feeds: [], items: [], privateFeeds: [], privateItems: [],
+  });
+}
+
+// ---------------------------------------------------------------------------
+section('The private half — a withdrawal takes ONLY our own entries');
+// ---------------------------------------------------------------------------
+{
+  // A group of ours with another app's track under it. Dropping the group takes
+  // their track with it, because the group is the only thing naming its parent.
+  const wire = [
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC)],
+    ['i', itemId(I_A)],   // ours
+    ['i', itemId(I_ODD)], // theirs
+    ['i', showId(F_POD)], // theirs entirely
+    ['k', 'podcast:guid'],
+    ['k', 'podcast:item:guid'],
+  ];
+  const mine = groupLocalFavorites([{ id: itemId(I_A), feedRef: F_MUSIC, medium: 'music' }]);
+  const split = baselineForHalves(mine, EMPTY_LOCAL);
+
+  const after = tagsFromList(mergeFavoritesList({
+    read: parseFavoritesList(wire), local: EMPTY_LOCAL, baseline: baselineHalf(split, 'public'),
+  }));
+
+  check('our track goes', after.some((t) => t[1] === itemId(I_A)), false);
+  check('their track stays', after.some((t) => t[1] === itemId(I_ODD)), true);
+  check('the group naming its parent stays with it', after.some((t) => t[1] === showId(F_MUSIC)), true);
+  check('and their own feed is untouched', after.some((t) => t[1] === showId(F_POD)), true);
+}
+
+// ---------------------------------------------------------------------------
+section('The private half — the plaintext survives an external signer');
+// ---------------------------------------------------------------------------
+{
+  // Amber URL-decodes the WHOLE `nostrsigner:` URI and only then splits it on
+  // `?`, so a plaintext carrying one is silently truncated there. Item guids
+  // are routinely permalink URLs — which is why `parseItemGuid` is not
+  // UUID-gated — so this payload is full of candidates.
+  const tags = [
+    ['alt', LIST_ALT],
+    ['i', itemId('https://example.com/ep?id=42&utm=x')],
+    ['i', itemId(I_URL)],
+    ['k', 'podcast:item:guid'],
+  ];
+  const pt = encodePrivateFavorites(tags);
+
+  check('no "?" reaches the signer', pt.includes('?'), false);
+  check('and it is still JSON any app can read', decodePrivateFavorites(pt), tags);
+
+  // The control is the obvious implementation.
+  check('(naive) bare JSON.stringify hands Amber a "?"', JSON.stringify(tags).includes('?'), true);
+
+  // MUST STILL WORK: nothing else is touched.
+  const plain = [['i', showId(F_MUSIC)]];
+  check('a payload with no "?" is unchanged', encodePrivateFavorites(plain), JSON.stringify(plain));
+
+  // Not a tag array ⇒ null, so the caller parks the blob instead of rewriting
+  // `content` from empty lists. This is the hole lib/nostr/mutes.ts still has.
+  check('a decrypted non-array is refused', decodePrivateFavorites('{"a":1}'), null);
+  check('a decrypted non-string element is refused', decodePrivateFavorites('[["i",7]]'), null);
+  check('garbage is refused', decodePrivateFavorites('not json'), null);
+}
+
+// ---------------------------------------------------------------------------
+section('The private half — the NIP-44 size cliff');
+// ---------------------------------------------------------------------------
+{
+  // A payload past the older NIP-44 plaintext cap reads back as EMPTY on a
+  // signer built to that text, not as an error. Refusing costs one favorite;
+  // publishing costs the whole list on that device.
+  const many = [];
+  for (let i = 0; i < 1200; i += 1) {
+    many.push({ id: itemId(`${I_A}-${i}-padded-out-to-a-realistic-permalink-length`), feedRef: F_MUSIC });
+  }
+  const huge = groupLocalFavorites(many);
+  const hugeMerged = mergeFavoritesList({ read: EMPTY_PARSED, local: huge, baseline: EMPTY_BASELINE });
+  check(
+    'the fixture is genuinely over the ceiling',
+    plaintextBytes(encodePrivateFavorites(tagsFromList(hugeMerged))) > PRIVATE_PLAINTEXT_MAX,
+    true,
+  );
+
+  const over = planFavoritesPublish({
+    merged: EMPTY_PARSED,
+    readTags: [],
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    privateMerged: hugeMerged,
+    readPrivateTags: [],
+    readContent: '',
+    privateLocal: huge,
+  });
+  check('an oversized private half is refused', over.reason, 'private-too-large');
+  check('...and publishes nothing', over.publish, false);
+
+  // MUST STILL WORK.
+  const few = groupLocalFavorites([{ id: itemId(I_A), feedRef: F_MUSIC }]);
+  const fewMerged = mergeFavoritesList({ read: EMPTY_PARSED, local: few, baseline: EMPTY_BASELINE });
+  const under = planFavoritesPublish({
+    merged: EMPTY_PARSED,
+    readTags: [],
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    privateMerged: fewMerged,
+    readPrivateTags: [],
+    readContent: '',
+    privateLocal: few,
+  });
+  check('an ordinary private half is not', under.reason, 'publish');
 }
 
 // ---------------------------------------------------------------------------

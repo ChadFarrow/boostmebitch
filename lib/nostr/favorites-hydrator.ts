@@ -29,7 +29,10 @@ import { storage } from '@/lib/storage';
 import { piMaybeUp, resolveEpisodeByGuid, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
 import {
-  baselineFrom,
+  EMPTY_LOCAL,
+  EMPTY_PARSED,
+  baselineForHalves,
+  baselineHalf,
   fetchFavoritesList,
   groupLocalFavorites,
   looksLikeFeedGuid,
@@ -38,14 +41,20 @@ import {
   planFavoritesPublish,
   publishFavoritesTags,
   tagsFromList,
+  type ParsedList,
+  type PartitionedList,
 } from './favorites';
 import {
+  favoritesMode,
   localFavoriteEntries,
   localFavoriteList,
+  privateFavoritesEnabled,
   requestFavoritesSync,
+  seedFavoritesMode,
   serializeFavoritesCycle,
   trustedBaseline,
   syncOptionsFor,
+  unattendedDecryptOk,
 } from './favorites-sync';
 import { resolvePublishRelays } from './relays';
 import type { NostrIdentity } from './auth';
@@ -170,7 +179,17 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // 'loading' forever and the notice would never appear.
   let read: Awaited<ReturnType<typeof fetchFavoritesList>>;
   try {
-    read = await fetchFavoritesList(identity.pubkey, relays);
+    // DO NOT SPEND A SIGNER PROMPT HERE. This runs on every page load and on
+    // every sign-in, and a decrypt approval sheet on a cold start is something
+    // nobody asked for — Amber's shows the PLAINTEXT, and on a Pixel 6 it was
+    // measured returning the user to the launcher, so the request never
+    // resolved and the prompt came straight back. The ciphertext rides through
+    // opaquely instead, the local cache still renders, and the retry on
+    // <FavoritesSyncNotice> is the user's explicit way in.
+    read = await fetchFavoritesList(identity.pubkey, relays, {
+      decryptPrivate: privateFavoritesEnabled() && unattendedDecryptOk(),
+      purpose: 'unattended',
+    });
   } catch (e) {
     setFavoritesSync('degraded');
     throw e;
@@ -186,14 +205,40 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     return;
   }
 
+  // An account that already HAS a list is never asked which half it wants — the
+  // wire already says. Seeding here, off the one trustworthy read of the cycle,
+  // is what keeps the first-favorite prompt aimed at people whose first
+  // favorite it really is. Both halves empty leaves it unrecorded on purpose.
+  const mode = seedFavoritesMode(identity.npub, read) ?? favoritesMode(identity.npub) ?? 'public';
+
   // First sign-in on a device that already has local favorites: adopt them and
   // push them up. This is why nostr-auth must clear favorites on an account
   // switch — otherwise account A's list gets published under account B's key.
-  const local = groupLocalFavorites(localFavoriteEntries());
+  //
+  // ONE local list, split by the mode: everything this device holds goes into
+  // one half, and the other is still read, merged and carried so another app's
+  // entries — or our own, mid-switch — survive.
+  const all = groupLocalFavorites(localFavoriteEntries());
+  const local = mode === 'private' ? EMPTY_LOCAL : all;
+  const privateLocal = mode === 'private' ? all : EMPTY_LOCAL;
   // Same guard the publish path uses. Read directly and this function becomes
   // the one place that still believes a baseline no other caller does.
   const baseline = trustedBaseline(identity.npub);
-  const merged = mergeFavoritesList({ read: read.list, local, baseline });
+  const merged = mergeFavoritesList({
+    read: read.list,
+    local,
+    baseline: baselineHalf(baseline, 'public'),
+  });
+  // Null, not an empty merge, when we could not read it: "carry these bytes"
+  // and "there is nothing there" are different claims and only one is safe to
+  // paint from.
+  const privateMerged: ParsedList | null = read.privateUnreadable
+    ? null
+    : mergeFavoritesList({
+      read: read.privateList ?? EMPTY_PARSED,
+      local: privateLocal,
+      baseline: baselineHalf(baseline, 'private'),
+    });
 
   // PLAN BEFORE PAINTING, because `setFavorites` writes THROUGH to localStorage
   // and this device's cache is an INPUT to the next hydrate, not a copy of the
@@ -217,6 +262,12 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     exists: read.exists,
     trustworthy: true, // the untrustworthy case returned above
     local,
+    mode,
+    privateMerged,
+    readPrivateTags: read.privateTags,
+    readContent: read.content,
+    privateUnreadable: read.privateUnreadable,
+    privateLocal,
   });
 
   // "This device holds nothing" is not the same claim as "the user cleared their
@@ -227,16 +278,39 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // also missing (a narrowed read, another app's delete). Both refuse the same
   // way a degraded read does: keep what is on screen, publish nothing, and
   // record NO baseline — `onSynced` here would make the next cycle agree.
+  //
+  // BOTH halves count here, for the same reason they do in the planner: a mode
+  // switch legitimately empties one of them, so a per-half test would refuse
+  // the feature it exists to protect. The pair is fed from ONE local list, so
+  // an unhydrated store empties them together while a switch merely moves
+  // entries across.
+  const mergedTotal = merged.nodes.length + (privateMerged?.nodes.length ?? 0);
   const cacheHasEntries =
     Object.keys(cached).length > 0 || Object.keys(cachedEpisodes).length > 0;
-  if (plan.reason === 'wholesale-delete' || (merged.nodes.length === 0 && cacheHasEntries)) {
-    setFavoritesSync('degraded');
+  if (plan.reason === 'wholesale-delete' || (mergedTotal === 0 && cacheHasEntries)) {
+    setFavoritesSync('degraded', 'wholesale-delete');
     // eslint-disable-next-line no-console
     console.warn(
       '[favorites] REFUSING to adopt an empty merge — this device holds favorites '
       + `(cache: ${Object.keys(cached).length} feeds, ${Object.keys(cachedEpisodes).length} items; `
-      + `relay: ${read.tags.filter((t) => t[0] === 'i').length} entries) and the merge came out empty. `
-      + 'Keeping local state, publishing nothing, recording no baseline.',
+      + `relay: ${read.tags.filter((t) => t[0] === 'i').length} public entries, `
+      + `${read.privateTags.filter((t) => t[0] === 'i').length} private) and both halves came out `
+      + 'empty. Keeping local state, publishing nothing, recording no baseline.',
+    );
+    return;
+  }
+
+  // A private half we could not open is not a private half that is empty, and
+  // painting from the public half alone would show the user a list missing
+  // everything they chose to hide. Keep what is on screen and say why. The
+  // planner has already refused the publish for the same reason; this is the
+  // rendering half of the same decision.
+  if (plan.reason === 'private-unreadable') {
+    setFavoritesSync('degraded', 'private-unreadable');
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[favorites] this list has an encrypted half we could not read — keeping local '
+      + 'favorites as-is and carrying the ciphertext untouched',
     );
     return;
   }
@@ -247,7 +321,13 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // the merge, too — the refusal branch has to be able to report 'degraded'.
   setFavoritesSync('ok');
 
-  const part = partitionList(merged);
+  // Rows come from BOTH halves — one library, two places it is stored. Public
+  // first, so that where the same feed guid appears in both, an unambiguous
+  // (itemless) public favorite is not overwritten by a private group that
+  // exists only to place a track. `partitionList` is run per half rather than
+  // over a spliced node list, because splicing two ordered lists would put an
+  // item under whichever group happened to precede it after the join.
+  const part = joinPartitions(partitionList(merged), privateMerged ? partitionList(privateMerged) : null);
 
   if (part.malformed.length > 0) installCleanupHook(identity, part.malformed);
 
@@ -371,6 +451,24 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
 }
 
 /**
+ * Two partitioned halves, rendered as one library.
+ *
+ * Public first and private second, so a `for` loop that skips a duplicate feed
+ * guid keeps the FIRST verdict: an itemless public group is an unambiguous
+ * favorite, and a private group carrying items may exist only to place a track.
+ * Order is the tie-break, and it is the safe way round.
+ */
+function joinPartitions(pub: PartitionedList, priv: PartitionedList | null): PartitionedList {
+  if (!priv) return pub;
+  return {
+    feeds: [...pub.feeds, ...priv.feeds],
+    items: [...pub.items, ...priv.items],
+    loose: [...pub.loose, ...priv.loose],
+    malformed: [...pub.malformed, ...priv.malformed],
+  };
+}
+
+/**
  * Expose a one-shot purge for malformed `podcast:guid:` entries — feed IDs and
  * live-episode strings written by old versions of this app, which 404 against
  * PI. It stays an explicit user action rather than an automatic cleanup: the
@@ -396,14 +494,21 @@ function installCleanupHook(identity: NostrIdentity, malformed: string[]) {
       const removed = read.list.nodes.length - kept.nodes.length;
       if (removed === 0) return 'nothing to remove';
       try {
-        await publishFavoritesTags(tagsFromList(kept), relays);
+        // `read.content` verbatim: this hook edits the PUBLIC half only, and
+        // rewriting a private half it never decrypted would delete it.
+        await publishFavoritesTags(tagsFromList(kept), read.content, relays);
       } catch (e) {
         // Reporting "removed N" for an event no relay took would be a lie the
         // user acts on — they'd stop running it. The baseline below stays
         // unwritten either way, so a retry is still a real retry.
         return `nothing removed — ${(e as Error)?.message ?? e}`;
       }
-      storage.favBaseline.set(identity.npub, baselineFrom(localFavoriteList()));
+      storage.favBaseline.set(
+        identity.npub,
+        favoritesMode(identity.npub) === 'private'
+          ? baselineForHalves(EMPTY_LOCAL, localFavoriteList())
+          : baselineForHalves(localFavoriteList(), EMPTY_LOCAL),
+      );
       return `removed ${removed} malformed entries`;
     });
   }
