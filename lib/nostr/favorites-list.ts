@@ -319,6 +319,11 @@ export function baselineHalf(baseline: FavoritesBaseline, half: ListHalf): Favor
  * what reaches disk. Callers pass the local list they actually published into
  * each half — which, under one whole-list choice, means one of them is empty.
  */
+export function baselineOfList(list: ParsedList | null | undefined): FavoritesBaseline {
+  if (!list) return EMPTY_BASELINE;
+  return baselineFrom(groupLocalFavorites(entriesFromList(list)));
+}
+
 export function baselineForHalves(publicLocal: LocalList, privateLocal: LocalList): FavoritesBaseline {
   const pub = baselineFrom(publicLocal);
   const priv = baselineFrom(privateLocal);
@@ -869,6 +874,12 @@ export interface FavoritesPlanInput {
   /** This device's favorites destined for the private half. */
   privateLocal?: LocalList;
   /**
+   * What this device last agreed with the relay on, so the claims about a half
+   * we could not read this cycle survive it. Without it an unreadable private
+   * half disowns every entry in it on the next publish.
+   */
+  previousBaseline?: FavoritesBaseline;
+  /**
    * This emptiness is something a person did, not something that happened.
    *
    * The ONLY thing that may bypass the wholesale-delete refusal — that guard
@@ -937,7 +948,34 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   const privateUnreadable = !!input.privateUnreadable;
 
   const tags = tagsFromList(input.merged);
-  const baseline = baselineForHalves(input.local, input.privateLocal ?? { groups: [], loose: [] });
+
+  // THE BASELINE DESCRIBES BOTH HALVES AS THEY NOW STAND, derived from the
+  // MERGED result rather than from `local`.
+  //
+  // It used to be `baselineForHalves(local, privateLocal)` — one local list
+  // split by mode — which blanked the claims on the half this device was not
+  // currently using. Every ordinary publish in public mode therefore threw away
+  // whatever this device had asserted privately, and those entries became
+  // unremovable: absent from the baseline, the merge reads them as another
+  // writer's and carries them forever, while the app still renders them and
+  // offers a heart that does nothing. Reported as "I unfavorited 2 and they
+  // came back", off an event holding 9 public entries and an encrypted copy.
+  //
+  // Deriving it from the merge is also what makes an ADOPTED list removable at
+  // all: this app paints the union of both halves into one library and lets the
+  // user unfavorite any of it, so it has to claim what it renders. Entries it
+  // cannot represent are excluded by `entriesFromList`, which is the line
+  // between adopting a list and claiming a stranger's bytes.
+  const pub = baselineOfList(input.merged);
+  // A half we could not read is a half whose claims we must keep: it is carried
+  // verbatim, so what we asserted about it is still true, and recomputing it
+  // from nothing would silently disown every private entry.
+  const priv = privateUnreadable
+    ? { feeds: input.previousBaseline?.privateFeeds ?? [], items: input.previousBaseline?.privateItems ?? [] }
+    : baselineOfList(input.privateMerged);
+  const baseline: FavoritesBaseline = {
+    feeds: pub.feeds, items: pub.items, privateFeeds: priv.feeds, privateItems: priv.items,
+  };
 
   // A private half with nothing in it is an EMPTY `content`, never an encrypted
   // empty array — otherwise every list that has never used one carries a couple

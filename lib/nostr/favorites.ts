@@ -421,6 +421,7 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     // Both provenances of an emptiness a person asked for: the withdrawal
     // dialog, and unfavoriting the whole list. See `emptyIsIntentional`.
     emptyIsIntentional: opts.withdraw || opts.localCleared,
+    previousBaseline: baseline,
   });
 
   if (plan.reason === 'degraded') {

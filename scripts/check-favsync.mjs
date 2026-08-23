@@ -57,6 +57,7 @@ import {
   PRIVATE_PLAINTEXT_MAX,
   baselineForHalves,
   baselineFrom,
+  baselineOfList,
   baselineHalf,
   decodePrivateFavorites,
   encodePrivateFavorites,
@@ -1055,6 +1056,72 @@ section('The private half — an ADOPTED list must enter the baseline');
     tagsFromList(mergeFavoritesList({
       read: withForeign, local: EMPTY_LOCAL, baseline: baselineHalf(b2, 'public'),
     })).some((t) => t[1] === 'something:else:entirely'), true);
+}
+
+// ---------------------------------------------------------------------------
+section('The private half — the baseline describes BOTH halves, every cycle');
+// ---------------------------------------------------------------------------
+{
+  // Reported as "I unfavorited 2 and they came back", off an event holding 9
+  // public entries AND an encrypted copy. The baseline was one local list split
+  // by mode, so every publish in public mode blanked the claims on the private
+  // half. Unclaimed, those entries read as another writer's and are carried
+  // forever — while the app still renders them and offers a heart that does
+  // nothing.
+  const pubWire = [
+    ['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC)], ['k', 'podcast:guid'],
+  ];
+  const privWire = [
+    ['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC2)], ['k', 'podcast:guid'],
+  ];
+  const readPub = parseFavoritesList(pubWire);
+  const readPriv = parseFavoritesList(privWire);
+  // Public mode: this device owns the public half and merely carries the other.
+  const mine = groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]);
+  const plan = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: readPub, local: mine, baseline: EMPTY_BASELINE }),
+    readTags: pubWire, exists: true, trustworthy: true, local: mine,
+    mode: 'public',
+    privateMerged: mergeFavoritesList({ read: readPriv, local: EMPTY_LOCAL, baseline: EMPTY_BASELINE }),
+    readPrivateTags: privWire, readContent: 'nip44:…', privateLocal: EMPTY_LOCAL,
+  });
+  check('the public half is claimed', plan.baseline.feeds, [showId(F_MUSIC)]);
+  check('...and so is the private half we are only carrying', plan.baseline.privateFeeds, [showId(F_MUSIC2)]);
+
+  // (naive) the version that shipped: one local list split by mode.
+  const naive = baselineForHalves(mine, EMPTY_LOCAL);
+  check('(naive) splitting one local list by mode disowns the other half', naive.privateFeeds, []);
+  // ...and disowned is unremovable: the merge carries what the baseline
+  // does not claim, so the entry survives every republish.
+  const stuck = tagsFromList(mergeFavoritesList({
+    read: readPriv, local: EMPTY_LOCAL, baseline: baselineHalf(naive, 'private'),
+  }));
+  check('(naive) ...so it comes back on every cycle', stuck.some((t) => t[1] === showId(F_MUSIC2)), true);
+  // With it claimed, dropping it locally actually removes it.
+  const gone = tagsFromList(mergeFavoritesList({
+    read: readPriv, local: EMPTY_LOCAL, baseline: baselineHalf(plan.baseline, 'private'),
+  }));
+  check('claimed, it can finally be removed', gone.some((t) => t[1] === showId(F_MUSIC2)), false);
+
+  // MUST STILL WORK: a half we could not READ keeps the claims we already had,
+  // rather than disowning every entry in it.
+  const kept = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: readPub, local: mine, baseline: EMPTY_BASELINE }),
+    readTags: pubWire, exists: true, trustworthy: true, local: mine,
+    mode: 'public', privateMerged: null, privateUnreadable: true,
+    readPrivateTags: [], readContent: 'nip44:…', privateLocal: EMPTY_LOCAL,
+    previousBaseline: { feeds: [], items: [], privateFeeds: [showId(F_MUSIC2)], privateItems: [] },
+  });
+  check('an unreadable private half keeps its claims', kept.baseline.privateFeeds, [showId(F_MUSIC2)]);
+
+  // MUST STILL WORK: what we cannot represent is never claimed.
+  const foreign = parseFavoritesList([
+    ['alt', LIST_ALT], ['i', 'something:else:entirely'], ['i', showId(F_POD)],
+  ]);
+  const b = baselineOfList(foreign);
+  check('an unreadable identifier stays unclaimed',
+    b.feeds.concat(b.items).includes('something:else:entirely'), false);
+  check('...while the one beside it is claimed', b.feeds, [showId(F_POD)]);
 }
 
 // ---------------------------------------------------------------------------

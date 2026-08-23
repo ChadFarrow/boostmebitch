@@ -292,6 +292,7 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     // re-adopts everything off the relay and the user's delete is undone
     // before the debounce that would have carried it ever fires.
     emptyIsIntentional: deliberatelyEmpty,
+    previousBaseline: baseline,
   });
 
   // "This device holds nothing" is not the same claim as "the user cleared their
@@ -499,12 +500,12 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     // Recording it is truthful rather than optimistic: this ran on a
     // TRUSTWORTHY read, and every id came off the relay a moment ago. "I agree
     // with the relay about these" is exactly what a baseline claims.
-    const adopted = localFavoriteList();
-    syncOptionsFor(identity).onSynced(
-      mode === 'private'
-        ? baselineForHalves(EMPTY_LOCAL, adopted)
-        : baselineForHalves(adopted, EMPTY_LOCAL),
-    );
+    // `plan.baseline` is now derived from the MERGED halves rather than from
+    // the pre-paint store, so it already describes what this device has just
+    // adopted — in the half each entry actually lives in. Recomputing it here
+    // from the store would put everything in the current mode's half and
+    // disown the other, which is the bug this replaced.
+    syncOptionsFor(identity).onSynced(plan.baseline);
   } else {
     // A REFUSAL. Record nothing, and say so.
     //
