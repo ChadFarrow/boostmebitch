@@ -114,7 +114,7 @@ Three console lines, one per rail-shape, because "I don't see any payment metada
 
 **Why the node line matters more than it looks.** A feed can list the same node twice — once as `type="node"` and once behind a lightning address that resolves to it. `lnurl-test-feed` does exactly that: `"My Node" 032870511bfa…` and `chadf@getalby.com`, which upgrades to that same pubkey. Only the address half printed a line, so a missing Helipad row could not be traced to a leg that never went out.
 
-**Helipad reads TLV `7629169` on keysend, and nothing else.** So an LNURL leg cannot appear there as a boost however complete its BoostBox record is — the record is reachable only through the URL in the comment. If a boost is missing from Helipad, check which rail its legs took before looking anywhere else.
+**A keysend leg carries the boostagram inline in TLV `7629169`; an LNURL leg carries none.** On the LNURL rail the metadata is reachable only through the `rss::payment` descriptor in the LUD-21 comment, which is what BoostBox exists to provide. So the two rails present differently to whatever the recipient runs, and a boost that looks absent on the receiving side is a question about **which rail its legs took** before it is a question about anything here. **Do not assert what a particular receiving tool does with either** — that was tried in this file and was wrong twice: a missing Helipad row was diagnosed here as an LNURL leg having no TLV to show, and turned out to be a Helipad-side fault that a reinstall fixed. We can only speak for what leaves this app.
 
 ### Reading an LNURL endpoint (`lnurlFetch` + `/api/lnurl`)
 
