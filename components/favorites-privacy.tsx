@@ -258,7 +258,14 @@ export function FavoritesPrivacyModal({
         await withdrawThisDevice(identity);
       }
       recordFavoritesPrivacy(identity.npub, choice, identity);
-      if (choice !== 'off') {
+      if (choice === 'off') {
+        // The status is normally set by `runHydrate`, and turning sync off is
+        // the one transition that stops it running — so nothing else would move
+        // it off 'ok' until a reload, and <FavoritesPage>'s empty state would
+        // keep telling a signed-in user to sign in. See `favoritesSync` in
+        // lib/store.ts for why 'off' is not 'idle'.
+        useApp.getState().setFavoritesSync('off');
+      } else {
         // Re-read and republish under the new mode. This is the move: the half
         // being left drops what this device's baseline claims, and the half
         // being joined gains it, in one publish.
