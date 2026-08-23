@@ -20,6 +20,7 @@ import { weblnPayInvoice } from './webln';
 import { pickRail, type Rail } from './boost';
 import { storeBoostMetadata } from './boostbox';
 import { bolt11AmountMsat } from './bolt11';
+import { lnurlFetch } from './lnurl-fetch';
 
 interface LnurlPayMetadata {
   callback: string;
@@ -43,9 +44,18 @@ function lnAddressToUrl(addr: string): string {
 }
 
 async function fetchPayMetadata(url: string): Promise<LnurlPayMetadata> {
-  const r = await fetch(url);
+  // Through `lnurlFetch`, never a bare fetch — the same reason `lnaddr.ts` does.
+  // A provider that sends no CORS header on this document is unreadable from
+  // the page, and here that also decides `lnaddrSupportsZaps`, i.e. whether the
+  // boost modal takes the zap path at all.
+  const r = await lnurlFetch(url);
   if (!r.ok) throw new Error(`LNURL lookup failed (${r.status})`);
-  const data = await r.json();
+  let data: LnurlPayMetadata & { tag?: string };
+  try {
+    data = JSON.parse(r.text);
+  } catch {
+    throw new Error('LNURL lookup did not return JSON');
+  }
   if (data.tag !== 'payRequest') throw new Error('Not a payRequest endpoint');
   return data;
 }
@@ -169,8 +179,8 @@ export async function sendZap(args: {
   );
   if (comment) cbUrl.searchParams.set('comment', comment);
 
-  const cb = await fetch(cbUrl.toString());
-  const cbText = await cb.text();
+  const cb = await lnurlFetch(cbUrl.toString());
+  const cbText = cb.text;
   let cbData: Record<string, unknown> | null = null;
   try { cbData = JSON.parse(cbText); } catch { /* non-JSON body */ }
   // LUD-06 error shape is { status: 'ERROR', reason }; some non-compliant

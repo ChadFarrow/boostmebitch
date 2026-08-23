@@ -45,8 +45,17 @@ async function ensureWebln(): Promise<Webln> {
  * module controls**, both of which run before any payment is attempted: the
  * provider being absent or refusing `enable()`, and a provider that exposes no
  * `keysend` method. Anything `wl.keysend()` itself rejects with stays a plain
- * Error and stays fatal to the leg — the extension may already have paid, and a
- * message heuristic is not proof that it didn't.
+ * Error — the extension may already have paid, and a message heuristic is not
+ * proof that it didn't.
+ *
+ * One narrow exception now reads such a message: `routingFailureProvesUnpaid`
+ * (`nwc-errors.ts`) matches a terminal routing reason, which the Alby extension
+ * reports as `400: FAILURE_REASON_NO_ROUTE`. That is not a heuristic about
+ * whether the wallet is telling the truth — it is the payment protocol: a
+ * Lightning payment is atomic, so a settled HTLC returns a preimage and is a
+ * success, and a finished route search that found nothing has already resolved
+ * every HTLC as failed. It has to read a message because this rail has no error
+ * codes at all. Every OTHER rejection stays fatal to the leg.
  *
  * `railCanKeysend('webln')` cannot answer this in advance: the Alby extension
  * defines `keysend` on the provider object whatever the connected account

@@ -73,6 +73,12 @@ function addressKey(address: string): string {
  * `payOne`. This only changes where the NEXT one goes, which is why it can be
  * this liberal: it costs at most the inline boostagram, never a second payment.
  *
+ * Rescuing the failed leg is a separate decision with a separate, far stricter
+ * predicate — `routingFailureProvesUnpaid` (`nwc-errors.ts`), which fires only
+ * when the wallet reported a finished route search that found nothing. Do not
+ * read this paragraph as a repo-wide ban on retrying: it is a statement about
+ * what THIS function is allowed to conclude from an unexplained failure.
+ *
  * Deliberately memory-only, and so lost on reload. A wrong demotion should
  * expire on its own rather than needing a user to find a setting, and the case
  * it exists for reproduces on the first leg of the next boost anyway.
@@ -93,10 +99,11 @@ export function keysendRecentlyFailed(address: string): boolean {
 }
 
 // Lightning node ids are compressed secp256k1 pubkeys: 33 bytes hex-encoded,
-// always prefixed 02 or 03. Validating strictly here is load-bearing — we
-// never retry LNURL after a keysend attempt (see payOne), so a malformed
-// pubkey that slipped through would fail the leg outright rather than
-// falling back.
+// always prefixed 02 or 03. Validating strictly here is load-bearing — a
+// keysend attempt is retried over LNURL only when the wallet PROVES it paid
+// nothing (see payOne), and a malformed pubkey does not produce that proof, so
+// one that slipped through would fail the leg outright rather than falling
+// back.
 const NODE_PUBKEY = /^0[23][0-9a-f]{64}$/i;
 
 /**

@@ -27,11 +27,11 @@ import { nwc } from '@getalby/sdk';
  * Thrown when the wallet REFUSED the request instead of executing it.
  *
  * Load-bearing as a *type*, not just a message: nothing left the wallet, so the
- * caller may safely retry the leg by another route. `boost.ts` keys its only
- * permitted keysend→LNURL fallback off `instanceof` this. Flattening it back
- * into a plain Error (as this code used to) makes a wallet that can't keysend
- * indistinguishable from a routing failure that may already have paid — and
- * the fallback would then be a double-pay.
+ * caller may safely retry the leg by another route. `boost.ts` keys arm one of
+ * its keysend→LNURL retry off `instanceof` this. Flattening it back into a
+ * plain Error (as this code used to) makes a wallet that can't keysend
+ * indistinguishable from a routing failure that may already have paid — and the
+ * fallback would then be a double-pay.
  *
  * Three NIP-47 codes qualify, and they qualify for one reason: each is the
  * wallet answering a question about PERMISSION or CAPABILITY, which it can only
@@ -51,8 +51,15 @@ import { nwc } from '@getalby/sdk';
  * stay untyped and fatal, which keeps this class meaning exactly one thing.
  *
  * Deliberately NOT `PAYMENT_FAILED`. That code is the wallet reporting on a
- * payment it DID attempt, and no wallet-side report can prove an HTLC did not
- * settle. Retrying it is the double-pay this whole class exists to avoid.
+ * payment it DID attempt, and the code by itself cannot prove an HTLC did not
+ * settle. Retrying on it is the double-pay this whole class exists to avoid.
+ *
+ * The retry gate has a second arm, `routingFailureProvesUnpaid`, and it is NOT
+ * this class — keep the two apart. That one reads the failure REASON, and fires
+ * only for a route search that finished and found nothing. A `PAYMENT_FAILED`
+ * carrying such a reason is retried by that arm; a bare one is still retried by
+ * neither. Widening THIS class to reach it would give a retry to every
+ * `PAYMENT_FAILED` there is.
  */
 export class NwcNotAttemptedError extends Error {
   /** The NIP-47 code, for logs — the branch is on the type, never on this. */
@@ -214,4 +221,145 @@ export function failureBlamesDestination(e: unknown): boolean {
   if (isSocketSuspect(e)) return false;
   if (e instanceof nwc.Nip47WalletError && e.code && PAYER_SIDE_CODES.has(e.code)) return false;
   return true;
+}
+
+// The tokens a wallet uses to report a route search that FINISHED and found
+// nothing. An allowlist, and it must stay one — the same rule `safeUrlAttr` is
+// held to, for the same reason: a denylist of "reasons that might mean the
+// payment landed" is unbounded and fails open, and failing open here is a
+// second payment.
+//
+// `FAILURE_REASON_NO_ROUTE` is LND's terminal reason and is what the Alby
+// browser extension prints (as `400: FAILURE_REASON_NO_ROUTE`). `NO_ROUTE`
+// alone covers the wallets that pass the bare code through. The first entry is
+// redundant against the second under today's boundary rule — `_` is a boundary
+// — and is listed anyway, so that tightening the boundary can never silently
+// stop matching the one string this was actually built from.
+const TERMINAL_ROUTING_TOKENS = ['FAILURE_REASON_NO_ROUTE', 'NO_ROUTE'];
+
+// A token boundary, not `\b` and not a bare `includes`. `readAttr` already cost
+// this repo a substituted payee over `\b`, which treats `_` as a word character
+// and `-` as a boundary — exactly backwards for these codes. Here the boundary
+// is "not alphanumeric", so `FAILURE_REASON_NO_ROUTE` matches (`_` is a
+// boundary) while `notarealNO_ROUTEthing` does not.
+function hasToken(message: string, token: string): boolean {
+  // Search AND index the same (uppercased) string. `toUpperCase()` is not
+  // length-preserving in general — '\u00df' becomes 'SS' — so an offset taken
+  // from the folded string and applied to the original slides the boundary test
+  // onto the wrong characters. The test itself is case-insensitive, so nothing
+  // is lost by reading the folded copy throughout.
+  const haystack = message.toUpperCase();
+  const i = haystack.indexOf(token);
+  if (i < 0) return false;
+  const before = i === 0 ? '' : haystack[i - 1];
+  const after = haystack[i + token.length] ?? '';
+  return !/[a-z0-9]/i.test(before) && !/[a-z0-9]/i.test(after);
+}
+
+/**
+ * Whether a failed keysend may be paid again, RIGHT NOW, over LNURL — because
+ * the wallet reported a completed route search that found nothing, so no HTLC
+ * can have settled.
+ *
+ * This is the second arm of `payOne`'s retry gate, beside `NwcNotAttemptedError`
+ * / `WeblnNotAttemptedError`, and it answers a different question from both of
+ * its neighbours here. `failureBlamesDestination` asks *whose fault*;
+ * `NwcIndeterminateError` says *we cannot know*; this one asks **did the sats
+ * move**, and returns true only when the answer is a definite no.
+ *
+ * **It is a message heuristic, and that is a deliberate, narrow exception.** The
+ * standing rule — stated in `NwcNotAttemptedError` above, in `webln.ts`, and in
+ * `docs/money-boosts.md` — is that no wallet-side report proves an HTLC never
+ * settled, so a failed keysend is fatal to its leg and only the ADDRESS is
+ * demoted, one leg later. That rule stands for every other failure. A terminal
+ * routing report is the one exception the payment protocol itself licenses: a
+ * Lightning payment is atomic, a settled HTLC returns a preimage and is a
+ * success, so a wallet that has finished searching and found no route has
+ * already resolved every HTLC as failed. Nothing moved, and LNURL cannot
+ * double-pay.
+ *
+ * It reads a message rather than a code because it has to. The reported case is
+ * the Alby browser extension, which rejects `wl.keysend()` with a plain `Error`
+ * — WebLN has no error codes at all. On the NWC rail the same text arrives as
+ * the message of a `PAYMENT_FAILED` `Nip47WalletError`, so one predicate covers
+ * both rails.
+ *
+ * The exclusions run FIRST and are the load-bearing half. A leg whose wallet
+ * never answered must never reach the allowlist, whatever its message happens to
+ * say: a reply timeout means the payment may have gone out, and that reading
+ * outranks any text in it. Same for a dead socket, which leaves the destination
+ * untested.
+ *
+ * Deliberately NOT in the allowlist, so nobody "completes" it:
+ * - `FAILURE_REASON_TIMEOUT` / `FAILURE_REASON_ERROR` — neither is terminal
+ *   about settlement.
+ * - `INCORRECT_PAYMENT_DETAILS` — it does mean the destination rejected the
+ *   HTLC, but that is a second claim with its own failure mode. Add it only with
+ *   a real wallet's output in hand.
+ * - `INSUFFICIENT_BALANCE`, `QUOTA_EXCEEDED`, `RATE_LIMITED` — these equally
+ *   prove no payment moved, but the LNURL retry they would license is refused
+ *   identically, so it buys nothing. Same reasoning `NwcNotAttemptedError` gives
+ *   for keeping them out of its own class.
+ */
+export function routingFailureProvesUnpaid(e: unknown): boolean {
+  // Exclusions first. Each of these says "we do not know what happened", and
+  // that outranks anything the message claims.
+  if (e instanceof NwcIndeterminateError) return false;
+  // The parent, so BOTH leaves. This is the opposite of the rule `mapNwcError`
+  // follows one function up, and for the same reason `failureBlamesDestination`
+  // collapses them: a reply timeout may have paid, a publish timeout leaves a
+  // suspect socket, and neither is a wallet reporting on a finished route
+  // search.
+  if (e instanceof nwc.Nip47TimeoutError) return false;
+  if (isSocketSuspect(e)) return false;
+  if (!(e instanceof Error)) return false;
+  const message = e.message ?? '';
+  if (!message) return false;
+  return TERMINAL_ROUTING_TOKENS.some((t) => hasToken(message, t));
+}
+
+/**
+ * Whether a failed keysend should demote the ADDRESS, sending later legs to
+ * LNURL.
+ *
+ * The rule, and it is one sentence: **demote only what could not be rescued.**
+ *
+ * The demotion exists because a failed leg is money lost — an address whose
+ * `.well-known/keysend` is published and correct while its node cannot be paid
+ * failed a leg of every boost, forever, and a value block's fee recipients ride
+ * on every show and every track. Redirecting the NEXT leg was the only repair
+ * available.
+ *
+ * `routingFailureProvesUnpaid` changed that arithmetic. When it matches, the leg
+ * is paid over LNURL immediately, so nothing is lost — and the demotion is no
+ * longer a repair, only a cost. It is not a small one: an LNURL leg carries **no
+ * TLV boostagram at all**, so `sender_id`, the podcast and episode, and the
+ * `remote_feed_guid`/`remote_item_guid` correlation are all absent from the
+ * wire, leaving a 255-character LUD-21 comment as the whole metadata channel.
+ * Six hours of that, for every leg to that address, bought nothing.
+ *
+ * It is also frequently the wrong verdict. `FAILURE_REASON_NO_ROUTE` says the
+ * PAYER could not find a path, which is as often the payer's own liquidity as
+ * the recipient being unreachable — and on the WebLN rail there are no error
+ * codes at all, so `failureBlamesDestination` reaches its default-TRUE arm and
+ * files an Alby routing problem against a recipient whose keysend works.
+ * Reported live: three `@getalby.com` addresses demoted, all paying fine over
+ * LNURL, all silently stripped of their boostagram.
+ *
+ * What this deliberately does NOT do is stop demoting an unexplained failure.
+ * That case has no rescue, so the original reasoning stands untouched: being
+ * wrong there costs one address its inline boostagram for a few hours, and
+ * being wrong the other way is a leg that fails on every boost forever.
+ *
+ * `refused` is passed in rather than tested here because it is a union with
+ * `WeblnNotAttemptedError`, and this module must stay loadable under plain Node
+ * — it cannot import a browser-only module. Same reason `payOne` computes it.
+ */
+export function shouldDemoteAddress(e: unknown, refused: boolean): boolean {
+  // Nothing was sent and nothing is known about the recipient.
+  if (refused) return false;
+  // Rescued in place — see above. Demoting now would cost the boostagram and
+  // buy nothing.
+  if (routingFailureProvesUnpaid(e)) return false;
+  return failureBlamesDestination(e);
 }

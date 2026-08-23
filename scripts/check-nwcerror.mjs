@@ -11,16 +11,26 @@
 //
 //   NOT_IMPLEMENTED   the wallet answered INSTEAD of paying. Nothing left the
 //   UNAUTHORIZED      wallet, so the leg may safely be retried by another route
-//   RESTRICTED        — `boost.ts` keys its only permitted keysend→LNURL
-//                     fallback off `instanceof NwcNotAttemptedError`. All three
+//   RESTRICTED        — this is arm one of `boost.ts`'s keysend→LNURL retry,
+//                     keyed off `instanceof NwcNotAttemptedError`. All three
 //                     answer a question about permission or capability, which a
 //                     wallet can only answer before it tries to pay.
 //   PAYMENT_FAILED    the wallet reporting on a payment it DID attempt. It reads
-//                     final and is NOT in the class above, because no wallet-side
-//                     report can prove an HTLC never settled — retrying it is a
-//                     double-pay. `failureBlamesDestination` is what handles it
-//                     instead: it demotes the ADDRESS so the NEXT leg goes to
+//                     final and is NOT in the class above, because the CODE
+//                     alone cannot prove an HTLC never settled — retrying on it
+//                     is a double-pay. `failureBlamesDestination` is what handles
+//                     it instead: it demotes the ADDRESS so the NEXT leg goes to
 //                     LNURL, which never re-pays anything.
+//   NO_ROUTE          a route search that FINISHED and found nothing — arm two,
+//                     `routingFailureProvesUnpaid`. A Lightning payment is
+//                     atomic, so a settled HTLC returns a preimage and is a
+//                     SUCCESS; a terminal routing report has therefore already
+//                     resolved every HTLC as failed. The one wallet-side report
+//                     that establishes non-payment, and the only message-based
+//                     signal here — it has to be, because the reported case is
+//                     the Alby extension and WebLN has no error codes. Its
+//                     exclusions run first: a timeout or a dead socket is never
+//                     read for the token, whatever its text says.
 //   reply timeout     the request was published and the wallet may have paid.
 //                     Reporting this as a failure shows ✗, the user re-boosts,
 //                     and EVERY leg pays again. Losing sats is recoverable;
@@ -57,6 +67,8 @@ import {
   failureBlamesDestination,
   isSocketSuspect,
   mapNwcError,
+  routingFailureProvesUnpaid,
+  shouldDemoteAddress,
 } from '../lib/v4v/nwc-errors.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -278,6 +290,191 @@ section('failureBlamesDestination — attribution, never a licence to re-pay');
     if (!v.alsoNaive) {
       check(`  (naive) disagrees on: ${v.label}`, naive(v.error) !== v.expected, true);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+section('routingFailureProvesUnpaid — the one report that licenses a re-pay');
+// ---------------------------------------------------------------------------
+{
+  // The SECOND arm of payOne's keysend-LNURL retry, and the only one that reads
+  // a MESSAGE. It has to: the reported case is the Alby browser extension,
+  // which rejects wl.keysend() with a plain Error because WebLN has no error
+  // codes at all. On the NWC rail the same text arrives as the message of a
+  // PAYMENT_FAILED wallet error.
+  //
+  // Getting it wrong is not symmetric. Under-match and the first recipient
+  // traversed loses their sats on every boost, which is the bug this fixes and
+  // is recoverable. Over-match and a leg that already paid is paid AGAIN, which
+  // is not. So the must-NOT-match half below is the larger half, and the
+  // exclusion vectors — a timeout or a dead socket whose message happens to
+  // carry the token — are the ones that matter: "the wallet never answered"
+  // must outrank any text inside it.
+  //
+  // `alsoNaive` marks a vector the wrong implementation also happens to get
+  // right — a property of that vector, never the default.
+  const reasonError = (msg) => new nwc.Nip47WalletError(msg, 'PAYMENT_FAILED');
+
+  const vectors = [
+    // ---- must match: the wallet finished searching and found no route -------
+    // The reported string, verbatim, from a live boost to podcastindex@getalby.com.
+    { label: 'the reported Alby extension string proves no payment',
+      error: new Error('400: FAILURE_REASON_NO_ROUTE'), expected: true, alsoNaive: true },
+    { label: 'the bare LND reason does too',
+      error: new Error('FAILURE_REASON_NO_ROUTE'), expected: true, alsoNaive: true },
+    // Case folding is ours to do; a wallet that lowercases its own reason still
+    // means it. The naive matcher below is case-sensitive and misses this.
+    { label: 'and it is matched case-insensitively',
+      error: new Error('failure_reason_no_route'), expected: true },
+    // The NWC rail's shape: the routing reason rides in the message of a
+    // PAYMENT_FAILED. The CODE alone still proves nothing (vector below) — it
+    // is the reason text that does.
+    { label: 'a PAYMENT_FAILED CARRYING the routing reason proves no payment',
+      error: reasonError('400: FAILURE_REASON_NO_ROUTE'), expected: true, alsoNaive: true },
+    { label: 'punctuation counts as a token boundary',
+      error: new Error('reason=NO_ROUTE;'), expected: true, alsoNaive: true },
+
+    // ---- must NOT match: everything else stays fatal to the leg ------------
+    // THE vector this arm must never swallow. PAYMENT_FAILED reads final and is
+    // not: with no routing reason it is only the wallet's verdict on a payment
+    // it did attempt. The address demotion handles this case, one leg later and
+    // with no second payment.
+    { label: 'a bare PAYMENT_FAILED proves nothing', error: walletError('PAYMENT_FAILED'),
+      expected: false, alsoNaive: true },
+    { label: 'a timeout REASON is not a routing reason',
+      error: new Error('FAILURE_REASON_TIMEOUT'), expected: false, alsoNaive: true },
+    { label: 'an empty wallet proves no payment but licenses nothing — LNURL is refused too',
+      error: walletError('INSUFFICIENT_BALANCE'), expected: false, alsoNaive: true },
+    { label: 'an unexplained failure proves nothing',
+      error: new Error('failed'), expected: false, alsoNaive: true },
+
+    // The exclusions, and the reason they run BEFORE the message is read. Each
+    // of these means "we do not know what happened", and a wallet is free to
+    // put anything in the text of one. Read the token first and a leg that may
+    // already have paid gets paid a second time.
+    { label: 'a wallet that never answered is excluded, whatever its message says',
+      error: new NwcIndeterminateError('400: FAILURE_REASON_NO_ROUTE'), expected: false },
+    { label: 'a raw reply timeout carrying the token is excluded too',
+      error: new nwc.Nip47ReplyTimeoutError('400: FAILURE_REASON_NO_ROUTE'), expected: false },
+    { label: 'a publish timeout carrying the token is excluded',
+      error: new nwc.Nip47PublishTimeoutError('FAILURE_REASON_NO_ROUTE'), expected: false },
+    { label: 'a dead socket carrying the token is excluded',
+      error: new Error('websocket closed: FAILURE_REASON_NO_ROUTE'), expected: false },
+
+    // The boundary. `\b` would be wrong in both directions here — it counts `_`
+    // as a word character and `-` as a boundary, the opposite of what these
+    // codes need — so the rule is "not alphanumeric either side". That is what
+    // lets FAILURE_REASON_NO_ROUTE match while this does not.
+    { label: 'the token must stand alone, not sit inside a longer word',
+      error: new Error('notarealNO_ROUTEthing'), expected: false },
+
+    // Deliberately narrow: the English phrase is NOT on the allowlist. It means
+    // the same thing and it is not a code, so it is not evidence we can bound.
+    // Widening to it is a decision to be taken with a real wallet's output in
+    // hand, not a gap to be tidied.
+    { label: 'the spaced English phrase is deliberately not matched',
+      error: new Error('no route to destination'), expected: false, alsoNaive: true },
+
+    // Nothing to read at all.
+    { label: 'a thrown string proves nothing', error: 'FAILURE_REASON_NO_ROUTE',
+      expected: false, alsoNaive: true },
+    { label: 'a null throw proves nothing', error: null, expected: false, alsoNaive: true },
+    { label: 'an empty message proves nothing', error: new Error(''),
+      expected: false, alsoNaive: true },
+  ];
+
+  // The plausible wrong version, and the one that would be written first:
+  // "does the message mention NO_ROUTE?" It gets every ordinary case right. It
+  // also hands the retry to a leg whose wallet never answered, and to one whose
+  // socket died mid-payment — the two states where re-paying is exactly the
+  // thing that must not happen.
+  const naive = (e) => String(e?.message ?? '').includes('NO_ROUTE');
+
+  for (const v of vectors) {
+    check(v.label, routingFailureProvesUnpaid(v.error), v.expected);
+    if (!v.alsoNaive) {
+      check(`  (naive) disagrees on: ${v.label}`, naive(v.error) !== v.expected, true);
+    }
+  }
+
+  // The two predicates answer different questions and must not be conflated.
+  // failureBlamesDestination asks WHOSE FAULT and defaults to true, so reusing
+  // it as the retry gate would re-pay every error we have never seen.
+  check('the two predicates disagree on a bare PAYMENT_FAILED, as they must',
+    failureBlamesDestination(walletError('PAYMENT_FAILED'))
+      && !routingFailureProvesUnpaid(walletError('PAYMENT_FAILED')),
+    true);
+  check('...and on an unknown error, where only attribution defaults to true',
+    failureBlamesDestination(new Error('something new'))
+      && !routingFailureProvesUnpaid(new Error('something new')),
+    true);
+}
+
+// ---------------------------------------------------------------------------
+section('shouldDemoteAddress — demote only what could not be rescued');
+// ---------------------------------------------------------------------------
+{
+  // Demoting an address costs it the whole TLV boostagram for 6 hours: an LNURL
+  // leg carries no sender_id, no podcast/episode, and no remote-feed
+  // correlation, leaving a 255-char comment as the entire metadata channel.
+  // That was worth paying while a failed leg meant money lost. Once
+  // routingFailureProvesUnpaid rescues the leg in place, it buys nothing —
+  // and it is usually the wrong verdict anyway, since FAILURE_REASON_NO_ROUTE
+  // says the PAYER found no path, which on the WebLN rail reaches
+  // failureBlamesDestination's default-TRUE arm and files an Alby routing
+  // problem against a recipient whose keysend works. Reported live: three
+  // @getalby.com addresses demoted, all paying fine, all silently stripped.
+  const vectors = [
+    // The rescue cases: paid over LNURL, so nothing to repair.
+    { label: 'a rescued NO_ROUTE does NOT demote the address',
+      error: new Error('400: FAILURE_REASON_NO_ROUTE'), refused: false, expected: false },
+    { label: 'a rescued PAYMENT_FAILED carrying the reason does not either',
+      error: new nwc.Nip47WalletError('FAILURE_REASON_NO_ROUTE', 'PAYMENT_FAILED'),
+      refused: false, expected: false },
+    // A refusal says nothing about the recipient — it is the payer's wallet.
+    { label: 'a wallet refusal never blames the recipient',
+      error: mapNwcError(walletError('NOT_IMPLEMENTED')), refused: true, expected: false },
+    { label: 'a WebLN refusal does not either (refused is passed in for this)',
+      error: new Error('This WebLN wallet does not support keysend'),
+      refused: true, expected: false },
+
+    // THE regression guard. An unexplained failure has NO rescue, so the
+    // original reasoning is untouched: a node that cannot be paid must still
+    // end up on LNURL, or the leg fails on every boost forever.
+    { label: 'an UNEXPLAINED failure still demotes — this is the original bug',
+      error: new Error('something went wrong'), refused: false, expected: true },
+    { label: 'a bare PAYMENT_FAILED still demotes',
+      error: walletError('PAYMENT_FAILED'), refused: false, expected: true },
+    { label: 'an INTERNAL still demotes — wallets bucket route failures there',
+      error: walletError('INTERNAL'), refused: false, expected: true },
+
+    // Payer-side, unchanged: one dry wallet must not demote every address.
+    { label: 'an empty wallet does not demote', error: walletError('INSUFFICIENT_BALANCE'),
+      refused: false, expected: false },
+    { label: 'an unanswered wallet does not demote',
+      error: mapNwcError(replyTimeout()), refused: false, expected: false },
+    { label: 'a dead socket does not demote',
+      error: new Error('websocket connection closed'), refused: false, expected: false },
+  ];
+
+  // The wrong version, and the one that was shipping: demote on attribution
+  // alone. It gets every case here right EXCEPT the two rescued ones — which is
+  // the whole change, and is why those two are the vectors without alsoNaive.
+  const naive = (e, refused) => !refused && failureBlamesDestination(e);
+
+  for (const v of vectors) {
+    check(v.label, shouldDemoteAddress(v.error, v.refused), v.expected);
+    if (naive(v.error, v.refused) === v.expected) continue;
+    check(`  (naive) disagrees on: ${v.label}`, true, true);
+  }
+
+  // Stated as an invariant rather than left implicit in the table above: the
+  // two decisions are exact complements on the rescue path. A future edit that
+  // re-adds the demotion for a rescued leg fails here even if it also edits the
+  // vectors, because this reads both predicates.
+  for (const e of [new Error('400: FAILURE_REASON_NO_ROUTE'), new Error('NO_ROUTE')]) {
+    check(`rescued and demoted are mutually exclusive for: ${e.message}`,
+      routingFailureProvesUnpaid(e) && !shouldDemoteAddress(e, false), true);
   }
 }
 

@@ -6,7 +6,6 @@
 
 import type { Boostagram, ValueBlock, ValueRecipient, BoostResult } from '@/lib/types';
 import {
-  failureBlamesDestination,
   hasNwc,
   nwcFetchCapabilities,
   nwcGetMethods,
@@ -14,6 +13,8 @@ import {
   nwcPayInvoice,
   NwcNotAttemptedError,
   NwcIndeterminateError,
+  routingFailureProvesUnpaid,
+  shouldDemoteAddress,
 } from './nwc';
 import { hasWebln, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
@@ -269,6 +270,18 @@ async function payOne(
     // email-shaped string cannot route on any rail, so this only ever turns a
     // certain failure into a working LNURL leg.
     if (!isLnAddressRecipient(recipient)) {
+      // A node-pubkey recipient logged NOTHING, which is the one leg you cannot
+      // check anywhere else: it never touches BoostBox, never fetches an
+      // invoice, and shows up in the console only if it throws. A feed listing
+      // the SAME node twice — once as `type="node"` and once behind a
+      // lightning address that resolves to it — was unreadable from a log,
+      // because only the address half printed a line. This carries the full
+      // boostagram in TLV 7629169; say so, so a missing Helipad row can be
+      // traced to a leg that never went out rather than to metadata that did.
+      console.info(
+        `[keysend] ${recipient.address.slice(0, 12)}… → keysend ${sats} sat ` +
+          `(node recipient, boostagram in TLV 7629169)`,
+      );
       return await payKeysend(recipient, sats, rail, boostagram);
     }
     const upgraded =
@@ -324,7 +337,12 @@ async function payOne(
       // and so cannot import a browser-only module. Hence the union here rather
       // than one predicate — and hence the ordering: read the refusal first.
       const refused = e instanceof NwcNotAttemptedError || e instanceof WeblnNotAttemptedError;
-      if (!refused && failureBlamesDestination(e)) {
+      // `shouldDemoteAddress` holds the rule — DEMOTE ONLY WHAT COULD NOT BE
+      // RESCUED — because the two decisions read the same two facts and had
+      // drifted apart once already. Do not re-inline it as boolean algebra
+      // here: the arm that matters is the one that does NOT fire, and an
+      // expression nobody can pin is where that goes quietly wrong.
+      if (shouldDemoteAddress(e, refused)) {
         noteKeysendFailure(recipient.address);
         console.warn(
           `[keysend] ${recipient.address} keysend FAILED at ` +
@@ -332,36 +350,78 @@ async function payOne(
             (e instanceof Error ? e.message : String(e)),
         );
       }
-      // SECOND: may THIS leg be paid again, right now, over LNURL? Only when the
-      // wallet refused the request *instead of* executing it — NIP-47
-      // NOT_IMPLEMENTED, UNAUTHORIZED or RESTRICTED, or a WebLN provider that
-      // never reached its own `keysend` — because then nothing left the wallet
-      // and LNURL cannot double-pay. Every other failure stays fatal to the leg: a
-      // keysend that errors after the money moved (see the Zeus no-preimage case
-      // in nwcKeysend) would otherwise pay twice, and a failed leg is the
-      // cheaper wrong answer. `PAYMENT_FAILED` is deliberately NOT in the class,
-      // however final it reads — a wallet's own report cannot prove an HTLC
-      // never settled. The demotion above is what fixes that case instead, one
-      // leg later and with no second payment.
+      // SECOND: may THIS leg be paid again, right now, over LNURL?
+      //
+      // Two arms, and they establish the SAME fact — that nothing left the
+      // wallet — by different evidence. Everything else stays fatal to the leg:
+      // a keysend that errors after the money moved (see the Zeus no-preimage
+      // case in nwcKeysend) would otherwise pay twice, and a failed leg is the
+      // cheaper wrong answer.
+      //
+      // ARM ONE, `refused`: the wallet answered a permission-or-capability
+      // question *instead of* executing — NIP-47 NOT_IMPLEMENTED, UNAUTHORIZED
+      // or RESTRICTED, or a WebLN provider that never reached its own
+      // `keysend`. A wallet can only answer that before it pays.
+      //
+      // ARM TWO, `provablyUnpaid`: the wallet reported a route search that
+      // FINISHED and found nothing. A Lightning payment is atomic — a settled
+      // HTLC returns a preimage and is a success — so a terminal routing report
+      // has already resolved every HTLC as failed. Without this arm the leg that
+      // failed was never paid by anything: the demotion above only redirects the
+      // NEXT leg, so the first recipient traversed simply lost their sats on
+      // every boost. It reads a MESSAGE rather than a code because it has to —
+      // the reported case is the Alby extension, and WebLN has no error codes.
+      // See `routingFailureProvesUnpaid` for why that narrow exception is safe
+      // and why the rest of the rule stands.
+      //
+      // `PAYMENT_FAILED` on its own is still in NEITHER arm, however final it
+      // reads: with no routing reason it is only the wallet's verdict on a
+      // payment it did attempt, and no such verdict proves an HTLC never
+      // settled. The demotion above is what handles that case, one leg later
+      // and with no second payment.
       //
       // Deliberately not gated on `canKeysend === 'unknown'`: a wallet that
       // advertised pay_keysend and then refuses it has simply mis-advertised,
       // and the refusal is equally proof-of-no-payment either way.
-      if (!refused) throw e;
+      const provablyUnpaid = !refused && routingFailureProvesUnpaid(e);
+      if (!refused && !provablyUnpaid) throw e;
       console.info(
-        `[keysend] ${recipient.address} → LNURL (wallet refused keysend: ${
-          e instanceof NwcNotAttemptedError ? e.code : e.message
+        `[keysend] ${recipient.address} → LNURL retry (${
+          refused
+            ? `wallet refused keysend: ${e instanceof NwcNotAttemptedError ? e.code : e.message}`
+            : `keysend found no route, so nothing was sent: ${e instanceof Error ? e.message : String(e)}`
         })`,
       );
-      return await payLnurl(recipient, sats, rail, boostagram);
+      try {
+        return await payLnurl(recipient, sats, rail, boostagram);
+      } catch (retryErr) {
+        // Name BOTH attempts. The user watched this leg try a keysend, so
+        // surfacing only the LNURL error reports a cause they never saw and
+        // loses the one they did.
+        //
+        // The wrapper must PRESERVE indeterminacy. If the LNURL retry is the
+        // leg that times out, the sats may be gone, and a plain Error here
+        // would strip the flag the outer catch reads and render ✗ over a
+        // payment that may have landed — the exact false-failure invariant 11
+        // exists to prevent, reintroduced by an error message.
+        const first = e instanceof Error ? e.message : String(e);
+        const second = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        const combined = `keysend: ${first}; LNURL retry: ${second}`;
+        throw retryErr instanceof NwcIndeterminateError
+          ? new NwcIndeterminateError(combined)
+          : new Error(combined);
+      }
     }
   } catch (e: any) {
     // A wallet that never answered is not a wallet that refused. `ok` stays
     // false (we hold no preimage), but the flag stops every consumer — the
     // modal's ✗, the stored log, the user's decision to boost again — from
     // asserting a failure that may have been a payment. See
-    // NwcIndeterminateError; the LNURL retry above is already gated on
-    // NwcNotAttemptedError alone, so this can never be retried.
+    // NwcIndeterminateError. Neither arm of the LNURL retry above can ever fire
+    // on one: arm one tests a refusal type it is not, and arm two excludes it
+    // and both timeout leaves outright, ahead of reading any message. That
+    // exclusion is the load-bearing half of `routingFailureProvesUnpaid` —
+    // "the wallet never answered" outranks whatever its text happened to say.
     const indeterminate = e instanceof NwcIndeterminateError;
     return { ...base, ok: false, indeterminate, error: e?.message ?? String(e) };
   }
