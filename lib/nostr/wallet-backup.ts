@@ -21,6 +21,7 @@ import { assertPublished, signAndPublish, type PublishedNote } from './publish';
 import { fetchLatestEvent, fetchLatestEventDetailed } from './event-queries';
 import { backupReadRelays, resolvePublishRelays } from './relays';
 import { requireNip44, decryptWithTimeout, type DecryptPurpose } from './signer';
+import { encodeAmberSafe, decodeAmberSafe } from './amber-safe-text';
 import type { NostrIdentity } from './auth';
 
 export const WALLET_BACKUP_KIND = 30078;
@@ -139,34 +140,99 @@ export async function fetchEncryptedNwc(
   identity: NostrIdentity,
   purpose: DecryptPurpose,
 ): Promise<string | null> {
+  return (await fetchEncryptedNwcDetailed(identity, purpose)).uri;
+}
+
+/**
+ * As {@link fetchEncryptedNwc}, but separates the three answers a caller with a
+ * screen has to tell apart. All three used to be `null`.
+ *
+ *  - `{ uri: null, unreadable: false }` — nobody published a backup, or the
+ *    latest event at the coordinate is `deleteEncryptedNwc`'s tombstone.
+ *  - `{ uri: null, unreadable: true }` — an event IS there, it decrypted, and
+ *    no connection string came out of it. That is a backup this account owns
+ *    and cannot use, and the only repair is to publish over it.
+ *  - a **throw** — the decrypt failed or timed out, so we learned nothing at
+ *    all. Swallowing it into `null` reports a backup as absent on the strength
+ *    of a signer that never answered, which is the general "never record an
+ *    absence you didn't reliably observe" rule one layer down. Both unattended
+ *    callers already `.catch`, so nothing regresses.
+ *
+ * The middle state is not hypothetical. Amber truncates a payload at the first
+ * `?`, an NWC connection string always has one, and the encrypt step still
+ * SUCCEEDS on the truncated text — so backups written from an Android device
+ * before `encodeAmberSafe` shipped hold a prefix like
+ * `{"uri":"nostr+walletconnect://<pubkey>` and nothing more. Reported as "no
+ * backup found", that reads as the feature never having run; reported as
+ * unreadable, it names the repair.
+ */
+export async function fetchEncryptedNwcDetailed(
+  identity: NostrIdentity,
+  purpose: DecryptPurpose,
+): Promise<{ uri: string | null; unreadable: boolean }> {
   const event = await fetchLatestEvent(
     backupReadRelays(identity),
     { kinds: [WALLET_BACKUP_KIND], authors: [identity.pubkey], '#d': [WALLET_NWC_D_TAG], limit: 1 },
     FEED_QUERY_MAX_WAIT_MS,
   );
-  if (!event || !event.content) return null;
+  if (!event || !event.content) return { uri: null, unreadable: false };
+  // Deliberately outside the try below: a decrypt that fails or times out is
+  // not a finding about the backup, so it propagates.
+  const plaintext = await decryptWithTimeout(identity.pubkey, event.content, purpose);
   try {
-    const parsed = JSON.parse(await decryptWithTimeout(identity.pubkey, event.content, purpose));
-    return typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
+    // Backups written before `encodeAmberSafe` shipped hold bare JSON, and they
+    // are the ones a returning user has. `decodeAmberSafe` returns null for
+    // anything without its prefix, which is the signal to read the plaintext
+    // as-is — so both formats round-trip and no existing backup is orphaned.
+    const parsed = JSON.parse(decodeAmberSafe(plaintext) ?? plaintext);
+    const uri = typeof parsed?.uri === 'string' && parsed.uri ? parsed.uri : null;
+    return { uri, unreadable: uri === null };
   } catch {
-    return null;
+    return { uri: null, unreadable: true };
   }
 }
 
-/** Encrypt-to-self and publish the NWC connection backup. */
+/**
+ * Encrypt-to-self and publish the NWC connection backup.
+ *
+ * **The plaintext goes through `encodeAmberSafe`, and that is a correctness
+ * requirement rather than a style choice.** On Amber the encrypt is a NIP-55
+ * round trip, the plaintext travels inside the `nostrsigner:` URI, and Amber
+ * URL-decodes that URI before splitting it on `?`. An NWC connection string
+ * always carries one — NIP-47 writes `nostr+walletconnect://<pubkey>?relay=…` —
+ * so the raw JSON truncated at `?relay=` and Amber answered "Invalid request"
+ * to every backup attempt ever made from an Android device. The failure was
+ * total, silent from this side, and indistinguishable from "Amber didn't come
+ * back". `fetchEncryptedNwc` reads both formats; see ./amber-safe-text.
+ *
+ * **Throws if the event reached no relay**, for the reason spelled out on
+ * `publishEncryptedMnemonic`: `signAndPublish` resolves once every relay has
+ * SETTLED, accepted or not, so a total failure awaits cleanly with an empty
+ * `acceptedRelays`. Both callers record durable state on this promise resolving
+ * — they set `bmb:nwc_backup:<npub>`, which is what the connected card renders
+ * as "backed up" and what `disconnect` reads to decide whether a tombstone is
+ * owed. Recording that against a publish nobody accepted tells the user their
+ * spending credential is safe on relays when it is nowhere.
+ */
 export async function publishEncryptedNwc(
   identity: NostrIdentity,
   uri: string,
 ): Promise<PublishedNote> {
-  const ciphertext = await requireNip44().encrypt(identity.pubkey, JSON.stringify({ uri }));
-  return signAndPublish(
-    {
-      kind: WALLET_BACKUP_KIND,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [['d', WALLET_NWC_D_TAG]],
-      content: ciphertext,
-    },
-    resolvePublishRelays(identity),
+  const ciphertext = await requireNip44().encrypt(
+    identity.pubkey,
+    encodeAmberSafe(JSON.stringify({ uri })),
+  );
+  return assertPublished(
+    await signAndPublish(
+      {
+        kind: WALLET_BACKUP_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['d', WALLET_NWC_D_TAG]],
+        content: ciphertext,
+      },
+      resolvePublishRelays(identity),
+    ),
+    'NWC connection backup',
   );
 }
 
@@ -175,17 +241,26 @@ export async function publishEncryptedNwc(
  * coordinate with empty content + a newer timestamp, so the latest version
  * carries no secret. (Relays SHOULD drop the superseded event; some may
  * retain it — the ciphertext stays decryptable only by the user's key.)
+ *
+ * **Throws if the tombstone reached no relay.** `disconnect` awaits this and
+ * keeps the local connection on a throw so the user can retry; without the
+ * assert a tombstone that reached nobody clears `bmb:nwc_backup:<npub>` anyway,
+ * the credential stays live on relays, and the next sign-in on a device with no
+ * local URI restores the very connection the user just disconnected.
  */
 export async function deleteEncryptedNwc(
   identity: NostrIdentity,
 ): Promise<PublishedNote> {
-  return signAndPublish(
-    {
-      kind: WALLET_BACKUP_KIND,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [['d', WALLET_NWC_D_TAG]],
-      content: '',
-    },
-    resolvePublishRelays(identity),
+  return assertPublished(
+    await signAndPublish(
+      {
+        kind: WALLET_BACKUP_KIND,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['d', WALLET_NWC_D_TAG]],
+        content: '',
+      },
+      resolvePublishRelays(identity),
+    ),
+    'NWC connection backup removal',
   );
 }

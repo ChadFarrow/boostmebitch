@@ -113,6 +113,7 @@ export {
   fetchEncryptedMnemonicDetailed,
   publishEncryptedMnemonic,
   fetchEncryptedNwc,
+  fetchEncryptedNwcDetailed,
   publishEncryptedNwc,
   deleteEncryptedNwc,
 } from './wallet-backup';
