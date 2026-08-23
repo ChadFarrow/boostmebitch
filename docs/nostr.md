@@ -122,6 +122,18 @@ StableKraft does not carry `content` yet. `storage.favPrivateOptIn` (set by
 `window.bmbEnablePrivateFavorites()`) is the per-machine hatch for testing it
 first. Flipping the constant is a one-line commit once the other writers ship.
 
+**The gate stops you CHOOSING private; it must never retire a list that is
+already private.** It is enforced at the three places a human chooses — the
+disabled segment, the disabled radio, `<FavoritesPrivacyModal>`'s apply — and
+nowhere else. `favoritesMode` reports the stored value unchanged and
+`seedFavoritesMode` adopts `'private'` off the wire whether the gate is open or
+not. The tempting version, downgrading a stored `'private'` to `'public'` so
+the flag is a real off switch, shipped for one commit and is a **plaintext
+leak**: a device that already keeps its favorites in `content` would read
+`'public'`, put `localFavoriteList()` in the public half, and republish the
+whole library as relay-indexed `i` tags beside the encrypted half it was
+ignoring. A build that cannot offer private must not silently do the opposite.
+
 **ONE choice for the whole list, not one per entry.** The spec permits a split;
 this app deliberately does not offer one. `localFavoriteList()` goes wholly into
 one half and the other is still read, merged and carried, so another app's
