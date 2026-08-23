@@ -186,11 +186,6 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     return;
   }
 
-  // Set here rather than at the end of the function: everything below is
-  // Podcast Index resolution, which fails for its own unrelated reasons and must
-  // not be reported as "couldn't reach the relays".
-  setFavoritesSync('ok');
-
   // First sign-in on a device that already has local favorites: adopt them and
   // push them up. This is why nostr-auth must clear favorites on an account
   // switch — otherwise account A's list gets published under account B's key.
@@ -199,6 +194,59 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // the one place that still believes a baseline no other caller does.
   const baseline = trustedBaseline(identity.npub);
   const merged = mergeFavoritesList({ read: read.list, local, baseline });
+
+  // PLAN BEFORE PAINTING, because `setFavorites` writes THROUGH to localStorage
+  // and this device's cache is an INPUT to the next hydrate, not a copy of the
+  // output. `cached[feed.feedGuid]` below is the only thing that tells a real
+  // album favorite from a group opened purely to place a track — the wire cannot
+  // restate that — so painting an empty merge doesn't blank a screen, it
+  // destroys the one record that keeps those rows recoverable, and the next load
+  // reads every one of them as placement-only. Forever.
+  //
+  // `planFavoritesPublish` already knows the shape that must never be believed;
+  // it was simply consulted too late and too narrowly. Two things were wrong:
+  // it ran AFTER the store had been replaced, and only `plan.publish` was read,
+  // so `wholesale-delete` fell through to the `else` and called `onSynced` with
+  // `baselineFrom(local)` — an EMPTY baseline recorded as agreement, plus an
+  // 'ok' status, for a list the planner had just refused to write. That is
+  // exactly what CLAUDE.md forbids: the next cycle then diffs against "we
+  // published nothing" and quietly agrees with the emptiness.
+  const plan = planFavoritesPublish({
+    merged,
+    readTags: read.tags,
+    exists: read.exists,
+    trustworthy: true, // the untrustworthy case returned above
+    local,
+  });
+
+  // "This device holds nothing" is not the same claim as "the user cleared their
+  // favorites" — one is an unhydrated store, and the store is rebuilt from
+  // scratch on every load while the baseline is read from disk. The planner
+  // tests that against the RELAY's tags; the second half here tests it against
+  // this device's CACHE, which catches the same mistake when the relay copy is
+  // also missing (a narrowed read, another app's delete). Both refuse the same
+  // way a degraded read does: keep what is on screen, publish nothing, and
+  // record NO baseline — `onSynced` here would make the next cycle agree.
+  const cacheHasEntries =
+    Object.keys(cached).length > 0 || Object.keys(cachedEpisodes).length > 0;
+  if (plan.reason === 'wholesale-delete' || (merged.nodes.length === 0 && cacheHasEntries)) {
+    setFavoritesSync('degraded');
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[favorites] REFUSING to adopt an empty merge — this device holds favorites '
+      + `(cache: ${Object.keys(cached).length} feeds, ${Object.keys(cachedEpisodes).length} items; `
+      + `relay: ${read.tags.filter((t) => t[0] === 'i').length} entries) and the merge came out empty. `
+      + 'Keeping local state, publishing nothing, recording no baseline.',
+    );
+    return;
+  }
+
+  // Set here rather than at the end of the function: everything below is
+  // Podcast Index resolution, which fails for its own unrelated reasons and must
+  // not be reported as "couldn't reach the relays". Set here rather than ABOVE
+  // the merge, too — the refusal branch has to be able to report 'degraded'.
+  setFavoritesSync('ok');
+
   const part = partitionList(merged);
 
   if (part.malformed.length > 0) installCleanupHook(identity, part.malformed);
@@ -312,15 +360,7 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // Publish only when the bytes actually differ from what the relay holds. A
   // no-op republish on every page load would bump created_at for nothing, race
   // other devices, and put a signing prompt on screen for a load that changed
-  // nothing.
-  const plan = planFavoritesPublish({
-    merged,
-    readTags: read.tags,
-    exists: read.exists,
-    trustworthy: true, // the untrustworthy case returned above
-    local,
-  });
-
+  // nothing. The plan is the one computed above, before the store was touched.
   if (plan.publish) {
     requestFavoritesSync(identity);
   } else {

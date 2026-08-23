@@ -637,6 +637,52 @@ export function NostrAuth() {
     else if (kind === 'bunker') storage.signer.set('bunker');
     else if (kind === 'local') storage.signer.set('local');
     else storage.signer.clear();
+
+    // PAINT THIS ACCOUNT'S CACHES BEFORE HYDRATION RUNS. The page-load restore
+    // effect above does this and an explicit sign-in did not, and the gap was
+    // not cosmetic — it fed `hydrateFavorites` a false premise.
+    //
+    // `localFavoriteEntries()` reads the STORE, and the store is seeded from the
+    // `:guest` bucket. `storage.favBaseline` is read from disk and names every
+    // id this device last agreed with the relay on. So a sign-in on a device
+    // that already had favorites handed the merge an empty `local` beside a full
+    // baseline — which is `mergeFavoritesList`'s removal test ("ours, and we no
+    // longer hold it") satisfied for every entry at once. The merge came out
+    // empty, and `setFavorites` writes THROUGH to localStorage, so the device's
+    // own cache went with it. `planFavoritesPublish` refused the publish, so the
+    // relay copy survived; the local one did not, and it is the cache that tells
+    // a real album favorite from a group opened only to place a track. Losing it
+    // downgrades every one of those to placement-only on the next load, for good.
+    //
+    // Mutes had the milder half of the same gap: the store kept the `:guest` set
+    // until `hydrateMutes` resolved, so a hydration that hung left the account's
+    // mute list empty for the whole session instead of falling back to the cache
+    // it already had on disk.
+    //
+    // Favorites UNION rather than replace, unlike the restore path. A signed-out
+    // user's favorites live in the store and are adopted on first sign-in, on
+    // purpose — replacing would delete them. The identity-switch block above has
+    // already cleared the store when this is a switch, so nothing leaks from A
+    // into B. Mutes replace, matching the restore effect: there is no guest-mute
+    // adoption path, and showing a `:guest` mute the account's own state doesn't
+    // carry would render a control the user cannot turn off.
+    const cachedProfileOnSignIn = storage.profile.get(id.pubkey);
+    if (cachedProfileOnSignIn && !id.profile) {
+      startTransition(() => setIdentity({ ...id, profile: cachedProfileOnSignIn }));
+    }
+    const cachedFavs = storage.favorites.get(id.npub);
+    if (Object.keys(cachedFavs).length > 0) {
+      setFavorites({ ...cachedFavs, ...useApp.getState().favorites });
+    }
+    const cachedFavEps = storage.favoriteEpisodes.get(id.npub);
+    if (Object.keys(cachedFavEps).length > 0) {
+      setFavoriteEpisodes({ ...cachedFavEps, ...useApp.getState().favoriteEpisodes });
+    }
+    const cachedMuteState = storage.muted.get(id.npub);
+    if (cachedMuteState.publicPubkeys.length || cachedMuteState.privatePubkeys.length) {
+      setMutedPubkeys(unionMutedPubkeys(cachedMuteState));
+    }
+
     loadProfile(id);
   }
 

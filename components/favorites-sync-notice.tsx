@@ -18,6 +18,15 @@ import { resetPiBreaker } from '@/lib/podcast-meta';
 // an hour of production debugging and nearly a revert of the address gate that
 // would have re-exposed every user to the shared list.
 //
+// The wording names the CONSEQUENCE, not one cause, because there are now two
+// and they are indistinguishable from here. A degraded read is one: nothing
+// answered. The other is a merge that came out empty over a list that is not —
+// `planFavoritesPublish`'s `wholesale-delete`, or the same shape caught against
+// this device's own cache — where the relays answered fine and the answer is
+// still one we refuse to adopt. "Couldn't reach the relays" would be a lie in
+// the second case, and the user's action is identical in both: retry, and until
+// then trust what is on screen.
+//
 // Signed out is deliberately not a case this handles: favorites are local by
 // design with no key to sync them under, so there is no relay failure to
 // report and claiming one would be a lie.
@@ -65,7 +74,7 @@ export function FavoritesSyncNotice() {
       role="status"
       className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5 mb-2 flex items-center justify-between gap-2"
     >
-      <span>⚠ Couldn&apos;t reach the relays — showing what&apos;s on this device.</span>
+      <span>⚠ Couldn&apos;t confirm your list — showing what&apos;s on this device.</span>
       <button
         type="button"
         onClick={retry}
