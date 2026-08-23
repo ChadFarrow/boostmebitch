@@ -101,19 +101,33 @@ export async function fetchRelayList(
  * (damus/primal/nos.lol/fountain) guarantees the note has somewhere to land.
  *
  * **An identity with no `writeRelays` falls back to this account's CACHED
- * kind:10002 write set before it falls back to the bare defaults, and that is a
- * correctness fix rather than a speed one.** `writeRelays` is populated by
- * `loadProfile`, which fetches kind:10002 in PARALLEL with the favorites and
- * mute-list hydrations — so on every cold load those two read from
- * `DEFAULT_RELAYS` alone while their own republish, moments later, targeted the
- * full union. A read narrower than its write is exactly how a shared
- * replaceable event gets overwritten with a version that never saw half the
- * relays, and on a device with no local cache it renders as the list simply not
- * being there: signing in on a second browser showed no favorites and an inert
- * mute list, because the events lived on the user's own write relays and the
- * defaults had never been asked. The cache is written by `loadProfile` once the
- * real kind:10002 lands; an account that has never resolved one reads `[]` here
- * and behaves exactly as before.
+ * kind:10002 write set before it falls back to the bare defaults.** `writeRelays`
+ * is populated by `loadProfile`, which fetches kind:10002 in PARALLEL with the
+ * favorites and mute-list hydrations, so on a cold load those two read from
+ * `DEFAULT_RELAYS` alone while their own republish targeted the full union.
+ *
+ * **Be precise about what that does and does not cost, because the union above
+ * absorbs most of it.** `DEFAULT_RELAYS` is always part of the publish set, so
+ * for an event THIS APP wrote a defaults-only read is a SUBSET of where it was
+ * sent, and normally finds it. The gap is real in four narrower cases:
+ *
+ *   1. **Another app is the writer.** Nothing guarantees a third-party client
+ *      publishes to our five defaults — it publishes to the user's own outbox.
+ *      This is the ORDINARY case for `kind:10000`, which Damus, Amethyst and
+ *      Coracle write and this app never creates, and a live one for `kind:10333`,
+ *      which is shared by design.
+ *   2. **The 20 cap.** `writeRelays` are listed FIRST, so an account with 20 or
+ *      more of them slices every default off the publish set entirely.
+ *   3. **Partial acceptance.** `assertPublished` requires only ONE relay, so an
+ *      event whose five defaults all refused (AUTH-gated, rate-limited, down)
+ *      lives on a write relay alone and is still recorded as published.
+ *   4. **An override.** `bmb:relays` replaces the defaults rather than joining
+ *      them. Nothing in the UI sets it today, so this one is theoretical.
+ *
+ * So this is the invariant "read from where you write" rather than a fix for an
+ * observed disappearance — see docs/nostr.md, which used to claim the latter.
+ * The cache is written by `loadProfile` once the real kind:10002 lands; an
+ * account that has never resolved one reads `[]` here and behaves as before.
  */
 export function resolvePublishRelays(identity: NostrIdentity | null): string[] {
   const override = storage.relays.get();

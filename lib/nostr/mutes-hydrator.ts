@@ -48,14 +48,17 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
   // whatever private list this device already cached.
   const decryptPrivate = storage.signer.get() !== 'amber';
   // READ FROM THE RELAYS WE WRITE TO. This used to pass `undefined`, which
-  // `fetchMutedPubkeys` reads as DEFAULT_RELAYS — while the republish below has
-  // always targeted `resolvePublishRelays`, the user's NIP-65 write set unioned
-  // with those defaults. So the read was strictly narrower than the write, and
-  // a kind:10000 written by another client (Damus and Amethyst publish to the
-  // user's own outbox, not to ours) was simply never found. On a device with a
-  // local cache that is invisible; on a fresh one the whole mute list reads as
-  // empty and every muted account comes back. Same fix, same reason, as
-  // `fetchFavoritesList` requiring its relay set rather than defaulting.
+  // `fetchMutedPubkeys` reads as DEFAULT_RELAYS, while the republish below has
+  // always targeted `resolvePublishRelays` — the user's NIP-65 write set unioned
+  // with those defaults.
+  //
+  // The union means a defaults-only read still finds anything WE published, so
+  // this matters most for the case that is normal here and not for favorites:
+  // this app never CREATES a kind:10000. Damus, Amethyst and Coracle do, and
+  // they publish to the user's own outbox, which need not intersect our five
+  // defaults at all. A device with a local cache hides that; a fresh one reads
+  // an empty mute list. Same fix, same reason, as `fetchFavoritesList` requiring
+  // its relay set rather than defaulting to one.
   const relays = resolvePublishRelays(identity);
   const muteEvent = await fetchMutedPubkeys(identity.pubkey, relays, { decryptPrivate });
 

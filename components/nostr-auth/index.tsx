@@ -176,17 +176,16 @@ export function NostrAuth() {
     // query. Favorites (kind:10333) and mutes (kind:10000) both read, merge and
     // republish; the republish goes to `resolvePublishRelays`, the user's NIP-65
     // write set unioned with DEFAULT_RELAYS. Started in parallel with the query
-    // that PRODUCES that write set, the read saw only the defaults — narrower
-    // than the write, which is how a shared replaceable event gets merged
-    // against a version that never included half the relays.
+    // that PRODUCES that write set, the read saw only the defaults.
     //
-    // On a device with a local cache the two lists still paint, so the gap is
-    // invisible there. On a fresh one it is the whole feature: signing in on a
-    // second browser showed no favorites at all and a mute list that filtered
-    // nobody, because both events lived on the user's own write relays and the
-    // defaults had never been asked. A kind:10000 makes that the common case
-    // rather than the exotic one — Damus and Amethyst write it to the user's
-    // outbox, not to ours.
+    // How much that costs depends on WHO wrote the event, and the union absorbs
+    // most of it: the defaults are always in our publish set, so a defaults-only
+    // read is a subset of where WE sent it and normally finds it. It is the
+    // third-party writers that are not covered — this app never creates a
+    // kind:10000 at all, and kind:10333 is shared by design, and neither Damus
+    // nor StableKraft has any reason to publish to our five. `resolvePublishRelays`
+    // lists the remaining holes (the 20 cap, partial acceptance, an override).
+    // So this is the invariant, not a fix for an observed disappearance.
     //
     // The cached write set is what keeps this cheap. When we have one,
     // `resolvePublishRelays` picks it up from the bare identity and hydration
