@@ -312,6 +312,17 @@ export interface SyncOptions {
    * request.
    */
   withdraw?: boolean;
+  /**
+   * This device is holding nothing ON PURPOSE — the user unfavorited their
+   * whole list, recorded by the store's removers at the moment it happened.
+   *
+   * It is not the same claim as `withdraw`, which also empties the halves
+   * itself. Here the locals are already empty and this only says the emptiness
+   * is meant, so the two guards that refuse an empty merge can tell it from an
+   * unhydrated store. Passed in rather than read here, so this module stays
+   * free of storage.
+   */
+  localCleared?: boolean;
 }
 
 /**
@@ -407,7 +418,9 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     readContent: read.content,
     privateUnreadable: read.privateUnreadable,
     privateLocal,
-    userConfirmedWithdrawal: opts.withdraw,
+    // Both provenances of an emptiness a person asked for: the withdrawal
+    // dialog, and unfavoriting the whole list. See `emptyIsIntentional`.
+    emptyIsIntentional: opts.withdraw || opts.localCleared,
   });
 
   if (plan.reason === 'degraded') {

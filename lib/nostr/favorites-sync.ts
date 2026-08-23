@@ -174,10 +174,11 @@ export function localFavoriteList(): LocalList {
  */
 export function trustedBaseline(npub: string): FavoritesBaseline {
   const baseline = storage.favBaseline.get(npub);
+  const deliberatelyEmpty = storage.favCleared.get(npub);
   const localHasEntries =
     Object.keys(storage.favorites.get(npub)).length > 0
     || Object.keys(storage.favoriteEpisodes.get(npub)).length > 0;
-  if (baselineIsTrustworthy(baseline, localHasEntries)) return baseline;
+  if (baselineIsTrustworthy(baseline, localHasEntries, deliberatelyEmpty)) return baseline;
   // eslint-disable-next-line no-console
   console.warn(
     '[favorites] ignoring the baseline this cycle — it names '
@@ -208,6 +209,11 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // a partial failure is not expressible and a single flag cannot lie.
     onSynced: (baseline) => {
       storage.favBaseline.set(identity.npub, baseline);
+      // The removal has now reached a relay, so the marker has done its job.
+      // Leaving it set would let a LATER empty merge — an unhydrated store on
+      // the next load — ride through the guard on a permission granted for a
+      // different act.
+      storage.favCleared.set(identity.npub, false);
       useApp.getState().setFavoritesSync('ok');
     },
     onDegraded: (reason) => useApp.getState().setFavoritesSync('degraded', reason),
@@ -235,6 +241,7 @@ function cycleOptionsFor(
     // before that — so treating it as 'public' here only affects the paths that
     // have already established one.
     mode: mode ?? 'public',
+    localCleared: storage.favCleared.get(identity.npub),
     // IN PRIVATE MODE THE DECRYPT IS NOT OPTIONAL, AND THE DEFAULT MUST NOT BE
     // "don't spend a prompt".
     //

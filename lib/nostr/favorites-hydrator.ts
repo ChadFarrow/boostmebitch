@@ -228,6 +228,7 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // is what keeps the first-favorite prompt aimed at people whose first
   // favorite it really is. Both halves empty leaves it unrecorded on purpose.
   const mode = seedFavoritesMode(identity.npub, read) ?? favoritesMode(identity.npub) ?? 'public';
+  const deliberatelyEmpty = storage.favCleared.get(identity.npub);
 
   // First sign-in on a device that already has local favorites: adopt them and
   // push them up. This is why nostr-auth must clear favorites on an account
@@ -286,6 +287,11 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     readContent: read.content,
     privateUnreadable: read.privateUnreadable,
     privateLocal,
+    // A reload lands here with the removal still unpublished, so the hydrator
+    // has to honour the same intent the publish path does — otherwise it
+    // re-adopts everything off the relay and the user's delete is undone
+    // before the debounce that would have carried it ever fires.
+    emptyIsIntentional: deliberatelyEmpty,
   });
 
   // "This device holds nothing" is not the same claim as "the user cleared their
@@ -319,7 +325,11 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   const mergedTotal = merged.nodes.length + (privateMerged?.nodes.length ?? 0);
   const cacheHasEntries =
     Object.keys(cached).length > 0 || Object.keys(cachedEpisodes).length > 0;
-  if (plan.reason === 'wholesale-delete' || (mergedTotal === 0 && cacheHasEntries)) {
+  // `deliberatelyEmpty` excuses BOTH halves of this, for the same reason it
+  // excuses the planner's: the user asked. Without it the cache half still
+  // fires on the load right after a delete-all, where the cache is empty but
+  // some other entry is not.
+  if (!deliberatelyEmpty && (plan.reason === 'wholesale-delete' || (mergedTotal === 0 && cacheHasEntries))) {
     setFavoritesSync('degraded', 'wholesale-delete');
     // eslint-disable-next-line no-console
     console.warn(

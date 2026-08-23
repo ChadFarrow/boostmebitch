@@ -63,6 +63,7 @@ const KEYS = {
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
+  favClearedPrefix: 'bmb:fav_cleared', // + ':<npub>' — '1' while this device is DELIBERATELY holding no favorites. The one thing that tells "the user unfavorited everything" from "the store has not hydrated yet", which are otherwise the same bytes: an empty store beside a baseline that claims ids. Set only by a removal that empties the list; cleared by any add and by the publish that carries the removal.
   favPrivacyPrefix: 'bmb:fav_privacy', // + ':<npub>' — 'public' | 'private' | 'off'. WHERE this account's favorites go, not a cache: absent means "never chosen", which is a third state the hydrator seeds from the wire and the first-favorite prompt asks about. Deliberately absent from EVICTABLE_PREFIXES — evicting it would silently republish a private list in plaintext.
   favPrivateOptIn: 'bmb:fav_private_optin', // device-wide '1' — the escape hatch for testing the private half before PRIVATE_FAVORITES_ENABLED goes true. Not per-npub: it is a build switch a human flips on their own machine, not a user preference.
   favBaselinePrefix: 'bmb:favbaseline', // + ':<npub>' — {feeds,items} of NIP-73 ids this device last agreed with the kind:10333 list on. NOT a cache: without it a shared, replaceable, many-writer event can't tell "another app added this" from "I removed this". See lib/nostr/favorites-list.ts.
@@ -1490,6 +1491,35 @@ export const storage = {
     clear: (npub: string | null | undefined) => {
       safeRemove(identityKey(KEYS.favPrivacyPrefix, npub));
       favPrivacyObservable.notify();
+    },
+  },
+
+  /**
+   * "This device is holding no favorites ON PURPOSE."
+   *
+   * An empty store beside a baseline that claims ids has two readings, and
+   * until this key there was no way to tell them apart:
+   *
+   *   the store has not hydrated yet   → believing the baseline deletes the
+   *                                      user's whole library (2026-08-21)
+   *   the user unfavorited everything  → NOT believing it means the removal
+   *                                      never publishes, and the next reload
+   *                                      re-adopts every entry off the relay
+   *
+   * `baselineIsTrustworthy` refused both, which made the second impossible:
+   * "delete all my favorites" silently did nothing and they came back. This
+   * records the difference at the only moment it is knowable — the removal
+   * itself. An unhydrated store never calls `removeFavorite`, so a set flag is
+   * proof of intent rather than an inference from state.
+   *
+   * Per-npub, and NOT evictable: losing it re-opens the bug it closes.
+   */
+  favCleared: {
+    get: (npub: string | null | undefined): boolean =>
+      safeGet(identityKey(KEYS.favClearedPrefix, npub)) === '1',
+    set: (npub: string | null | undefined, on: boolean) => {
+      if (on) safeSet(identityKey(KEYS.favClearedPrefix, npub), '1');
+      else safeRemove(identityKey(KEYS.favClearedPrefix, npub));
     },
   },
 

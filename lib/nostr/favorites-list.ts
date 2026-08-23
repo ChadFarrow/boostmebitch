@@ -353,7 +353,19 @@ export function baselineForHalves(publicLocal: LocalList, privateLocal: LocalLis
 export function baselineIsTrustworthy(
   baseline: FavoritesBaseline,
   localHasEntries: boolean,
+  deliberatelyEmpty = false,
 ): boolean {
+  // "I unfavorited everything" produces the SAME bytes as an unhydrated store —
+  // an empty local set beside a baseline that claims ids — and refusing both is
+  // what made deleting a whole list impossible: the removal never published,
+  // the cycle then recorded an empty baseline over the real one, and the next
+  // reload re-adopted every entry off the relay. Reported from a real account.
+  //
+  // The two are only separable at the moment of the action, which is why this
+  // takes an argument instead of trying to infer it. `storage.favCleared` is
+  // written by the store's removers and by nothing else; an unhydrated store
+  // never calls one, so a set flag is proof rather than a guess.
+  if (deliberatelyEmpty) return true;
   const claimsSomething =
     baseline.feeds.length > 0 ||
     baseline.items.length > 0 ||
@@ -857,11 +869,21 @@ export interface FavoritesPlanInput {
   /** This device's favorites destined for the private half. */
   privateLocal?: LocalList;
   /**
-   * The user asked, in as many words, to take this device's entries off the
-   * relays. The ONLY thing that may bypass the wholesale-delete refusal — that
-   * guard exists to catch an empty merge nobody asked for, and this one was.
+   * This emptiness is something a person did, not something that happened.
+   *
+   * The ONLY thing that may bypass the wholesale-delete refusal — that guard
+   * exists to catch an empty merge nobody asked for. Two provenances, both
+   * genuine:
+   *
+   *   - the withdrawal dialog ("also remove my entries from Nostr")
+   *   - the user unfavoriting their whole list, recorded by the store's
+   *     removers in `storage.favCleared` at the moment it happens
+   *
+   * Never inferred from state. An empty merge over a full read is the shape of
+   * the 2026-08-21 wipe, and the only thing separating that from a deliberate
+   * clear is whether somebody asked for it.
    */
-  userConfirmedWithdrawal?: boolean;
+  emptyIsIntentional?: boolean;
 }
 
 export interface FavoritesPlan {
@@ -974,7 +996,7 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // decrypt unattended, so this is an ordinary state rather than an error —
   // which is exactly why it has to reach the screen. "Hidden here by choice"
   // and "this app cannot read it" both render as a shorter list.
-  const wantsPrivateWrite = mode === 'private' || !!input.userConfirmedWithdrawal;
+  const wantsPrivateWrite = mode === 'private' || !!input.emptyIsIntentional;
   if (privateUnreadable && wantsPrivateWrite) return plan(false, 'private-unreadable');
 
   // ONLY NOW may we say "nothing changed", and the order is the whole point.
@@ -1037,7 +1059,7 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // the baseline is itself corrupt.
   const readHadEntries =
     input.readTags.some((t) => t[0] === 'i') || readPrivateTags.some((t) => t[0] === 'i');
-  if (publicNodes === 0 && privateNodes === 0 && readHadEntries && !input.userConfirmedWithdrawal) {
+  if (publicNodes === 0 && privateNodes === 0 && readHadEntries && !input.emptyIsIntentional) {
     return plan(false, 'wholesale-delete');
   }
 

@@ -315,6 +315,64 @@ section('Spec vector 2c — a baseline the local cache cannot back is not believ
 }
 
 // ---------------------------------------------------------------------------
+section('Spec vector 2d — "I deleted them all" is not "the store never loaded"');
+// ---------------------------------------------------------------------------
+{
+  // The two are the SAME BYTES — an empty local set beside a baseline that
+  // claims ids — and two separate guards refused both, which made deleting a
+  // whole list impossible: the removal never published, the cycle recorded an
+  // empty baseline over the real one, and the next reload re-adopted every
+  // entry off the relay. Reported from a real account, and reproduced with the
+  // private half switched off entirely, so it predates it.
+  //
+  // Only the moment of the action can tell them apart. `storage.favCleared` is
+  // written by the store's removers and by nothing else.
+  const mine = groupLocalFavorites([
+    { id: showId(F_MUSIC), medium: 'music' },
+    { id: showId(F_POD), medium: 'podcast' },
+  ]);
+  const wire = tagsFromList(mergeFavoritesList({ read: EMPTY_PARSED, local: mine, baseline: EMPTY_BASELINE }));
+  const baseline = baselineForHalves(mine, EMPTY_LOCAL);
+
+  // -- the baseline guard ---------------------------------------------------
+  check('an unhydrated store must NOT be believed', baselineIsTrustworthy(baseline, false), false);
+  check('...and a deliberate clear MUST be', baselineIsTrustworthy(baseline, false, true), true);
+  check('a device that still holds entries is believed either way',
+    [baselineIsTrustworthy(baseline, true), baselineIsTrustworthy(baseline, true, true)], [true, true]);
+  check('an empty baseline needs no excuse', baselineIsTrustworthy(EMPTY_BASELINE, false), true);
+
+  // -- the planner guard ----------------------------------------------------
+  const emptied = mergeFavoritesList({
+    read: parseFavoritesList(wire), local: EMPTY_LOCAL, baseline: baselineHalf(baseline, 'public'),
+  });
+  check('the merge really does come out empty', emptied.nodes.length, 0);
+
+  const plan = (intentional) => planFavoritesPublish({
+    merged: emptied, readTags: wire, exists: true, trustworthy: true, local: EMPTY_LOCAL,
+    privateMerged: EMPTY_PARSED, readPrivateTags: [], readContent: '', privateLocal: EMPTY_LOCAL,
+    emptyIsIntentional: intentional,
+  });
+  check('(naive) with no record of intent the delete is refused', plan(false).reason, 'wholesale-delete');
+  check('...which is what made "delete everything" impossible', plan(false).publish, false);
+  check('with intent recorded it goes out', plan(true).reason, 'publish');
+  check('...and the event it writes holds nothing of ours', plan(true).tags, [['alt', LIST_ALT]]);
+
+  // MUST STILL WORK: intent is not a licence to delete another writer's
+  // entries. Only what this device's baseline claims may go.
+  const shared = [
+    ['alt', LIST_ALT], ['medium', 'music'],
+    ['i', showId(F_MUSIC)], ['i', showId(F_MUSIC2)],
+    ['k', 'podcast:guid'],
+  ];
+  const onlyOurs = baselineForHalves(groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]), EMPTY_LOCAL);
+  const after = tagsFromList(mergeFavoritesList({
+    read: parseFavoritesList(shared), local: EMPTY_LOCAL, baseline: baselineHalf(onlyOurs, 'public'),
+  }));
+  check('ours goes', after.some((t) => t[1] === showId(F_MUSIC)), false);
+  check('theirs stays', after.some((t) => t[1] === showId(F_MUSIC2)), true);
+}
+
+// ---------------------------------------------------------------------------
 section('Spec vector 3 — idempotence');
 // ---------------------------------------------------------------------------
 {
@@ -1068,7 +1126,7 @@ section('The private half — wholesale-delete spans BOTH halves');
     readPrivateTags: [],
     readContent: '',
     privateLocal: EMPTY_LOCAL,
-    userConfirmedWithdrawal: true,
+    emptyIsIntentional: true,
   });
   check('a confirmed withdrawal is allowed past it', withdrawn.reason, 'publish');
   check('...and records an empty baseline once it lands', withdrawn.baseline, {
