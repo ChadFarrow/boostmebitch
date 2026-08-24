@@ -125,10 +125,17 @@ async function fetchSub(accessToken: string): Promise<string> {
 // through the same callback. Collapsing both to "cancelled" tells a user whose
 // popup blocker fired that they did something they didn't do, and hides the one
 // thing they can actually fix.
-function gisErrorMessage(e: unknown): string {
+function gisErrorMessage(e: unknown, clickStarted: boolean): string {
   const type = (e as GsiErrorEvent | null)?.type;
   if (type === 'popup_failed_to_open') {
-    return 'Your browser blocked the Google sign-in popup. Allow popups for this site, then try again.';
+    // Two different faults share this GIS type, and the difference decides who
+    // can fix it. A request made without a gesture behind it is OURS and the
+    // user can do nothing about it, so telling them to allow popups sends them
+    // into Settings after a setting that is not the problem. Say which one
+    // happened — this also makes a screenshot diagnostic.
+    return clickStarted
+      ? 'Your browser blocked the Google sign-in window even though you tapped. Tap Retry — it usually opens on the second try.'
+      : 'The Google sign-in window could not open. Tap Retry.';
   }
   if (type === 'popup_closed') return 'Google sign-in was cancelled';
   return getErrorMessage(e, 'Google sign-in failed');
@@ -142,7 +149,11 @@ function gisErrorMessage(e: unknown): string {
 // Bound it so every caller can always reach a terminal state.
 const TOKEN_REQUEST_TIMEOUT_MS = 60_000;
 
-function requestAccessToken(clientId: string, silent = false): Promise<string> {
+function requestAccessToken(
+  clientId: string,
+  silent = false,
+  clickStarted = false,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const gis = window.google;
     if (!gis) {
@@ -176,7 +187,7 @@ function requestAccessToken(clientId: string, silent = false): Promise<string> {
         if (r.access_token) succeed(r.access_token);
         else fail(r.error || 'Google did not grant Drive access');
       },
-      error_callback: (e) => fail(gisErrorMessage(e)),
+      error_callback: (e) => fail(gisErrorMessage(e, clickStarted)),
     });
     // prompt:'' reuses the grant the user already gave without showing consent
     // UI. GIS's default opens a popup — fine inside the click that started
@@ -197,6 +208,18 @@ function requestAccessToken(clientId: string, silent = false): Promise<string> {
  */
 export function preloadGis(): void {
   void loadGis().catch(() => { /* the real attempt reports this properly */ });
+}
+
+/**
+ * Resolves once the GIS script is on the page, rejecting if it can't load.
+ *
+ * A surface that needs a popup waits on THIS and only then offers the button —
+ * it must never await it and then ask for the popup, because that await is the
+ * network and the request lands with no activation left. That distinction is
+ * the whole bug: see startGoogleSignIn().
+ */
+export function whenGisReady(): Promise<void> {
+  return loadGis();
 }
 
 /** True once the GIS script is on the page, i.e. once `startGoogleSignIn()`
@@ -234,7 +257,7 @@ export function hasPendingGoogleSignIn(): boolean {
 export function startGoogleSignIn(): boolean {
   const clientId = googleClientId();
   if (!clientId || !isGisReady()) return false;
-  const p = requestAccessToken(clientId).then(async (accessToken) => ({
+  const p = requestAccessToken(clientId, false, true).then(async (accessToken) => ({
     sub: await fetchSub(accessToken),
     accessToken,
   }));
