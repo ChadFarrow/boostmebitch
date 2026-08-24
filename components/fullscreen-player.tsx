@@ -6,6 +6,7 @@ import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { nowPlayingArt } from '@/lib/track-art';
+import { lockScroll } from '@/lib/scroll-lock';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import type { TranscriptCue } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
@@ -295,20 +296,17 @@ export function FullscreenPlayer({
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const [valueOpen, setValueOpen] = useState(false);
 
-  // Lock the page behind the overlay so its scrollbar doesn't show through.
-  // The document scrolls at the <html> element (background lives there), so
-  // lock both html and body to be safe.
+  // Lock the page behind the overlay. This used to be a local `overflow:
+  // hidden` on <html> and <body>, which is not a scroll lock on iOS: in the
+  // installed home-screen app WebKit scrolled the web view anyway, and
+  // `position: fixed` elements travel with the document when it does — so this
+  // overlay slid off the top of the screen and the browse page showed in the
+  // strip below it. The shared module is the fix AND the refcount: a BOOST
+  // modal opens from in here, and two independent locks over one <body> mean
+  // whichever releases first unlocks the page under the other one.
   useEffect(() => {
     if (!open) return;
-    const html = document.documentElement;
-    const prevHtml = html.style.overflow;
-    const prevBody = document.body.style.overflow;
-    html.style.overflow = 'hidden';
-    document.body.style.overflow = 'hidden';
-    return () => {
-      html.style.overflow = prevHtml;
-      document.body.style.overflow = prevBody;
-    };
+    return lockScroll();
   }, [open]);
 
   // Above the `!current` return — hook order has to stay stable, and the hook
@@ -445,7 +443,13 @@ export function FullscreenPlayer({
           chat — not the page behind — fills the space below the video; the page
           used to scroll past the overlay and reveal the browse view. Non-live
           (podcast/music) keeps the normal single-scroll-container behavior. */}
-      <div className={`flex-1 min-h-0 flex flex-col sm:flex-row ${liveStreamId ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
+      {/* `overscroll-contain` on this row, which is the overlay's scroll
+          boundary: a swipe past its end chains outward to the document, and on
+          iOS a document scroll drags every `position: fixed` element with it —
+          this overlay and the mini-player bar both. Containing it here covers
+          the nested lists too (the album list, the transcript box), because
+          chaining walks outward to the nearest scrollable ancestor. */}
+      <div className={`flex-1 min-h-0 flex flex-col sm:flex-row overscroll-contain ${liveStreamId ? 'overflow-hidden sm:overflow-y-auto' : 'overflow-y-auto'}`}>
         {/* Artwork (or live video) — centered in the left half; sticky so it
             stays put as the page scrolls. For HLS streams the shared <video>
             is displayed here via its OutPortal while the player is open; when

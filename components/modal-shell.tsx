@@ -1,6 +1,7 @@
 'use client';
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { lockScroll } from '@/lib/scroll-lock';
 
 /**
  * The one overlay every modal in this app renders through.
@@ -33,12 +34,17 @@ import { createPortal } from 'react-dom';
  *   of an open modal into the page behind it, and closing left focus on
  *   `<body>` so the next Tab started from the top of the document.
  *
- * - **Scroll lock, refcounted.** Only `<FullscreenPlayer>` locked the body, so
- *   the page scrolled behind every modal on iOS. The refcount matters because
- *   these genuinely stack (a boost modal opens over the fullscreen player):
- *   without it the first one to close restores scrolling while another is still
- *   open, and a naive save/restore of `overflow` would write back the *locked*
- *   value the outer modal had already set.
+ * - **Scroll lock, refcounted — and it lives in `lib/scroll-lock.ts`, not
+ *   here.** Only `<FullscreenPlayer>` locked the body, so the page scrolled
+ *   behind every modal on iOS. The refcount matters because these genuinely
+ *   stack (a boost modal opens over the fullscreen player): without it the
+ *   first one to close restores scrolling while another is still open, and a
+ *   naive save/restore of `overflow` would write back the *locked* value the
+ *   outer modal had already set. That refcount was still only half the rule —
+ *   `<FullscreenPlayer>` kept its OWN lock, outside this count, so the two
+ *   could still release over each other. Both go through the shared module
+ *   now, which is also where the reason `overflow: hidden` is not a lock on
+ *   iOS is written down.
  */
 
 // One shared depth. `<Player>` is z-30 and `<FullscreenPlayer>` is z-50, and a
@@ -47,29 +53,6 @@ import { createPortal } from 'react-dom';
 // surface to do so from the fullscreen player would have rendered it
 // underneath, invisible.
 const OVERLAY_Z = 'z-[60]';
-
-// Refcount, not a boolean: modals stack, and the inner one closing must not
-// unlock scrolling while the outer one is still open.
-let scrollLocks = 0;
-let savedOverflow = '';
-
-function lockScroll(): () => void {
-  if (scrollLocks === 0) {
-    savedOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-  }
-  scrollLocks++;
-  let released = false;
-  return () => {
-    // Guard against a double release — React 18+ StrictMode runs effect
-    // cleanups twice in development, and an unbalanced decrement would leave
-    // the count negative and the page permanently unlocked.
-    if (released) return;
-    released = true;
-    scrollLocks--;
-    if (scrollLocks === 0) document.body.style.overflow = savedOverflow;
-  };
-}
 
 const FOCUSABLE = [
   'a[href]',
@@ -213,7 +196,14 @@ export function ModalShell({
         // `max-h-[92vh]` is measured against the viewport instead and overflows
         // the box meant to hold it — measured at 390x844, the card ran
         // -14 -> 762 inside a 16 -> 732 padding box.
-        className={`card bg-ink relative max-h-full overflow-y-auto outline-none ${className}`}
+        // `overscroll-contain`: a swipe that runs past the end of this card
+        // otherwise chains outward to the document, and on iOS that drags the
+        // whole fixed layer — this overlay included — off the screen. The lock
+        // in lib/scroll-lock.ts is what makes that impossible; this stops the
+        // gesture from ever reaching the document. Containing at the overlay
+        // boundary covers every nested list inside it, because chaining walks
+        // outward to the nearest scrollable ancestor and stops here.
+        className={`card bg-ink relative max-h-full overflow-y-auto overscroll-contain outline-none ${className}`}
       >
         {children}
       </div>
