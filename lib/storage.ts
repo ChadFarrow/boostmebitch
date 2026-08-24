@@ -1050,9 +1050,15 @@ export const storage = {
         return emptyMuteState();
       }
     },
-    set: (npub: string | null | undefined, v: MuteListState) => {
-      safeSet(identityKey(KEYS.mutedPrefix, npub), JSON.stringify(v));
-    },
+    /**
+     * Returns whether the value reached DISK. Don't drop that answer: a mute
+     * that only made it into `safeSet`'s in-memory mirror filters correctly for
+     * the rest of the session and is gone on the next load, which presents
+     * exactly as "I muted them and they came back". The relay copy is the only
+     * durable record in that case, so a signed-in caller must still publish.
+     */
+    set: (npub: string | null | undefined, v: MuteListState): boolean =>
+      safeSet(identityKey(KEYS.mutedPrefix, npub), JSON.stringify(v)),
   },
 
   /**
