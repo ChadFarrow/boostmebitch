@@ -1,14 +1,18 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   fetchBoostsReceivedBy,
   fetchBoostsSentBy,
   fetchProfile,
+  fetchZapsReceivedBy,
   noteHasSubstance,
+  quotedEventIds,
   shortNpub,
   useNostrFeed,
   useViewerReposts,
+  zapSats,
   type DiscoveredNote,
+  type ReceivedZap,
 } from '@/lib/nostr';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { useApp } from '@/lib/store';
@@ -17,6 +21,7 @@ import { Avatar } from './avatar';
 import { CopyLinkButton } from './copy-link-button';
 import { FeedSection } from './feed-section';
 import { NoteCard } from './nostr-note-card';
+import { ZapReceiptCard } from './zap-receipt-card';
 
 /**
  * Every boost one npub sent and received, read from relays only.
@@ -29,15 +34,20 @@ import { NoteCard } from './nostr-note-card';
  *    anonymous boost should still reach the artist. So a site-signed boost
  *    lands here even though its sender is unrecoverable.
  *
- *    It is still a list of **boost NOTES**, not of payments. Bare NIP-57 zap
- *    receipts (kind:9735) are deliberately not read: this is a boostagram
- *    surface, and a receipt is a different object with a different sender and a
- *    different provenance. The overlap is smaller than it looks — a
- *    Fountain-style boost posts a kind:1 wrapper that quotes its own receipt,
- *    and that wrapper still appears here with its amount adopted off the quoted
- *    receipt (`buildNote`). What is not shown is a zap that produced no note at
- *    all. `lib/nostr/zap-receipt.ts` therefore stays: `buildNote` reads amounts
- *    through it and `<LiveChat>` still renders receipts.
+ *    It is a list of **boost NOTES**, not of payments, and that is why the
+ *    NIP-57 zap receipts sit in their OWN section rather than in this one. A
+ *    receipt is a different object with a different author (the recipient's
+ *    LNURL server, never the payer) and different evidential weight. They were
+ *    merged once and it was reverted (`9699c81`): two kinds of evidence under
+ *    one heading made the list look like it answered "what was I paid", which
+ *    it does not. The objection was to the MERGE — the coverage gap was real,
+ *    so the receipts are read again, under their own heading, never mixed in.
+ *  - **A payment that posts both is shown once.** A Fountain-style boost is two
+ *    events for one payment: a kind:9735 and a kind:1 wrapper quoting it, both
+ *    `p`-tagging the recipient. The wrapper is the richer card (sender profile,
+ *    podcast line, reply thread) and its amount is adopted off the quoted
+ *    receipt in `buildNote`, so the wrapper wins and `quotedEventIds` drops the
+ *    receipt from the zaps section.
  *  - **Sent under-reports, permanently.** A boost is only authored by the
  *    sender when they chose "post to my Nostr feed"; every other boost is
  *    signed by the site key, and an anonymous one drops `sender_id` and
@@ -80,6 +90,37 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
     deps: [pubkey],
   });
 
+  // Zaps get a plain effect rather than useNostrFeed: that hook's payload type
+  // is DiscoveredNote[] and it writes the shared bmb:feed cache, whose reader
+  // maps a `replies` normalizer over whatever it parses — so bending it to hold
+  // receipts would both mistype two other feeds and staple a bogus `replies: []`
+  // onto every receipt. The `gen` ref is the same race guard it uses: a slow
+  // fetch for one npub must not land over a newer one.
+  //
+  // The cost is that this section has no localStorage warm paint, so on a
+  // revisit the two boost sections come back from `bmb:feed:*` within a frame
+  // while this one sits on "searching nostr relays…". Deliberate: a sibling
+  // cache namespace is the fix if that ever matters, never a generic
+  // useNostrFeed.
+  const [zaps, setZaps] = useState<ReceivedZap[] | null>(null);
+  const zapGen = useRef(0);
+  const refreshZaps = useCallback(() => {
+    const myGen = ++zapGen.current;
+    setZaps(null);
+    fetchZapsReceivedBy(pubkey)
+      .then((z) => { if (myGen === zapGen.current) setZaps(z); })
+      .catch(() => { if (myGen === zapGen.current) setZaps([]); });
+  }, [pubkey]);
+  useEffect(() => {
+    refreshZaps();
+    // Bump the counter on cleanup so an in-flight fetch bails, exactly as
+    // useNostrFeed does. `zapGen` is a plain counter ref (not a DOM node), so
+    // the exhaustive-deps "ref may have changed" heuristic doesn't apply —
+    // changing it is the point.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { zapGen.current++; };
+  }, [refreshZaps]);
+
   // EVERY note in the sent list is authored by the page's subject, so muting
   // them empties that panel outright — and the empty message blamed
   // site-signing and anonymity for it, which is the "a guard that silently
@@ -99,6 +140,27 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
     [received.notes, mutedPubkeys],
   );
 
+  // Held at null until BOTH lists are in hand. `quotedEventIds` needs the boost
+  // notes to know which receipts are already on screen above, so painting early
+  // would show a duplicated payment for a frame and then pull the row out from
+  // under the reader. The two queries run in parallel, so this costs nothing but
+  // the slower of the two.
+  //
+  // Mutes are filtered HERE as well as inside <ZapReceiptCard>. The card returns
+  // null for a muted zapper, but <FeedSection> counts `notes.length` and renders
+  // one wrapper <div> per item, so an all-muted list would be N empty rows under
+  // a header reading (N). The card keeps its own `useApp` selector because it is
+  // memoized and a mute arriving only through props would be skipped.
+  //
+  // Dedupe on the receipt's own id ONLY. A receipt whose `targetEventId` names a
+  // note in the list is someone zapping that boost note — a second real payment,
+  // not the same one twice.
+  const zapsVisible = useMemo<ReceivedZap[] | null>(() => {
+    if (zaps === null || received.notes === null) return null;
+    const quoted = quotedEventIds(received.notes);
+    return zaps.filter((z) => !quoted.has(z.id) && !mutedPubkeys.has(z.zapper));
+  }, [zaps, received.notes, mutedPubkeys]);
+
   // Which of these the VIEWER has already reposted. Not decoration: without it
   // `alreadyReposted` is false on every card, the button reads "🔁 repost"
   // rather than done, and a viewer who already reposted a boost from the global
@@ -112,10 +174,13 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
 
   // One resolver pass over both lists, so a show boosted in each direction is
   // looked up once.
+  // `NoteRefs` is the plain {podcastGuid, episodeGuids} shape, which a zap
+  // receipt carries too — read off its embedded kind:9734 — so the receipts feed
+  // the same resolver rather than a second one.
   const metaRefs = useMemo<NoteRefs[] | null>(() => {
-    if (!sentVisible && !receivedVisible) return null;
-    return [...(sentVisible ?? []), ...(receivedVisible ?? [])];
-  }, [sentVisible, receivedVisible]);
+    if (!sentVisible && !receivedVisible && !zapsVisible) return null;
+    return [...(sentVisible ?? []), ...(receivedVisible ?? []), ...(zapsVisible ?? [])];
+  }, [sentVisible, receivedVisible, zapsVisible]);
   const { podcasts, episodes } = useNoteMeta(metaRefs);
 
   function metaFor(refs: NoteRefs) {
@@ -149,6 +214,22 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
   // it with, because the splits live in the value block, not on the wire here.
   // A count is a fact; that sum would be a claim about money nobody can check.
   const sentSats = (sentVisible ?? []).reduce((n, x) => n + Math.floor((x.amountMsat ?? 0) / 1000), 0);
+
+  // The zaps section MAY print a sum, and the received-boosts one still may not.
+  // The difference is what the number measures. A boost note's `amount` tag is
+  // `value_msat_total` — the whole boost, before the value block divides it — so
+  // it is the same number on every p-tagged npub's page. A zap receipt's amount
+  // is the invoice THIS recipient's own LNURL server issued: a per-payee settled
+  // fact. `zapReceiptAmountMsat` falls back to the zap request's amount only
+  // after the receipt tag and the bolt11 HRP, and NIP-57 requires those to agree.
+  //
+  // Scoped in the words twice over, because both limits are real: the scan is
+  // limit-bounded, so this is the receipts SHOWN and not a lifetime total, and
+  // `zapSats` floors an unreadable msat to 0, so those rows are counted out loud
+  // rather than left to sink into the sum. Do not read this as licence to bring
+  // the received-boosts sum back.
+  const zapSatsTotal = (zapsVisible ?? []).reduce((n, z) => n + zapSats(z), 0);
+  const zapsNoAmount = (zapsVisible ?? []).filter((z) => z.msat === null).length;
 
   return (
     <div className="flex flex-col gap-10">
@@ -227,6 +308,39 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
         itemKey={(n) => n.id}
         collapsibleKey="npub:recv"
         renderNote={(note) => <NoteCard note={note} repostedIds={repostedIds} {...metaFor(note)} />}
+      />
+
+      <FeedSection<ReceivedZap>
+        heading={
+          <h2 className="font-display text-2xl">
+            <span className="text-bolt">&#9889;</span> Zaps received
+          </h2>
+        }
+        description={
+          <p className="text-xs text-muted leading-relaxed mb-3">
+            NIP-57 zap receipts (
+            <code className="font-mono text-bone/70">kind:9735</code>) addressed to this npub —
+            settled payments that posted no boost note of their own
+            {zapsVisible && zapsVisible.length > 0 && (
+              <span className="text-bone/70">
+                {' '}— {zapsVisible.length} here, {zapSatsTotal.toLocaleString()} sats across the
+                receipts shown
+                {zapsNoAmount > 0 && ` (${zapsNoAmount} with no readable amount)`}
+              </span>
+            )}
+            . A receipt is written by this npub&apos;s own Lightning server, so the sender is read
+            from the zap request inside it; one whose request can&apos;t be read names nobody and
+            is not listed. A zap that a boost note already quotes appears above, not twice.
+          </p>
+        }
+        notes={zapsVisible}
+        loading={zapsVisible === null}
+        err={null}
+        emptyMessage="no zaps to this npub surfaced from these relays."
+        onRefresh={refreshZaps}
+        itemKey={(z) => z.id}
+        collapsibleKey="npub:zaps"
+        renderNote={(zap) => <ZapReceiptCard zap={zap} {...metaFor(zap)} />}
       />
     </div>
   );

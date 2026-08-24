@@ -659,6 +659,16 @@ so the suggestion row is instant. The page behind it is three relay queries the
 sections fire **independently on mount**, so each paints when its own resolves
 and a revisit paints from `bmb:feed:*` within one frame.
 
+Two caveats on the zaps column below, both deliberate. Its query is independent
+but its **paint** is not: `zapsVisible` holds at `null` until the received-boosts
+notes land, because `quotedEventIds` needs them to know which receipts are
+already on screen above, so in practice that column is `max(zaps, received)`.
+And it has no warm cache — `useNostrFeed` and `bmb:feed:*` are typed to
+`DiscoveredNote`, so on a revisit the two boost sections repaint in a frame while
+this one goes through "searching nostr relays…" again. A sibling cache namespace
+is the fix if that ever matters; making `useNostrFeed` generic for one caller is
+not.
+
 Measured against a local relay (`Promise.all` of all three, 12 sent + 12 received
 + 8 zaps):
 
@@ -712,24 +722,64 @@ filter there would silently drop a client whose tags we hadn't thought of.
 `eventLooksLikeBoost` trims the raw events **before** `assembleNotes`, so the
 reply-tree BFS never walks a mention that was never going to render.
 
-**Bare zap receipts are deliberately NOT read.** This is a boostagram surface:
-both lists are kind:1 boost notes, and a kind:9735 is a different object with a
-different author (the recipient's LNURL server, never the payer) and different
-provenance. An earlier revision merged receipts into the received list and it was
-removed — mixing them put two kinds of evidence under one heading and made the
-list answer a question ("what was I paid") that the page does not actually
-answer.
+**Zap receipts are read, in their OWN section, and must never be merged into the
+boosts list.** The history is the rule here, because both halves of it were
+right. Receipts started life merged into the received list and were removed in
+`9699c81`: a kind:9735 is a different object with a different author (the
+recipient's LNURL server, never the payer) and different evidential weight, and
+two kinds of evidence under one heading made the list answer a question ("what
+was I paid") that the page does not answer. But the objection was to the **merge**
+— the coverage gap was real. A payment that produced no kind:1 at all is invisible
+to a boost-note query, and that is most of what a Fountain, zap.stream or Wavlake
+sender pays, plus this app's own live-stream boosts, which go out as real NIP-57
+zaps (boost invariant 0). So `fetchZapsReceivedBy` is back, under its own
+heading, and the two lists never mix.
 
-The coverage cost is smaller than it looks, and worth stating exactly: a
+**The bare `#p` filter there is not the widening this section forbids two
+paragraphs down.** That rule is about kind:1, where `{'#p':[pubkey]}` is the
+person's whole mentions firehose and the `limit` is spent on ordinary replies
+before a boost arrives. A kind:9735 is not a conversational kind: every event the
+filter returns is a payment to them.
+
+`quotedEventIds` is live again and is what keeps one payment to one card. A
 Fountain-style boost publishes a kind:1 wrapper that quote-references its own
-receipt, and **that wrapper still appears**, with its amount adopted off the
-quoted receipt in `buildNote`. What is no longer shown is a zap that produced no
-kind:1 at all. Dropping receipts also removed the reason `quotedEventIds` existed
-— with only notes in the list, one payment can no longer render as two cards.
+receipt, and **both `p`-tag the recipient**; split across two sections that is
+the same payment twice, with the zaps total double-counting money the boosts
+panel already showed. The wrapper wins — it is the richer card and its amount is
+adopted off the quoted receipt in `buildNote` — so the receipt is dropped. It
+must go through `parseQuoteRefs` and not an `e`/`q` tag scan, because Fountain
+writes the reference as a `nostr:nevent1…` URI in the note **body**. Dedupe on
+the receipt's own id only: a receipt whose `targetEventId` names a note in the
+list is someone zapping that boost note, which is a second real payment.
 
-**`lib/nostr/zap-receipt.ts` stays regardless**, because two live callers need it:
-`buildNote` reads a quoted receipt's amount through `zapReceiptAmountMsat`, and
-`<LiveChat>` renders receipts in a stream's chat. Its `zapReceiptAmountMsat`
+**The zaps section may print a sats total and the received-boosts one still may
+not** — see the review-pass note below for why the boosts sum was removed. The
+difference is what the number measures. A boost note's `amount` is
+`value_msat_total`, the whole boost before the value block divides it, so it is
+the same figure on every p-tagged npub's page. A receipt's amount is the invoice
+**this** recipient's own LNURL server issued: a per-payee settled fact.
+`zapReceiptAmountMsat` falls back to the zap request's amount only after the
+receipt tag and the bolt11 HRP, and NIP-57 requires those to agree. The copy
+still scopes it twice, because both limits are real — the scan is limit-bounded
+("across the receipts shown", not a lifetime total) and `zapSats` floors an
+unreadable msat to 0, so those rows are counted out loud rather than left to sink
+into the sum. This is not licence to bring the boosts sum back.
+
+Two further guards the surface has to name rather than apply silently.
+`parseZapReceipt` returns `null` for a receipt carrying no usable kind:9734, and
+those are **dropped rather than attributed to the LNURL server** — a card naming
+the server as the payer would be worse than no card. And mutes are filtered in
+`<BoostExplorer>` as well as inside `<ZapReceiptCard>`: the card returns `null`
+for a muted zapper, but `<FeedSection>` counts `notes.length` and renders one
+wrapper `<div>` per item, so filtering only in the card leaves N empty rows under
+a header reading `(N)`. The card keeps its own `useApp` selector regardless,
+because it is memoized and a mute arriving only through props is skipped.
+
+**`lib/nostr/zap-receipt.ts` has three live callers**: `buildNote` reads a quoted
+receipt's amount through `zapReceiptAmountMsat`, `<LiveChat>` renders receipts in
+a stream's chat, and `fetchZapsReceivedBy` parses the zaps section. It kept
+earning its place through the release where the explorer read no receipts at all,
+which is why it was there to restore them. Its `zapReceiptAmountMsat`
 keeps the original precedence (receipt `amount` → `bolt11` HRP → *then* the
 embedded request's `amount`); the third source was appended, so it can only fire
 where the old function returned `null`, leaving `buildNote` unchanged. And a

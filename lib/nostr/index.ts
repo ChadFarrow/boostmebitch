@@ -48,10 +48,15 @@ export {
   fetchSocialInteractThread,
   fetchBoostsSentBy,
   fetchBoostsReceivedBy,
+  fetchZapsReceivedBy,
+  quotedEventIds,
   noteFromEvent,
   noteHasSubstance,
   type DiscoveredNote,
+  type ReceivedZap,
 } from './discover';
+
+export { parseZapReceipt, zapSats, type ZapReceipt } from './zap-receipt';
 
 export { useNostrFeed } from './use-feed';
 
