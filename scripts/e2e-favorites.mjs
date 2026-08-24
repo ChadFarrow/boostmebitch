@@ -52,7 +52,11 @@ if (!appUp) {
   process.exit(1);
 }
 
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+// macOS default, because that is where this is usually run. `CHROME_PATH`
+// overrides it, which is what lets this script run on Linux and in CI at all —
+// hardcoded, it exits before the first assertion on any other platform.
+const CHROME = process.env.CHROME_PATH
+  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const profile = `${tmpdir()}/bmb-e2e-favorites`;
 rmSync(profile, { recursive: true, force: true });
 const chrome = spawn(CHROME, [
