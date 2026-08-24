@@ -887,7 +887,13 @@ export interface FavoritesPlanInput {
   readTags: string[][];
   exists: boolean;
   trustworthy: boolean;
-  /** This device's favorites destined for the public half. */
+  /**
+   * This device's favorites destined for the public half.
+   *
+   * VESTIGIAL: the baseline moved off `local` and onto the merge, so nothing in
+   * here reads it any more. Kept because every call site and check vector
+   * passes it, and because it documents which half `merged` was built from.
+   */
   local: LocalList;
 
   // -- the private half -----------------------------------------------------
@@ -906,7 +912,7 @@ export interface FavoritesPlanInput {
   readContent?: string;
   /** True when `content` is non-empty and we could not turn it into tags. */
   privateUnreadable?: boolean;
-  /** This device's favorites destined for the private half. */
+  /** This device's favorites destined for the private half. Vestigial, as `local`. */
   privateLocal?: LocalList;
   /**
    * What this device last agreed with the relay on, so the claims about a half
@@ -930,6 +936,17 @@ export interface FavoritesPlanInput {
    * clear is whether somebody asked for it.
    */
   emptyIsIntentional?: boolean;
+  /**
+   * This cycle is a WITHDRAWAL: both halves get an empty local list, so neither
+   * is fed by this device.
+   *
+   * Distinct from {@link emptyIsIntentional}, which it implies but is not
+   * implied by — unfavoriting the whole list also empties the active half, and
+   * that half's baseline must still be recomputed from the (now empty) merge.
+   * Here the device removes everything it claimed, so afterwards it claims
+   * nothing and BOTH halves record an empty baseline.
+   */
+  withdraw?: boolean;
 }
 
 export interface FavoritesPlan {
@@ -984,8 +1001,9 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
 
   const tags = tagsFromList(input.merged);
 
-  // THE BASELINE DESCRIBES BOTH HALVES AS THEY NOW STAND, derived from the
-  // MERGED result rather than from `local`.
+  // THE BASELINE DESCRIBES BOTH HALVES AS THEY NOW STAND: the ACTIVE half
+  // derived from the MERGED result rather than from `local`, the inactive one
+  // carried from what this device last asserted about it.
   //
   // It used to be `baselineForHalves(local, privateLocal)` — one local list
   // split by mode — which blanked the claims on the half this device was not
@@ -996,18 +1014,45 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // offers a heart that does nothing. Reported as "I unfavorited 2 and they
   // came back", off an event holding 9 public entries and an encrypted copy.
   //
-  // Deriving it from the merge is also what makes an ADOPTED list removable at
-  // all: this app paints the union of both halves into one library and lets the
+  // Deriving the ACTIVE half from the merge is what makes an ADOPTED list
+  // removable at all: this app paints that half into one library and lets the
   // user unfavorite any of it, so it has to claim what it renders. Entries it
   // cannot represent are excluded by `entriesFromList`, which is the line
   // between adopting a list and claiming a stranger's bytes.
-  const pub = baselineOfList(input.merged);
-  // A half we could not read is a half whose claims we must keep: it is carried
-  // verbatim, so what we asserted about it is still true, and recomputing it
-  // from nothing would silently disown every private entry.
-  const priv = privateUnreadable
-    ? { feeds: input.previousBaseline?.privateFeeds ?? [], items: input.previousBaseline?.privateItems ?? [] }
-    : baselineOfList(input.privateMerged);
+  //
+  // THE INACTIVE HALF IS CARRIED, NEVER RECOMPUTED, AND THE DIFFERENCE IS A
+  // DELETION. Under one whole-list choice `syncFavorites` hands that half
+  // `EMPTY_LOCAL` on every cycle, so a claim made off ITS merge has nothing
+  // backing it next time round — `mergeFavoritesList`'s removal test (ours, and
+  // we no longer hold it) then fires on every entry in it at once. Cycle 1
+  // claims another writer's entries and cycle 2 deletes them, and cycle 1 need
+  // not even publish, because the hydrator records a baseline on 'unchanged'
+  // too. Measured both ways round against this module: a public-mode device
+  // published `content: ''` over a foreign private half, and a private-mode
+  // device published `[]` over a foreign public one — the same cross-app
+  // deletion the carry rule exists to prevent, arriving through the baseline
+  // instead of through `content`.
+  //
+  // Carrying `previousBaseline` keeps the claims from when that half WAS active,
+  // so a mode switch still removes what it moved, and invents none over a writer
+  // we are merely carrying for.
+  const carried = (half: ListHalf): FavoritesBaseline => (half === 'public'
+    ? { feeds: input.previousBaseline?.feeds ?? [], items: input.previousBaseline?.items ?? [] }
+    : { feeds: input.previousBaseline?.privateFeeds ?? [], items: input.previousBaseline?.privateItems ?? [] });
+
+  // A withdrawal feeds NEITHER half and removes everything this device claimed,
+  // so afterwards it claims nothing. Not `carried`: a claim naming an entry that
+  // is now gone would make `mergeFavoritesList`'s `fresh` filter suppress it if
+  // the user ever favorites it again.
+  const pub = input.withdraw
+    ? { feeds: [], items: [] }
+    : mode === 'private' ? carried('public') : baselineOfList(input.merged);
+  // A half we could not read is carried for the same reason and one of its own:
+  // it goes back verbatim, so what we asserted about it is still true, and
+  // recomputing it from nothing would silently disown every private entry.
+  const priv = input.withdraw
+    ? { feeds: [], items: [] }
+    : privateUnreadable || mode !== 'private' ? carried('private') : baselineOfList(input.privateMerged);
   const baseline: FavoritesBaseline = {
     feeds: pub.feeds, items: pub.items, privateFeeds: priv.feeds, privateItems: priv.items,
   };
@@ -1213,6 +1258,48 @@ export function partitionList(list: ParsedList): PartitionedList {
   }
 
   return { feeds, items, loose, malformed };
+}
+
+/**
+ * The rows of an INACTIVE half this device may adopt into its own store.
+ *
+ * The app renders the union of both halves as one library, but it publishes
+ * into ONE of them — so anything it adopts out of the half it is not using is
+ * republished into the half it IS using on the next cycle. For this device's
+ * own entries that is the point: a mode switch moves them. For another writer's
+ * it is a migration nobody asked for, and in the public direction it is a
+ * disclosure — a private entry re-emitted as a plaintext `i` tag, which relays
+ * index, which makes it reverse-searchable by feed. That is the property the
+ * private half exists to provide.
+ *
+ * The baseline is the only thing that can tell the two apart, because it names
+ * exactly what this device put there. So the active half is adopted whole and
+ * the inactive half is filtered through this.
+ *
+ * `loose` and `malformed` come back EMPTY on purpose. A loose entry is by
+ * definition one we have no meaning for, so it is carried on the wire and never
+ * adopted; `malformed` drives a cleanup hook that only ever edits the public
+ * half, and offering to remove an entry from the other one would print a count
+ * and take nothing away.
+ *
+ * An item survives without its feed row: `ListItem` carries its own `feedGuid`,
+ * and a group the baseline does not claim is one we opened only to place a
+ * track — not a favorite of the feed.
+ */
+export function claimedByBaseline(
+  part: PartitionedList,
+  baseline: FavoritesBaseline,
+  half: ListHalf,
+): PartitionedList {
+  const claimed = baselineHalf(baseline, half);
+  const feedSet = new Set(claimed.feeds);
+  const itemSet = new Set(claimed.items);
+  return {
+    feeds: part.feeds.filter((f) => feedSet.has(showId(f.feedGuid))),
+    items: part.items.filter((i) => itemSet.has(itemId(i.itemGuid))),
+    loose: [],
+    malformed: [],
+  };
 }
 
 /**

@@ -158,6 +158,35 @@ Four things break under a private half, and none of them is optional:
   absent reads as `[]`, so a baseline written before this shipped reads as
   all-public — which is what it is. `baselineHalf` is the only way either merge
   should reach one.
+- **Which half a claim may be COMPUTED from.** Three positions exist and only
+  the middle one is right. Splitting one local list by mode
+  (`baselineForHalves(local, privateLocal)`) **blanks** the inactive half, so an
+  ordinary publish disowns every claim on it and those entries become
+  unremovable — *"I unfavorited 2 and they came back"*. Deriving **both** halves
+  from their merges over-corrects: `syncFavorites` hands the inactive half
+  `EMPTY_LOCAL` on every cycle, so a claim made off its merge has nothing
+  backing it next time round and the removal test drops the whole half. Cycle 1
+  claims another writer's entries and cycle 2 deletes them — a public-mode
+  device published `content: ''` over a foreign private half, and a private-mode
+  device published `[]` over a foreign public one, both measured against the
+  shipping module. Cycle 1 need not publish for this: the hydrator records a
+  baseline on `'unchanged'` too. So the **active** half is `baselineOfList` of
+  its merge, and the inactive one is `previousBaseline` — carried, which keeps
+  the claims made while it WAS active so a switch still removes what it moved.
+  A **withdrawal** feeds neither half and takes down everything this device
+  claimed, so afterwards it claims nothing in either; carrying there would make
+  `fresh` suppress an entry the user later re-favorites. **The pin has to be two
+  cycles**, because a single cycle emits correct bytes and only the baseline
+  beside them is wrong.
+- **Rendering a half is adopting it, and adopting the wrong one leaks.** The
+  store writes through to `localStorage` and returns as `local`, which goes
+  wholly into the active half — so anything the hydrator paints out of the
+  inactive half is republished into the active one. Own entries: that is the
+  switch working. Another writer's: a migration nobody asked for, and in the
+  private→public direction a disclosure, since `i` is single-letter and relays
+  index it. `claimedByBaseline` filters the inactive half's rows to what this
+  device claims; the active half is joined whole. A foreign private half is
+  therefore carried but not shown, which is the deliberate cost.
 - **`wholesale-delete` had to widen, and only to the UNION.** Its test is *the
   merge came out empty over a read that is not*, and switching to private is
   exactly that shape — so a per-half test would refuse the feature it exists to

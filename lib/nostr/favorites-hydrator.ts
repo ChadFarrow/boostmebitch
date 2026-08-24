@@ -33,6 +33,7 @@ import {
   EMPTY_PARSED,
   baselineForHalves,
   baselineHalf,
+  claimedByBaseline,
   fetchFavoritesList,
   groupLocalFavorites,
   looksLikeFeedGuid,
@@ -356,8 +357,22 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // exists only to place a track. `partitionList` is run per half rather than
   // over a spliced node list, because splicing two ordered lists would put an
   // item under whichever group happened to precede it after the join.
+  //
+  // THE INACTIVE HALF IS FILTERED TO WHAT THIS DEVICE'S BASELINE CLAIMS, and
+  // that is a privacy gate rather than a tidy-up. The store is not a render
+  // cache: it writes through to localStorage and comes back as `local` on the
+  // next cycle, which goes wholly into the ACTIVE half. So an entry adopted out
+  // of the other half is republished into this one — for our own entries that
+  // is exactly how a mode switch moves them, and for another writer's it is a
+  // migration nobody asked for. In the private-to-public direction it is a
+  // disclosure: the entry comes back as a plaintext `i` tag, relays index `i`,
+  // and a `#i` filter answers which pubkeys favorited that feed. See
+  // `claimedByBaseline`.
   const publicPart = partitionList(merged);
-  const part = joinPartitions(publicPart, privateMerged ? partitionList(privateMerged) : null);
+  const privatePart = privateMerged ? partitionList(privateMerged) : null;
+  const part = mode === 'private'
+    ? joinPartitions(claimedByBaseline(publicPart, baseline, 'public'), privatePart)
+    : joinPartitions(publicPart, privatePart && claimedByBaseline(privatePart, baseline, 'private'));
 
   // PUBLIC malformed only. `bmbCleanFavorites` edits `event.tags` and carries
   // `content` verbatim — it has to, since it never decrypts — so offering to

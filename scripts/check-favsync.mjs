@@ -71,6 +71,7 @@ import {
   parseItemGuid,
   parseShowGuid,
   partitionList,
+  claimedByBaseline,
   seedModeFromWire,
   baselineIsTrustworthy,
   planFavoritesPublish,
@@ -1102,10 +1103,19 @@ section('The private half — the baseline describes BOTH halves, every cycle');
 {
   // Reported as "I unfavorited 2 and they came back", off an event holding 9
   // public entries AND an encrypted copy. The baseline was one local list split
-  // by mode, so every publish in public mode blanked the claims on the private
-  // half. Unclaimed, those entries read as another writer's and are carried
-  // forever — while the app still renders them and offers a heart that does
-  // nothing.
+  // by mode — `baselineForHalves(local, privateLocal)` — which BLANKED the
+  // claims on whichever half this device was not currently using. Unclaimed,
+  // those entries read as another writer's and are carried forever, while the
+  // app still renders them and offers a heart that does nothing.
+  //
+  // THE REPAIR IS TO CARRY THE INACTIVE HALF'S CLAIMS, NOT TO RECOMPUTE THEM
+  // FROM ITS MERGE. The two look equivalent on one cycle and are not:
+  // recomputing claims every entry in that half, a writer we are only carrying
+  // for included, and `syncFavorites` hands that half `EMPTY_LOCAL` every
+  // cycle — so the next one reads a claim it cannot back as a removal and
+  // deletes the lot. That shipped, and it is pinned in "TWO CYCLES" below.
+  // Carrying is what fixes the report, because the claims exist: this device
+  // made them while that half WAS the active one.
   const pubWire = [
     ['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC)], ['k', 'podcast:guid'],
   ];
@@ -1116,15 +1126,20 @@ section('The private half — the baseline describes BOTH halves, every cycle');
   const readPriv = parseFavoritesList(privWire);
   // Public mode: this device owns the public half and merely carries the other.
   const mine = groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]);
+  // This device wrote the encrypted copy while it was in private mode, so the
+  // claim is on record. Switching to public must not throw it away.
+  const before = { feeds: [], items: [], privateFeeds: [showId(F_MUSIC2)], privateItems: [] };
   const plan = planFavoritesPublish({
     merged: mergeFavoritesList({ read: readPub, local: mine, baseline: EMPTY_BASELINE }),
     readTags: pubWire, exists: true, trustworthy: true, local: mine,
     mode: 'public',
     privateMerged: mergeFavoritesList({ read: readPriv, local: EMPTY_LOCAL, baseline: EMPTY_BASELINE }),
     readPrivateTags: privWire, readContent: 'nip44:…', privateLocal: EMPTY_LOCAL,
+    previousBaseline: before,
   });
   check('the public half is claimed', plan.baseline.feeds, [showId(F_MUSIC)]);
-  check('...and so is the private half we are only carrying', plan.baseline.privateFeeds, [showId(F_MUSIC2)]);
+  check('...and the private half KEEPS the claims we already made',
+    plan.baseline.privateFeeds, [showId(F_MUSIC2)]);
 
   // (naive) the version that shipped: one local list split by mode.
   const naive = baselineForHalves(mine, EMPTY_LOCAL);
@@ -1140,6 +1155,19 @@ section('The private half — the baseline describes BOTH halves, every cycle');
     read: readPriv, local: EMPTY_LOCAL, baseline: baselineHalf(plan.baseline, 'private'),
   }));
   check('claimed, it can finally be removed', gone.some((t) => t[1] === showId(F_MUSIC2)), false);
+
+  // MUST STILL WORK, AND IT IS THE OTHER HALF OF THE SAME RULE: a writer we are
+  // only carrying for is never claimed. Claim it and the next cycle — with
+  // `EMPTY_LOCAL` on this half again — reads our own claim back as a removal.
+  const carrying = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: readPub, local: mine, baseline: EMPTY_BASELINE }),
+    readTags: pubWire, exists: true, trustworthy: true, local: mine,
+    mode: 'public',
+    privateMerged: mergeFavoritesList({ read: readPriv, local: EMPTY_LOCAL, baseline: EMPTY_BASELINE }),
+    readPrivateTags: privWire, readContent: 'nip44:…', privateLocal: EMPTY_LOCAL,
+    previousBaseline: EMPTY_BASELINE,
+  });
+  check('a half we have never claimed stays unclaimed', carrying.baseline.privateFeeds, []);
 
   // MUST STILL WORK: a half we could not READ keeps the claims we already had,
   // rather than disowning every entry in it.
@@ -1351,6 +1379,182 @@ section('The private half — the NIP-44 size cliff');
     privateLocal: few,
   });
   check('an ordinary private half is not', under.reason, 'publish');
+}
+
+// ---------------------------------------------------------------------------
+section('The private half — TWO CYCLES, because one cycle cannot see this');
+// ---------------------------------------------------------------------------
+{
+  // EVERY OTHER VECTOR IN THIS FILE IS SINGLE-CYCLE, AND THAT IS THE HOLE.
+  //
+  // A plan is judged on the bytes it emits, so a plan that emits the right
+  // bytes passes — even when the BASELINE it records alongside them is a claim
+  // this device cannot keep. The damage lands on the next cycle, when that
+  // baseline comes back as an input and `mergeFavoritesList`'s removal test
+  // (ours, and we no longer hold it) fires on entries we never owned.
+  //
+  // That shipped. `planFavoritesPublish` derived BOTH halves from their merges
+  // — `baselineOfList(input.merged)` and `baselineOfList(input.privateMerged)`
+  // — on the reasoning that this app renders the union of both halves and so
+  // must claim what it renders. True of the ACTIVE half, whose merge is painted
+  // into the store and returns as `local`. False of the other one:
+  // `syncFavorites` hands it `EMPTY_LOCAL` on every cycle, so nothing backs the
+  // claim next time round and the whole half is read as a removal.
+  //
+  // Measured both ways: a public-mode device published `content: ''` over a
+  // foreign private half, and a private-mode device published `[]` over a
+  // foreign public one. Cycle 1 need not even publish — the hydrator records a
+  // baseline on 'unchanged' too.
+  //
+  // So these run the planner TWICE, feeding cycle 1's baseline back in.
+
+  // One cycle of the real pipeline, in the shape `syncFavorites` builds it.
+  const cycle = (mode, publicWire, privateWire, store, baseline) => {
+    const all = groupLocalFavorites(store);
+    const publicLocal = mode === 'private' ? EMPTY_LOCAL : all;
+    const privateLocal = mode === 'private' ? all : EMPTY_LOCAL;
+    const merged = mergeFavoritesList({
+      read: parseFavoritesList(publicWire), local: publicLocal, baseline: baselineHalf(baseline, 'public'),
+    });
+    const privateMerged = mergeFavoritesList({
+      read: parseFavoritesList(privateWire), local: privateLocal, baseline: baselineHalf(baseline, 'private'),
+    });
+    const plan = planFavoritesPublish({
+      merged,
+      readTags: publicWire,
+      exists: true,
+      trustworthy: true,
+      local: publicLocal,
+      mode,
+      privateMerged,
+      readPrivateTags: privateWire,
+      readContent: privateWire.length > 0 ? 'nip44:…' : '',
+      privateUnreadable: false,
+      privateLocal,
+      previousBaseline: baseline,
+    });
+    // What the relay holds afterwards.
+    const nextPublic = plan.publish ? plan.tags : publicWire;
+    let nextPrivate = privateWire;
+    if (plan.publish) {
+      if (plan.encryptPrivate) nextPrivate = plan.privateTags;
+      else if (plan.content === '') nextPrivate = [];
+    }
+    // What the hydrator paints: the active half whole, the inactive half
+    // filtered to what this device's baseline claims.
+    const pubPart = partitionList(merged);
+    const privPart = partitionList(privateMerged);
+    const painted = mode === 'private'
+      ? [...claimedByBaseline(pubPart, plan.baseline, 'public').feeds, ...privPart.feeds]
+      : [...pubPart.feeds, ...claimedByBaseline(privPart, plan.baseline, 'private').feeds];
+    return {
+      plan,
+      publicWire: nextPublic,
+      privateWire: nextPrivate,
+      baseline: plan.baseline,
+      store: painted.map((f) => ({ id: showId(f.feedGuid), medium: f.medium })),
+    };
+  };
+
+  const entries = (tags) => tags.filter((t) => t[0] === 'i').map((t) => t[1]);
+  const wireOf = (...guids) => tagsFromList(parseFavoritesList([
+    ['alt', LIST_ALT], ...guids.map((g) => ['i', showId(g)]),
+  ]));
+
+  // -- public mode, another writer's PRIVATE half ---------------------------
+  {
+    const ours = [{ id: showId(F_MUSIC) }];
+    let st = { publicWire: wireOf(F_MUSIC), privateWire: wireOf(F_UNKNOWN), store: ours, baseline: EMPTY_BASELINE };
+
+    st = cycle('public', st.publicWire, st.privateWire, st.store, st.baseline);
+    check(
+      'public mode, cycle 1: the foreign private half is carried',
+      entries(st.privateWire), [showId(F_UNKNOWN)],
+    );
+    check(
+      'public mode, cycle 1: this device claims only its OWN half',
+      st.baseline.privateFeeds, [],
+    );
+
+    st = cycle('public', st.publicWire, st.privateWire, st.store, st.baseline);
+    check(
+      'public mode, cycle 2: the foreign private half is STILL there',
+      entries(st.privateWire), [showId(F_UNKNOWN)],
+    );
+    check(
+      'public mode, cycle 2: and was not migrated into the indexed public half',
+      entries(st.publicWire), [showId(F_MUSIC)],
+    );
+    check('public mode, cycle 2: nothing to say', st.plan.reason, 'unchanged');
+  }
+
+  // -- private mode, another writer's PUBLIC half ---------------------------
+  {
+    const ours = [{ id: showId(F_MUSIC) }];
+    let st = { publicWire: wireOf(F_UNKNOWN), privateWire: wireOf(F_MUSIC), store: ours, baseline: EMPTY_BASELINE };
+
+    st = cycle('private', st.publicWire, st.privateWire, st.store, st.baseline);
+    check('private mode, cycle 1: the foreign public half is carried', entries(st.publicWire), [showId(F_UNKNOWN)]);
+    check('private mode, cycle 1: this device claims only its OWN half', st.baseline.feeds, []);
+
+    st = cycle('private', st.publicWire, st.privateWire, st.store, st.baseline);
+    check('private mode, cycle 2: the foreign public half is STILL there', entries(st.publicWire), [showId(F_UNKNOWN)]);
+    check('private mode, cycle 2: ours stays private', entries(st.privateWire), [showId(F_MUSIC)]);
+  }
+
+  // -- the property this must NOT cost: a switch still MOVES ----------------
+  {
+    // A fresh device adopts a public list off the relay, then switches. The
+    // adopted entries have to enter the ACTIVE half's baseline or the switch
+    // copies instead of moving — the bug the merge-derived baseline fixed, and
+    // the one a naive "carry both halves" repair would bring straight back.
+    let st = { publicWire: wireOf(F_MUSIC, F_MUSIC2), privateWire: [], store: [], baseline: EMPTY_BASELINE };
+
+    st = cycle('public', st.publicWire, st.privateWire, st.store, st.baseline);
+    check('a fresh device adopts the relay list', st.store.map((e) => e.id), [showId(F_MUSIC), showId(F_MUSIC2)]);
+    check('...and claims it, so a later switch can remove it',
+      st.baseline.feeds, [showId(F_MUSIC), showId(F_MUSIC2)]);
+
+    st = cycle('private', st.publicWire, st.privateWire, st.store, st.baseline);
+    check('the switch empties the public half', entries(st.publicWire), []);
+    check('...and the private half gains exactly those entries',
+      entries(st.privateWire), [showId(F_MUSIC), showId(F_MUSIC2)]);
+
+    st = cycle('private', st.publicWire, st.privateWire, st.store, st.baseline);
+    check('and it settles — no republish on the next cycle', st.plan.reason, 'unchanged');
+  }
+
+  // -- a withdrawal claims nothing afterwards -------------------------------
+  {
+    // Both halves get an empty local list, so neither may be recomputed from
+    // its merge. Nor may the old claims be carried: a claim naming an entry
+    // that is now gone makes `mergeFavoritesList`'s `fresh` filter suppress it
+    // if the user ever favorites it again.
+    const ours = groupLocalFavorites([{ id: showId(F_MUSIC) }]);
+    const publicWire = wireOf(F_MUSIC, F_UNKNOWN);
+    const baseline = baselineForHalves(ours, EMPTY_LOCAL);
+    const plan = planFavoritesPublish({
+      merged: mergeFavoritesList({
+        read: parseFavoritesList(publicWire), local: EMPTY_LOCAL, baseline: baselineHalf(baseline, 'public'),
+      }),
+      readTags: publicWire,
+      exists: true,
+      trustworthy: true,
+      local: EMPTY_LOCAL,
+      mode: 'public',
+      privateMerged: EMPTY_PARSED,
+      readPrivateTags: [],
+      readContent: '',
+      privateUnreadable: false,
+      privateLocal: EMPTY_LOCAL,
+      emptyIsIntentional: true,
+      withdraw: true,
+      previousBaseline: baseline,
+    });
+    check('a withdrawal removes only our own entry', entries(plan.tags), [showId(F_UNKNOWN)]);
+    check('...and claims nothing afterwards, in either half',
+      [plan.baseline.feeds, plan.baseline.privateFeeds], [[], []]);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -421,6 +421,11 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     // Both provenances of an emptiness a person asked for: the withdrawal
     // dialog, and unfavoriting the whole list. See `emptyIsIntentional`.
     emptyIsIntentional: opts.withdraw || opts.localCleared,
+    // Narrower than `emptyIsIntentional`, and the baseline needs the narrower
+    // claim: a withdrawal feeds NEITHER half, so neither may be recomputed from
+    // its merge, while an ordinary delete-all still feeds (and empties) the
+    // active one.
+    withdraw: opts.withdraw,
     previousBaseline: baseline,
   });
 
