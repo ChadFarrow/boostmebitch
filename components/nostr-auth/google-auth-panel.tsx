@@ -29,10 +29,10 @@ import {
 } from '@/lib/nostr/drive-backup';
 import {
   hasPendingGoogleSignIn,
-  preloadGis,
   refreshAccessToken,
   signInWithGoogle,
   startGoogleSignIn,
+  whenGisReady,
 } from '@/lib/nostr/google-auth';
 import { getErrorMessage } from '@/lib/util';
 import { buildGeneratedProfile } from '@/lib/nostr/generated-profile';
@@ -48,9 +48,11 @@ import { provisionProfileFromKey } from './provision-profile';
 
 type Stage =
   | { s: 'idle' }
-  // GIS wasn't loaded when the opening click ran, so no popup could be started
-  // inside it. Ask for one more tap rather than firing a request the browser
-  // will block — see startGoogleSignIn().
+  // The Google script is still loading, so no popup can be requested yet.
+  // Nothing is offered from here until it lands — see `armTap` below.
+  | { s: 'preparing' }
+  // The script is ready and a tap can now open the popup synchronously. This
+  // stage exists because the opening click was too early to start one itself.
   | { s: 'needsTap' }
   | { s: 'signingIn' }
   | { s: 'checkingDrive' }
@@ -192,19 +194,37 @@ export function GoogleAuthPanel({
     }
   }, [fail, withDrive]);
 
-  /** Every user-initiated entry point. `startGoogleSignIn()` must run FIRST and
-   *  synchronously: it is what opens the consent popup inside this click. */
+  /** Hold the panel on `preparing` until the script is on the page, then offer
+   *  the tap. Waiting HERE rather than inside the click is the point: the wait
+   *  is a network fetch, and a popup requested after one has no activation left
+   *  and is refused. So the button does not exist until a tap can succeed. */
+  const armTap = useCallback(() => {
+    setStage({ s: 'preparing' });
+    whenGisReady().then(
+      () => setStage({ s: 'needsTap' }),
+      (e) => fail(e, 'Could not load Google sign-in'),
+    );
+  }, [fail]);
+
+  /** Every user-initiated entry point. `startGoogleSignIn()` runs FIRST and
+   *  synchronously — it is what opens the popup inside this click. If it can't
+   *  (the script went away, or this is a Retry from a cold error) we go back to
+   *  waiting rather than firing a request that would be blocked. That fallback
+   *  is the hole the first fix left: it called begin(), which awaits the script
+   *  fetch and THEN asks for the popup, which is how a cold start still spent
+   *  its one blocked attempt before Retry worked. */
   const tapBegin = useCallback(() => {
-    startGoogleSignIn();
+    if (!startGoogleSignIn()) {
+      armTap();
+      return;
+    }
     begin();
-  }, [begin]);
+  }, [begin, armTap]);
 
   // Pick up the request the opening click already started. This effect does NOT
   // run under that click's transient activation — React schedules effects in a
   // later task — so asking for the popup here is asking for it to be blocked,
-  // which is what iOS Safari did on every single first attempt. When there is
-  // no pending request (GIS hadn't loaded yet when the click ran) the honest
-  // move is one more tap, not a popup nobody will see.
+  // which is what iOS Safari did on every first attempt.
   //
   // The ref guard is for StrictMode's mount → unmount → mount cycle in dev,
   // which would otherwise consume the request twice.
@@ -213,10 +233,7 @@ export function GoogleAuthPanel({
     if (started.current) return;
     started.current = true;
     if (hasPendingGoogleSignIn()) begin();
-    else {
-      preloadGis(); // so the tap below has something to call synchronously
-      setStage({ s: 'needsTap' });
-    }
+    else armTap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -459,6 +476,13 @@ export function GoogleAuthPanel({
         <div className="flex items-center gap-2 text-xs text-muted py-4">
           <span className="animate-bolt">◆</span>
           {busyLabel}
+        </div>
+      )}
+
+      {stage.s === 'preparing' && (
+        <div className="flex items-center gap-2 text-xs text-muted py-4">
+          <span className="animate-bolt">◆</span>
+          Preparing Google sign-in…
         </div>
       )}
 

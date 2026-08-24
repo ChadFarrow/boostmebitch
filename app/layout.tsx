@@ -165,6 +165,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       className={`${bricolage.variable} ${jetbrainsMono.variable}`}
     >
       <head>
+        {/* Warm the TCP + TLS handshake to Google's script host, without
+            fetching anything. The GIS script itself stays lazy (it is fetched
+            when the account menu opens — see preloadGis), because a signed-out
+            visitor who never taps Sign in should not pay for a third-party
+            script. But that leaves only the menu-reading time to load it, and
+            a tap arriving before it lands is a tap that cannot open the consent
+            popup. The handshake is the slow half on a cold mobile connection,
+            so paying it here is what makes the later fetch land in time.
+            No request is sent and no cookie rides along. */}
+        <link rel="preconnect" href="https://accounts.google.com" crossOrigin="" />
         <script dangerouslySetInnerHTML={{ __html: FOUC_BLOCKER }} />
       </head>
       <body className="min-h-screen antialiased">
