@@ -27,7 +27,13 @@ import {
   listBackups,
   uploadBackup,
 } from '@/lib/nostr/drive-backup';
-import { refreshAccessToken, signInWithGoogle } from '@/lib/nostr/google-auth';
+import {
+  hasPendingGoogleSignIn,
+  preloadGis,
+  refreshAccessToken,
+  signInWithGoogle,
+  startGoogleSignIn,
+} from '@/lib/nostr/google-auth';
 import { getErrorMessage } from '@/lib/util';
 import { buildGeneratedProfile } from '@/lib/nostr/generated-profile';
 import { provisionSparkFromKey } from './provision-spark';
@@ -42,6 +48,10 @@ import { provisionProfileFromKey } from './provision-profile';
 
 type Stage =
   | { s: 'idle' }
+  // GIS wasn't loaded when the opening click ran, so no popup could be started
+  // inside it. Ask for one more tap rather than firing a request the browser
+  // will block — see startGoogleSignIn().
+  | { s: 'needsTap' }
   | { s: 'signingIn' }
   | { s: 'checkingDrive' }
   | { s: 'setupPin' }
@@ -182,18 +192,31 @@ export function GoogleAuthPanel({
     }
   }, [fail, withDrive]);
 
-  // Kick off on mount — the user already tapped "Continue with Google", and
-  // running inside that gesture's transient activation is what keeps the
-  // consent popup from being blocked. (Retry is a direct click, so a blocked
-  // first attempt is always recoverable.)
+  /** Every user-initiated entry point. `startGoogleSignIn()` must run FIRST and
+   *  synchronously: it is what opens the consent popup inside this click. */
+  const tapBegin = useCallback(() => {
+    startGoogleSignIn();
+    begin();
+  }, [begin]);
+
+  // Pick up the request the opening click already started. This effect does NOT
+  // run under that click's transient activation — React schedules effects in a
+  // later task — so asking for the popup here is asking for it to be blocked,
+  // which is what iOS Safari did on every single first attempt. When there is
+  // no pending request (GIS hadn't loaded yet when the click ran) the honest
+  // move is one more tap, not a popup nobody will see.
   //
   // The ref guard is for StrictMode's mount → unmount → mount cycle in dev,
-  // which would otherwise open two Google popups back to back.
+  // which would otherwise consume the request twice.
   const started = useRef(false);
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    begin();
+    if (hasPendingGoogleSignIn()) begin();
+    else {
+      preloadGis(); // so the tap below has something to call synchronously
+      setStage({ s: 'needsTap' });
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -392,7 +415,7 @@ export function GoogleAuthPanel({
     if (missed > 0) {
       return (
         <>
-          <button onClick={begin} className="btn-ghost w-full text-[11px]">
+          <button onClick={tapBegin} className="btn-ghost w-full text-[11px]">
             Retry downloads
           </button>
           <p className="text-[11px] text-nostr/80">
@@ -439,11 +462,22 @@ export function GoogleAuthPanel({
         </div>
       )}
 
+      {stage.s === 'needsTap' && (
+        <>
+          <p className="text-[11px] text-muted">
+            Google opens its sign-in window when you tap. Tap below to continue.
+          </p>
+          <button onClick={tapBegin} className="btn-bolt w-full">
+            Continue with Google
+          </button>
+        </>
+      )}
+
       {stage.s === 'error' && (
         <>
           <span className="text-[11px] text-nostr/80">{stage.message}</span>
           <div className="flex gap-2">
-            <button onClick={begin} className="btn-bolt text-[11px] py-1 px-3">
+            <button onClick={tapBegin} className="btn-bolt text-[11px] py-1 px-3">
               Retry
             </button>
             <button onClick={onCancel} className="btn-ghost text-[11px] py-1 px-3">

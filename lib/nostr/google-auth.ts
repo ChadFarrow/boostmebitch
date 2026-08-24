@@ -190,16 +190,69 @@ function requestAccessToken(clientId: string, silent = false): Promise<string> {
  * Warm the GIS script before the user commits to anything. Fetching it inside
  * the click path is what burns the click's transient activation on a cold first
  * visit and gets the consent popup blocked. `loadGis()` is memoized, so calling
- * this when the sign-in modal opens makes the later click path effectively
- * synchronous. Failures are swallowed — signInWithGoogle() surfaces them with
- * real copy when it matters.
+ * this one gesture EARLIER — when the account menu opens, and again when the
+ * sign-in modal opens — is what lets `startGoogleSignIn()` run synchronously
+ * later. Failures are swallowed — signInWithGoogle() surfaces them with real
+ * copy when it matters.
  */
 export function preloadGis(): void {
   void loadGis().catch(() => { /* the real attempt reports this properly */ });
 }
 
+/** True once the GIS script is on the page, i.e. once `startGoogleSignIn()`
+ *  can open the popup without awaiting anything. */
+function isGisReady(): boolean {
+  return typeof window !== 'undefined' && !!window.google?.accounts;
+}
+
+// The consent request started by the click that opened the panel. See
+// startGoogleSignIn() below for why the request cannot start in the panel.
+let pendingSignIn: Promise<GoogleAuthResult> | null = null;
+
+/** True while a click-started consent request is waiting to be consumed. */
+export function hasPendingGoogleSignIn(): boolean {
+  return pendingSignIn !== null;
+}
+
+/**
+ * Start the consent popup from INSIDE the click handler that opens the panel,
+ * and park the result for `signInWithGoogle()` to consume.
+ *
+ * The popup MUST be requested during the synchronous run of a user gesture.
+ * `<GoogleAuthPanel>` used to request it from its mount effect, on the premise
+ * that the effect still ran under the opening click's transient activation. It
+ * does not: React schedules effects in a later task, so on iOS Safari — the
+ * home-screen PWA included — the very first attempt was blocked EVERY time and
+ * the panel opened on "Your browser blocked the Google sign-in popup." Tapping
+ * Retry then worked, because Retry is a real click and GIS was loaded by then,
+ * which is exactly the shape of the bug report.
+ *
+ * Returns false when GIS is not loaded yet — there is nothing to call
+ * synchronously, so the caller must ask for another tap rather than start a
+ * request that will be blocked.
+ */
+export function startGoogleSignIn(): boolean {
+  const clientId = googleClientId();
+  if (!clientId || !isGisReady()) return false;
+  const p = requestAccessToken(clientId).then(async (accessToken) => ({
+    sub: await fetchSub(accessToken),
+    accessToken,
+  }));
+  // The panel consumes `p` itself; this second handler only stops an abandoned
+  // attempt (modal closed on the consent screen) from surfacing as an unhandled
+  // rejection. It does not swallow anything the consumer sees.
+  p.catch(() => { /* consumed by signInWithGoogle(), or abandoned */ });
+  pendingSignIn = p;
+  return true;
+}
+
 /** Full sign-in: one consent popup for both scopes, then read `sub` back. */
 export async function signInWithGoogle(): Promise<GoogleAuthResult> {
+  // Consume a click-started request when there is one. Take it before anything
+  // can throw, so a failed attempt never leaves a stale promise for the next.
+  const pending = pendingSignIn;
+  pendingSignIn = null;
+  if (pending) return pending;
   const clientId = googleClientId();
   if (!clientId) throw new Error('Google sign-in is not configured for this site');
   // Keep this await: once preloadGis() has run it resolves in a microtask,
