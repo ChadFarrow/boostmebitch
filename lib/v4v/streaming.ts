@@ -49,7 +49,7 @@ import { getErrorMessage, hasValueRecipients, splitAtPosition, DEFAULT_SENDER_NA
 import { isLiveStreamId } from '@/lib/nostr/live-streams';
 import { canSignUnattended } from '@/lib/nostr/signer';
 import { resolvePublishRelays } from '@/lib/nostr/relays';
-import { publishValuePlaybackReceipt } from '@/lib/nostr/value-playback';
+import { publishValuePlaybackReceipt, queueSummaryUpdate } from '@/lib/nostr/value-playback';
 import { sendBoost, pickRail, paidAny } from './boost';
 import { subscribeNwc } from './nwc';
 import { subscribeSpark } from './spark';
@@ -144,6 +144,16 @@ interface StreamContext {
    * two runs were contiguous when a gap of any length sits between them.
    */
   sessionId?: string;
+  /**
+   * Feed guids a receipt was actually PUBLISHED for during this listen, for the
+   * kind:33369 summary pass at release.
+   *
+   * Populated in `maybePublishReceipt` rather than wherever a payment happens,
+   * and only past every one of its refusals, because a summary is derived from
+   * receipts — an id whose receipt was never published has nothing to summarize
+   * and would cost a pair of relay reads to confirm it.
+   */
+  summarizedFeeds?: Map<string, string | undefined>;
 }
 
 /** The ids Split Kit uses to tie a payment back to the block that earned it. */
@@ -914,6 +924,15 @@ function maybePublishReceipt(
     );
     if (settledMsat <= 0) return;
     const { feedGuid, itemGuid } = paymentIds(c, bucket);
+    // Only past every refusal above: a feed with no receipt has nothing to
+    // summarize. `label` is the track/episode title the log already resolved,
+    // used for the summary's human-readable `alt`.
+    if (feedGuid) {
+      if (!c.summarizedFeeds) c.summarizedFeeds = new Map();
+      if (!c.summarizedFeeds.has(feedGuid)) {
+        c.summarizedFeeds.set(feedGuid, targetFor(c, bucket).label ?? c.podcast.title);
+      }
+    }
     void publishValuePlaybackReceipt({
       feedGuid,
       itemGuid,
@@ -1061,6 +1080,48 @@ function maybeSettle(c: StreamContext, l: StreamLedger, force: boolean): StreamL
   return nextLedger;
 }
 
+
+/**
+ * Hand this listen's feed ids to the kind:33369 summary queue.
+ *
+ * The guards are `maybePublishReceipt`'s, plus one: **summaries require
+ * receipts.** A summary is derived from receipts, so with receipts off there is
+ * nothing new to derive from and the only effect would be republishing an
+ * unchanged total — which the predicate refuses anyway, after paying for two
+ * relay reads to find out.
+ *
+ * Re-read here rather than captured when the receipt was published, because a
+ * listener may turn either switch off mid-listen and the honest reading of that
+ * is "stop", not "finish what was queued".
+ *
+ * Total by construction, for the same reason `maybePublishReceipt` is: this is
+ * reached from `releaseContext`, which runs inside `tick()` on the engine's
+ * interval, and a throw there would take the whole engine down mid-listen.
+ */
+function maybeQueueSummaries(c: StreamContext) {
+  try {
+    const feeds = c.summarizedFeeds;
+    if (!feeds?.size) return;
+    if (!storage.streamReceipts.get()) return;
+    if (!storage.streamSummaries.get()) return;
+    if (streamingIsAnonymous()) return;
+    if (!canSignUnattended()) return;
+    const identity = useApp.getState().identity;
+    if (!identity?.pubkey) return;
+    queueSummaryUpdate({
+      ids: Array.from(feeds, ([id, label]) => ({
+        id: `podcast:guid:${id}`,
+        idKind: 'podcast:guid',
+        label,
+      })),
+      pubkey: identity.pubkey,
+      relays: resolvePublishRelays(identity),
+    });
+  } catch (e) {
+    console.warn('[33369] summaries not queued', e);
+  }
+}
+
 /**
  * Tear down the current item.
  *
@@ -1078,6 +1139,20 @@ function maybeSettle(c: StreamContext, l: StreamLedger, force: boolean): StreamL
  */
 function releaseContext(settle: boolean) {
   if (settle && ctx && ledger) ledger = maybeSettle(ctx, ledger, true);
+  // Queue the kind:33369 summaries for the feeds this listen actually paid.
+  //
+  // **Gated on `settle` for the same reason the settle itself is.** The
+  // `settle: false` path is engine shutdown, and <Player>'s cleanup runs on
+  // every Fast Refresh — a summary pass there means editing a comment fires a
+  // signature request and a pair of relay writes, which is the dev-loop
+  // version of the bug that makes teardown non-settling.
+  //
+  // Queued BEFORE the settles above have run their payments, on purpose: the
+  // debounce inside queueSummaryUpdate is longer than a settle takes, and the
+  // ids come from receipts already published earlier in this listen. A receipt
+  // still in flight is simply not counted yet, and the monotonic rule means the
+  // next listen picks it up.
+  if (settle && ctx) maybeQueueSummaries(ctx);
   if (ledger) persist(ledger);
   ctx = null;
   ledger = null;

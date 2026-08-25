@@ -208,9 +208,14 @@ function templateFor(kind, nowSec) {
 // read mode
 // ---------------------------------------------------------------------------
 
+const tagOf = (ev, n) => ev.tags.find((t) => t[0] === n)?.[1] ?? '';
+
 async function readMode(pubkey) {
-  console.log(`reading kind:3369 for ${pubkey.slice(0, 12)}… across ${relays.length} relays\n`);
-  let total = 0;
+  console.log(`reading kinds 3369 + 33369 for ${pubkey.slice(0, 12)}… across ${relays.length} relays\n`);
+  // Deduped across relays: the same event is normally on several, and counting
+  // it once per relay would make every summary look understated.
+  const receipts = new Map();
+  const summaries = new Map();
   for (const url of relays) {
     let ws;
     try {
@@ -219,21 +224,59 @@ async function readMode(pubkey) {
       console.log(`  ${url.padEnd(28)} — ${e.message}`);
       continue;
     }
-    const events = await query(ws, { kinds: [3369], authors: [pubkey], limit: 20 });
+    const got = await query(ws, { kinds: [3369, 33369], authors: [pubkey], limit: 500 });
     ws.close();
-    total += events.length;
-    console.log(`  ${url.padEnd(28)} — ${events.length} event(s)`);
-    for (const ev of events) {
-      const tag = (n) => ev.tags.find((t) => t[0] === n)?.[1] ?? '';
-      const ids = ev.tags.filter((t) => t[0] === 'i').map((t) => t[1]);
-      console.log(
-        `      ${new Date(ev.created_at * 1000).toISOString()}  ${tag('amount').padStart(8)} msat  ${tag('action')}  session=${tag('session')}`,
-      );
-      for (const i of ids) console.log(`          i  ${i}`);
+    console.log(`  ${url.padEnd(28)} — ${got.length} event(s)`);
+    for (const ev of got) {
+      if (ev.kind === 3369) receipts.set(ev.id, ev);
+      // Addressable: newest per `d` wins, exactly as a relay would serve it.
+      if (ev.kind === 33369) {
+        const d = tagOf(ev, 'd');
+        const prev = summaries.get(d);
+        if (!prev || ev.created_at > prev.created_at) summaries.set(d, ev);
+      }
     }
   }
-  console.log(`\n${total} event(s) total.`);
-  if (!total) {
+
+  console.log(`\n${receipts.size} receipt(s), ${summaries.size} summary address(es), deduped.\n`);
+
+  if (summaries.size) {
+    // The check that matters: a summary is DERIVED from the receipts, so
+    // re-deriving here from the same receipts must reproduce it. A mismatch
+    // where the summary is HIGHER is expected and fine — the totals are
+    // monotonic and this read may see fewer receipts than the writer did. A
+    // summary LOWER than what the receipts say means the writer under-derived
+    // and monotonicity has pinned it there.
+    console.log('summaries, checked against the receipts visible here:');
+    for (const [d, ev] of summaries) {
+      const mine = [...receipts.values()].filter((r) => r.tags.some((t) => t[0] === 'i' && t[1] === d));
+      const sum = mine.reduce((n, r) => n + (Number(tagOf(r, 'amount')) || 0), 0);
+      const claimed = Number(tagOf(ev, 'amount')) || 0;
+      const claimedCount = Number(tagOf(ev, 'count')) || 0;
+      const verdict =
+        claimed === sum && claimedCount === mine.length ? 'matches'
+          : claimed >= sum && claimedCount >= mine.length ? 'ahead of this read (expected — monotonic)'
+            : 'BEHIND the receipts — the writer under-derived';
+      console.log(`  ${d}`);
+      console.log(
+        `      claims ${String(claimed).padStart(9)} msat / ${claimedCount} receipts` +
+        `   here: ${String(sum).padStart(9)} msat / ${mine.length}   → ${verdict}`,
+      );
+    }
+    console.log('');
+  }
+
+  if (receipts.size) {
+    console.log('receipts:');
+    for (const ev of [...receipts.values()].sort((a, b) => a.created_at - b.created_at)) {
+      console.log(
+        `  ${new Date(ev.created_at * 1000).toISOString()}  ${tagOf(ev, 'amount').padStart(8)} msat  ${tagOf(ev, 'action')}  session=${tagOf(ev, 'session')}`,
+      );
+      for (const t of ev.tags) if (t[0] === 'i') console.log(`      i  ${t[1]}`);
+    }
+  }
+
+  if (!receipts.size && !summaries.size) {
     console.log(
       'Nothing found. Either none were published, or the read relays differ from\n' +
       'the write relays — this app publishes to the NIP-65 write set unioned with\n' +

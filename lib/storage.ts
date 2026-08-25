@@ -47,6 +47,7 @@ const KEYS = {
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
   streamReceipts: 'bmb:stream_receipts', // '1' when the listener opted into publishing kind:3369 value-playback receipts for streaming settles. Absent = OFF, unlike shareNostr — see the accessor.
+  streamSummaries: 'bmb:stream_summaries', // '1' when the listener also opted into kind:33369 running totals. Absent = OFF. Requires streamReceipts — a summary is derived FROM receipts.
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
@@ -890,6 +891,27 @@ export const storage = {
   streamReceipts: {
     get: (): boolean => safeGet(KEYS.streamReceipts) === '1',
     set: (v: boolean): boolean => safeSet(KEYS.streamReceipts, v ? '1' : '0'),
+  },
+
+  /**
+   * Whether a finished listen also publishes a kind:33369 running total.
+   *
+   * **A separate key from `streamReceipts`, and off by default even when
+   * receipts are on.** The two are not the same disclosure. A receipt is one
+   * event among hundreds, findable only by someone who already queries this
+   * pubkey. A summary sits at a STABLE, GUESSABLE address —
+   * `(pubkey, 33369, podcast:guid:<feedGuid>)` — so a single `#d` filter
+   * answers "who has streamed to this show", each answer carrying a total and
+   * a date range rather than needing anyone to assemble one. It is also
+   * monotonic, and therefore permanent by design.
+   *
+   * No new fact is revealed: the receipts are public and already `#i`-indexed.
+   * What changes is the cost of asking, from a query plus arithmetic to one
+   * lookup. That is enough of a difference to be its own switch.
+   */
+  streamSummaries: {
+    get: (): boolean => safeGet(KEYS.streamSummaries) === '1',
+    set: (v: boolean): boolean => safeSet(KEYS.streamSummaries, v ? '1' : '0'),
   },
 
   /**

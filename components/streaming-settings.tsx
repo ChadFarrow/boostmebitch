@@ -273,6 +273,7 @@ function streamRateDescription(v: StreamRateView): string {
  */
 function StreamReceipts() {
   const [on, setOn] = useState(() => storage.streamReceipts.get());
+  const [totals, setTotals] = useState(() => storage.streamSummaries.get());
   const [landed, setLanded] = useState(true);
   // Read after mount: both depend on browser state the server render has no
   // view of, so deriving them during render is a hydration mismatch.
@@ -290,6 +291,11 @@ function StreamReceipts() {
     setLanded(storage.streamReceipts.set(v));
   }
 
+  function changeTotals(v: boolean) {
+    setTotals(v);
+    setLanded(storage.streamSummaries.set(v));
+  }
+
   return (
     <div className="mt-4 pt-3 border-t border-line">
       <div className="flex flex-wrap items-center gap-3">
@@ -304,6 +310,23 @@ function StreamReceipts() {
         public and permanent: together they are a timestamped record of what you
         listened to.
       </p>
+      {on && (
+        <div className="mt-3 pl-3 border-l border-line">
+          <div className="flex flex-wrap items-center gap-3">
+            <StreamSwitch on={totals} onChange={changeTotals} />
+            <span className="text-[11px] uppercase tracking-widest text-muted">
+              Also publish running totals
+            </span>
+          </div>
+          <p className="text-[11px] text-muted mt-2">
+            Keeps one running total per show or album, so anyone can look up what
+            you have paid it without reading every receipt. This is the
+            searchable half: the totals sit at a fixed address, so a single query
+            answers who has streamed to a show. Totals only ever go up and cannot
+            be lowered later.
+          </p>
+        </div>
+      )}
       {on && anonymous && (
         <p className="text-[11px] text-nostr mt-2">
           Nothing is published while boosts are set to Anonymous. The receipt is

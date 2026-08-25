@@ -253,3 +253,43 @@ instead and the ledger has already moved on, yielding a zero-length interval.
 Anonymous is set, or under Amber, and publishes nothing in either case; both
 states are spelled out on screen. A silent correct decision is indistinguishable
 from a broken one.
+
+### Running totals (kind:33369)
+
+**A second opt-in, off by default even when receipts are on**, because it is a
+different disclosure — see [`docs/value-playback.md`](value-playback.md).
+
+`maybeQueueSummaries` runs from `releaseContext`, and everything about the
+trigger is chosen to keep it cheap and to keep it away from the dev loop:
+
+- **At item release, not per settle.** Re-reading every receipt for a feed to
+  add one is O(all of them) work for a +1 change, six times an hour on an
+  ordinary show and once per song on a live one.
+- **Gated on `settle === true`, exactly like the settle itself.** The
+  `settle: false` path is engine shutdown and `<Player>`'s cleanup runs on
+  every Fast Refresh. A summary pass there means editing a comment fires a
+  signature request and a pair of relay writes — the dev-loop version of the
+  bug that makes teardown non-settling.
+- **Feed-level ids only.** A receipt carries a feed guid and an item guid, and
+  each distinct id is its own address, so summarizing both would make a
+  twelve-track album listen thirteen addresses to read and write at once. The
+  feed total is also the one a listener recognises.
+- **Only feeds a receipt was actually PUBLISHED for.** `StreamContext.summarizedFeeds`
+  is populated inside `maybePublishReceipt`, past every one of its refusals — a
+  summary derives from receipts, so an id with no receipt has nothing to
+  summarize and would cost two relay reads to establish that.
+- **Debounced ~30 s and flushed serially.** The last settles' receipts publish
+  fire-and-forget, so deriving at the moment of release reads the relays before
+  they land. The delay is not a correctness requirement — an unlanded receipt is
+  simply not counted yet and the monotonic rule means the next listen picks it
+  up — it just makes the common case right the first time instead of one listen
+  behind. Serial because a burst is exactly what the kind's own relay guidance
+  warns about.
+- **The switches are re-read at flush time, not captured at queue time.** A
+  listener who turns either one off mid-listen means "stop", not "finish what
+  was queued".
+
+`maybeQueueSummaries` is total by construction for a harder reason than
+`maybePublishReceipt` is: it is reached from `releaseContext`, which runs inside
+`tick()` on the engine's own interval, so a throw takes the whole engine down
+mid-listen rather than failing one settle.

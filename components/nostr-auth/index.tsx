@@ -28,6 +28,7 @@ import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
+import { cancelQueuedSummaries } from '@/lib/nostr/value-playback';
 // Direct import, not the barrel: lib/nostr/follows.ts is deliberately
 // store-free to avoid a cycle with lib/store, and it isn't re-exported.
 import { resetFollows } from '@/lib/nostr/follows';
@@ -531,6 +532,8 @@ export function NostrAuth() {
     // re-checks storage.npub); leaving its settled promise in the dedupe map
     // would short-circuit a re-sign-in within 25s and skip hydration entirely.
     pendingProfileLoad.clear();
+    // Anything queued belongs to the account going away — see flushSummaries.
+    cancelQueuedSummaries();
     setIdentity(null);
     setFavorites({});
     setFavoriteEpisodes({});
@@ -569,6 +572,8 @@ export function NostrAuth() {
     }
     sparkDisconnect();
     setWalletRestoring(false);
+    // Anything queued belongs to the account going away — see flushSummaries.
+    cancelQueuedSummaries();
     setIdentity(null);
     setFavorites({});
     setFavoriteEpisodes({});

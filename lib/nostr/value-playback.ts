@@ -24,6 +24,17 @@
 import type { EventTemplate } from 'nostr-tools';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish } from './publish';
+import { canSignUnattended } from './signer';
+import { collectEventsDetailed, fetchLatestEventDetailed } from './event-queries';
+import {
+  VALUE_PLAYBACK_SUMMARY_KIND,
+  deriveSummary,
+  parseStoredSummary,
+  receiptFacts,
+  receiptMatchesId,
+  summaryPublishDecision,
+  type ReceiptFacts,
+} from './value-playback-summary';
 
 /** Kind for one interval's receipt. The sibling kinds in the spec — 23369
  *  (ephemeral ticker) and 33369 (addressable summary) — are not emitted yet. */
@@ -180,4 +191,274 @@ export async function publishValuePlaybackReceipt(
   } catch (e) {
     console.warn('[3369] receipt not published', e);
   }
+}
+
+
+// ───────────────────────────────────────────────────────────────────────────
+// Kind 33369 — Value Playback Summary
+//
+// The addressable aggregate over the receipts above, so a consumer answers
+// "what has this person paid this feed" with one fetch instead of pulling and
+// summing hundreds of events.
+//
+// The arithmetic and the publish predicate live in ./value-playback-summary.ts,
+// which is import-free so `npm run check:vpsummary` pins the real thing. What
+// lives HERE is the IO: which relays, which filters, and the order the two
+// reads happen in.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** How long the receipt scan may run. Longer than a single-event read: this
+ *  has to see the WHOLE set, and there is no early exit to shorten it. */
+const SUMMARY_RECEIPT_SCAN_MS = 8_000;
+
+/** How long the whole read-decide-publish cycle may take before we give up. */
+const SUMMARY_PUBLISH_TIMEOUT_MS = 25_000;
+
+/**
+ * Wait this long after a listen ends before deriving summaries for it.
+ *
+ * The last settles' receipts are published fire-and-forget, so deriving the
+ * moment the item is released reads the relays before those receipts arrive.
+ * The delay is not a correctness requirement — a receipt that has not landed is
+ * simply not counted yet, and the monotonic rule means the next listen's
+ * derivation picks it up and the total only ever climbs. It is here so the
+ * common case is right the first time rather than one listen behind.
+ */
+const SUMMARY_FLUSH_DELAY_MS = 30_000;
+
+export interface SummaryUpdateArgs {
+  /** The NIP-73 id this summary addresses, e.g. `podcast:guid:<feedGuid>`. */
+  id: string;
+  /** Identifier kind for the `k` tag, matching `id`'s prefix. */
+  idKind: string;
+  /** The author. Both the read filter and the signature are scoped to it. */
+  pubkey: string;
+  /** Publish set. Also the read set — see the note in updateValuePlaybackSummary. */
+  relays: string[];
+  /** Human label for `alt`, e.g. the show or album title. */
+  label?: string;
+}
+
+/**
+ * The unsigned kind:33369 template.
+ *
+ * `alt` says "by me" deliberately. A summary speaks for ONE person's payments,
+ * and a bare "1420 sats streamed to this show" reads as a global figure — wrong
+ * by however many other listeners there are, in the one field a human actually
+ * sees.
+ */
+export function buildValuePlaybackSummary(
+  args: SummaryUpdateArgs,
+  derived: { amount: number; count: number; first: number; last: number },
+): EventTemplate {
+  const tags: string[][] = [
+    ['d', args.id],
+    ['i', args.id],
+    ['k', args.idKind],
+    ['amount', String(derived.amount)],
+    ['count', String(derived.count)],
+  ];
+  if (derived.first > 0) tags.push(['first', String(derived.first)]);
+  if (derived.last > 0) tags.push(['last', String(derived.last)]);
+  const sats = Math.round(derived.amount / 1000);
+  const what = args.label ? ` to ${args.label}` : '';
+  tags.push(['alt', `${sats} sats streamed${what} by me in total (value playback summary)`]);
+  return {
+    kind: VALUE_PLAYBACK_SUMMARY_KIND,
+    created_at: Math.floor(Date.now() / 1000),
+    tags,
+    content: '',
+  };
+}
+
+/**
+ * Derive one summary from the author's own receipts and publish it if the rules
+ * allow. Resolves either way and NEVER throws.
+ *
+ * Order matters and is the whole function:
+ *
+ *  1. **Scan the receipts.** `#i` narrows it at the relay, and every event is
+ *     re-checked with `receiptMatchesId` because a filter is how you ask, not
+ *     proof of what you got — an over-answering relay produces a total that is
+ *     quietly too big rather than an obviously wrong event.
+ *  2. **Refuse an incomplete scan.** `complete` is deliberately stricter than
+ *     the `trustworthy` a single-event read uses; see `DetailedCollect`. A sum
+ *     over a partial set is an understatement, and publishing one would pin the
+ *     address low until some later read happens to see more.
+ *  3. **Read what is already stored**, and refuse if THAT read is degraded too.
+ *     Without the stored value there is nothing to enforce monotonicity
+ *     against, so publishing would be a blind write over a number that may be
+ *     larger. `dTag` is pinned at intake so a different `d` sharing the
+ *     subscription cannot pose as this address's value.
+ *  4. **Ask the predicate**, and publish only if it says so.
+ *
+ * The read set is the publish set. That is the spec's relay rule and it is a
+ * correctness requirement rather than a convenience: receipts have to be
+ * readable by anything deriving a summary, or two apps derive from different
+ * subsets and the monotonic rule silences whichever one has the narrower view.
+ */
+export async function updateValuePlaybackSummary(args: SummaryUpdateArgs): Promise<void> {
+  const relays = args.relays.length ? args.relays : DEFAULT_RELAYS;
+  try {
+    const scan = await collectEventsDetailed(
+      relays,
+      { kinds: [VALUE_PLAYBACK_RECEIPT_KIND], authors: [args.pubkey], '#i': [args.id] },
+      SUMMARY_RECEIPT_SCAN_MS,
+      { pubkey: args.pubkey, kinds: [VALUE_PLAYBACK_RECEIPT_KIND] },
+    );
+    if (!scan.complete) {
+      console.warn(
+        `[33369] receipt scan incomplete (${scan.answered}/${scan.reached} relays) — not publishing`,
+        { id: args.id },
+      );
+      return;
+    }
+    const facts: ReceiptFacts[] = [];
+    for (const ev of scan.events) {
+      if (!receiptMatchesId(ev.tags, args.id)) continue;
+      const f = receiptFacts(ev.tags, ev.created_at);
+      if (f) facts.push(f);
+    }
+    const derived = deriveSummary(facts);
+
+    const current = await fetchLatestEventDetailed(
+      relays,
+      { kinds: [VALUE_PLAYBACK_SUMMARY_KIND], authors: [args.pubkey], '#d': [args.id], limit: 1 },
+      undefined,
+      { pubkey: args.pubkey, kinds: [VALUE_PLAYBACK_SUMMARY_KIND], dTag: args.id },
+    );
+    if (!current.trustworthy) {
+      console.warn('[33369] could not read the stored summary — not publishing', { id: args.id });
+      return;
+    }
+    const stored = current.event ? parseStoredSummary(current.event.tags) : null;
+
+    const decision = summaryPublishDecision(derived, stored);
+    if (!decision.publish) {
+      console.log(`[33369] no publish (${decision.reason})`, { id: args.id, derived, stored });
+      return;
+    }
+    const note = await signAndPublish(buildValuePlaybackSummary(args, derived), relays);
+    console.log(
+      `[33369] summary published to ${note.acceptedRelays.length}/${relays.length} relays`,
+      { id: args.id, amount: derived.amount, count: derived.count },
+    );
+  } catch (e) {
+    console.warn('[33369] summary not published', e);
+  }
+}
+
+// ── the debounce ────────────────────────────────────────────────────────────
+//
+// Summaries are derived once per listen, not once per settle. Re-reading every
+// receipt to add one is O(all of them) work for a +1 change, six times an hour
+// on an ordinary show and once per song on a live one.
+
+interface PendingSummaries {
+  ids: Map<string, { idKind: string; label?: string }>;
+  pubkey: string;
+  relays: string[];
+}
+
+let pending: PendingSummaries | null = null;
+let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Queue one or more ids for a summary update, coalescing repeats.
+ *
+ * Flushes SERIALLY. A twelve-track album listen can touch several album feeds,
+ * and each id is two relay reads plus a possible write — firing them at once is
+ * a burst against a kind whose own spec names rate limits as the binding
+ * constraint, from the one client that knows better.
+ *
+ * The timer is restarted on every call, so a listener skipping between items
+ * gets one flush after they settle rather than one per skip.
+ */
+export function queueSummaryUpdate(args: {
+  ids: { id: string; idKind: string; label?: string }[];
+  pubkey: string;
+  relays: string[];
+}) {
+  if (!args.ids.length || !args.pubkey) return;
+  if (!pending) pending = { ids: new Map(), pubkey: args.pubkey, relays: args.relays };
+  // A signed-in-as-someone-else flush would derive one account's totals and
+  // sign them with another's key. Drop what was queued for the old identity.
+  if (pending.pubkey !== args.pubkey) {
+    pending = { ids: new Map(), pubkey: args.pubkey, relays: args.relays };
+  }
+  pending.relays = args.relays;
+  for (const entry of args.ids) {
+    if (entry.id) pending.ids.set(entry.id, { idKind: entry.idKind, label: entry.label });
+  }
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = setTimeout(flushSummaries, SUMMARY_FLUSH_DELAY_MS);
+}
+
+async function flushSummaries() {
+  flushTimer = null;
+  const batch = pending;
+  pending = null;
+  if (!batch) return;
+
+  // **Re-check the signer, do not trust the one that queued this.** Up to
+  // SUMMARY_FLUSH_DELAY_MS separates the queue from the flush, and a sign-out
+  // or an account switch inside that window would otherwise derive one
+  // account's totals from its receipts and sign them with somebody else's key
+  // — a permanent, addressable, monotonic claim on the wrong pubkey, which no
+  // later publish can lower.
+  //
+  // `cancelQueuedSummaries` on the sign-out paths handles the ordinary case.
+  // This is the backstop, here rather than at those call sites because a third
+  // exit added later inherits it instead of having to remember it.
+  //
+  // Order matters: `canSignUnattended` is what rules out Amber and a bunker, so
+  // it must run BEFORE `getPublicKey` — on Amber that call is an intent
+  // dispatch and an approval sheet, which is the thing this whole feature
+  // refuses to do on a timer.
+  if (!canSignUnattended()) return;
+  let signer: string;
+  try {
+    signer = await window.nostr!.getPublicKey();
+  } catch {
+    return;
+  }
+  if (signer !== batch.pubkey) return;
+
+  for (const [id, meta] of batch.ids) {
+    await withTimeout(
+      updateValuePlaybackSummary({
+        id,
+        idKind: meta.idKind,
+        label: meta.label,
+        pubkey: batch.pubkey,
+        relays: batch.relays,
+      }),
+      SUMMARY_PUBLISH_TIMEOUT_MS,
+    );
+  }
+}
+
+/**
+ * Cap one id's cycle so a hung signer or relay cannot stall the rest of the
+ * batch. A signer that goes away does not reject, it hangs — the same reason
+ * `withDecryptTimeout` exists — and here that would strand every id queued
+ * behind it, silently.
+ */
+async function withTimeout(p: Promise<void>, ms: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      p,
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, ms); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Drop anything queued without flushing it. For sign-out. */
+export function cancelQueuedSummaries() {
+  if (flushTimer) clearTimeout(flushTimer);
+  flushTimer = null;
+  pending = null;
 }
