@@ -14,7 +14,8 @@
     "verify": "npm run verify:ingest && npm run verify:api && npm run verify:indexer",
     "verify:ingest": "node --experimental-strip-types verify/check-ingest.mjs",
     "verify:api": "node --experimental-strip-types verify/check-api.mjs",
-    "verify:indexer": "node --experimental-strip-types verify/check-indexer.mjs"
+    "verify:indexer": "node --experimental-strip-types verify/check-indexer.mjs",
+    "measure:size": "node --experimental-strip-types verify/measure-size.mjs"
   },
   "dependencies": {
     "fastify": "^5.2.0",

@@ -98,3 +98,43 @@ of its shapes is load-bearing:
 Filling an absent key with `null` is the negative-cache poisoning bug the app's
 `COULD_NOT_ASK` set exists to prevent, arriving from the server side. It is
 pinned by `check-api.mjs`.
+
+## How big does this get
+
+Measured, not estimated. `verify/measure-size.mjs` loads a corpus through the
+real ingest path and asks Postgres what it holds:
+
+```bash
+DATABASE_URL=postgres://... npm run measure:size
+```
+
+At today's corpus — roughly 22,400 boost notes, from `ReedBTC/onlyboosts`'
+published measurement of the same network-wide stream:
+
+| Table | Rows | Total |
+|---|---|---|
+| `event_tags` | 240,600 | 107 MB |
+| `events` | 34,100 | 59 MB |
+| `pi_episodes` | 6,700 | 6 MB |
+| `pi_podcasts` | 1,300 | 3 MB |
+| `pi_queue` | transient | 3 MB |
+| `profiles` | 2,000 | 2 MB |
+| **Database** | | **~188 MB** |
+
+Per event, all-in: a boost note costs about **5.6 KB** (9 indexable tags at
+~445 bytes per `event_tags` row, plus ~1.6 KB of event), a zap receipt about
+2.3 KB, a repost about 1.4 KB.
+
+**`event_tags` is 57% of the total and most of that is its index**, because an
+event id is a 64-character `TEXT` that appears in the events primary key, the
+`event_tags` primary key and the lookup index. Storing ids as `bytea` would
+roughly halve it. Not worth doing at this size; it is the lever if it ever is.
+
+Growth is about **1,000 boost notes a month** (21,956 over ~21.5 months in the
+measurement above), so with replies and zaps in proportion, **under 10 MB a
+month**. Ten times today's corpus is under 2 GB — everything here is
+row-proportional, so it scales linearly.
+
+`pi_queue` drains once `PODCAST_INDEX_KEY` is set; it only accumulates while
+the warm-fill is disabled.
+
