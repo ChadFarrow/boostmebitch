@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch, readCappedJson } from '@/lib/safe-fetch';
+import { safeFetch, readCappedText } from '@/lib/safe-fetch';
+import { parseChaptersJson } from '@/lib/chapters-json';
 
 // Server-side proxy for Podcasting 2.0 chapters JSON. Many chapter hosts
 // (e.g. feeds.fountain.fm) serve the file without an Access-Control-Allow-Origin
@@ -26,7 +27,16 @@ export async function GET(req: Request) {
     }
     // Capped: the URL is feed-supplied, and the 8 s timeout above bounds how
     // long this runs, not how many bytes it returns.
-    const data = await readCappedJson(res);
+    //
+    // Read TEXT and parse here rather than `readCappedJson`, because a strict
+    // parse is not the last word on a chapters file. A real feed (V4V Music
+    // Spotlight 005) serves 25 valid chapters with an orphan `0` before every
+    // `"title"` key, which `JSON.parse` rejects outright — so this route
+    // answered 500 and the app rendered "no chapters", which reads exactly like
+    // an episode that published none. `parseChaptersJson` tries strict first
+    // and only then a narrow, string-aware repair; a well-formed document never
+    // reaches it. See `lib/chapters-json.ts`.
+    const data = parseChaptersJson(await readCappedText(res));
     return NextResponse.json(data, {
       headers: { 'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400' },
     });
