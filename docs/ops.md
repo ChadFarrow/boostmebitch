@@ -108,13 +108,52 @@ from the internet.
 **2. Railway service.** Root directory `services/nostr-index`, start command
 `npm start`. Nothing else; there is no build step.
 
+> **The root directory is not optional, and getting it wrong is silent.**
+> `railway up` archives from the **git repository root**, not the working
+> directory — so running it from inside `services/nostr-index` still uploads the
+> whole repo. Railpack then finds the repo's own `package.json` first and runs
+> `next start`: the Next.js app boots, binds the port, passes the health check,
+> and the deployment reports **SUCCESS** while serving the wrong application on
+> the index's URL. Nothing anywhere says so. It happened on the first deploy of
+> this service and was caught only by reading the runtime log and noticing the
+> package name.
+>
+> Set `rootDirectory` on the service instance before the first deploy, and
+> confirm the deploy log names `boostmebitch-nostr-index`, never
+> `boostmebitch`. **A green deployment is not evidence the right thing is
+> running** — the package name in the log is.
+
 **3. Set the service variables.** `DATABASE_URL` (the private string),
 `INDEX_API_KEY` (a long random secret), and `PODCAST_INDEX_KEY` /
 `PODCAST_INDEX_SECRET` — the same pair Vercel already holds, so the warm-fill
 worker can populate the shared metadata cache.
 
 *Check:* the boot log prints `[migrate] applied 001_init.sql`, then
-`[index] api listening`. `GET /health` answers `{"ok":true}` without a key.
+`[index] api listening`. `GET /health` answers `{"ok":true}` without a key, and
+every other route answers **401** without one.
+
+**3b. Trim the relay set to what actually answers.** `INDEX_RELAYS` and
+`INDEX_PROFILE_RELAYS` default to eight relays, and on 2026-08-25 three of them
+served nothing when asked with the indexer's own two filters — not with a
+generic `kinds:[1]` query, which is misleading for a specialist relay and will
+tell you `purplepag.es` is broken when it is doing its job.
+
+| Relay | podcast-notes | boostagrams | Verdict |
+|---|---|---|---|
+| `relay.damus.io` | 50 | 50 | keep |
+| `relay.fountain.fm` | 50 | 50 | keep — it carries this corpus |
+| `nos.lol` | 50 | 50 | keep |
+| `relay.primal.net` | 50 | 9 | keep |
+| `relay.nostr.band` | 0 | 0 | connects, serves nothing |
+| `purplepag.es` | — | kind:0 = 20 | keep (profiles) |
+| `nostr.bitcoiner.social` | — | kind:0 = 0 | serves nothing |
+| `eden.nostr.land` | — | kind:0 = 0 | times out; the source of every `NOTICE ... closed: timeout` |
+
+The deployed set is therefore four core relays and one profile relay. This is
+two environment variables and a redeploy, never a code change — re-measure
+before trusting the table, because a relay that is dead today may not be
+tomorrow, and the cost of keeping a dead one is a socket and some log noise,
+not correctness.
 
 **4. Watch the backfill.** It walks history backwards and logs a cursor per page.
 It records progress in `indexer_state`, so a restart resumes rather than
