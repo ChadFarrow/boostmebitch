@@ -977,3 +977,147 @@ export function stripHtml(s: string): string {
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
+
+// ---------------------------------------------------------------------------
+// Artwork proxy (/api/art)
+//
+// Podcast covers are third-party media sized for a poster, not for a tile.
+// Measured across 53 live feeds on 2026-08-25: 27.68 MB total, 535 KB average,
+// 230 KB median, and a largest of 8,090 KB — one cover, for a square the app
+// draws at 64 pixels. Extrapolated to a 213-show favorites list that is over
+// 100 MB of artwork from nineteen different hosts.
+//
+// Both helpers live here rather than beside the route because lib/util.ts is
+// import-free (its one import is type-only and erases), so `npm run check:art`
+// can load the SHIPPING functions under plain Node instead of a copy that
+// drifts. `<PodcastCover>` and app/api/art/route.ts are the two callers, and
+// they must agree about the allowlist — which is the point of exporting it.
+// ---------------------------------------------------------------------------
+
+/**
+ * The only widths /api/art will serve.
+ *
+ * A fixed set, never an arbitrary integer. Each `(url, width)` pair is a CDN
+ * cache key whose miss costs a full decode-and-resize of up to 12 MB, so an
+ * open width parameter turns one cover into an unbounded family of cold misses
+ * — an amplification lever aimed at our own compute, and one that looks like
+ * ordinary traffic the whole time it is being pulled.
+ */
+export const ART_WIDTHS = [160, 320, 640, 1024] as const;
+
+export type ArtWidth = (typeof ART_WIDTHS)[number];
+
+/** What a caller gets when it does not ask: right for a list row at 2x. */
+export const DEFAULT_ART_WIDTH: ArtWidth = 320;
+
+/**
+ * Validate a `w` query parameter against the allowlist.
+ *
+ * Returns the width, `DEFAULT_ART_WIDTH` when absent, or `null` for anything
+ * else — and the route turns that `null` into a 400.
+ *
+ * **The digits-only test is deliberate and neither `Number()` nor `parseInt`
+ * can replace it.** `Number('0x140')` is 320 and `Number('3e2')` is 300, so a
+ * `Number()` guard accepts two spellings of an allowed width and hands the CDN
+ * a third cache key for bytes it already holds. `parseInt('320abc')` is 320,
+ * which accepts unbounded junk that all collapses to the same image. Both are
+ * silent: the picture renders, so nothing looks wrong.
+ */
+export function artWidth(raw: string | null | undefined): ArtWidth | null {
+  if (raw === null || raw === undefined || raw === '') return DEFAULT_ART_WIDTH;
+  if (!/^[0-9]+$/.test(raw)) return null;
+  const n = Number(raw);
+  return (ART_WIDTHS as readonly number[]).includes(n) ? (n as ArtWidth) : null;
+}
+
+/** Only an absolute http(s) URL can be fetched server-side; safeFetch refuses
+ *  the rest, and a `data:` URL is already inline so proxying it would upload
+ *  the bytes to ourselves to be handed straight back. */
+function isProxyable(url: string): boolean {
+  return /^https?:\/\//i.test(url);
+}
+
+/** The proxied form of one artwork URL. `encodeURIComponent`, never string
+ *  concatenation — a real cover URL routinely carries its own query string
+ *  (`megaphone.imgix.net/...?ixlib=rails-4.3.1&w=3000`) and appending `&w=` to
+ *  that changes the *upstream* request instead of ours. */
+export function artProxyUrl(url: string, width: ArtWidth): string {
+  return `/api/art?url=${encodeURIComponent(url)}&w=${width}`;
+}
+
+/**
+ * The ordered list `<PodcastCover>` walks with its `onError` ladder.
+ *
+ * **The raw URLs at the tail are what make this feature unable to make things
+ * worse.** Proxied first, so covers actually shrink; originals still behind
+ * them, so a proxy that is down, undeployed, out of memory, or handed a format
+ * sharp cannot decode falls back to exactly the behaviour the app had before
+ * this existed. Drop the tail and one broken route blanks every cover on all
+ * twelve surfaces that render this component, several seconds after they
+ * appeared, looking like a CDN fault. Put the raw URLs first and the feature is
+ * installed but inert.
+ */
+export function artCandidates(
+  image: string | null | undefined,
+  artwork: string | null | undefined,
+  width: ArtWidth,
+): string[] {
+  const raw: string[] = [];
+  if (image) raw.push(image);
+  if (artwork && artwork !== image) raw.push(artwork);
+  return [...raw.filter(isProxyable).map((u) => artProxyUrl(u, width)), ...raw];
+}
+
+/**
+ * Whether /api/art should hand a response body to the image decoder.
+ *
+ * `'decode'` — a declared image type, or one so vague it declares nothing.
+ * `'refuse'` — a type that is definitely not a raster image.
+ *
+ * **The Content-Type header was never the security boundary and must not be
+ * mistaken for one.** A hostile feed controls that header as easily as it
+ * controls the bytes, so any real defence has to come from the decoder's own
+ * validation, the byte cap and `limitInputPixels` — all three of which the
+ * route applies regardless. What this function is actually for is refusing
+ * things that are *documents*: HTML, XML, JSON, and above all SVG, which can
+ * carry external references and scripts and has no business reaching a
+ * rasteriser when an `<img>` tag will sandbox it perfectly well.
+ *
+ * Measured on 2026-08-25: 2 of 53 live podcast covers declare
+ * `application/octet-stream` or a malformed `image/*`. Both are ordinary
+ * JPEGs. A strict list of real image types refuses them, which does not break
+ * anything — the component falls back to the raw URL — but it silently drops
+ * them out of the optimisation, one of them a 670 KB file. That is the failure
+ * this AMBIGUOUS branch exists to prevent, and it is why the branch must not
+ * be "tidied" back into the strict list.
+ */
+export function artTypeVerdict(contentType: string | null | undefined): 'decode' | 'refuse' {
+  const type = (contentType ?? '').split(';')[0].trim().toLowerCase();
+
+  // Documents. SVG is the one that matters; the rest are here because a feed
+  // serving them to an <img> is broken, not attacking us, and 415 says so.
+  if (
+    type === 'image/svg+xml' ||
+    type === 'image/svg' ||
+    type.startsWith('text/') ||
+    type.startsWith('application/xml') ||
+    type.startsWith('application/json') ||
+    type.startsWith('application/rss') ||
+    type.startsWith('application/atom')
+  ) {
+    return 'refuse';
+  }
+
+  // Real raster types, plus the two shapes that mean "I am not going to tell
+  // you" and are answered by letting the decoder read the magic bytes.
+  if (
+    type.startsWith('image/') ||
+    type === 'application/octet-stream' ||
+    type === 'binary/octet-stream' ||
+    type === ''
+  ) {
+    return 'decode';
+  }
+
+  return 'refuse';
+}
