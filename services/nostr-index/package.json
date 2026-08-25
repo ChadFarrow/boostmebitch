@@ -1,0 +1,31 @@
+{
+  "name": "boostmebitch-nostr-index",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only Nostr + Podcast Index cache for boostmebitch. Rebuildable; relays stay authoritative.",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/index.ts",
+    "migrate": "node --experimental-strip-types src/migrate.ts",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run verify:ingest && npm run verify:api && npm run verify:indexer",
+    "verify:ingest": "node --experimental-strip-types verify/check-ingest.mjs",
+    "verify:api": "node --experimental-strip-types verify/check-api.mjs",
+    "verify:indexer": "node --experimental-strip-types verify/check-indexer.mjs"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0",
+    "nostr-tools": "2.19.4",
+    "pg": "^8.13.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.7",
+    "@types/pg": "^8.11.10",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.3"
+  }
+}
