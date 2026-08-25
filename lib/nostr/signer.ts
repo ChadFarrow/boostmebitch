@@ -18,6 +18,7 @@
 //   activateLocalSigner(skHex)     — install LocalSigner as window.nostr
 //   deactivateLocalSigner()        — restore the original window.nostr
 //   isLocalActive()                — true while LocalSigner is active
+//   canSignUnattended()            — signer won't prompt or hang on a timer
 
 import { AmberSigner } from './amber';
 import { LocalSigner } from './local-signer';
@@ -139,6 +140,37 @@ export function deactivateLocalSigner() {
 
 export function isLocalActive(): boolean {
   return localInstance !== null;
+}
+
+/**
+ * Can this signer be asked for a signature with nobody looking at the screen?
+ *
+ * Streaming sats settle on a timer, and the kind:3369 receipt for a settle is
+ * signed at that moment — six times an hour on a plain show, once per song on a
+ * live one. Two of the four signer types cannot serve that:
+ *
+ *  - **Amber leaves the app.** Every `sign_event` dispatches a `nostrsigner:`
+ *    intent and puts an approval sheet in front of the user; some of them need
+ *    a page reload to come back at all, which is why `RESUMABLE_TYPES` exists.
+ *    An approval sheet every ten minutes during playback is exactly what the
+ *    unattended-payer rules in CLAUDE.md exist to prevent.
+ *  - **A bunker is a network round trip**, so it inherits the hang this file
+ *    already documents for `withDecryptTimeout`: a remote signer that goes away
+ *    does not reject, it simply never settles.
+ *
+ * A local key signs in-process and a NIP-07 extension signs without leaving the
+ * page, so both are fine. Signed out there is no key at all.
+ *
+ * The predicate lives HERE, next to the three `is*Active` accessors it reads,
+ * rather than at the call site — a fifth signer type added later then gets its
+ * answer in one place instead of wherever someone remembers to look. Note it
+ * says nothing about whether a signature is *safe* to ask for, only whether
+ * asking is free: `decryptWithTimeout`'s `purpose` argument is the guard for
+ * the other question and is not replaced by this one.
+ */
+export function canSignUnattended(): boolean {
+  if (typeof window === 'undefined' || !window.nostr) return false;
+  return !isAmberActive() && !isBunkerActive();
 }
 
 // Deliberately NO getActiveLocal() accessor, unlike getActiveAmber /

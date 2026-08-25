@@ -32,7 +32,8 @@
     "check:ambersafe": "node --experimental-strip-types scripts/check-amber-safe-text.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
-    "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs"
+    "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs",
+    "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",

@@ -10,6 +10,7 @@ import {
   type StreamingStatus,
 } from '@/lib/v4v/streaming';
 import { STREAM_AMOUNT_MAX_SATS, STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
+import { canSignUnattended } from '@/lib/nostr/signer';
 
 /**
  * On/off switch.
@@ -248,6 +249,84 @@ function streamRateDescription(v: StreamRateView): string {
  * makes "turning it off didn't lose my number" visible, and it lets a user set
  * a rate before committing to it.
  */
+/**
+ * Opt in to publishing a kind:3369 value-playback receipt for each streaming
+ * settle.
+ *
+ * GLOBAL only — deliberately not offered per show. It is a disclosure decision
+ * about the listener, and a per-show version would present as a choice about
+ * one podcast while the thing being decided is whether this device publishes a
+ * listening log at all.
+ *
+ * The copy names the DISCLOSURE, not the mechanism. "Share streaming payments
+ * to Nostr" is true and understates it by a wide margin: what goes out is a
+ * public, timestamped record of what was played, when, and for how much, one
+ * event per settle, permanently.
+ *
+ * Two states withhold silently, and both are spelled out on screen rather than
+ * left to be discovered. A signer that cannot be asked unattended (Amber,
+ * bunker) publishes nothing at all, and "Anonymous" in the boost share picker
+ * publishes nothing either — the event is signed, so the signature is the
+ * pubkey and there is no quieter version to send. A switch that reads ON while
+ * nothing is ever published is the failure this repo keeps re-learning: a
+ * silent correct decision is indistinguishable from a broken one.
+ */
+function StreamReceipts() {
+  const [on, setOn] = useState(() => storage.streamReceipts.get());
+  const [landed, setLanded] = useState(true);
+  // Read after mount: both depend on browser state the server render has no
+  // view of, so deriving them during render is a hydration mismatch.
+  const [canSign, setCanSign] = useState(true);
+  const [anonymous, setAnonymous] = useState(false);
+  useEffect(() => {
+    setCanSign(canSignUnattended());
+    setAnonymous(storage.shareNostr.get() && storage.shareNostrAs.get() === 'site');
+  }, []);
+
+  function change(v: boolean) {
+    setOn(v);
+    // A control with no local state renders whatever reads back, so a write
+    // that never reached disk would freeze the switch with no error anywhere.
+    setLanded(storage.streamReceipts.set(v));
+  }
+
+  return (
+    <div className="mt-4 pt-3 border-t border-line">
+      <div className="flex flex-wrap items-center gap-3">
+        <StreamSwitch on={on} onChange={change} />
+        <span className="text-[11px] uppercase tracking-widest text-muted">
+          Publish receipts to Nostr
+        </span>
+      </div>
+      <p className="text-[11px] text-muted mt-2">
+        Publishes one event for each streaming payment, naming the show or track,
+        the amount and the time. No client shows these in a feed, but they are
+        public and permanent: together they are a timestamped record of what you
+        listened to.
+      </p>
+      {on && anonymous && (
+        <p className="text-[11px] text-nostr mt-2">
+          Nothing is published while boosts are set to Anonymous. The receipt is
+          signed by your key, so there is no anonymous version of it to send.
+        </p>
+      )}
+      {on && !anonymous && !canSign && (
+        <p className="text-[11px] text-nostr mt-2">
+          Nothing is published with your current sign-in. Amber and remote
+          signers ask for approval on every signature, which a payment on a timer
+          cannot do. A browser extension or a key stored here can.
+        </p>
+      )}
+      {!landed && (
+        <p className="text-[11px] text-bolt/80 mt-2">
+          Storage is restricted or full — this setting works now but won&apos;t
+          survive a reload.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function StreamRate({
   podcast,
   onDone,
@@ -374,6 +453,7 @@ export function StreamRate({
           </>
         )}
       </p>
+      {!showKey && <StreamReceipts />}
       {onDone && (
         <button onClick={onDone} className="text-[11px] text-muted hover:text-bone mt-2">
           Done

@@ -46,6 +46,7 @@ const KEYS = {
   senderNamePrefix: 'bmb:sender_name', // + ':<npub>' — the boost modal's "From". Per-npub because it's an identity-linked display name, not a device setting.
   shareNostr: 'bmb:share_nostr',
   shareNostrAs: 'bmb:share_nostr_as', // 'site' when a signed-in user prefers boost notes signed by the site key; absent = own key
+  streamReceipts: 'bmb:stream_receipts', // '1' when the listener opted into publishing kind:3369 value-playback receipts for streaming settles. Absent = OFF, unlike shareNostr — see the accessor.
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
@@ -869,6 +870,26 @@ export const storage = {
   shareNostrAs: {
     get: (): ShareNostrAs => (safeGet(KEYS.shareNostrAs) === 'site' ? 'site' : 'self'),
     set: (v: ShareNostrAs) => safeSet(KEYS.shareNostrAs, v),
+  },
+
+  /**
+   * Whether a streaming settle publishes a kind:3369 value-playback receipt.
+   *
+   * **Unset = OFF, which is the opposite of `shareNostr` above, and the
+   * asymmetry is the point.** That one governs one note per button press,
+   * describing a payment the user just chose to make. This one governs a
+   * continuous, public, timestamped record of what was played and when — a
+   * disclosure nobody consented to by ticking "post my boosts". Defaulting it
+   * on, or folding it into `shareNostr`, would borrow that consent for
+   * something materially larger.
+   *
+   * `set` returns whether the write reached disk. A settings control here has no
+   * local state and renders whatever reads back, so a dropped write freezes the
+   * switch with no error anywhere — see the safeSet notes in CLAUDE.md.
+   */
+  streamReceipts: {
+    get: (): boolean => safeGet(KEYS.streamReceipts) === '1',
+    set: (v: boolean): boolean => safeSet(KEYS.streamReceipts, v ? '1' : '0'),
   },
 
   /**

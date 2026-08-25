@@ -178,3 +178,78 @@ All in `components/streaming-settings.tsx`; each subscribes to `subscribeStreami
 - Gated on the same `hasValueRecipients` check as BOOST: a show with no value block can't be streamed, so the button doesn't render.
 
 
+
+### Value playback receipts (kind:3369)
+
+**Off by default.** Streaming's standing rule is that it publishes nothing to
+Nostr, and the reason was always specific rather than general: the only vehicle
+available was a kind:1, and a note per settle would bury the user's own feed
+under machine output. A [kind:3369](value-playback.md) is queryable by any
+client and rendered by none, so it cannot reach a feed at all. The rule keeps
+its full force for kind:1 and this sits beside it. Do not turn the receipt into
+a note.
+
+`maybePublishReceipt` (`lib/v4v/streaming.ts`) is the whole emitter and it is
+mostly refusals. Each one is a way to ship this broken:
+
+- **Inside `runSettle`'s success branch, behind the same `paidAny(results)` gate
+  the local streamed log sits behind.** A receipt is a permanent public
+  assertion that money moved, and a NIP-47 reply timeout is the case where
+  nobody knows whether it did. Invariant 11 forbids rendering that as a failure;
+  it forbids rendering it as a success at least as hard, because a `?` in a
+  modal can be corrected by looking at the wallet and a signed event on relays
+  cannot be corrected at all.
+- **`amount` is summed over legs that actually paid** (`r.ok && r.sats > 0`),
+  never the bucket's `sats`. A boost note carries *intent* on purpose — invariant
+  7, so "boosted 100 sats" survives one failed leg — and a receipt carries what
+  settled. Note that `sessionSentSats += sats` on the line above over-counts a
+  partly-failed batch in exactly this way. That is pre-existing, it only affects
+  a session meter rather than a published record, and it was left alone rather
+  than folded into an unrelated change.
+- **Anonymous publishes nothing at all.** `streamingIsAnonymous()` is the same
+  signal `senderFields()` reads, and a listener who set it has been told their
+  pubkey does not ride along with their payments. A receipt with no `name` tag
+  would honour the letter and break the promise, because the event is **signed**
+  and the signature is the pubkey. There is no quieter version to send, so the
+  answer is no event.
+- **Nothing publishes under a signer that would prompt or hang**
+  (`canSignUnattended`, `lib/nostr/signer.ts`). Amber dispatches a
+  `nostrsigner:` intent for every signature and puts an approval sheet in front
+  of the user — six times an hour during playback, and some of those need a page
+  reload to return at all. A bunker is a network round trip, so it inherits the
+  hang `withDecryptTimeout` exists for. A local key and a NIP-07 extension both
+  sign without leaving the page.
+- **Never awaited by the settle `chain`.** That chain serializes *payments*;
+  parking a relay round trip in it delays the next settle.
+  `publishValuePlaybackReceipt` resolves either way, so the bare `void` cannot
+  strand a rejection, and it is time-capped internally for the same reason
+  decrypts are.
+- **A failed publish must never reach `noteFailure`.** Two failed settles stop
+  the engine for an item. A relay outage is not a failed settle, and conflating
+  them would let a relay problem stop somebody's payments.
+
+**`paymentIds(c, bucket)` is the single source of the identifiers, shared with
+`buildBoostagram`.** Both wire formats carry the same feed guid and item guid —
+the boostagram as `remote_feed_guid`/`remote_item_guid`, the receipt as NIP-73
+`i` tags — and the entire use of a receipt is that a consumer can filter `#i`
+and find the payment it describes. Two independent derivations is how a track's
+receipt comes to name the playlist while the boostagram names the song, with
+nothing on either side saying so. Note it deliberately uses the `remote_*` pair
+rather than the boostagram's primary `podcast`/`episode` fields: those name the
+playlist the listener chose, and the receipt is about who got paid.
+
+`StreamContext.sessionId` groups consecutive settles of one listen. It is
+stamped in `openContext` rather than at the call site, because `next` is rebuilt
+on every 1 Hz tick and only the literal that reaches `openContext` becomes the
+context. It is deliberately **not** persisted with the ledger: a session is one
+uninterrupted listen, and carrying it across a reload would tell a consumer two
+runs were contiguous when an arbitrary gap sits between them.
+
+The `start`/`end` window is `[l.lastSettleMs, now]`, captured in `maybeSettle`
+before `settleBatch` stamps the new `lastSettleMs` — read inside `runSettle`
+instead and the ledger has already moved on, yielding a zero-length interval.
+
+**`<StreamReceipts>` says when it is withholding.** The switch reads ON while
+Anonymous is set, or under Amber, and publishes nothing in either case; both
+states are spelled out on screen. A silent correct decision is indistinguishable
+from a broken one.
