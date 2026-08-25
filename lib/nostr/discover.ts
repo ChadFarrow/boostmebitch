@@ -601,22 +601,10 @@ async function assembleNotes(
 ): Promise<DiscoveredNote[]> {
   if (!events.length) return [];
 
-  // Dedupe by id (relays often return overlapping copies).
-  const byId = new Map<string, Event>();
-  for (const e of events) byId.set(e.id, e);
-  const uniqueEvents = Array.from(byId.values());
-
-  // Split into top-level (no e-tag) and reply candidates. publishReply()
-  // inherits the parent's NIP-73 i/k tags, so replies authored by this app
-  // arrive on the same `#i: podcast:guid:` query as their parent boost — we
-  // pull them out of the top-level list here so they only render nested.
-  const topLevelEvents: Event[] = [];
-  const seedReplies: Event[] = [];
-  for (const e of uniqueEvents) {
-    if (getParentEventId(e) === null) topLevelEvents.push(e);
-    else seedReplies.push(e);
-  }
-  topLevelEvents.sort((a, b) => b.created_at - a.created_at);
+  // Dedupe by id (relays often return overlapping copies) and split top-level
+  // notes from replies. Shared with assembleFromBundle so the two paths cannot
+  // disagree about what counts as a top-level note.
+  const { topLevel: topLevelEvents, replies: seedReplies } = splitTopLevel(events);
 
   const childrenByParent = await fetchReplyTree(
     pool,
@@ -644,6 +632,26 @@ async function assembleNotes(
     fetchQuotedEvents(pool, relays, allTreeEvents),
   ]);
 
+  return buildTree(topLevelEvents, childrenByParent, profiles, quoted, relays);
+}
+
+/**
+ * Turn a resolved set of events into the nested `DiscoveredNote[]` a feed
+ * surface renders.
+ *
+ * Extracted so `assembleNotes` (which resolves its inputs from relays, in four
+ * serial stages) and `assembleFromBundle` (which gets the same inputs from the
+ * read index in one request) cannot disagree about how a thread is shaped. Two
+ * copies of this is how the same boost comes to render differently depending on
+ * where its replies happened to come from.
+ */
+function buildTree(
+  topLevelEvents: Event[],
+  childrenByParent: Map<string, Event[]>,
+  profiles: Map<string, ProfileMetadata>,
+  quoted: Map<string, Event>,
+  relays: string[],
+): DiscoveredNote[] {
   function build(e: Event): DiscoveredNote {
     const children = childrenByParent.get(e.id) ?? [];
     const replies = [...children]
@@ -651,8 +659,91 @@ async function assembleNotes(
       .map(build);
     return buildNote(e, relays, profiles.get(e.pubkey) ?? null, quoted, replies);
   }
-
   return topLevelEvents.map(build);
+}
+
+/** Split events into top-level notes and replies, exactly as `assembleNotes`
+ *  does. `publishReply` inherits the parent's NIP-73 i/k tags, so a reply
+ *  authored by this app arrives on the same tag query as its parent boost and
+ *  must be pulled out of the top-level list or it renders twice. */
+function splitTopLevel(events: Event[]): { topLevel: Event[]; replies: Event[] } {
+  const byId = new Map<string, Event>();
+  for (const e of events) byId.set(e.id, e);
+  const topLevel: Event[] = [];
+  const replies: Event[] = [];
+  for (const e of byId.values()) {
+    if (getParentEventId(e) === null) topLevel.push(e);
+    else replies.push(e);
+  }
+  topLevel.sort((a, b) => b.created_at - a.created_at);
+  return { topLevel, replies };
+}
+
+/**
+ * Build the same `DiscoveredNote[]` from a read-index bundle — no relay queries
+ * at all.
+ *
+ * This is the seam the whole index exists for. `assembleNotes` costs four
+ * serial relay stages: the notes, then one query PER REPLY DEPTH, then profiles
+ * in three passes (kind:0, then a NIP-65 outbox lookup for whoever is missing,
+ * then kind:0 again against those relays). Every one of those has its own
+ * multi-second ceiling and nothing paints until the last one resolves. The
+ * bundle carries all of it in one response.
+ *
+ * Reply nesting is recomputed here from NIP-10 rather than taken from the
+ * server's shape: the index finds a reply by walking `e` tags in either
+ * direction, so a note carrying both a `root` and a `reply` marker is reachable
+ * from two parents. `getParentEventId` is the one place that decides which is
+ * the real one, and it stays the one place.
+ */
+export function assembleFromBundle(
+  bundle: { notes: Event[]; replies: Event[]; quoted: Event[]; profiles: Event[] },
+  relays: string[],
+): DiscoveredNote[] {
+  if (!bundle.notes.length) return [];
+  const { topLevel, replies: seedReplies } = splitTopLevel(bundle.notes);
+
+  const known = new Set(topLevel.map((e) => e.id));
+  const allReplies = new Map<string, Event>();
+  for (const e of [...seedReplies, ...bundle.replies]) allReplies.set(e.id, e);
+
+  // Place replies against their parents, repeating until nothing new attaches.
+  // A reply can only be placed once its own parent is, and the bundle is not
+  // ordered by depth, so one pass would silently drop everything below depth 1.
+  const childrenByParent = new Map<string, Event[]>();
+  let placedSomething = true;
+  while (placedSomething) {
+    placedSomething = false;
+    for (const [id, e] of allReplies) {
+      const parent = getParentEventId(e);
+      if (!parent || !known.has(parent)) continue;
+      const list = childrenByParent.get(parent) ?? [];
+      list.push(e);
+      childrenByParent.set(parent, list);
+      known.add(id);
+      allReplies.delete(id);
+      placedSomething = true;
+    }
+  }
+  // Anything left in `allReplies` replies to a note outside this bundle. It is
+  // deliberately dropped rather than promoted to top level: rendering a reply
+  // as if it were a standalone boost is worse than not showing it.
+
+  const profiles = new Map<string, ProfileMetadata>();
+  for (const p of bundle.profiles) {
+    const meta = parseProfileContent(p.content);
+    if (meta) {
+      profiles.set(p.pubkey, meta);
+      // Feed the app's own per-pubkey cache, so the relay pass that runs after
+      // this one — and every other surface in the tab — skips the lookup.
+      storage.profile.set(p.pubkey, meta);
+    }
+  }
+
+  const quoted = new Map<string, Event>();
+  for (const q of bundle.quoted) quoted.set(q.id, q);
+
+  return buildTree(topLevel, childrenByParent, profiles, quoted, relays);
 }
 
 /**

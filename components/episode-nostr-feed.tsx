@@ -4,6 +4,7 @@ import {
   fetchEpisodeNotes,
   noteHasSubstance,
   useNostrFeed,
+  indexedEpisodeNotes,
   useViewerReposts,
   type DiscoveredNote,
 } from '@/lib/nostr';
@@ -25,6 +26,7 @@ export function EpisodeNostrFeed({
   const { notes, loading, err, refresh } = useNostrFeed({
     cacheKey: `episode:${episodeGuid}`,
     fetcher: (opts) => fetchEpisodeNotes(episodeGuid, opts),
+    indexFetcher: () => indexedEpisodeNotes(episodeGuid),
     deps: [episodeGuid],
   });
   const identity = useApp((s) => s.identity);
