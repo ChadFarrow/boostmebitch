@@ -81,3 +81,67 @@ puts Vercel's CDN in front, which matters more than it looks: the global feed is
 byte-identical for every visitor, so `s-maxage` means the edge serves it rather
 than the Railway box.
 
+
+### Deploy checklist
+
+The order matters, and each step has a check that proves it worked before the
+next one depends on it. The variable tables above and in
+[`services/nostr-index/README.md`](../services/nostr-index/README.md) say what
+each value *is*; this says when to set it.
+
+**0. Measure first, before anything is provisioned.**
+
+```bash
+npm run probe:index
+```
+
+Keep the output. It times the relay path stage by stage and counts the corpus.
+Without it the whole change is a performance claim with no before number, and
+this repo has no test runner to fall back on. It also sizes the database: the
+corpus is the network-wide podcast boost stream, which is small — a published
+measurement of the same stream puts it near 22,000 notes across ~1,300 shows.
+
+**1. Railway Postgres.** Add the managed plugin. Copy the **private** connection
+string, not the public proxy one — the database has no reason to be reachable
+from the internet.
+
+**2. Railway service.** Root directory `services/nostr-index`, start command
+`npm start`. Nothing else; there is no build step.
+
+**3. Set the service variables.** `DATABASE_URL` (the private string),
+`INDEX_API_KEY` (a long random secret), and `PODCAST_INDEX_KEY` /
+`PODCAST_INDEX_SECRET` — the same pair Vercel already holds, so the warm-fill
+worker can populate the shared metadata cache.
+
+*Check:* the boot log prints `[migrate] applied 001_init.sql`, then
+`[index] api listening`. `GET /health` answers `{"ok":true}` without a key.
+
+**4. Watch the backfill.** It walks history backwards and logs a cursor per page.
+It records progress in `indexer_state`, so a restart resumes rather than
+re-walking from the top.
+
+*Check:* `select kind, count(*) from events group by kind` climbs, and
+`backfill_done` eventually goes true for both core filters.
+
+**5. Vercel PREVIEW only.** Set `NOSTR_INDEX_URL` and `NOSTR_INDEX_KEY` on a
+preview deployment, never production first. Compare the preview against
+production side by side — same show, same `/npub` page, same favorites list.
+
+*Check:* the feeds paint in well under a second, and the favorites list is
+**identical** to production. A list that differs is a stop, not a rounding
+error.
+
+**6. Promote to production**, then re-run the probe with the index:
+
+```bash
+npm run probe:index -- --index https://<railway-host> --key <INDEX_API_KEY>
+```
+
+That prints the before and after side by side. Put both numbers in the PR.
+
+**7. Prove the rollback, once.** Unset `NOSTR_INDEX_URL` and redeploy. Every
+surface must still work — slower, and otherwise unchanged.
+
+This is the most important step and the easiest to skip. It is the difference
+between an accelerator and a dependency, and the only moment you find out which
+one you built is the moment you need it to be the first.
