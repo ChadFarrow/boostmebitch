@@ -24,4 +24,60 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 - **DNS is at Namecheap, not Vercel** — nameservers `dns1/dns2.registrar-servers.com`, apex A record and `www` CNAME pointing at Vercel. `boostmebitch.com` is verified as a Search Console **domain property** via a TXT record at host `@`, alongside Namecheap's pre-existing email-forwarding SPF record. **Never delete that record or fold it into the SPF one** — it un-verifies the domain and invalidates the brand approval.
 - **Editing branding re-opens the review.** App name, logo (`public/icons/icon-120.png` — 120×120 is what Google wants; deliberately not in `manifest.json`, since no browser asks for that size), home page URL and privacy policy URL are verified as a set.
 
+## The Nostr read index (Railway)
+
+`services/nostr-index` is a second deployable. It is **not** on Vercel, and
+cannot be: its job is to hold WebSocket subscriptions to several relays open
+continuously, and a serverless function has no persistent process to do that in.
+A cron-driven poller was considered and rejected — staler, noisier against the
+relays, and unable to catch up on a burst.
+
+**Everything it stores is a rebuildable cache and relays stay authoritative.**
+Dropping the database loses speed and nothing else. Its own README carries the
+list of kinds it refuses to index and why; the short version is that kind:10333
+favorites, kind:10000 mutes, kind:3 follows and kind:30078 backups are never
+stored, because each drives a destructive replaceable-event write on the client
+or carries ciphertext.
+
+### Railway setup
+
+One project, two components on the **private** network so the database is never
+exposed to the internet:
+
+1. **Postgres** — Railway's managed plugin. Take the *private* connection
+   string for `DATABASE_URL`, not the public proxy one.
+2. **Service** — root directory `services/nostr-index`, start command
+   `npm start`. Migrations run automatically on boot.
+
+Set `INDEX_API_KEY` to a long random secret, and `PODCAST_INDEX_KEY` /
+`PODCAST_INDEX_SECRET` to the same values Vercel holds so the warm-fill worker
+can populate the shared metadata cache. Everything else has a working default;
+see the service README for the full table.
+
+`INDEX_ROLE` splits the API and the indexer into two Railway services later
+without a code change. One process (`all`, the default) is the cheapest thing
+that works and is the right starting point.
+
+### Vercel side
+
+Two variables, and they are required **together** — one alone leaves the feature
+off:
+
+| Variable | Value |
+|---|---|
+| `NOSTR_INDEX_URL` | the Railway service's public URL |
+| `NOSTR_INDEX_KEY` | the same secret as `INDEX_API_KEY` |
+
+Absent either one, `/api/nostr/index` answers 503 and every client path falls
+back to relays and to the single-guid Podcast Index routes — which is exactly
+how the app behaved before the index existed. **This is the rollback**: unset
+`NOSTR_INDEX_URL` and redeploy. There is no migration to undo and no client
+state to clean up.
+
+Neither variable may ever be `NEXT_PUBLIC`. The key is server-only, and the
+whole reason the app proxies the index through its own route rather than letting
+the page call Railway directly is so the browser never holds it. The proxy also
+puts Vercel's CDN in front, which matters more than it looks: the global feed is
+byte-identical for every visitor, so `s-maxage` means the edge serves it rather
+than the Railway box.
 
