@@ -616,8 +616,38 @@ export function payableSplit(
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
 // IDs (e.g. synthesizing an Episode.id from a guid) that survive reloads.
 /**
- * Canonical deep link to a show: the site ROOT with `?podcast=<guid>`. Null
- * when there's no guid (nothing stable to link to) or during SSR.
+ * The visible word when a control names its TARGET rather than its action —
+ * `[♡ SHOW]` / `[♡ EPISODE]`, `[↗ ALBUM]` / `[↗ TRACK]`.
+ *
+ * The vocabulary is central on purpose: two surfaces inventing their own nouns
+ * is how "EPISODE" and "TRACK" come to mean the same thing on two screens.
+ * `isMusicMedium` is the same gate the rest of the app branches on, so a music
+ * feed says ALBUM/TRACK everywhere or nowhere.
+ *
+ * It lives in `lib/util.ts` rather than in `fav-heart.tsx`, where it started,
+ * because the hearts are no longer the only control that needs it: the
+ * fullscreen player names its two SHARE targets with the same words. That is
+ * the `showShareUrl` situation again — the alternative was one component
+ * importing another for a string.
+ */
+export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): string {
+  const music = !!podcast && isMusicMedium(podcast);
+  if (kind === 'feed') return music ? 'ALBUM' : 'SHOW';
+  return music ? 'TRACK' : 'EPISODE';
+}
+
+/**
+ * Canonical deep link to a show, or to one episode of it: the site ROOT with
+ * `?podcast=<guid>`, plus `&episode=<itemGuid>` when one is given. Null when
+ * there's no podcast guid (nothing stable to link to) or during SSR.
+ *
+ * Both params are restored by the same `<HomePage>` mount effect, which
+ * resolves the show and then opens that episode, so an episode link is a real
+ * deep link rather than a show link with a suffix. `episodeGuid` is optional
+ * because the show header shares a show and the player shares what is playing
+ * — one function so the two can't drift into different links for the same
+ * episode, which is exactly what happened to the show link before it lived
+ * here.
  *
  * **The root, not the current pathname**, and that distinction is the whole
  * function. `?podcast=` is restored by exactly one thing — `<HomePage>`'s
@@ -638,10 +668,14 @@ export function payableSplit(
  * moving <FavHeart> out). Two private `ShareButton` copies had already drifted
  * into two different URLs for the same show before it was centralized here.
  */
-export function showShareUrl(podcastGuid: string | undefined): string | null {
+export function showShareUrl(
+  podcastGuid: string | undefined,
+  episodeGuid?: string,
+): string | null {
   if (!podcastGuid || typeof window === 'undefined') return null;
   const url = new URL('/', window.location.origin);
   url.searchParams.set('podcast', podcastGuid);
+  if (episodeGuid) url.searchParams.set('episode', episodeGuid);
   return url.toString();
 }
 

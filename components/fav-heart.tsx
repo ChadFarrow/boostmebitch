@@ -8,7 +8,7 @@ import type {
 } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { requestFavoritesSync } from '@/lib/nostr';
-import { isMusicMedium } from '@/lib/util';
+import { targetWord } from '@/lib/util';
 
 // The ♡ / ♥ favorite toggle. Lives in its own module (rather than lists.tsx)
 // because several unrelated surfaces render it — the podcast rows + show header
@@ -40,22 +40,6 @@ function heartClasses(isFav: boolean, size: Size) {
       ? 'border-nostr text-nostr hover:bg-nostr/10'
       : 'border-bone/40 text-bone/70 hover:border-nostr/70 hover:text-nostr'
   }`;
-}
-
-/**
- * The visible word when a heart is asked to name its TARGET rather than its
- * action — `nameTarget`, below.
- *
- * The vocabulary lives here rather than at the call site on purpose: two
- * surfaces inventing their own nouns is how "EPISODE" and "TRACK" end up
- * meaning the same thing on two screens. `isMusicMedium` is the same gate the
- * rest of the app branches on, so a music feed says ALBUM/TRACK everywhere or
- * nowhere.
- */
-function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): string {
-  const music = !!podcast && isMusicMedium(podcast);
-  if (kind === 'feed') return music ? 'ALBUM' : 'SHOW';
-  return music ? 'TRACK' : 'EPISODE';
 }
 
 function HeartButton({

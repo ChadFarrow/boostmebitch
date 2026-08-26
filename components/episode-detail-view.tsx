@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration } from '@/lib/format';
-import { episodeContentsLabel, hasValueRecipients, httpUrl, stripHtml } from '@/lib/util';
+import { episodeContentsLabel, hasValueRecipients, httpUrl, showShareUrl, stripHtml } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
 import { useChapters } from '@/lib/chapters';
 import { useResolvedSplits } from '@/lib/track-art';
@@ -12,7 +12,8 @@ import { useTranscript, transcriptIndexAt } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
 import { useNotesFollows } from './notes-follows';
 import { LinkedText } from './linked-text';
-import { BoltIcon, ShareIcon, CoinIcon } from './icons';
+import { CopyLinkButton } from './copy-link-button';
+import { BoltIcon, CoinIcon } from './icons';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart } from './fav-heart';
 import { BoostModal } from './boost-modal';
@@ -41,31 +42,30 @@ function ValueSplitSection({ value }: { value: ValueBlock }) {
   );
 }
 
+/**
+ * SHARE on the episode page — a link to THIS episode, not to its show.
+ *
+ * Two things it used to do itself and no longer does. It hand-rolled the
+ * clipboard write and the COPIED flash, which is the fourth copy of a widget
+ * whose whole reason for existing is that copies drift; `<CopyLinkButton>`
+ * also clears its timeout on unmount, which this one never did. And it built
+ * the URL from `window.location.pathname`, which `showShareUrl` exists to
+ * forbid: `?podcast=`/`?episode=` are restored by `<HomePage>`'s mount effect
+ * and by nothing else, so a pathname-based link is correct only while the app
+ * is served from `/` — true of this view today, and silently false the moment
+ * an episode renders anywhere else.
+ *
+ * The early return stays: on a page about one episode, a button labelled
+ * "copy link to this episode" that copies a show link is worse than no button.
+ */
 function EpisodeShareButton({ episode, podcast }: { episode: Episode; podcast: NonNullable<ReturnType<typeof useApp.getState>['selectedPodcast']> }) {
-  const [copied, setCopied] = useState(false);
   if (!episode.guid || !podcast.podcastGuid) return null;
-
-  async function onShare() {
-    const url = new URL(window.location.origin + window.location.pathname);
-    url.searchParams.set('podcast', podcast.podcastGuid!);
-    url.searchParams.set('episode', episode.guid!);
-    try {
-      await navigator.clipboard.writeText(url.toString());
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1800);
-    } catch { /* clipboard blocked — silent */ }
-  }
-
   return (
-    <button
-      type="button"
-      onClick={onShare}
-      className="btn-ghost text-xs"
+    <CopyLinkButton
+      url={showShareUrl(podcast.podcastGuid, episode.guid)}
       title="Copy link to this episode"
-      aria-label="Copy link to this episode"
-    >
-      <ShareIcon /> {copied ? 'COPIED' : 'SHARE'}
-    </button>
+      className="btn-ghost text-xs"
+    />
   );
 }
 
