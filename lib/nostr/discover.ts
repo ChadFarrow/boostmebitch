@@ -221,6 +221,19 @@ export function noteHasSubstance(note: DiscoveredNote): boolean {
 }
 
 /**
+ * Cap on the track guids folded into one `#i` filter.
+ *
+ * The caller hands over one guid per item in the feed, and `/api/feed` now
+ * serves up to a thousand of them where it used to serve fifty. A REQ carrying
+ * a thousand-element `#i` array is one plenty of relays refuse outright, which
+ * would take the whole comment feed down — a worse outcome than missing notes
+ * on the tail of an album longer than any real one. The show's own guid is
+ * never subject to this: it is the first element and the cap applies to the
+ * track guids alone.
+ */
+const MAX_ITEM_GUIDS = 200;
+
+/**
  * Fetch every kind:1 note tagged with NIP-73 `podcast:guid:<podcastGuid>` from
  * the given relays. Resolves each unique author's kind:0 metadata in a single
  * follow-up query so the UI can render avatar + display_name without N+1
@@ -230,6 +243,7 @@ export function noteHasSubstance(note: DiscoveredNote): boolean {
  * `podcast:item:guid:<guid>` tags (OR semantics in one filter). Music album
  * pages pass every track guid so the show feed surfaces per-track boosts even
  * when a client tagged only the item guid — there are no per-track pages.
+ * Capped at {@link MAX_ITEM_GUIDS}.
  */
 export async function fetchPodcastNotes(
   podcastGuid: string,
@@ -240,7 +254,7 @@ export async function fetchPodcastNotes(
   const limit = opts.limit ?? 100;
   const iTags = [
     `podcast:guid:${podcastGuid}`,
-    ...episodeGuids.map((g) => `podcast:item:guid:${g}`),
+    ...episodeGuids.slice(0, MAX_ITEM_GUIDS).map((g) => `podcast:item:guid:${g}`),
   ];
 
   return withPool(relays, async (pool) => {
