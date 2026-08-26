@@ -1184,3 +1184,92 @@ export function artTypeVerdict(contentType: string | null | undefined): 'decode'
 
   return 'refuse';
 }
+
+/**
+ * The per-connection NWC spending budget, in whole sats.
+ *
+ * `remainingSats` is what this app may still send before the budget renews —
+ * NOT what the wallet holds. On a connection to your own node those two are
+ * wildly different numbers, and `get_balance` answers with the second one.
+ */
+export interface NwcBudget {
+  usedSats: number;
+  totalSats: number;
+  remainingSats: number;
+  /** Unix SECONDS at which the budget resets, when the wallet gives one. */
+  renewsAt?: number;
+  /** `daily` | `weekly` | `monthly` | `yearly` | `never` — wallet's wording. */
+  renewalPeriod?: string;
+}
+
+/**
+ * Read a NIP-47 `get_budget` response, in msat, into whole sats. Returns null
+ * for "no budget applies".
+ *
+ * **Null is the safe answer and every doubtful input must reach it**, because
+ * a null falls the caller back to the wallet's balance — the number this app
+ * displayed before budgets were read at all. The opposite default is worse
+ * than wrong: a budget misread as 0 renders a funded wallet as empty, paints
+ * the boost modal's insufficient-funds warning over it, and gives the user no
+ * way to tell that from a wallet that really is spent.
+ *
+ * So four different inputs collapse to null on purpose:
+ *
+ *  - **The empty object.** NIP-47 answers an unbudgeted connection with `{}`.
+ *  - **A non-positive total.** Wallets that model "unlimited" as `0` exist,
+ *    and a total of 0 cannot describe a limit anybody could spend against.
+ *  - **Anything non-finite.** `Number(undefined)` is `NaN`, and `NaN` compares
+ *    false against every bound, so an unguarded parse produces a budget whose
+ *    every arithmetic result is `NaN` — which renders as the string "NaN".
+ *  - **A negative used amount.** It cannot be true, and it would inflate the
+ *    remainder past the total.
+ *
+ * `used > total` is NOT one of them: it is an ordinary state on a budget the
+ * wallet has just shrunk, and it means zero remaining, which `Math.max` gives.
+ * Rejecting it would restore the full balance to the screen at exactly the
+ * moment the connection can spend nothing.
+ *
+ * Sats FLOOR rather than round, both fields, for the same reason every other
+ * msat→sat conversion here does: rounding up can only ever overstate what is
+ * spendable, and this number sits beside a send button.
+ */
+export function parseNwcBudget(res: unknown): NwcBudget | null {
+  if (!res || typeof res !== 'object') return null;
+  const r = res as Record<string, unknown>;
+  const total = Number(r.total_budget ?? 0);
+  const used = Number(r.used_budget ?? 0);
+  if (!Number.isFinite(total) || total <= 0) return null;
+  if (!Number.isFinite(used) || used < 0) return null;
+  const totalSats = Math.floor(total / 1000);
+  const usedSats = Math.floor(used / 1000);
+  const renewsAt = Number(r.renews_at);
+  return {
+    usedSats,
+    totalSats,
+    remainingSats: Math.max(0, totalSats - usedSats),
+    renewsAt: Number.isFinite(renewsAt) && renewsAt > 0 ? renewsAt : undefined,
+    renewalPeriod: typeof r.renewal_period === 'string' ? r.renewal_period : undefined,
+  };
+}
+
+/**
+ * What an NWC connection can actually send: the MINIMUM of the wallet's
+ * balance and the budget's remainder, because either one running out fails the
+ * payment. A boost cannot spend a budget the wallet can't fund, and it cannot
+ * spend a balance the budget won't release.
+ *
+ * `budgetLimited` says which of the two binds, and it is deliberately a strict
+ * comparison: a budget larger than the balance is not the reason the number is
+ * what it is, so calling it one would explain an ordinary low balance as a
+ * spending limit the user would then go looking for in their wallet.
+ */
+export function spendableSats(
+  balanceSats: number,
+  budget: NwcBudget | null,
+): { sats: number; budgetLimited: boolean } {
+  if (!budget) return { sats: balanceSats, budgetLimited: false };
+  return {
+    sats: Math.min(balanceSats, budget.remainingSats),
+    budgetLimited: budget.remainingSats < balanceSats,
+  };
+}

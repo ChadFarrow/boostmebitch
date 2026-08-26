@@ -33,6 +33,7 @@
     "check:chapters": "node --experimental-strip-types scripts/check-chapters-json.mjs",
     "check:art": "node --experimental-strip-types scripts/check-art.mjs",
     "check:vpsummary": "node --experimental-strip-types scripts/check-value-playback-summary.mjs",
+    "check:nwcbudget": "node --experimental-strip-types scripts/check-nwc-budget.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs",

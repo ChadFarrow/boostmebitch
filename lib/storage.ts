@@ -161,7 +161,19 @@ export type RailPref = 'nwc' | 'spark' | 'webln';
 export type StreamMode = 'rate' | 'track';
 export type ShareNostrAs = 'self' | 'site';
 export type ThemeMode = 'light' | 'dark';
-export interface CachedWalletBalance { rail: RailPref; balance: number; ts: number }
+export interface CachedWalletBalance {
+  rail: RailPref;
+  /** What that rail could SEND when it was read — on NWC, budget-capped. */
+  balance: number;
+  ts: number;
+  /**
+   * True when a per-connection NWC budget capped that number. Carried so the
+   * cached paint on page load keeps the caveat the live read would print; an
+   * older record without the field reads as `false`, which only costs the
+   * caveat for the second it takes the first read to land.
+   */
+  limited?: boolean;
+}
 
 /** One settled streaming payment run — the `bmb:streamed:<npub>` log. */
 export interface StreamedEntry {
@@ -697,6 +709,10 @@ export const storage = {
    * page load while the underlying SDK reconnects (Breez Spark's WASM load
    * + connect + sync can take 5-10 s; NWC's first RPC has its own latency).
    * The cached value is replaced as soon as a fresh fetch lands.
+   *
+   * `balance` is the SPENDABLE number, which on NWC is capped by the
+   * connection's budget — `limited` records that it was, so the cached paint
+   * carries the same caveat the live read does.
    */
   walletBalance: {
     get: (npub: string | null | undefined): CachedWalletBalance | null => {
@@ -709,15 +725,20 @@ export const storage = {
           && typeof p?.balance === 'number' && Number.isFinite(p.balance)
           && typeof p?.ts === 'number'
         ) {
-          return p as CachedWalletBalance;
+          return { ...p, limited: p?.limited === true } as CachedWalletBalance;
         }
         return null;
       } catch { return null; }
     },
-    set: (npub: string | null | undefined, rail: RailPref, balance: number) => {
+    set: (
+      npub: string | null | undefined,
+      rail: RailPref,
+      balance: number,
+      limited = false,
+    ) => {
       safeSet(
         identityKey(KEYS.walletBalancePrefix, npub),
-        JSON.stringify({ rail, balance, ts: Date.now() }),
+        JSON.stringify({ rail, balance, ts: Date.now(), limited }),
       );
     },
     clear: (npub: string | null | undefined) =>
