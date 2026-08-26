@@ -56,31 +56,32 @@ export const LIST_ALT = 'PC 2.0 Favorites';
 export type FavoritesPrivacy = 'public' | 'private' | 'off';
 
 /**
- * THE PRIVATE HALF IS SWITCHED OFF UNTIL EVERY WRITER CARRIES `content`.
+ * THE PRIVATE HALF IS ON. Every writer of this list now carries `content`.
  *
  * `i` is a single-letter tag, so relays index it and a `#i` filter answers
  * "which pubkeys favorited this feed" — the public list is searchable in
  * reverse, not merely readable by someone who already has the pubkey. That is
  * the whole reason a private half exists.
  *
- * But the spec is explicit about the order it may ship in, and the reason is
- * not ours to weigh: rule 4 ("carry what you can't read") covers TAGS and says
- * nothing about `content`, so a conforming writer that has never heard of a
- * private half republishes the empty string the format has specified from the
- * start. The first favorite toggled in such an app erases every private entry —
- * silently, on someone else's device, with no undo, and with that app behaving
- * correctly by the document it was written against.
+ * The condition this waited on has been met. Rule 4 ("carry what you can't
+ * read") covered TAGS and said nothing about `content`, so a conforming writer
+ * that had never heard of a private half republished the empty string the
+ * format has specified from the start, erasing every private entry — silently,
+ * on someone else's device, with no undo, while behaving correctly by the
+ * document it was written against. The spec now states the carry rule for
+ * `content` explicitly (PC20-Nostr#23), and StableKraft ships it
+ * (ChadFarrow/stablekraft-app#225, in production).
  *
- * StableKraft is the other writer and does not carry `content` yet. So the
- * carry rule below ships ON and unconditionally, and this flag stays false until
- * it does. Flipping it is a one-line commit.
+ * Turned on 2026-08-26, and not a moment early: StableKraft's list was already
+ * private when this flipped, 436 entries of encrypted `content` sitting on the
+ * relays that the previous value of this constant would have blanked on the
+ * next favorite anyone toggled here.
  *
  * `privateFavoritesEnabled()` in `lib/nostr/favorites-sync.ts` ORs in a
- * per-device opt-in so this can be tested end to end before then; the constant
- * is here rather than there because this module is the one a check script can
- * load.
+ * per-device opt-in; the constant is here rather than there because this module
+ * is the one a check script can load.
  */
-export const PRIVATE_FAVORITES_ENABLED = false;
+export const PRIVATE_FAVORITES_ENABLED = true;
 
 /**
  * Plaintext ceiling for the private half, in UTF-8 bytes.
