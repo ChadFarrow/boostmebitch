@@ -11,7 +11,7 @@ import {
   streamNaddr,
   type NostrLiveStream,
 } from '@/lib/nostr/live-streams';
-import { fetchProfile, indexedLiveStreams } from '@/lib/nostr';
+import { fetchProfilesFor, indexedLiveStreams, LIVE_STREAM_RELAYS } from '@/lib/nostr';
 import type { Event } from 'nostr-tools';
 import { hasValueRecipients } from '@/lib/util';
 import { storage } from '@/lib/storage';
@@ -125,12 +125,25 @@ export function NostrLiveStreams() {
     // Host profiles: name, avatar, LN address. The index pass has already put
     // the ones it carried into `storage.profile`, so this only chases whatever
     // it did not know about.
-    const hostPubkeys = [...new Set(merged.map((s) => s.pubkey))];
-    await Promise.all(
-      hostPubkeys.map(async (pk) => {
-        if (storage.profile.get(pk) === undefined) await fetchProfile(pk);
-      }),
-    );
+    //
+    // ONE batched query, never a `fetchProfile` per host. `fetchProfile` opens
+    // a subscription per relay — that per-relay accounting is what its
+    // `trustworthy` flag is for — so a row of twenty-odd streams was ~5x that
+    // many concurrent REQs across five sockets. Relays cap subscriptions per
+    // connection and drop the overflow silently, so the hosts that lost the
+    // race did not resolve late, they did not resolve at all, and this `await`
+    // then sat on the slowest of them: a bare npub where a name should be, for
+    // the full window, on the first thing the home page paints.
+    // `fetchProfilesFor` serves cached hits and cached misses without touching
+    // the network, so passing the whole list every time costs nothing.
+    //
+    // Asked against LIVE_STREAM_RELAYS rather than the defaults, because that
+    // is where these particular kind:0s are: a zap.stream or nostr.wine host
+    // need not publish a profile to a podcast listener's relay set, and
+    // `resolveStreamV4V` already falls back to exactly this union one pubkey at
+    // a time. Costs no new sockets — the kind:30311 query that produced these
+    // streams opened them a moment ago and the shared pool keeps them warm.
+    await fetchProfilesFor([...new Set(merged.map((s) => s.pubkey))], LIVE_STREAM_RELAYS);
     if (!mountedRef.current) return;
     setResolved(paint());
 

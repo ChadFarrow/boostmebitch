@@ -152,11 +152,49 @@ export function useNostrFeed({
  * — it carries whatever replies and profiles that pass found, and a note whose
  * author profile resolved on the second pass must not be reverted to the
  * anonymous version from the first.
+ *
+ * **Except that a wholesale replace does not deliver that, which is the whole
+ * reason `richer` exists.** Every commit is one pass's best answer about the
+ * same immutable event, and the passes do not arrive in order of how much they
+ * know: the index answers in tens of milliseconds with profiles and a whole
+ * reply forest, and the relay pass then paints its top-level notes seconds
+ * later carrying neither. Replacing on id made that a downgrade the reader
+ * watches happen — an avatar and a thread that were on screen vanish and only
+ * return when the last relay stage finishes, which is exactly the "profiles
+ * load slowly" this is downstream of. So the newer copy wins field by field,
+ * and only where it actually has something.
  */
 function mergeNotes(existing: DiscoveredNote[], incoming: DiscoveredNote[]): DiscoveredNote[] {
   if (!existing.length) return incoming;
   const byId = new Map<string, DiscoveredNote>();
   for (const n of existing) byId.set(n.id, n);
-  for (const n of incoming) byId.set(n.id, n);
+  for (const n of incoming) {
+    const prev = byId.get(n.id);
+    byId.set(n.id, prev ? richer(prev, n) : n);
+  }
   return Array.from(byId.values()).sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/**
+ * The newer copy of one note, with anything the older copy knew and it doesn't.
+ *
+ * A kind:1 is immutable, so the two copies differ only in how much enrichment
+ * the pass that produced them had done. Nothing here can be legitimately
+ * *withdrawn* by a later pass; each field below is one a pass either resolved
+ * or never looked up.
+ *
+ *  - `author` — the profile stage; null until a kind:0 lands.
+ *  - `replies` — the reply-tree stage; empty on a root-only paint.
+ *  - `amountMsat` / `isBoost` — adopted from a quoted kind:9735 for a Fountain
+ *    wrapper note, which needs the quoted-event stage. `isBoost` also gates
+ *    `noteHasSubstance`, so losing it takes the whole note off the feed.
+ */
+function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredNote {
+  return {
+    ...incoming,
+    author: incoming.author ?? existing.author,
+    replies: incoming.replies.length ? incoming.replies : existing.replies,
+    amountMsat: incoming.amountMsat ?? existing.amountMsat,
+    isBoost: incoming.isBoost || existing.isBoost,
+  };
 }

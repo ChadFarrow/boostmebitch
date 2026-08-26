@@ -49,6 +49,7 @@ export {
   fetchBoostsSentBy,
   fetchBoostsReceivedBy,
   fetchZapsReceivedBy,
+  fetchProfilesFor,
   quotedEventIds,
   noteFromEvent,
   noteHasSubstance,
