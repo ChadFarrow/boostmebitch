@@ -58,6 +58,7 @@ import {
   baselineForHalves,
   baselineFrom,
   baselineOfList,
+  looseIdsWePublished,
   baselineHalf,
   decodePrivateFavorites,
   encodePrivateFavorites,
@@ -1600,6 +1601,191 @@ section('Control — the obvious wrong implementation must fail these');
     const differs = JSON.stringify(ours) !== JSON.stringify(theirs);
     check(`(naive) ${label}`, differs, true);
   }
+}
+
+// ---------------------------------------------------------------------------
+section('A CARRIED entry is not evidence that this device holds anything');
+// ---------------------------------------------------------------------------
+{
+  // The third path to the 2026-08-21 wipe, and it hid inside the fix for the
+  // first two. The guard asks "did both halves come out empty over a read that
+  // was not?", and it asked it of `merged.nodes.length` — with a comment
+  // justifying the union on the grounds that "both halves are fed from ONE
+  // local list". That is false for the half that matters. `mergeFavoritesList`
+  // ALSO carries another writer's entries through untouched, and those are fed
+  // by no local state at all.
+  //
+  // So: an unhydrated store (empty local, exactly what a page load looks like
+  // before hydration), a public half this device published, and ONE foreign
+  // entry sitting in the private half. `privateMerged.nodes.length` is 1, the
+  // union is not zero, the guard does not fire, and the public half publishes
+  // as `[['alt', LIST_ALT]]` — every favorite gone, on every device, no undo.
+  const pubWire = [
+    ['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC)], ['k', 'podcast:guid'],
+  ];
+  // Never fed by this device: no baseline claim names it, so the merge carries it.
+  const privWire = [
+    ['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC2)], ['k', 'podcast:guid'],
+  ];
+  const readPub = parseFavoritesList(pubWire);
+  const readPriv = parseFavoritesList(privWire);
+  const baselineNamesPublic = { feeds: [showId(F_MUSIC)], items: [], privateFeeds: [], privateItems: [] };
+
+  const merged = mergeFavoritesList({
+    read: readPub, local: EMPTY_LOCAL, baseline: baselineHalf(baselineNamesPublic, 'public'),
+  });
+  const privateMerged = mergeFavoritesList({
+    read: readPriv, local: EMPTY_LOCAL, baseline: baselineHalf(baselineNamesPublic, 'private'),
+  });
+
+  // The shape that makes this dangerous, asserted so the vector cannot rot into
+  // one where the guard would have fired anyway.
+  check('the public merge really is empty', merged.nodes.length, 0);
+  check('...while the private merge carries the foreign entry', privateMerged.nodes.length, 1);
+  check('...and none of it came from local state', privateMerged.localFed, 0);
+
+  const plan = planFavoritesPublish({
+    merged, readTags: pubWire, exists: true, trustworthy: true, local: EMPTY_LOCAL,
+    mode: 'public',
+    privateMerged, readPrivateTags: privWire, readContent: 'nip44:…', privateLocal: EMPTY_LOCAL,
+    previousBaseline: baselineNamesPublic,
+  });
+  check('a foreign private entry does NOT license an empty public publish',
+    plan.reason, 'wholesale-delete');
+  check('...and nothing is published', plan.publish, false);
+
+  // (naive) the version this replaced: count merged nodes, not provenance.
+  const naiveUnion = merged.nodes.length + privateMerged.nodes.length;
+  check('(naive) counting merged nodes sees a non-empty union', naiveUnion > 0, true);
+  // ...which is the alt-only wipe, spelled out.
+  check('(naive) ...and the tags it would have published are alt-only',
+    tagsFromList(merged), [['alt', LIST_ALT]]);
+
+  // MUST STILL WORK: a mode switch legitimately empties one half, and the guard
+  // must not refuse it. Same empty public merge — but the entries are in the
+  // private half BECAUSE THIS DEVICE PUT THEM THERE, so `localFed` is not zero.
+  const movedLocal = groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]);
+  const switchPlan = planFavoritesPublish({
+    merged: mergeFavoritesList({
+      read: readPub, local: EMPTY_LOCAL, baseline: baselineHalf(baselineNamesPublic, 'public'),
+    }),
+    readTags: pubWire, exists: true, trustworthy: true, local: EMPTY_LOCAL,
+    mode: 'private',
+    privateMerged: mergeFavoritesList({ read: EMPTY_PARSED, local: movedLocal, baseline: EMPTY_BASELINE }),
+    readPrivateTags: [], readContent: '', privateLocal: movedLocal,
+    previousBaseline: baselineNamesPublic,
+  });
+  check('a public→private switch is still allowed', switchPlan.reason === 'wholesale-delete', false);
+}
+
+// ---------------------------------------------------------------------------
+section('A loose entry we published must be claimable, or it is unremovable');
+// ---------------------------------------------------------------------------
+{
+  // `baselineOfList` walks `entriesFromList`, whose first line is
+  // `if (node.t !== 'group') continue`. Every LOOSE node is skipped — and a
+  // loose node is a favorite whose parent feed we never learned, published as a
+  // bare `i` tag. Recorded nowhere, `mergeFavoritesList`'s loose-removal test
+  // can never fire for it, so it is re-emitted on every republish and re-adopted
+  // on every hydrate: the heart empties locally and the tag never leaves.
+  //
+  // The other half of the rule is that a CARRIED loose entry must stay
+  // unclaimed, or this device gains permission to delete another app's. So the
+  // ids come from the local list and the survivors from the merge.
+  const ours = groupLocalFavorites([{ id: itemId(I_ODD), feedRef: '920666' }]);
+  check('an item with a non-UUID parent lands loose', ours.loose.length, 1);
+
+  const merged = mergeFavoritesList({ read: EMPTY_PARSED, local: ours, baseline: EMPTY_BASELINE });
+  const plan = planFavoritesPublish({
+    merged, readTags: [], exists: false, trustworthy: true, local: ours, mode: 'public',
+    privateMerged: null, readPrivateTags: [], readContent: '', privateLocal: EMPTY_LOCAL,
+    previousBaseline: EMPTY_BASELINE,
+  });
+  check('a loose entry we published IS claimed', plan.baseline.items, [itemId(I_ODD)]);
+
+  // (naive) groups only — the shape that shipped.
+  check('(naive) groups-only records nothing for it', baselineOfList(merged).items, []);
+
+  // And claimed, the unfavorite finally sticks: local no longer holds it, the
+  // baseline says we put it there, so the merge drops it.
+  const after = mergeFavoritesList({
+    read: parseFavoritesList(tagsFromList(merged)),
+    local: EMPTY_LOCAL,
+    baseline: baselineHalf(plan.baseline, 'public'),
+  });
+  check('claimed, unfavoriting it removes it', after.nodes.length, 0);
+  // (naive) unclaimed, it survives forever.
+  const stuck = mergeFavoritesList({
+    read: parseFavoritesList(tagsFromList(merged)),
+    local: EMPTY_LOCAL,
+    baseline: baselineHalf(baselineOfList(merged), 'public'),
+  });
+  check('(naive) unclaimed, it comes back on every cycle', stuck.nodes.length, 1);
+
+  // MUST STILL WORK: an identifier kind we cannot read belongs to another
+  // writer and is never claimed, whichever list it appears in.
+  const foreignWire = [['alt', LIST_ALT], ['i', 'something:else:entirely']];
+  const foreignMerged = mergeFavoritesList({
+    read: parseFavoritesList(foreignWire), local: EMPTY_LOCAL, baseline: EMPTY_BASELINE,
+  });
+  check('a carried loose entry stays unclaimed',
+    looseIdsWePublished(foreignMerged, EMPTY_LOCAL), []);
+}
+
+// ---------------------------------------------------------------------------
+section('A claim that has stopped being true is worse than no claim');
+// ---------------------------------------------------------------------------
+{
+  // Carrying the inactive half's claims is what fixed "I unfavorited 2 and they
+  // came back" (see above). Carrying them FOREVER is the mirror bug. A
+  // private→public switch moves entries out of `content`, but the recorded
+  // baseline kept naming them, and every later public-mode cycle copied the
+  // claim again. When another app — or the user's second device — later
+  // favorites one of those same ids privately, this device matches the stale
+  // claim, reads it as ours-and-removed, and drops it. A cross-app deletion
+  // with no undo, from an assertion that expired at the switch.
+  const pubWire = [['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC)], ['k', 'podcast:guid']];
+  const mine = groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]);
+  // The switch has already happened: the private half is empty on the wire, and
+  // the previous baseline still names what used to be in it.
+  const staleClaim = { feeds: [], items: [], privateFeeds: [showId(F_MUSIC2)], privateItems: [] };
+  const plan = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: parseFavoritesList(pubWire), local: mine, baseline: EMPTY_BASELINE }),
+    readTags: pubWire, exists: true, trustworthy: true, local: mine, mode: 'public',
+    privateMerged: mergeFavoritesList({ read: EMPTY_PARSED, local: EMPTY_LOCAL, baseline: EMPTY_BASELINE }),
+    readPrivateTags: [], readContent: '', privateLocal: EMPTY_LOCAL,
+    previousBaseline: staleClaim,
+  });
+  check('a claim whose entry the switch moved out is retired',
+    plan.baseline.privateFeeds, []);
+  // (naive) carry verbatim — the shape that shipped.
+  check('(naive) carrying verbatim keeps naming it',
+    staleClaim.privateFeeds, [showId(F_MUSIC2)]);
+  // ...and that is what deletes another writer's entry later.
+  const laterPrivWire = [['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC2)], ['k', 'podcast:guid']];
+  const deleted = mergeFavoritesList({
+    read: parseFavoritesList(laterPrivWire), local: EMPTY_LOCAL,
+    baseline: baselineHalf(staleClaim, 'private'),
+  });
+  check('(naive) ...so a later foreign private entry is deleted', deleted.nodes.length, 0);
+  const survives = mergeFavoritesList({
+    read: parseFavoritesList(laterPrivWire), local: EMPTY_LOCAL,
+    baseline: baselineHalf(plan.baseline, 'private'),
+  });
+  check('retired, that entry survives', survives.nodes.length, 1);
+
+  // MUST STILL WORK: an UNREADABLE half is carried verbatim. Absence from a half
+  // we could not open is not evidence of anything, and filtering on it would
+  // disown every private entry at once — the bug the carry rule exists for.
+  const keptPlan = planFavoritesPublish({
+    merged: mergeFavoritesList({ read: parseFavoritesList(pubWire), local: mine, baseline: EMPTY_BASELINE }),
+    readTags: pubWire, exists: true, trustworthy: true, local: mine, mode: 'public',
+    privateMerged: null, privateUnreadable: true,
+    readPrivateTags: [], readContent: 'nip44:…', privateLocal: EMPTY_LOCAL,
+    previousBaseline: staleClaim,
+  });
+  check('an unreadable half keeps its claims verbatim',
+    keptPlan.baseline.privateFeeds, [showId(F_MUSIC2)]);
 }
 
 // ---------------------------------------------------------------------------
