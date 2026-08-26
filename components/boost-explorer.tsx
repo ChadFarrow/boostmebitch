@@ -9,6 +9,9 @@ import {
   quotedEventIds,
   shortNpub,
   useNostrFeed,
+  indexedBoostsSentBy,
+  indexedBoostsReceivedBy,
+  indexedZapsReceivedBy,
   useViewerReposts,
   zapSats,
   type DiscoveredNote,
@@ -82,11 +85,16 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
   const sent = useNostrFeed({
     cacheKey: `npub:${pubkey}:sent`,
     fetcher: (opts) => fetchBoostsSentBy(pubkey, opts),
+    // fetchBoostsSentBy pays a NIP-65 outbox lookup BEFORE its own scan, so the
+    // relay path here stacks two multi-second windows back to back. The index
+    // answers both in one request.
+    indexFetcher: () => indexedBoostsSentBy(pubkey),
     deps: [pubkey],
   });
   const received = useNostrFeed({
     cacheKey: `npub:${pubkey}:recv`,
     fetcher: (opts) => fetchBoostsReceivedBy(pubkey, opts),
+    indexFetcher: () => indexedBoostsReceivedBy(pubkey),
     deps: [pubkey],
   });
 
@@ -97,19 +105,33 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
   // onto every receipt. The `gen` ref is the same race guard it uses: a slow
   // fetch for one npub must not land over a newer one.
   //
-  // The cost is that this section has no localStorage warm paint, so on a
-  // revisit the two boost sections come back from `bmb:feed:*` within a frame
-  // while this one sits on "searching nostr relays…". Deliberate: a sibling
-  // cache namespace is the fix if that ever matters, never a generic
-  // useNostrFeed.
+  // This section still has no localStorage warm paint, so on a revisit the two
+  // boost sections come back from `bmb:feed:*` within a frame while this one
+  // waits. The READ INDEX now covers most of that gap — it answers in one
+  // request where the relay pass costs a multi-second scan plus a batched
+  // profile lookup — but a sibling cache namespace is still the fix if the
+  // remaining delay ever matters, never a generic useNostrFeed.
   const [zaps, setZaps] = useState<ReceivedZap[] | null>(null);
   const zapGen = useRef(0);
   const refreshZaps = useCallback(() => {
     const myGen = ++zapGen.current;
     setZaps(null);
+    // The index pass runs ALONGSIDE the relay pass, never in front of it: an
+    // index that is merely slow must not delay the query that is authoritative.
+    // It only paints if it wins and actually has something, and the relay
+    // result still lands over it, because relays hold receipts this index may
+    // never have been running to see.
+    indexedZapsReceivedBy(pubkey)
+      .then((z) => { if (z?.length && myGen === zapGen.current) setZaps(z); })
+      .catch(() => { /* the index is never a reason to fail this panel */ });
     fetchZapsReceivedBy(pubkey)
       .then((z) => { if (myGen === zapGen.current) setZaps(z); })
-      .catch(() => { if (myGen === zapGen.current) setZaps([]); });
+      // Only claim "none" if nothing is on screen. An index hit followed by a
+      // relay failure is a working panel; blanking it would report an absence
+      // we did not observe.
+      .catch(() => {
+        if (myGen === zapGen.current) setZaps((prev) => (prev?.length ? prev : []));
+      });
   }, [pubkey]);
   useEffect(() => {
     refreshZaps();

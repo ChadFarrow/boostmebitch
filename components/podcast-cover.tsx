@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import { artCandidates, DEFAULT_ART_WIDTH, type ArtWidth } from '@/lib/util';
 
 // Renders the podcast's artwork with a deterministic colored-initial
 // fallback when every candidate URL is missing, blocked, or 404s. Mirrors
@@ -19,6 +20,7 @@ export function PodcastCover({
   title,
   seed,
   className,
+  w = DEFAULT_ART_WIDTH,
   lowPriority,
 }: {
   image?: string | null;
@@ -29,6 +31,16 @@ export function PodcastCover({
    *  string. */
   seed?: string;
   className?: string;
+  /**
+   * How wide to ask /api/art for, in CSS pixels before device pixel ratio.
+   *
+   * The default suits a list row or a podroll card. Only a surface that paints
+   * the cover large needs to say otherwise — <FullscreenPlayer>'s hero passes
+   * 640. It is an allowlisted set rather than a free number because each
+   * `(url, width)` pair is a CDN cache key whose miss costs a decode and a
+   * resize; `artWidth` in lib/util.ts is the guard, pinned by check:art.
+   */
+  w?: ArtWidth;
   /**
    * "This image must never compete with audio playback."
    *
@@ -47,18 +59,22 @@ export function PodcastCover({
    */
   lowPriority?: boolean;
 }) {
-  const candidates = useMemo(() => {
-    const out: string[] = [];
-    if (image) out.push(image);
-    if (artwork && artwork !== image) out.push(artwork);
-    return out;
-  }, [image, artwork]);
+  // Proxied copies first, then the ORIGINAL third-party URLs behind them.
+  //
+  // The raw tail is what keeps this an accelerator rather than a dependency:
+  // if /api/art is undeployed, rate-limited, out of memory, or handed a format
+  // sharp cannot decode, the `onError` ladder below falls straight through to
+  // the URL the app used before the proxy existed. Dropping it would blank
+  // every cover on all twelve surfaces that render this component. Ordering it
+  // the other way round would leave the feature installed and inert. Both
+  // shapes are pinned by `npm run check:art`.
+  const candidates = useMemo(() => artCandidates(image, artwork, w), [image, artwork, w]);
   const [idx, setIdx] = useState(0);
   // Re-attempt from the first candidate whenever the source URLs change. Without
   // this, a caller that swaps `image` over time (e.g. per-chapter artwork in the
   // player) would keep a stale failing-index: once a bad img advanced idx to the
   // artwork fallback, the next (valid) image would be skipped for artwork.
-  useEffect(() => { setIdx(0); }, [image, artwork]);
+  useEffect(() => { setIdx(0); }, [image, artwork, w]);
   const current = candidates[idx];
   if (current) {
     return (

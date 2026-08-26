@@ -30,10 +30,13 @@
     "check:gif": "node --experimental-strip-types scripts/check-gif.mjs",
     "check:amber": "node --experimental-strip-types scripts/check-amber.mjs",
     "check:ambersafe": "node --experimental-strip-types scripts/check-amber-safe-text.mjs",
+    "check:chapters": "node --experimental-strip-types scripts/check-chapters-json.mjs",
+    "check:art": "node --experimental-strip-types scripts/check-art.mjs",
     "check:vpsummary": "node --experimental-strip-types scripts/check-value-playback-summary.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs",
+    "probe:index": "node --experimental-strip-types scripts/probe-index.mjs",
     "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs"
   },
   "dependencies": {
@@ -50,6 +53,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-reverse-portal": "^2.3.0",
+    "sharp": "^0.34.5",
     "socket.io-client": "^4.8.3",
     "zustand": "^5.0.3"
   },

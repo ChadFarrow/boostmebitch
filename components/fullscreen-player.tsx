@@ -562,6 +562,9 @@ export function FullscreenPlayer({
                 title={podcast.title}
                 seed={podcast.id?.toString()}
                 lowPriority
+                // The one surface that paints a cover large. Every other
+                // caller takes the 320 default, which is a list tile at 2x.
+                w={640}
                 className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
               />
             </div>

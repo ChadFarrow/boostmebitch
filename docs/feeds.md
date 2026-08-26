@@ -88,4 +88,43 @@ Keep them as **separate instances**. Only the mechanism is shared; folding the p
 
 Sweep expired entries **before** capacity-evicting: dropping what nobody can serve should never cost you something still useful. `get` also evicts on a past-horizon read, so a read-heavy, write-idle period can't hold a dead entry indefinitely.
 
+## Batched Podcast Index resolution
+
+`/api/by-guid/batch` and `/api/episode-by-guid/batch` resolve up to 100
+identifiers per request. They exist for favorites hydration, which issues one
+request per favorited show and one per favorited track — 213 and 232 on the list
+this was sized against — drained six at a time because that is what a browser
+allows per host. That burst is also what exhausts the per-IP limiter, and a 429
+arriving mid-list poisons whatever ran after the budget.
+
+Both go through `lib/pi-batch.ts`, which is shared rather than duplicated
+because **the three-state answer is the contract** and two copies is one copy
+that eventually forgets it:
+
+| Response | Meaning | Client may cache |
+|---|---|---|
+| key present, value | PI resolved it | yes |
+| key present, `null` | PI answered "not found" | yes — a 404 IS an answer |
+| **key absent** | we could not ask | **never** |
+
+It follows probe-first-then-batch: one sequential lookup first, and if that
+throws — meaning PI itself is unreachable, since `getPodcastByGuid` already
+turns PI's 400/404 into `null` — the remaining N−1 are never attempted and stay
+absent. A rejection in the parallel half leaves that key absent too, rather than
+recording an absence nobody observed.
+
+**The batch routes deliberately do NOT trip the client-side PI breaker.** They
+answer 200 with an empty map when PI is down, and the client's
+`warmPodcastCache` caches nothing and returns. The authoritative per-guid path
+that runs next still 500s and still trips it. Tripping the breaker from a
+*prefetch* would let a warm-up disable metadata resolution for the whole tab.
+
+`warmPodcastCache` / `warmEpisodeCache` (`lib/podcast-meta.ts`) are a **prefetch,
+not a rewrite**. `resolveVia`, `resolveEpisodeByGuid`, the breaker and
+`COULD_NOT_ASK` are untouched — after a warm pass the existing resolvers find
+every entry in `podcastMem` and issue no network calls. Every rule in that file
+cost a production incident, so the blast radius of adding speed to it is kept at
+zero by construction. Reading the map uses `key in obj`, never `?? null`: the
+latter turns every unanswered guid into a cached miss, which is exactly the
+poisoning `COULD_NOT_ASK` exists to prevent.
 

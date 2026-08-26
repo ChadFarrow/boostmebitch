@@ -4,6 +4,7 @@ import {
   fetchAllPodcastNotes,
   noteHasSubstance,
   useNostrFeed,
+  indexedGlobalNotes,
   useViewerReposts,
   type DiscoveredNote,
 } from '@/lib/nostr';
@@ -33,6 +34,9 @@ export function GlobalNostrFeed() {
   const { notes, loading, err, refresh } = useNostrFeed({
     cacheKey: 'global',
     fetcher: fetchAllPodcastNotes,
+    // One request for the notes, their replies, quoted events and author
+    // profiles. Runs alongside the relay pass, never instead of it.
+    indexFetcher: indexedGlobalNotes,
   });
   // Show + episode titles for every note's NIP-73 guids. Shared with the boost
   // explorer, which needs the same probe-first-then-batch PI resolution.

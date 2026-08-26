@@ -16,6 +16,11 @@ const config = [
       // entire source tree and report thousands of duplicate problems, which
       // is indistinguishable from having broken the build.
       '.claude/**',
+      // services/nostr-index is a separate deployable with its own package.json,
+      // tsconfig and dependencies. Linting it under the Next config reports
+      // rules that do not apply to a Node service and, like the worktree case
+      // above, drowns real problems in noise.
+      'services/**',
     ],
   },
   ...compat.extends('next/core-web-vitals', 'next/typescript'),
