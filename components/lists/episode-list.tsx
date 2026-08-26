@@ -12,6 +12,7 @@ import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium, showShareUrl } from '@/lib/util';
 import { applyLiveStatuses } from '@/lib/live-status';
+import { loadFeed } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
 import { BoostModal } from '../boost-modal';
 import { BoltIcon, CoinIcon } from '../icons';
@@ -140,11 +141,6 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
     // is exactly the state a slow or failed metadata fetch leaves behind.
     if (!feedId) { setData({ podcast: null, episodes: [] }); setLoading(false); setLoadError(false); return; }
     setLoading(true);
-    // Preview (not-in-PI) feeds load by URL — the synthetic id can't be
-    // resolved server-side. PI feeds load by numeric id as before.
-    const endpoint = feedUrl
-      ? `/api/feed?url=${encodeURIComponent(feedUrl)}`
-      : `/api/feed?id=${feedId}`;
     // The generation guard is a CORRECTNESS gate, not a perf one. Switching
     // shows quickly can land A's response after B's, and the handler below
     // writes `episodeQueue` — the array <TransportControls> computes prev/next
@@ -157,8 +153,15 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
     // empty, and the page rendered `not found`.
     const gen = ++feedGenRef.current;
     setLoadError(false);
-    fetch(endpoint)
-      .then((r) => r.json())
+    // `loadFeed` rather than a bare fetch, and it also owns the URL: a preview
+    // (not-in-PI) feed loads by URL because its synthetic id cannot be resolved
+    // server-side, and a PI feed by numeric id. It coalesces a request already
+    // in flight for the same feed — which on a cold `?podcast=…&episode=…` deep
+    // link is exactly what is happening, because `<HomePage>` puts the show in
+    // the store first and this list mounts while `loadEpisodeFromFeed` is still
+    // downloading the very same body. Nothing is cached past the promise
+    // settling, so the retry button below still re-fetches.
+    loadFeed(feedUrl ? { feedUrl } : { feedId })
       .then((d) => {
         if (gen !== feedGenRef.current) return;
         // An `{ error }` body parses fine and would otherwise put `undefined`

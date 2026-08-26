@@ -33,6 +33,37 @@ export function HomePage() {
   const openEpisode = useApp((s) => s.openEpisode);
   const discussionEpisode = useApp((s) => s.discussionEpisode);
   const openDiscussion = useApp((s) => s.openDiscussion);
+  /**
+   * Whether we yet know which page this is — the home page, or a `?podcast=` /
+   * `?feed=` deep link on its way to a show.
+   *
+   * **It gates the two relay-backed home surfaces, and it is a load-time rule
+   * rather than a rendering preference.** `inDetailView` cannot answer it:
+   * it is `!!selectedPodcast`, which a deep link does not set until
+   * `resolvePodcastByGuid` has been to the server and back. So on a cold
+   * `/?podcast=…&episode=…` the first commit mounted `<NostrLiveStreams>` and
+   * `<GlobalNostrFeed>`, whose effects run BEFORE this component's, and threw
+   * the whole thing away a moment later. Measured against a stubbed API, both
+   * of their index requests went out ahead of the deep link's own first
+   * request — and behind an index that answers 503 (or none at all) that is not
+   * two requests, it is the full relay path: a kind:1 scan, a reply-tree BFS,
+   * the profile ladder and a PI metadata batch, all of it competing for sockets
+   * and main-thread time with the page the visitor actually asked for.
+   *
+   * It starts FALSE on the server and on the first client render, so the markup
+   * is deterministic and there is no hydration mismatch — which is why this is
+   * a state flag set from an effect rather than a read of
+   * `window.location.search` during render. The cost is that an ordinary home
+   * visit paints its two feed sections one commit later than it used to; they
+   * are below the hero and the search box, and their own skeletons are what
+   * appears either way.
+   *
+   * It is only ever set, never cleared, and that is deliberate: once the URL
+   * question is answered `inDetailView` alone governs, so pressing "← back to
+   * results" out of a deep-linked show brings the home surfaces up as it always
+   * did.
+   */
+  const [entryResolved, setEntryResolved] = useState(false);
 
   // Mount-time hydration: restore the detail / episode / discussion view from
   // the URL. Podcast resolves by ?podcast=<guid> (resolvePodcastByGuid, with its
@@ -46,8 +77,8 @@ export function HomePage() {
     const feedId = params.get('feed');
     const episodeGuid = params.get('episode');
     const wantDiscussion = params.get('discussion') === '1';
-    if (!guid && !feedId) return;
-    if (useApp.getState().selectedPodcast) return;
+    if (!guid && !feedId) { setEntryResolved(true); return; }
+    if (useApp.getState().selectedPodcast) { setEntryResolved(true); return; }
     (async () => {
       let podcast: Podcast | null = null;
       if (guid) {
@@ -62,6 +93,11 @@ export function HomePage() {
           } catch { /* ignore */ }
         }
       }
+      // Whatever happened, the question this flag gates is now answered. On a
+      // successful restore `inDetailView` is what hides the home surfaces from
+      // here on; on a failure — a guid PI doesn't hold, PI down, offline — the
+      // visitor is looking at the browse page and must get the whole one.
+      setEntryResolved(true);
       if (!podcast || useApp.getState().selectedPodcast) return;
       setSelected(podcast);
       if (!episodeGuid) return;
@@ -392,7 +428,7 @@ export function HomePage() {
         ) : null}
       </section>
 
-      {!inDetailView && (
+      {entryResolved && !inDetailView && (
         <>
           <section className="max-w-7xl mx-auto px-4 pt-8">
             <NostrLiveStreams />
