@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
 import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
-import { safeFetch, readCappedText } from './safe-fetch';
+import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
 import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls } from './util';
 import { createBoundedCache } from './bounded-cache';
@@ -35,7 +35,7 @@ export class PiHttpError extends Error {
   }
 }
 
-async function pi<T>(path: string): Promise<T> {
+async function pi<T>(path: string, maxBytes?: number): Promise<T> {
   const res = await fetch(BASE + path, {
     headers: authHeaders(),
     // Podcast Index data is fairly cacheable; 60s is sane for search.
@@ -46,8 +46,13 @@ async function pi<T>(path: string): Promise<T> {
   // error branch is capped hardest: that string ends up inside an exception
   // message, so an HTML error page would otherwise ride along in memory and,
   // before the api-handler change, out to the caller.
+  //
+  // `maxBytes` is for the one caller that asks for a list whose length it
+  // chose: a body over the cap THROWS, and a throw here is a 500 on the whole
+  // show page, so a request big enough to outgrow the shared ceiling has to
+  // raise it rather than inherit it.
   if (!res.ok) throw new PiHttpError(res.status, await readCappedText(res, 4 * 1024));
-  return JSON.parse(await readCappedText(res)) as T;
+  return JSON.parse(await readCappedText(res, maxBytes)) as T;
 }
 
 // PI's value object → our ValueBlock
@@ -249,9 +254,24 @@ function buildEpisode(e: any): Episode {
   };
 }
 
+/**
+ * PI's ceiling for one `/episodes/byfeedid` call, and the number `/api/feed`
+ * asks for. There is no offset or "older than" parameter on that endpoint —
+ * `max` is the only lever — so an item we don't ask for here is an item no
+ * later call can reach, and the reader simply never sees it. A feed longer
+ * than this is the one case the app still truncates; see docs/feeds.md.
+ */
+export const PI_EPISODE_MAX = 1000;
+
 export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> {
   const data = await pi<any>(
     `/episodes/byfeedid?id=${feedId}&max=${max}&fulltext`,
+    // `fulltext` means PI sends every description untruncated, so the body
+    // scales with `max` while the shared cap does not: a 1000-item ask can
+    // pass 8 MB, and `readCappedText` answers that with a throw — a show page
+    // that worked at 50 items 500ing outright at 1000. 24 KB per episode is
+    // well past any real one and keeps the ceiling proportional to the ask.
+    max > 100 ? Math.max(MAX_BODY_BYTES, max * 24 * 1024) : undefined,
   );
   return (data.items ?? []).map(buildEpisode);
 }

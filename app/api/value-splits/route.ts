@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getEpisodes, resolveValueTimeSplits } from '@/lib/pi';
+import { PI_EPISODE_MAX, getEpisodes, resolveValueTimeSplits } from '@/lib/pi';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -15,7 +15,10 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'missing or invalid feedId / episodeId' }, { status: 400 });
   }
   return withErrorHandling(async () => {
-    const episodes = await getEpisodes(feedId, 50);
+    // Same `max` as /api/feed on purpose, twice over: an episode the list can
+    // show must be one this route can find its tracks for, and an identical PI
+    // URL shares that route's fetch cache entry instead of opening a second.
+    const episodes = await getEpisodes(feedId, PI_EPISODE_MAX);
     const episode = episodes.find((e) => e.id === episodeId);
     if (!episode) return NextResponse.json({ error: 'episode not found' }, { status: 404 });
     const raw = episode.valueTimeSplits ?? [];

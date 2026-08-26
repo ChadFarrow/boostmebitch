@@ -314,8 +314,9 @@ export async function resolveEpisodeByGuid(
  * Both halves of the result are wanted. `podcast` is the RSS-enriched show
  * (funding / medium / podroll), for `syncSelectedPodcast`. `episode` is null
  * when the feed loaded but doesn't hold that guid — `/api/feed` asks PI for the
- * latest 50 items, so a favorite older than that legitimately isn't in it, and
- * the caller should stay on the show page rather than invent one.
+ * latest `PI_EPISODE_MAX` items, so a favorite older than an archive show's
+ * first thousand legitimately isn't in it, and the caller should stay on the
+ * show page rather than invent one.
  *
  * Returns null only when the feed itself couldn't be loaded. Deliberately does
  * NOT trip the PI breaker: this runs on an explicit navigation, where the cost

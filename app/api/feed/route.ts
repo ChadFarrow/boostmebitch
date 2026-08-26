@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment } from '@/lib/pi';
+import { PI_EPISODE_MAX, getEpisodes, getFeedFromRss, getLiveItemsForFeed, getLiveItemsFromRss, getPodcast, getRssEpisodeEnrichment } from '@/lib/pi';
 import type { Episode } from '@/lib/types';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
@@ -9,6 +9,66 @@ const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
   live: 0,
   pending: 1,
 };
+
+/**
+ * Ceiling for the serialized `episodes` array.
+ *
+ * Vercel's Node runtime refuses a non-streamed response body over 4.5 MB, and
+ * this route now asks PI for up to `PI_EPISODE_MAX` items, so an archive show
+ * with long notes can build a payload the platform will not send — which
+ * arrives as a 500 and a blank show page, i.e. a feed that worked while it was
+ * truncated breaking outright once it isn't. 3.5 MB leaves room for `podcast`
+ * and the headers.
+ */
+const EPISODES_BUDGET_BYTES = 3.5 * 1024 * 1024;
+
+/**
+ * Shrink `episodes` to {@link EPISODES_BUDGET_BYTES}, oldest first.
+ *
+ * Prose is shed before rows are, because the two costs are not the same thing.
+ * `contentEncoded` (the full show notes) and `description` are nearly all the
+ * bytes and **no list row reads either** — only the detail view does, and it
+ * already renders a notes-less episode. An episode stripped of both still
+ * lists, plays, favorites and boosts. A dropped one is invisible, which is the
+ * truncation this whole change exists to remove, so it happens only when
+ * shedding every word in the feed still isn't enough.
+ *
+ * Order is load-bearing: `episodes` is already sorted (live first, then the
+ * feed's own order), so trimming from the end takes the rows a reader reaches
+ * last, and live items at the front are never touched.
+ */
+const SHEDDABLE: readonly (keyof Episode)[] = ['contentEncoded', 'description'];
+
+function fitEpisodesToBudget(episodes: Episode[]): Episode[] {
+  const out = episodes.slice();
+  const sizes = out.map((e) => Buffer.byteLength(JSON.stringify(e)));
+  let total = sizes.reduce((a, b) => a + b, 0);
+  if (total <= EPISODES_BUDGET_BYTES) return episodes;
+
+  let shed = 0;
+  for (const field of SHEDDABLE) {
+    for (let i = out.length - 1; i >= 0 && total > EPISODES_BUDGET_BYTES; i--) {
+      if (out[i][field] == null) continue;
+      const stripped = { ...out[i], [field]: undefined };
+      const size = Buffer.byteLength(JSON.stringify(stripped));
+      total -= sizes[i] - size;
+      sizes[i] = size;
+      out[i] = stripped;
+      shed++;
+    }
+  }
+  // `> 1`, not `> 0`: a single episode whose own notes are past the budget has
+  // already been stripped above, and answering with an empty list would read
+  // as a feed with no episodes rather than as one very large one.
+  while (out.length > 1 && total > EPISODES_BUDGET_BYTES) {
+    total -= sizes.pop() ?? 0;
+    out.pop();
+  }
+  console.warn(
+    `[feed] response over budget: shed prose from ${shed} field(s), kept ${out.length} of ${episodes.length} episodes`,
+  );
+  return out;
+}
 
 export async function GET(req: Request) {
   const limited = rateLimit(req, 'feed', 60);
@@ -27,7 +87,10 @@ export async function GET(req: Request) {
     return withErrorHandling(async () => {
       const parsed = await getFeedFromRss(url);
       if (!parsed) return NextResponse.json({ error: 'not found' }, { status: 404 });
-      return NextResponse.json(parsed, {
+      // Same budget as the PI path: this one reads every <item> in a document
+      // `safeFetch` accepts up to 8 MB, so it has always been able to build a
+      // body the platform will not send.
+      return NextResponse.json({ ...parsed, episodes: fitEpisodesToBudget(parsed.episodes) }, {
         headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' },
       });
     }, 'feed fetch failed');
@@ -41,7 +104,10 @@ export async function GET(req: Request) {
     // not blank out the whole feed page.
     const [podcast, episodes, piLive] = await Promise.all([
       getPodcast(id),
-      getEpisodes(id, 50),
+      // Ask for everything PI will give: the client reveals rows a page at a
+      // time, so a long feed costs the reader nothing until they scroll, while
+      // an episode we never requested is one no later call can fetch.
+      getEpisodes(id, PI_EPISODE_MAX),
       getLiveItemsForFeed(id).catch(() => [] as Episode[]),
     ]);
     // PI's episode API doesn't expose <podcast:socialInteract> or full show
@@ -151,7 +217,7 @@ export async function GET(req: Request) {
     // notes. RSS-only like podroll, so it's an unconditional attach.
     if (feedNostrNpubs) podcast.nostrNpubs = feedNostrNpubs;
     return NextResponse.json(
-      { podcast, episodes: merged },
+      { podcast, episodes: fitEpisodesToBudget(merged) },
       { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },
     );
   }, 'feed fetch failed');

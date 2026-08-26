@@ -24,6 +24,9 @@ import { FavEpisodeHeart, FavHeart } from '../fav-heart';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 
+/** Rows revealed per press of "Load more episodes". */
+const PAGE_SIZE = 50;
+
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   if (status === 'live') {
     return (
@@ -103,9 +106,12 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
   const [showBoostOpen, setShowBoostOpen] = useState(false);
   const [boostTrack, setBoostTrack] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
-  // Episodes are revealed 10 at a time behind a "Load more" button. The Nostr
-  // comments feed sits below this list, so a button (not infinite scroll) keeps
-  // it at a stable, reachable position on mobile.
+  // Episodes open at 10 rows and reveal PAGE_SIZE more per press of a "Load
+  // more" button. The Nostr comments feed sits below this list, so a button
+  // (not infinite scroll) keeps it at a stable, reachable position on mobile —
+  // which is also why the step is bigger than the opening count: /api/feed
+  // serves up to PI's full 1000 items, and 10 at a time is a hundred presses
+  // to reach the bottom of an archive show.
   const [visibleCount, setVisibleCount] = useState(10);
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Consecutive-miss counters for the two-misses-before-ended rule in
@@ -488,7 +494,7 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
       {remaining > 0 && (
         <button
           type="button"
-          onClick={() => setVisibleCount((c) => Math.min(c + 10, data.episodes.length))}
+          onClick={() => setVisibleCount((c) => Math.min(c + PAGE_SIZE, data.episodes.length))}
           className="btn-ghost w-full mt-3"
         >
           Load more episodes ({remaining})
