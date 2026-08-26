@@ -62,12 +62,19 @@ export function FavoritesSyncNotice() {
 
   const privateUnreadable = reason === 'private-unreadable';
   const tooLarge = reason === 'private-too-large';
+  const ambiguous = reason === 'mode-ambiguous';
 
   const message = privateUnreadable
     ? "⚠ Your signer couldn't open the private half of your list — showing what's on this device."
     : tooLarge
       ? '⚠ Your private favorites are too large to store safely. Nothing was changed; make some public to fit.'
-      : "⚠ Couldn't confirm your list — showing what's on this device.";
+      : ambiguous
+        // The withholding this names is real and would otherwise be invisible:
+        // both halves hold entries, so this device cannot tell which one it
+        // owns, and it renders the public half alone rather than guess. A
+        // shorter list with an 'ok' status is indistinguishable from a bug.
+        ? '⚠ Your list has both a public and a private half, so this device can\u2019t tell which is yours. Showing the public half only — choose one in favorites settings.'
+        : "⚠ Couldn't confirm your list — showing what's on this device.";
 
   async function retry() {
     setRetrying(true);
@@ -83,12 +90,15 @@ export function FavoritesSyncNotice() {
       // Single-flight inside the hydrator, so a double-tap joins the first run
       // rather than starting a second read-merge-publish cycle. A success
       // flips `favoritesSync` and unmounts this component from under us.
-      await hydrateFavorites(identity!);
-      // The hydrator's own read is deliberately unattended, so on a signer that
-      // refuses one it will not have touched the private half. This second pass
-      // is the explicit ask: 'user-initiated' is what spends the prompt, and the
-      // user pressing "retry" under a message naming their signer is what makes
-      // that honest.
+      // On the unlock path this pass is itself user-initiated, which is what
+      // makes it PAINT. Publishing without repainting was the bug: `syncFavorites`
+      // never touches the store, so a successful unlock cleared the notice and
+      // left the entries it had just unlocked off the screen — the explanation
+      // gone and nothing in its place.
+      await hydrateFavorites(identity!, privateUnreadable ? 'user-initiated' : 'unattended');
+      // Then publish, so the merge this device now understands goes back up.
+      // Second, not first: a publish that precedes the paint cannot fix the
+      // screen, and the hydrator is what owns the store.
       if (privateUnreadable) await syncFavoritesNow(identity!, 'user-initiated');
     } catch {
       // The hydrator already set 'degraded'; the notice simply stays up.
@@ -103,7 +113,7 @@ export function FavoritesSyncNotice() {
       className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5 mb-2 flex items-center justify-between gap-2"
     >
       <span>{message}</span>
-      {!tooLarge && (
+      {!tooLarge && !ambiguous && (
         <button
           type="button"
           onClick={retry}

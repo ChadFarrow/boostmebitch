@@ -223,15 +223,27 @@ export function FavoritesPrivacyControl() {
 export function FavoritesPrivacyModal({
   to,
   onClose,
+  onBusyChange,
 }: {
   /** Unset = the first-favorite question. Set = confirming a switch to it. */
   to?: FavoritesPrivacy;
   onClose: () => void;
+  /**
+   * Reported up so the PARENT does not unmount this mid-publish.
+   * `dismissable={!busy}` only stops Escape and a backdrop click; it cannot stop
+   * the owner from removing the element, which is what
+   * <FavoritesPrivacyPrompt>'s close-on-mode effect did the instant
+   * `recordFavoritesPrivacy` wrote — while `apply` was still awaiting. Any error
+   * from that publish then landed on an unmounted component and the user saw the
+   * dialog simply vanish, having been told nothing.
+   */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const identity = useApp((s) => s.identity);
   const [choice, setChoice] = useState<FavoritesPrivacy>(to ?? 'public');
   const [withdraw, setWithdraw] = useState(true);
   const [busy, setBusy] = useState(false);
+  useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
   const [error, setError] = useState<string | null>(null);
   const asking = !to;
   const gated = !privateFavoritesEnabled();
@@ -272,7 +284,25 @@ export function FavoritesPrivacyModal({
       // has stopped syncing with entries it promised to remove and now never
       // will.
       if (choice === 'off' && withdraw && published > 0) {
-        await withdrawThisDevice(identity);
+        // **A REFUSAL IS A `null`, NOT A THROW — test the answer.**
+        // `withdrawFavorites` → `syncFavorites` returns null without recording
+        // anything on a degraded read, on 'wholesale-delete', on
+        // 'private-unreadable', on 'private-too-large', and when the publish
+        // reached no relay (`NoRelayAcceptedError` is swallowed into
+        // `onDegraded`). A single relay wobble is enough. Ignoring it and
+        // recording 'off' tells the user their entries were taken down while
+        // they are still on the relays — and 'off' then stops both `runHydrate`
+        // and `requestFavoritesSync`, so NOTHING EVER RETRIES. Stopping here
+        // leaves the mode unrecorded, which is what keeps the retry real.
+        const note = await withdrawThisDevice(identity);
+        if (!note) {
+          setError(
+            'Could not remove your entries from Nostr just now — your relays did not '
+            + 'confirm the change, so nothing was altered and your setting is unchanged. '
+            + 'Try again in a moment.',
+          );
+          return;
+        }
       }
       // A choice that did not reach DISK must not be reported as saved.
       // `safeSet` falls back to an in-memory mirror when localStorage is full
@@ -473,12 +503,20 @@ export function FavoritesPrivacyPrompt() {
     return () => onFavoritesModeNeeded(null);
   }, []);
 
+  // Never while the dialog is mid-publish. `apply` writes the mode BEFORE it
+  // awaits `syncFavoritesNow`, so without this guard the mode landing is itself
+  // what unmounts the dialog that is still working — and the error it would have
+  // shown goes nowhere. `apply` closes itself on success; this effect exists for
+  // the other case, a mode arriving from somewhere else (another device through
+  // `applySyncedSettings`, or a second surface).
+  const [busy, setBusy] = useState(false);
   useEffect(() => {
+    if (busy) return;
     if (open && (mode || !identity)) setOpen(false);
-  }, [open, mode, identity, setOpen]);
+  }, [open, mode, identity, setOpen, busy]);
 
   if (!open || !identity) return null;
-  return <FavoritesPrivacyModal onClose={() => setOpen(false)} />;
+  return <FavoritesPrivacyModal onClose={() => setOpen(false)} onBusyChange={setBusy} />;
 }
 
 /**

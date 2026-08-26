@@ -291,8 +291,17 @@ export interface SyncOptions {
    *
    * ONE choice for the whole list: `local()` goes wholly into one half, and the
    * other half is still read, merged and carried so another app's entries
-   * survive. 'off' never reaches here — `requestFavoritesSync` returns before
-   * a cycle starts.
+   * survive.
+   *
+   * **'off' DOES reach here, and the early return below is why it is safe.**
+   * `requestFavoritesSync` tests the mode at SCHEDULE time and then hands the
+   * work to a debounce; `cycleOptionsFor` re-reads it at fire time, so a user
+   * who taps a heart and immediately chooses "Not on Nostr" arrives here with
+   * mode 'off'. Without a check, anything that is not 'private' is treated as
+   * public and the whole library is published seconds after the dialog said
+   * "Kept on this device only. Nothing is sent to Nostr." A withdrawal is the
+   * one exception: it is how entries are taken OFF the relays, and it is always
+   * user-initiated.
    */
   mode?: FavoritesPrivacy;
   /**
@@ -377,6 +386,11 @@ export async function withdrawFavorites(
  */
 export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | null> {
   const mode: FavoritesPrivacy = opts.mode ?? 'public';
+  // See `mode` in SyncOptions. A queued cycle can land after the user has turned
+  // syncing off, and publishing then is the one thing the setting promises will
+  // not happen. Returning null is the same "nothing recorded" answer every other
+  // refusal gives, so nothing downstream writes a baseline off it.
+  if (mode === 'off' && !opts.withdraw) return null;
   const read = await fetchFavoritesList(opts.pubkey, opts.relays, {
     decryptPrivate: !!opts.purpose,
     purpose: opts.purpose,
@@ -486,6 +500,27 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     // the baseline — without it the first unfavorite on this device has nothing
     // to diff against and silently fails to propagate.
     opts.onSynced(plan.baseline);
+    return null;
+  }
+
+  // **Ask whether we can encrypt BEFORE trying to, or the failure is silent.**
+  // `readPrivateHalf` only reaches its own `getNip44()` guard when `content` is
+  // non-empty, so a FIRST private publish (`content === ''`) never establishes
+  // that the signer can encrypt at all. `requireNip44()` inside
+  // `encryptPrivateHalf` then throws, and the throw is not a
+  // `NoRelayAcceptedError`, so it leaves this function entirely: no
+  // `onDegraded`, no `PublishReason`, no notice — on the background path just
+  // one line in `createScheduledPublish`'s console warn, while the user's
+  // favorites quietly stop propagating. It is the same state as
+  // 'private-unreadable', which does get a reason and a notice, so it gets the
+  // same treatment.
+  if (plan.encryptPrivate && plan.privateTags && !getNip44()) {
+    opts.onDegraded?.('private-unreadable');
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[favorites] this signer cannot NIP-44 encrypt, so the private half cannot be written — '
+      + 'keeping local favorites as-is and publishing nothing',
+    );
     return null;
   }
 

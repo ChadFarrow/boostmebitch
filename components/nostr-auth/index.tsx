@@ -19,6 +19,7 @@ import {
   fetchEncryptedNwc,
   fetchSettings,
   applySyncedSettings,
+  favoritesMode,
   hydrateFavorites,
   hydrateMutes,
   unionMutedPubkeys,
@@ -205,7 +206,17 @@ export function NostrAuth() {
       ? Promise.resolve(id)
       : writeRelaysPromise.then((write) => (write.length ? { ...id, writeRelays: write } : id));
 
-    const favoritesPromise = hydrateIdentity.then((hid) => hydrateFavorites(hid)).catch(() => {});
+    // **Sequenced behind the settings read WHEN THIS DEVICE HAS NO MODE**, which
+    // is the case the ordering note on `settingsPromise` is about. Started here
+    // unconditionally, `runHydrate` can seed a mode off the wire and record a
+    // baseline under it before `fetchSettings` returns the phone's 'private' or
+    // 'off' — a kind:30078 read plus a NIP-44 decrypt routinely outlasts the
+    // 1500 ms debounce that was the only thing narrowing the window. When a mode
+    // IS recorded locally there is nothing to race, so it keeps the parallelism.
+    const favoritesNeedsSettings = !favoritesMode(id.npub);
+    const favoritesPromise = favoritesNeedsSettings
+      ? null
+      : hydrateIdentity.then((hid) => hydrateFavorites(hid)).catch(() => {});
     const mutesPromise = hydrateIdentity.then((hid) => hydrateMutes(hid)).catch(() => {});
 
     // Apply profile + relay list as soon as both land. Both feed the
@@ -313,9 +324,18 @@ export function NostrAuth() {
           .catch(() => {})
       : Promise.resolve();
 
+    // The deferred half of the favorites hydration — see `favoritesNeedsSettings`.
+    // `settingsPromise` already swallows its own failures, so a settings read
+    // that never lands delays this rather than cancelling it.
+    const favoritesReady = favoritesPromise
+      ?? settingsPromise
+        .then(() => hydrateIdentity)
+        .then((hid) => hydrateFavorites(hid))
+        .catch(() => {});
+
     // Wait for the rest so the dedup map's resolved promise doesn't release
     // before everything settles (in_flight guards re-entrant remounts).
-    await Promise.allSettled([favoritesPromise, mutesPromise, sparkPromise, settingsPromise, nwcPromise]);
+    await Promise.allSettled([favoritesReady, mutesPromise, sparkPromise, settingsPromise, nwcPromise]);
   }
 
   useEffect(() => {

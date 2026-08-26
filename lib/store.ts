@@ -290,19 +290,77 @@ interface AppState {
  * Deliberately keyed off the FULL local set, both maps together — they share
  * one event, so "empty" means empty of both.
  */
+/**
+ * Record — or retire — "the user deliberately emptied their whole list".
+ *
+ * This flag is the most powerful thing in the favorites path: `deliberatelyEmpty`
+ * makes `baselineIsTrustworthy` return true UNCONDITIONALLY, and
+ * `emptyIsIntentional` waves the merge past `wholesale-delete`. It switches off
+ * both wipe guards at once, so what sets it has to be a real statement of
+ * intent, not a coincidence.
+ *
+ * **"The store is empty now" is NOT that statement, and the difference is the
+ * 2026-08-21 wipe.** On a device whose favorites cache failed to reach disk —
+ * quota or blocked storage on iOS Safari, both documented — the library renders
+ * empty while `bmb:favBaseline:*` (a few hundred bytes, so it landed) still
+ * names all 213 ids. The user taps one heart on and off, the store is `{}`/`{}`,
+ * and the naive version writes the flag. The next cycle then trusts that
+ * baseline, skips the guard, and publishes the shared kind:10333 empty.
+ *
+ * So setting it takes two things the naive version does not ask for:
+ *
+ *   - the cache write LANDED (`landed`) — a flag recorded beside a cache that
+ *     did not persist is a claim about a list nobody can see, and
+ *   - the store COVERED what the baseline claims before this removal, so what
+ *     was cleared really was the whole list rather than the part this device
+ *     happened to be showing.
+ *
+ * Retiring it is unconditional, and must stay that way: a non-empty store is
+ * proof the user did not clear everything, whatever they did a moment ago.
+ */
 function markClearedIfEmpty(
   npub: string | undefined,
   favorites: Record<string, unknown>,
   episodes: Record<string, unknown>,
+  prevFavorites: Record<string, unknown>,
+  prevEpisodes: Record<string, unknown>,
+  landed: boolean,
 ) {
   if (!npub) return;
   const empty = Object.keys(favorites).length === 0 && Object.keys(episodes).length === 0;
-  storage.favCleared.set(npub, empty);
+  if (!empty) {
+    storage.favCleared.set(npub, false);
+    return;
+  }
+  if (!landed) return;
+  const baseline = storage.favBaseline.get(npub);
+  const held = new Set([...Object.keys(prevFavorites), ...Object.keys(prevEpisodes)]);
+  // The baseline stores full NIP-73 identifier strings; the store is keyed by
+  // bare guids. Compare on the trailing guid so the two are talking about the
+  // same thing.
+  const bareId = (id: string) => id.slice(id.lastIndexOf(':') + 1);
+  const claimed = [
+    ...baseline.feeds, ...baseline.items,
+    ...(baseline.privateFeeds ?? []), ...(baseline.privateItems ?? []),
+  ];
+  const covered = claimed.every((id) => held.has(bareId(id)));
+  if (!covered) return;
+  storage.favCleared.set(npub, true);
 }
 
 function dropBaselineIfWriteFailed(landed: boolean, npub: string | undefined, what: string) {
   if (landed || !npub) return;
-  storage.favBaseline.set(npub, { feeds: [], items: [] });
+  // **The PUBLIC half only.** The two-field literal reads back with
+  // `privateFeeds: []` / `privateItems: []`, which disowns every private claim
+  // as a side effect — and the private entries live in a different place and
+  // were not affected by this failed write. Unclaimed, `mergeFavoritesList`
+  // reads them as another writer's and carries them through every republish:
+  // unremovable, while the app still renders a heart for them.
+  const prev = storage.favBaseline.get(npub);
+  storage.favBaseline.set(npub, {
+    feeds: [], items: [],
+    privateFeeds: prev.privateFeeds ?? [], privateItems: prev.privateItems ?? [],
+  });
   // eslint-disable-next-line no-console
   console.warn(
     `[favorites] the ${what} cache did not reach disk — dropping this device's baseline so it `
@@ -413,16 +471,18 @@ export const useApp = create<AppState>((set, get) => ({
   isFavorite: (guid) => !!guid && !!get().favorites[guid],
   addFavorite: (p) => set((s) => {
     const next = { ...s.favorites, [p.podcastGuid]: p };
-    dropBaselineIfWriteFailed(storage.favorites.set(s.identity?.npub, next), s.identity?.npub, 'favorites');
-    markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes);
+    const landed = storage.favorites.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(landed, s.identity?.npub, 'favorites');
+    markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes, s.favorites, s.favoriteEpisodes, landed);
     return { favorites: next };
   }),
   removeFavorite: (guid) => set((s) => {
     if (!s.favorites[guid]) return s;
     const next = { ...s.favorites };
     delete next[guid];
-    dropBaselineIfWriteFailed(storage.favorites.set(s.identity?.npub, next), s.identity?.npub, 'favorites');
-    markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes);
+    const landed = storage.favorites.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(landed, s.identity?.npub, 'favorites');
+    markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes, s.favorites, s.favoriteEpisodes, landed);
     return { favorites: next };
   }),
   // NOT marked: this is the bulk painter (hydration, sign-in, teardown), and
@@ -438,16 +498,18 @@ export const useApp = create<AppState>((set, get) => ({
   isFavoriteEpisode: (itemGuid) => !!itemGuid && !!get().favoriteEpisodes[itemGuid],
   addFavoriteEpisode: (e) => set((s) => {
     const next = { ...s.favoriteEpisodes, [e.itemGuid]: e };
-    dropBaselineIfWriteFailed(storage.favoriteEpisodes.set(s.identity?.npub, next), s.identity?.npub, 'favorite-episodes');
-    markClearedIfEmpty(s.identity?.npub, s.favorites, next);
+    const landed = storage.favoriteEpisodes.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(landed, s.identity?.npub, 'favorite-episodes');
+    markClearedIfEmpty(s.identity?.npub, s.favorites, next, s.favorites, s.favoriteEpisodes, landed);
     return { favoriteEpisodes: next };
   }),
   removeFavoriteEpisode: (itemGuid) => set((s) => {
     if (!s.favoriteEpisodes[itemGuid]) return s;
     const next = { ...s.favoriteEpisodes };
     delete next[itemGuid];
-    dropBaselineIfWriteFailed(storage.favoriteEpisodes.set(s.identity?.npub, next), s.identity?.npub, 'favorite-episodes');
-    markClearedIfEmpty(s.identity?.npub, s.favorites, next);
+    const landed = storage.favoriteEpisodes.set(s.identity?.npub, next);
+    dropBaselineIfWriteFailed(landed, s.identity?.npub, 'favorite-episodes');
+    markClearedIfEmpty(s.identity?.npub, s.favorites, next, s.favorites, s.favoriteEpisodes, landed);
     return { favoriteEpisodes: next };
   }),
   setFavoriteEpisodes: (next) => set((s) => {
