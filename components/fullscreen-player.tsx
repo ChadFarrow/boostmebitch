@@ -12,7 +12,7 @@ import type { TranscriptCue } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
 import { EpisodeContents } from './episode-contents';
 import { LivePlayedTracks } from './live-played-tracks';
-import type { Podcast, ValueTimeSplit } from '@/lib/types';
+import type { Episode, Podcast, ValueTimeSplit } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
 import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
@@ -21,6 +21,7 @@ import {
   hasValueRecipients,
   isMusicMedium,
   showShareUrl,
+  targetWord,
   stripHtml,
   fullscreenElement,
   fullscreenSupported,
@@ -178,49 +179,71 @@ function EpisodeInfoPanel({
   );
 }
 
-// Copy a BMB deep link to the current item. For a Nostr live stream
-// (liveStreamId = `<pubkey>:<dTag>`) this hands out the PERMANENT per-host
-// link `/live/<npub>` — not the per-broadcast `/stream/<naddr>` — so a show can
+// SHARE for a Nostr live stream. It hands out the PERMANENT per-host link
+// `/live/<npub>` — not the per-broadcast `/stream/<naddr>` — so a show can
 // share one URL that stays valid across broadcasts (each gets a fresh dTag).
 // The npub is the HOST's (episode.liveHostPubkey), NOT the stream id's author
 // half: platform-published streams (Shosho, zap.stream) are authored by the
 // PLATFORM's key, and `/live/<platform npub>` resolves to whatever that
 // platform streams next — a different show entirely.
-// Otherwise ?podcast=<guid>. Clipboard-only with a COPIED flip, mirroring the
-// episode-list ShareButton.
-function ShareButton({
+//
+// Separate from <ShareTargets> below, and not a branch inside it: this renders
+// only in the live-chat pane, where `liveStreamId` is the condition of the
+// branch, so the podcast case was unreachable code that read as a fallback.
+function LiveShareButton({
   liveStreamId,
   liveHostPubkey,
-  podcast,
-  episodeGuid,
 }: {
-  liveStreamId: string | null;
+  liveStreamId: string;
   liveHostPubkey?: string;
-  podcast: Podcast;
-  /** The playing episode, so this shares what the player is showing rather
-   *  than the show it belongs to. Absent (or unresolvable) falls back to the
-   *  show link — this button is labelled "this page", and a show link is still
-   *  a true answer for it. */
-  episodeGuid?: string;
 }) {
-  // This player shares two different kinds of thing, which is why the URL is
-  // built here rather than inside <CopyLinkButton>: a live stream resolves to
-  // its host's /live/<npub> page, everything else to the episode on screen.
-  // The podcast branch goes through the shared `showShareUrl` so it can't
-  // drift from the one in the episode list again — this copy used to
-  // interpolate `${origin}/?podcast=` and produced a different link off the
-  // root path.
   function buildUrl(): string | null {
     if (typeof window === 'undefined') return null;
-    if (liveStreamId) {
-      const parsed = parseStreamId(liveStreamId);
-      if (!parsed) return null;
-      return `${window.location.origin}/live/${nip19.npubEncode(liveHostPubkey ?? parsed.pubkey)}`;
-    }
-    return showShareUrl(podcast.podcastGuid, episodeGuid);
+    const parsed = parseStreamId(liveStreamId);
+    if (!parsed) return null;
+    return `${window.location.origin}/live/${nip19.npubEncode(liveHostPubkey ?? parsed.pubkey)}`;
   }
 
-  return <CopyLinkButton url={buildUrl()} title="Copy link to this page" />;
+  return <CopyLinkButton url={buildUrl()} title="Copy link to this stream" />;
+}
+
+/**
+ * The player's two SHARE buttons: one for the show, one for the episode on
+ * screen, each naming its target the way the two hearts beside them do.
+ *
+ * They are two controls rather than one because this surface presents two
+ * things and the links are not interchangeable: a show link opens the show, an
+ * episode link opens that episode. A single button has to pick, and whichever
+ * it picks is wrong for someone — sharing the show loses the episode you were
+ * listening to, sharing the episode loses the way to hand somebody the show.
+ * Neither failure is visible from here: the copy succeeds, the URL reads
+ * plausibly, and the person who finds out is the one who opens it.
+ *
+ * `targetWord` supplies the noun, so a music feed reads `[↗ ALBUM] [↗ TRACK]`
+ * and the hearts above never disagree with the shares below about what an item
+ * is called.
+ */
+function ShareTargets({ podcast, episode }: { podcast: Podcast; episode: Episode }) {
+  const showWord = targetWord('feed', podcast);
+  const itemWord = targetWord('item', podcast);
+  // Never `showShareUrl(guid, undefined)` for the episode button: that returns
+  // the SHOW link, so a guid-less episode would render two identical links
+  // under two different words.
+  const episodeUrl = episode.guid ? showShareUrl(podcast.podcastGuid, episode.guid) : null;
+  return (
+    <>
+      <CopyLinkButton
+        url={showShareUrl(podcast.podcastGuid)}
+        title={`Copy link to this ${showWord.toLowerCase()}`}
+        word={showWord}
+      />
+      <CopyLinkButton
+        url={episodeUrl}
+        title={`Copy link to this ${itemWord.toLowerCase()}`}
+        word={itemWord}
+      />
+    </>
+  );
 }
 
 export function FullscreenPlayer({
@@ -613,11 +636,9 @@ export function FullscreenPlayer({
                   <BoltIcon /> BOOST
                 </button>
                 <FavHeart podcast={podcast} size="md" />
-                <ShareButton
+                <LiveShareButton
                   liveStreamId={liveStreamId}
                   liveHostPubkey={episode.liveHostPubkey}
-                  podcast={podcast}
-                  episodeGuid={episode.guid}
                 />
               </div>
             </div>
@@ -704,7 +725,7 @@ export function FullscreenPlayer({
               <div className="flex items-center gap-2 flex-wrap">
                 <FavHeart podcast={podcast} size="md" nameTarget />
                 <FavEpisodeHeart episode={episode} podcast={podcast} size="md" nameTarget />
-                <ShareButton liveStreamId={null} podcast={podcast} episodeGuid={episode.guid} />
+                <ShareTargets podcast={podcast} episode={episode} />
                 {/* The meter below says what streaming is DOING; this is the
                     only place in the player you can change it. Without it the
                     reaction to "≋ streaming 10 sats/min" is to go hunting for

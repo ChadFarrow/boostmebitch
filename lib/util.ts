@@ -616,6 +616,27 @@ export function payableSplit(
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
 // IDs (e.g. synthesizing an Episode.id from a guid) that survive reloads.
 /**
+ * The visible word when a control names its TARGET rather than its action —
+ * `[♡ SHOW]` / `[♡ EPISODE]`, `[↗ ALBUM]` / `[↗ TRACK]`.
+ *
+ * The vocabulary is central on purpose: two surfaces inventing their own nouns
+ * is how "EPISODE" and "TRACK" come to mean the same thing on two screens.
+ * `isMusicMedium` is the same gate the rest of the app branches on, so a music
+ * feed says ALBUM/TRACK everywhere or nowhere.
+ *
+ * It lives in `lib/util.ts` rather than in `fav-heart.tsx`, where it started,
+ * because the hearts are no longer the only control that needs it: the
+ * fullscreen player names its two SHARE targets with the same words. That is
+ * the `showShareUrl` situation again — the alternative was one component
+ * importing another for a string.
+ */
+export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): string {
+  const music = !!podcast && isMusicMedium(podcast);
+  if (kind === 'feed') return music ? 'ALBUM' : 'SHOW';
+  return music ? 'TRACK' : 'EPISODE';
+}
+
+/**
  * Canonical deep link to a show, or to one episode of it: the site ROOT with
  * `?podcast=<guid>`, plus `&episode=<itemGuid>` when one is given. Null when
  * there's no podcast guid (nothing stable to link to) or during SSR.

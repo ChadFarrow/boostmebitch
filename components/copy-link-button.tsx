@@ -29,12 +29,23 @@ const COPIED_FLASH_MS = 1800;
 export function CopyLinkButton({
   url,
   title,
+  word = 'SHARE',
   className = 'btn-ghost',
 }: {
   /** Finished URL to copy. `null` renders nothing. */
   url: string | null;
   /** Tooltip + accessible name, e.g. "Copy link to this show". */
   title: string;
+  /**
+   * The visible word. Defaults to the ACTION ("SHARE"), which is right
+   * wherever the surface has one thing to share. Where two of these sit in one
+   * cluster the caller passes the TARGET instead — `targetWord` (`lib/util.ts`)
+   * — for the same reason the hearts do: two buttons reading SHARE side by
+   * side say nothing about which link each copies, and the difference is
+   * invisible until someone opens what you sent them. `title` spells out the
+   * whole action either way, so the accessible name never gets shorter.
+   */
+  word?: string;
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
@@ -59,7 +70,7 @@ export function CopyLinkButton({
 
   return (
     <button onClick={onClick} className={className} title={title} aria-label={title}>
-      <ShareIcon /> {copied ? 'COPIED' : 'SHARE'}
+      <ShareIcon /> {copied ? 'COPIED' : word}
     </button>
   );
 }
