@@ -310,6 +310,62 @@ The **SHARE button** copies `origin + /?podcast=<guid>` with a 1.8 s "COPIED" fl
 **Floating BOOST FAB.** A `fixed right-4 z-40 rounded-full` `⚡ BOOST`, shown when `hasValue`. **Hidden while the now-playing bar is up** (`hasValue && !playerVisible`) — the mini-player carries its own BOOST and the FAB (`z-40`) would just overlap the bar (`z-30`); boosting the viewed episode stays reachable via the inline `SHARE · SUPPORT · BOOST` cluster. Since it only renders with the bar hidden, its `bottom` is a fixed `calc(1.5rem + env(safe-area-inset-bottom))`.
 
 
+## Artwork is proxied and resized (`/api/art`)
+
+Podcast covers are authored as posters and rendered here as tiles. Measured
+across 53 live feeds on 2026-08-25: **27.68 MB in total, 535 KB average, 230 KB
+median, largest 8,090 KB** — for squares the app paints at 64 to 160 pixels.
+Extrapolated to a 213-show favorites list that is over **100 MB** of artwork
+pulled from nineteen unrelated hosts. Through the proxy the same 53 covers are
+**0.62 MB, 12 KB average** — a 97.8% cut, and that list becomes about 2.5 MB.
+
+`loading="lazy"` and `decoding="async"` were already in place and are not the
+fix. They control *when* a cover is fetched; this controls *how big it is*.
+
+**The raw third-party URLs stay in `artCandidates`, behind the proxied ones,
+and that is what keeps this an accelerator rather than a dependency.**
+`<PodcastCover>`'s `onError` ladder therefore falls all the way through to the
+URL the app used before the proxy existed: a route that is undeployed,
+rate-limited, out of memory, or handed something sharp cannot decode costs the
+speed-up and nothing else. Drop that tail and one broken route blanks every
+cover on the twelve surfaces this component renders on, several seconds after
+they appeared, looking exactly like a CDN fault. Order it the other way round
+and the feature is installed and inert. Both shapes are pinned by
+`npm run check:art`.
+
+**The width is an allowlist (`160|320|640|1024`), never a free integer.** Each
+`(url, width)` pair is a CDN cache key whose miss costs a full decode and
+resize of up to 12 MB, so an open parameter turns one cover into an unbounded
+family of cold misses — an amplification lever aimed at our own compute that
+looks like ordinary traffic the whole time. `artWidth` is the guard, and it is
+a **digits-only** test on purpose: `Number('0x140')` is 320 and `Number('3e2')`
+is 300, so a `Number()` guard accepts extra spellings of an allowed width and
+buys a third cache key for bytes we already hold, while `parseInt('320abc')`
+accepts unbounded junk. All three render correctly, which is why none of it
+looks wrong.
+
+**Do not add a redirect-to-origin fallback inside the route.** A 302 is a 200
+to the browser's `onError`, so it would defeat the ladder above, teach the CDN
+to cache a redirect, and hide from us that the proxy is failing at all.
+
+**`Content-Type` is not the security boundary and must not be mistaken for
+one** — a hostile feed controls that header as easily as it controls the bytes.
+The real defences are `safeFetch` (every redirect hop re-validated, hostname
+resolved), the 12 MB byte cap, `limitInputPixels`, and sharp's own magic-byte
+validation. `artTypeVerdict` exists to refuse *documents*, above all
+`image/svg+xml`, which can carry external references and scripts and has no
+business reaching a rasteriser when an `<img>` will sandbox it. The strict
+image-type list it replaced looked stricter and was worse: 2 of the 53 live
+covers declare `application/octet-stream` or a malformed `image/*` and are
+ordinary JPEGs, so it dropped them out of the optimisation silently — one of
+them 670 KB — while still accepting `image/svg+xml`, because that string does
+begin with `image/`.
+
+The 12 MB cap is deliberately larger than `/api/og/boost.png`'s 2 MB. That
+route can afford to skip an oversized cover; this one exists *because* covers
+are oversized, and a 2 MB cap would refuse precisely the images with the most
+to gain.
+
 ## Fonts and first paint
 
 **Both families are self-hosted by `next/font` in `app/layout.tsx` and reached through `var(--font-display)` / `var(--font-mono)`. Never add an `@import` to `app/globals.css`.**
