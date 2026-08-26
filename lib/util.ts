@@ -616,8 +616,17 @@ export function payableSplit(
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric
 // IDs (e.g. synthesizing an Episode.id from a guid) that survive reloads.
 /**
- * Canonical deep link to a show: the site ROOT with `?podcast=<guid>`. Null
- * when there's no guid (nothing stable to link to) or during SSR.
+ * Canonical deep link to a show, or to one episode of it: the site ROOT with
+ * `?podcast=<guid>`, plus `&episode=<itemGuid>` when one is given. Null when
+ * there's no podcast guid (nothing stable to link to) or during SSR.
+ *
+ * Both params are restored by the same `<HomePage>` mount effect, which
+ * resolves the show and then opens that episode, so an episode link is a real
+ * deep link rather than a show link with a suffix. `episodeGuid` is optional
+ * because the show header shares a show and the player shares what is playing
+ * — one function so the two can't drift into different links for the same
+ * episode, which is exactly what happened to the show link before it lived
+ * here.
  *
  * **The root, not the current pathname**, and that distinction is the whole
  * function. `?podcast=` is restored by exactly one thing — `<HomePage>`'s
@@ -638,10 +647,14 @@ export function payableSplit(
  * moving <FavHeart> out). Two private `ShareButton` copies had already drifted
  * into two different URLs for the same show before it was centralized here.
  */
-export function showShareUrl(podcastGuid: string | undefined): string | null {
+export function showShareUrl(
+  podcastGuid: string | undefined,
+  episodeGuid?: string,
+): string | null {
   if (!podcastGuid || typeof window === 'undefined') return null;
   const url = new URL('/', window.location.origin);
   url.searchParams.set('podcast', podcastGuid);
+  if (episodeGuid) url.searchParams.set('episode', episodeGuid);
   return url.toString();
 }
 

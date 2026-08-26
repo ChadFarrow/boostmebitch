@@ -192,17 +192,24 @@ function ShareButton({
   liveStreamId,
   liveHostPubkey,
   podcast,
+  episodeGuid,
 }: {
   liveStreamId: string | null;
   liveHostPubkey?: string;
   podcast: Podcast;
+  /** The playing episode, so this shares what the player is showing rather
+   *  than the show it belongs to. Absent (or unresolvable) falls back to the
+   *  show link — this button is labelled "this page", and a show link is still
+   *  a true answer for it. */
+  episodeGuid?: string;
 }) {
   // This player shares two different kinds of thing, which is why the URL is
   // built here rather than inside <CopyLinkButton>: a live stream resolves to
-  // its host's /live/<npub> page, everything else to the show link. The show
-  // branch goes through the shared `showShareUrl` so it can't drift from the
-  // one in the episode list again — this copy used to interpolate
-  // `${origin}/?podcast=` and produced a different link off the root path.
+  // its host's /live/<npub> page, everything else to the episode on screen.
+  // The podcast branch goes through the shared `showShareUrl` so it can't
+  // drift from the one in the episode list again — this copy used to
+  // interpolate `${origin}/?podcast=` and produced a different link off the
+  // root path.
   function buildUrl(): string | null {
     if (typeof window === 'undefined') return null;
     if (liveStreamId) {
@@ -210,7 +217,7 @@ function ShareButton({
       if (!parsed) return null;
       return `${window.location.origin}/live/${nip19.npubEncode(liveHostPubkey ?? parsed.pubkey)}`;
     }
-    return showShareUrl(podcast.podcastGuid);
+    return showShareUrl(podcast.podcastGuid, episodeGuid);
   }
 
   return <CopyLinkButton url={buildUrl()} title="Copy link to this page" />;
@@ -610,6 +617,7 @@ export function FullscreenPlayer({
                   liveStreamId={liveStreamId}
                   liveHostPubkey={episode.liveHostPubkey}
                   podcast={podcast}
+                  episodeGuid={episode.guid}
                 />
               </div>
             </div>
@@ -696,7 +704,7 @@ export function FullscreenPlayer({
               <div className="flex items-center gap-2 flex-wrap">
                 <FavHeart podcast={podcast} size="md" nameTarget />
                 <FavEpisodeHeart episode={episode} podcast={podcast} size="md" nameTarget />
-                <ShareButton liveStreamId={null} podcast={podcast} />
+                <ShareButton liveStreamId={null} podcast={podcast} episodeGuid={episode.guid} />
                 {/* The meter below says what streaming is DOING; this is the
                     only place in the player you can change it. Without it the
                     reaction to "≋ streaming 10 sats/min" is to go hunting for
