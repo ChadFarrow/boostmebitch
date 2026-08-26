@@ -81,6 +81,28 @@ export async function startMockRelay(events = []) {
       }
     },
     delivered: () => delivered,
+    /** How many clients are connected right now. */
+    connections: () => subs.size,
+    /**
+     * Kill every client socket WITHOUT closing the server, so the port stays
+     * put and a reconnecting client finds the same url.
+     *
+     * `wss.close()` is the wrong tool for that: it frees the port, and the
+     * server was opened on `port: 0`, so a replacement would come back on a
+     * different one and the client would be reconnecting to nothing. The whole
+     * point of this helper is to reproduce the ONE failure that stalled the
+     * deployed indexer — a dropped socket, same relay, still there.
+     *
+     * `terminate()` rather than `close()`: a clean close handshake is the easy
+     * case, and an abrupt drop is what a load balancer or an idle timeout
+     * actually does.
+     */
+    dropConnections() {
+      let n = 0;
+      for (const ws of subs.keys()) { try { ws.terminate(); n++; } catch { /* already gone */ } }
+      subs.clear();
+      return n;
+    },
     close: () => new Promise((r) => wss.close(r)),
   };
 }

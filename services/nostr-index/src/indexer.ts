@@ -6,9 +6,11 @@
 // no persistent process to do that in.
 
 import { SimplePool, type Event, type Filter } from 'nostr-tools';
+import { normalizeURL } from 'nostr-tools/utils';
+import type { AbstractRelay } from 'nostr-tools/abstract-relay';
 import type { Db } from './db.ts';
 import type { Config } from './config.ts';
-import { emptyStats, ingestEvent, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
+import { emptyStats, indexedThrough, ingestEvent, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
 import { fetchEpisodeByGuid, fetchPodcastByGuid, piConfigured } from './pi.ts';
 
 /** The two filters that define this index's universe. Both mirror queries the
@@ -40,8 +42,64 @@ const BACKFILL_PAUSE_MS = 750;
 // a long-lived process cannot grow it without limit.
 const SEEN_CAP = 100_000;
 
+// How often relay connectivity is checked, and how many consecutive all-dead
+// checks are tolerated before the subscriptions are rebuilt from scratch.
+// Two, not one, because a single check can land inside nostr-tools' own
+// reconnect backoff (10s rising to 60s) and see zero connections while a
+// perfectly good recovery is already in flight.
+const CONNECTIVITY_CHECK_MS = 60_000;
+const DEAD_CHECKS_BEFORE_REBUILD = 2;
+
+/**
+ * `AbstractSimplePool.relays` is protected, and whether a socket is actually
+ * open is exactly what the watchdog and /health have to read. This subclass
+ * exists for that one accessor and nothing else.
+ *
+ * It normalises the url on the way in because the pool keys that map by the
+ * NORMALISED form — look up the configured string and every relay reads as
+ * missing, which would make the watchdog rebuild every subscription once a
+ * minute forever while reporting zero relays connected.
+ */
+class IndexPool extends SimplePool {
+  relayFor(url: string): AbstractRelay | undefined {
+    try { return this.relays.get(normalizeURL(url)); } catch { return undefined; }
+  }
+}
+
 export class Indexer {
-  private pool = new SimplePool();
+  // `enableReconnect` and `enablePing` are BOTH off by default in nostr-tools
+  // 2.19.4, and this process depends on neither being off.
+  //
+  // With reconnect off, `handleHardClose` calls `closeAllSubscriptions` and
+  // `SimplePool.ensureRelay`'s `onclose` deletes the relay from the pool. The
+  // core subscriptions are created ONCE in `start()`, and `subscribeTracked`
+  // returns early unless the tracked-pubkey set changed — which needs new
+  // events, which needs the sockets. So one dropped socket stopped ingestion
+  // permanently, and the only symptom was `indexedThrough` drifting: `/health`
+  // answered `{ok:true}` without touching the database and `reportStats`
+  // returned early on all-zero counters, so a fully stalled indexer logged
+  // nothing at all. Measured 2026-08-25 on the deployed service: newest note
+  // 5.5 h old against a relay note 0.6 h old, `indexedThrough` ~2 h behind.
+  //
+  // With reconnect ON the relay stays in the pool, `reconnect()` retries on a
+  // 10s→60s backoff forever, and `ws.onopen` re-fires every open subscription
+  // with `since = lastEmitted + 1`, so a reconnect resumes rather than replays.
+  //
+  // `enablePing` detects the half-open socket that never fires `onclose` at
+  // all. nostr-tools uses real WebSocket ping frames when the implementation
+  // has them and otherwise falls back to a tiny `{ids:[…], limit:0}` REQ; this
+  // process is on Node's global WebSocket, so it takes the REQ path. Measured
+  // against all five configured relays before enabling it — every one answered
+  // EOSE, the slowest (`relay.fountain.fm`) at 3206 ms against a 20 s ping
+  // timeout — because a relay that does NOT answer would be closed and
+  // reconnected every 29 s, which is worse than the problem.
+  //
+  // NOT switched to the `ws` package, though it is a declared dependency and
+  // would give real ping frames: measured the same day, `relay.damus.io`
+  // refuses a `ws` handshake ("non-101 status code") while accepting Node's
+  // global WebSocket. That would cost a core relay to save a REQ.
+  private pool = new IndexPool({ enableReconnect: true, enablePing: true });
+  private deadChecks = 0;
   private seen = new Set<string>();
   private closers: { close(): void }[] = [];
   private timers: NodeJS.Timeout[] = [];
@@ -76,6 +134,10 @@ export class Indexer {
     const interval = this.cfg.resubscribeIntervalMs ?? RESUBSCRIBE_INTERVAL_MS;
     this.timers.push(setInterval(() => void this.subscribeTracked().catch(logErr('resubscribe')), interval));
     this.timers.push(setInterval(() => this.reportStats(), 60_000));
+    this.timers.push(setInterval(
+      () => void this.checkConnectivity().catch(logErr('connectivity')),
+      this.cfg.connectivityCheckMs ?? CONNECTIVITY_CHECK_MS,
+    ));
     for (const t of this.timers) t.unref();
   }
 
@@ -142,6 +204,112 @@ export class Indexer {
       }
     }
     console.log(`[indexer] tracked subscriptions rebuilt for ${pubkeys.length} pubkeys`);
+  }
+
+  /**
+   * Each configured relay sorted into the three states that matter.
+   *
+   * `subless` is the one worth naming: a relay with an OPEN socket and no
+   * subscriptions on it. That is the shape of the failure this whole change
+   * exists for — the process looks perfectly healthy from outside and indexes
+   * nothing — and it is invisible to a plain connected/disconnected count.
+   */
+  connectedRelays(): { connected: string[]; down: string[]; subless: string[] } {
+    const connected: string[] = [];
+    const down: string[] = [];
+    const subless: string[] = [];
+    for (const url of this.relays) {
+      const relay = this.pool.relayFor(url);
+      if (!relay?.connected) { down.push(url); continue; }
+      connected.push(url);
+      if (relay.openSubs.size === 0) subless.push(url);
+    }
+    return { connected, down, subless };
+  }
+
+  /**
+   * The watchdog behind nostr-tools' own reconnect.
+   *
+   * The library's reconnect is the primary recovery and handles every case
+   * seen so far. This exists because the failure it covers is SILENT and
+   * total: if reconnect ever leaves a relay in the pool without re-firing its
+   * subscriptions, the process keeps running, keeps answering /health, and
+   * indexes nothing — which is exactly the state this service was found in.
+   *
+   * The trigger is SUBSCRIPTION state, not event freshness and not a plain
+   * connected count. Both of the obvious triggers are wrong:
+   *
+   *  - Freshness is wrong because this corpus is genuinely quiet — roughly 26
+   *    podcast notes a day — so "no events for an hour" is an ordinary
+   *    afternoon, and a watchdog that rebuilt on it would thrash the relays
+   *    for nothing.
+   *  - "No relay connected" is wrong because this method REPAIRS that itself,
+   *    by re-dialling. Measured while building this: with the fix's pool
+   *    options reverted, the watchdog re-dialled the dropped relay, the next
+   *    check saw it connected and cleared the counter, and the rebuild never
+   *    fired — while the fresh relay object carried no subscriptions and
+   *    ingestion stayed dead. A backstop whose own repair clears its trigger
+   *    is not a backstop.
+   *
+   * So it triggers on a relay that is CONNECTED and carries no subscriptions,
+   * which is the failure itself rather than a proxy for it. Two consecutive
+   * observations, because `subscribeMany` reaches a relay asynchronously and a
+   * relay legitimately has no subs for a moment right after start.
+   */
+  private async checkConnectivity(): Promise<void> {
+    if (this.stopped) return;
+    const { connected, down, subless } = this.connectedRelays();
+
+    // Re-dial anything down. With reconnect enabled `ensureRelay` returns the
+    // SAME relay object, so its existing subscriptions come back with it; this
+    // only shortens the wait when the library is mid-backoff.
+    for (const url of down) {
+      try { await this.pool.ensureRelay(url, { connectionTimeout: 5_000 }); } catch { /* still down */ }
+    }
+    if (down.length) console.warn(`[indexer] ${down.length}/${this.relays.length} relay(s) down: ${down.join(', ')}`);
+
+    if (!subless.length) { this.deadChecks = 0; return; }
+
+    this.deadChecks++;
+    console.warn(
+      `[indexer] ${subless.length} relay(s) connected with NO subscriptions ` +
+      `(check ${this.deadChecks}/${DEAD_CHECKS_BEFORE_REBUILD}): ${subless.join(', ')}`,
+    );
+    if (this.deadChecks < DEAD_CHECKS_BEFORE_REBUILD) return;
+    this.deadChecks = 0;
+    console.warn(`[indexer] rebuilding every subscription from scratch (${connected.length} relays connected)`);
+    for (const c of this.closers) { try { c.close(); } catch { /* already gone */ } }
+    this.closers = [];
+    this.subscribeCore();
+    // The tracked set has almost certainly not changed while nothing was being
+    // ingested, so clear the fingerprint or `subscribeTracked` returns early
+    // and the tracked half is never rebuilt.
+    this.trackedFingerprint = '';
+    await this.subscribeTracked().catch(logErr('rebuild tracked'));
+  }
+
+  /** What /health reports. Cheap enough to serve unauthenticated on every
+   *  request: one indexed `max(seen_at)` and an in-memory socket count. */
+  async health(): Promise<{
+    indexedThrough: number;
+    secondsBehind: number;
+    relaysConnected: number;
+    relaysConfigured: number;
+    relaysDown: string[];
+    relaysWithoutSubscriptions: string[];
+    subscriptions: number;
+  }> {
+    const through = await indexedThrough(this.db);
+    const { connected, down, subless } = this.connectedRelays();
+    return {
+      indexedThrough: through,
+      secondsBehind: through ? Math.max(0, Math.floor(Date.now() / 1000) - through) : -1,
+      relaysConnected: connected.length,
+      relaysConfigured: this.relays.length,
+      relaysDown: down,
+      relaysWithoutSubscriptions: subless,
+      subscriptions: this.closers.length,
+    };
   }
 
   private async take(event: Event, source: string): Promise<void> {
@@ -268,7 +436,19 @@ export class Indexer {
 
   private reportStats(): void {
     const s = this.stats;
-    if (!s.stored && !s.profiles && !s.deleted && !s.rejected) return;
+    // Deliberately prints on an all-zero minute too. It used to return early
+    // there, which meant the one state worth shouting about — ingesting
+    // nothing at all — was the single state that produced no log line, and
+    // the service sat stalled for hours saying nothing.
+    if (!s.stored && !s.profiles && !s.deleted && !s.rejected) {
+      const { connected, subless } = this.connectedRelays();
+      console.log(
+        `[indexer] idle: nothing ingested this minute, ` +
+        `${connected.length}/${this.relays.length} relays connected` +
+        (subless.length ? `, ${subless.length} WITHOUT SUBSCRIPTIONS` : ''),
+      );
+      return;
+    }
     console.log(
       `[indexer] stored=${s.stored} profiles=${s.profiles} deleted=${s.deleted} ` +
       `rejected=${s.rejected} ${JSON.stringify(s.rejectReasons)}`,

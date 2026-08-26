@@ -58,10 +58,45 @@ DATABASE_URL=postgres://... INDEX_API_KEY=... npm start
 | `INDEX_PROFILE_RELAYS` | no | Defaults to the app's three profile outboxes. |
 | `INDEX_BACKFILL_DAYS` | no | How far the first history sweep walks. Default 180. |
 | `INDEX_RESUBSCRIBE_MS` | no | How often tracked subscriptions are reconsidered. Default 60000. |
+| `INDEX_CONNECTIVITY_MS` | no | How often relay health is checked. Default 60000. |
 | `PODCAST_INDEX_KEY` / `_SECRET` | no | Absent means the `pi_*` tables are only filled on demand, never warmed ahead. |
 | `INDEX_PI_TTL_HOURS` | no | How stale a `pi_*` row may be. Default 168. |
 
 Migrations run automatically on boot; `npm run migrate` runs them alone.
+
+## Staying alive
+
+The one job of this process is to hold relay sockets open, so the two ways it
+can stop doing that are the two things worth knowing about it.
+
+`SimplePool` is constructed with `enableReconnect` and `enablePing`, both of
+which nostr-tools 2.19.4 leaves **off** by default. Off, a dropped socket closed
+every subscription on that relay and deleted the relay from the pool, and
+nothing in the process could recover: the core subscriptions are created once at
+boot, and `subscribeTracked` returns early unless the tracked-pubkey set changed
+— which needs new events, which needs the sockets. That deadlock ran on the
+deployed service for hours in August 2026 with no error anywhere.
+
+Behind that sits a watchdog, on `INDEX_CONNECTIVITY_MS`. It re-dials relays that
+are down, and rebuilds every subscription when a relay is **connected and
+carrying none** — which is the failure itself rather than a proxy for it. It
+deliberately does not trigger on event freshness: this corpus is quiet enough
+that hours can pass between notes.
+
+`GET /health` needs no key and reports what it can actually see:
+
+```json
+{ "ok": true, "indexedThrough": 1787700777, "secondsBehind": 42,
+  "relaysConnected": 5, "relaysConfigured": 5,
+  "relaysDown": [], "relaysWithoutSubscriptions": [], "subscriptions": 6 }
+```
+
+`ok` is relay connectivity AND no unsubscribed relay — never freshness, for the
+reason above. It answers **HTTP 200 in every case on purpose**: Railway reads
+this route, and a 503 during a relay-side outage would restart-loop the
+container while the in-process watchdog was already recovering, throwing away
+the backfill cursor and the seen-set to no benefit. Read `ok`; do not wire it to
+a restart.
 
 ## Verifying
 

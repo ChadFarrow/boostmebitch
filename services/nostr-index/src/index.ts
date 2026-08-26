@@ -20,7 +20,10 @@ if (config.role === 'all' || config.role === 'indexer') {
 
 let app: ReturnType<typeof buildApi> | null = null;
 if (config.role === 'all' || config.role === 'api') {
-  app = buildApi(db, config);
+  // The indexer is handed to the API only as a health probe, so /health can
+  // report relay connectivity instead of a static literal. Null in the `api`
+  // role, where this process has no relays of its own to speak for.
+  app = buildApi(db, config, indexer ? () => indexer!.health() : undefined);
   await app.listen({ port: config.port, host: '0.0.0.0' });
   console.log(`[index] api listening on :${config.port}`);
 }

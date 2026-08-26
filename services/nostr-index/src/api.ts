@@ -33,7 +33,12 @@ function isGuid(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0 && v.length <= 256 && !/[\x00-\x1f\x7f]/.test(v);
 }
 
-export function buildApi(db: Db, cfg: ApiConfig): FastifyInstance {
+/** What /health reports about the indexer half, when this process runs one.
+ *  A function rather than the Indexer itself so `buildApi` stays constructible
+ *  from a check script with no relays and no pool. */
+export type HealthProbe = () => Promise<Record<string, unknown>>;
+
+export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
 
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
@@ -44,7 +49,36 @@ export function buildApi(db: Db, cfg: ApiConfig): FastifyInstance {
     }
   });
 
-  app.get('/health', async () => ({ ok: true }));
+  // The only unauthenticated route, and it used to be a static literal that
+  // never touched the database — so it answered `{ok:true}` on a process whose
+  // relay sockets had been dead for hours, which is how this service came to
+  // sit stalled without anyone noticing.
+  //
+  // `ok` reports RELAY CONNECTIVITY, never event freshness. Freshness is the
+  // wrong test: this corpus is quiet enough that hours can legitimately pass
+  // between notes, so a freshness-gated `ok` would cry wolf on an ordinary
+  // afternoon. `secondsBehind` is still reported, as data to read rather than
+  // a verdict.
+  //
+  // It answers HTTP 200 in every case ON PURPOSE. Railway's health check reads
+  // this route, and a 503 during a relay-side outage would restart-loop the
+  // container while the in-process watchdog was already recovering — which is
+  // the better recovery, because it keeps the backfill cursor and the seen-set.
+  app.get('/health', async () => {
+    if (!probe) return { ok: true, role: 'api' };
+    try {
+      const h = await probe();
+      // Both halves are required. A connected relay carrying no subscriptions
+      // is the exact state that stalled this service, and a connectivity-only
+      // `ok` reports it as healthy — which is the mistake the static
+      // `{ok:true}` made, one level less obviously.
+      const connected = (h.relaysConnected as number) > 0;
+      const subless = (h.relaysWithoutSubscriptions as string[] | undefined)?.length ?? 0;
+      return { ok: connected && subless === 0, ...h };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'health probe failed' };
+    }
+  });
 
   // --- feed bundles --------------------------------------------------------
   //

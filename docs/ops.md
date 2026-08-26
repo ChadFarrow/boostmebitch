@@ -129,8 +129,23 @@ from the internet.
 worker can populate the shared metadata cache.
 
 *Check:* the boot log prints `[migrate] applied 001_init.sql`, then
-`[index] api listening`. `GET /health` answers `{"ok":true}` without a key, and
-every other route answers **401** without one.
+`[index] api listening`. `GET /health` answers without a key, and every other
+route answers **401** without one.
+
+**Read what `/health` returns, not just that it answered.** It used to be a
+static `{"ok":true}` that never touched the database, which is how this service
+came to sit stalled for hours in August 2026 while reporting itself healthy. It
+now carries `indexedThrough`, `secondsBehind`, `relaysConnected` /
+`relaysConfigured`, `relaysDown` and `relaysWithoutSubscriptions`. `ok` is false
+when no relay is connected, or when a connected relay carries no subscriptions —
+the shape of that stall. It is **not** false merely because `secondsBehind` is
+large: this corpus is quiet enough that hours can pass between notes.
+
+It answers HTTP 200 either way on purpose, so Railway's health check cannot
+restart-loop the container during a relay-side outage while the in-process
+watchdog is already recovering. If `ok` is false and stays false, restart it —
+but read the log first, because `reportStats` now prints an `idle:` line every
+minute naming the connected relay count.
 
 **3b. Trim the relay set to what actually answers.** `INDEX_RELAYS` and
 `INDEX_PROFILE_RELAYS` default to eight relays, and on 2026-08-25 three of them

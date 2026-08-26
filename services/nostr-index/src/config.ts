@@ -70,6 +70,11 @@ export const config = {
   // How often tracked-pubkey subscriptions are reconsidered. Exposed mainly so
   // verify/check-indexer.mjs can drive it in milliseconds instead of minutes.
   resubscribeIntervalMs: num('INDEX_RESUBSCRIBE_MS', 60_000),
+
+  // How often relay connectivity is checked, and how many all-dead checks in a
+  // row rebuild every subscription. Same reason as above: the reconnect test
+  // in verify/check-indexer.mjs cannot wait two minutes per assertion.
+  connectivityCheckMs: num('INDEX_CONNECTIVITY_MS', 60_000),
 };
 
 export type Config = typeof config;
