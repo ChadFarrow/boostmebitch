@@ -57,6 +57,7 @@ const cfg = {
   // Drive the rebuild in milliseconds. In production this is 60s; a check that
   // waited that out would be a check nobody runs.
   resubscribeIntervalMs: 300,
+  connectivityCheckMs: 300,
 };
 
 const indexer = new Indexer(db, cfg);
@@ -92,6 +93,35 @@ ok(
   (await count('select count(*)::int as n from tracked_pubkeys where pubkey = $1', ['ab'.repeat(32)])) === 1,
   'the p-tagged pubkey is tracked, so its zaps can be indexed later',
 );
+
+// --- replies -----------------------------------------------------------------
+//
+// A reply is a kind:1 with an `e` tag to its parent and NOTHING else naming it
+// — no `k: podcast:guid`, no `t: boostagram`. It matches neither core filter,
+// and the tracked filter asks its authors for kinds 0/6/5 rather than 1. So the
+// only filter shape that finds one is `#e` on the parent id, and without a
+// subscription of that shape the index served `replies: []` forever while
+// `replyForest`'s recursive CTE ran correctly over an empty set. Measured on
+// production 2026-08-25: 50 notes, 0 replies.
+//
+// The reply watcher rebuilds on `resubscribeIntervalMs`, so wait for it to pick
+// the parent up rather than racing it.
+const replier = generateSecretKey();
+const reply = finalizeEvent({
+  kind: 1, created_at: NOW + 5, content: 'replying to that boost', tags: [['e', live.id]],
+}, replier);
+await waitFor(async () => {
+  relay.push(reply);
+  return (await count('select count(*)::int as n from events where id = $1', [reply.id])) === 1;
+}, 'a reply carrying only an `e` tag was subscribed and stored', 12_000);
+
+// The bundle is what the app actually reads, so assert through it rather than
+// through the events table: a stored reply that the query cannot reach is the
+// same nothing as a reply never stored.
+const { bundle: bundleFor, globalNotes: globalFor } = await import('../src/queries.ts');
+const bundled = await bundleFor(db, await globalFor(db, 50), 0);
+ok(bundled.replies.some((r) => r.id === reply.id),
+   'and /feed/global carries it in `replies`, which is what the client reads');
 
 // --- a relay sending what nobody asked for ---------------------------------
 //
@@ -132,6 +162,54 @@ relay.push(hostileDeletion);
 await sleep(1200);
 ok((await count('select count(*)::int as n from events where id = $1 and deleted_at is null', [target.id])) === 1,
    'a kind:5 from a DIFFERENT author cannot delete this author note');
+
+// --- the socket drops, and ingestion has to come back -----------------------
+//
+// This is the one that matters, and it is why this file drives a real relay
+// rather than pinning a predicate. The deployed indexer stalled for hours with
+// no error anywhere: nostr-tools 2.19.4 defaults `enableReconnect` to false, so
+// a dropped socket closed every subscription on that relay and deleted the
+// relay from the pool. Core subscriptions are created once in `start()`;
+// `subscribeTracked` returns early unless the tracked set changed, which needs
+// events, which needs the sockets. Nothing in the process could break that
+// loop, and `/health` said `{ok:true}` throughout.
+//
+// So: prove a reconnect happens, and prove ingestion RESUMES through it. The
+// second half is the real assertion — a relay can be reconnected while its
+// subscriptions are not re-fired, which looks healthy and indexes nothing.
+ok(relay.connections() > 0, 'the indexer holds a connection before the drop');
+const droppedFrom = relay.connections();
+ok(relay.dropConnections() === droppedFrom, 'every client socket was terminated');
+ok(relay.connections() === 0, 'the relay sees no client immediately after the drop');
+
+await waitFor(
+  async () => relay.connections() > 0,
+  'the indexer reconnected on its own after the socket dropped',
+  20_000, // nostr-tools backs off 10s before its first retry
+);
+ok(indexer.connectedRelays().connected.length === 1,
+   'and the pool reports the relay connected, which is what /health reads');
+
+const afterDrop = sign({
+  kind: 1, created_at: NOW + 30, content: 'boost published after the socket dropped',
+  tags: [['k', 'podcast:guid'], ['i', `podcast:guid:${FEED}`]],
+});
+relay.push(afterDrop);
+await waitFor(
+  async () => (await count('select count(*)::int as n from events where id = $1', [afterDrop.id])) === 1,
+  'INGESTION RESUMED: an event pushed after the drop reached Postgres',
+  20_000,
+);
+
+// /health has to be able to tell the difference. A static {ok:true} could not,
+// and that is why the stall went unnoticed.
+const h = await indexer.health();
+ok(h.relaysConnected === 1 && h.relaysConfigured === 1, 'health reports relay connectivity');
+ok(h.relaysDown.length === 0, 'health names no relay as down while one is connected');
+ok(h.relaysWithoutSubscriptions.length === 0,
+   'health reports no connected-but-unsubscribed relay, the state that stalled the service');
+ok(typeof h.indexedThrough === 'number' && h.indexedThrough > 0, 'health reports indexedThrough');
+ok(h.subscriptions > 0, 'health reports live subscriptions');
 
 indexer.stop();
 await relay.close();

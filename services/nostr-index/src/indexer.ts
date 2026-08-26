@@ -6,10 +6,13 @@
 // no persistent process to do that in.
 
 import { SimplePool, type Event, type Filter } from 'nostr-tools';
+import { normalizeURL } from 'nostr-tools/utils';
+import type { AbstractRelay } from 'nostr-tools/abstract-relay';
 import type { Db } from './db.ts';
 import type { Config } from './config.ts';
-import { emptyStats, ingestEvent, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
+import { emptyStats, indexedThrough, ingestEvent, recentNoteIds, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
 import { fetchEpisodeByGuid, fetchPodcastByGuid, piConfigured } from './pi.ts';
+import { LIVE_STREAM_KIND } from './ingest.ts';
 
 /** The two filters that define this index's universe. Both mirror queries the
  *  app already makes of relays — `fetchAllPodcastNotes` and the tag half of
@@ -26,6 +29,27 @@ export const CORE_FILTERS: { name: string; filter: Filter }[] = [
 const PUBKEY_CHUNK = 500;
 const MAX_TRACKED_IN_FILTERS = 5_000;
 
+// How many recently-stored notes are watched for REPLIES, and the per-filter
+// chunk. A reply carries no `k`/`t` tag of its own, so it matches neither core
+// filter and the only way to see one is to ask for it by its parent's id.
+// Without this the index served bundles with `replies: []` forever — measured
+// on production 2026-08-25, 50 notes and zero replies — and `replyForest`'s
+// recursive CTE was correct all along, joining against rows nothing ingested.
+//
+// The window is generous against a corpus of roughly 26 notes a day, so it
+// covers far more history than any feed page shows.
+const REPLY_WATCH_IDS = 2_000;
+const ID_CHUNK = 500;
+
+// The live-activity window, matching `LIVE_STREAM_RELAYS`' own 7-day `since`
+// in lib/nostr/live-streams.ts: wide enough to carry a stream scheduled ahead
+// of time, narrow enough not to drag in broadcasts that ended months ago.
+// Re-subscribed hourly so the `since` does not go stale on a long-lived
+// process — a subscription filter is evaluated once, at REQ time.
+const LIVE_WINDOW_SECS = 7 * 86_400;
+const LIVE_RESUBSCRIBE_MS = 3_600_000;
+const LIVE_SEED_LIMIT = 500;
+
 // How often the tracked-pubkey subscriptions are RECONSIDERED. Resubscribing
 // per new pubkey would thrash every relay, and the set grows constantly — but
 // the rebuild only actually happens when the set changed, so checking often is
@@ -40,10 +64,70 @@ const BACKFILL_PAUSE_MS = 750;
 // a long-lived process cannot grow it without limit.
 const SEEN_CAP = 100_000;
 
+// How often relay connectivity is checked, and how many consecutive all-dead
+// checks are tolerated before the subscriptions are rebuilt from scratch.
+// Two, not one, because a single check can land inside nostr-tools' own
+// reconnect backoff (10s rising to 60s) and see zero connections while a
+// perfectly good recovery is already in flight.
+const CONNECTIVITY_CHECK_MS = 60_000;
+const DEAD_CHECKS_BEFORE_REBUILD = 2;
+
+/**
+ * `AbstractSimplePool.relays` is protected, and whether a socket is actually
+ * open is exactly what the watchdog and /health have to read. This subclass
+ * exists for that one accessor and nothing else.
+ *
+ * It normalises the url on the way in because the pool keys that map by the
+ * NORMALISED form — look up the configured string and every relay reads as
+ * missing, which would make the watchdog rebuild every subscription once a
+ * minute forever while reporting zero relays connected.
+ */
+class IndexPool extends SimplePool {
+  relayFor(url: string): AbstractRelay | undefined {
+    try { return this.relays.get(normalizeURL(url)); } catch { return undefined; }
+  }
+}
+
 export class Indexer {
-  private pool = new SimplePool();
+  // `enableReconnect` and `enablePing` are BOTH off by default in nostr-tools
+  // 2.19.4, and this process depends on neither being off.
+  //
+  // With reconnect off, `handleHardClose` calls `closeAllSubscriptions` and
+  // `SimplePool.ensureRelay`'s `onclose` deletes the relay from the pool. The
+  // core subscriptions are created ONCE in `start()`, and `subscribeTracked`
+  // returns early unless the tracked-pubkey set changed — which needs new
+  // events, which needs the sockets. So one dropped socket stopped ingestion
+  // permanently, and the only symptom was `indexedThrough` drifting: `/health`
+  // answered `{ok:true}` without touching the database and `reportStats`
+  // returned early on all-zero counters, so a fully stalled indexer logged
+  // nothing at all. Measured 2026-08-25 on the deployed service: newest note
+  // 5.5 h old against a relay note 0.6 h old, `indexedThrough` ~2 h behind.
+  //
+  // With reconnect ON the relay stays in the pool, `reconnect()` retries on a
+  // 10s→60s backoff forever, and `ws.onopen` re-fires every open subscription
+  // with `since = lastEmitted + 1`, so a reconnect resumes rather than replays.
+  //
+  // `enablePing` detects the half-open socket that never fires `onclose` at
+  // all. nostr-tools uses real WebSocket ping frames when the implementation
+  // has them and otherwise falls back to a tiny `{ids:[…], limit:0}` REQ; this
+  // process is on Node's global WebSocket, so it takes the REQ path. Measured
+  // against all five configured relays before enabling it — every one answered
+  // EOSE, the slowest (`relay.fountain.fm`) at 3206 ms against a 20 s ping
+  // timeout — because a relay that does NOT answer would be closed and
+  // reconnected every 29 s, which is worse than the problem.
+  //
+  // NOT switched to the `ws` package, though it is a declared dependency and
+  // would give real ping frames: measured the same day, `relay.damus.io`
+  // refuses a `ws` handshake ("non-101 status code") while accepting Node's
+  // global WebSocket. That would cost a core relay to save a REQ.
+  private pool = new IndexPool({ enableReconnect: true, enablePing: true });
+  private deadChecks = 0;
   private seen = new Set<string>();
-  private closers: { close(): void }[] = [];
+  // Subscriptions by GROUP, not one flat list. The flat list was replaced
+  // per-generation with `closers.splice(CORE_FILTERS.length)` — arithmetic that
+  // silently means the wrong thing the moment a third group exists, which is
+  // exactly what the reply watcher below adds. A keyed map cannot drift.
+  private subs = new Map<string, { close(): void }[]>();
   private timers: NodeJS.Timeout[] = [];
   private stats: IngestStats = emptyStats();
   private stopped = false;
@@ -52,6 +136,7 @@ export class Indexer {
   // MAX_TRACKED_IN_FILTERS window in the same interval: the count is unchanged,
   // the membership is not, and the subscriptions silently never rebuild.
   private trackedFingerprint = '';
+  private replyFingerprint = '';
 
   // Plain assignments, not parameter properties - strip-only TypeScript
   // rejects those, and this service runs without a build step.
@@ -70,12 +155,23 @@ export class Indexer {
   async start(): Promise<void> {
     this.subscribeCore();
     await this.subscribeTracked();
+    await this.subscribeReplies();
+    this.subscribeLive();
     void this.backfillLoop();
     void this.piLoop();
 
     const interval = this.cfg.resubscribeIntervalMs ?? RESUBSCRIBE_INTERVAL_MS;
     this.timers.push(setInterval(() => void this.subscribeTracked().catch(logErr('resubscribe')), interval));
+    this.timers.push(setInterval(() => void this.subscribeReplies().catch(logErr('reply resubscribe')), interval));
+    this.timers.push(setInterval(
+      () => this.subscribeLive(),
+      this.cfg.liveResubscribeMs ?? LIVE_RESUBSCRIBE_MS,
+    ));
     this.timers.push(setInterval(() => this.reportStats(), 60_000));
+    this.timers.push(setInterval(
+      () => void this.checkConnectivity().catch(logErr('connectivity')),
+      this.cfg.connectivityCheckMs ?? CONNECTIVITY_CHECK_MS,
+    ));
     for (const t of this.timers) t.unref();
   }
 
@@ -83,23 +179,90 @@ export class Indexer {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
-    for (const c of this.closers) {
-      try { c.close(); } catch { /* already gone */ }
-    }
-    this.closers = [];
+    this.closeAllSubs();
     try { this.pool.close(this.relays); } catch { /* already gone */ }
+  }
+
+  /** Replace one named group of subscriptions, closing whatever it held. */
+  private setSubs(group: string, closers: { close(): void }[]): void {
+    for (const c of this.subs.get(group) ?? []) { try { c.close(); } catch { /* already gone */ } }
+    this.subs.set(group, closers);
+  }
+
+  private closeAllSubs(): void {
+    for (const group of this.subs.keys()) this.setSubs(group, []);
+    this.subs.clear();
+  }
+
+  private subCount(): number {
+    let n = 0;
+    for (const list of this.subs.values()) n += list.length;
+    return n;
   }
 
   /** Live subscriptions for the two core filters. */
   private subscribeCore(): void {
-    for (const { name, filter } of CORE_FILTERS) {
-      this.closers.push(
-        this.pool.subscribeMany(this.relays, filter, {
-          onevent: (e) => void this.take(e, name),
-          onclose: () => console.warn(`[indexer] ${name} subscription closed`),
-        }),
-      );
+    this.setSubs('core', CORE_FILTERS.map(({ name, filter }) =>
+      this.pool.subscribeMany(this.relays, filter, {
+        onevent: (e) => void this.take(e, name),
+        onclose: () => console.warn(`[indexer] ${name} subscription closed`),
+      }),
+    ));
+  }
+
+  /**
+   * Replies to notes this index already holds.
+   *
+   * A reply is a kind:1 carrying an `e` tag to its parent and nothing else that
+   * identifies it — no `k: podcast:guid`, no `t: boostagram` — so it matches
+   * neither core filter, and the tracked filter asks its authors for kinds
+   * 0/6/5 rather than 1. There is no filter shape that finds replies except
+   * asking for them by parent id, which is what this does.
+   *
+   * `ingest.ts` already accepts kind:1, so nothing else had to change: the
+   * subscription was the only thing missing, and `replyForest` has been
+   * returning `[]` from a correct query over an empty set for the life of the
+   * feature.
+   */
+  /**
+   * NIP-53 live activities (kind:30311), for the homepage's "Live on Nostr" row.
+   *
+   * No backfill and no separate seed query: a relay answers a REQ with the
+   * stored events matching the filter and THEN streams new ones, so a
+   * subscription carrying `since` seeds itself. That is also why it is not in
+   * CORE_FILTERS — `backfillLoop` walks those back to the 180-day floor, which
+   * for this kind would page in thousands of broadcasts that ended in spring.
+   *
+   * Re-subscribed on a timer because the `since` is baked in at REQ time. A
+   * process up for a week would otherwise be asking about a window that
+   * started a week before it booted.
+   */
+  private subscribeLive(): void {
+    const since = Math.floor(Date.now() / 1000) - LIVE_WINDOW_SECS;
+    this.setSubs('live', [
+      this.pool.subscribeMany(this.relays, {
+        kinds: [LIVE_STREAM_KIND], since, limit: LIVE_SEED_LIMIT,
+      }, {
+        onevent: (e) => void this.take(e, 'live'),
+        onclose: () => console.warn('[indexer] live subscription closed'),
+      }),
+    ]);
+  }
+
+  private async subscribeReplies(): Promise<void> {
+    const ids = await recentNoteIds(this.db, REPLY_WATCH_IDS);
+    const fingerprint = fingerprintOf(ids);
+    if (!ids.length || fingerprint === this.replyFingerprint) return;
+    this.replyFingerprint = fingerprint;
+
+    const closers: { close(): void }[] = [];
+    for (let i = 0; i < ids.length; i += ID_CHUNK) {
+      closers.push(this.pool.subscribeMany(this.relays, {
+        kinds: [1], '#e': ids.slice(i, i + ID_CHUNK),
+      }, { onevent: (e) => void this.take(e, 'replies') }));
     }
+    this.setSubs('replies', closers);
+    console.log(`[indexer] reply subscriptions rebuilt for ${ids.length} notes`);
   }
 
   /**
@@ -120,28 +283,142 @@ export class Indexer {
     if (!pubkeys.length || fingerprint === this.trackedFingerprint) return;
     this.trackedFingerprint = fingerprint;
 
-    // Replace, don't add: the previous generation covers a subset of these.
-    const old = this.closers.splice(CORE_FILTERS.length);
-    for (const c of old) { try { c.close(); } catch { /* already gone */ } }
-
-    // nostr-tools 2.19.4 takes ONE filter per subscription, so the
-    // authors-scoped and p-scoped halves are separate subscriptions rather
-    // than one call with two filters.
+    // nostr-tools 2.19.4 takes ONE filter per subscription, so each half is a
+    // separate subscription rather than one call with several filters.
+    //
+    // kind:0 is asked for ON ITS OWN, not folded in beside 6 and 5. A relay
+    // caps a filter's result at its own default (strfry's is 500) and serves
+    // the NEWEST matches first; a profile is written once and rarely touched,
+    // so kind:0 sorts behind every recent repost and deletion from the same 500
+    // authors and gets truncated away. Measured on production 2026-08-25, the
+    // live bundle carried 6 profiles for 24 distinct note authors while relays
+    // held 20 of the 24. Separating the filter is what stops high-churn kinds
+    // spending the profile budget.
+    const closers: { close(): void }[] = [];
     for (let i = 0; i < pubkeys.length; i += PUBKEY_CHUNK) {
       const chunk = pubkeys.slice(i, i + PUBKEY_CHUNK);
       const filters: Filter[] = [
-        { kinds: [0, 6, 5], authors: chunk },
+        { kinds: [0], authors: chunk },
+        { kinds: [6, 5], authors: chunk },
         { kinds: [9735], '#p': chunk },
       ];
       for (const filter of filters) {
-        this.closers.push(
-          this.pool.subscribeMany(this.relays, filter, {
-            onevent: (e) => void this.take(e, 'tracked'),
-          }),
-        );
+        closers.push(this.pool.subscribeMany(this.relays, filter, {
+          onevent: (e) => void this.take(e, 'tracked'),
+        }));
       }
     }
+    this.setSubs('tracked', closers);
     console.log(`[indexer] tracked subscriptions rebuilt for ${pubkeys.length} pubkeys`);
+  }
+
+  /**
+   * Each configured relay sorted into the three states that matter.
+   *
+   * `subless` is the one worth naming: a relay with an OPEN socket and no
+   * subscriptions on it. That is the shape of the failure this whole change
+   * exists for — the process looks perfectly healthy from outside and indexes
+   * nothing — and it is invisible to a plain connected/disconnected count.
+   */
+  connectedRelays(): { connected: string[]; down: string[]; subless: string[] } {
+    const connected: string[] = [];
+    const down: string[] = [];
+    const subless: string[] = [];
+    for (const url of this.relays) {
+      const relay = this.pool.relayFor(url);
+      if (!relay?.connected) { down.push(url); continue; }
+      connected.push(url);
+      if (relay.openSubs.size === 0) subless.push(url);
+    }
+    return { connected, down, subless };
+  }
+
+  /**
+   * The watchdog behind nostr-tools' own reconnect.
+   *
+   * The library's reconnect is the primary recovery and handles every case
+   * seen so far. This exists because the failure it covers is SILENT and
+   * total: if reconnect ever leaves a relay in the pool without re-firing its
+   * subscriptions, the process keeps running, keeps answering /health, and
+   * indexes nothing — which is exactly the state this service was found in.
+   *
+   * The trigger is SUBSCRIPTION state, not event freshness and not a plain
+   * connected count. Both of the obvious triggers are wrong:
+   *
+   *  - Freshness is wrong because this corpus is genuinely quiet — roughly 26
+   *    podcast notes a day — so "no events for an hour" is an ordinary
+   *    afternoon, and a watchdog that rebuilt on it would thrash the relays
+   *    for nothing.
+   *  - "No relay connected" is wrong because this method REPAIRS that itself,
+   *    by re-dialling. Measured while building this: with the fix's pool
+   *    options reverted, the watchdog re-dialled the dropped relay, the next
+   *    check saw it connected and cleared the counter, and the rebuild never
+   *    fired — while the fresh relay object carried no subscriptions and
+   *    ingestion stayed dead. A backstop whose own repair clears its trigger
+   *    is not a backstop.
+   *
+   * So it triggers on a relay that is CONNECTED and carries no subscriptions,
+   * which is the failure itself rather than a proxy for it. Two consecutive
+   * observations, because `subscribeMany` reaches a relay asynchronously and a
+   * relay legitimately has no subs for a moment right after start.
+   */
+  private async checkConnectivity(): Promise<void> {
+    if (this.stopped) return;
+    const { connected, down, subless } = this.connectedRelays();
+
+    // Re-dial anything down. With reconnect enabled `ensureRelay` returns the
+    // SAME relay object, so its existing subscriptions come back with it; this
+    // only shortens the wait when the library is mid-backoff.
+    for (const url of down) {
+      try { await this.pool.ensureRelay(url, { connectionTimeout: 5_000 }); } catch { /* still down */ }
+    }
+    if (down.length) console.warn(`[indexer] ${down.length}/${this.relays.length} relay(s) down: ${down.join(', ')}`);
+
+    if (!subless.length) { this.deadChecks = 0; return; }
+
+    this.deadChecks++;
+    console.warn(
+      `[indexer] ${subless.length} relay(s) connected with NO subscriptions ` +
+      `(check ${this.deadChecks}/${DEAD_CHECKS_BEFORE_REBUILD}): ${subless.join(', ')}`,
+    );
+    if (this.deadChecks < DEAD_CHECKS_BEFORE_REBUILD) return;
+    this.deadChecks = 0;
+    console.warn(`[indexer] rebuilding every subscription from scratch (${connected.length} relays connected)`);
+    this.closeAllSubs();
+    this.subscribeCore();
+    // Neither dynamic set has changed while nothing was being ingested, so
+    // clear both fingerprints or their rebuilds return early and only the core
+    // half comes back — which would look like a recovery and index no replies
+    // and no profiles.
+    this.trackedFingerprint = '';
+    this.replyFingerprint = '';
+    await this.subscribeTracked().catch(logErr('rebuild tracked'));
+    await this.subscribeReplies().catch(logErr('rebuild replies'));
+    this.subscribeLive();
+  }
+
+  /** What /health reports. Cheap enough to serve unauthenticated on every
+   *  request: one indexed `max(seen_at)` and an in-memory socket count. */
+  async health(): Promise<{
+    indexedThrough: number;
+    secondsBehind: number;
+    relaysConnected: number;
+    relaysConfigured: number;
+    relaysDown: string[];
+    relaysWithoutSubscriptions: string[];
+    subscriptions: number;
+  }> {
+    const through = await indexedThrough(this.db);
+    const { connected, down, subless } = this.connectedRelays();
+    return {
+      indexedThrough: through,
+      secondsBehind: through ? Math.max(0, Math.floor(Date.now() / 1000) - through) : -1,
+      relaysConnected: connected.length,
+      relaysConfigured: this.relays.length,
+      relaysDown: down,
+      relaysWithoutSubscriptions: subless,
+      subscriptions: this.subCount(),
+    };
   }
 
   private async take(event: Event, source: string): Promise<void> {
@@ -268,7 +545,19 @@ export class Indexer {
 
   private reportStats(): void {
     const s = this.stats;
-    if (!s.stored && !s.profiles && !s.deleted && !s.rejected) return;
+    // Deliberately prints on an all-zero minute too. It used to return early
+    // there, which meant the one state worth shouting about — ingesting
+    // nothing at all — was the single state that produced no log line, and
+    // the service sat stalled for hours saying nothing.
+    if (!s.stored && !s.profiles && !s.deleted && !s.rejected) {
+      const { connected, subless } = this.connectedRelays();
+      console.log(
+        `[indexer] idle: nothing ingested this minute, ` +
+        `${connected.length}/${this.relays.length} relays connected` +
+        (subless.length ? `, ${subless.length} WITHOUT SUBSCRIPTIONS` : ''),
+      );
+      return;
+    }
     console.log(
       `[indexer] stored=${s.stored} profiles=${s.profiles} deleted=${s.deleted} ` +
       `rejected=${s.rejected} ${JSON.stringify(s.rejectReasons)}`,

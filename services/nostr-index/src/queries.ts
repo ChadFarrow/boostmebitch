@@ -56,6 +56,53 @@ export async function globalNotes(db: Db, limit: number, until?: number): Promis
   return rows;
 }
 
+/**
+ * NIP-53 live activities, newest version per address, within a time window.
+ *
+ * kind:30311 is ADDRESSABLE, so `(pubkey, d)` names one broadcast and every
+ * event at that address is a version of it. `events` is keyed by `id` with
+ * `on conflict do nothing`, so the versions accumulate and the dedupe has to
+ * happen here — `distinct on` over the address, newest `created_at` first,
+ * which is the same rule `parseNostrLiveStream` applies client-side.
+ *
+ * `sinceSecs` filters on `created_at`, i.e. when the streamer last UPDATED the
+ * event. A broadcast whose client stopped updating it hours ago is over,
+ * whatever its `status` tag still says; the client applies its own
+ * `LIVE_FRESH_SECS` on top and reads the status itself.
+ *
+ * The `d` tag can be absent, in which case the event id stands in for it —
+ * matching the client, where `?? e.id` does the same. Coalescing to a constant
+ * instead would collapse every d-less stream from one pubkey into one row.
+ *
+ * The `d` lookup is a LATERAL taking the lowest `pos`, not `pos = 0`.
+ * `event_tags.pos` is the tag's index in the event's own `tags` array, not a
+ * rank among `d` tags — a `d` sitting behind a `title` or a `status` is
+ * ordinary, and `pos = 0` would find no `d` at all for it, silently falling
+ * back to the event id. Every version of that broadcast would then read as a
+ * separate address and none would ever be deduped, so an ended stream would
+ * sit in the list beside its own live replacement.
+ */
+export async function liveStreams(db: Db, limit: number, sinceSecs: number): Promise<StoredEvent[]> {
+  const { rows } = await db.query<StoredEvent>(
+    `select ${SELECT_EVENT} from (
+       select distinct on (e.pubkey, coalesce(d.value, e.id))
+              e.id, e.pubkey, e.kind, e.created_at, e.content, e.tags, e.sig
+         from events e
+         left join lateral (
+           select t.value from event_tags t
+            where t.event_id = e.id and t.name = 'd'
+            order by t.pos limit 1
+         ) d on true
+        where e.kind = 30311 and e.deleted_at is null and e.created_at >= $2
+        order by e.pubkey, coalesce(d.value, e.id), e.created_at desc
+     ) e
+     order by e.created_at desc
+     limit $1`,
+    [limit, sinceSecs],
+  );
+  return rows;
+}
+
 /** Notes referencing one identifier, e.g. `podcast:guid:<uuid>`. */
 export async function notesByIdentifier(db: Db, identifier: string, limit: number, until?: number): Promise<StoredEvent[]> {
   const { rows } = await db.query<StoredEvent>(

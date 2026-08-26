@@ -87,6 +87,12 @@ const walletBackup = sign({ kind: 30078, tags: [['d', 'boostmebitch:wallet:nwc']
 const dm = sign({ kind: 4, tags: [['p', P1]] });
 const relayList = sign({ kind: 10002, tags: [['r', 'wss://relay.example']] });
 const liveStream = sign({ kind: 30311, tags: [['d', 'stream1']] });
+// An addressable kind that is NOT indexed, so the `unindexed-kind` rule keeps a
+// guard after kind:30311 moved into STORABLE_KINDS. Without a replacement, the
+// only vector exercising that branch would have been reassigned to the kind it
+// no longer describes, and "anything not on the list is dropped at the door"
+// would be asserted nowhere.
+const longFormPost = sign({ kind: 30023, tags: [['d', 'an-article']] });
 const itemOnly = sign({ kind: 1, tags: [['i', 'podcast:item:guid:orphan-item']] });
 // Tag ORDER is not guaranteed on the wire. A note may name the item before the
 // feed it belongs to, and a parser that pairs an item against "whatever feed I
@@ -148,9 +154,23 @@ const VECTORS = [
   { fn: 'classify', args: [overTheWire(relayList)],
     expect: { type: 'reject', reason: 'forbidden-kind' },
     why: 'kind:10002 - relay lists belong to the outbox model, not to a cache' },
+  // kind:30311 was rejected here until the live-stream row started reading from
+  // this index. It is indexed deliberately, and it is worth being explicit that
+  // this is a SPEC change rather than a test bent to fit: the FORBIDDEN list
+  // exists for events a stale index read could talk a client into destroying,
+  // and nothing in this app ever WRITES a live activity. It is published by the
+  // streamer and only ever read.
+  // `alsoNaive` for the same reason kinds 1, 6 and 9735 carry it: naive() stores
+  // anything that is not kind 0 or 5, so it gets every STORED kind right by
+  // construction and no stored-kind vector can discriminate. The rule this
+  // change actually needs guarded is the REJECT branch, and kind:30023 below
+  // does discriminate — naive() stores it, the shipping module refuses it.
   { fn: 'classify', args: [overTheWire(liveStream)],
+    expect: { type: 'store' }, alsoNaive: true,
+    why: 'kind:30311 live activities are indexed - read-only, and never written by this app' },
+  { fn: 'classify', args: [overTheWire(longFormPost)],
     expect: { type: 'reject', reason: 'unindexed-kind' },
-    why: 'kind:30311 is simply not in the storable set' },
+    why: 'kind:30023 - an addressable kind still off the list, so the door rule keeps a guard' },
 
   // indexableTags - pos is the ORIGINAL ordinal, gaps and all
   { fn: 'indexableTags', args: [boost],

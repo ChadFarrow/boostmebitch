@@ -5,8 +5,8 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Db } from './db.ts';
 import {
-  bundle, clampLimit, globalNotes, notesByAuthor, notesByIdentifier, notesMentioning,
-  profilesFor, repostsBy, zapsReceived,
+  bundle, clampLimit, globalNotes, liveStreams, notesByAuthor, notesByIdentifier,
+  notesMentioning, profilesFor, repostsBy, zapsReceived,
 } from './queries.ts';
 import { indexedThrough } from './store.ts';
 import { fetchEpisodeByGuid, fetchPodcastByFeedUrl, fetchPodcastByGuid, piConfigured } from './pi.ts';
@@ -33,7 +33,26 @@ function isGuid(v: unknown): v is string {
   return typeof v === 'string' && v.length > 0 && v.length <= 256 && !/[\x00-\x1f\x7f]/.test(v);
 }
 
-export function buildApi(db: Db, cfg: ApiConfig): FastifyInstance {
+/** What /health reports about the indexer half, when this process runs one.
+ *  A function rather than the Indexer itself so `buildApi` stays constructible
+ *  from a check script with no relays and no pool. */
+export type HealthProbe = () => Promise<Record<string, unknown>>;
+
+// The kind:30311 window served by /feed/live, matching the client's own.
+const LIVE_WINDOW_SECS = 7 * 86_400;
+
+// How stale `indexedThrough` may be before /feed/live refuses to answer.
+//
+// This gate exists for this route and no other. Every other bundle is public
+// history: a note from an hour ago is still true, so a slightly behind index is
+// simply a slightly shorter feed. A LIVE list is a claim about right now, and a
+// stale one says a finished broadcast is on air — worse than saying nothing,
+// because the client's relay fallback would have been right. So when the index
+// is behind, this answers 503 and the caller falls back to relays, which is the
+// same shape every other index failure already takes.
+const LIVE_MAX_STALENESS_SECS = 300;
+
+export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
 
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
@@ -44,13 +63,60 @@ export function buildApi(db: Db, cfg: ApiConfig): FastifyInstance {
     }
   });
 
-  app.get('/health', async () => ({ ok: true }));
+  // The only unauthenticated route, and it used to be a static literal that
+  // never touched the database — so it answered `{ok:true}` on a process whose
+  // relay sockets had been dead for hours, which is how this service came to
+  // sit stalled without anyone noticing.
+  //
+  // `ok` reports RELAY CONNECTIVITY, never event freshness. Freshness is the
+  // wrong test: this corpus is quiet enough that hours can legitimately pass
+  // between notes, so a freshness-gated `ok` would cry wolf on an ordinary
+  // afternoon. `secondsBehind` is still reported, as data to read rather than
+  // a verdict.
+  //
+  // It answers HTTP 200 in every case ON PURPOSE. Railway's health check reads
+  // this route, and a 503 during a relay-side outage would restart-loop the
+  // container while the in-process watchdog was already recovering — which is
+  // the better recovery, because it keeps the backfill cursor and the seen-set.
+  app.get('/health', async () => {
+    if (!probe) return { ok: true, role: 'api' };
+    try {
+      const h = await probe();
+      // Both halves are required. A connected relay carrying no subscriptions
+      // is the exact state that stalled this service, and a connectivity-only
+      // `ok` reports it as healthy — which is the mistake the static
+      // `{ok:true}` made, one level less obviously.
+      const connected = (h.relaysConnected as number) > 0;
+      const subless = (h.relaysWithoutSubscriptions as string[] | undefined)?.length ?? 0;
+      return { ok: connected && subless === 0, ...h };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : 'health probe failed' };
+    }
+  });
 
   // --- feed bundles --------------------------------------------------------
   //
   // Each returns notes + their whole reply forest + quoted events + author
   // profiles in ONE response. That is the point of the whole service: the
   // client currently pays four serial relay stages for the same thing.
+
+  // NIP-53 live activities for the homepage row. Not a bundle: a stream card
+  // renders from the event plus its host's profile, and has no reply forest or
+  // quoted events to carry.
+  app.get('/feed/live', async (req, reply) => {
+    const q = req.query as Record<string, string>;
+    const through = await indexedThrough(db);
+    const behind = Math.floor(Date.now() / 1000) - through;
+    if (!through || behind > LIVE_MAX_STALENESS_SECS) {
+      return reply.code(503).send({ error: 'index too stale for live', secondsBehind: through ? behind : -1 });
+    }
+    const streams = await liveStreams(db, clampLimit(q.limit), Math.floor(Date.now() / 1000) - LIVE_WINDOW_SECS);
+    // Host profiles come along for the same reason a feed bundle carries them:
+    // without one a card renders a bare npub, and fetching them per card is the
+    // N+1 this service exists to remove.
+    const profiles = await profilesFor(db, Array.from(new Set(streams.map((e) => e.pubkey))));
+    return { streams, profiles, indexedThrough: through };
+  });
 
   app.get('/feed/global', async (req) => {
     const q = req.query as Record<string, string>;

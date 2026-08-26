@@ -101,10 +101,20 @@ export async function ingestEvent(db: Db, event: Event, stats: IngestStats): Pro
 
       const tracked = trackedFrom(event);
       if (tracked.length) {
+        // `do update set seen_at = now()`, not `do nothing`.
+        //
+        // `trackedPubkeys` takes the 5000 most recent rows BY `seen_at`, and
+        // with `do nothing` that column was first-seen and never moved — so it
+        // ordered by "most recently DISCOVERED", not "most recently active".
+        // The 180-day backfill discovers thousands of pubkeys off old notes,
+        // each stamped `now()`, which pushed the authors of the notes the live
+        // subscription had just seen out of the window; their kind:0
+        // subscription was then dropped and never reopened. Refreshing on every
+        // sighting is what makes the window mean what its query says it means.
         await client.query(
           `insert into tracked_pubkeys (pubkey, reason)
              select * from unnest($1::text[], $2::text[])
-           on conflict (pubkey) do nothing`,
+           on conflict (pubkey) do update set seen_at = now()`,
           [tracked.map((t) => t.pubkey), tracked.map((t) => t.reason)],
         );
       }
@@ -153,6 +163,28 @@ function jsonOrEmpty(content: string): string {
   } catch {
     return '{}';
   }
+}
+
+/**
+ * The newest stored kind:1 ids, for the reply watcher's `#e` filter.
+ *
+ * `created_at`, not `seen_at`: the question is "which notes are new enough
+ * that people may still be replying to them", which is about when the note was
+ * PUBLISHED, not when this index happened to see it. Ordering by arrival would
+ * put a whole backfill page at the top and watch five-month-old notes for
+ * replies while ignoring this morning's.
+ *
+ * Tombstoned notes are excluded — a deleted note's replies are not something to
+ * go looking for.
+ */
+export async function recentNoteIds(db: Db, limit = 2_000): Promise<string[]> {
+  const { rows } = await db.query<{ id: string }>(
+    `select id from events
+       where kind = 1 and deleted_at is null
+       order by created_at desc limit $1`,
+    [limit],
+  );
+  return rows.map((r) => r.id);
 }
 
 export async function trackedPubkeys(db: Db, limit = 20_000): Promise<string[]> {
