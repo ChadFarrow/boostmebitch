@@ -76,11 +76,37 @@ const doomed = sign({
   tags: [['k', 'podcast:guid'], ['i', `podcast:guid:${FEED}`], ['p', ARTIST_PK], ['e', root.id, '', 'root']],
 });
 const tombstone = sign({ kind: 5, created_at: NOW, content: '', tags: [['e', doomed.id]] });
+// NIP-53 live activities. Two versions of ONE broadcast, so the address
+// dedupe has something to do, plus a second broadcast from the same host and a
+// third that is outside the 7-day window.
+//
+// `dOld`/`dNew` deliberately put the `d` tag at DIFFERENT positions in the tags
+// array, and never at index 0. `event_tags.pos` is the tag's index in that
+// array, not a rank among `d` tags, so a query joining on `pos = 0` finds no
+// `d` for either — falls back to the event id, reads the two versions as two
+// separate broadcasts, and shows an ended stream next to its own replacement.
+const liveOld = sign({
+  kind: 30311, created_at: NOW - 600, content: '',
+  tags: [['title', 'The Show'], ['d', 'show-1'], ['status', 'planned']],
+});
+const liveNew = sign({
+  kind: 30311, created_at: NOW - 60, content: '',
+  tags: [['status', 'live'], ['title', 'The Show'], ['streaming', 'https://x/s.m3u8'], ['d', 'show-1']],
+});
+const liveOther = sign({
+  kind: 30311, created_at: NOW - 120, content: '',
+  tags: [['d', 'show-2'], ['status', 'live'], ['title', 'Another Show']],
+});
+const liveStale = sign({
+  kind: 30311, created_at: NOW - 30 * 86_400, content: '',
+  tags: [['d', 'show-3'], ['status', 'ended'], ['title', 'Months Ago']],
+});
 const authorProfile = sign({ kind: 0, created_at: NOW, content: JSON.stringify({ name: 'Author', banner: 'https://x/b.png', website: 'https://x' }) });
 const replierProfile = sign({ kind: 0, created_at: NOW, content: JSON.stringify({ name: 'Replier' }) }, REPLIER);
 
 const stats = emptyStats();
-for (const e of [quoted, root, trackNote, quoter, reply1, reply2, repost, zap, doomed, authorProfile, replierProfile, tombstone]) {
+for (const e of [quoted, root, trackNote, quoter, reply1, reply2, repost, zap, doomed,
+                liveOld, liveNew, liveOther, liveStale, authorProfile, replierProfile, tombstone]) {
   await ingestEvent(db, e, stats);
 }
 console.log('seed:', JSON.stringify(stats));
@@ -179,6 +205,45 @@ async function post(url, payload) {
 
   const p = await get(`/profiles?pubkeys=${AUTHOR_PK},${REPLIER_PK},${ARTIST_PK}`);
   eq(p.body.profiles.length, 2, 'only pubkeys we hold a profile for come back');
+}
+
+// --- live activities (kind:30311) -------------------------------------------
+{
+  const { status, body } = await get('/feed/live?limit=50');
+  eq(status, 200, 'live feed answers while the index is fresh');
+  const ids = body.streams.map((e) => e.id);
+
+  ok(ids.includes(liveNew.id), 'the newest version of a broadcast is served');
+  ok(!ids.includes(liveOld.id),
+     'and its older version is NOT — one address is one broadcast, whatever the d-tag position');
+  ok(ids.includes(liveOther.id), 'a second broadcast from the same host is its own row');
+  ok(!ids.includes(liveStale.id), 'a broadcast last updated outside the 7-day window is dropped');
+
+  const forShow1 = ids.filter((id) => id === liveNew.id || id === liveOld.id).length;
+  eq(forShow1, 1, 'exactly one row per (pubkey, d), not one per version');
+
+  ok(body.profiles.some((pr) => pr.pubkey === AUTHOR_PK),
+     'the host profile rides along, so a card is not a bare npub');
+  ok(typeof body.indexedThrough === 'number', 'the live feed reports its own freshness');
+}
+
+// --- the live feed refuses to answer when the index is behind ---------------
+//
+// The gate is on THIS route and no other. Every other bundle is public history:
+// an hour-old note is still true. A live list is a claim about right now, and a
+// stale one puts a finished broadcast on air — strictly worse than saying
+// nothing, because the client's relay fallback would have been right.
+{
+  const { rows } = await db.query('select max(seen_at) as t from events');
+  await db.query(`update events set seen_at = now() - interval '1 hour'`);
+  const stale = await get('/feed/live');
+  eq(stale.status, 503, 'a stale index refuses the live feed rather than serving an ended stream');
+  ok(stale.body.secondsBehind > 300, 'and says how far behind it is');
+
+  const globalStill = await get('/feed/global?limit=5');
+  eq(globalStill.status, 200,
+     'while /feed/global still answers — history does not go stale, so the gate must not spread');
+  await db.query('update events set seen_at = $1', [rows[0].t]);
 }
 
 // --- input validation -------------------------------------------------------

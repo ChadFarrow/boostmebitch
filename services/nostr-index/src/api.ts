@@ -5,8 +5,8 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Db } from './db.ts';
 import {
-  bundle, clampLimit, globalNotes, notesByAuthor, notesByIdentifier, notesMentioning,
-  profilesFor, repostsBy, zapsReceived,
+  bundle, clampLimit, globalNotes, liveStreams, notesByAuthor, notesByIdentifier,
+  notesMentioning, profilesFor, repostsBy, zapsReceived,
 } from './queries.ts';
 import { indexedThrough } from './store.ts';
 import { fetchEpisodeByGuid, fetchPodcastByFeedUrl, fetchPodcastByGuid, piConfigured } from './pi.ts';
@@ -37,6 +37,20 @@ function isGuid(v: unknown): v is string {
  *  A function rather than the Indexer itself so `buildApi` stays constructible
  *  from a check script with no relays and no pool. */
 export type HealthProbe = () => Promise<Record<string, unknown>>;
+
+// The kind:30311 window served by /feed/live, matching the client's own.
+const LIVE_WINDOW_SECS = 7 * 86_400;
+
+// How stale `indexedThrough` may be before /feed/live refuses to answer.
+//
+// This gate exists for this route and no other. Every other bundle is public
+// history: a note from an hour ago is still true, so a slightly behind index is
+// simply a slightly shorter feed. A LIVE list is a claim about right now, and a
+// stale one says a finished broadcast is on air — worse than saying nothing,
+// because the client's relay fallback would have been right. So when the index
+// is behind, this answers 503 and the caller falls back to relays, which is the
+// same shape every other index failure already takes.
+const LIVE_MAX_STALENESS_SECS = 300;
 
 export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
@@ -85,6 +99,24 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
   // Each returns notes + their whole reply forest + quoted events + author
   // profiles in ONE response. That is the point of the whole service: the
   // client currently pays four serial relay stages for the same thing.
+
+  // NIP-53 live activities for the homepage row. Not a bundle: a stream card
+  // renders from the event plus its host's profile, and has no reply forest or
+  // quoted events to carry.
+  app.get('/feed/live', async (req, reply) => {
+    const q = req.query as Record<string, string>;
+    const through = await indexedThrough(db);
+    const behind = Math.floor(Date.now() / 1000) - through;
+    if (!through || behind > LIVE_MAX_STALENESS_SECS) {
+      return reply.code(503).send({ error: 'index too stale for live', secondsBehind: through ? behind : -1 });
+    }
+    const streams = await liveStreams(db, clampLimit(q.limit), Math.floor(Date.now() / 1000) - LIVE_WINDOW_SECS);
+    // Host profiles come along for the same reason a feed bundle carries them:
+    // without one a card renders a bare npub, and fetching them per card is the
+    // N+1 this service exists to remove.
+    const profiles = await profilesFor(db, Array.from(new Set(streams.map((e) => e.pubkey))));
+    return { streams, profiles, indexedThrough: through };
+  });
 
   app.get('/feed/global', async (req) => {
     const q = req.query as Record<string, string>;

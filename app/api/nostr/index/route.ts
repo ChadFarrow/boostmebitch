@@ -21,6 +21,12 @@ type Allowed = { pattern: RegExp; sMaxAge: number };
 const ALLOWED: Allowed[] = [
   // Identical for every visitor, so this is where the CDN pays.
   { pattern: /^\/feed\/global$/, sMaxAge: 30 },
+  // Live activities are identical for every visitor too, but they are a claim
+  // about NOW, so the edge window is short. The service refuses this route
+  // outright when its own index is more than five minutes behind, and the
+  // client falls back to relays — so a cached 503 would extend that refusal
+  // past its usefulness, which is why this is the shortest window here.
+  { pattern: /^\/feed\/live$/, sMaxAge: 15 },
   { pattern: /^\/feed\/podcast\/[^/]{1,256}$/, sMaxAge: 60 },
   { pattern: /^\/feed\/episode\/[^/]{1,256}$/, sMaxAge: 60 },
   // Per-visitor pages: still shared (a boost explorer is public), but a shorter

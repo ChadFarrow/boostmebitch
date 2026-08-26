@@ -94,6 +94,35 @@ ok(
   'the p-tagged pubkey is tracked, so its zaps can be indexed later',
 );
 
+// --- replies -----------------------------------------------------------------
+//
+// A reply is a kind:1 with an `e` tag to its parent and NOTHING else naming it
+// — no `k: podcast:guid`, no `t: boostagram`. It matches neither core filter,
+// and the tracked filter asks its authors for kinds 0/6/5 rather than 1. So the
+// only filter shape that finds one is `#e` on the parent id, and without a
+// subscription of that shape the index served `replies: []` forever while
+// `replyForest`'s recursive CTE ran correctly over an empty set. Measured on
+// production 2026-08-25: 50 notes, 0 replies.
+//
+// The reply watcher rebuilds on `resubscribeIntervalMs`, so wait for it to pick
+// the parent up rather than racing it.
+const replier = generateSecretKey();
+const reply = finalizeEvent({
+  kind: 1, created_at: NOW + 5, content: 'replying to that boost', tags: [['e', live.id]],
+}, replier);
+await waitFor(async () => {
+  relay.push(reply);
+  return (await count('select count(*)::int as n from events where id = $1', [reply.id])) === 1;
+}, 'a reply carrying only an `e` tag was subscribed and stored', 12_000);
+
+// The bundle is what the app actually reads, so assert through it rather than
+// through the events table: a stored reply that the query cannot reach is the
+// same nothing as a reply never stored.
+const { bundle: bundleFor, globalNotes: globalFor } = await import('../src/queries.ts');
+const bundled = await bundleFor(db, await globalFor(db, 50), 0);
+ok(bundled.replies.some((r) => r.id === reply.id),
+   'and /feed/global carries it in `replies`, which is what the client reads');
+
 // --- a relay sending what nobody asked for ---------------------------------
 //
 // No filter here requests kind:10333 or kind:3. The relay sends them anyway.

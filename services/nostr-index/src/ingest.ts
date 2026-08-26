@@ -23,7 +23,18 @@ export const PODCAST_ITEM_PREFIX = 'podcast:item:guid:';
  *   30078 backups   — encrypted wallet + settings
  *     4/1059 DMs    — private by construction
  */
-export const STORABLE_KINDS = new Set([0, 1, 6, 9735]);
+export const STORABLE_KINDS = new Set([0, 1, 6, 9735, 30311]);
+
+/** NIP-53 live activities. Addressable (30000-39999), so the newest event per
+ *  `(pubkey, d)` is the current one and older versions are history — the
+ *  dedupe lives in the query rather than at ingest, because a relay serves
+ *  versions out of order and the newest may arrive first.
+ *
+ *  It is safe to index for the reason the FORBIDDEN list exists: nothing this
+ *  app does WRITES a kind:30311. The forbidden kinds are all events a stale
+ *  index read could talk a client into destroying; a live-stream announcement
+ *  is published by the streamer and only ever read here. */
+export const LIVE_STREAM_KIND = 30311;
 
 /** kind:5 is consumed at ingest (it tombstones rows) and never stored. */
 export const DELETION_KIND = 5;

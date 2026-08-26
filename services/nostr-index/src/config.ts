@@ -75,6 +75,10 @@ export const config = {
   // row rebuild every subscription. Same reason as above: the reconnect test
   // in verify/check-indexer.mjs cannot wait two minutes per assertion.
   connectivityCheckMs: num('INDEX_CONNECTIVITY_MS', 60_000),
+
+  // How often the kind:30311 subscription is re-issued so its `since` window
+  // does not go stale. Hourly; a filter is evaluated once, at REQ time.
+  liveResubscribeMs: num('INDEX_LIVE_RESUBSCRIBE_MS', 3_600_000),
 };
 
 export type Config = typeof config;

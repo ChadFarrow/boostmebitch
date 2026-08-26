@@ -10,8 +10,9 @@ import { normalizeURL } from 'nostr-tools/utils';
 import type { AbstractRelay } from 'nostr-tools/abstract-relay';
 import type { Db } from './db.ts';
 import type { Config } from './config.ts';
-import { emptyStats, indexedThrough, ingestEvent, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
+import { emptyStats, indexedThrough, ingestEvent, recentNoteIds, setState, getState, trackedPubkeys, type IngestStats } from './store.ts';
 import { fetchEpisodeByGuid, fetchPodcastByGuid, piConfigured } from './pi.ts';
+import { LIVE_STREAM_KIND } from './ingest.ts';
 
 /** The two filters that define this index's universe. Both mirror queries the
  *  app already makes of relays — `fetchAllPodcastNotes` and the tag half of
@@ -27,6 +28,27 @@ export const CORE_FILTERS: { name: string; filter: Filter }[] = [
 // take part at all.
 const PUBKEY_CHUNK = 500;
 const MAX_TRACKED_IN_FILTERS = 5_000;
+
+// How many recently-stored notes are watched for REPLIES, and the per-filter
+// chunk. A reply carries no `k`/`t` tag of its own, so it matches neither core
+// filter and the only way to see one is to ask for it by its parent's id.
+// Without this the index served bundles with `replies: []` forever — measured
+// on production 2026-08-25, 50 notes and zero replies — and `replyForest`'s
+// recursive CTE was correct all along, joining against rows nothing ingested.
+//
+// The window is generous against a corpus of roughly 26 notes a day, so it
+// covers far more history than any feed page shows.
+const REPLY_WATCH_IDS = 2_000;
+const ID_CHUNK = 500;
+
+// The live-activity window, matching `LIVE_STREAM_RELAYS`' own 7-day `since`
+// in lib/nostr/live-streams.ts: wide enough to carry a stream scheduled ahead
+// of time, narrow enough not to drag in broadcasts that ended months ago.
+// Re-subscribed hourly so the `since` does not go stale on a long-lived
+// process — a subscription filter is evaluated once, at REQ time.
+const LIVE_WINDOW_SECS = 7 * 86_400;
+const LIVE_RESUBSCRIBE_MS = 3_600_000;
+const LIVE_SEED_LIMIT = 500;
 
 // How often the tracked-pubkey subscriptions are RECONSIDERED. Resubscribing
 // per new pubkey would thrash every relay, and the set grows constantly — but
@@ -101,7 +123,11 @@ export class Indexer {
   private pool = new IndexPool({ enableReconnect: true, enablePing: true });
   private deadChecks = 0;
   private seen = new Set<string>();
-  private closers: { close(): void }[] = [];
+  // Subscriptions by GROUP, not one flat list. The flat list was replaced
+  // per-generation with `closers.splice(CORE_FILTERS.length)` — arithmetic that
+  // silently means the wrong thing the moment a third group exists, which is
+  // exactly what the reply watcher below adds. A keyed map cannot drift.
+  private subs = new Map<string, { close(): void }[]>();
   private timers: NodeJS.Timeout[] = [];
   private stats: IngestStats = emptyStats();
   private stopped = false;
@@ -110,6 +136,7 @@ export class Indexer {
   // MAX_TRACKED_IN_FILTERS window in the same interval: the count is unchanged,
   // the membership is not, and the subscriptions silently never rebuild.
   private trackedFingerprint = '';
+  private replyFingerprint = '';
 
   // Plain assignments, not parameter properties - strip-only TypeScript
   // rejects those, and this service runs without a build step.
@@ -128,11 +155,18 @@ export class Indexer {
   async start(): Promise<void> {
     this.subscribeCore();
     await this.subscribeTracked();
+    await this.subscribeReplies();
+    this.subscribeLive();
     void this.backfillLoop();
     void this.piLoop();
 
     const interval = this.cfg.resubscribeIntervalMs ?? RESUBSCRIBE_INTERVAL_MS;
     this.timers.push(setInterval(() => void this.subscribeTracked().catch(logErr('resubscribe')), interval));
+    this.timers.push(setInterval(() => void this.subscribeReplies().catch(logErr('reply resubscribe')), interval));
+    this.timers.push(setInterval(
+      () => this.subscribeLive(),
+      this.cfg.liveResubscribeMs ?? LIVE_RESUBSCRIBE_MS,
+    ));
     this.timers.push(setInterval(() => this.reportStats(), 60_000));
     this.timers.push(setInterval(
       () => void this.checkConnectivity().catch(logErr('connectivity')),
@@ -145,23 +179,90 @@ export class Indexer {
     this.stopped = true;
     for (const t of this.timers) clearInterval(t);
     this.timers = [];
-    for (const c of this.closers) {
-      try { c.close(); } catch { /* already gone */ }
-    }
-    this.closers = [];
+    this.closeAllSubs();
     try { this.pool.close(this.relays); } catch { /* already gone */ }
+  }
+
+  /** Replace one named group of subscriptions, closing whatever it held. */
+  private setSubs(group: string, closers: { close(): void }[]): void {
+    for (const c of this.subs.get(group) ?? []) { try { c.close(); } catch { /* already gone */ } }
+    this.subs.set(group, closers);
+  }
+
+  private closeAllSubs(): void {
+    for (const group of this.subs.keys()) this.setSubs(group, []);
+    this.subs.clear();
+  }
+
+  private subCount(): number {
+    let n = 0;
+    for (const list of this.subs.values()) n += list.length;
+    return n;
   }
 
   /** Live subscriptions for the two core filters. */
   private subscribeCore(): void {
-    for (const { name, filter } of CORE_FILTERS) {
-      this.closers.push(
-        this.pool.subscribeMany(this.relays, filter, {
-          onevent: (e) => void this.take(e, name),
-          onclose: () => console.warn(`[indexer] ${name} subscription closed`),
-        }),
-      );
+    this.setSubs('core', CORE_FILTERS.map(({ name, filter }) =>
+      this.pool.subscribeMany(this.relays, filter, {
+        onevent: (e) => void this.take(e, name),
+        onclose: () => console.warn(`[indexer] ${name} subscription closed`),
+      }),
+    ));
+  }
+
+  /**
+   * Replies to notes this index already holds.
+   *
+   * A reply is a kind:1 carrying an `e` tag to its parent and nothing else that
+   * identifies it — no `k: podcast:guid`, no `t: boostagram` — so it matches
+   * neither core filter, and the tracked filter asks its authors for kinds
+   * 0/6/5 rather than 1. There is no filter shape that finds replies except
+   * asking for them by parent id, which is what this does.
+   *
+   * `ingest.ts` already accepts kind:1, so nothing else had to change: the
+   * subscription was the only thing missing, and `replyForest` has been
+   * returning `[]` from a correct query over an empty set for the life of the
+   * feature.
+   */
+  /**
+   * NIP-53 live activities (kind:30311), for the homepage's "Live on Nostr" row.
+   *
+   * No backfill and no separate seed query: a relay answers a REQ with the
+   * stored events matching the filter and THEN streams new ones, so a
+   * subscription carrying `since` seeds itself. That is also why it is not in
+   * CORE_FILTERS — `backfillLoop` walks those back to the 180-day floor, which
+   * for this kind would page in thousands of broadcasts that ended in spring.
+   *
+   * Re-subscribed on a timer because the `since` is baked in at REQ time. A
+   * process up for a week would otherwise be asking about a window that
+   * started a week before it booted.
+   */
+  private subscribeLive(): void {
+    const since = Math.floor(Date.now() / 1000) - LIVE_WINDOW_SECS;
+    this.setSubs('live', [
+      this.pool.subscribeMany(this.relays, {
+        kinds: [LIVE_STREAM_KIND], since, limit: LIVE_SEED_LIMIT,
+      }, {
+        onevent: (e) => void this.take(e, 'live'),
+        onclose: () => console.warn('[indexer] live subscription closed'),
+      }),
+    ]);
+  }
+
+  private async subscribeReplies(): Promise<void> {
+    const ids = await recentNoteIds(this.db, REPLY_WATCH_IDS);
+    const fingerprint = fingerprintOf(ids);
+    if (!ids.length || fingerprint === this.replyFingerprint) return;
+    this.replyFingerprint = fingerprint;
+
+    const closers: { close(): void }[] = [];
+    for (let i = 0; i < ids.length; i += ID_CHUNK) {
+      closers.push(this.pool.subscribeMany(this.relays, {
+        kinds: [1], '#e': ids.slice(i, i + ID_CHUNK),
+      }, { onevent: (e) => void this.take(e, 'replies') }));
     }
+    this.setSubs('replies', closers);
+    console.log(`[indexer] reply subscriptions rebuilt for ${ids.length} notes`);
   }
 
   /**
@@ -182,27 +283,32 @@ export class Indexer {
     if (!pubkeys.length || fingerprint === this.trackedFingerprint) return;
     this.trackedFingerprint = fingerprint;
 
-    // Replace, don't add: the previous generation covers a subset of these.
-    const old = this.closers.splice(CORE_FILTERS.length);
-    for (const c of old) { try { c.close(); } catch { /* already gone */ } }
-
-    // nostr-tools 2.19.4 takes ONE filter per subscription, so the
-    // authors-scoped and p-scoped halves are separate subscriptions rather
-    // than one call with two filters.
+    // nostr-tools 2.19.4 takes ONE filter per subscription, so each half is a
+    // separate subscription rather than one call with several filters.
+    //
+    // kind:0 is asked for ON ITS OWN, not folded in beside 6 and 5. A relay
+    // caps a filter's result at its own default (strfry's is 500) and serves
+    // the NEWEST matches first; a profile is written once and rarely touched,
+    // so kind:0 sorts behind every recent repost and deletion from the same 500
+    // authors and gets truncated away. Measured on production 2026-08-25, the
+    // live bundle carried 6 profiles for 24 distinct note authors while relays
+    // held 20 of the 24. Separating the filter is what stops high-churn kinds
+    // spending the profile budget.
+    const closers: { close(): void }[] = [];
     for (let i = 0; i < pubkeys.length; i += PUBKEY_CHUNK) {
       const chunk = pubkeys.slice(i, i + PUBKEY_CHUNK);
       const filters: Filter[] = [
-        { kinds: [0, 6, 5], authors: chunk },
+        { kinds: [0], authors: chunk },
+        { kinds: [6, 5], authors: chunk },
         { kinds: [9735], '#p': chunk },
       ];
       for (const filter of filters) {
-        this.closers.push(
-          this.pool.subscribeMany(this.relays, filter, {
-            onevent: (e) => void this.take(e, 'tracked'),
-          }),
-        );
+        closers.push(this.pool.subscribeMany(this.relays, filter, {
+          onevent: (e) => void this.take(e, 'tracked'),
+        }));
       }
     }
+    this.setSubs('tracked', closers);
     console.log(`[indexer] tracked subscriptions rebuilt for ${pubkeys.length} pubkeys`);
   }
 
@@ -278,14 +384,17 @@ export class Indexer {
     if (this.deadChecks < DEAD_CHECKS_BEFORE_REBUILD) return;
     this.deadChecks = 0;
     console.warn(`[indexer] rebuilding every subscription from scratch (${connected.length} relays connected)`);
-    for (const c of this.closers) { try { c.close(); } catch { /* already gone */ } }
-    this.closers = [];
+    this.closeAllSubs();
     this.subscribeCore();
-    // The tracked set has almost certainly not changed while nothing was being
-    // ingested, so clear the fingerprint or `subscribeTracked` returns early
-    // and the tracked half is never rebuilt.
+    // Neither dynamic set has changed while nothing was being ingested, so
+    // clear both fingerprints or their rebuilds return early and only the core
+    // half comes back — which would look like a recovery and index no replies
+    // and no profiles.
     this.trackedFingerprint = '';
+    this.replyFingerprint = '';
     await this.subscribeTracked().catch(logErr('rebuild tracked'));
+    await this.subscribeReplies().catch(logErr('rebuild replies'));
+    this.subscribeLive();
   }
 
   /** What /health reports. Cheap enough to serve unauthenticated on every
@@ -308,7 +417,7 @@ export class Indexer {
       relaysConfigured: this.relays.length,
       relaysDown: down,
       relaysWithoutSubscriptions: subless,
-      subscriptions: this.closers.length,
+      subscriptions: this.subCount(),
     };
   }
 
