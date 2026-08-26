@@ -4,12 +4,15 @@ import { useRouter } from 'next/navigation';
 import {
   fetchNostrLiveStreams,
   resolveStreamV4V,
+  shapeLiveStreams,
+  streamAddrOf,
   streamToEpisode,
   streamToPodcast,
   streamNaddr,
   type NostrLiveStream,
 } from '@/lib/nostr/live-streams';
-import { fetchProfile } from '@/lib/nostr';
+import { fetchProfile, indexedLiveStreams } from '@/lib/nostr';
+import type { Event } from 'nostr-tools';
 import { hasValueRecipients } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
@@ -43,6 +46,21 @@ export function NostrLiveStreams() {
   const router = useRouter();
   const mountedRef = useRef(true);
   const lastLoadRef = useRef(0);
+  // Every kind:30311 event either pass has seen, keyed by NIP-33 address.
+  //
+  // The union is by ADDRESS, not by event id, and that is the difference from
+  // the note feeds. A note is immutable, so unioning by id is right there; a
+  // live activity is REPLACEABLE, so the index and the relays routinely hold
+  // two versions of one broadcast and an id union would render the same show
+  // twice — once as it was an hour ago and once as it is now. `shapeLiveStreams`
+  // keeps the newest per address, so re-shaping the accumulated set is what
+  // makes a second source additive instead of duplicative.
+  const seenRef = useRef<Map<string, Event>>(new Map());
+  // V4V blocks already resolved, by NIP-33 address. `resolveStreamV4V` costs a
+  // relay round trip per zap-split recipient, so re-running it on every commit
+  // would pay the whole bill again — and the early paint below would blank a
+  // boost button that was working a moment ago.
+  const valueRef = useRef<Map<string, ValueBlock | null>>(new Map());
   const rowRef = useHorizontalWheelScroll<HTMLDivElement>();
   // Which group the single row shows. Falls back to the first non-empty group
   // (see `active` below) when the selected one has nothing.
@@ -74,35 +92,82 @@ export function NostrLiveStreams() {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /** Merge one source's answer into what is on screen, and resolve it. */
+  async function commit(streams: NostrLiveStream[]) {
+    if (!streams.length || !mountedRef.current) return;
+    for (const s of streams) {
+      const addr = streamAddrOf(s.rawEvent);
+      const prev = seenRef.current.get(addr);
+      if (!prev || s.rawEvent.created_at > prev.created_at) seenRef.current.set(addr, s.rawEvent);
+    }
+    const merged = shapeLiveStreams([...seenRef.current.values()]);
+
+    // PAINT FIRST, with whatever is already known, and enrich underneath.
+    //
+    // This is the whole point of reading the index. It answers in tens of
+    // milliseconds, and everything below this line is relay traffic:
+    // `resolveStreamV4V` fetches a profile per zap-split recipient and
+    // deliberately retries cached misses, so a row of 23 streams is dozens of
+    // round trips. Resolving before painting spent the index's entire advantage
+    // and then some — measured at 7.3s to first row against a 56ms index
+    // response. A card renders from the event itself; the profile is a nicer
+    // name and avatar, and `value` only gates the BOOST button.
+    const paint = () => merged.map((stream) => ({
+      stream,
+      profile: storage.profile.get(stream.pubkey) ?? null,
+      value: valueRef.current.get(streamAddrOf(stream.rawEvent)) ?? null,
+    }));
+    setResolved(paint());
+    // `loading` means "nothing to show yet", not "a fetch is running" — the
+    // same rule `useNostrFeed` follows.
+    setLoading(false);
+
+    // Host profiles: name, avatar, LN address. The index pass has already put
+    // the ones it carried into `storage.profile`, so this only chases whatever
+    // it did not know about.
+    const hostPubkeys = [...new Set(merged.map((s) => s.pubkey))];
+    await Promise.all(
+      hostPubkeys.map(async (pk) => {
+        if (storage.profile.get(pk) === undefined) await fetchProfile(pk);
+      }),
+    );
+    if (!mountedRef.current) return;
+    setResolved(paint());
+
+    // Then V4V, which is the expensive half. Only for streams whose block we
+    // have not resolved yet — a second commit from the slower source must not
+    // re-pay for the ones the first already answered.
+    await Promise.all(
+      merged.map(async (stream) => {
+        const addr = streamAddrOf(stream.rawEvent);
+        if (valueRef.current.has(addr)) return;
+        valueRef.current.set(addr, await resolveStreamV4V(stream));
+      }),
+    );
+
+    if (!mountedRef.current) return;
+    setResolved(paint());
+  }
+
   async function load() {
     lastLoadRef.current = Date.now(); // stamp at entry so overlapping triggers debounce
+
+    // The two passes run TOGETHER, and the index never replaces the relays.
+    // It holds what it has seen since it was deployed; the relays hold whatever
+    // each of them kept, and only they carry a broadcast published in the
+    // seconds since the last index write. Awaiting the index first would make a
+    // merely-slow index worse than none, and letting it substitute for the
+    // relay pass would drop streams it has not crawled.
+    const indexPass = indexedLiveStreams()
+      .then((streams) => (streams ? commit(streams) : undefined))
+      .catch(() => { /* the index is never a reason to fail this row */ });
+
     try {
-      const streams = await fetchNostrLiveStreams();
-      if (!mountedRef.current) return;
-
-      // Fetch host profiles (needed for name + avatar + LN address)
-      const hostPubkeys = [...new Set(streams.map((s) => s.pubkey))];
-      await Promise.all(
-        hostPubkeys.map(async (pk) => {
-          const cached = storage.profile.get(pk);
-          if (cached === undefined) await fetchProfile(pk);
-        }),
-      );
-
-      // Resolve V4V for each stream (profiles now cached — fast path)
-      const withV4V = await Promise.all(
-        streams.map(async (stream) => {
-          const profile = storage.profile.get(stream.pubkey) ?? null;
-          const value = await resolveStreamV4V(stream);
-          return { stream, profile, value };
-        }),
-      );
-
-      if (!mountedRef.current) return;
-      setResolved(withV4V);
+      await commit(await fetchNostrLiveStreams());
     } catch {
       // silently ignore — live streams section just stays empty / stale
     } finally {
+      await indexPass;
       if (mountedRef.current) setLoading(false);
     }
   }

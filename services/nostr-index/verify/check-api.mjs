@@ -97,16 +97,34 @@ const liveOther = sign({
   kind: 30311, created_at: NOW - 120, content: '',
   tags: [['d', 'show-2'], ['status', 'live'], ['title', 'Another Show']],
 });
+// `status: live` on purpose. It is the WINDOW that must drop this one, and a
+// vector carrying `ended` would be dropped by the status filter instead —
+// passing while proving nothing about the window at all.
 const liveStale = sign({
   kind: 30311, created_at: NOW - 30 * 86_400, content: '',
-  tags: [['d', 'show-3'], ['status', 'ended'], ['title', 'Months Ago']],
+  tags: [['d', 'show-3'], ['status', 'live'], ['title', 'Still Says Live']],
+});
+// The mirror image: inside the window, but explicitly over. The client maps
+// every non-live, non-planned status to `ended` and drops it, so shipping these
+// is pure payload. Measured against real relays, they were 140 of the newest
+// 200 events in the window.
+const liveEnded = sign({
+  kind: 30311, created_at: NOW - 300, content: '',
+  tags: [['d', 'show-4'], ['status', 'ended'], ['title', 'Finished An Hour Ago']],
+});
+// No `status` tag at all — 39 of those same 200. `parseNostrLiveStream` maps a
+// missing status to `ended`, so the client drops these too.
+const liveNoStatus = sign({
+  kind: 30311, created_at: NOW - 200, content: '',
+  tags: [['d', 'show-5'], ['title', 'No Status Tag']],
 });
 const authorProfile = sign({ kind: 0, created_at: NOW, content: JSON.stringify({ name: 'Author', banner: 'https://x/b.png', website: 'https://x' }) });
 const replierProfile = sign({ kind: 0, created_at: NOW, content: JSON.stringify({ name: 'Replier' }) }, REPLIER);
 
 const stats = emptyStats();
 for (const e of [quoted, root, trackNote, quoter, reply1, reply2, repost, zap, doomed,
-                liveOld, liveNew, liveOther, liveStale, authorProfile, replierProfile, tombstone]) {
+                liveOld, liveNew, liveOther, liveStale, liveEnded, liveNoStatus,
+                authorProfile, replierProfile, tombstone]) {
   await ingestEvent(db, e, stats);
 }
 console.log('seed:', JSON.stringify(stats));
@@ -217,7 +235,19 @@ async function post(url, payload) {
   ok(!ids.includes(liveOld.id),
      'and its older version is NOT — one address is one broadcast, whatever the d-tag position');
   ok(ids.includes(liveOther.id), 'a second broadcast from the same host is its own row');
-  ok(!ids.includes(liveStale.id), 'a broadcast last updated outside the 7-day window is dropped');
+  ok(!ids.includes(liveStale.id),
+     'a broadcast last updated outside the 7-day window is dropped, though it still says `live`');
+
+  // The status filter. Not a copy of the client's rule — a SUPERSET of it. The
+  // client additionally requires a `live` event to be recent, and that half
+  // must stay client-side: it is evaluated at render time while this response
+  // sits in a CDN for 15s, so a server applying it would be answering about a
+  // moment that has passed.
+  ok(!ids.includes(liveEnded.id), 'an explicitly ENDED broadcast inside the window is not shipped');
+  ok(!ids.includes(liveNoStatus.id),
+     'nor is one with no status tag — the client maps that to `ended` and drops it');
+  ok(ids.includes(liveOther.id) && ids.includes(liveNew.id),
+     'while live and planned both survive the filter');
 
   const forShow1 = ids.filter((id) => id === liveNew.id || id === liveOld.id).length;
   eq(forShow1, 1, 'exactly one row per (pubkey, d), not one per version');

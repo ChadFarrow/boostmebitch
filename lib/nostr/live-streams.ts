@@ -167,41 +167,60 @@ export async function fetchNostrLiveStreams(opts?: {
         FEED_QUIET_MS,
       );
 
-      // Deduplicate replaceable events: keep the newest version per NIP-33 address
-      const byAddr = new Map<string, Event>();
-      for (const e of events) {
-        const dTag = e.tags.find((t) => t[0] === 'd')?.[1] ?? e.id;
-        const addr = `${e.pubkey}:${dTag}`;
-        const existing = byAddr.get(addr);
-        if (!existing || e.created_at > existing.created_at) {
-          byAddr.set(addr, e);
-        }
-      }
-
-      // A genuinely-live kind:30311 event is re-published periodically while
-      // broadcasting (zap.stream et al. bump `current_participants` ~every
-      // minute), so an active stream always has a fresh `created_at`. When a
-      // stream ends, most clients never publish the `ended` status — they just
-      // stop updating — so a stale event tagged `live` is almost certainly a
-      // dead broadcast. Require live events to have been updated recently;
-      // planned streams are exempt (their event is set once, ahead of time).
-      const liveFreshAfter = Math.floor(Date.now() / 1000) - LIVE_FRESH_SECS;
-
-      return Array.from(byAddr.values())
-        .map(parseNostrLiveStream)
-        .filter((s) =>
-          s.status === 'planned' ||
-          (s.status === 'live' && s.rawEvent.created_at >= liveFreshAfter),
-        )
-        .sort((a, b) => {
-          // Upcoming (planned) first, then live. Within a group, newest first.
-          if (a.status !== b.status) return a.status === 'planned' ? -1 : 1;
-          return (b.startsAt ?? 0) - (a.startsAt ?? 0);
-        });
+      return shapeLiveStreams(events);
     } catch {
       return [];
     }
   });
+}
+
+/** The NIP-33 address a kind:30311 event belongs to. A `d` tag is optional, and
+ *  the event id stands in when it is absent — the same fallback the index's own
+ *  query makes, so the two sides agree about what one broadcast is. */
+export function streamAddrOf(e: Event): string {
+  return `${e.pubkey}:${e.tags.find((t) => t[0] === 'd')?.[1] ?? e.id}`;
+}
+
+/**
+ * Raw kind:30311 events → the rows the homepage renders.
+ *
+ * Extracted so the relay path and the read index cannot disagree about which
+ * broadcast is current or which one is over. The two arrive from different
+ * places and they overlap, so a second copy of this would not fail loudly — it
+ * would show the same show twice, or show an ended one, depending on which
+ * source happened to answer first.
+ */
+export function shapeLiveStreams(events: Event[]): NostrLiveStream[] {
+  // Deduplicate replaceable events: keep the newest version per NIP-33 address
+  const byAddr = new Map<string, Event>();
+  for (const e of events) {
+    const addr = streamAddrOf(e);
+    const existing = byAddr.get(addr);
+    if (!existing || e.created_at > existing.created_at) {
+      byAddr.set(addr, e);
+    }
+  }
+
+  // A genuinely-live kind:30311 event is re-published periodically while
+  // broadcasting (zap.stream et al. bump `current_participants` ~every
+  // minute), so an active stream always has a fresh `created_at`. When a
+  // stream ends, most clients never publish the `ended` status — they just
+  // stop updating — so a stale event tagged `live` is almost certainly a
+  // dead broadcast. Require live events to have been updated recently;
+  // planned streams are exempt (their event is set once, ahead of time).
+  const liveFreshAfter = Math.floor(Date.now() / 1000) - LIVE_FRESH_SECS;
+
+  return Array.from(byAddr.values())
+    .map(parseNostrLiveStream)
+    .filter((s) =>
+      s.status === 'planned' ||
+      (s.status === 'live' && s.rawEvent.created_at >= liveFreshAfter),
+    )
+    .sort((a, b) => {
+      // Upcoming (planned) first, then live. Within a group, newest first.
+      if (a.status !== b.status) return a.status === 'planned' ? -1 : 1;
+      return (b.startsAt ?? 0) - (a.startsAt ?? 0);
+    });
 }
 
 /**
