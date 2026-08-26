@@ -90,7 +90,8 @@ export async function GET(req: Request) {
       // Same budget as the PI path: this one reads every <item> in a document
       // `safeFetch` accepts up to 8 MB, so it has always been able to build a
       // body the platform will not send.
-      return NextResponse.json({ ...parsed, episodes: fitEpisodesToBudget(parsed.episodes) }, {
+      const fitted = fitEpisodesToBudget(parsed.episodes);
+      return NextResponse.json({ ...parsed, episodes: fitted, truncated: fitted.length < parsed.episodes.length }, {
         headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' },
       });
     }, 'feed fetch failed');
@@ -216,8 +217,19 @@ export async function GET(req: Request) {
     // <podcast:txt purpose="nostr"> — the show's own npub, p-tagged on boost
     // notes. RSS-only like podroll, so it's an unconditional attach.
     if (feedNostrNpubs) podcast.nostrNpubs = feedNostrNpubs;
+    const fitted = fitEpisodesToBudget(merged);
+    // Two ways this list can be short of the feed, and neither is visible from
+    // the rows: PI has no more to give past its own ceiling, or the response
+    // budget above dropped the tail. The client says so at the end of the list
+    // rather than just stopping — "the app only had part of the feed" is the
+    // report this whole cap exists to answer, and a list that simply ends is
+    // indistinguishable from a show that ended. Hitting the ceiling exactly is
+    // read as truncation on purpose: a feed of exactly PI_EPISODE_MAX items
+    // over-reports, which costs a sentence, while under-reporting costs the
+    // reader the answer.
+    const truncated = episodes.length >= PI_EPISODE_MAX || fitted.length < merged.length;
     return NextResponse.json(
-      { podcast, episodes: fitEpisodesToBudget(merged) },
+      { podcast, episodes: fitted, truncated },
       { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },
     );
   }, 'feed fetch failed');

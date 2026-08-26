@@ -90,7 +90,10 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
 }
 
 export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUrl?: string }) {
-  const [data, setData] = useState<{ podcast: Podcast | null; episodes: Episode[] }>({
+  // `truncated`: the route could not serve the whole feed (PI's per-feed
+  // ceiling, or the response byte budget). Rendered at the end of the list —
+  // a list that just stops reads as a show that stopped.
+  const [data, setData] = useState<{ podcast: Podcast | null; episodes: Episode[]; truncated?: boolean }>({
     podcast: null, episodes: [],
   });
   const [loading, setLoading] = useState(false);
@@ -162,7 +165,7 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
         // into the store as the episode queue.
         const episodes = Array.isArray(d?.episodes) ? d.episodes : [];
         if (!d?.podcast) { setLoadError(true); return; }
-        setData({ podcast: d.podcast, episodes });
+        setData({ podcast: d.podcast, episodes, truncated: !!d.truncated });
         setEpisodeQueue(episodes);
         // Push the RSS-enriched podcast (funding/medium/podroll) back into the
         // store so the episode detail view — which reads selectedPodcast — shows
@@ -499,6 +502,11 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
         >
           Load more episodes ({remaining})
         </button>
+      )}
+      {remaining === 0 && data.truncated && (
+        <p className="text-muted text-xs mt-3 text-center">
+          Older episodes exist, but this feed is longer than the app can load in one go.
+        </p>
       )}
 
       {/* No placeholder: <Podroll> renders its own skeleton while resolving and
