@@ -147,6 +147,21 @@ watchdog is already recovering. If `ok` is false and stays false, restart it —
 but read the log first, because `reportStats` now prints an `idle:` line every
 minute naming the connected relay count.
 
+**Checking freshness through the app needs a cache-buster.** `/api/nostr/index`
+sets `s-maxage` and Vercel's CDN serves it, so reading `indexedThrough` from
+`https://www.boostmebitch.com/api/nostr/index?path=/feed/global` can hand back a
+response cached before whatever you just did. On 2026-08-25 that produced three
+consecutive readings of "186 minutes behind" from an index that was in fact
+0.1 minutes behind — the number even drifted upward between reads, which looks
+exactly like a stalled indexer rather than a frozen cache. Add a changing query
+parameter, or check `x-vercel-cache` in the response headers, before believing
+a freshness number.
+
+**Deploying the service is a separate act from merging.** It is CLI-uploaded,
+not repo-connected, so a merged PR touching `services/nostr-index/` changes
+nothing until `railway up` runs from that directory. See the note in CLAUDE.md
+under the server/client boundary.
+
 **3b. Trim the relay set to what actually answers.** `INDEX_RELAYS` and
 `INDEX_PROFILE_RELAYS` default to eight relays, and on 2026-08-25 three of them
 served nothing when asked with the indexer's own two filters — not with a
