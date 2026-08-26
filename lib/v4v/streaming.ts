@@ -38,15 +38,18 @@
 // whoever happened to be on when the timer fired. Boost-all remains the way to
 // pay every track at once, on purpose.
 
-import type { Episode, Podcast, Boostagram, ValueBlock, ValueTimeSplit } from '@/lib/types';
+import type { Episode, Podcast, Boostagram, BoostResult, ValueBlock, ValueTimeSplit } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { storage, subscribeStreamRate as onStoredRateChange, type StreamMode } from '@/lib/storage';
 import { createObservable } from '@/lib/pubsub';
 // DEFAULT_SENDER_NAME lives in lib/util.ts, NOT in the boost modal that owns
 // the "From" field — importing it from `components/` here would invert the v4v
 // swap-out boundary and pull a 'use client' React module into the engine.
-import { getErrorMessage, hasValueRecipients, splitAtPosition, DEFAULT_SENDER_NAME } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, splitAtPosition, DEFAULT_SENDER_NAME, randomId } from '@/lib/util';
 import { isLiveStreamId } from '@/lib/nostr/live-streams';
+import { canSignUnattended } from '@/lib/nostr/signer';
+import { resolvePublishRelays } from '@/lib/nostr/relays';
+import { publishValuePlaybackReceipt, queueSummaryUpdate } from '@/lib/nostr/value-playback';
 import { sendBoost, pickRail, paidAny } from './boost';
 import { subscribeNwc } from './nwc';
 import { subscribeSpark } from './spark';
@@ -129,6 +132,28 @@ interface StreamContext {
    * once-per-run flag, which is what `credited` is.
    */
   run?: { bucket: string; sinceMs: number; credited: boolean };
+  /**
+   * Opaque id grouping every settle of ONE listen, for the `session` tag on a
+   * kind:3369 receipt. Stamped by openContext rather than by the caller: `next`
+   * is rebuilt on every 1 Hz tick and only the literal that actually reaches
+   * openContext becomes the context, so generating it at the call site would
+   * burn a UUID a second and still hand over the wrong one.
+   *
+   * Deliberately NOT persisted with the ledger. A session is one uninterrupted
+   * listen; a reload is a new one, and claiming otherwise would tell a consumer
+   * two runs were contiguous when a gap of any length sits between them.
+   */
+  sessionId?: string;
+  /**
+   * Feed guids a receipt was actually PUBLISHED for during this listen, for the
+   * kind:33369 summary pass at release.
+   *
+   * Populated in `maybePublishReceipt` rather than wherever a payment happens,
+   * and only past every one of its refusals, because a summary is derived from
+   * receipts — an id whose receipt was never published has nothing to summarize
+   * and would cost a pair of relay reads to confirm it.
+   */
+  summarizedFeeds?: Map<string, string | undefined>;
 }
 
 /** The ids Split Kit uses to tie a payment back to the block that earned it. */
@@ -653,9 +678,33 @@ function persist(l: StreamLedger) {
  * exact failure the boost-flow notes in CLAUDE.md describe, just without a
  * screen in front of it to notice on.
  */
+function streamingIsAnonymous(): boolean {
+  return storage.shareNostr.get() && storage.shareNostrAs.get() === 'site';
+}
+
+/**
+ * May a playback receipt or summary be published under the user's own key?
+ *
+ * **This is NOT `!streamingIsAnonymous()`, and reusing that predicate here is a
+ * privacy inversion.** `streamingIsAnonymous` answers a question about
+ * ATTRIBUTION — does `sender_id` ride along — and it is written the way
+ * `useSharePicker` writes it, so it is true only for the specific pair
+ * (`shareNostr` on, posting as the site). "Don't post" writes `shareNostr =
+ * false` and leaves `shareNostrAs` alone, which makes `streamingIsAnonymous`
+ * FALSE — so gating a publish on its negation starts publishing signed, public,
+ * timestamped records for the user who just chose to publish less, and takes the
+ * on-screen notice explaining the suppression away at the same moment.
+ *
+ * The publish question is its own: the user must be posting to Nostr at all, and
+ * posting AS THEMSELVES. Both other choices refuse.
+ */
+function streamingMayPublish(): boolean {
+  return storage.shareNostr.get() && storage.shareNostrAs.get() !== 'site';
+}
+
 function senderFields(): { sender_name: string; sender_id: string | undefined } {
   const identity = useApp.getState().identity;
-  const anonymous = storage.shareNostr.get() && storage.shareNostrAs.get() === 'site';
+  const anonymous = streamingIsAnonymous();
   const typed = anonymous
     ? ''
     : storage.senderName.get(identity?.npub)
@@ -666,6 +715,50 @@ function senderFields(): { sender_name: string; sender_id: string | undefined } 
     sender_name: typed.trim() || DEFAULT_SENDER_NAME,
     sender_id: anonymous ? undefined : identity?.pubkey,
   };
+}
+
+/**
+ * WHAT this bucket's payment is for, as a feed guid and an item guid.
+ *
+ * One function because two wire formats carry these same two values and MUST
+ * agree: the boostagram's `remote_feed_guid`/`remote_item_guid`, and the NIP-73
+ * `i` tags on the kind:3369 receipt. The entire use of a receipt is that a
+ * consumer can filter `#i` and find the payment it describes — two independent
+ * derivations is how a track's receipt comes to name the playlist while the
+ * boostagram names the song, with nothing on either side saying so.
+ *
+ * A track bucket resolves to its `<podcast:valueTimeSplit>` remote item; the
+ * host bucket resolves to the show and the episode. Note the receipt uses the
+ * SAME pair the boostagram puts in `remote_*` rather than the boostagram's
+ * primary `podcast`/`episode` fields: those name the playlist the listener
+ * chose, and the receipt is about who got paid.
+ */
+function paymentIds(
+  c: StreamContext,
+  bucket: string,
+): { feedGuid?: string; itemGuid?: string } {
+  const split = bucket === HOST_BUCKET ? null : c.splits.get(bucket);
+  if (split) {
+    // THREE STATES, exactly as `<FavTrackHeart>` reads them (components/fav-heart.tsx).
+    // A host may point a `<podcast:valueTimeSplit>` at a PUBLISHER feed, whose
+    // `<podcast:remoteItem>` entries name the real albums — so the wire guid is
+    // not always the album, and `resolveOneSplit` records what it learned:
+    // `undefined` means nothing was learned (the wire value stands), a string is
+    // a recovered album guid that OUTRANKS the wire, and `null` means known
+    // unresolvable.
+    //
+    // `??` alone would be wrong in both directions, and here the cost is
+    // permanent: an `i` tag and a kind:33369 `d` address are published, and the
+    // summary is monotonic, so an address no client can resolve to an album can
+    // never be rewritten downward. On `null` we withhold the id rather than
+    // publish one we have already established nobody can open.
+    const feedGuid =
+      split.parentFeedGuid === null
+        ? undefined
+        : split.parentFeedGuid ?? split.remoteItem?.feedGuid;
+    return { feedGuid, itemGuid: split.remoteItem?.itemGuid };
+  }
+  return { feedGuid: c.podcast.podcastGuid, itemGuid: c.episode.guid };
 }
 
 /**
@@ -701,7 +794,7 @@ function buildBoostagram(
   atPositionSec: number,
 ): Boostagram {
   const { episode, podcast } = c;
-  const split = bucket === HOST_BUCKET ? null : c.splits.get(bucket);
+  const { feedGuid, itemGuid } = paymentIds(c, bucket);
   return {
     app_name: 'BoostMeBitch',
     app_version: '0.1.0',
@@ -711,19 +804,12 @@ function buildBoostagram(
     ts: Math.max(0, Math.floor(atPositionSec)),
     value_msat_total: sats * 1000,
     action: 'auto',
-    uuid: crypto.randomUUID(),
+    uuid: randomId(),
     episode: episode.title,
     itemID: episode.id,
     episode_guid: episode.guid,
-    ...(split
-      ? {
-          remote_feed_guid: split.remoteItem?.feedGuid,
-          remote_item_guid: split.remoteItem?.itemGuid,
-        }
-      : {
-          remote_feed_guid: podcast.podcastGuid,
-          remote_item_guid: episode.guid,
-        }),
+    remote_feed_guid: feedGuid,
+    remote_item_guid: itemGuid,
     // Split Kit correlation for THIS bucket's block — recorded when the bucket
     // was adopted, because by the time a track's sats settle the watcher has
     // usually moved on. Absent for every other kind of payment, and
@@ -810,11 +896,125 @@ function noteFailure(
   });
 }
 
+/**
+ * Publish the kind:3369 value-playback receipt for a settle that PAID.
+ *
+ * Called from runSettle's success branch and nowhere else, so it sits behind
+ * the same `paidAny(results)` gate the local streamed log does. That placement
+ * is the load-bearing part: a receipt is an assertion that money moved, and a
+ * NIP-47 reply timeout means the wallet was asked and never answered. Invariant
+ * 11 in CLAUDE.md forbids rendering that as a failure; it forbids rendering it
+ * as a success just as hard, and a receipt is a permanent public one.
+ *
+ * Four reasons to publish nothing, and they are answers about the LISTENER
+ * rather than about the event, which is why they live here rather than in
+ * lib/nostr/value-playback.ts:
+ *
+ *  1. **The setting is off**, which is its default. `bmb:stream_receipts` is
+ *     deliberately not folded into `bmb:share_nostr`: that one consented to a
+ *     note per button press, and this is a continuous timestamped record of
+ *     what was played and when.
+ *  2. **Anonymous is set.** A listener who chose it has been told their pubkey
+ *     does not ride along with their payments. Publishing a receipt with no
+ *     `name` would honour the letter and break the promise, because the
+ *     SIGNATURE is the pubkey — so the answer is no event at all, not a
+ *     quieter one.
+ *  3. **The signer would prompt or hang** (`canSignUnattended`). Amber puts an
+ *     approval sheet in front of the user for every signature and a settle
+ *     fires six times an hour; a bunker is a network round trip that can hang.
+ *  4. **Nothing actually settled.** A batch can be reported as paid on one leg
+ *     while others failed, so the amount is summed over legs that really moved
+ *     sats rather than taken from the bucket total.
+ *
+ * Never awaited. The settle `chain` serializes PAYMENTS, and parking a relay
+ * round trip in it would delay the next one. `publishValuePlaybackReceipt`
+ * resolves either way, so the bare `void` cannot strand a rejection — and a
+ * failure here must never reach `noteFailure`, because two failed settles stop
+ * the engine and a relay outage is not a failed settle.
+ */
+function maybePublishReceipt(
+  c: StreamContext,
+  bucket: string,
+  results: BoostResult[],
+  windowStartMs: number,
+  atPositionSec: number,
+) {
+  // TOTAL BY CONSTRUCTION, and this is not defensive habit — it is the one
+  // thing standing between a bookkeeping bug and a money bug. The call site is
+  // inside runSettle's `try`, whose `catch` refunds the bucket and calls
+  // noteFailure. So a synchronous throw from anywhere in here would credit the
+  // ledger with sats that HAVE ALREADY LEFT THE WALLET (the next settle then
+  // spends them again — the double-spend this whole file is ordered to prevent)
+  // and count a successful payment as a failure, two of which stop the engine
+  // for the item. Catching at the function rather than at the call site is
+  // deliberate: a second caller added later inherits the guarantee instead of
+  // having to remember it.
+  try {
+    if (!storage.streamReceipts.get()) return;
+    if (!streamingMayPublish()) return;
+    if (!canSignUnattended()) return;
+    const identity = useApp.getState().identity;
+    if (!identity) return;
+    const settledMsat = results.reduce(
+      (n, r) => (r.ok && r.sats > 0 ? n + r.sats * 1000 : n),
+      0,
+    );
+    if (settledMsat <= 0) return;
+    const { feedGuid, itemGuid } = paymentIds(c, bucket);
+    // A receipt that names NEITHER is unpublishable, not merely thin.
+    //
+    // `Podcast.podcastGuid` is optional, a Split Kit live block may name no feed,
+    // and `paymentIds` now withholds a guid it knows to be unresolvable — so all
+    // three ids can be absent at once. `buildValuePlaybackReceipt` skips both tag
+    // blocks in that case and the event goes out with an amount and no NIP-73
+    // identifier: a permanent, signed, public assertion that sats moved, naming
+    // nothing. It cannot be found by the `#i` filter that is the whole point of
+    // the kind, cannot be summarized, and cannot be edited or withdrawn.
+    //
+    // Publishing less is the cheap direction here: the payment still happened and
+    // the local log still records it.
+    if (!feedGuid && !itemGuid) return;
+    // Only past every refusal above: a feed with no receipt has nothing to
+    // summarize. `label` is the track/episode title the log already resolved,
+    // used for the summary's human-readable `alt`.
+    if (feedGuid) {
+      if (!c.summarizedFeeds) c.summarizedFeeds = new Map();
+      if (!c.summarizedFeeds.has(feedGuid)) {
+        // The label names the FEED, never the track. `targetFor(...).label` is
+        // the song for a track bucket, and this address aggregates every track
+        // on that feed — so using it makes a kind:33369 for a whole album
+        // permanently advertise one song's name as the album's total, and
+        // `if (!has(feedGuid))` means the first song of the listen wins and
+        // sticks. `ValueTimeSplit.feedTitle` is documented as "the album the
+        // track belongs to, not the show playing it", which is exactly this.
+        const split = bucket === HOST_BUCKET ? null : c.splits.get(bucket);
+        c.summarizedFeeds.set(feedGuid, split?.feedTitle ?? c.podcast.title);
+      }
+    }
+    void publishValuePlaybackReceipt({
+      feedGuid,
+      itemGuid,
+      msat: settledMsat,
+      action: 'auto',
+      startSec: Math.floor(windowStartMs / 1000),
+      endSec: Math.floor(Date.now() / 1000),
+      positionSec: Math.max(0, Math.floor(atPositionSec)),
+      session: c.sessionId,
+      label: targetFor(c, bucket).label ?? c.episode.title,
+      relays: resolvePublishRelays(identity),
+    });
+  } catch (e) {
+    console.warn('[3369] receipt skipped', e);
+  }
+}
+
 async function runSettle(
   c: StreamContext,
   bucket: string,
   sats: number,
   atPositionSec: number,
+  /** Wall-clock ms this billing window opened — the receipt's `start`. */
+  windowStartMs: number,
 ) {
   const rail = pickRail();
   if (!rail) {
@@ -867,6 +1067,11 @@ async function runSettle(
       episodeTitle: label ?? c.episode.title,
       ok: true,
     });
+    // Inside the paidAny() gate on purpose — see maybePublishReceipt, which
+    // swallows everything precisely because this sits inside a try whose catch
+    // refunds the bucket. Last in the branch so the local log is already
+    // written whatever happens here.
+    maybePublishReceipt(c, bucket, results, windowStartMs, atPositionSec);
   } catch (e) {
     // A partial failure never lands here — paidAny() means money moved, and
     // re-sending the whole batch to recover one failed leg would pay the
@@ -908,6 +1113,11 @@ function maybeSettle(c: StreamContext, l: StreamLedger, force: boolean): StreamL
   // window in which the same sats are both owed and in flight.
   persist(nextLedger);
   const atPositionSec = nextLedger.lastPositionSec;
+  // Captured from the ledger BEFORE settleBatch stamped the new one, so the
+  // receipt's `start`/`end` describe the window that was just billed rather
+  // than a zero-length one. Read here rather than inside runSettle: by the time
+  // a chained settle runs, `ledger` has moved on.
+  const windowStartMs = l.lastSettleMs;
   // "How much did THIS batch already pay before it failed" — so it resets at the
   // batch boundary, and does so as a link in `chain` rather than here. Enqueue
   // order is not run order: a batch queued while an earlier one is still
@@ -919,13 +1129,56 @@ function maybeSettle(c: StreamContext, l: StreamLedger, force: boolean): StreamL
   for (const { bucket, sats } of runs) {
     pendingSettles++;
     chain = chain
-      .then(() => runSettle(c, bucket, sats, atPositionSec))
+      .then(() => runSettle(c, bucket, sats, atPositionSec, windowStartMs))
       .finally(() => {
         pendingSettles--;
         notifyIfChanged();
       });
   }
   return nextLedger;
+}
+
+
+/**
+ * Hand this listen's feed ids to the kind:33369 summary queue.
+ *
+ * The guards are `maybePublishReceipt`'s, plus one: **summaries require
+ * receipts.** A summary is derived from receipts, so with receipts off there is
+ * nothing new to derive from and the only effect would be republishing an
+ * unchanged total — which the predicate refuses anyway, after paying for two
+ * relay reads to find out.
+ *
+ * Re-read here rather than captured when the receipt was published, because a
+ * listener may turn either switch off mid-listen and the honest reading of that
+ * is "stop", not "finish what was queued".
+ *
+ * Total by construction, for the same reason `maybePublishReceipt` is — and the
+ * reason is now stronger. `releaseContext` queues this as a link in the settle
+ * `chain` rather than calling it on the tick, so a throw would reject `chain`
+ * and take every later settle down with it, not just the current tick.
+ */
+function maybeQueueSummaries(c: StreamContext) {
+  try {
+    const feeds = c.summarizedFeeds;
+    if (!feeds?.size) return;
+    if (!storage.streamReceipts.get()) return;
+    if (!storage.streamSummaries.get()) return;
+    if (!streamingMayPublish()) return;
+    if (!canSignUnattended()) return;
+    const identity = useApp.getState().identity;
+    if (!identity?.pubkey) return;
+    queueSummaryUpdate({
+      ids: Array.from(feeds, ([id, label]) => ({
+        id: `podcast:guid:${id}`,
+        idKind: 'podcast:guid',
+        label,
+      })),
+      pubkey: identity.pubkey,
+      relays: resolvePublishRelays(identity),
+    });
+  } catch (e) {
+    console.warn('[33369] summaries not queued', e);
+  }
 }
 
 /**
@@ -945,6 +1198,37 @@ function maybeSettle(c: StreamContext, l: StreamLedger, force: boolean): StreamL
  */
 function releaseContext(settle: boolean) {
   if (settle && ctx && ledger) ledger = maybeSettle(ctx, ledger, true);
+  // Queue the kind:33369 summaries for the feeds this listen actually paid.
+  //
+  // **Gated on `settle` for the same reason the settle itself is.** The
+  // `settle: false` path is engine shutdown, and <Player>'s cleanup runs on
+  // every Fast Refresh — a summary pass there means editing a comment fires a
+  // signature request and a pair of relay writes, which is the dev-loop
+  // version of the bug that makes teardown non-settling.
+  //
+  // Queued as a LINK IN `chain`, after the settles above, not on this tick.
+  //
+  // `summarizedFeeds` is written inside `maybePublishReceipt`, which runs inside
+  // `runSettle` — and `maybeSettle` only ENQUEUES that. Reading the map here
+  // synchronously therefore misses the release settle's feeds, and when the
+  // release settle is the listen's ONLY settle the map is still empty, so
+  // `maybeQueueSummaries` hits `if (!feeds?.size) return` and queues nothing at
+  // all. That is not an edge case: STREAM_SETTLE_INTERVAL_MS is ten minutes of
+  // billed playback, so every listen shorter than that has exactly one settle.
+  // The map is per-context and starts empty each time, so "the next listen picks
+  // it up" does not rescue it either — a listener who works in short sessions
+  // would never publish a summary at all.
+  //
+  // Chaining is enough, and does not need the publish to have landed: the
+  // `summarizedFeeds.set` is synchronous inside `maybePublishReceipt`, ahead of
+  // the fire-and-forget relay write. `ctx` is captured because it is nulled
+  // below, before the callback runs. `maybeQueueSummaries` is total by
+  // construction, which matters more here than it did on the tick: a throw would
+  // now reject `chain` and take every later settle with it.
+  if (settle && ctx) {
+    const summarized = ctx;
+    chain = chain.then(() => maybeQueueSummaries(summarized));
+  }
   if (ledger) persist(ledger);
   ctx = null;
   ledger = null;
@@ -990,6 +1274,12 @@ function openContext(c: StreamContext) {
     if (pending) storage.streamPending.clear();
     ledger = { ...createLedger(c.key, now), lastPositionSec: useApp.getState().positionSec };
   }
+  // `randomId`, not `crypto.randomUUID`: this runs from the bare
+  // `setInterval(tick)` callback with no `try` above it, and `randomUUID` is
+  // secure-context-only. Over `http://<LAN-IP>` a bare call throws before
+  // `ctx = c`, so every later tick fails the same way and the engine accrues
+  // nothing, pays nothing and says nothing.
+  c.sessionId = randomId().slice(0, 8);
   ctx = c;
   persist(ledger);
 }

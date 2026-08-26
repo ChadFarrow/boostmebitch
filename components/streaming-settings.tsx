@@ -10,6 +10,8 @@ import {
   type StreamingStatus,
 } from '@/lib/v4v/streaming';
 import { STREAM_AMOUNT_MAX_SATS, STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
+import { canSignUnattended } from '@/lib/nostr/signer';
+import { useApp } from '@/lib/store';
 
 /**
  * On/off switch.
@@ -237,6 +239,136 @@ function streamRateDescription(v: StreamRateView): string {
 }
 
 /**
+ * Opt in to publishing a kind:3369 value-playback receipt for each streaming
+ * settle.
+ *
+ * GLOBAL only — deliberately not offered per show. It is a disclosure decision
+ * about the listener, and a per-show version would present as a choice about
+ * one podcast while the thing being decided is whether this device publishes a
+ * listening log at all.
+ *
+ * The copy names the DISCLOSURE, not the mechanism. "Share streaming payments
+ * to Nostr" is true and understates it by a wide margin: what goes out is a
+ * public, timestamped record of what was played, when, and for how much, one
+ * event per settle, permanently.
+ *
+ * Two states withhold silently, and both are spelled out on screen rather than
+ * left to be discovered. A signer that cannot be asked unattended (Amber,
+ * bunker) publishes nothing at all, and "Anonymous" in the boost share picker
+ * publishes nothing either — the event is signed, so the signature is the
+ * pubkey and there is no quieter version to send. A switch that reads ON while
+ * nothing is ever published is the failure this repo keeps re-learning: a
+ * silent correct decision is indistinguishable from a broken one.
+ */
+function StreamReceipts() {
+  const [on, setOn] = useState(() => storage.streamReceipts.get());
+  const [totals, setTotals] = useState(() => storage.streamSummaries.get());
+  const [landed, setLanded] = useState(true);
+  // Read after mount: these depend on browser state the server render has no
+  // view of, so deriving them during render is a hydration mismatch.
+  //
+  // **Re-read on identity and on the modal opening, never once on mount.** This
+  // panel lives in <WalletModal>, which stays mounted across a sign-in and
+  // across a trip to the boost share picker, so a mount-only effect leaves the
+  // notices describing a state the user has already left — in both directions.
+  // Saying "receipts will publish" when they will not, and showing the Anonymous
+  // warning after the user turned it off, are the same failure: a confident
+  // wrong statement about whether a permanent public event is being written.
+  const identity = useApp((st) => st.identity);
+  const walletOpen = useApp((st) => st.walletOpen);
+  const [withheld, setWithheld] = useState<'none' | 'signed-out' | 'no-signer' | 'anonymous' | 'not-posting'>('none');
+  useEffect(() => {
+    // Mirrors `streamingMayPublish()` + the identity and signer gates in
+    // `maybePublishReceipt`, in the order those refusals actually run. Keep the
+    // two in step: a state this misses is a switch that reads ON while nothing
+    // is published, which is the failure this repo keeps re-learning.
+    if (!identity) setWithheld('signed-out');
+    else if (!canSignUnattended()) setWithheld('no-signer');
+    else if (!storage.shareNostr.get()) setWithheld('not-posting');
+    else if (storage.shareNostrAs.get() === 'site') setWithheld('anonymous');
+    else setWithheld('none');
+  }, [identity, walletOpen]);
+
+  function change(v: boolean) {
+    setOn(v);
+    // A control with no local state renders whatever reads back, so a write
+    // that never reached disk would freeze the switch with no error anywhere.
+    setLanded(storage.streamReceipts.set(v));
+  }
+
+  function changeTotals(v: boolean) {
+    setTotals(v);
+    setLanded(storage.streamSummaries.set(v));
+  }
+
+  return (
+    <div className="mt-4 pt-3 border-t border-line">
+      <div className="flex flex-wrap items-center gap-3">
+        <StreamSwitch on={on} onChange={change} />
+        <span className="text-[11px] uppercase tracking-widest text-muted">
+          Publish receipts to Nostr
+        </span>
+      </div>
+      <p className="text-[11px] text-muted mt-2">
+        Publishes one event for each streaming payment, naming the show or track,
+        the amount and the time. No client shows these in a feed, but they are
+        public and permanent: together they are a timestamped record of what you
+        listened to.
+      </p>
+      {on && (
+        <div className="mt-3 pl-3 border-l border-line">
+          <div className="flex flex-wrap items-center gap-3">
+            <StreamSwitch on={totals} onChange={changeTotals} />
+            <span className="text-[11px] uppercase tracking-widest text-muted">
+              Also publish running totals
+            </span>
+          </div>
+          <p className="text-[11px] text-muted mt-2">
+            Keeps one running total per show or album, so anyone can look up what
+            you have paid it without reading every receipt. This is the
+            searchable half: the totals sit at a fixed address, so a single query
+            answers who has streamed to a show. Totals only ever go up and cannot
+            be lowered later.
+          </p>
+        </div>
+      )}
+      {on && withheld === 'signed-out' && (
+        <p className="text-[11px] text-nostr mt-2">
+          Nothing is published while you are signed out. A receipt is a signed
+          Nostr event, so it needs a key. Sign in to publish these.
+        </p>
+      )}
+      {on && withheld === 'no-signer' && (
+        <p className="text-[11px] text-nostr mt-2">
+          Nothing is published with your current sign-in. Amber and remote
+          signers ask for approval on every signature, which a payment on a timer
+          cannot do. A browser extension or a key stored here can.
+        </p>
+      )}
+      {on && withheld === 'not-posting' && (
+        <p className="text-[11px] text-nostr mt-2">
+          Nothing is published while boosts are set to “Don’t post”. That choice
+          covers these receipts too. Set boosts back to your own feed to publish
+          them.
+        </p>
+      )}
+      {on && withheld === 'anonymous' && (
+        <p className="text-[11px] text-nostr mt-2">
+          Nothing is published while boosts are set to Anonymous. The receipt is
+          signed by your key, so there is no anonymous version of it to send.
+        </p>
+      )}
+      {!landed && (
+        <p className="text-[11px] text-bolt/80 mt-2">
+          Storage is restricted or full — this setting works now but won&apos;t
+          survive a reload.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
  * "Streaming sats — [on/off] [N] sats/min."
  *
  * Two scopes from one component. `podcast` omitted = the global default (the
@@ -374,6 +506,7 @@ export function StreamRate({
           </>
         )}
       </p>
+      {!showKey && <StreamReceipts />}
       {onDone && (
         <button onClick={onDone} className="text-[11px] text-muted hover:text-bone mt-2">
           Done

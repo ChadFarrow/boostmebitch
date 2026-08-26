@@ -552,6 +552,52 @@ Episodes (and RSS live items) can carry `<podcast:socialInteract protocol="nostr
 **Inline images in notes.** `NoteCard` pulls image URLs (`jpg/jpeg/png/gif/webp/avif/bmp`, optional query string) out of the body via `extractImages` and renders `<img>` thumbnails (clickable, lazy, `max-h-80`) instead of raw links — every note surface, not just the thread. Detection is extension-based, so URLs without one (some `i.nostr.build/<hash>`) aren't caught; that would need NIP-92 `imeta` parsing. Uses `<img>`, not `next/image` (arbitrary hosts), like `PodcastCover`.
 
 
+## Value playback receipts (kind:3369)
+
+Spec and reasoning: [`docs/value-playback.md`](value-playback.md) and
+[`docs/streaming.md`](streaming.md). What belongs here is the tag contract, so
+it sits beside the boost note's.
+
+`buildValuePlaybackReceipt()` in `lib/nostr/value-playback.ts` builds a kind:3369
+with the **same NIP-73 `i`/`k` pair SHAPE, in the same order and the same
+pairing**, that `buildBoostNoteTemplate` emits — that is the point of it. Drift
+the tag shape and nothing can read the two under one filter.
+
+**But the shape matching does not mean the VALUES match, and only the host
+bucket actually meets its boost note.** `buildBoostNoteTemplate` always tags the
+SHOW and the EPISODE, and `components/boost-modal/index.tsx` passes those even
+for a track-redirected boost — while `paymentIds` for a track bucket returns the
+track's own album feed guid and item guid. So a manual boost of a song and a
+streaming receipt for that same song carry **disjoint** `i` tags and never come
+back under one `#i` query; only a host-bucket receipt matches the note. Do not
+"fix" that by making the receipt tag the show: the receipt names who was
+actually paid, which is the artist, and that is the more useful of the two.
+Widen the query instead — the album-page track union below is the pattern.
+
+Then `amount` (millisats that SETTLED), `action` (`auto`), `start`/`end` (the
+wall-clock interval), `position` (playback seconds), `session`, `app`, and a
+NIP-31 `alt`. `content` is the empty string: the field exists in the spec for a
+boostagram message and an unattended payment has none.
+
+Two tags the spec allows and this app deliberately omits:
+
+- **No `name`.** The event's author pubkey IS the sender, so a display name is a
+  second answer to a question the signature has already settled — and a
+  user-editable one, which is the shape that drifts.
+- **No `p`.** Streaming pays value-block recipients by node pubkey or lnaddress;
+  this app learns no Nostr identity for them, and inventing one from a feed's
+  `<podcast:txt purpose="nostr">` would `p`-tag the show's artist for a payment
+  that may have gone to a different track's.
+
+`alt` is not optional dressing. No client renders this kind — that is the design
+— so without it a general-purpose client shows an empty box.
+
+**No `assertPublished`.** That guard exists for callers that record durable
+state on the strength of a publish, because recording success is exactly what
+stops the next attempt retrying. Nothing is recorded here, so an event that
+reached no relay costs one missing receipt and nothing else. The accepted-relay
+count is logged instead, so "why are there no receipts?" stays answerable.
+
 ## Nostr publish shape
 
 `publishBoostNote()` in `lib/nostr/boost-notes.ts` builds a kind:1 with:
