@@ -42,7 +42,14 @@ export function useNostrFeed({
   deps = [],
 }: {
   cacheKey: string;
-  fetcher: (opts?: { since?: number }) => Promise<DiscoveredNote[]>;
+  fetcher: (opts?: {
+    since?: number;
+    /** Called with the top-level notes the moment the relay scan returns,
+     *  before the reply / profile / quote stages. Optional on purpose — the
+     *  boost-explorer fetchers must not implement it (see `FetchOpts.onRoots`),
+     *  and a fetcher that ignores it simply commits once at the end. */
+    onRoots?: (roots: DiscoveredNote[]) => void;
+  }) => Promise<DiscoveredNote[]>;
   /** Optional fast path. Returns null when there is no index, it is
    *  unreachable, or it has nothing — never an empty array meaning "none". */
   indexFetcher?: () => Promise<DiscoveredNote[] | null>;
@@ -72,6 +79,15 @@ export function useNostrFeed({
     const merged = mergeNotes(shown.current, incoming);
     shown.current = merged;
     setNotes(merged);
+    // `loading` means "there is nothing to show yet", NOT "a fetch is running".
+    // Anything else makes it a claim the screen contradicts: the index pass
+    // commits a full feed in well under a second while the relay pass runs on
+    // for tens of seconds, and clearing this only in the relay `finally` left
+    // the control reading `loading…` and DISABLED over a feed the reader was
+    // already scrolling. The relay pass keeps going and keeps committing —
+    // `mergeNotes` unions by id, so a later answer can only add to what is on
+    // screen, never take it away, which is what makes an early clear safe.
+    setLoading(false);
     storage.feedNotes.set(cacheKey, merged);
   }
 
@@ -90,7 +106,10 @@ export function useNostrFeed({
       : Promise.resolve();
 
     try {
-      const result = await fetcher();
+      // Three commits on a cold relay-only load, not one: the roots as soon as
+      // the kind:1 scan returns, then the assembled tree. `commit` unions by
+      // id, so each can only add.
+      const result = await fetcher({ onRoots: (roots) => commit(roots, myGen) });
       if (myGen !== gen.current) return; // superseded
       commit(result, myGen);
     } catch (e) {

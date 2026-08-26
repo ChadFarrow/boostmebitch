@@ -317,7 +317,7 @@ We emit the boostagram in TLV `7629169` only — never a separate `696969` sende
 **Where it publishes.** Signed in → `resolvePublishRelays(identity)`: a manual `localStorage.bmb:relays` override, else the user's NIP-65 (kind:10002) write relays **unioned with the defaults** (so a note still lands when the write relays are dead/AUTH-gated), capped at 20. Signed out (site identity) → the defaults. Defaults:
 
 ```
-wss://relay.damus.io · wss://relay.primal.net · wss://nos.lol · wss://relay.nostr.band · wss://relay.fountain.fm
+wss://relay.damus.io · wss://relay.primal.net · wss://nos.lol · wss://relay.fountain.fm
 ```
 
 ---

@@ -1,6 +1,12 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { piMaybeUp, resolveEpisodeByGuid, resolvePodcastByGuid } from '@/lib/podcast-meta';
+import {
+  piMaybeUp,
+  resolveEpisodeByGuid,
+  resolvePodcastByGuid,
+  warmEpisodeCache,
+  warmPodcastCache,
+} from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
 
 // UUID-shaped podcast:guid filter. Some clients post boost notes with
@@ -51,6 +57,16 @@ export function episodeRefOf(
  *    client-side Podcast Index breaker can trip before the rest fire in
  *    parallel; `piMaybeUp()` gates the batch. Without it one outage costs N
  *    parallel failures instead of one.
+ *  - **The batch is a real batch.** `warm*Cache` fills `podcastMem`/`episodeMem`
+ *    100 guids per request, and the `resolve*` calls after it are then cache
+ *    hits that touch no network. "Batch" used to mean `Promise.all` over N
+ *    single-guid routes, which on a 100-note global feed was ~100 requests
+ *    against `/api/by-guid` and `/api/episode-by-guid`, drained six at a time
+ *    per host — competing with the relay sockets and the artwork for the same
+ *    connections on the one page that mounts every feed at once.
+ *    The `resolve*` pass is KEPT rather than replaced: warming is best-effort
+ *    and records nothing it could not ask for, so a failed or partial warm has
+ *    to fall through to the per-entry path or the row silently stays a guid.
  *  - **The attempted-sets are refs, not state.** Putting them in the dep array
  *    beside the effect's own `setPodcasts` created a fetch storm, where
  *    cancelled-but-already-in-flight requests kept hitting the network on every
@@ -86,6 +102,8 @@ export function useNoteMeta(items: NoteRefs[] | null): {
       if (cancelled) return;
       setPodcasts((prev) => ({ ...prev, [first]: firstPodcast }));
       if (!piMaybeUp()) return;
+      await warmPodcastCache(rest);
+      if (cancelled) return;
       const restPodcasts = await Promise.all(rest.map(resolvePodcastByGuid));
       if (cancelled) return;
       setPodcasts((prev) => {
@@ -120,6 +138,8 @@ export function useNoteMeta(items: NoteRefs[] | null): {
       if (cancelled) return;
       setEpisodes((prev) => ({ ...prev, [firstKey]: firstEpisode }));
       if (!piMaybeUp()) return;
+      await warmEpisodeCache(rest.map(([, r]) => r));
+      if (cancelled) return;
       const restEpisodes = await Promise.all(
         rest.map(([, r]) => resolveEpisodeByGuid(r.feedGuid, r.itemGuid)),
       );
