@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import {
   hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate,
-  nwcFetchCapabilities, nwcGetMethods,
+  nwcFetchCapabilities, nwcGetMethods, nwcGetBudget, type NwcBudget,
 } from '@/lib/v4v/nwc';
 import {
   publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, fetchEncryptedNwcDetailed,
@@ -11,6 +11,40 @@ import {
 } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
+
+/**
+ * States what this connection may spend, which is NOT the wallet's balance
+ * whenever a budget applies. Both branches are worth printing:
+ *
+ *  - A budget exists → name it, so a header chip smaller than the wallet's own
+ *    balance reads as the grant working rather than as a bug.
+ *  - The wallet reports budgets and this connection has none → say so, so a
+ *    user whose node balance IS the number on screen knows why, and knows the
+ *    repair is a budgeted connection rather than anything in this app.
+ *
+ * A wallet that never answers `get_budget` gets no line at all — we have no
+ * fact to state, and guessing either way would be a claim about someone's
+ * spending limit that we did not read.
+ */
+function BudgetLine({ budget, knowsBudgets }: { budget: NwcBudget | null; knowsBudgets: boolean }) {
+  if (budget) {
+    const period = budget.renewalPeriod && budget.renewalPeriod !== 'never'
+      ? ` \u00b7 renews ${budget.renewalPeriod}`
+      : '';
+    return (
+      <div className="text-[11px] text-muted">
+        Budget {budget.remainingSats.toLocaleString()} of{' '}
+        {budget.totalSats.toLocaleString()} sats left{period}
+      </div>
+    );
+  }
+  if (!knowsBudgets) return null;
+  return (
+    <div className="text-[11px] text-muted">
+      No spending limit on this connection — the balance shown is your whole wallet.
+    </div>
+  );
+}
 
 interface Props {
   mode: 'form' | 'card';
@@ -89,6 +123,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   // checkbox cannot carry it: it is already checked before the tap.
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [budget, setBudget] = useState<NwcBudget | null>(null);
   const [autoChecking, setAutoChecking] = useState(false);
   const identity = useApp((s) => s.identity);
   // Form-only opt-in choice (applied when the user clicks Connect). The
@@ -152,6 +187,24 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     if (mode !== 'card' || !hasNwc()) return;
     if (nwcGetMethods() !== null) return; // already fetched this session
     nwcFetchCapabilities().catch(() => {});
+  }, [mode]);
+
+  // The connection's spending budget, read once per card open. This is the
+  // card that answers "why is the number in the header not what my wallet
+  // says" — on a connection to your own node, `get_balance` reports the NODE's
+  // balance while the grant this app holds is whatever budget the connection
+  // was made with, and nothing on screen used to name the difference.
+  //
+  // `null` covers both "no budget" and "this wallet does not report one", so
+  // the card states the first only when it also knows the wallet answers the
+  // question at all — a method list naming `get_budget`.
+  useEffect(() => {
+    if (mode !== 'card' || !hasNwc()) return;
+    let cancelled = false;
+    nwcGetBudget()
+      .then((b) => { if (!cancelled) setBudget(b); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, [mode]);
 
   async function restoreFromNostr() {
@@ -341,6 +394,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
           </div>
         )}
         {host && <div className="text-[11px] text-muted">{host}</div>}
+        <BudgetLine budget={budget} knowsBudgets={methods !== null && methods.includes('get_budget')} />
         {methods !== null && !canPayInvoice && (
           <div className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5">
             ⚠ This wallet does not support sending payments via NWC. Boosts will fail. Try Alby or Mutiny.

@@ -3,6 +3,10 @@
 
 import { nwc } from '@getalby/sdk';
 import { storage } from '../storage';
+// The budget arithmetic lives in `lib/util.ts` so `npm run check:nwcbudget`
+// can load the shipping functions under plain Node — this module imports
+// `../storage` and the SDK, and cannot be loaded that way.
+import { parseNwcBudget, spendableSats, type NwcBudget } from '../util';
 import { createObservable } from '../pubsub';
 import { createLeasePool, type Lease } from './lease';
 
@@ -31,6 +35,8 @@ import {
   routingFailureProvesUnpaid,
   shouldDemoteAddress,
 } from './nwc-errors';
+
+export type { NwcBudget };
 
 export {
   failureBlamesDestination,
@@ -116,6 +122,7 @@ export async function nwcFetchCapabilities(): Promise<string[]> {
 export const saveNwcUri = (uri: string) => {
   storage.nwcUri.set(uri);
   cachedNwcMethods = null;
+  budgetUnsupportedFor = null;
   // Drop any socket held against the previous wallet. `acquire` also catches a
   // URI change, but only on the next call — this makes it immediate, and a
   // shared client outliving the wallet it authenticates to is worth no window
@@ -129,6 +136,7 @@ export const clearNwcUri = () => {
   storage.nwcUri.clear();
   storage.nwcMethods.clear();
   cachedNwcMethods = null;
+  budgetUnsupportedFor = null;
   // MUST be explicit here, not left to `acquire`: with no URI stored, `acquire`
   // throws before it can compare, so a disconnect would otherwise strand the
   // socket until the idle timer happened to fire.
@@ -300,10 +308,113 @@ export async function nwcPayInvoice(invoice: string): Promise<string> {
 }
 
 /**
+ * What this connection can actually send, and why.
+ *
+ * `sats` is the number every surface displays. It is the MINIMUM of the
+ * wallet's balance and the connection's remaining budget, because either one
+ * running out fails the payment — a boost cannot spend a budget the wallet
+ * can't fund, and it cannot spend a balance the budget won't release.
+ */
+export interface NwcSpendable {
+  sats: number;
+  /** True when the BUDGET is the binding limit, not the wallet's balance. */
+  budgetLimited: boolean;
+  /** The wallet's own balance in sats. */
+  balanceSats: number;
+  /** Absent when this connection carries no budget (an unlimited grant). */
+  budget: NwcBudget | null;
+}
+
+/**
+ * Whether this URI's wallet answers `get_budget`, remembered in memory so a
+ * refusal costs one request per session rather than one per refresh (the
+ * balance hook refreshes on every `payment_sent` push). Keyed by URI so a
+ * wallet switch re-asks. Deliberately NOT persisted: `get_budget` post-dates
+ * most wallets, so a `false` written today would outlive the wallet's next
+ * update and permanently hide a budget that had started being reported.
+ */
+let budgetUnsupportedFor: string | null = null;
+
+/**
+ * Fetch this connection's spending budget, or null when it has none.
+ *
+ * **A null here means "no budget applies," so callers fall back to the raw
+ * balance — which makes every failure direction have to resolve to null
+ * safely.** It does: an unsupported method, an ungranted permission, a dead
+ * relay and a malformed answer all mean we cannot show a smaller number than
+ * the balance, which is the same thing this app displayed before budgets were
+ * read at all. The opposite default would be worse than wrong: a budget
+ * misread as 0 renders the wallet as empty and paints the boost modal's
+ * insufficient-funds warning over a wallet that can pay.
+ *
+ * `parseNwcBudget` (lib/util.ts) holds the reading of the wire, including
+ * which inputs collapse to null, and is pinned by `npm run check:nwcbudget`.
+ */
+export async function nwcGetBudget(): Promise<NwcBudget | null> {
+  const uri = loadNwcUri();
+  if (!uri) return null;
+  if (budgetUnsupportedFor === uri) return null;
+  // When the method list is known and lacks `get_budget`, skip the round trip
+  // entirely. A null list means "we don't know" (see nwcGetMethods) — ask, and
+  // let the answer settle it.
+  //
+  // Trusting the list matters for more than tidiness: `nwcGetSpendable` awaits
+  // both reads, so a wallet that neither implements this NOR answers it would
+  // hold the balance behind the SDK's 10 s read cap on every refresh. NIP-47
+  // has wallets advertise their methods in `get_info`, so a wallet that
+  // supports budgets and omits it from that list is out of spec — and the cost
+  // of believing it is one stale-looking chip, against a blank one for
+  // everybody whose wallet ignores the method.
+  const methods = nwcGetMethods();
+  if (methods !== null && !methods.includes('get_budget')) {
+    budgetUnsupportedFor = uri;
+    return null;
+  }
+  try {
+    // A read, so a retry is safe — see `withNwcClient`.
+    const res = await withNwcClient((c) => c.getBudget(), { retry: true });
+    return parseNwcBudget(res);
+  } catch (e) {
+    // NOT_IMPLEMENTED / UNAUTHORIZED / RESTRICTED are the wallet saying it
+    // will never answer this on this connection — stop asking for the session.
+    // Anything else (a timeout, a dead relay) may well answer next time.
+    const mapped = mapNwcError(e);
+    if (mapped instanceof NwcNotAttemptedError) budgetUnsupportedFor = uri;
+    return null;
+  }
+}
+
+/**
+ * What this connection can send, in whole sats — the number every balance
+ * surface shows. Returns null when the wallet's balance is unreadable, so
+ * callers hide the chip rather than paint a stale or zero value.
+ *
+ * **`get_balance` alone is the wrong number on a node-backed wallet.** A
+ * connection to your own node (Alby Hub, an LND bridge) answers it with the
+ * NODE's whole balance, while the grant this app holds may be a few thousand
+ * sats a month — so the chip advertised nine million spendable sats over a
+ * budget that would refuse the next boost. The two reads ride the one shared
+ * socket the lease already holds, so asking for both costs no extra dial.
+ */
+export async function nwcGetSpendable(): Promise<NwcSpendable | null> {
+  const [balanceSats, budget] = await Promise.all([
+    nwcGetBalance(),
+    nwcGetBudget().catch(() => null),
+  ]);
+  if (balanceSats === null) return null;
+  const { sats, budgetLimited } = spendableSats(balanceSats, budget);
+  return { sats, budgetLimited, balanceSats, budget };
+}
+
+/**
  * Fetch the wallet's current balance in sats. NIP-47 returns msats; we floor
  * to whole sats. Returns null on any error (network failure, capability not
  * granted on this connection, wallet down) — callers should hide the chip
  * rather than show a stale or zero value.
+ *
+ * **This is the WALLET's balance, not what this connection may spend.** A
+ * display surface wants `nwcGetSpendable()`; this stays exported for the
+ * places that genuinely mean the wallet total.
  */
 export async function nwcGetBalance(): Promise<number | null> {
   try {

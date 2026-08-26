@@ -16,6 +16,12 @@
 // NWC: live updates via subscribeNwcNotifications when the wallet supports
 // notifications, plus visibilitychange/focus refresh as a fallback for
 // wallets that don't. NIP-47 returns msat; helper floors to whole sats.
+//
+// The NWC number is `nwcGetSpendable()`, NOT `get_balance` — on a connection
+// to your own node the wallet's balance is the NODE's, while the grant this
+// app holds is whatever budget the connection was created with. Showing the
+// balance there advertised nine million spendable sats over a budget that
+// would refuse the next boost.
 
 import { useEffect, useMemo, useState } from 'react';
 import type { Rail } from '@/lib/v4v/boost';
@@ -27,9 +33,10 @@ import {
 } from '@/lib/v4v/spark';
 import {
   hasNwc,
-  nwcGetBalance,
+  nwcGetSpendable,
   subscribeNwc,
   subscribeNwcNotifications,
+  type NwcBudget,
 } from '@/lib/v4v/nwc';
 import {
   isWeblnEnabled,
@@ -49,6 +56,14 @@ import { storage, subscribeRailPref } from '@/lib/storage';
 const BALANCE_DEBOUNCE_MS = 1200;
 
 /**
+ * Stands in for a budget we know applies but haven't re-read yet — the cached
+ * paint on page load. Every figure is 0 because none of them is known; the
+ * surfaces below render the caveat off `budget !== null` and only print the
+ * numbers when `totalSats > 0`.
+ */
+const PLACEHOLDER_BUDGET: NwcBudget = { usedSats: 0, totalSats: 0, remainingSats: 0 };
+
+/**
  * Returns the active rail's balance + the rail it came from. Pass a
  * `railOverride` to force a specific rail (e.g. the boost modal passes its
  * picker selection so the displayed balance matches the rail that will pay).
@@ -56,15 +71,22 @@ const BALANCE_DEBOUNCE_MS = 1200;
  * else NWC > Spark > WebLN (WebLN only counted as "ready" once the user has
  * explicitly enabled it via the wallet sub-card, since fetching balance
  * otherwise would prompt them). Mirrors pickRail() in lib/v4v/boost.ts.
+ *
+ * `balance` is what the rail can SEND, which on NWC is the smaller of the
+ * wallet's balance and the connection's remaining budget. `budget` is non-null
+ * only when that budget is the BINDING limit, so a surface can say why the
+ * number is smaller than the wallet holds; it is always null on Spark and
+ * WebLN, neither of which has such a grant.
  */
 export function useWalletBalance(
   railOverride?: Rail | null,
-): { balance: number | null; rail: Rail | null } {
+): { balance: number | null; rail: Rail | null; budget: NwcBudget | null } {
   const npub = useApp((s) => s.identity?.npub) ?? null;
   const [sparkReady, setSparkReady] = useState(hasSpark());
   const [nwcReady, setNwcReady] = useState(hasNwc());
   const [weblnReady, setWeblnReady] = useState(isWeblnEnabled());
   const [balance, setBalance] = useState<number | null>(null);
+  const [budget, setBudget] = useState<NwcBudget | null>(null);
 
   const [, setPrefTick] = useState(0);
 
@@ -100,6 +122,7 @@ export function useWalletBalance(
 
   useEffect(() => {
     setBalance(null);
+    setBudget(null);
     if (rail === null) return;
     let cancelled = false;
     const cleanups: Array<() => void> = [];
@@ -110,8 +133,14 @@ export function useWalletBalance(
         const info = await sparkGetInfo();
         if (!cancelled && info) setBalance(info.balanceSats);
       } else if (rail === 'nwc') {
-        const sats = await nwcGetBalance();
-        if (!cancelled && sats !== null) setBalance(sats);
+        const spendable = await nwcGetSpendable();
+        if (!cancelled && spendable !== null) {
+          setBalance(spendable.sats);
+          // Only when the BUDGET is what caps the number. A connection with a
+          // 100k budget over a 5k wallet is showing 5k for the ordinary
+          // reason, and calling that a budget would explain it wrongly.
+          setBudget(spendable.budgetLimited ? spendable.budget : null);
+        }
       } else {
         const sats = await weblnGetBalance();
         if (!cancelled && sats !== null) setBalance(sats);
@@ -208,9 +237,9 @@ export function useWalletBalance(
   // on cold load, which leaves the chip blank for far too long otherwise.
   useEffect(() => {
     if (balance !== null && rail !== null) {
-      storage.walletBalance.set(npub, rail, balance);
+      storage.walletBalance.set(npub, rail, balance, budget !== null);
     }
-  }, [balance, rail, npub]);
+  }, [balance, rail, npub, budget]);
 
   // Fall back to the cached value while the live balance hasn't landed yet.
   // Two cases we honor the cache:
@@ -243,15 +272,52 @@ export function useWalletBalance(
     }
   }
 
-  return { balance: displayBalance, rail: displayRail };
+  // A cached value paints before the first read lands, and it may be a
+  // budget-capped number — so the cache records that it was, and the surface
+  // keeps saying so. Dropping the caveat for the second it takes the live read
+  // to arrive would flash "this is your wallet balance" over a number that
+  // isn't one.
+  const displayBudget =
+    budget ?? (balance === null && cached?.limited && displayRail === 'nwc'
+      ? PLACEHOLDER_BUDGET
+      : null);
+
+  return { balance: displayBalance, rail: displayRail, budget: displayBudget };
 }
 
-/** Compact balance pill for the header. Hidden when no rail is connected. */
+
+/**
+ * How a budget-capped number is described, in one place, because both
+ * surfaces below say it and a boost that fails for budget reasons must not be
+ * explained two different ways.
+ */
+export function budgetTitle(budget: NwcBudget): string {
+  if (budget.totalSats <= 0) return 'Limited by this connection\u2019s spending budget';
+  const period = budget.renewalPeriod && budget.renewalPeriod !== 'never'
+    ? `, renews ${budget.renewalPeriod}`
+    : '';
+  return `${budget.remainingSats.toLocaleString()} of ${budget.totalSats.toLocaleString()} sats left in this app\u2019s NWC budget${period}`;
+}
+
+/**
+ * Compact balance pill for the header. Hidden when no rail is connected.
+ *
+ * A budget-capped number carries a `≤` prefix — "you may spend at most this",
+ * which is what a budget remainder is. One character, because the header has
+ * no width to spare (see the `<AppHeader>` rule in CLAUDE.md), and a marker at
+ * all because the number otherwise silently means something different from the
+ * balance the user reads in their own wallet app: a chip showing 2,340 beside
+ * a node holding 9,017,493 reads as a bug. `~` was the first draft and says
+ * the wrong thing — the figure is exact, it is the ceiling that is the news.
+ */
 export function WalletBalanceChip() {
-  const { balance, rail } = useWalletBalance();
+  const { balance, rail, budget } = useWalletBalance();
   if (rail === null || balance === null) return null;
   const formatted = balance.toLocaleString();
   const railName = rail === 'nwc' ? 'NWC' : rail === 'webln' ? 'WebLN' : 'Spark';
+  const title = budget
+    ? `${formatted} sats spendable (${railName}) \u2014 ${budgetTitle(budget)}`
+    : `${formatted} sats (${railName})`;
   return (
     // No ⚡ here: the only call site (<AuthControl>) already renders one in the
     // button, and it has to stay there — this component returns null whenever
@@ -260,9 +326,9 @@ export function WalletBalanceChip() {
     // Rendering one in both gave the chip two.
     <span
       className="text-bolt text-[11px] font-mono tabular-nums whitespace-nowrap"
-      title={`${formatted} sats (${railName})`}
+      title={title}
     >
-      {formatted}
+      {budget ? '\u2264' : ''}{formatted}
     </span>
   );
 }
@@ -281,8 +347,11 @@ export function BoostModalBalance({
   amountSats: number;
   rail: Rail | null;
 }) {
-  const { balance, rail } = useWalletBalance(railOverride);
+  const { balance, rail, budget } = useWalletBalance(railOverride);
   if (rail === null || balance === null) return null;
+  // The insufficient test runs against the SPENDABLE number, so a boost the
+  // connection's budget would refuse is flagged here rather than at the
+  // wallet — the point of reading the budget at all.
   const insufficient = amountSats > balance;
   const railName = rail === 'nwc' ? 'NWC' : rail === 'spark' ? 'Spark' : 'WebLN';
   return (
@@ -290,10 +359,15 @@ export function BoostModalBalance({
       className={`text-[11px] font-mono tabular-nums whitespace-nowrap ${
         insufficient ? 'text-nostr' : 'text-muted'
       }`}
-      title={`${balance.toLocaleString()} sats available on ${railName}`}
+      title={budget
+        ? `${balance.toLocaleString()} sats spendable on ${railName} \u2014 ${budgetTitle(budget)}`
+        : `${balance.toLocaleString()} sats available on ${railName}`}
     >
       <span className={insufficient ? 'text-nostr' : 'text-bolt'}>⚡</span>
       {balance.toLocaleString()}
+      {/* The modal has room for the word, so it says it rather than wearing
+          the chip's `≤` — a symbol beside a spelt-out caveat is noise. */}
+      {budget && <span className="ml-1 text-muted/70">budget</span>}
     </span>
   );
 }
