@@ -25,10 +25,19 @@
 // must-still-work half is exempted ONE VECTOR AT A TIME with `alsoNaive: true`,
 // never by default.
 //
-// `naive()` here is the version somebody would actually write: publish whenever
-// the derived numbers differ from the stored ones. It has no monotonicity check
-// at all, so it happily lowers a total on a partial read — and that is the bug
-// that cannot be seen from one device.
+// There is one `naive()` PER KIND — `decision`, `facts`, `matches`, `derive`,
+// `parse` — and each is the version somebody would actually write, not a
+// strawman: every one of them passes a single-writer test. The decision one
+// publishes whenever the numbers differ, with no monotonicity check at all, so
+// it happily lowers a total on a partial read; that is the bug no single device
+// can see.
+//
+// **A new function pinned here needs a recorder AND a naive, or its vectors
+// prove nothing.** The replay refuses a kind it has no implementation for
+// rather than comparing two absences and passing — this file previously
+// recorded only `decision`, so roughly twenty assertions across the other four
+// functions sat green having been compared against nothing, under a header that
+// said otherwise.
 
 import {
   receiptFacts,
@@ -54,10 +63,42 @@ function eq(label, actual, expected) {
   console.error(`  FAIL  ${label}\n          expected ${e}\n          actual   ${a}`);
 }
 
-/** A summaryPublishDecision vector. `alsoNaive` marks a must-still-work input. */
+// Every assertion below goes through one of these, and every one of them
+// RECORDS the call. That is the whole point: a bare `eq()` is an assertion the
+// replay cannot see, so it sits green having been compared against nothing —
+// which is precisely how check-assetlinks.mjs came to have a header claiming
+// total coverage over a footer that named six vectors of twenty-nine by hand.
+// Adding a function here without a recorder re-opens that hole.
+//
+// `alsoNaive` marks a must-still-work input: a legitimate value the wrong
+// implementation also handles. It is a property of that input, never a default.
+function record(kind, label, args, alsoNaive) {
+  vectors.push({ label, kind, args, alsoNaive });
+}
+
 function checkDecision(label, derived, stored, expected, { alsoNaive = false } = {}) {
   eq(label, summaryPublishDecision(derived, stored), expected);
-  vectors.push({ label, kind: 'decision', args: [derived, stored], alsoNaive });
+  record('decision', label, [derived, stored], alsoNaive);
+}
+
+function checkFacts(label, tags, createdAt, expected, { alsoNaive = false } = {}) {
+  eq(label, receiptFacts(tags, createdAt), expected);
+  record('facts', label, [tags, createdAt], alsoNaive);
+}
+
+function checkMatches(label, tags, id, expected, { alsoNaive = false } = {}) {
+  eq(label, receiptMatchesId(tags, id), expected);
+  record('matches', label, [tags, id], alsoNaive);
+}
+
+function checkDerive(label, facts, expected, { alsoNaive = false } = {}) {
+  eq(label, deriveSummary(facts), expected);
+  record('derive', label, [facts], alsoNaive);
+}
+
+function checkParse(label, tags, expected, { alsoNaive = false } = {}) {
+  eq(label, parseStoredSummary(tags), expected);
+  record('parse', label, [tags], alsoNaive);
 }
 
 const d = (amount, count, first = 0, last = 0) => ({ amount, count, first, last });
@@ -77,31 +118,38 @@ console.log('\nreceiptFacts — what one receipt contributes');
     ['amount', '30000'],
     ['action', 'auto'],
   ];
-  eq('reads amount and created_at', receiptFacts(tags, 1740000180), {
+  checkFacts('reads amount and created_at', tags, 1740000180, {
     amountMsat: 30000,
     createdAt: 1740000180,
-  });
+  }, { alsoNaive: true });
 
   // A missing amount must not become a zero-sat receipt. It would leave the
   // total right and the COUNT wrong, and count is the field a consumer uses to
   // decide whether a summary is behind — so a phantom entry makes an accurate
   // summary look permanently stale.
-  eq('no amount tag is dropped, not counted as 0',
-    receiptFacts([['i', 'podcast:guid:x']], 1740000180), null);
-  eq('empty amount is dropped (Number("") is 0)',
-    receiptFacts([['amount', '']], 1740000180), null);
-  eq('non-numeric amount is dropped',
-    receiptFacts([['amount', '30000 msat']], 1740000180), null);
-  eq('negative amount is dropped',
-    receiptFacts([['amount', '-30000']], 1740000180), null);
-  eq('fractional amount is dropped',
-    receiptFacts([['amount', '30000.5']], 1740000180), null);
+  checkFacts('no amount tag is dropped, not counted as 0',
+    [['i', 'podcast:guid:x']], 1740000180, null);
+  checkFacts('empty amount is dropped (Number("") is 0)',
+    [['amount', '']], 1740000180, null);
+  checkFacts('non-numeric amount is dropped',
+    [['amount', '30000 msat']], 1740000180, null);
+  checkFacts('negative amount is dropped',
+    [['amount', '-30000']], 1740000180, null);
+  checkFacts('fractional amount is dropped',
+    [['amount', '30000.5']], 1740000180, null);
   // Whitespace is tolerated on the way IN but must still parse to the number,
   // never to NaN and never to 0.
-  eq('padded amount parses to the number',
-    receiptFacts([['amount', ' 30000 ']], 1740000180), { amountMsat: 30000, createdAt: 1740000180 });
-  eq('a genuine zero-sat receipt is kept',
-    receiptFacts([['amount', '0']], 1740000180), { amountMsat: 0, createdAt: 1740000180 });
+  checkFacts('padded amount parses to the number',
+    [['amount', ' 30000 ']], 1740000180, { amountMsat: 30000, createdAt: 1740000180 },
+    { alsoNaive: true });
+  checkFacts('a genuine zero-sat receipt is kept',
+    [['amount', '0']], 1740000180, { amountMsat: 0, createdAt: 1740000180 },
+    { alsoNaive: true });
+  // `created_at` is the other half of a fact and is validated too — it sets
+  // `first`/`last`, so a garbage timestamp does not merely look odd, it moves
+  // the bounds a second writer compares against.
+  checkFacts('a negative created_at is dropped', [['amount', '30000']], -1, null);
+  checkFacts('a non-integer created_at is dropped', [['amount', '30000']], 1.5, null);
 }
 
 // ---------------------------------------------------------------------------
@@ -115,21 +163,24 @@ console.log('\nreceiptMatchesId — the relay filter is not proof');
     ['i', 'podcast:item:guid:d98d189b-dc7b-45b1-8720-d4b98690f31f'],
     ['k', 'podcast:item:guid'],
   ];
-  eq('matches the feed id', receiptMatchesId(tags, ID), true);
-  eq('matches the item id it also carries',
-    receiptMatchesId(tags, 'podcast:item:guid:d98d189b-dc7b-45b1-8720-d4b98690f31f'), true);
-  eq('does not match an id it does not carry',
-    receiptMatchesId(tags, 'podcast:guid:00000000-0000-0000-0000-000000000000'), false);
+  checkMatches('matches the feed id', tags, ID, true, { alsoNaive: true });
+  checkMatches('matches the item id it also carries', tags,
+    'podcast:item:guid:d98d189b-dc7b-45b1-8720-d4b98690f31f', true, { alsoNaive: true });
+  checkMatches('does not match an id it does not carry', tags,
+    'podcast:guid:00000000-0000-0000-0000-000000000000', false, { alsoNaive: true });
   // A prefix test would count a longer guid toward a shorter one. Over-counting
   // a total is silent — the event still looks well-formed.
-  eq('a longer id sharing the prefix does not match',
-    receiptMatchesId([['i', ID + '-extra']], ID), false);
-  eq('a shorter prefix of a carried id does not match',
-    receiptMatchesId(tags, 'podcast:guid:c90e609a'), false);
+  checkMatches('a longer id sharing the prefix does not match',
+    [['i', ID + '-extra']], ID, false, { alsoNaive: true });
+  checkMatches('a shorter prefix of a carried id does not match', tags,
+    'podcast:guid:c90e609a', false, { alsoNaive: true });
   // `k` names the kind, never the entry. Reading it as one lets any receipt
-  // count toward any feed of that kind.
-  eq('a k tag is not an entry', receiptMatchesId([['k', ID]], ID), false);
-  eq('an empty id matches nothing', receiptMatchesId(tags, ''), false);
+  // count toward any feed of that kind — which is what the naive version does.
+  checkMatches('a k tag is not an entry', [['k', ID]], ID, false);
+  checkMatches('an empty id matches nothing', tags, '', false, { alsoNaive: true });
+  // The guard is what makes the empty-id case total: without it, a tag whose
+  // own value is empty answers yes to "do you carry the empty id".
+  checkMatches('an empty id does not match an empty tag value', [['i', '']], '', false);
 }
 
 // ---------------------------------------------------------------------------
@@ -139,32 +190,32 @@ console.log('\nderiveSummary — order-independent, which is what lets two apps 
   const a = { amountMsat: 30000, createdAt: 1740000180 };
   const b = { amountMsat: 12000, createdAt: 1739900000 };
   const c = { amountMsat: 1000, createdAt: 1740000000 };
-  eq('sums and bounds', deriveSummary([a, b, c]), {
-    amount: 43000, count: 3, first: 1739900000, last: 1740000180,
-  });
+  const bounds = { amount: 43000, count: 3, first: 1739900000, last: 1740000180 };
+  checkDerive('sums and bounds', [a, b, c], bounds);
   // Relays return events in no particular order, so a second writer only agrees
-  // with the first if the derivation does not depend on arrival order.
-  eq('reversed input gives the identical result',
-    deriveSummary([c, b, a]), deriveSummary([a, b, c]));
-  eq('empty is zero and reports no bounds', deriveSummary([]), {
+  // with the first if the derivation does not depend on arrival order. The naive
+  // version reads facts[0] and facts[n-1] — right only for a sorted array, which
+  // is exactly what one device's own receipts look like.
+  checkDerive('reversed input gives the identical result', [c, b, a], bounds);
+  checkDerive('empty is zero and reports no bounds', [], {
     amount: 0, count: 0, first: 0, last: 0,
-  });
+  }, { alsoNaive: true });
   // `first` starts at 0 as a sentinel; a single receipt must set it, not keep 0.
-  eq('one receipt sets both bounds to itself', deriveSummary([a]), {
+  checkDerive('one receipt sets both bounds to itself', [a], {
     amount: 30000, count: 1, first: 1740000180, last: 1740000180,
-  });
+  }, { alsoNaive: true });
 }
 
 // ---------------------------------------------------------------------------
 console.log('\nparseStoredSummary — an unreadable value must not freeze the address');
 // ---------------------------------------------------------------------------
 {
-  eq('reads amount and count', parseStoredSummary([
+  checkParse('reads amount and count', [
     ['d', 'podcast:guid:x'], ['amount', '1420000'], ['count', '84'],
-  ]), { amount: 1420000, count: 84 });
-  eq('missing count is unreadable', parseStoredSummary([['amount', '1420000']]), null);
-  eq('missing amount is unreadable', parseStoredSummary([['count', '84']]), null);
-  eq('garbage is unreadable', parseStoredSummary([['amount', 'lots'], ['count', '84']]), null);
+  ], { amount: 1420000, count: 84 }, { alsoNaive: true });
+  checkParse('missing count is unreadable', [['amount', '1420000']], null);
+  checkParse('missing amount is unreadable', [['count', '84']], null);
+  checkParse('garbage is unreadable', [['amount', 'lots'], ['count', '84']], null);
 }
 
 // ---------------------------------------------------------------------------
@@ -244,19 +295,69 @@ console.log('\nevery decision vector fails against the obvious wrong implementat
   // publish if it differs. No monotonicity anywhere. It is correct on every
   // single-writer path and lowers the total the first time a relay read is
   // short — which is exactly the failure no one device can observe.
-  const naive = (derived, stored) => {
-    if (!stored) return { publish: true, reason: 'publish' };
-    if (derived.amount === stored.amount && derived.count === stored.count) {
-      return { publish: false, reason: 'unchanged' };
-    }
-    return { publish: true, reason: 'publish' };
+  // One naive per recorded kind, and each is the version somebody would actually
+  // write — not a strawman. Every one of them passes a single-writer test.
+  const naiveTagValue = (tags, name) => {
+    for (const t of tags) if (t[0] === name) return t[1];
+    return undefined;
+  };
+
+  const naive = {
+    // Publish whenever the numbers differ. No monotonicity at all, so it lowers
+    // a total the first time a relay read comes back short — the failure no one
+    // device can observe.
+    decision: (derived, stored) => {
+      if (!stored) return { publish: true, reason: 'publish' };
+      if (derived.amount === stored.amount && derived.count === stored.count) {
+        return { publish: false, reason: 'unchanged' };
+      }
+      return { publish: true, reason: 'publish' };
+    },
+    // `Number()` and a `?? 0`, which is what reading a tag looks like when you
+    // are not thinking about the absent case. A receipt with no readable amount
+    // becomes a real zero-sat entry: the total stays right and `count` gains a
+    // phantom, so an accurate summary looks permanently behind.
+    facts: (tags, createdAt) => ({
+      amountMsat: Number(naiveTagValue(tags, 'amount') ?? 0),
+      createdAt,
+    }),
+    // Search the tag VALUES and forget that the tag NAME carries meaning. `k`
+    // holds the identifier kind, so this counts any receipt of that kind toward
+    // any feed of that kind.
+    matches: (tags, id) => tags.some((t) => t[1] === id),
+    // Assume the array arrived sorted, which is true of one device's own
+    // receipts and false of anything a relay returns.
+    derive: (facts) => ({
+      amount: facts.reduce((n, f) => n + f.amountMsat, 0),
+      count: facts.length,
+      first: facts.length ? facts[0].createdAt : 0,
+      last: facts.length ? facts[facts.length - 1].createdAt : 0,
+    }),
+    // Same missing-value blindness as `facts`, one level up: an unreadable
+    // stored summary reads as NaN rather than as "we could not read it", and
+    // NaN compares false against everything, so the address is rewritten every
+    // cycle forever.
+    parse: (tags) => ({
+      amount: Number(naiveTagValue(tags, 'amount')),
+      count: Number(naiveTagValue(tags, 'count')),
+    }),
+  };
+
+  const real = {
+    decision: summaryPublishDecision,
+    facts: receiptFacts,
+    matches: receiptMatchesId,
+    derive: deriveSummary,
+    parse: parseStoredSummary,
   };
 
   const call = (impl, v) => {
+    const fn = (impl === 'real' ? real : naive)[v.kind];
+    // A vector whose kind has no implementation on either side would compare
+    // equal and pass silently — the exact hole this replay exists to close.
+    if (!fn) return `no ${impl} implementation for kind "${v.kind}"`;
     try {
-      return JSON.stringify(
-        impl === 'real' ? summaryPublishDecision(...v.args) : naive(...v.args),
-      );
+      return JSON.stringify(fn(...v.args));
       // A wrong implementation is allowed to throw where the real one returns.
       // That still counts as differing — it is the loudest way to be wrong.
     } catch (e) {

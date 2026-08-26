@@ -645,6 +645,35 @@ export function showShareUrl(podcastGuid: string | undefined): string | null {
   return url.toString();
 }
 
+/**
+ * A random UUID that also works in an INSECURE context.
+ *
+ * `crypto.randomUUID` is secure-context-only. Over `http://<LAN-IP>` — which is
+ * how this app is tested on a phone — it is simply absent, and a bare call
+ * throws `TypeError`. Inside a `try` that costs one operation. Outside one it
+ * is fatal: `openContext` runs from the streaming engine's bare
+ * `setInterval(tick)` callback, so a throw there stops every later tick from
+ * ever opening a context — no accrual, no meter, no payments, and nothing in
+ * the console to read.
+ *
+ * `crypto.getRandomValues` is NOT secure-context-only, so the first fallback is
+ * still a real v4 UUID; only the third is not. These ids are correlation tags —
+ * a boostagram `uuid`, a streaming session id — never secrets, never keys, so
+ * that last resort is sound. **Do not reach for this where unpredictability is
+ * a security property.**
+ */
+export function randomId(): string {
+  const c: Crypto | undefined = typeof globalThis.crypto === 'object' ? globalThis.crypto : undefined;
+  if (typeof c?.randomUUID === 'function') return c.randomUUID();
+  const bytes = new Uint8Array(16);
+  if (typeof c?.getRandomValues === 'function') c.getRandomValues(bytes);
+  else for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // variant 1
+  const hex = Array.from(bytes, (n) => n.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
 export function fnvHash(s: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {

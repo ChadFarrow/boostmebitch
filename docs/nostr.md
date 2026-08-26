@@ -559,10 +559,20 @@ Spec and reasoning: [`docs/value-playback.md`](value-playback.md) and
 it sits beside the boost note's.
 
 `buildValuePlaybackReceipt()` in `lib/nostr/value-playback.ts` builds a kind:3369
-with the **same NIP-73 `i`/`k` pairs, in the same order and the same pairing**,
-that `buildBoostNoteTemplate` emits — that is the point of it. One `#i` filter
-returns the boost note and every streaming receipt for one feed, episode or
-track together; drift the tag shape and the two stop meeting.
+with the **same NIP-73 `i`/`k` pair SHAPE, in the same order and the same
+pairing**, that `buildBoostNoteTemplate` emits — that is the point of it. Drift
+the tag shape and nothing can read the two under one filter.
+
+**But the shape matching does not mean the VALUES match, and only the host
+bucket actually meets its boost note.** `buildBoostNoteTemplate` always tags the
+SHOW and the EPISODE, and `components/boost-modal/index.tsx` passes those even
+for a track-redirected boost — while `paymentIds` for a track bucket returns the
+track's own album feed guid and item guid. So a manual boost of a song and a
+streaming receipt for that same song carry **disjoint** `i` tags and never come
+back under one `#i` query; only a host-bucket receipt matches the note. Do not
+"fix" that by making the receipt tag the show: the receipt names who was
+actually paid, which is the artist, and that is the more useful of the two.
+Widen the query instead — the album-page track union below is the pattern.
 
 Then `amount` (millisats that SETTLED), `action` (`auto`), `start`/`end` (the
 wall-clock interval), `position` (playback seconds), `session`, `app`, and a

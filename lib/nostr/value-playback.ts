@@ -21,7 +21,8 @@
 // The wire format is an external spec shared with other Podcasting 2.0 apps and
 // is NOT ours to change here — see docs/value-playback.md.
 
-import type { EventTemplate } from 'nostr-tools';
+import type { EventTemplate, NostrEvent } from 'nostr-tools';
+import { storage } from '../storage';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish } from './publish';
 import { canSignUnattended } from './signer';
@@ -211,6 +212,27 @@ export async function publishValuePlaybackReceipt(
  *  has to see the WHOLE set, and there is no early exit to shorten it. */
 const SUMMARY_RECEIPT_SCAN_MS = 8_000;
 
+/**
+ * Page size for the receipt scan, and the ceiling on how many pages it walks.
+ *
+ * An unlimited REQ is not an unlimited answer: relays cap it at a default of
+ * their own choosing, commonly a few hundred, and say nothing about having done
+ * so. `DetailedCollect.complete` cannot see that — it reports that every reached
+ * relay sent EOSE, not that every matching event came back — so a scan that has
+ * been silently truncated looks exactly like a complete one. At roughly six
+ * receipts an hour a feed passes a 500-event cap after about 83 hours of
+ * listening, and from then on every scan derives the same newest-N sum: the
+ * total plateaus, `summaryPublishDecision` answers 'unchanged' forever, and the
+ * monotonic rule pins the public number below the truth permanently.
+ *
+ * So the scan asks for an explicit page and walks backwards with `until` until a
+ * page comes back short. `MAX_RECEIPT_PAGES` bounds the work for an account with
+ * a very long history; hitting it is the one case where the view really is
+ * partial, and the scan reports that rather than publishing a low total.
+ */
+const RECEIPT_PAGE_LIMIT = 500;
+const MAX_RECEIPT_PAGES = 20;
+
 /** How long the whole read-decide-publish cycle may take before we give up. */
 const SUMMARY_PUBLISH_TIMEOUT_MS = 25_000;
 
@@ -297,18 +319,75 @@ export function buildValuePlaybackSummary(
  * readable by anything deriving a summary, or two apps derive from different
  * subsets and the monotonic rule silences whichever one has the narrower view.
  */
+/**
+ * Every receipt this pubkey published for one identifier, walked page by page.
+ *
+ * `complete` here is stricter than `DetailedCollect.complete`: it also requires
+ * that the walk reached the end of the history rather than the page ceiling. A
+ * sum is only as good as its narrowest input, and publishing a truncated one is
+ * permanent — see RECEIPT_PAGE_LIMIT.
+ */
+async function scanReceipts(
+  relays: string[],
+  pubkey: string,
+  id: string,
+): Promise<{ events: NostrEvent[]; complete: boolean; reached: number; answered: number; pages: number }> {
+  const byId = new Map<string, NostrEvent>();
+  let until: number | undefined;
+  let reached = 0;
+  let answered = 0;
+  let pages = 0;
+  let walkedToEnd = false;
+
+  while (pages < MAX_RECEIPT_PAGES) {
+    const page = await collectEventsDetailed(
+      relays,
+      {
+        kinds: [VALUE_PLAYBACK_RECEIPT_KIND],
+        authors: [pubkey],
+        '#i': [id],
+        limit: RECEIPT_PAGE_LIMIT,
+        ...(until === undefined ? {} : { until }),
+      },
+      SUMMARY_RECEIPT_SCAN_MS,
+      { pubkey, kinds: [VALUE_PLAYBACK_RECEIPT_KIND] },
+    );
+    pages++;
+    reached = page.reached;
+    answered = page.answered;
+    if (!page.complete) return { events: [...byId.values()], complete: false, reached, answered, pages };
+
+    let added = 0;
+    let oldest = Infinity;
+    for (const ev of page.events) {
+      if (ev.created_at < oldest) oldest = ev.created_at;
+      if (byId.has(ev.id)) continue;
+      byId.set(ev.id, ev);
+      added++;
+    }
+    // A short page is the end of the history. `added === 0` catches the other
+    // terminator: a page whose events we have all seen, which is what a run of
+    // receipts sharing one `created_at` produces once `until` stops advancing.
+    if (page.events.length < RECEIPT_PAGE_LIMIT || added === 0) {
+      walkedToEnd = true;
+      break;
+    }
+    // `until` is inclusive, so the boundary second is re-fetched and deduped by
+    // id rather than skipped — dropping it would silently lose every receipt
+    // that shares that second with the page edge.
+    until = oldest;
+  }
+
+  return { events: [...byId.values()], complete: walkedToEnd, reached, answered, pages };
+}
+
 export async function updateValuePlaybackSummary(args: SummaryUpdateArgs): Promise<void> {
   const relays = args.relays.length ? args.relays : DEFAULT_RELAYS;
   try {
-    const scan = await collectEventsDetailed(
-      relays,
-      { kinds: [VALUE_PLAYBACK_RECEIPT_KIND], authors: [args.pubkey], '#i': [args.id] },
-      SUMMARY_RECEIPT_SCAN_MS,
-      { pubkey: args.pubkey, kinds: [VALUE_PLAYBACK_RECEIPT_KIND] },
-    );
+    const scan = await scanReceipts(relays, args.pubkey, args.id);
     if (!scan.complete) {
       console.warn(
-        `[33369] receipt scan incomplete (${scan.answered}/${scan.reached} relays) — not publishing`,
+        `[33369] receipt scan incomplete (${scan.answered}/${scan.reached} relays, ${scan.pages} pages) — not publishing`,
         { id: args.id },
       );
       return;
@@ -362,6 +441,8 @@ interface PendingSummaries {
 
 let pending: PendingSummaries | null = null;
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
+/** True while `flushSummaries` is awaiting publishes. See its re-entrancy note. */
+let flushing = false;
 
 /**
  * Queue one or more ids for a summary update, coalescing repeats.
@@ -396,9 +477,31 @@ export function queueSummaryUpdate(args: {
 
 async function flushSummaries() {
   flushTimer = null;
+  // **One flush at a time.** Each id is awaited serially with up to
+  // SUMMARY_PUBLISH_TIMEOUT_MS of budget, so a three-id batch can run for over a
+  // minute — long enough for a fresh `queueSummaryUpdate` to set another timer
+  // and fire it underneath this one. Two flushes holding the same id would read
+  // the same stored summary, derive the same numbers, both decide 'publish', and
+  // write two events to one address back to back: the relay churn the
+  // CHANGED-BY-VALUE rule exists to avoid, plus a signature the user did not
+  // expect. The re-arm below means nothing queued is dropped, only deferred.
+  if (flushing) {
+    if (pending) flushTimer = setTimeout(flushSummaries, SUMMARY_FLUSH_DELAY_MS);
+    return;
+  }
   const batch = pending;
   pending = null;
   if (!batch) return;
+
+  // **Re-read the switches, do not trust the ones that queued this.** Up to
+  // SUMMARY_FLUSH_DELAY_MS separates the queue from the flush, and a listener
+  // who turns either switch off inside that window means "stop", not "finish
+  // what was queued" — a kind:33369 is permanent and monotonic, so an event
+  // published after the opt-out cannot be undone by turning the switch off
+  // again. `maybeQueueSummaries` reads them too, but that is QUEUE time; this is
+  // the one that matches what the user last chose.
+  if (!storage.streamReceipts.get()) return;
+  if (!storage.streamSummaries.get()) return;
 
   // **Re-check the signer, do not trust the one that queued this.** Up to
   // SUMMARY_FLUSH_DELAY_MS separates the queue from the flush, and a sign-out
@@ -424,17 +527,26 @@ async function flushSummaries() {
   }
   if (signer !== batch.pubkey) return;
 
-  for (const [id, meta] of batch.ids) {
-    await withTimeout(
-      updateValuePlaybackSummary({
-        id,
-        idKind: meta.idKind,
-        label: meta.label,
-        pubkey: batch.pubkey,
-        relays: batch.relays,
-      }),
-      SUMMARY_PUBLISH_TIMEOUT_MS,
-    );
+  flushing = true;
+  try {
+    for (const [id, meta] of batch.ids) {
+      await withTimeout(
+        updateValuePlaybackSummary({
+          id,
+          idKind: meta.idKind,
+          label: meta.label,
+          pubkey: batch.pubkey,
+          relays: batch.relays,
+        }),
+        SUMMARY_PUBLISH_TIMEOUT_MS,
+      );
+    }
+  } finally {
+    flushing = false;
+    // Anything queued while this ran gets its own timer — the early return above
+    // only fires when a timer was already pending, so without this a batch that
+    // arrived mid-flush would sit in `pending` with nothing scheduled to send it.
+    if (pending && !flushTimer) flushTimer = setTimeout(flushSummaries, SUMMARY_FLUSH_DELAY_MS);
   }
 }
 

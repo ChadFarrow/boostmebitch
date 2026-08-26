@@ -11,6 +11,7 @@ import {
 } from '@/lib/v4v/streaming';
 import { STREAM_AMOUNT_MAX_SATS, STREAM_RATE_MAX_PER_MIN } from '@/lib/v4v/stream-ledger';
 import { canSignUnattended } from '@/lib/nostr/signer';
+import { useApp } from '@/lib/store';
 
 /**
  * On/off switch.
@@ -238,18 +239,6 @@ function streamRateDescription(v: StreamRateView): string {
 }
 
 /**
- * "Streaming sats — [on/off] [N] sats/min."
- *
- * Two scopes from one component. `podcast` omitted = the global default (the
- * wallet modal); `podcast` given = that show's override, which carries a third
- * state — **explicitly off, which must outrank a global rate raised later** —
- * plus a "use default" escape back to following the global.
- *
- * The rate field stays live while the switch is off, on purpose: that is what
- * makes "turning it off didn't lose my number" visible, and it lets a user set
- * a rate before committing to it.
- */
-/**
  * Opt in to publishing a kind:3369 value-playback receipt for each streaming
  * settle.
  *
@@ -275,14 +264,30 @@ function StreamReceipts() {
   const [on, setOn] = useState(() => storage.streamReceipts.get());
   const [totals, setTotals] = useState(() => storage.streamSummaries.get());
   const [landed, setLanded] = useState(true);
-  // Read after mount: both depend on browser state the server render has no
+  // Read after mount: these depend on browser state the server render has no
   // view of, so deriving them during render is a hydration mismatch.
-  const [canSign, setCanSign] = useState(true);
-  const [anonymous, setAnonymous] = useState(false);
+  //
+  // **Re-read on identity and on the modal opening, never once on mount.** This
+  // panel lives in <WalletModal>, which stays mounted across a sign-in and
+  // across a trip to the boost share picker, so a mount-only effect leaves the
+  // notices describing a state the user has already left — in both directions.
+  // Saying "receipts will publish" when they will not, and showing the Anonymous
+  // warning after the user turned it off, are the same failure: a confident
+  // wrong statement about whether a permanent public event is being written.
+  const identity = useApp((st) => st.identity);
+  const walletOpen = useApp((st) => st.walletOpen);
+  const [withheld, setWithheld] = useState<'none' | 'signed-out' | 'no-signer' | 'anonymous' | 'not-posting'>('none');
   useEffect(() => {
-    setCanSign(canSignUnattended());
-    setAnonymous(storage.shareNostr.get() && storage.shareNostrAs.get() === 'site');
-  }, []);
+    // Mirrors `streamingMayPublish()` + the identity and signer gates in
+    // `maybePublishReceipt`, in the order those refusals actually run. Keep the
+    // two in step: a state this misses is a switch that reads ON while nothing
+    // is published, which is the failure this repo keeps re-learning.
+    if (!identity) setWithheld('signed-out');
+    else if (!canSignUnattended()) setWithheld('no-signer');
+    else if (!storage.shareNostr.get()) setWithheld('not-posting');
+    else if (storage.shareNostrAs.get() === 'site') setWithheld('anonymous');
+    else setWithheld('none');
+  }, [identity, walletOpen]);
 
   function change(v: boolean) {
     setOn(v);
@@ -327,17 +332,30 @@ function StreamReceipts() {
           </p>
         </div>
       )}
-      {on && anonymous && (
+      {on && withheld === 'signed-out' && (
         <p className="text-[11px] text-nostr mt-2">
-          Nothing is published while boosts are set to Anonymous. The receipt is
-          signed by your key, so there is no anonymous version of it to send.
+          Nothing is published while you are signed out. A receipt is a signed
+          Nostr event, so it needs a key. Sign in to publish these.
         </p>
       )}
-      {on && !anonymous && !canSign && (
+      {on && withheld === 'no-signer' && (
         <p className="text-[11px] text-nostr mt-2">
           Nothing is published with your current sign-in. Amber and remote
           signers ask for approval on every signature, which a payment on a timer
           cannot do. A browser extension or a key stored here can.
+        </p>
+      )}
+      {on && withheld === 'not-posting' && (
+        <p className="text-[11px] text-nostr mt-2">
+          Nothing is published while boosts are set to “Don’t post”. That choice
+          covers these receipts too. Set boosts back to your own feed to publish
+          them.
+        </p>
+      )}
+      {on && withheld === 'anonymous' && (
+        <p className="text-[11px] text-nostr mt-2">
+          Nothing is published while boosts are set to Anonymous. The receipt is
+          signed by your key, so there is no anonymous version of it to send.
         </p>
       )}
       {!landed && (
@@ -350,6 +368,18 @@ function StreamReceipts() {
   );
 }
 
+/**
+ * "Streaming sats — [on/off] [N] sats/min."
+ *
+ * Two scopes from one component. `podcast` omitted = the global default (the
+ * wallet modal); `podcast` given = that show's override, which carries a third
+ * state — **explicitly off, which must outrank a global rate raised later** —
+ * plus a "use default" escape back to following the global.
+ *
+ * The rate field stays live while the switch is off, on purpose: that is what
+ * makes "turning it off didn't lose my number" visible, and it lets a user set
+ * a rate before committing to it.
+ */
 export function StreamRate({
   podcast,
   onDone,
