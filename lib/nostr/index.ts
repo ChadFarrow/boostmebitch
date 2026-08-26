@@ -70,6 +70,7 @@ export {
   indexedBoostsSentBy,
   indexedBoostsReceivedBy,
   indexedZapsReceivedBy,
+  indexedLiveStreams,
   indexAvailable,
 } from './index-client';
 

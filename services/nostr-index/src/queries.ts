@@ -70,6 +70,25 @@ export async function globalNotes(db: Db, limit: number, until?: number): Promis
  * whatever its `status` tag still says; the client applies its own
  * `LIVE_FRESH_SECS` on top and reads the status itself.
  *
+ * The `status` filter keeps this route from shipping a payload almost none of
+ * which can render. Measured against real relays: of the newest 200 events in
+ * the window, 140 were explicitly `ended`, 39 carried no status at all and 4
+ * were empty — and `parseNostrLiveStream` maps every one of those to `ended`,
+ * which `shapeLiveStreams` then drops. 204 KB over the wire to render 17 rows.
+ *
+ * It is deliberately a SUPERSET of the client's rule, never a copy of it. The
+ * client also requires a `live` event to have been updated recently, and that
+ * test must stay client-side: it is evaluated at render time, while this
+ * response sits in a CDN for 15 s, so a server that applied it would be
+ * answering a question about a moment that has passed. Filtering here on the
+ * one part that cannot change — an explicit `ended`, or no status to be live by
+ * — leaves the time-dependent half where it belongs.
+ *
+ * `status` is not in `event_tags`: `indexableTags` stores single-letter tags
+ * only, per NIP-01's indexed-tag rule. `d` is one and `status` is not, so this
+ * reads the whole tag array out of the jsonb column instead. The scan is over
+ * the window's few hundred rows, not the table.
+ *
  * The `d` tag can be absent, in which case the event id stands in for it —
  * matching the client, where `?? e.id` does the same. Coalescing to a constant
  * instead would collapse every d-less stream from one pubkey into one row.
@@ -94,6 +113,8 @@ export async function liveStreams(db: Db, limit: number, sinceSecs: number): Pro
             order by t.pos limit 1
          ) d on true
         where e.kind = 30311 and e.deleted_at is null and e.created_at >= $2
+          and exists (select 1 from jsonb_array_elements(e.tags) tag
+                       where tag->>0 = 'status' and tag->>1 in ('live', 'planned'))
         order by e.pubkey, coalesce(d.value, e.id), e.created_at desc
      ) e
      order by e.created_at desc

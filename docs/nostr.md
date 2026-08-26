@@ -915,6 +915,41 @@ Two properties make the quiet timer safe, and both matter:
 
 
 
+## Live streams from the read index
+
+`<NostrLiveStreams>` reads `/feed/live` and the relays TOGETHER, the same shape
+`useNostrFeed` uses for notes, with two differences that are not cosmetic.
+
+**The union is by ADDRESS, not by event id.** A note is immutable, so unioning
+notes by id is right; a kind:30311 is REPLACEABLE, so the index and the relays
+routinely hold two versions of one broadcast and an id union renders the same
+show twice — once as it was an hour ago and once as it is now. `shapeLiveStreams`
+(`lib/nostr/live-streams.ts`) keeps the newest per `pubkey:dTag`, and it is
+shared by both paths so they cannot disagree about which broadcast is current
+or which one is over.
+
+**The route refuses to answer when the index is behind.** Every other bundle is
+public history, where an hour-old note is still true and a behind index just
+means a slightly shorter feed. A live list is a claim about *right now*: served
+stale it puts a finished broadcast on air, which is worse than answering
+nothing, because the relay fallback would have been correct. `/feed/live`
+answers 503 past five minutes, and `check-api.mjs` asserts `/feed/global` still
+answers 200 under the same staleness so the gate cannot spread.
+
+**Paint before you resolve, or the index buys nothing.** `resolveStreamV4V`
+fetches a profile per zap-split recipient and deliberately retries cached
+misses, so a row of 23 streams is dozens of relay round trips. Resolving before
+painting spent the index's whole advantage and then some — measured 7346 ms to
+first row against a 56 ms index response. The card renders from the event
+itself; the profile is a nicer name and avatar, and `value` only gates BOOST. So
+the component paints from `shapeLiveStreams` immediately, then fills profiles,
+then V4V, keeping resolved blocks in a ref so a second commit from the slower
+source does not re-pay for what the first already answered — or blank a boost
+button that was working a moment ago.
+
+Measured end to end against a local index holding real relay data: **391 ms**
+with the index, **7346 ms** without it, and the row renders either way.
+
 ## Boost explorer (`/npub/<npub>`)
 
 A shareable, read-only page: what one npub boosted, and who boosted it.

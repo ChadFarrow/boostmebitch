@@ -118,6 +118,50 @@ export function indexGlobalFeed(limit = INDEX_FEED_LIMIT): Promise<IndexBundle |
   return bundleFrom('/feed/global', limit);
 }
 
+/**
+ * NIP-53 live activities from the index.
+ *
+ * Not a `bundleFrom`: a stream card renders from the event plus its host's
+ * profile and has no reply forest or quoted events, so `/feed/live` answers a
+ * different shape and this reads it directly.
+ *
+ * The route REFUSES with 503 when the index is more than five minutes behind,
+ * and that is load-bearing rather than defensive. Every other thing this client
+ * fetches is public history, where an hour-old answer is still true and a
+ * behind index just means a slightly shorter feed. A live list is a claim about
+ * right now: served stale it puts a finished broadcast on air, which is worse
+ * than answering nothing, because the relay fallback would have been correct.
+ *
+ * `ask` already latches `indexOffForTab` on a 503, which is the right response
+ * to "not configured" and the wrong one to "temporarily behind" — but the two
+ * are indistinguishable from here, and erring toward the relay path is the
+ * direction that cannot be wrong.
+ */
+export async function indexedLiveStreams(limit = 200): Promise<NostrLiveStream[] | null> {
+  const raw = await ask<unknown>('/feed/live', { limit: String(limit) });
+  if (!raw || typeof raw !== 'object') return null;
+  const body = raw as { streams?: unknown; profiles?: unknown };
+  if (!Array.isArray(body.streams)) return null;
+
+  const [streams, profiles] = await Promise.all([
+    verifyAll(body.streams as Event[]),
+    verifyAll(Array.isArray(body.profiles) ? (body.profiles as Event[]) : []),
+  ]);
+
+  // Seed the shared per-pubkey cache before returning, so the caller's own
+  // profile pass finds them already there rather than re-fetching every host.
+  for (const p of profiles) {
+    const meta = parseProfileContent(p.content);
+    if (meta) storage.profile.set(p.pubkey, meta);
+  }
+
+  const shaped = shapeLiveStreams(streams);
+  // Same rule as every other fetcher here: empty is not an answer this may
+  // make. Nobody being live right now and the index not having crawled a
+  // broadcast look identical from this side, so let the relay pass speak.
+  return shaped.length ? shaped : null;
+}
+
 export function indexPodcastFeed(guid: string, limit = INDEX_FEED_LIMIT): Promise<IndexBundle | null> {
   return bundleFrom(`/feed/podcast/${encodeURIComponent(guid)}`, limit);
 }
@@ -162,6 +206,7 @@ export async function indexZapsReceivedBy(pubkey: string, limit = INDEX_FEED_LIM
 
 import { nip19 } from 'nostr-tools';
 import { assembleFromBundle, type DiscoveredNote, type ReceivedZap } from './discover';
+import { shapeLiveStreams, type NostrLiveStream } from './live-streams';
 import { DEFAULT_RELAYS } from './relays';
 import { parseProfileContent } from './auth';
 import { parseZapReceipt, type ZapReceipt } from './zap-receipt';
