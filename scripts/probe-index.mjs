@@ -26,14 +26,22 @@ const flag = (name) => {
   return i >= 0 ? args[i + 1] : undefined;
 };
 
+// Mirrors DEFAULT_RELAYS / PROFILE_RELAYS in lib/nostr/relays.ts. Keep them in
+// step or this stops measuring what a real page waits, which is its whole job.
+//
+// BASELINE, for comparison across the trim: with `relay.nostr.band` in RELAYS
+// and `nostr.bitcoiner.social` + `eden.nostr.land` in PROFILE_RELAYS, this run
+// totalled 42037ms on 2026-08-25 with every single stage returning at its
+// ceiling (7025 / 7002 / 7002 / 7002 / 7002 / 7003). None of those three served
+// an event; they were removed for that. Do not read a later number against this
+// one as an index result — it is the relay path getting out of its own way.
 const RELAYS = [
   'wss://relay.damus.io',
   'wss://relay.primal.net',
   'wss://nos.lol',
-  'wss://relay.nostr.band',
   'wss://relay.fountain.fm',
 ];
-const PROFILE_RELAYS = ['wss://purplepag.es', 'wss://nostr.bitcoiner.social', 'wss://eden.nostr.land'];
+const PROFILE_RELAYS = ['wss://purplepag.es'];
 
 // The app's own ceilings, from lib/nostr/pool.ts. Copied so the numbers below
 // are comparable to what a real page waits.

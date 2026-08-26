@@ -331,8 +331,7 @@ export interface CollectResult {
  *   - every pubkey in `expectedAuthors` seen at least once (all-found early exit),
  *   - aggregate EOSE (every relay reached end-of-stored-events),
  *   - `quietMs` after the last event arrived (set > 0 to enable — backstops a
- *     connected-but-stalled relay that never sends EOSE; leave 0 for the
- *     profile path, which relies on the all-found exit + EOSE),
+ *     connected-but-stalled relay that never sends EOSE),
  *   - `maxWait`.
  *
  * Unlike `pool.querySync` (which waits for the slowest relay or the full maxWait
@@ -341,6 +340,19 @@ export interface CollectResult {
  * batch. `allEosed`/`gotAnyEvent` let callers gate negative-caching: an empty
  * result with `allEosed=false` means "degraded, don't trust the absence",
  * whereas `allEosed=true` means "genuinely not on these relays".
+ *
+ * PASS A `quietMs` ON ANY BROAD SCAN. The all-found exit and aggregate EOSE were
+ * once thought to be enough for the profile path; measured on the global feed
+ * they are not, because the exit needs EVERY requested author and 18 of 24 have
+ * no kind:0 on the default set, so it never fires and the scan waits out the
+ * full window on every load. The quiet timer is the only bound that a silent
+ * relay cannot defeat. It cannot truncate a healthy one either: it arms only
+ * after the first event and every event re-arms it.
+ *
+ * Note what a quiet-timer finish means downstream: `allEosed` stays FALSE,
+ * because only `oneose` sets it. That is deliberate and it is the safe
+ * direction — a scan that stopped early has not proved an absence, so callers
+ * gating a negative cache on `allEosed` correctly decline to record one.
  *
  * The CALLER owns the pool (unlike `fetchLatestEvent`, which uses `withPool`):
  * `fetchProfiles` runs inside `withExtraRelays(pool, …)` and the helper must

@@ -1,5 +1,6 @@
 import { nip19, type Event } from 'nostr-tools';
-import { withPool, FEED_QUERY_MAX_WAIT_MS } from './pool';
+import { withPool, FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS } from './pool';
+import { collectEventsByAuthors } from './event-queries';
 import { DEFAULT_RELAYS, sanitizeRelays } from './relays';
 import { fetchProfile } from './profile';
 import { storage } from '../storage';
@@ -137,7 +138,22 @@ export async function fetchNostrLiveStreams(opts?: {
 
   return withPool(relays, async (pool) => {
     try {
-      const events = await pool.querySync(
+      // Quiet-timer backstop, NOT `pool.querySync`. This runs on the homepage
+      // beside the global feed, on the same shared pool, and it repolls every
+      // 60s — so it is the one live-stream query where a stalled relay is paid
+      // over and over. querySync resolves only at aggregate EOSE: measured on
+      // 2026-08-25, this query took 7027ms with `relay.nostr.band` in the set
+      // and 1682ms without it, for the same 229 events.
+      //
+      // Deliberately NOT applied to `fetchLiveStreamByAddr` /
+      // `fetchLatestStreamByPubkey` below. Those back a deep link that must
+      // find one specific event, often held only by a slow host relay, and
+      // their own comments say completeness beats the early resolve. The quiet
+      // timer would arm on some OTHER stream's event and cut the slow relay
+      // off — turning a valid link into "stream not found". A missing row in
+      // this list is a gap; a missing row there is a dead link.
+      const { events } = await collectEventsByAuthors(
+        pool,
         relays,
         {
           kinds: [30311],
@@ -146,7 +162,9 @@ export async function fetchNostrLiveStreams(opts?: {
           since: Math.floor(Date.now() / 1000) - 7 * 86400,
           limit,
         },
-        { maxWait: FEED_QUERY_MAX_WAIT_MS },
+        [],
+        FEED_QUERY_MAX_WAIT_MS,
+        FEED_QUIET_MS,
       );
 
       // Deduplicate replaceable events: keep the newest version per NIP-33 address

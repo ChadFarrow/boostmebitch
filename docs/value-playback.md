@@ -97,9 +97,8 @@ regular, `20000 <= n < 30000` ephemeral, `30000 <= n < 40000` addressable) and
 none of the three appears in the NIPs event-kind table, so there is no
 collision. **Neither fact says a relay will take one.** Most general-purpose
 relays store any regular kind, but this app's defaults are not all
-general-purpose — `relay.nostr.band` is an index and `relay.fountain.fm` is an
-app's own relay — and a kind allowlist or a rate limit is invisible until you
-write to one.
+general-purpose — `relay.fountain.fm` is an app's own relay — and a kind
+allowlist or a rate limit is invisible until you write to one.
 
 `npm run probe:kinds` is the measurement. It signs with a key it generates,
 writes each kind to each relay individually, and **reads each back**, which is
@@ -126,7 +125,6 @@ relay as broken in a table someone later trusts.
 | relay.damus.io | | | |
 | relay.primal.net | | | |
 | nos.lol | | | |
-| relay.nostr.band | | | |
 | relay.fountain.fm | | | |
 
 `npm run probe:kinds -- --read <npub>` also cross-checks a published summary

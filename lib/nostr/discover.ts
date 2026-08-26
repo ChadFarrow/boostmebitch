@@ -68,6 +68,19 @@ interface FetchOpts {
    *  immediately and stream replies in afterward. The root note is built from
    *  the per-pubkey profile cache only (no extra network). */
   onRoot?: (root: DiscoveredNote) => void;
+  /** The feed equivalent of `onRoot`: fired with EVERY top-level note as soon
+   *  as the kind:1 scan returns, before replies, profiles and quoted events
+   *  resolve. `useNostrFeed` commits it, so a relay-only load paints at the
+   *  first stage instead of the last.
+   *
+   *  Only the three FEED fetchers accept it — global, per-podcast, per-episode
+   *  — because they return `assembleNotes`' output unchanged. The two boost
+   *  fetchers deliberately do NOT, and must not be "made consistent": they end
+   *  with `notes.filter(n => n.isBoost)`, and `isBoost` for a Fountain wrapper
+   *  is adopted from a quoted kind:9735 that has not been fetched at root time.
+   *  Emitting there would publish notes the final answer excludes — and since
+   *  `mergeNotes` unions and never removes, they would stay on screen for good. */
+  onRoots?: (roots: DiscoveredNote[]) => void;
 }
 
 // Pull every event id this note quote-references, plus relay hints. Sources:
@@ -245,7 +258,7 @@ export async function fetchPodcastNotes(
     } catch {
       return [];
     }
-    return await assembleNotes(pool, live, events);
+    return await assembleNotes(pool, live, events, opts.onRoots);
   });
 }
 
@@ -273,7 +286,7 @@ export async function fetchEpisodeNotes(
     } catch {
       return [];
     }
-    return await assembleNotes(pool, live, events);
+    return await assembleNotes(pool, live, events, opts.onRoots);
   });
 }
 
@@ -363,7 +376,7 @@ export async function fetchAllPodcastNotes(
     } catch {
       return [];
     }
-    return await assembleNotes(pool, live, events);
+    return await assembleNotes(pool, live, events, opts.onRoots);
   });
 }
 
@@ -598,6 +611,7 @@ async function assembleNotes(
   pool: import('nostr-tools').SimplePool,
   relays: string[],
   events: Event[],
+  onRoots?: (roots: DiscoveredNote[]) => void,
 ): Promise<DiscoveredNote[]> {
   if (!events.length) return [];
 
@@ -605,6 +619,30 @@ async function assembleNotes(
   // notes from replies. Shared with assembleFromBundle so the two paths cannot
   // disagree about what counts as a top-level note.
   const { topLevel: topLevelEvents, replies: seedReplies } = splitTopLevel(events);
+
+  // Hand the roots over BEFORE the three slow stages below. Everything after
+  // this line is enrichment — replies, profiles, quoted events — and none of it
+  // changes which notes exist or what they say. Holding all of it back until
+  // the last stage finishes is why the feed used to sit empty for the whole
+  // relay pass while the notes themselves had arrived seconds earlier.
+  //
+  // This lives HERE, in the one funnel all six fetchers pass through, rather
+  // than at each of their `assembleNotes` call sites — six places to add it is
+  // six places to forget it, and a fetcher that silently skipped it would look
+  // no different from a slow network.
+  //
+  // Profiles come from the localStorage cache only, so this costs no network:
+  // an author we have not seen paints as a bare npub for a few seconds and then
+  // fills in. Same for a Fountain wrapper's amount, which is adopted from a
+  // quoted kind:9735 that has not been fetched yet. A note can therefore gain
+  // detail on the second commit but can never lose any, and `mergeNotes` unions
+  // by id with the later copy winning, so the enriched version replaces the
+  // bare one in place.
+  if (onRoots && topLevelEvents.length) {
+    onRoots(topLevelEvents.map(
+      (e) => noteFromEvent(e, relays, storage.profile.get(e.pubkey) ?? null),
+    ));
+  }
 
   const childrenByParent = await fetchReplyTree(
     pool,
@@ -804,11 +842,19 @@ async function fetchReplyTree(
     if (frontier.size === 0) break;
     let events: Event[] = [];
     try {
-      events = await pool.querySync(relays, {
+      // `collectEventsByAuthors` rather than `pool.querySync`, for the quiet
+      // timer alone — the early exit is off (`[]` authors), because a reply
+      // scan has no "we have everyone" condition to exit on. querySync resolves
+      // only at AGGREGATE eose, so one relay that connects and then says nothing
+      // pinned each round at the full 8s, and this loop runs up to
+      // MAX_THREAD_DEPTH rounds IN SERIES. That was the single largest stage of
+      // a cold homepage. The quiet timer cannot truncate a healthy relay: it
+      // only starts once events have arrived, and each event re-arms it.
+      ({ events } = await collectEventsByAuthors(pool, relays, {
         kinds: [1],
         '#e': Array.from(frontier),
         limit: REPLY_QUERY_LIMIT,
-      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
+      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS));
     } catch {
       break;
     }
@@ -845,11 +891,16 @@ async function fetchQuotedEvents(
   // dozens of niche relays. The base relays are always preferred. sanitizeRelays
   // first so a malformed `q`/`e`/nevent relay hint can't crash normalizeURL.
   const cappedHints = sanitizeRelays(Array.from(hintRelays)).slice(0, Math.max(0, 12 - relays.length));
+  // Same quiet-timer backstop as the reply tree, and it matters more here: the
+  // hint relays are taken from feed-supplied `q`/`e` tags, so this is the one
+  // stage whose relay set an author we've never met gets to choose. A single
+  // silent hint used to cost the full window.
   const events = await withExtraRelays(pool, relays, cappedHints, async (queryRelays) => {
     try {
-      return await pool.querySync(queryRelays, {
+      const res = await collectEventsByAuthors(pool, queryRelays, {
         ids: Array.from(ids),
-      }, { maxWait: FEED_QUERY_MAX_WAIT_MS });
+      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS);
+      return res.events;
     } catch {
       return [] as Event[];
     }
@@ -894,13 +945,18 @@ async function fetchAuthorWriteRelays(
   // the events.
   //
   // `maxWait` is a parameter because the early exit only fires when the author
-  // HAS a kind:10002. An author with none waits out the whole window, so a
-  // caller that runs this BEFORE its own query (rather than as a fallback
-  // after one) stacks two windows back to back and doubles its worst case.
-  // Measured against a relay that accepts the socket and then says nothing:
-  // 16 s for the sent panel against 8 s for the other two.
+  // HAS a kind:10002. An author with none waits out the window, so a caller
+  // that runs this BEFORE its own query (rather than as a fallback after one)
+  // stacks two windows back to back and doubles its worst case. Measured
+  // against a relay that accepts the socket and then says nothing: 16 s for the
+  // sent panel against 8 s for the other two. The `FEED_QUIET_MS` backstop
+  // shortens that once events start arriving, but it does not remove it — an
+  // author whose kind:10002 nobody holds produces no event to arm the timer
+  // with, so the ordering rule above still stands.
   const res = await withExtraRelays(pool, relays, PROFILE_RELAYS, (queryRelays) =>
-    collectEventsByAuthors(pool, queryRelays, { kinds: [10002], authors }, authors, maxWait),
+    collectEventsByAuthors(
+      pool, queryRelays, { kinds: [10002], authors }, authors, maxWait, FEED_QUIET_MS,
+    ),
   );
   const newest = new Map<string, Event>();
   for (const e of res.events) {
@@ -947,11 +1003,20 @@ async function fetchProfiles(
   //    profile-outbox relays (purplepag.es etc.). The outbox relays exist
   //    specifically to host kind:0 for arbitrary authors, so this catches the
   //    common case where an author's profile isn't on DEFAULT_RELAYS.
-  //    `collectEventsByAuthors` early-exits the moment all `toFetch` authors are
-  //    seen, otherwise resolves at aggregate EOSE or maxWait — so one stalled
-  //    relay can no longer pin or empty the whole batch (the old querySync did).
+  //    `collectEventsByAuthors` early-exits the moment all `toFetch` authors
+  //    are seen, otherwise at aggregate EOSE, the quiet timer, or maxWait.
+  //
+  //    The quiet timer is load-bearing and used not to be. This pass was left
+  //    at `quietMs = 0` on the theory that the all-found exit plus EOSE covered
+  //    it. On the global feed the exit essentially never fires — it needs EVERY
+  //    author, and measured on 2026-08-25 18 of 24 had no kind:0 on the default
+  //    set — so the pass fell through to maxWait on every single load, and this
+  //    ladder runs up to three of them in series.
   const firstRes = await withExtraRelays(pool, relays, PROFILE_RELAYS, (queryRelays) =>
-    collectEventsByAuthors(pool, queryRelays, { kinds: [0], authors: toFetch }, toFetch),
+    collectEventsByAuthors(
+      pool, queryRelays, { kinds: [0], authors: toFetch }, toFetch,
+      FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS,
+    ),
   );
   for (const [pubkey, profile] of newestProfilesByAuthor(firstRes.events)) {
     out.set(pubkey, profile);
@@ -970,7 +1035,10 @@ async function fetchProfiles(
     if (cappedExtras.length) {
       fallbackRan = true;
       const fbRes = await withExtraRelays(pool, relays, cappedExtras, (queryRelays) =>
-        collectEventsByAuthors(pool, queryRelays, { kinds: [0], authors: missing }, missing),
+        collectEventsByAuthors(
+          pool, queryRelays, { kinds: [0], authors: missing }, missing,
+          FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS,
+        ),
       );
       fallbackHealthy = fbRes.allEosed && fbRes.gotAnyEvent;
       for (const [pubkey, profile] of newestProfilesByAuthor(fbRes.events)) {
@@ -987,7 +1055,9 @@ async function fetchProfiles(
   //    at least one event came back (so a relay blackout isn't mistaken for
   //    "nobody has a profile"). Without this gate a transient outage poisons
   //    every author with a 15-min miss and the feed shows raw npubs long after
-  //    relays recover. An author carried into the NIP-65 fallback is gated on
+  //    relays recover. A quiet-timer finish lands on the right side of this by
+  //    construction: only `oneose` sets `allEosed`, so a scan that stopped on
+  //    silence has not established that anybody is missing a profile. An author carried into the NIP-65 fallback is gated on
   //    the fallback's health (its own write relays are authoritative); one that
   //    wasn't is gated on the first pass.
   const firstHealthy = firstRes.allEosed && firstRes.gotAnyEvent;

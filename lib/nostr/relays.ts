@@ -2,11 +2,28 @@ import { withPool, QUERY_MAX_WAIT_MS } from './pool';
 import { storage } from '../storage';
 import type { NostrIdentity } from './auth';
 
+// Every read query in the app fans out to these, and `SimplePool.querySync` /
+// `collectEventsByAuthors` resolve on AGGREGATE eose — so a relay that connects
+// and then answers nothing does not cost nothing, it costs the caller's whole
+// `maxWait`, on every stage, every load. `warmRelays` cannot catch it: it scores
+// `pool.ensureRelay`, and a silent relay connects perfectly.
+//
+// `wss://relay.nostr.band` was exactly that and was measured out on 2026-08-25.
+// Asked for this app's own kind:1 filter it returned 0 events and never EOSE'd,
+// while pinning each query to the ceiling. Removing it changed no result:
+//
+//   kind:1 podcast notes   5 relays 7026ms / 227 events -> 4 relays 2403ms / 227
+//   kind:30311 live        7 relays 7027ms / 229 events -> 6 relays 1682ms / 229
+//   reply tree, round 0    5 relays 7029ms /  18 events -> 4 relays 2702ms /  18
+//
+// `docs/ops.md` carries the same table for the index service, which was trimmed
+// to these four for the same reason. RE-MEASURE before trusting this list — a
+// relay that is dead today may not be tomorrow, and the cost of carrying a live
+// one is a socket, while the cost of carrying a dead one is five seconds a stage.
 export const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
   'wss://relay.primal.net',
   'wss://nos.lol',
-  'wss://relay.nostr.band',
   'wss://relay.fountain.fm',
 ];
 
@@ -16,19 +33,30 @@ export const DEFAULT_RELAYS = [
 // authors whose primary relays don't intersect DEFAULT_RELAYS.
 //
 //  - purplepag.es: the de facto standard profile outbox (Damus, Amethyst).
-//  - nostr.bitcoiner.social: Bitcoin-community relay; many podcast/V4V
-//    authors publish their metadata here (e.g. Jupiter Broadcasting hosts).
-//  - eden.nostr.land: broadly-mirrored aggregator; catches profiles whose
-//    publisher only chose niche relays.
 //
-// querySync calls in this codebase pass a QUERY_MAX_WAIT_MS bound (4s) so
-// the wall time is capped — added relays don't compound latency since the
-// pool runs them in parallel and we resolve when EOSE arrives or the bound
-// fires, whichever comes first.
+// This comment used to say a bound "caps the wall time" so extra relays "don't
+// compound latency since the pool runs them in parallel". That is the belief the
+// bug lived in, and it is wrong in the direction that costs the most: the bound
+// caps the WORST case and a silent relay makes every query hit it, so an added
+// relay that answers nothing converts the ceiling into the typical time. It is
+// only free to add a relay that ANSWERS.
+//
+// `nostr.bitcoiner.social` and `eden.nostr.land` were dropped on 2026-08-25 for
+// that reason. Measured against the live global feed, interleaved to cancel
+// corpus drift:
+//
+//   kind:0, base + these 3   7005ms / 7001ms, 78 and 87 profiles
+//   kind:0, trimmed sets     1072ms / 1132ms, 77 and 100 profiles
+//
+// They cost ~5.9s a stage. Be exact about what that bought: across both rounds
+// they held ONE profile, of about ninety, that the trimmed set did not — not
+// zero. That one is still reachable, because a profile missing from the first
+// pass is exactly what `fetchProfiles`' NIP-65 outbox fallback exists to chase,
+// and that fallback was itself unreachable in practice while each pass ahead of
+// it burned its whole window. `fetchProfiles` runs the ladder up to three times
+// in series, so the three relays cost roughly 18s of a cold homepage for it.
 export const PROFILE_RELAYS = [
   'wss://purplepag.es',
-  'wss://nostr.bitcoiner.social',
-  'wss://eden.nostr.land',
 ];
 
 // Drop relay entries that aren't valid `ws://` / `wss://` URLs. Corrupt NIP-65
