@@ -29,7 +29,6 @@ import type { NostrIdentity } from './auth';
  */
 export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
   const setMutedPubkeys = useApp.getState().setMutedPubkeys;
-  const cached = storage.muted.get(identity.npub);
   // DO NOT SPEND AN AMBER PROMPT HERE. This runs on every page load, before
   // the user has touched anything, and decrypting the private half of the
   // mute list is a NIP-04 call — which on Amber leaves the browser for
@@ -61,6 +60,23 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
   // its relay set rather than defaulting to one.
   const relays = resolvePublishRelays(identity);
   const muteEvent = await fetchMutedPubkeys(identity.pubkey, relays, { decryptPrivate });
+
+  // READ THE CACHE AFTER THE AWAIT, NEVER BEFORE IT. This used to be the first
+  // line of the function, and the gap it left is not small: this hydration does
+  // not start until the account's NIP-65 write set resolves (up to 4 s), then
+  // spends up to another 4 s on `fetchLatestEvent`, plus a NIP-04 decrypt. So
+  // the reconcile lands the better part of ten seconds into the session —
+  // exactly while the user is scrolling the feed the page just painted, which
+  // is when someone mutes a spam account.
+  //
+  // A mute made in that window was invisible here, and BOTH branches below then
+  // wrote a state without it: to the store, so the note came straight back on
+  // screen, and to `storage.muted`, so it did not survive the reload either.
+  // The local-ahead branch went further and republished the loss, which is how
+  // muting the same account over and over never took. Everything after this
+  // line is synchronous, so reading here closes the window rather than
+  // narrowing it.
+  const cached = storage.muted.get(identity.npub);
 
   if (!muteEvent) {
     // No Nostr event yet; if we have a local cache, push it up so the user's

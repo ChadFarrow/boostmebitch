@@ -26,7 +26,13 @@
 
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
-import { piMaybeUp, resolveEpisodeByGuid, resolvePodcastByGuid } from '@/lib/podcast-meta';
+import {
+  piMaybeUp,
+  resolveEpisodeByGuid,
+  resolvePodcastByGuid,
+  warmEpisodeCache,
+  warmPodcastCache,
+} from '@/lib/podcast-meta';
 import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/types';
 import {
   EMPTY_LOCAL,
@@ -443,6 +449,16 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   setFavoriteEpisodes(nextEpisodes);
 
   if (unresolvedShows.length > 0) {
+    // Fill the caches in one request first. Purely additive: `resolveBatch`
+    // below is unchanged and, after this, finds every entry in memory and
+    // issues no network calls. A failure here is a silent no-op and the
+    // per-guid path runs exactly as it always did.
+    //
+    // What it buys is the burst, not the latency. One request per favorited
+    // show, drained six at a time (HTTP connections per host), is what exhausts
+    // the per-IP limiter mid-list — and until recently a 429 arriving there was
+    // negative-cached as "PI does not hold this feed" for the life of the tab.
+    await warmPodcastCache(unresolvedShows);
     const resolved = await resolveBatch(unresolvedShows, resolveGuidToFavorite);
     const mergedShows = { ...useApp.getState().favorites };
     for (const fav of resolved) {
@@ -465,6 +481,12 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   }
 
   if (unresolvedEpisodes.length > 0) {
+    // Same prefetch for tracks, and this is the half that runs out of budget
+    // first: 232 items against 213 shows on the list this was measured against.
+    // Every entry here has a feedGuid — the push above requires one.
+    await warmEpisodeCache(
+      unresolvedEpisodes.map((ep) => ({ feedGuid: ep.feedGuid!, itemGuid: ep.itemGuid })),
+    );
     const resolved = await resolveBatch(unresolvedEpisodes, async (ep) => {
       const episode = await resolveEpisodeByGuid(ep.feedGuid!, ep.itemGuid);
       return episode ? favoriteFromEpisode(episode, ep.feedGuid!) : null;

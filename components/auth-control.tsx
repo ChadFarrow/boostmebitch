@@ -2,7 +2,7 @@
 import { useWalletChange } from '@/lib/use-wallet-change';
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
-import { isGoogleAuthConfigured } from '@/lib/nostr/google-auth';
+import { isGoogleAuthConfigured, preloadGis, startGoogleSignIn } from '@/lib/nostr/google-auth';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
 import { WalletModal } from './wallet-modal';
 import { WalletBalanceChip } from './wallet-balance';
@@ -88,7 +88,14 @@ export function AuthControl() {
       {!walletConnected && needNostr && (
         <>
           <button
-            onClick={() => setMenuOpen((o) => !o)}
+            onClick={() => {
+              // Fetch the GIS script one gesture BEFORE the Google item is
+              // tapped. That tap has to open the consent popup synchronously
+              // (see startGoogleSignIn), which it can only do once the script
+              // is on the page — and reading the menu is the time we have.
+              if (googleConfigured) preloadGis();
+              setMenuOpen((o) => !o);
+            }}
             className="btn-ghost flex items-center gap-1"
             aria-haspopup="menu"
             aria-expanded={menuOpen}
@@ -132,7 +139,15 @@ export function AuthControl() {
               {googleConfigured && (
                 <button
                   role="menuitem"
-                  onClick={() => { setMenuOpen(false); setSignInOpen(true, 'google'); }}
+                  onClick={() => {
+                    // FIRST and synchronously: this click is the only moment
+                    // the browser will let the consent popup open. The panel
+                    // mounts in a later task and picks the request up from
+                    // there — it cannot start one of its own.
+                    startGoogleSignIn();
+                    setMenuOpen(false);
+                    setSignInOpen(true, 'google');
+                  }}
                   className="w-full text-left px-3 py-2 rounded hover:bg-bone/5 transition flex items-start gap-2 text-sm"
                 >
                   <span className="text-bone w-4 shrink-0 text-center leading-5">◉</span>

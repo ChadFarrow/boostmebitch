@@ -5,7 +5,7 @@ import { storage } from '../storage';
 import { parseProfileContent, type ProfileMetadata } from './auth';
 import { collectEventsByAuthors } from './event-queries';
 import { warmRelays } from './relay-health';
-import { zapReceiptAmountMsat } from './zap-receipt';
+import { parseZapReceipt, zapReceiptAmountMsat, type ZapReceipt } from './zap-receipt';
 import { stripNostrUris, extractImages } from '../format';
 
 export interface DiscoveredNote {
@@ -501,6 +501,99 @@ export async function fetchBoostsReceivedBy(
   });
 }
 
+/**
+ * Every event id the given notes quote-reference.
+ *
+ * Exists for one job: a Fountain-style boost is TWO events for ONE payment — a
+ * kind:9735 receipt and a kind:1 wrapper that quotes it — and both can `p`-tag
+ * the recipient. Without this the same payment renders twice on the same page,
+ * once in the boosts section as the wrapper and once in the zaps section as the
+ * receipt, and the zaps total double-counts money the boosts panel already
+ * showed.
+ *
+ * Goes through `parseQuoteRefs` rather than an inline `e`/`q` tag scan, because
+ * Fountain publishes the reference as a `nostr:nevent1…` URI inside the note
+ * body, which a tag scan does not see.
+ */
+export function quotedEventIds(notes: DiscoveredNote[]): Set<string> {
+  const out = new Set<string>();
+  for (const n of notes) {
+    for (const id of parseQuoteRefs(n.rawEvent).ids) out.add(id);
+  }
+  return out;
+}
+
+/** A kind:9735 zap to this npub, with its sender's profile already resolved. */
+export interface ReceivedZap extends ZapReceipt {
+  zapperNpub: string;
+  zapperProfile: ProfileMetadata | null;
+}
+
+/**
+ * NIP-57 zaps this npub RECEIVED, newest first.
+ *
+ * The other half of "who paid me". BoostMeBitch itself pays boostagrams over
+ * keysend/LNURL and publishes a kind:1, so most of this comes from elsewhere —
+ * the Fountain, zap.stream and Wavlake senders, whose payment IS the receipt —
+ * plus this app's own live-stream boosts, which go out as real NIP-57 zaps.
+ * Without them an artist's page shows a fraction of what they were sent.
+ *
+ * **The bare `#p` here is not the widening the two kind:1 filters above are
+ * forbidden from doing.** That rule exists because `{kinds:[1], '#p':[pubkey]}`
+ * is the person's whole mentions firehose and the limit would be spent on
+ * ordinary replies. A kind:9735 is not a conversational kind: every event this
+ * filter returns is a payment to them.
+ *
+ * The zapper is the kind:9734 author inside the receipt's `description`, never
+ * `rawEvent.pubkey` (that is the recipient's LNURL server) — see
+ * `parseZapReceipt`. A receipt with no usable request is dropped rather than
+ * attributed to the server, which is a guard that withholds, so the surface has
+ * to say so.
+ */
+export async function fetchZapsReceivedBy(
+  pubkey: string,
+  opts: FetchOpts = {},
+): Promise<ReceivedZap[]> {
+  const relays = opts.relays ?? DEFAULT_RELAYS;
+  const limit = opts.limit ?? 100;
+
+  return withPool(relays, async (pool) => {
+    const live = await warmRelays(pool, relays);
+    let events: Event[] = [];
+    try {
+      ({ events } = await collectEventsByAuthors(pool, live, {
+        kinds: [9735],
+        '#p': [pubkey],
+        limit,
+        ...(opts.since !== undefined ? { since: opts.since } : {}),
+      }, [], FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS));
+    } catch {
+      return [];
+    }
+
+    const receipts: ZapReceipt[] = [];
+    for (const e of events) {
+      const parsed = parseZapReceipt(e);
+      if (parsed) receipts.push(parsed);
+    }
+    if (!receipts.length) return [];
+    receipts.sort((a, b) => b.createdAt - a.createdAt);
+
+    // Same batch profile path the feeds use, so zapper avatars come out of the
+    // shared bmb:profile4 cache instead of a second lookup per card.
+    const profiles = await fetchProfiles(
+      pool,
+      live,
+      Array.from(new Set(receipts.map((r) => r.zapper))),
+    );
+    return receipts.map((r) => ({
+      ...r,
+      zapperNpub: nip19.npubEncode(r.zapper),
+      zapperProfile: profiles.get(r.zapper) ?? null,
+    }));
+  });
+}
+
 async function assembleNotes(
   pool: import('nostr-tools').SimplePool,
   relays: string[],
@@ -508,22 +601,10 @@ async function assembleNotes(
 ): Promise<DiscoveredNote[]> {
   if (!events.length) return [];
 
-  // Dedupe by id (relays often return overlapping copies).
-  const byId = new Map<string, Event>();
-  for (const e of events) byId.set(e.id, e);
-  const uniqueEvents = Array.from(byId.values());
-
-  // Split into top-level (no e-tag) and reply candidates. publishReply()
-  // inherits the parent's NIP-73 i/k tags, so replies authored by this app
-  // arrive on the same `#i: podcast:guid:` query as their parent boost — we
-  // pull them out of the top-level list here so they only render nested.
-  const topLevelEvents: Event[] = [];
-  const seedReplies: Event[] = [];
-  for (const e of uniqueEvents) {
-    if (getParentEventId(e) === null) topLevelEvents.push(e);
-    else seedReplies.push(e);
-  }
-  topLevelEvents.sort((a, b) => b.created_at - a.created_at);
+  // Dedupe by id (relays often return overlapping copies) and split top-level
+  // notes from replies. Shared with assembleFromBundle so the two paths cannot
+  // disagree about what counts as a top-level note.
+  const { topLevel: topLevelEvents, replies: seedReplies } = splitTopLevel(events);
 
   const childrenByParent = await fetchReplyTree(
     pool,
@@ -551,6 +632,26 @@ async function assembleNotes(
     fetchQuotedEvents(pool, relays, allTreeEvents),
   ]);
 
+  return buildTree(topLevelEvents, childrenByParent, profiles, quoted, relays);
+}
+
+/**
+ * Turn a resolved set of events into the nested `DiscoveredNote[]` a feed
+ * surface renders.
+ *
+ * Extracted so `assembleNotes` (which resolves its inputs from relays, in four
+ * serial stages) and `assembleFromBundle` (which gets the same inputs from the
+ * read index in one request) cannot disagree about how a thread is shaped. Two
+ * copies of this is how the same boost comes to render differently depending on
+ * where its replies happened to come from.
+ */
+function buildTree(
+  topLevelEvents: Event[],
+  childrenByParent: Map<string, Event[]>,
+  profiles: Map<string, ProfileMetadata>,
+  quoted: Map<string, Event>,
+  relays: string[],
+): DiscoveredNote[] {
   function build(e: Event): DiscoveredNote {
     const children = childrenByParent.get(e.id) ?? [];
     const replies = [...children]
@@ -558,8 +659,91 @@ async function assembleNotes(
       .map(build);
     return buildNote(e, relays, profiles.get(e.pubkey) ?? null, quoted, replies);
   }
-
   return topLevelEvents.map(build);
+}
+
+/** Split events into top-level notes and replies, exactly as `assembleNotes`
+ *  does. `publishReply` inherits the parent's NIP-73 i/k tags, so a reply
+ *  authored by this app arrives on the same tag query as its parent boost and
+ *  must be pulled out of the top-level list or it renders twice. */
+function splitTopLevel(events: Event[]): { topLevel: Event[]; replies: Event[] } {
+  const byId = new Map<string, Event>();
+  for (const e of events) byId.set(e.id, e);
+  const topLevel: Event[] = [];
+  const replies: Event[] = [];
+  for (const e of byId.values()) {
+    if (getParentEventId(e) === null) topLevel.push(e);
+    else replies.push(e);
+  }
+  topLevel.sort((a, b) => b.created_at - a.created_at);
+  return { topLevel, replies };
+}
+
+/**
+ * Build the same `DiscoveredNote[]` from a read-index bundle — no relay queries
+ * at all.
+ *
+ * This is the seam the whole index exists for. `assembleNotes` costs four
+ * serial relay stages: the notes, then one query PER REPLY DEPTH, then profiles
+ * in three passes (kind:0, then a NIP-65 outbox lookup for whoever is missing,
+ * then kind:0 again against those relays). Every one of those has its own
+ * multi-second ceiling and nothing paints until the last one resolves. The
+ * bundle carries all of it in one response.
+ *
+ * Reply nesting is recomputed here from NIP-10 rather than taken from the
+ * server's shape: the index finds a reply by walking `e` tags in either
+ * direction, so a note carrying both a `root` and a `reply` marker is reachable
+ * from two parents. `getParentEventId` is the one place that decides which is
+ * the real one, and it stays the one place.
+ */
+export function assembleFromBundle(
+  bundle: { notes: Event[]; replies: Event[]; quoted: Event[]; profiles: Event[] },
+  relays: string[],
+): DiscoveredNote[] {
+  if (!bundle.notes.length) return [];
+  const { topLevel, replies: seedReplies } = splitTopLevel(bundle.notes);
+
+  const known = new Set(topLevel.map((e) => e.id));
+  const allReplies = new Map<string, Event>();
+  for (const e of [...seedReplies, ...bundle.replies]) allReplies.set(e.id, e);
+
+  // Place replies against their parents, repeating until nothing new attaches.
+  // A reply can only be placed once its own parent is, and the bundle is not
+  // ordered by depth, so one pass would silently drop everything below depth 1.
+  const childrenByParent = new Map<string, Event[]>();
+  let placedSomething = true;
+  while (placedSomething) {
+    placedSomething = false;
+    for (const [id, e] of allReplies) {
+      const parent = getParentEventId(e);
+      if (!parent || !known.has(parent)) continue;
+      const list = childrenByParent.get(parent) ?? [];
+      list.push(e);
+      childrenByParent.set(parent, list);
+      known.add(id);
+      allReplies.delete(id);
+      placedSomething = true;
+    }
+  }
+  // Anything left in `allReplies` replies to a note outside this bundle. It is
+  // deliberately dropped rather than promoted to top level: rendering a reply
+  // as if it were a standalone boost is worse than not showing it.
+
+  const profiles = new Map<string, ProfileMetadata>();
+  for (const p of bundle.profiles) {
+    const meta = parseProfileContent(p.content);
+    if (meta) {
+      profiles.set(p.pubkey, meta);
+      // Feed the app's own per-pubkey cache, so the relay pass that runs after
+      // this one — and every other surface in the tab — skips the lookup.
+      storage.profile.set(p.pubkey, meta);
+    }
+  }
+
+  const quoted = new Map<string, Event>();
+  for (const q of bundle.quoted) quoted.set(q.id, q);
+
+  return buildTree(topLevel, childrenByParent, profiles, quoted, relays);
 }
 
 /**

@@ -27,7 +27,13 @@ import {
   listBackups,
   uploadBackup,
 } from '@/lib/nostr/drive-backup';
-import { refreshAccessToken, signInWithGoogle } from '@/lib/nostr/google-auth';
+import {
+  hasPendingGoogleSignIn,
+  refreshAccessToken,
+  signInWithGoogle,
+  startGoogleSignIn,
+  whenGisReady,
+} from '@/lib/nostr/google-auth';
 import { getErrorMessage } from '@/lib/util';
 import { buildGeneratedProfile } from '@/lib/nostr/generated-profile';
 import { provisionSparkFromKey } from './provision-spark';
@@ -42,6 +48,12 @@ import { provisionProfileFromKey } from './provision-profile';
 
 type Stage =
   | { s: 'idle' }
+  // The Google script is still loading, so no popup can be requested yet.
+  // Nothing is offered from here until it lands — see `armTap` below.
+  | { s: 'preparing' }
+  // The script is ready and a tap can now open the popup synchronously. This
+  // stage exists because the opening click was too early to start one itself.
+  | { s: 'needsTap' }
   | { s: 'signingIn' }
   | { s: 'checkingDrive' }
   | { s: 'setupPin' }
@@ -182,18 +194,46 @@ export function GoogleAuthPanel({
     }
   }, [fail, withDrive]);
 
-  // Kick off on mount — the user already tapped "Continue with Google", and
-  // running inside that gesture's transient activation is what keeps the
-  // consent popup from being blocked. (Retry is a direct click, so a blocked
-  // first attempt is always recoverable.)
+  /** Hold the panel on `preparing` until the script is on the page, then offer
+   *  the tap. Waiting HERE rather than inside the click is the point: the wait
+   *  is a network fetch, and a popup requested after one has no activation left
+   *  and is refused. So the button does not exist until a tap can succeed. */
+  const armTap = useCallback(() => {
+    setStage({ s: 'preparing' });
+    whenGisReady().then(
+      () => setStage({ s: 'needsTap' }),
+      (e) => fail(e, 'Could not load Google sign-in'),
+    );
+  }, [fail]);
+
+  /** Every user-initiated entry point. `startGoogleSignIn()` runs FIRST and
+   *  synchronously — it is what opens the popup inside this click. If it can't
+   *  (the script went away, or this is a Retry from a cold error) we go back to
+   *  waiting rather than firing a request that would be blocked. That fallback
+   *  is the hole the first fix left: it called begin(), which awaits the script
+   *  fetch and THEN asks for the popup, which is how a cold start still spent
+   *  its one blocked attempt before Retry worked. */
+  const tapBegin = useCallback(() => {
+    if (!startGoogleSignIn()) {
+      armTap();
+      return;
+    }
+    begin();
+  }, [begin, armTap]);
+
+  // Pick up the request the opening click already started. This effect does NOT
+  // run under that click's transient activation — React schedules effects in a
+  // later task — so asking for the popup here is asking for it to be blocked,
+  // which is what iOS Safari did on every first attempt.
   //
   // The ref guard is for StrictMode's mount → unmount → mount cycle in dev,
-  // which would otherwise open two Google popups back to back.
+  // which would otherwise consume the request twice.
   const started = useRef(false);
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    begin();
+    if (hasPendingGoogleSignIn()) begin();
+    else armTap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -392,7 +432,7 @@ export function GoogleAuthPanel({
     if (missed > 0) {
       return (
         <>
-          <button onClick={begin} className="btn-ghost w-full text-[11px]">
+          <button onClick={tapBegin} className="btn-ghost w-full text-[11px]">
             Retry downloads
           </button>
           <p className="text-[11px] text-nostr/80">
@@ -439,11 +479,29 @@ export function GoogleAuthPanel({
         </div>
       )}
 
+      {stage.s === 'preparing' && (
+        <div className="flex items-center gap-2 text-xs text-muted py-4">
+          <span className="animate-bolt">◆</span>
+          Preparing Google sign-in…
+        </div>
+      )}
+
+      {stage.s === 'needsTap' && (
+        <>
+          <p className="text-[11px] text-muted">
+            Google opens its sign-in window when you tap. Tap below to continue.
+          </p>
+          <button onClick={tapBegin} className="btn-bolt w-full">
+            Continue with Google
+          </button>
+        </>
+      )}
+
       {stage.s === 'error' && (
         <>
           <span className="text-[11px] text-nostr/80">{stage.message}</span>
           <div className="flex gap-2">
-            <button onClick={begin} className="btn-bolt text-[11px] py-1 px-3">
+            <button onClick={tapBegin} className="btn-bolt text-[11px] py-1 px-3">
               Retry
             </button>
             <button onClick={onCancel} className="btn-ghost text-[11px] py-1 px-3">

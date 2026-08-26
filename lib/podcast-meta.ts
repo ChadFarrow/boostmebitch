@@ -127,6 +127,106 @@ async function resolveVia(cacheKey: string, query: string): Promise<Podcast | nu
   }
 }
 
+/**
+ * Fill the caches for many identifiers in ONE request, before the per-entry
+ * resolvers run.
+ *
+ * DELIBERATELY A PREFETCH, NOT A REWRITE. `resolveVia` and
+ * `resolveEpisodeByGuid` below are untouched: the breaker, COULD_NOT_ASK, and
+ * the rule about what may and may not be cached as an absence all keep working
+ * exactly as they did. After a warm pass the existing resolvers simply find
+ * every entry in `podcastMem` and issue no network calls at all. Every rule in
+ * this file cost a production incident; the blast radius of adding speed to it
+ * should be as close to zero as it can be made.
+ *
+ * The problem it solves is a burst, not a latency: favorites hydration issues
+ * one request per favorited show and one per favorited track — 213 and 232 on
+ * the list this was measured against — drained six at a time because that is
+ * what a browser allows per host. That burst is also what exhausts the per-IP
+ * limiter, and a 429 arriving mid-list poisons whatever ran after the budget.
+ *
+ * THE THREE-STATE ANSWER IS WHY THIS CANNOT BE A SIMPLE MAP MERGE:
+ *
+ *   key present, value   PI resolved it            - cache it
+ *   key present, null    PI answered "not found"   - cache it (404 IS an answer)
+ *   key ABSENT           we could not ask          - cache NOTHING, retry later
+ *
+ * Warming is entirely best-effort. Any failure leaves every cache untouched and
+ * the ordinary per-entry path runs, so this can never make resolution worse.
+ */
+export async function warmPodcastCache(guids: string[]): Promise<void> {
+  const wanted = Array.from(new Set(guids)).filter((g) => g && !podcastMem.has(g));
+  if (!wanted.length || !piMaybeUp()) return;
+  for (const chunk of chunked(wanted, BATCH_SIZE)) {
+    try {
+      const r = await fetch(`/api/by-guid/batch?guids=${chunk.map(encodeURIComponent).join(',')}`);
+      // A 5xx is PI being down; the breaker belongs to the resolvers, and
+      // tripping it from a prefetch would disable metadata for the whole tab
+      // over a warm-up. Just stop warming.
+      if (!r.ok) return;
+      const { podcasts } = (await r.json()) as { podcasts: Record<string, Podcast | null> };
+      if (!podcasts || typeof podcasts !== 'object') return;
+      for (const key of chunk) {
+        // ABSENT means "we could not ask". `in`, never `?? null` — the latter
+        // turns every unanswered guid into a cached miss, which is the exact
+        // poisoning COULD_NOT_ASK exists to prevent.
+        if (!(key in podcasts)) continue;
+        const podcast = podcasts[key];
+        podcastMem.set(key, podcast ?? null);
+        if (podcast) storage.podcastMeta.set(key, podcast);
+      }
+    } catch {
+      // Offline, aborted, throttled. Nothing observed, so nothing recorded.
+      return;
+    }
+  }
+}
+
+/** Same, for `(feedGuid, itemGuid)` pairs. POST because item guids are commonly
+ *  permalink URLs, so a hundred pairs do not reliably fit a query string. */
+export async function warmEpisodeCache(refs: { feedGuid: string; itemGuid: string }[]): Promise<void> {
+  const seen = new Set<string>();
+  const wanted = refs.filter((r) => {
+    if (!r?.feedGuid || !r?.itemGuid) return false;
+    const key = `${r.feedGuid}:${r.itemGuid}`;
+    if (seen.has(key) || episodeMem.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (!wanted.length || !piMaybeUp()) return;
+  for (const chunk of chunked(wanted, BATCH_SIZE)) {
+    try {
+      const r = await fetch('/api/episode-by-guid/batch', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ refs: chunk }),
+      });
+      if (!r.ok) return;
+      const { episodes } = (await r.json()) as { episodes: Record<string, Episode | null> };
+      if (!episodes || typeof episodes !== 'object') return;
+      for (const ref of chunk) {
+        const key = `${ref.feedGuid}:${ref.itemGuid}`;
+        if (!(key in episodes)) continue;
+        const episode = episodes[key];
+        episodeMem.set(key, episode ?? null);
+        if (episode) storage.episodeMeta.set(key, episode);
+      }
+    } catch {
+      return;
+    }
+  }
+}
+
+// Matches the server-side MAX_BATCH in lib/pi-batch.ts. A larger chunk is
+// silently truncated there, which would look like a partial warm.
+const BATCH_SIZE = 100;
+
+function chunked<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 export function resolvePodcastByGuid(guid: string): Promise<Podcast | null> {
   return resolveVia(guid, `guid=${encodeURIComponent(guid)}`);
 }

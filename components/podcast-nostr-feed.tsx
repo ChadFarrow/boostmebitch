@@ -4,6 +4,7 @@ import {
   fetchPodcastNotes,
   noteHasSubstance,
   useNostrFeed,
+  indexedPodcastNotes,
   useViewerReposts,
   type DiscoveredNote,
 } from '@/lib/nostr';
@@ -31,6 +32,7 @@ export function PodcastNostrFeed({
   const { notes, loading, err, refresh } = useNostrFeed({
     cacheKey: `podcast:${podcastGuid}`,
     fetcher: (opts) => fetchPodcastNotes(podcastGuid, opts, episodeGuids),
+    indexFetcher: () => indexedPodcastNotes(podcastGuid),
     deps: [podcastGuid, guidsKey],
   });
   const identity = useApp((s) => s.identity);

@@ -511,7 +511,20 @@ export const useApp = create<AppState>((set, get) => ({
 // the signer's NIP-04 capability is checked in one place.
 function persistMuted(identity: NostrIdentity | null, state: MuteListState) {
   const npub = identity?.npub ?? null;
-  storage.muted.set(npub, state);
+  const landed = storage.muted.set(npub, state);
+  if (!landed) {
+    // The write fell back to safeSet's in-memory mirror: storage is blocked
+    // (Private Browsing, "Block All Cookies", a content blocker) or too full
+    // for even this. The mute filters for the rest of the session and is gone
+    // on the next load — which reads as "I muted them and they came back", not
+    // as a storage problem, because nothing else on screen looks wrong. Say so
+    // here rather than letting it be discovered as a mute that won't stick.
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[mutes] could not write the mute list to storage — it will not survive a reload' +
+        (identity ? '. The relay copy still will, once the publish below lands.' : '.'),
+    );
+  }
   if (!identity) return; // guest mutes stay local — can't sign without a key
   schedulePublishMuteList(
     identity.pubkey,

@@ -683,6 +683,8 @@ stale `ok: true` gates the kind:3 publish path.)
 
 Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-level + replies before mapping). `bmb:muted:<npub>` is `MuteListState` JSON; `lib/storage.ts` auto-promotes the legacy `{ pubkeys, otherTags }` shape on read. Account menu surfaces a collapsible "Muted accounts (N)" with kind:0 lookups firing only while expanded.
 
+**A reconcile reads its local side AFTER the network round trip, never before it.** `hydrateMutes` took `storage.muted.get(npub)` as its first line and then awaited `fetchMutedPubkeys`, so every decision below was made against a snapshot taken up to ten seconds earlier — this hydration does not even *start* until the NIP-65 write set resolves (up to 4 s), then spends up to another 4 s on `fetchLatestEvent`, plus a NIP-04 decrypt. That window is not idle time: it is the user scrolling the feed the page has already painted, which is exactly when a spam account gets muted. A mute made in it was invisible to the reconcile, and both branches then wrote a state without it — to the store, so the note reappeared on screen a few seconds after being hidden, and to `bmb:muted:<npub>`, so it did not survive the reload either. The local-ahead branch also *republished* the loss, so the deletion propagated to the relays and to the user's other clients. Reported as "I keep muting this account but it keeps showing up", which is precisely what it does: the mute works, then a background promise undoes it. **Everything after the read is synchronous, so reading late closes the window rather than narrowing it** — a `setTimeout`-free tail is what makes that true, and a new `await` added below that line reopens the bug. `favorites-hydrator.ts` already reads its merge inputs (`localFavoriteEntries()`, `trustedBaseline()`) after its own await; mutes was the one that did not.
+
 **`MuteListState` and `emptyMuteState()` are defined in `lib/nostr/mute-state.ts`, an import-free leaf, and re-exported by `mutes.ts`.** Both `mutes.ts` and `lib/storage.ts` need them, and `storage.ts` cannot import from `mutes.ts`: that closes a cycle, because `mutes.ts` → `relays.ts` → `../storage` (relays reads `storage.relays` for the user's relay override). So the shared piece moves **down** to a leaf rather than sideways. `storage.ts` takes the *value* import from the leaf directly while keeping `MuteListState` as a type-only import from the `./nostr` barrel — type imports erase and cannot cycle, value imports can, and the distinction is the whole reason this compiles.
 
 Two constructors for one persisted shape is how a field added on one side goes missing on the other, which is what made this worth fixing rather than leaving: `storage.ts` had a private copy identical to the exported one. Note this leaf is a **different** thing from the four modules `scripts/import-free.mjs` enforces — those are import-free so a check script can load them under plain Node; this one is import-free to break a cycle. Same discipline, different reason, and it should not be added to that script's list.
@@ -884,6 +886,16 @@ so the suggestion row is instant. The page behind it is three relay queries the
 sections fire **independently on mount**, so each paints when its own resolves
 and a revisit paints from `bmb:feed:*` within one frame.
 
+Two caveats on the zaps column below, both deliberate. Its query is independent
+but its **paint** is not: `zapsVisible` holds at `null` until the received-boosts
+notes land, because `quotedEventIds` needs them to know which receipts are
+already on screen above, so in practice that column is `max(zaps, received)`.
+And it has no warm cache — `useNostrFeed` and `bmb:feed:*` are typed to
+`DiscoveredNote`, so on a revisit the two boost sections repaint in a frame while
+this one goes through "searching nostr relays…" again. A sibling cache namespace
+is the fix if that ever matters; making `useNostrFeed` generic for one caller is
+not.
+
 Measured against a local relay (`Promise.all` of all three, 12 sent + 12 received
 + 8 zaps):
 
@@ -937,24 +949,64 @@ filter there would silently drop a client whose tags we hadn't thought of.
 `eventLooksLikeBoost` trims the raw events **before** `assembleNotes`, so the
 reply-tree BFS never walks a mention that was never going to render.
 
-**Bare zap receipts are deliberately NOT read.** This is a boostagram surface:
-both lists are kind:1 boost notes, and a kind:9735 is a different object with a
-different author (the recipient's LNURL server, never the payer) and different
-provenance. An earlier revision merged receipts into the received list and it was
-removed — mixing them put two kinds of evidence under one heading and made the
-list answer a question ("what was I paid") that the page does not actually
-answer.
+**Zap receipts are read, in their OWN section, and must never be merged into the
+boosts list.** The history is the rule here, because both halves of it were
+right. Receipts started life merged into the received list and were removed in
+`9699c81`: a kind:9735 is a different object with a different author (the
+recipient's LNURL server, never the payer) and different evidential weight, and
+two kinds of evidence under one heading made the list answer a question ("what
+was I paid") that the page does not answer. But the objection was to the **merge**
+— the coverage gap was real. A payment that produced no kind:1 at all is invisible
+to a boost-note query, and that is most of what a Fountain, zap.stream or Wavlake
+sender pays, plus this app's own live-stream boosts, which go out as real NIP-57
+zaps (boost invariant 0). So `fetchZapsReceivedBy` is back, under its own
+heading, and the two lists never mix.
 
-The coverage cost is smaller than it looks, and worth stating exactly: a
+**The bare `#p` filter there is not the widening this section forbids two
+paragraphs down.** That rule is about kind:1, where `{'#p':[pubkey]}` is the
+person's whole mentions firehose and the `limit` is spent on ordinary replies
+before a boost arrives. A kind:9735 is not a conversational kind: every event the
+filter returns is a payment to them.
+
+`quotedEventIds` is live again and is what keeps one payment to one card. A
 Fountain-style boost publishes a kind:1 wrapper that quote-references its own
-receipt, and **that wrapper still appears**, with its amount adopted off the
-quoted receipt in `buildNote`. What is no longer shown is a zap that produced no
-kind:1 at all. Dropping receipts also removed the reason `quotedEventIds` existed
-— with only notes in the list, one payment can no longer render as two cards.
+receipt, and **both `p`-tag the recipient**; split across two sections that is
+the same payment twice, with the zaps total double-counting money the boosts
+panel already showed. The wrapper wins — it is the richer card and its amount is
+adopted off the quoted receipt in `buildNote` — so the receipt is dropped. It
+must go through `parseQuoteRefs` and not an `e`/`q` tag scan, because Fountain
+writes the reference as a `nostr:nevent1…` URI in the note **body**. Dedupe on
+the receipt's own id only: a receipt whose `targetEventId` names a note in the
+list is someone zapping that boost note, which is a second real payment.
 
-**`lib/nostr/zap-receipt.ts` stays regardless**, because two live callers need it:
-`buildNote` reads a quoted receipt's amount through `zapReceiptAmountMsat`, and
-`<LiveChat>` renders receipts in a stream's chat. Its `zapReceiptAmountMsat`
+**The zaps section may print a sats total and the received-boosts one still may
+not** — see the review-pass note below for why the boosts sum was removed. The
+difference is what the number measures. A boost note's `amount` is
+`value_msat_total`, the whole boost before the value block divides it, so it is
+the same figure on every p-tagged npub's page. A receipt's amount is the invoice
+**this** recipient's own LNURL server issued: a per-payee settled fact.
+`zapReceiptAmountMsat` falls back to the zap request's amount only after the
+receipt tag and the bolt11 HRP, and NIP-57 requires those to agree. The copy
+still scopes it twice, because both limits are real — the scan is limit-bounded
+("across the receipts shown", not a lifetime total) and `zapSats` floors an
+unreadable msat to 0, so those rows are counted out loud rather than left to sink
+into the sum. This is not licence to bring the boosts sum back.
+
+Two further guards the surface has to name rather than apply silently.
+`parseZapReceipt` returns `null` for a receipt carrying no usable kind:9734, and
+those are **dropped rather than attributed to the LNURL server** — a card naming
+the server as the payer would be worse than no card. And mutes are filtered in
+`<BoostExplorer>` as well as inside `<ZapReceiptCard>`: the card returns `null`
+for a muted zapper, but `<FeedSection>` counts `notes.length` and renders one
+wrapper `<div>` per item, so filtering only in the card leaves N empty rows under
+a header reading `(N)`. The card keeps its own `useApp` selector regardless,
+because it is memoized and a mute arriving only through props is skipped.
+
+**`lib/nostr/zap-receipt.ts` has three live callers**: `buildNote` reads a quoted
+receipt's amount through `zapReceiptAmountMsat`, `<LiveChat>` renders receipts in
+a stream's chat, and `fetchZapsReceivedBy` parses the zaps section. It kept
+earning its place through the release where the explorer read no receipts at all,
+which is why it was there to restore them. Its `zapReceiptAmountMsat`
 keeps the original precedence (receipt `amount` → `bolt11` HRP → *then* the
 embedded request's `amount`); the third source was appended, so it can only fire
 where the old function returned `null`, leaving `buildNote` unchanged. And a
@@ -1051,3 +1103,90 @@ plus the display name. Three details are load-bearing:
 
 The npub is deliberately not kept beside a resolved name. It is one line, and the
 full npub is in the input directly above for anyone who wants to compare it.
+
+## The read index (`services/nostr-index`)
+
+A server-side cache of public Nostr events, deployed separately on Railway. It
+exists because every Nostr read in this app happens in the browser, against
+relays, on every page load — and one feed load is four serial stages with
+nothing on screen until the last one resolves:
+
+```
+warmRelays (≤3s) → kind:1 collect (≤8s) → reply tree (≤8s × up to 6 depths) → profiles (3 stacked passes)
+```
+
+The index answers all of that in one request. `assembleFromBundle`
+(`lib/nostr/discover.ts`) turns the response into the same `DiscoveredNote[]`
+`assembleNotes` builds, sharing `buildTree` and `splitTopLevel` with it so the
+two paths cannot disagree about how a thread is shaped.
+
+**It is an accelerator and never a dependency.** Unset `NOSTR_INDEX_URL` and
+every path falls back to relays exactly as before. That is also the rollback.
+
+### The rules that are not derivable from reading the code
+
+- **`null` from the index means "no answer", never "there are none".** Every
+  function in `lib/nostr/index-client.ts` returns `null` for unconfigured,
+  unreachable, timed out, refused, unparseable *and for an empty result*. The
+  empty case is the surprising one and it is deliberate: an index that has not
+  crawled a show yet is indistinguishable from a show with no notes, and letting
+  the fast path assert the second would replace a slow-but-correct feed with a
+  fast-and-wrong one. The proxy answers **503**, never an empty body, for the
+  same reason. Any new index-backed surface inherits this.
+
+- **The three sources UNION, they do not replace.** `useNostrFeed` paints
+  localStorage, then the index, then relays, merging by event id. The relay pass
+  finishes many seconds after the index one and asks a *different* question —
+  the index holds what it has seen since deploy, each relay holds whatever it
+  kept — so a replace would make notes VANISH from a feed the user is already
+  reading, seconds after they appeared, with nothing on screen explaining it.
+  Notes are append-only and carry their own id, so a union is both correct and
+  the only shape that cannot lose one. On a collision the newer pass wins: a
+  note whose author profile resolved on the second pass must not revert to the
+  anonymous version from the first.
+
+- **The index pass runs ALONGSIDE the relay pass, never in front of it.**
+  Awaiting the index first makes an index that is merely *slow* worse than no
+  index at all, because the relay query would not have started yet.
+
+- **A relay failure is only an error when nothing is on screen.** An index hit
+  followed by a relay failure is a working feed, and saying otherwise is a claim
+  the user cannot check. Same rule in the boost explorer's zaps panel, which
+  keeps a populated list rather than blanking to `[]`.
+
+- **Every event is verified client-side, chunked.** The index verified it all
+  before storing it, so a failure here means that service or its database was
+  tampered with — checking again is what stops a compromised index putting sat
+  amounts under someone else's npub. It costs ~3ms per event, which the relay
+  path also pays (nostr-tools verifies everything it receives) but spreads
+  across an 8-second window. Arriving in one lump it would freeze the main
+  thread, so `verifyAll` yields between chunks of 15.
+
+- **Reply nesting is recomputed from NIP-10 on the client, not taken from the
+  server's shape.** The index finds replies with a recursive walk over `e` tags,
+  so a note carrying both a `root` and a `reply` marker is reachable from two
+  parents. `getParentEventId` decides which is real, and it stays the only place
+  that does. `assembleFromBundle` loops until nothing new attaches, because the
+  bundle is not ordered by depth and one pass would silently drop everything
+  below depth 1. A reply whose parent is outside the bundle is dropped, never
+  promoted to top level — rendering a reply as a standalone boost is worse than
+  not showing it.
+
+### What it must never index
+
+Enforced in `services/nostr-index/src/ingest.ts` (`FORBIDDEN_KINDS`) rather than
+only in the subscription filters, because **a filter is a request and a relay
+may send anything** — pinned by `verify/check-indexer.mjs`, which pushes a
+kind:10333 down a subscription that never asked for one.
+
+kind:10333 favorites, kind:10000 mutes, kind:3 follows, kind:30078 backups,
+kind:4/1059 DMs, kind:10002 relay lists. The first four drive destructive
+replaceable-event writes on the client or carry ciphertext; **a stale index read
+of kind:10333 satisfies `mergeFavoritesList`'s removal test and deletes entries
+another app wrote, on someone else's device, with no undo.** The favorites
+speed-up comes entirely from the Podcast Index tables — the kind:10333 read
+itself keeps coming from relays, always.
+
+**No degraded-read decision is ever downstream of the index.**
+`lib/nostr/read-trust.ts` stays the only authority, and the index never feeds it.
+

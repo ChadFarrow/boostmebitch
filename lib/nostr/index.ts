@@ -48,12 +48,30 @@ export {
   fetchSocialInteractThread,
   fetchBoostsSentBy,
   fetchBoostsReceivedBy,
+  fetchZapsReceivedBy,
+  quotedEventIds,
   noteFromEvent,
   noteHasSubstance,
   type DiscoveredNote,
+  type ReceivedZap,
 } from './discover';
 
+export { parseZapReceipt, zapSats, type ZapReceipt } from './zap-receipt';
+
 export { useNostrFeed } from './use-feed';
+
+// The read index (services/nostr-index). Every one of these returns null when
+// there is no index, it is unreachable, or it holds nothing — never an empty
+// array, which would read as "there are none".
+export {
+  indexedGlobalNotes,
+  indexedPodcastNotes,
+  indexedEpisodeNotes,
+  indexedBoostsSentBy,
+  indexedBoostsReceivedBy,
+  indexedZapsReceivedBy,
+  indexAvailable,
+} from './index-client';
 
 export { fetchViewerReposts, useViewerReposts } from './viewer-state';
 
