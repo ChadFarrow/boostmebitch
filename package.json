@@ -36,6 +36,9 @@
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs",
+    "relay": "node scripts/local-relay.mjs",
+    "seed:relay": "node --experimental-strip-types scripts/seed-local-relay.mjs",
+    "e2e:favorites": "node scripts/e2e-favorites.mjs",
     "probe:index": "node --experimental-strip-types scripts/probe-index.mjs",
     "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs"
   },

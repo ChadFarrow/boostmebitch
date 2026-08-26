@@ -98,16 +98,26 @@ export {
   mergeFavoritesList,
   tagsFromList,
   baselineFrom,
+  baselineHalf,
+  baselineForHalves,
+  encodePrivateFavorites,
+  decodePrivateFavorites,
   planFavoritesPublish,
   partitionList,
   fetchFavoritesList,
   publishFavoritesTags,
   syncFavorites,
+  withdrawFavorites,
+  PRIVATE_FAVORITES_ENABLED,
+  PRIVATE_PLAINTEXT_MAX,
   type FavoriteEntry,
   type FavoritesBaseline,
+  type FavoritesPrivacy,
   type FavoritesRead,
+  type ListHalf,
   type LocalList,
   type ParsedList,
+  type PublishReason,
   type SyncOptions,
 } from './favorites';
 
@@ -115,12 +125,19 @@ export {
 // cycle has to be both debounced and queued, and a scheduler that skipped the
 // queue was a second way in. Use `requestFavoritesSync`.
 export {
+  favoritesMode,
+  setFavoritesMode,
+  seedFavoritesMode,
+  privateFavoritesEnabled,
+  unattendedDecryptOk,
+  onFavoritesModeNeeded,
   localFavoriteEntries,
   localFavoriteList,
   requestFavoritesSync,
   serializeFavoritesCycle,
   syncFavoritesNow,
   syncOptionsFor,
+  withdrawThisDevice,
 } from './favorites-sync';
 
 export {
@@ -140,7 +157,9 @@ export {
   SETTINGS_D_TAG,
   fetchSettings,
   publishSettings,
+  applySyncedSettings,
   recordLastRail,
+  recordFavoritesPrivacy,
   type SyncedSettings,
 } from './settings-backup';
 

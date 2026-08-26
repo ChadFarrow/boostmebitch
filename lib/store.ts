@@ -1,7 +1,7 @@
 'use client';
 import { create } from 'zustand';
 import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, ValueBlock } from './types';
-import type { NostrIdentity } from './nostr';
+import type { NostrIdentity, PublishReason } from './nostr';
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
@@ -10,7 +10,7 @@ import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from '
 export type SignInIntent = 'default' | 'google';
 
 /** See `favoritesSync` below. */
-export type FavoritesSyncStatus = 'idle' | 'loading' | 'ok' | 'degraded';
+export type FavoritesSyncStatus = 'idle' | 'loading' | 'ok' | 'degraded' | 'off';
 
 interface AppState {
   identity: NostrIdentity | null;
@@ -199,11 +199,40 @@ interface AppState {
   // 'idle' still is not a failure: it is the pre-hydration and signed-out
   // state, and a consumer that treats it as one shows every visitor a relay
   // warning before anything has been attempted.
+  //
+  // 'off' is NOT 'idle', and the difference is a whole render state. Both mean
+  // "no read has happened", but 'idle' means *not yet* and 'off' means *not
+  // ever* — the user chose "not on Nostr". A surface that folds them together
+  // sits on "loading your favorites…" forever, because the thing it is waiting
+  // for is never going to start. Anything that treats 'idle' as in-flight has
+  // to exclude 'off' explicitly.
   favoritesSync: FavoritesSyncStatus;
-  setFavoritesSync: (s: FavoritesSyncStatus) => void;
+  /**
+   * WHY the last cycle withheld, when it did.
+   *
+   * `favoritesSync` alone says "we didn't write", which was enough while every
+   * withholding had the same cause and the same sentence. It no longer is: a
+   * private half this signer cannot decrypt and a relay set that never answered
+   * both render as a shorter list, and the user cannot tell "hidden here by
+   * choice" from "this app has not been able to open it" without being told
+   * which. Null while the status is anything but 'degraded'.
+   */
+  favoritesSyncReason: PublishReason | null;
+  setFavoritesSync: (s: FavoritesSyncStatus, reason?: PublishReason) => void;
   /** Back to 'idle', for the identity teardowns in nostr-auth. Kept as its own
    *  call so the three places that clear it can't drift. */
   resetFavoritesSync: () => void;
+
+  /**
+   * The "where should these go?" dialog is open.
+   *
+   * Lifted for the same reason `signInOpen` and `walletOpen` are: the thing
+   * that decides it has to open is `requestFavoritesSync`, the one funnel every
+   * heart goes through, and the thing that renders it is a modal mounted once
+   * in <AppHeader>. Thirteen heart render sites cannot each own a dialog.
+   */
+  favPrivacyPrompt: boolean;
+  setFavPrivacyPrompt: (open: boolean) => void;
 
   // NIP-51 kind:10000 mute list, hydrated on login from the user's relay
   // event. Filter is applied at render time in NoteCard and feed surfaces.
@@ -243,6 +272,34 @@ interface AppState {
 // Clearing costs one delayed unfavourite; the next successful cycle rewrites
 // both keys together. Both callers pass the npub they just wrote under, so a
 // signed-out (guest) write has no baseline to drop.
+/**
+ * Record whether this device is holding nothing ON PURPOSE.
+ *
+ * An empty store beside a baseline that claims ids is two different situations
+ * with identical bytes — an unhydrated store, and a user who unfavorited
+ * everything — and `baselineIsTrustworthy` refused both. Refusing the first is
+ * what stopped a live account losing 213 groups on 2026-08-21. Refusing the
+ * second is why "delete all my favorites" silently did nothing and every entry
+ * came back on the next reload.
+ *
+ * The difference is only knowable HERE, at the moment of the action: an
+ * unhydrated store never calls a remover. So the removers record it and the
+ * adders clear it, and every reader downstream gets an answer instead of a
+ * guess.
+ *
+ * Deliberately keyed off the FULL local set, both maps together — they share
+ * one event, so "empty" means empty of both.
+ */
+function markClearedIfEmpty(
+  npub: string | undefined,
+  favorites: Record<string, unknown>,
+  episodes: Record<string, unknown>,
+) {
+  if (!npub) return;
+  const empty = Object.keys(favorites).length === 0 && Object.keys(episodes).length === 0;
+  storage.favCleared.set(npub, empty);
+}
+
 function dropBaselineIfWriteFailed(landed: boolean, npub: string | undefined, what: string) {
   if (landed || !npub) return;
   storage.favBaseline.set(npub, { feeds: [], items: [] });
@@ -357,6 +414,7 @@ export const useApp = create<AppState>((set, get) => ({
   addFavorite: (p) => set((s) => {
     const next = { ...s.favorites, [p.podcastGuid]: p };
     dropBaselineIfWriteFailed(storage.favorites.set(s.identity?.npub, next), s.identity?.npub, 'favorites');
+    markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes);
     return { favorites: next };
   }),
   removeFavorite: (guid) => set((s) => {
@@ -364,8 +422,13 @@ export const useApp = create<AppState>((set, get) => ({
     const next = { ...s.favorites };
     delete next[guid];
     dropBaselineIfWriteFailed(storage.favorites.set(s.identity?.npub, next), s.identity?.npub, 'favorites');
+    markClearedIfEmpty(s.identity?.npub, next, s.favoriteEpisodes);
     return { favorites: next };
   }),
+  // NOT marked: this is the bulk painter (hydration, sign-in, teardown), and
+  // nothing it does is a statement of user intent. Painting an empty store
+  // during hydration is exactly the state the marker exists to be distinguished
+  // FROM, so setting it here would erase the distinction.
   setFavorites: (next) => set((s) => {
     dropBaselineIfWriteFailed(storage.favorites.set(s.identity?.npub, next), s.identity?.npub, 'favorites');
     return { favorites: next };
@@ -376,6 +439,7 @@ export const useApp = create<AppState>((set, get) => ({
   addFavoriteEpisode: (e) => set((s) => {
     const next = { ...s.favoriteEpisodes, [e.itemGuid]: e };
     dropBaselineIfWriteFailed(storage.favoriteEpisodes.set(s.identity?.npub, next), s.identity?.npub, 'favorite-episodes');
+    markClearedIfEmpty(s.identity?.npub, s.favorites, next);
     return { favoriteEpisodes: next };
   }),
   removeFavoriteEpisode: (itemGuid) => set((s) => {
@@ -383,6 +447,7 @@ export const useApp = create<AppState>((set, get) => ({
     const next = { ...s.favoriteEpisodes };
     delete next[itemGuid];
     dropBaselineIfWriteFailed(storage.favoriteEpisodes.set(s.identity?.npub, next), s.identity?.npub, 'favorite-episodes');
+    markClearedIfEmpty(s.identity?.npub, s.favorites, next);
     return { favoriteEpisodes: next };
   }),
   setFavoriteEpisodes: (next) => set((s) => {
@@ -391,8 +456,17 @@ export const useApp = create<AppState>((set, get) => ({
   }),
 
   favoritesSync: 'idle',
-  setFavoritesSync: (s) => set({ favoritesSync: s }),
-  resetFavoritesSync: () => set({ favoritesSync: 'idle' }),
+  favoritesSyncReason: null,
+  // The reason is cleared on every non-degraded status rather than left behind:
+  // a stale "your signer couldn't decrypt this" sitting under a healthy 'ok' is
+  // a notice about a problem that is over, which is the same lie as a silent
+  // withholding pointed the other way.
+  setFavoritesSync: (s, reason) =>
+    set({ favoritesSync: s, favoritesSyncReason: s === 'degraded' ? (reason ?? null) : null }),
+  resetFavoritesSync: () => set({ favoritesSync: 'idle', favoritesSyncReason: null }),
+
+  favPrivacyPrompt: false,
+  setFavPrivacyPrompt: (open) => set({ favPrivacyPrompt: open }),
 
   // Hydrate from the guest cache; once the user signs in, hydrateMutes
   // replaces this with their NIP-51 set reconciled against the relay event.
