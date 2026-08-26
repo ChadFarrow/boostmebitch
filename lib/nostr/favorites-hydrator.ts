@@ -37,7 +37,7 @@ import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast } from '@/lib/t
 import {
   EMPTY_LOCAL,
   EMPTY_PARSED,
-  baselineForHalves,
+  baselineFrom,
   baselineHalf,
   claimedByBaseline,
   fetchFavoritesList,
@@ -49,13 +49,14 @@ import {
   publishFavoritesTags,
   tagsFromList,
   type ParsedList,
+  type ListFeed,
+  type ListItem,
   type PartitionedList,
 } from './favorites';
 import {
   favoritesMode,
   localFavoriteEntries,
   localFavoriteList,
-  privateFavoritesEnabled,
   requestFavoritesSync,
   seedFavoritesMode,
   serializeFavoritesCycle,
@@ -64,6 +65,7 @@ import {
   unattendedDecryptOk,
 } from './favorites-sync';
 import { resolvePublishRelays } from './relays';
+import type { DecryptPurpose } from './signer';
 import type { NostrIdentity } from './auth';
 
 function favoriteFromPodcast(p: Podcast): FavoritePodcast | null {
@@ -164,15 +166,27 @@ let inFlight: { npub: string; promise: Promise<void> } | null = null;
  * Hydrate favorites for `identity`, deduped per npub and serialized against any
  * other favorites cycle.
  */
-export function hydrateFavorites(identity: NostrIdentity): Promise<void> {
+/**
+ * `purpose` is how an explicit retry differs from a page load.
+ *
+ * The default read is 'unattended' and must stay that way — this runs on every
+ * load, and Amber's approval sheet shows the PLAINTEXT. But a signer that
+ * refuses an unattended decrypt then leaves the private half unpainted with no
+ * way to repaint it: `<FavoritesSyncNotice>`'s "unlock" published under a
+ * user-initiated decrypt and never came back here, so the entries it unlocked
+ * stayed off the screen while the notice explaining their absence disappeared.
+ * Passing 'user-initiated' spends exactly one prompt, under a control the user
+ * pressed, and paints.
+ */
+export function hydrateFavorites(identity: NostrIdentity, purpose: DecryptPurpose = 'unattended'): Promise<void> {
   if (inFlight?.npub === identity.npub) return inFlight.promise;
-  const promise = serializeFavoritesCycle(() => runHydrate(identity))
+  const promise = serializeFavoritesCycle(() => runHydrate(identity, purpose))
     .finally(() => { if (inFlight?.npub === identity.npub) inFlight = null; });
   inFlight = { npub: identity.npub, promise };
   return promise;
 }
 
-async function runHydrate(identity: NostrIdentity): Promise<void> {
+async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'unattended'): Promise<void> {
   const { setFavorites, setFavoriteEpisodes, setFavoritesSync } = useApp.getState();
   const cached = storage.favorites.get(identity.npub);
   const cachedEpisodes = storage.favoriteEpisodes.get(identity.npub);
@@ -211,9 +225,29 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
     // resolved and the prompt came straight back. The ciphertext rides through
     // opaquely instead, the local cache still renders, and the retry on
     // <FavoritesSyncNotice> is the user's explicit way in.
+    //
+    // **The feature flag governs CHOOSING private, never READING it, and
+    // conflating the two is a total block with no way out.** With
+    // `privateFavoritesEnabled()` in this condition, an account already in
+    // private mode — set on another device, arriving through
+    // `applySyncedSettings`, or seeded off an opaque `content` — hydrates with
+    // `privateUnreadable: true` on every load, which makes `wantsPrivateWrite`
+    // true, which returns 'private-unreadable', which returns before the paint.
+    // `favoritesSync` then sits on 'degraded' forever and <FavoritesSyncNotice>'s
+    // retry cannot help, because it re-enters this same gated path. The list is
+    // on the relays, readable, and no screen in the app can show it.
+    //
+    // It also poisons `seedFavoritesMode`: never attempting the decrypt makes
+    // `privateUnreadable` true for ANY non-empty `content`, so a third app's
+    // field seeds mode 'private' on a build that cannot use one. The flag stays
+    // where it belongs — on the two `gated` checks in <FavoritesPrivacy*>, which
+    // is what stops a NEW private half being created.
     read = await fetchFavoritesList(identity.pubkey, relays, {
-      decryptPrivate: privateFavoritesEnabled() && unattendedDecryptOk(),
-      purpose: 'unattended',
+      // A user-initiated pass may always decrypt: the prompt is the thing the
+      // user just pressed. An unattended one asks only when it can do so
+      // without a sheet.
+      decryptPrivate: purpose === 'user-initiated' || unattendedDecryptOk(),
+      purpose,
     });
   } catch (e) {
     setFavoritesSync('degraded');
@@ -234,7 +268,21 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // wire already says. Seeding here, off the one trustworthy read of the cycle,
   // is what keeps the first-favorite prompt aimed at people whose first
   // favorite it really is. Both halves empty leaves it unrecorded on purpose.
-  const mode = seedFavoritesMode(identity.npub, read) ?? favoritesMode(identity.npub) ?? 'public';
+  //
+  // **`?? 'public'` is a FALLBACK, not an answer, and it withholds.** A null
+  // from `seedFavoritesMode` on a wire holding both halves is deliberate — the
+  // account's own private entries may sit beside a public tag, and no device can
+  // tell from the wire alone which half is its own. Flattening to 'public' then
+  // filters the private half through `claimedByBaseline`, which on a device with
+  // no private claims drops every one of them, and the cycle still reports 'ok'.
+  // The user sees a shorter library and no explanation. So the fallback stays
+  // (there is nothing better to render from) but it is ANNOUNCED.
+  const seeded = seedFavoritesMode(identity.npub, read);
+  const recorded = favoritesMode(identity.npub);
+  const modeAmbiguous = !seeded && !recorded
+    && read.tags.some((t) => t[0] === 'i')
+    && (read.privateUnreadable || read.privateTags.some((t) => t[0] === 'i'));
+  const mode = seeded ?? recorded ?? 'public';
   const deliberatelyEmpty = storage.favCleared.get(identity.npub);
 
   // First sign-in on a device that already has local favorites: adopt them and
@@ -327,10 +375,20 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
 
   // BOTH halves count here, for the same reason they do in the planner: a mode
   // switch legitimately empties one of them, so a per-half test would refuse
-  // the feature it exists to protect. The pair is fed from ONE local list, so
-  // an unhydrated store empties them together while a switch merely moves
-  // entries across.
-  const mergedTotal = merged.nodes.length + (privateMerged?.nodes.length ?? 0);
+  // the feature it exists to protect.
+  //
+  // **And for the same reason as the planner, the count is `localFed`, not
+  // `nodes.length`.** A merge also CARRIES another writer's entries, which no
+  // local state feeds — so one foreign private entry makes the total non-zero
+  // while the local list is empty, this refusal is skipped, and an empty store
+  // is painted through to localStorage. That destroys `cached[feed.feedGuid]`,
+  // the only record separating a real album favorite from a group opened to
+  // place a track; every one of those rows reads as placement-only from then
+  // on. Fixing the planner alone does NOT fix this — the two guards are
+  // independent, and this one runs even when the planner said 'publish'.
+  const mergedTotal =
+    (merged.localFed ?? merged.nodes.length)
+    + (privateMerged ? privateMerged.localFed ?? privateMerged.nodes.length : 0);
   const cacheHasEntries =
     Object.keys(cached).length > 0 || Object.keys(cachedEpisodes).length > 0;
   // `deliberatelyEmpty` excuses BOTH halves of this, for the same reason it
@@ -355,7 +413,22 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
   // Podcast Index resolution, which fails for its own unrelated reasons and must
   // not be reported as "couldn't reach the relays". Set here rather than ABOVE
   // the merge, too — the refusal branch has to be able to report 'degraded'.
-  setFavoritesSync('ok');
+  //
+  // `mode-ambiguous` is 'degraded' rather than 'ok' because the paint below is
+  // genuinely incomplete: the private half was filtered out by
+  // `claimedByBaseline` under a mode this device only assumed. Everything else
+  // proceeds normally — the public half renders and resolves — but the user is
+  // told why the list is short instead of being left to notice.
+  if (modeAmbiguous) {
+    setFavoritesSync('degraded', 'mode-ambiguous');
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[favorites] this list has entries in BOTH halves, so which one this device owns '
+      + 'is unknowable from the wire — rendering the public half only and asking the user to choose',
+    );
+  } else {
+    setFavoritesSync('ok');
+  }
 
   // Rows come from BOTH halves — one library, two places it is stored. Public
   // first, so that where the same feed guid appears in both, an unambiguous
@@ -571,11 +644,40 @@ async function runHydrate(identity: NostrIdentity): Promise<void> {
  * favorite, and a private group carrying items may exist only to place a track.
  * Order is the tie-break, and it is the safe way round.
  */
+/**
+ * One library out of two halves — DEDUPED, which a plain concatenation is not.
+ *
+ * The halves legitimately overlap: mid-switch, one still carries what the other
+ * has just gained. Concatenating meant a feed present in both was pushed onto
+ * `unresolvedShows` twice and resolved twice, so an ordinary mode switch doubled
+ * a ~213-show / ~232-item cold hydration against `/api/by-guid`'s 300/min per-IP
+ * budget — and the 429s land in `lib/podcast-meta.ts` as `COULD_NOT_ASK` for
+ * whatever ran after it expired.
+ *
+ * PUBLIC WINS A TIE, matching the paint order below: an unambiguous (itemless)
+ * public feed favorite must not be replaced by a private group that exists only
+ * to place a track. `itemless` is the field that carries that distinction, and
+ * it is the one a second copy would silently overwrite.
+ */
 function joinPartitions(pub: PartitionedList, priv: PartitionedList | null): PartitionedList {
   if (!priv) return pub;
+  const feeds: ListFeed[] = [];
+  const seenFeeds = new Set<string>();
+  for (const f of [...pub.feeds, ...priv.feeds]) {
+    if (seenFeeds.has(f.feedGuid)) continue;
+    seenFeeds.add(f.feedGuid);
+    feeds.push(f);
+  }
+  const items: ListItem[] = [];
+  const seenItems = new Set<string>();
+  for (const it of [...pub.items, ...priv.items]) {
+    if (seenItems.has(it.itemGuid)) continue;
+    seenItems.add(it.itemGuid);
+    items.push(it);
+  }
   return {
-    feeds: [...pub.feeds, ...priv.feeds],
-    items: [...pub.items, ...priv.items],
+    feeds,
+    items,
     loose: [...pub.loose, ...priv.loose],
     malformed: [...pub.malformed, ...priv.malformed],
   };
@@ -616,11 +718,24 @@ function installCleanupHook(identity: NostrIdentity, malformed: string[]) {
         // unwritten either way, so a retry is still a real retry.
         return `nothing removed — ${(e as Error)?.message ?? e}`;
       }
+      // **Rewrite the ACTIVE half only, and keep the other one's claims.**
+      // `baselineForHalves(local, EMPTY_LOCAL)` writes `privateFeeds: []` /
+      // `privateItems: []`, which disowns every private entry this device
+      // published — and in private mode the ternary flips and it disowns the
+      // public ones instead. Either way the discarded half stops being claimed,
+      // so `mergeFavoritesList` reads those entries as another writer's and
+      // carries them forever: the app still renders them and the heart does
+      // nothing. That is the "I unfavorited 2 and they came back" report, and
+      // `planFavoritesPublish`'s `carried()` exists precisely to prevent it —
+      // this hook, which only means to purge malformed PUBLIC entries, was the
+      // one remaining caller reproducing the shipped bug.
+      const previous = storage.favBaseline.get(identity.npub);
+      const active = baselineFrom(localFavoriteList());
       storage.favBaseline.set(
         identity.npub,
         favoritesMode(identity.npub) === 'private'
-          ? baselineForHalves(EMPTY_LOCAL, localFavoriteList())
-          : baselineForHalves(localFavoriteList(), EMPTY_LOCAL),
+          ? { ...previous, privateFeeds: active.feeds, privateItems: active.items }
+          : { ...previous, feeds: active.feeds, items: active.items },
       );
       return `removed ${removed} malformed entries`;
     });

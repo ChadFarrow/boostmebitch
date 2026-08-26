@@ -34,6 +34,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 import { ServiceWorkerRegister } from '@/components/sw-register';
 import { Player } from '@/components/player';
+import { FavoritesPrivacyPrompt } from '@/components/favorites-privacy';
 import { ErrorBoundary } from '@/components/error-boundary';
 
 export const metadata: Metadata = {
@@ -225,6 +226,18 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ErrorBoundary label="Player">
           <Player />
         </ErrorBoundary>
+        {/* Mounted in the LAYOUT, beside <Player>, and not in <AppHeader>.
+            `onFavoritesModeNeeded` is a single module-level slot that only
+            exists while the component registering it is mounted, and
+            <AppHeader> renders on `/` and /favorites ONLY — while <Player>'s
+            <FullscreenPlayer> renders hearts on EVERY route. So a ♡ pressed on
+            /npub/<npub>, /live/<npub> or /stream/<naddr> by a user with no
+            recorded mode reached `promptForMode?.()` as `null`: the heart
+            filled, the store wrote through to localStorage, no dialog appeared,
+            and the favorite reached no relay — silently, until the user
+            happened to re-toggle the same item back on `/`.
+            It portals to document.body, so it contributes no layout here. */}
+        <FavoritesPrivacyPrompt />
         <ServiceWorkerRegister />
       </body>
     </html>

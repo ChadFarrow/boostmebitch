@@ -238,6 +238,18 @@ export interface ParsedList {
   foreignTags: string[][];
   /** `k` values outside our table — a kind a newer writer emits. */
   foreignKinds: string[];
+  /**
+   * How many emitted nodes exist because THIS DEVICE holds them.
+   *
+   * Set by {@link mergeFavoritesList}; absent on a plain parse, where the
+   * question has no meaning. It is the only honest input to an "is this merge
+   * empty" test, and the difference is not academic — `nodes.length` counts
+   * CARRIED entries, which belong to another writer and are fed by no local
+   * state at all. A single foreign entry in either half therefore makes a merge
+   * built from an EMPTY local list look non-empty, which is exactly the input
+   * the wholesale-delete guard exists to refuse.
+   */
+  localFed?: number;
 }
 
 /** This device's favorites, grouped for the wire. */
@@ -355,9 +367,45 @@ export function seedModeFromWire(hasPublic: boolean, hasPrivate: boolean): Favor
   return null;
 }
 
+/**
+ * The baseline a published list's GROUPS assert.
+ *
+ * **Groups only, and deliberately so: what we cannot represent is never
+ * claimed.** A loose node is either ours (a favorite whose parent feed we never
+ * learned) or another writer's (an identifier kind outside our table), and this
+ * function cannot tell them apart — it only sees the merged wire. Claiming a
+ * foreign one would hand this device permission to delete another app's entry.
+ *
+ * The other half of that rule is that OUR loose entries must still be claimed,
+ * or they can never be unfavorited. Only the caller knows which are ours, so it
+ * unions them in from the local list — see `looseIdsWePublished`.
+ */
 export function baselineOfList(list: ParsedList | null | undefined): FavoritesBaseline {
   if (!list) return EMPTY_BASELINE;
   return baselineFrom(groupLocalFavorites(entriesFromList(list)));
+}
+
+/**
+ * The loose identifiers THIS DEVICE put on the wire.
+ *
+ * The intersection is the whole point. `merged` holds every loose node that
+ * survived, ours and carried alike; `local` holds only ours. An id in both is
+ * one we published and still assert, which is exactly what a baseline records —
+ * and leaving it out is not a small loss: `mergeFavoritesList`'s loose-removal
+ * test is gated on the baseline, so an unclaimed loose entry is re-emitted on
+ * every republish and re-adopted on every hydrate. The heart empties locally and
+ * the tag never leaves the relay, on any device, with no error.
+ */
+export function looseIdsWePublished(merged: ParsedList | null | undefined, local: LocalList): string[] {
+  if (!merged) return [];
+  const ours = new Set(local.loose.map((l) => l.tag[1]).filter((id): id is string => !!id));
+  const out: string[] = [];
+  for (const node of merged.nodes) {
+    if (node.t !== 'loose') continue;
+    const id = node.loose.tag[1];
+    if (id && ours.has(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
 }
 
 export function baselineForHalves(publicLocal: LocalList, privateLocal: LocalList): FavoritesBaseline {
@@ -753,6 +801,9 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
 
   const nodes: ListNode[] = [];
   const taken = new Set<string>();
+  // Incremented ONLY where a node is emitted because local state holds it —
+  // never where one is carried for another writer. See `ParsedList.localFed`.
+  let localFed = 0;
 
   for (const node of read.nodes) {
     if (node.t === 'loose') {
@@ -768,6 +819,7 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
       // side. Which half it landed in is an accident of history; whether we
       // published it is the question.
       if (id && (publishedItems.has(id) || publishedFeeds.has(id)) && !localLooseIds.has(id)) continue;
+      if (id && localLooseIds.has(id)) localFed++;
       nodes.push({ t: 'loose', loose: { tag: node.loose.tag.slice(), medium: node.loose.medium } });
       continue;
     }
@@ -790,6 +842,7 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
       continue;
     }
 
+    localFed++;
     nodes.push({
       t: 'group',
       group: {
@@ -833,6 +886,7 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
     if (publishedFeeds.has(showId(group.feedGuid)) && fresh.length === 0) continue;
 
     taken.add(group.feedGuid);
+    localFed++;
     nodes.push({ t: 'group', group: { ...group, itemGuids: fresh } });
   }
 
@@ -841,10 +895,11 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
     if (!id) continue;
     if (read.nodes.some((n) => n.t === 'loose' && n.loose.tag[1] === id)) continue;
     if (publishedItems.has(id) || publishedFeeds.has(id)) continue;
+    localFed++;
     nodes.push({ t: 'loose', loose: { tag: loose.tag.slice(), medium: loose.medium } });
   }
 
-  return { nodes, foreignTags: read.foreignTags, foreignKinds: read.foreignKinds };
+  return { nodes, foreignTags: read.foreignTags, foreignKinds: read.foreignKinds, localFed };
 }
 
 /**
@@ -879,6 +934,11 @@ export type PublishReason =
   | 'wholesale-delete'
   | 'private-unreadable'
   | 'private-too-large'
+  // Not a plan outcome — the hydrator's, for a wire `seedModeFromWire` refuses
+  // to read (entries in BOTH halves, so which one this device owns is
+  // unknowable). It withholds the private half rather than guess, and this is
+  // what stops that being silent.
+  | 'mode-ambiguous'
   | 'publish';
 
 export interface FavoritesPlanInput {
@@ -1045,15 +1105,70 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // so afterwards it claims nothing. Not `carried`: a claim naming an entry that
   // is now gone would make `mergeFavoritesList`'s `fresh` filter suppress it if
   // the user ever favorites it again.
+  //
+  // **A CLAIM THAT HAS STOPPED BEING TRUE IS WORSE THAN NO CLAIM**, and a mode
+  // switch is the ordinary way one does. Switching private→public moves entries
+  // out of `content`, but `carried('private')` copies the pre-switch claims
+  // forward unchanged and every later public-mode cycle copies them again. When
+  // another app (or the user's second device) later favorites one of those same
+  // ids privately, this device matches the stale claim, reads it as
+  // ours-and-removed, and drops it — a cross-app deletion with no undo, driven
+  // by an assertion that expired at the moment of the switch.
+  //
+  // So an inactive half keeps only the claims whose entries are STILL THERE.
+  // This is never applied to an UNREADABLE half: absence from a half we could
+  // not open is not evidence of anything, and filtering on it would disown
+  // every private entry at once.
+  const stillPresent = (b: FavoritesBaseline, list: ParsedList | null | undefined): FavoritesBaseline => {
+    if (!list) return b;
+    const present = new Set<string>();
+    for (const node of list.nodes) {
+      if (node.t === 'loose') {
+        const id = node.loose.tag[1];
+        if (id) present.add(id);
+        continue;
+      }
+      present.add(showId(node.group.feedGuid));
+      for (const g of node.group.itemGuids) present.add(itemId(g));
+    }
+    return { feeds: b.feeds.filter((id) => present.has(id)), items: b.items.filter((id) => present.has(id)) };
+  };
+
+  // `withLoose` restores what `baselineOfList` deliberately cannot see. It reads
+  // GROUPS off the merged wire (which is what was actually published) and takes
+  // the loose ids from the LOCAL list (which is what tells ours from another
+  // writer's). Dropping the loose half is silent and permanent: an orphan
+  // favorite this device published would never enter a baseline, so
+  // `mergeFavoritesList`'s loose-removal test could never fire for it and the
+  // unfavorite would revert on every cycle, forever.
+  const withLoose = (b: FavoritesBaseline, list: ParsedList | null | undefined, l: LocalList) => {
+    const loose = looseIdsWePublished(list, l);
+    if (loose.length === 0) return b;
+    const items = new Set(b.items);
+    for (const id of loose) items.add(id);
+    return { ...b, items: [...items] };
+  };
   const pub = input.withdraw
     ? { feeds: [], items: [] }
-    : mode === 'private' ? carried('public') : baselineOfList(input.merged);
+    // Inactive public half (private mode), same rule as the private one below.
+    : mode === 'private'
+      ? stillPresent(carried('public'), input.merged)
+      : withLoose(baselineOfList(input.merged), input.merged, input.local);
   // A half we could not read is carried for the same reason and one of its own:
   // it goes back verbatim, so what we asserted about it is still true, and
   // recomputing it from nothing would silently disown every private entry.
   const priv = input.withdraw
     ? { feeds: [], items: [] }
-    : privateUnreadable || mode !== 'private' ? carried('private') : baselineOfList(input.privateMerged);
+    // Unreadable: verbatim, always. We cannot see what is in there, so what we
+    // asserted about it is still the best answer we have, and recomputing it
+    // from nothing would silently disown every private entry.
+    : privateUnreadable
+      ? carried('private')
+      // Inactive but readable — the post-switch case. Carry, minus what the
+      // switch just moved out.
+      : mode !== 'private'
+        ? stillPresent(carried('private'), input.privateMerged)
+        : withLoose(baselineOfList(input.privateMerged), input.privateMerged, input.privateLocal ?? EMPTY_LOCAL);
   const baseline: FavoritesBaseline = {
     feeds: pub.feeds, items: pub.items, privateFeeds: priv.feeds, privateItems: priv.items,
   };
@@ -1109,13 +1224,24 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // In 'private' mode that is every publish — including the half-finished state
   // during a switch, where this device still has public baseline entries to
   // drop. Publishing only the drop would take them off the public half without
-  // ever putting them in the private one.
+  // ever putting them in the private one. A WITHDRAWAL is the other one: it
+  // empties both halves by definition, so it cannot carry `content` verbatim.
+  //
+  // **The question is whether this plan must CHANGE `content`, never whether an
+  // emptiness was intentional.** `emptyIsIntentional` is `withdraw ||
+  // localCleared`, and the second is a public-mode delete-all — which carries
+  // the ciphertext untouched (`privateSame` is hard-coded true for an unreadable
+  // half, so `content = readContent`). Folding it in refused a publish that
+  // changes nothing about `content`, and the refusal is permanent: `favCleared`
+  // is only retired by `recordFavoritesBaseline`, which never runs because the
+  // plan never publishes. The user reads "Your signer couldn't open the private
+  // half" forever and their delete-all never leaves the device.
   //
   // Not every signer implements NIP-44, and Amber is deliberately not asked to
   // decrypt unattended, so this is an ordinary state rather than an error —
   // which is exactly why it has to reach the screen. "Hidden here by choice"
   // and "this app cannot read it" both render as a shorter list.
-  const wantsPrivateWrite = mode === 'private' || !!input.emptyIsIntentional;
+  const wantsPrivateWrite = mode === 'private' || !!input.withdraw;
   if (privateUnreadable && wantsPrivateWrite) return plan(false, 'private-unreadable');
 
   // ONLY NOW may we say "nothing changed", and the order is the whole point.
@@ -1166,9 +1292,19 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // WITH A PRIVATE HALF THIS IS ASKED OF THE UNION, NEVER OF EITHER HALF ALONE.
   // Switching to private legitimately empties the public merge over a non-empty
   // read — the exact shape below — so a per-half test would refuse the feature
-  // it exists to protect. The union is the honest question because both halves
-  // are fed from ONE local list: an unhydrated store empties them together,
-  // while a mode switch moves entries across and the total never drops.
+  // it exists to protect. A mode switch moves entries across and the union never
+  // drops, while an unhydrated store empties both at once.
+  //
+  // **BUT THE UNION MUST BE OVER LOCALLY-FED NODES, NEVER OVER `nodes.length`.**
+  // The tempting version reads the merged totals, and its justification — "both
+  // halves are fed from ONE local list" — is false for the half of the merge
+  // that matters here. `mergeFavoritesList` also CARRIES another writer's
+  // entries through untouched, and those are fed by no local state at all. So a
+  // single foreign entry in the private half makes `privateMerged.nodes.length`
+  // 1 while the public merge is legitimately 0, the guard never fires, and the
+  // public half publishes as an alt-only tag array: the 2026-08-21 wipe, from a
+  // guard written to prevent exactly it. `localFed` is the provenance count that
+  // answers the question actually being asked.
   //
   // Refusing costs a user who genuinely emptied their list one extra action.
   // Publishing costs every favorite they have, on every device, with no undo,
@@ -1178,7 +1314,15 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // the baseline is itself corrupt.
   const readHadEntries =
     input.readTags.some((t) => t[0] === 'i') || readPrivateTags.some((t) => t[0] === 'i');
-  if (publicNodes === 0 && privateNodes === 0 && readHadEntries && !input.emptyIsIntentional) {
+  // `?? nodes.length` is the conservative fallback for a list that did not come
+  // from a merge: over-counting can only make this guard fire LESS, so it must
+  // never be the silent default for a merged list — which is why
+  // `mergeFavoritesList` always sets the field.
+  const publicLocalFed = input.merged.localFed ?? input.merged.nodes.length;
+  const privateLocalFed = input.privateMerged
+    ? input.privateMerged.localFed ?? input.privateMerged.nodes.length
+    : 0;
+  if (publicLocalFed === 0 && privateLocalFed === 0 && readHadEntries && !input.emptyIsIntentional) {
     return plan(false, 'wholesale-delete');
   }
 
