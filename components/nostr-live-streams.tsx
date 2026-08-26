@@ -11,7 +11,7 @@ import {
   streamNaddr,
   type NostrLiveStream,
 } from '@/lib/nostr/live-streams';
-import { fetchProfile, indexedLiveStreams } from '@/lib/nostr';
+import { fetchProfilesFor, indexedLiveStreams, LIVE_STREAM_RELAYS } from '@/lib/nostr';
 import type { Event } from 'nostr-tools';
 import { hasValueRecipients } from '@/lib/util';
 import { storage } from '@/lib/storage';
@@ -125,23 +125,50 @@ export function NostrLiveStreams() {
     // Host profiles: name, avatar, LN address. The index pass has already put
     // the ones it carried into `storage.profile`, so this only chases whatever
     // it did not know about.
-    const hostPubkeys = [...new Set(merged.map((s) => s.pubkey))];
-    await Promise.all(
-      hostPubkeys.map(async (pk) => {
-        if (storage.profile.get(pk) === undefined) await fetchProfile(pk);
-      }),
-    );
+    //
+    // ONE batched query, never a `fetchProfile` per host. `fetchProfile` opens
+    // a subscription per relay — that per-relay accounting is what its
+    // `trustworthy` flag is for — so a row of twenty-odd streams was ~5x that
+    // many concurrent REQs across five sockets. Relays cap subscriptions per
+    // connection and drop the overflow silently, so the hosts that lost the
+    // race did not resolve late, they did not resolve at all, and this `await`
+    // then sat on the slowest of them: a bare npub where a name should be, for
+    // the full window, on the first thing the home page paints.
+    // `fetchProfilesFor` serves cached hits and cached misses without touching
+    // the network, so passing the whole list every time costs nothing.
+    //
+    // Asked against LIVE_STREAM_RELAYS rather than the defaults, because that
+    // is where these particular kind:0s are: a zap.stream or nostr.wine host
+    // need not publish a profile to a podcast listener's relay set, and
+    // `resolveStreamV4V` already falls back to exactly this union one pubkey at
+    // a time. Costs no new sockets — the kind:30311 query that produced these
+    // streams opened them a moment ago and the shared pool keeps them warm.
+    await fetchProfilesFor([...new Set(merged.map((s) => s.pubkey))], LIVE_STREAM_RELAYS);
     if (!mountedRef.current) return;
     setResolved(paint());
 
     // Then V4V, which is the expensive half. Only for streams whose block we
     // have not resolved yet — a second commit from the slower source must not
     // re-pay for the ones the first already answered.
+    const pending = merged.filter((s) => !valueRef.current.has(streamAddrOf(s.rawEvent)));
+
+    // Their zap-split recipients first, in ONE query for the whole row.
+    // `resolveStreamV4V` resolves a NIP-53 `zap` tag's pubkey to an lnaddress
+    // through its kind:0, one pubkey at a time — and this loop runs it across
+    // every stream at once, so a row where several broadcasts carry splits was
+    // dozens of single-author lookups, each fanning out per relay. They are all
+    // known here, before any of them is needed. What is left for the per-pubkey
+    // path afterwards is the case it genuinely exists for: a recipient carrying
+    // its own relay hint, and a cached MISS, which that function deliberately
+    // retries because an lud16 is what gates the BOOST button.
+    const zapRecipients = [...new Set(
+      pending.flatMap((s) => s.zapWeights.filter((z) => z.weight > 0).map((z) => z.pubkey)),
+    )];
+    if (zapRecipients.length) await fetchProfilesFor(zapRecipients, LIVE_STREAM_RELAYS);
+
     await Promise.all(
-      merged.map(async (stream) => {
-        const addr = streamAddrOf(stream.rawEvent);
-        if (valueRef.current.has(addr)) return;
-        valueRef.current.set(addr, await resolveStreamV4V(stream));
+      pending.map(async (stream) => {
+        valueRef.current.set(streamAddrOf(stream.rawEvent), await resolveStreamV4V(stream));
       }),
     );
 

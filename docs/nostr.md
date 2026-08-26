@@ -891,8 +891,118 @@ Since Lightning and Nostr are independent logins, a signed-out boost would other
 1. **Cache always paints first.** `storage.feedNotes.get(cacheKey)` returns whatever's there regardless of age (no TTL gate), set into state synchronously in the mount effect.
 2. **Full fetch on every load.** Mount and user-triggered `refresh()` both do a full relay fetch (no `since`). Stale cached state is replaced, not merged — simpler, and stale notes can't block new relay activity.
 3. **No auto-refresh.** Mount + user click only, never a timer. Local mutations (e.g. `boostsTick` after a sent boost) intermix client-side, not via re-fetch.
-4. **The relay pass commits TWICE — roots, then the assembled tree.** `assembleNotes` hands its top-level notes to `FetchOpts.onRoots` the moment the kind:1 scan returns, before the reply / profile / quoted stages, and `useNostrFeed` commits that. Everything after that line is enrichment: it changes what a note *shows*, never which notes exist. Holding it all back until the last stage is why a relay-only load painted nothing for the whole chain while the notes themselves had arrived at the first stage. It lives in `assembleNotes` — the one funnel all six fetchers pass through — rather than at each call site, for the same reason `recordLivePlay` lives in `setTarget`. **Only the three FEED fetchers pass it**; `fetchBoostsSentBy` / `fetchBoostsReceivedBy` end with `notes.filter(n => n.isBoost)`, and `isBoost` for a Fountain wrapper is adopted from a quoted kind:9735 that is not fetched at root time — so emitting there would publish notes the final answer excludes, and `mergeNotes` unions rather than replaces, so they would never leave.
+4. **The relay pass commits SEVERAL times — roots, roots again as their profiles land, then the assembled tree.** `assembleNotes` hands its top-level notes to `FetchOpts.onRoots` the moment the kind:1 scan returns, before the reply / profile / quoted stages, and `useNostrFeed` commits that. Everything after that line is enrichment: it changes what a note *shows*, never which notes exist. Holding it all back until the last stage is why a relay-only load painted nothing for the whole chain while the notes themselves had arrived at the first stage. It lives in `assembleNotes` — the one funnel all six fetchers pass through — rather than at each call site, for the same reason `recordLivePlay` lives in `setTarget`. **Only the three FEED fetchers pass it**; `fetchBoostsSentBy` / `fetchBoostsReceivedBy` end with `notes.filter(n => n.isBoost)`, and `isBoost` for a Fountain wrapper is adopted from a quoted kind:9735 that is not fetched at root time — so emitting there would publish notes the final answer excludes, and `mergeNotes` unions rather than replaces, so they would never leave.
 5. **`loading` means "nothing to show yet", not "a fetch is running".** It is cleared on the FIRST commit from any source. It used to be cleared only in the relay pass's `finally`, which made it a claim the screen contradicted: measured on production 2026-08-25, the feed painted from the index at 387 ms and the refresh control read `loading…` and stayed DISABLED until 22 686 ms. An early clear is safe only because `mergeNotes` unions by id — a later answer can add to what is on screen but can never take it away.
+
+### The profile stage runs BESIDE the reply tree, not behind it
+
+`assembleNotes` used to read: scan kind:1 → paint the roots → **await the whole
+reply forest** → then fetch kind:0. Nothing about a profile lookup depends on a
+reply, and the authors of the top-level notes are known the moment the scan
+returns — but the `await` sat between them, so every avatar and display name on
+the home page waited out a query with no relationship to it. The tree is a BFS
+that runs one relay round PER DEPTH LEVEL in series, each with its own
+multi-second ceiling, which is why the feed could sit on bare npubs for tens of
+seconds after the notes themselves had painted. That is the shape the "profiles
+load slowly" reports were describing.
+
+The root authors' kind:0 now starts immediately and runs alongside the tree, and
+`fetchProfiles` takes an `onPartial` callback so the roots repaint when the
+FIRST kind:0 pass lands rather than waiting on the NIP-65 outbox fallback that
+only a minority of authors need. Three things make that safe, and none of them
+is obvious from the call site:
+
+- **The prefetch is awaited before the second batch, not raced with it.**
+  `fetchProfiles` reads the per-pubkey cache first, and the prefetch has been
+  writing into it for the whole length of the tree, so the batch that picks up
+  the reply authors queries only the authors the tree just introduced. Racing
+  them would ask the same relays for the same authors twice.
+- **Its rejection is caught where it is created**, not where it is awaited. It
+  is created before the tree and awaited after it, so an unhandled rejection in
+  between would reach the tab's error handler rather than this call site — and a
+  profile lookup is never a reason to fail a feed.
+- **A repaint has to earn its place.** `paintRoots` counts how many roots it can
+  name and returns early when a later call cannot name more. `noteFromEvent`
+  builds fresh objects every time, so `<NoteCard>`'s memo cannot absorb a
+  no-change repaint — it is a full feed re-render for nothing. The first paint
+  is exempt: it is the one that puts the notes on screen.
+
+**And `mergeNotes` merges field by field rather than replacing on id, which is
+what makes any of this safe to do more than once.** The passes do not arrive in
+order of how much they know — the index answers in tens of milliseconds with
+profiles and a whole reply forest, and the relay pass then paints its top-level
+notes seconds later carrying neither. Replacing on id made that a downgrade the
+reader watches happen: an avatar and a thread that were on screen vanish, and
+only return when the last relay stage finishes. A kind:1 is immutable, so the
+copies differ only in how much enrichment ran; `richer` therefore keeps the
+newer copy but takes `author`, `replies`, `amountMsat` and `isBoost` from
+whichever copy actually has them. `isBoost` matters most — it gates
+`noteHasSubstance`, so losing it takes the whole note off the feed.
+
+### Many authors is ONE query — `fetchProfilesFor`, never `fetchProfile` per pubkey
+
+`fetchProfile` opens **a subscription per relay** rather than a `subscribeMany`,
+and that is deliberate: the per-relay `reached`/`answered` counting is what makes
+its `trustworthy` flag mean anything (see `perRelayRead`). It is the right shape
+for one pubkey and the wrong one for twenty. `<NostrLiveStreams>` resolved its
+hosts with a `fetchProfile` per host inside a `Promise.all`, so a row of
+twenty-odd streams opened roughly five times that many concurrent REQs across
+five sockets. Relays cap concurrent subscriptions per connection and drop the
+overflow **silently**, so the hosts that lost the race did not resolve late,
+they did not resolve at all — and the `await` then sat on the slowest of them,
+leaving a bare npub where a name should be on the first thing the home page
+paints.
+
+`fetchProfilesFor(pubkeys, relays?)` (`lib/nostr/discover.ts`) is the batched
+door onto the same `fetchProfiles` the feeds use: one
+`{ kinds:[0], authors:[…] }` per relay, with an all-found early exit, a quiet
+timer, the NIP-65 outbox fallback and the negative-cache health gate. Cached
+hits and cached misses are served with no network at all, so handing it the
+whole list on every commit costs nothing.
+
+The live-streams row asks it against `LIVE_STREAM_RELAYS` rather than the
+defaults, because that is where those particular kind:0s are — a zap.stream or
+nostr.wine host need not publish a profile to a podcast listener's relay set,
+and `resolveStreamV4V` already falls back to exactly that union one pubkey at a
+time. It costs no new sockets: the kind:30311 query that produced the rows
+opened them a moment earlier and the shared pool keeps them warm.
+
+**The profile outbox is unioned in directly, not opened as `withExtraRelays`
+extras.** That helper closes what it opened, which is right for relay sets this
+app does not choose — a note's `q`/`e` hints, another author's write relays —
+because those are feed-supplied and unbounded. `PROFILE_RELAYS` is one fixed
+relay that nearly every profile lookup queries, so tearing it down after each
+batch meant re-handshaking it on the next one, and a fresh TLS + WebSocket
+handshake is the dominant and most variable part of a lookup that is otherwise a
+few hundred milliseconds. Worse, the two paths were working against each other:
+`fetchProfile` passes it straight to `withPool` and keeps it warm, and every
+batch then closed the socket it had opened.
+
+
+**Four surfaces had this shape, not one.** `<NostrLiveStreams>` for its hosts,
+and then again inside the V4V stage — `resolveStreamV4V` resolves a NIP-53 `zap`
+tag's pubkey to an lnaddress through its kind:0, one at a time, and the row runs
+it across every broadcast at once, so a row where several streams carry splits
+was dozens of single-author lookups. `<LiveChat>` fired one per message author,
+and a busy room introduces people in bursts. `<MutedAccounts>` fired one per
+muted pubkey the moment the list was expanded. All four now hand their whole
+list to `fetchProfilesFor`.
+
+The mute list carried a second bug the batch removes: it called
+`storage.profile.setMiss(pk)` itself whenever `fetchProfile` returned null — an
+absence it had not reliably observed, since that function returns the same null
+for "nobody has this profile" and "nothing answered", and pinning a bare npub
+for the miss TTL after any relay wobble is precisely what `fetchProfile`'s own
+health gate exists to prevent. `fetchProfiles` records a miss only off a query
+that demonstrably answered, and writes through to `storage.profile` itself, so
+neither cache write belongs at a call site.
+
+Pre-batching does not remove `resolveStreamV4V`'s per-pubkey path and is not
+meant to. That function has to work standalone for `/live/<npub>` and
+`/stream/<naddr>`, and it deliberately retries a cached MISS, because an lud16
+is what gates the BOOST button and a streamer's profile can miss transiently.
+What the batch removes is the case where it was re-asking about profiles nobody
+had asked for yet.
 
 ### Every stage needs a quiet timer, because aggregate EOSE is not a bound
 

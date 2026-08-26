@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
-import { resolvePodcastByGuid, resolvePodcastByFeedUrl, piMaybeUp } from '@/lib/podcast-meta';
+import { resolvePodcastByGuid, resolvePodcastByFeedUrl, piMaybeUp, warmPodcastCache } from '@/lib/podcast-meta';
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel';
 import type { Podcast, PodrollItem } from '@/lib/types';
 import { PodcastCover } from './podcast-cover';
@@ -51,6 +51,24 @@ export function Podroll({ items }: { items: PodrollItem[] }) {
       const first = await resolveItem(unique[0]);
       if (first) resolved.push(first);
       if (piMaybeUp() && unique.length > 1) {
+        // ONE request for the rest, not one per entry. "Batch" here used to
+        // mean `Promise.all` over N single-guid routes — the exact shape
+        // `useNoteMeta` was rewritten out of — and this row sits on the show
+        // page under the episode list, so its N requests land while the feed
+        // itself is still downloading. A podroll is publisher-authored and
+        // routinely runs to dozens of shows.
+        //
+        // `warmPodcastCache` fills the same `podcastMem` the resolver reads, so
+        // the `resolveItem` pass below is unchanged and simply finds its
+        // answers already in hand. That is what keeps the two things it does
+        // that a batch cannot: a guid PI answered "not found" for still falls
+        // back to the entry's `feedUrl` hint, and a guid the warm could not ask
+        // about (a 429, an aborted request) is still attempted rather than
+        // silently dropped from the row.
+        await warmPodcastCache(
+          unique.slice(1).map((i) => i.feedGuid).filter((g): g is string => !!g),
+        );
+        if (gen !== genRef.current) return;
         const rest = await Promise.all(unique.slice(1).map(resolveItem));
         for (const p of rest) if (p) resolved.push(p);
       }

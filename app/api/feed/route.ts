@@ -23,6 +23,23 @@ const LIVE_RANK: Partial<Record<NonNullable<Episode['liveStatus']>, number>> = {
 const EPISODES_BUDGET_BYTES = 3.5 * 1024 * 1024;
 
 /**
+ * `max-age` is the half that was missing, and this is the largest body the app
+ * serves.
+ *
+ * With `s-maxage` alone the CDN may hold a feed for five minutes while the
+ * BROWSER re-downloads all of it on every mount — and `<EpisodeList>` unmounts
+ * whenever an episode opens, so show → episode → back → episode fetches the
+ * whole feed once per step, on the connection the reader is waiting on. Sixty
+ * seconds of private cache makes that navigation free without introducing a
+ * staleness class that did not already exist: a shared cache has been allowed
+ * to answer with a five-minute-old copy of this document since it was written,
+ * and the one field on it that goes out of date within a minute — a live item's
+ * status — is not read from here at all. `/api/live-status` polls it every ten
+ * seconds and `applyLiveStatuses` patches the rows in place.
+ */
+const FEED_CACHE_CONTROL = 'public, max-age=60, s-maxage=300, stale-while-revalidate=600';
+
+/**
  * Shrink `episodes` to {@link EPISODES_BUDGET_BYTES}, oldest first.
  *
  * Prose is shed before rows are, because the two costs are not the same thing.
@@ -92,7 +109,7 @@ export async function GET(req: Request) {
       // body the platform will not send.
       const fitted = fitEpisodesToBudget(parsed.episodes);
       return NextResponse.json({ ...parsed, episodes: fitted, truncated: fitted.length < parsed.episodes.length }, {
-        headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' },
+        headers: { 'Cache-Control': FEED_CACHE_CONTROL },
       });
     }, 'feed fetch failed');
   }
@@ -230,7 +247,7 @@ export async function GET(req: Request) {
     const truncated = episodes.length >= PI_EPISODE_MAX || fitted.length < merged.length;
     return NextResponse.json(
       { podcast, episodes: fitted, truncated },
-      { headers: { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' } },
+      { headers: { 'Cache-Control': FEED_CACHE_CONTROL } },
     );
   }, 'feed fetch failed');
 }

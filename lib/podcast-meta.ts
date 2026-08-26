@@ -327,8 +327,7 @@ export async function loadEpisodeFromFeed(
   guid: string,
 ): Promise<{ podcast: Podcast; episode: Episode | null } | null> {
   try {
-    const res = await fetch(`/api/feed?id=${feedId}`);
-    const data = await res.json();
+    const data = await loadFeed({ feedId });
     if (!data?.podcast) return null;
     const episodes = Array.isArray(data.episodes) ? (data.episodes as Episode[]) : [];
     return { podcast: data.podcast as Podcast, episode: episodes.find((e) => e.guid === guid) ?? null };
@@ -336,3 +335,62 @@ export async function loadEpisodeFromFeed(
     return null;
   }
 }
+
+/** What `/api/feed` answers with. Deliberately loose — an `{ error }` body
+ *  parses fine and each caller decides what to do about a missing `podcast`. */
+export interface FeedResponse {
+  podcast?: Podcast;
+  episodes?: Episode[];
+  truncated?: boolean;
+  error?: string;
+}
+
+/**
+ * The ONE place `/api/feed` is requested from the browser, and the one place
+ * its URL is built.
+ *
+ * **It coalesces concurrent callers, because on a cold episode deep link there
+ * are two of them and they were each downloading the whole feed.** Opening
+ * `/?podcast=<guid>&episode=<guid>` resolves the show, puts it in the store,
+ * and only then loads the episode — so `<EpisodeList>` mounts for the show in
+ * between and fires its own `/api/feed?id=N` while `loadEpisodeFromFeed`'s is
+ * still in flight. Measured against a stubbed API: two requests for the same
+ * URL, 15 ms apart. Neither the browser cache nor a CDN collapses two requests
+ * already in flight, so that is the entire feed downloaded twice — and this
+ * route now serves up to `PI_EPISODE_MAX` episodes with their show notes, which
+ * the response budget only trims at 3.5 MB.
+ *
+ * Both callers are wanted, which is why this coalesces rather than one of them
+ * being deleted: `<EpisodeList>`'s handler is what writes `episodeQueue`, the
+ * array `<TransportControls>` computes prev/next from, and it must still run
+ * even though the episode view replaces it a moment later.
+ *
+ * **The entry is dropped the moment the promise settles, so nothing is ever
+ * cached — not a body, and above all not a failure.** A shared in-flight
+ * promise is only ever an answer two callers are already waiting for; keeping
+ * it afterwards would serve a stale episode list to the next navigation and
+ * make `<EpisodeList>`'s retry button re-deliver the error it is retrying.
+ * The rejection propagates to every caller, so each keeps its own error path.
+ *
+ * The URL is built here for the reason `showShareUrl` exists: two call sites
+ * spelling the same request differently is how one feed comes to be fetched
+ * two ways, and a differing spelling would also defeat the coalescing silently.
+ */
+export function loadFeed(
+  source: { feedId: number; feedUrl?: undefined } | { feedUrl: string; feedId?: undefined },
+): Promise<FeedResponse> {
+  // Preview (not-in-PI) feeds load by URL — their synthetic negative id cannot
+  // be resolved server-side.
+  const endpoint = source.feedUrl
+    ? `/api/feed?url=${encodeURIComponent(source.feedUrl)}`
+    : `/api/feed?id=${source.feedId}`;
+  const existing = feedInFlight.get(endpoint);
+  if (existing) return existing;
+  const p = fetch(endpoint)
+    .then((r) => r.json() as Promise<FeedResponse>)
+    .finally(() => { feedInFlight.delete(endpoint); });
+  feedInFlight.set(endpoint, p);
+  return p;
+}
+
+const feedInFlight = new Map<string, Promise<FeedResponse>>();

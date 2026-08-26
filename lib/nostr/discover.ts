@@ -645,18 +645,62 @@ async function assembleNotes(
   // six places to forget it, and a fetcher that silently skipped it would look
   // no different from a slow network.
   //
-  // Profiles come from the localStorage cache only, so this costs no network:
-  // an author we have not seen paints as a bare npub for a few seconds and then
-  // fills in. Same for a Fountain wrapper's amount, which is adopted from a
-  // quoted kind:9735 that has not been fetched yet. A note can therefore gain
-  // detail on the second commit but can never lose any, and `mergeNotes` unions
-  // by id with the later copy winning, so the enriched version replaces the
-  // bare one in place.
-  if (onRoots && topLevelEvents.length) {
-    onRoots(topLevelEvents.map(
-      (e) => noteFromEvent(e, relays, storage.profile.get(e.pubkey) ?? null),
+  // The FIRST paint's profiles come from the localStorage cache only, so it
+  // costs no network: an author we have not seen paints as a bare npub and
+  // fills in on the next one. Same for a Fountain wrapper's amount, which is
+  // adopted from a quoted kind:9735 that has not been fetched yet. A note can
+  // therefore gain detail on each later commit but can never lose any —
+  // `mergeNotes` merges the two copies field by field and keeps whichever of
+  // them actually has each one, so a paint that knows less about a note cannot
+  // undo one that knew more.
+  //
+  // How many roots the last paint could name. The first paint always happens —
+  // it is what puts the notes on screen — and every one after it has to earn
+  // its place by resolving an author the previous one could not. Without that
+  // test the profile stage below repaints on a fallback pass that commonly adds
+  // nothing, and each repaint is a full feed re-render: `noteFromEvent` builds
+  // fresh objects every time, so `<NoteCard>`'s memo cannot absorb it.
+  let paintedAuthors = -1;
+  const paintRoots = (profiles: Map<string, ProfileMetadata>): void => {
+    if (!onRoots || !topLevelEvents.length) return;
+    const roots = topLevelEvents.map((e) => noteFromEvent(
+      e, relays, profiles.get(e.pubkey) ?? storage.profile.get(e.pubkey) ?? null,
     ));
-  }
+    const named = roots.reduce((n, r) => n + (r.author ? 1 : 0), 0);
+    if (named <= paintedAuthors) return;
+    paintedAuthors = named;
+    onRoots(roots);
+  };
+  paintRoots(EMPTY_PROFILES);
+
+  // THE AUTHOR PROFILES START HERE, NOT AFTER THE REPLY TREE.
+  //
+  // Nothing about a kind:0 lookup depends on the reply forest, and the authors
+  // of the top-level notes are known on the line above — but the profile stage
+  // used to sit below the `await` for the tree, so every avatar and display
+  // name on the page waited out a query it has no relationship with. The tree
+  // is a BFS that runs one relay round PER DEPTH LEVEL in series, each with its
+  // own multi-second ceiling, so on a cold load that was the whole reason the
+  // feed sat on bare npubs for tens of seconds after the notes themselves had
+  // painted.
+  //
+  // `paintRoots` is handed to it as the partial callback, so the roots repaint
+  // the moment the first kind:0 pass lands rather than waiting on the NIP-65
+  // outbox fallback that only a minority of authors need. Every commit is
+  // additive — `useNostrFeed`'s merge keeps the richer copy field by field — so
+  // an extra paint can only fill detail in, never take it away.
+  //
+  // The reply authors are NOT prefetched here on purpose: they are unknown
+  // until the tree resolves, and the batch below picks them up. It re-reads the
+  // per-pubkey cache first, so awaiting this prefetch before it runs is what
+  // keeps the two from querying the same author twice.
+  const rootAuthors = Array.from(new Set(topLevelEvents.map((e) => e.pubkey)));
+  const rootProfiles = fetchProfiles(pool, relays, rootAuthors, paintRoots)
+    .then((profiles) => { paintRoots(profiles); return profiles; })
+    // A profile lookup is never a reason to fail a feed, and this promise is
+    // awaited long after it is created — an unhandled rejection in between
+    // would take the tab's error handler, not this call site.
+    .catch(() => EMPTY_PROFILES);
 
   const childrenByParent = await fetchReplyTree(
     pool,
@@ -678,11 +722,17 @@ async function assembleNotes(
   }
   for (const e of topLevelEvents) collectChildren(e.id);
 
+  // Await the root prefetch BEFORE the batch below, not alongside it. It has
+  // been running for the whole length of the reply tree, and its results are in
+  // the per-pubkey cache, which is the first thing `fetchProfiles` reads — so
+  // this batch queries only the authors the tree just introduced.
+  const rootMap = await rootProfiles;
   const authors = Array.from(new Set(allTreeEvents.map((e) => e.pubkey)));
-  const [profiles, quoted] = await Promise.all([
+  const [replyMap, quoted] = await Promise.all([
     fetchProfiles(pool, relays, authors),
     fetchQuotedEvents(pool, relays, allTreeEvents),
   ]);
+  const profiles = new Map([...rootMap, ...replyMap]);
 
   return buildTree(topLevelEvents, childrenByParent, profiles, quoted, relays);
 }
@@ -967,10 +1017,8 @@ async function fetchAuthorWriteRelays(
   // shortens that once events start arriving, but it does not remove it — an
   // author whose kind:10002 nobody holds produces no event to arm the timer
   // with, so the ordering rule above still stands.
-  const res = await withExtraRelays(pool, relays, PROFILE_RELAYS, (queryRelays) =>
-    collectEventsByAuthors(
-      pool, queryRelays, { kinds: [10002], authors }, authors, maxWait, FEED_QUIET_MS,
-    ),
+  const res = await collectEventsByAuthors(
+    pool, withProfileOutbox(relays), { kinds: [10002], authors }, authors, maxWait, FEED_QUIET_MS,
   );
   const newest = new Map<string, Event>();
   for (const e of res.events) {
@@ -994,10 +1042,66 @@ async function fetchAuthorWriteRelays(
   return sanitizeRelays(urls);
 }
 
+/**
+ * The relay set every kind:0 / kind:10002 lookup runs against: the caller's own
+ * relays plus the profile outbox.
+ *
+ * **Unioned directly rather than opened as `withExtraRelays` extras, and that
+ * is the point of the function.** `withExtraRelays` closes what it opened, which
+ * is right for the relay sets this app does not choose — a note's `q`/`e` relay
+ * hints, another author's write relays — because those are feed-supplied and
+ * unbounded, and holding them open would grow the socket set for the life of
+ * the tab. PROFILE_RELAYS is neither: it is one fixed relay that nearly every
+ * profile lookup in the app queries. Torn down after each batch it was
+ * re-handshaked on the next one, and a fresh TLS + WebSocket handshake is the
+ * dominant and most variable part of a lookup that is otherwise a few hundred
+ * milliseconds. `fetchProfile` (the single-pubkey path) already keeps it warm
+ * by passing it straight to `withPool`, so the two paths were also working
+ * against each other: every batch closed the socket the single path had opened.
+ */
+function withProfileOutbox(relays: string[]): string[] {
+  return Array.from(new Set([...relays, ...PROFILE_RELAYS]));
+}
+
+/** Shared empty map, so a "nothing yet" paint allocates nothing and every
+ *  caller's fallback is the same object. Never mutated. */
+const EMPTY_PROFILES: Map<string, ProfileMetadata> = new Map();
+
+/**
+ * Resolve kind:0 metadata for a LIST of pubkeys in one batched pass.
+ *
+ * This is the component-facing door onto `fetchProfiles`, and using it rather
+ * than a `fetchProfile` per pubkey is a latency rule, not a tidiness one.
+ * `fetchProfile` opens a subscription PER RELAY (that is what makes its
+ * `trustworthy` flag countable), so N of them in a `Promise.all` is 5N
+ * concurrent REQs across the same five sockets — relays cap concurrent
+ * subscriptions per connection and quietly drop the overflow, so the profiles
+ * that lose the race do not arrive late, they do not arrive at all, and the
+ * caller waits out the full window for each of them. One batched
+ * `{ kinds:[0], authors:[…] }` is a single subscription per relay with an
+ * all-found early exit.
+ *
+ * Cached hits and cached misses are served without any network at all, so it
+ * is safe to hand it the whole list every time.
+ */
+export function fetchProfilesFor(
+  pubkeys: string[],
+  relays?: string[],
+): Promise<Map<string, ProfileMetadata>> {
+  const useRelays = relays ?? DEFAULT_RELAYS;
+  return withPool(useRelays, (pool) => fetchProfiles(pool, useRelays, pubkeys));
+}
+
 async function fetchProfiles(
   pool: import('nostr-tools').SimplePool,
   relays: string[],
   authors: string[],
+  /** Fired with everything known after the FIRST kind:0 pass, before the
+   *  NIP-65 outbox fallback runs. A surface that paints author names can show
+   *  the majority immediately instead of holding all of them for the minority
+   *  whose profile is not on the default set. Never fired when there is
+   *  nothing to add. */
+  onPartial?: (profiles: Map<string, ProfileMetadata>) => void,
 ): Promise<Map<string, ProfileMetadata>> {
   const out = new Map<string, ProfileMetadata>();
   if (!authors.length) return out;
@@ -1026,16 +1130,15 @@ async function fetchProfiles(
   //    author, and measured on 2026-08-25 18 of 24 had no kind:0 on the default
   //    set — so the pass fell through to maxWait on every single load, and this
   //    ladder runs up to three of them in series.
-  const firstRes = await withExtraRelays(pool, relays, PROFILE_RELAYS, (queryRelays) =>
-    collectEventsByAuthors(
-      pool, queryRelays, { kinds: [0], authors: toFetch }, toFetch,
-      FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS,
-    ),
+  const firstRes = await collectEventsByAuthors(
+    pool, withProfileOutbox(relays), { kinds: [0], authors: toFetch }, toFetch,
+    FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS,
   );
   for (const [pubkey, profile] of newestProfilesByAuthor(firstRes.events)) {
     out.set(pubkey, profile);
     storage.profile.set(pubkey, profile);
   }
+  if (onPartial && out.size) onPartial(out);
 
   // 3. NIP-65 fallback: for any author still missing, look up their write
   //    relays via kind:10002 and re-query kind:0 against the union. Cap the

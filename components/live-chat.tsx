@@ -2,7 +2,7 @@
 import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { nip19, type Event } from 'nostr-tools';
 import { subscribeLiveChat, publishLiveChat, LIVE_STREAM_RELAYS } from '@/lib/nostr';
-import { fetchProfile, shortNpub } from '@/lib/nostr';
+import { fetchProfilesFor, shortNpub } from '@/lib/nostr';
 import { parseZapReceipt, zapSats } from '@/lib/nostr/zap-receipt';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { storage } from '@/lib/storage';
@@ -184,12 +184,24 @@ export function LiveChat({ streamId }: { streamId: string }) {
       }
     }
     if (Object.keys(seed).length) setProfiles((p) => ({ ...p, ...seed }));
-    toFetch.forEach((pk) => {
-      attempted.current.add(pk);
-      // Query the broad live-stream relay set: chat participants' profiles
-      // (and their lud16) often live on zap.stream/nostr.wine, not a viewer's
-      // default relays — same reason BOOST/names fail to resolve otherwise.
-      fetchProfile(pk, LIVE_STREAM_RELAYS).then((p) => setProfiles((prev) => ({ ...prev, [pk]: p })));
+    if (!toFetch.length) return;
+    for (const pk of toFetch) attempted.current.add(pk);
+    // ONE query for everyone this pass learned about, not one per author.
+    // `fetchProfile` opens a subscription per relay, and a busy chat introduces
+    // people in bursts — a room of thirty participants was thirty lookups
+    // across six relays, which relays cap and silently drop, so the names that
+    // lost the race never arrived at all. The broad live-stream relay set is
+    // still what it asks: chat participants' profiles (and their lud16) often
+    // live on zap.stream/nostr.wine rather than a viewer's default relays.
+    fetchProfilesFor(toFetch, LIVE_STREAM_RELAYS).then((found) => {
+      setProfiles((prev) => {
+        const next = { ...prev };
+        // `null`, not absent, for the ones nobody held — `consider` above skips
+        // a pubkey already in `profiles`, and leaving it out would make every
+        // later message re-offer an author this pass already answered for.
+        for (const pk of toFetch) next[pk] = found.get(pk) ?? null;
+        return next;
+      });
     });
   }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
 

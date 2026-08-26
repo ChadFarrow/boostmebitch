@@ -307,6 +307,65 @@ The **SHARE button** copies `origin + /?podcast=<guid>` with a 1.8 s "COPIED" fl
 **The cluster is a `basis-full` SIBLING of the header's text column, not a child of it** — the header is `flex flex-wrap` so that row claims the full width at every breakpoint. Nested under the author line (where it lived) it was capped at the text column's width, which on a 390px screen is ~230px against five ~105px controls, so it stacked one-per-line into a ragged five-row column that made the sticky header ~330px tall. DOM nesting can't be responsive, so the alternatives were `flex-col sm:flex-row` (tidier, still ~350px pinned) or rendering the cluster twice behind `hidden sm:flex` (two `<FavHeart>` store subscriptions and two `ShareButton` timers for a visual concern) — hence the hoist. The four ghost buttons carry `btn-compact` (padding/gap only, height untouched, defined in `globals.css` **below** the `.btn*` family since source order is what breaks the specificity tie). Order above is unchanged and all five stay visible; don't collapse any into a menu. The episode detail page and the fullscreen player carry the same STREAM control — it's show-scoped everywhere, so all three edit one setting.
 
 
+### What a deep link must NOT pay for
+
+`?podcast=<guid>&episode=<guid>` is a cold start with two serial server round
+trips in front of it — `/api/by-guid` to resolve the show, then `/api/feed` to
+find the episode inside it — and until #241 the whole page was competing with
+work it was going to throw away. Measured with Playwright against a stubbed API
+(the probe is four lines of `page.route` plus a request log; the point is the
+ORDER, which no amount of reading the source makes obvious):
+
+```
+before                                          after
+  407ms  /api/nostr/index?path=/feed/live         314ms  /api/by-guid?guid=…
+  422ms  /api/nostr/index?path=/feed/global       339ms  /api/feed?id=…
+  423ms  /api/by-guid?guid=…                      395ms  /api/nostr/index?path=/feed/episode/…
+  442ms  /api/feed?id=…
+  457ms  /api/feed?id=…
+```
+
+Two separate faults, and each one is invisible from the screen.
+
+**The home page's two relay-backed sections loaded first.** They render under
+`{!inDetailView && …}`, and `inDetailView` is `!!selectedPodcast` — which a deep
+link does not set until `resolvePodcastByGuid` has been to the server and back.
+So the first commit mounted `<NostrLiveStreams>` and `<GlobalNostrFeed>`, whose
+effects run BEFORE `<HomePage>`'s own, and unmounted them a moment later. Behind
+an index that answers 503, or none at all, that is not two requests — it is the
+full relay path (a kind:1 scan, a reply-tree BFS, the profile ladder, a PI
+metadata batch) plus the bundle's signature verification, competing for sockets
+and main-thread time with the page the visitor asked for. `entryResolved`
+(`components/home-page.tsx`) gates them: false on the server and on the first
+client render, so the markup stays deterministic and there is no hydration
+mismatch, and set once the URL question is answered either way — including when
+the restore FAILS, or a bad guid would cost the visitor the home page they were
+dropped back onto. It is never cleared, so "← back to results" out of a
+deep-linked show brings both sections up as it always did.
+
+**And the feed was downloaded twice.** The restore puts the show in the store
+before it loads the episode, so `<EpisodeList>` mounts in between and fires its
+own `/api/feed?id=N` while `loadEpisodeFromFeed`'s is still in flight — 15 ms
+apart, and neither the browser cache nor a CDN collapses two requests already
+running. `/api/feed` now serves up to `PI_EPISODE_MAX` episodes with their show
+notes, trimmed only at 3.5 MB, so this is megabytes twice on the connection the
+visitor is waiting on. Both callers are wanted — `<EpisodeList>`'s handler is
+what writes `episodeQueue`, which `<TransportControls>` computes prev/next from,
+and it must still run even though the episode view replaces it — so `loadFeed`
+(`lib/podcast-meta.ts`) coalesces them instead of one being deleted. It drops
+the entry the moment the promise settles: a shared in-flight promise is only an
+answer two callers are already waiting for, and keeping it would serve a stale
+episode list to the next navigation and make the list's retry button re-deliver
+the error it is retrying. It owns the URL too, for the reason `showShareUrl`
+does — two call sites spelling one request differently is how a feed comes to be
+fetched two ways, and here it would also defeat the coalescing silently.
+
+**What is still on the critical path, and was not changed.** The two server
+round trips are serial by data dependency (the feed id comes out of the first),
+and `/api/feed`'s body is the whole feed. Trimming show notes from it is not
+available without a second request per episode: `<EpisodeDetailView>` renders
+whichever episode the list hands it, including the thousandth.
+
 ### Episode detail view
 
 **Tabs.** Show notes / Chapters / Transcript / Boosts collapse into one tab strip (`components/episode-detail-view.tsx`), mirroring the fullscreen `EpisodeInfoPanel`. Only sections with content get a tab; the **Boosts** tab lazy-mounts `<EpisodeNostrFeed>` (no relay fetch until opened) inside a `min-h-[70vh]` so its short loading frame can't collapse the page and yank the scroll.
