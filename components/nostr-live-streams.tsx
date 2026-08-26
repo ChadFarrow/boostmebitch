@@ -150,11 +150,25 @@ export function NostrLiveStreams() {
     // Then V4V, which is the expensive half. Only for streams whose block we
     // have not resolved yet — a second commit from the slower source must not
     // re-pay for the ones the first already answered.
+    const pending = merged.filter((s) => !valueRef.current.has(streamAddrOf(s.rawEvent)));
+
+    // Their zap-split recipients first, in ONE query for the whole row.
+    // `resolveStreamV4V` resolves a NIP-53 `zap` tag's pubkey to an lnaddress
+    // through its kind:0, one pubkey at a time — and this loop runs it across
+    // every stream at once, so a row where several broadcasts carry splits was
+    // dozens of single-author lookups, each fanning out per relay. They are all
+    // known here, before any of them is needed. What is left for the per-pubkey
+    // path afterwards is the case it genuinely exists for: a recipient carrying
+    // its own relay hint, and a cached MISS, which that function deliberately
+    // retries because an lud16 is what gates the BOOST button.
+    const zapRecipients = [...new Set(
+      pending.flatMap((s) => s.zapWeights.filter((z) => z.weight > 0).map((z) => z.pubkey)),
+    )];
+    if (zapRecipients.length) await fetchProfilesFor(zapRecipients, LIVE_STREAM_RELAYS);
+
     await Promise.all(
-      merged.map(async (stream) => {
-        const addr = streamAddrOf(stream.rawEvent);
-        if (valueRef.current.has(addr)) return;
-        valueRef.current.set(addr, await resolveStreamV4V(stream));
+      pending.map(async (stream) => {
+        valueRef.current.set(streamAddrOf(stream.rawEvent), await resolveStreamV4V(stream));
       }),
     );
 

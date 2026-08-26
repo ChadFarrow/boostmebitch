@@ -39,7 +39,11 @@ export async function GET(req: Request) {
       headers: {
         'Content-Type': 'text/plain; charset=utf-8',
         'X-Content-Type-Options': 'nosniff',
-        'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400',
+        // Same reasoning as /api/chapters: keyed by the URL the feed names,
+        // already held an hour by the CDN, and re-fetched by the browser on
+        // every episode open without a private cache. A transcript is the
+        // largest of the per-episode documents.
+        'Cache-Control': 'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400',
       },
     });
   }, 'transcript fetch failed');

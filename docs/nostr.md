@@ -978,6 +978,32 @@ few hundred milliseconds. Worse, the two paths were working against each other:
 `fetchProfile` passes it straight to `withPool` and keeps it warm, and every
 batch then closed the socket it had opened.
 
+
+**Four surfaces had this shape, not one.** `<NostrLiveStreams>` for its hosts,
+and then again inside the V4V stage — `resolveStreamV4V` resolves a NIP-53 `zap`
+tag's pubkey to an lnaddress through its kind:0, one at a time, and the row runs
+it across every broadcast at once, so a row where several streams carry splits
+was dozens of single-author lookups. `<LiveChat>` fired one per message author,
+and a busy room introduces people in bursts. `<MutedAccounts>` fired one per
+muted pubkey the moment the list was expanded. All four now hand their whole
+list to `fetchProfilesFor`.
+
+The mute list carried a second bug the batch removes: it called
+`storage.profile.setMiss(pk)` itself whenever `fetchProfile` returned null — an
+absence it had not reliably observed, since that function returns the same null
+for "nobody has this profile" and "nothing answered", and pinning a bare npub
+for the miss TTL after any relay wobble is precisely what `fetchProfile`'s own
+health gate exists to prevent. `fetchProfiles` records a miss only off a query
+that demonstrably answered, and writes through to `storage.profile` itself, so
+neither cache write belongs at a call site.
+
+Pre-batching does not remove `resolveStreamV4V`'s per-pubkey path and is not
+meant to. That function has to work standalone for `/live/<npub>` and
+`/stream/<naddr>`, and it deliberately retries a cached MISS, because an lud16
+is what gates the BOOST button and a streamer's profile can miss transiently.
+What the batch removes is the case where it was re-asking about profiles nobody
+had asked for yet.
+
 ### Every stage needs a quiet timer, because aggregate EOSE is not a bound
 
 `pool.querySync` and `collectEventsByAuthors` both resolve at **aggregate** EOSE — every relay reached end-of-stored-events. A relay that accepts the socket and then answers nothing never sends one, so it does not slow a query down by a little, it pins it at the caller's whole `maxWait`. `warmRelays` cannot see it: `relay-health.ts` scores `pool.ensureRelay`, and a silent relay connects perfectly.

@@ -38,7 +38,14 @@ export async function GET(req: Request) {
     // reaches it. See `lib/chapters-json.ts`.
     const data = parseChaptersJson(await readCappedText(res));
     return NextResponse.json(data, {
-      headers: { 'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400' },
+      // `max-age` as well as `s-maxage`. A chapters document is keyed by the
+      // URL the feed names and changes about as often as the episode does, but
+      // with no private cache the browser re-fetched it every time the episode
+      // was opened — and a music show's chapters JSON carries a row and an
+      // image URL per track. The CDN has been allowed to answer with an
+      // hour-old copy since this route was written; this lets the reader's own
+      // browser do the same.
+      headers: { 'Cache-Control': 'public, max-age=3600, s-maxage=3600, stale-while-revalidate=86400' },
     });
   }, 'chapters fetch failed');
 }

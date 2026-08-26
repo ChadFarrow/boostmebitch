@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import { nip19 } from 'nostr-tools';
-import { shortNpub, fetchProfile, type ProfileMetadata } from '@/lib/nostr';
+import { shortNpub, fetchProfilesFor, type ProfileMetadata } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { Avatar } from '../avatar';
@@ -35,19 +35,25 @@ export function MutedAccountsSection() {
     if (unresolved.length === 0) return;
     let cancelled = false;
     (async () => {
-      const fetched = await Promise.all(
-        unresolved.map((pk) =>
-          fetchProfile(pk).then((p) => {
-            if (p) storage.profile.set(pk, p);
-            else storage.profile.setMiss(pk);
-            return [pk, p] as const;
-          }).catch(() => [pk, null] as const),
-        ),
+      // ONE query for the whole mute list. It was a `fetchProfile` per pubkey,
+      // which opens a subscription per relay — and a long mute list is exactly
+      // the case that produces, so the names that lost the race against the
+      // relays' own subscription caps never resolved.
+      //
+      // It also drops an ungated `setMiss`. `fetchProfile` returns the same
+      // `null` for "nobody has this profile" and "nothing answered", and this
+      // recorded BOTH as a miss — an absence it had not reliably observed,
+      // pinning a bare npub for the full miss TTL after any relay wobble. The
+      // batch records a miss only when the query that failed to find it was
+      // demonstrably healthy, and it writes through to `storage.profile`
+      // itself, so neither cache write belongs here any more.
+      const found = await fetchProfilesFor(unresolved).catch(
+        () => new Map<string, ProfileMetadata>(),
       );
       if (cancelled) return;
       setProfiles((prev) => {
         const merged = { ...prev };
-        for (const [pk, p] of fetched) merged[pk] = p;
+        for (const pk of unresolved) merged[pk] = found.get(pk) ?? null;
         return merged;
       });
     })();

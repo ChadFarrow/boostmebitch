@@ -69,6 +69,24 @@ A channel-level `<podcast:podroll>` holds `<podcast:remoteItem feedGuid=… feed
 `parsePodroll` only sees the pre-first-`<item>` channel slice, so a podroll authored *after* the items is missed — same limitation as `feedMedium`, and conventional feeds put channel metadata first.
 
 
+**One request for the row, not one per entry.** `<Podroll>` resolved each entry
+with its own `/api/by-guid` — "batch" meaning `Promise.all` over N single-guid
+routes, the exact shape `useNoteMeta` was rewritten out of. Measured with a
+12-entry podroll: **13 `/api/by-guid` requests, now 2** (the probe, then one
+`/api/by-guid/batch` for the rest). A podroll is publisher-authored and
+routinely runs to dozens of shows, and this row sits under the episode list on
+the show page, so its requests land while the feed itself is still downloading.
+
+The `resolveItem` pass is KEPT rather than replaced, for the two things it does
+that a batch cannot: a guid PI answered "not found" for still falls back to the
+entry's `feedUrl` hint, and a guid the warm could not ask about — a 429, an
+aborted request — is still attempted rather than silently dropped from the row.
+`warmPodcastCache` fills the same `podcastMem` the resolver reads, so after a
+successful warm that pass simply finds its answers in hand.
+
+It is also behind `<DeferredOnScroll>`, so none of this is on the show page's
+cold path at all — it costs nothing until the reader scrolls to it.
+
 ## /api/by-guid resilience and PI breaker
 
 `/api/by-guid` 5xxs when PI keys are missing or PI is down. A returning user with a 100-guid favorites set would otherwise hammer the broken endpoint on every reload (StrictMode + Fast Refresh amplifies into thousands).
@@ -103,6 +121,29 @@ Keep them as **separate instances**. Only the mechanism is shared; folding the p
 **`set` deletes before it sets, and that line is load-bearing.** Eviction order is insertion order, and re-setting an existing key in a `Map` keeps its ORIGINAL position — so without the delete, a constantly-refreshed entry drifts to the front of the eviction queue and gets evicted while hot, which is the opposite of what a cache is for.
 
 Sweep expired entries **before** capacity-evicting: dropping what nobody can serve should never cost you something still useful. `get` also evicts on a past-horizon read, so a read-heavy, write-idle period can't hold a dead entry indefinitely.
+
+## What the browser is allowed to keep
+
+Most routes here shipped with `s-maxage` and no `max-age`, which lets the CDN
+hold a document while the reader's own browser re-downloads it every time.
+Three were worth closing, and the argument is the same for each: **a private
+cache shorter than the shared one that already exists adds no staleness class
+that was not already permitted.**
+
+| Route | Was | Now | Why it mattered |
+|---|---|---|---|
+| `/api/feed` | `s-maxage=300` | `max-age=60, s-maxage=300` | The largest body the app serves — up to `PI_EPISODE_MAX` episodes with their show notes, trimmed only at 3.5 MB. `<EpisodeList>` unmounts whenever an episode opens, so show → episode → back → episode fetched the whole feed once per step. |
+| `/api/chapters` | `s-maxage=3600` | `max-age=3600, s-maxage=3600` | Keyed by the URL the feed names; a music show's chapters JSON is a row and an image URL per track, re-fetched on every episode open. |
+| `/api/transcript` | `s-maxage=3600` | `max-age=3600, s-maxage=3600` | Same, and the largest of the per-episode documents. |
+
+The one field on a feed that goes stale inside a minute is a live item's status,
+and it is not read from this cache at all: `/api/live-status` polls at
+`max-age=10` and `applyLiveStatuses` patches the rows in place.
+
+`/api/by-guid` and `/api/episode-by-guid` are deliberately left alone — the
+client already holds them for seven days in `bmb:pmeta:*` / `bmb:epmeta:*`, so a
+browser cache would be a third layer answering a question two layers above it
+have already answered.
 
 ## Batched Podcast Index resolution
 
