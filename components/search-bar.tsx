@@ -9,6 +9,7 @@ import type { Podcast } from '@/lib/types';
 import { SEARCH_TYPES, parseSearchType } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
 import { Avatar } from './avatar';
+import { Chip } from './chip';
 
 /**
  * What produced the results, travelling WITH them.
@@ -147,17 +148,41 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
   const active = SEARCH_TYPES.find((s) => s.type === type) ?? SEARCH_TYPES[0];
 
   /**
-   * One box, two kinds of thing to find. An npub is unmistakable — `npub1…`,
-   * 63 characters of bech32, or an `nprofile`/hex/profile link — so the box can
-   * tell which the user meant instead of making them know which box to use.
-   * That was the alternative and it was worse: a second input beside this one,
-   * each silently useless for the other's input.
+   * A pasted key, parsed once. `npub1…`, an `nprofile`, bare hex, or a profile
+   * link.
    *
-   * Memoized on `q` so the object identity is stable per query — it is an
+   * Memoized on `q` so the object identity is stable per query — it feeds an
    * effect dependency below, and a fresh object every render would restart the
    * debounce on every keystroke of an ordinary podcast search.
    */
-  const npubHit = useMemo(() => parseNpubInput(q), [q]);
+  const parsedNpub = useMemo(() => parseNpubInput(q), [q]);
+
+  /**
+   * The pasted key this mode will ACT on, which is NPUB's alone.
+   *
+   * The box used to look one up whichever mode it was in: an npub is
+   * unmistakable, so it could tell what the user meant without being told. That
+   * was right while there was nothing to tell it with. Now there is, and
+   * inferring over the top of an explicit choice is worse than not inferring at
+   * all — somebody who picked PODCASTS and pasted a key gets a person lookup
+   * they did not ask a podcast search for, and no mode means what it says.
+   *
+   * Under every other mode a key is ordinary text and is searched as typed.
+   * Deriving rather than memoizing is deliberate: both arms are already stable
+   * references, so this stays safe as an effect input.
+   */
+  const npubHit = type === 'npub' ? parsedNpub : null;
+
+  /**
+   * A key pasted under a mode that will not look it up.
+   *
+   * Parsed, never acted on. It exists only so the box can SAY that, because the
+   * alternative is the dead end this repo keeps paying for: the search runs, no
+   * show is called `npub1vl029mg…`, and "no results yet — try another phrase"
+   * is the last word on a lookup the app can do perfectly well. Nothing here
+   * navigates, fetches a profile, or changes the query — it offers the mode.
+   */
+  const strayNpub = type === 'npub' ? null : parsedNpub;
 
   /**
    * A pasted SECRET key, which this box now invites by asking for a key at all.
@@ -245,23 +270,26 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
   const genRef = useRef(0);
 
   useEffect(() => {
-    // An npub never needs the podcast API. Skipping the fetch is not just an
-    // optimisation: a 63-character bech32 string matches no show, so the call
-    // spends Podcast Index quota to return nothing and then paints "no results"
-    // over the suggestion below, which IS the answer.
+    // NPUB never needs the podcast API: it accepts a pasted key and nothing
+    // else, because this app has no Nostr name search to offer, so there is no
+    // podcast query to send under it. That also makes it the strongest possible
+    // form of the secret-key guard — no request is issued at all.
+    //
+    // A parsed npub under ANY OTHER mode is deliberately NOT in this list. It is
+    // ordinary text there and gets searched as typed, which is what those modes
+    // say they do; the row below is what stops that reading as a dead end.
+    //
+    // `secretHit` IS unconditional, in every mode, and must stay that way. It is
+    // a different question from "did this parse" — `parseNpubInput` returns the
+    // same null for an nsec as for "bowl after bowl", and that null falling
+    // through to a fetch is how a signing key reached this origin's logs and
+    // then Podcast Index's. A key sent to a third party cannot be recalled.
     //
     // Reports an EMPTY query rather than `q`, so the page behind the box does
-    // not flip into its searching layout and throw away the favorites panel
-    // for a query that was never about shows.
-    //
-    // `type === 'npub'` joins that list rather than getting a branch of its own.
-    // NPUB is a mode of the INPUT — it accepts a pasted key and nothing
-    // else, because this app has no Nostr name search to offer — so there is
-    // never a podcast query to send under it. That also makes it the strongest
-    // possible form of the secret-key guard: no request is issued at all.
+    // not flip into its searching layout for a query that was never about shows.
     const byPress = lastTypeRef.current !== type;
     lastTypeRef.current = type;
-    if (!q.trim() || npubHit || secretHit || type === 'npub') {
+    if (!q.trim() || secretHit || type === 'npub') {
       onResults([], '', { type, total: 0 });
       return;
     }
@@ -297,7 +325,7 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
       }
     }, byPress ? 0 : 280);
     return () => clearTimeout(t);
-  }, [q, type, npubHit, secretHit, onResults, onLoading]);
+  }, [q, type, secretHit, onResults, onLoading]);
 
   // Navigation hangs off the suggestion (click or Enter), never off the npub
   // merely PARSING. Someone pasting an npub mid-edit, or pasting one they then
@@ -322,10 +350,11 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
           320px. Above costs one line and touches neither. */}
       <SearchTypeMenu type={type} onChange={onTypeChange} />
       <div className="relative">
-        {/* The warning outranks everything, then the parsed key, then the mode.
-            A ⚡ over an nsec would say "this is a person" about a secret key. */}
+        {/* The warning outranks the mode. A ⚡ over an nsec would say "this is a
+            person" about a secret key. The ⚡ now follows the MODE rather than a
+            parse, because a key pasted under PODCASTS is not being looked up. */}
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs">
-          {secretHit ? '⚠' : npubHit || type === 'npub' ? '⚡' : '⌕'}
+          {secretHit ? '⚠' : type === 'npub' ? '⚡' : '⌕'}
         </span>
         <input
           ref={inputRef}
@@ -407,6 +436,24 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
 
           Ordered after the two branches above so a pasted key gets the
           suggestion row and an nsec gets the warning; this is the remainder. */}
+      {/* A key pasted under a mode that does not look one up.
+
+          The search still runs — PODCASTS searching for what you typed is what
+          PODCASTS says it does — so this sits BESIDE "no results", not instead
+          of it. It offers the mode rather than instructing the reader to go and
+          find it: the same one-press way out the results panel gives a narrowed
+          empty result, for the same reason. Nothing here navigates or resolves a
+          profile; that is what makes it an offer and not the inference the mode
+          selector exists to replace. */}
+      {strayNpub && (
+        <div className="flex flex-wrap items-center gap-2 border border-t-0 border-bone/30 bg-ink/60 px-3 py-2 text-xs text-muted">
+          <span className="min-w-0">
+            That looks like an <code className="font-mono text-bone">npub</code>. This
+            mode searches podcasts.
+          </span>
+          <Chip active={false} onClick={() => onTypeChange('npub')}>⚡ look it up</Chip>
+        </div>
+      )}
       {type === 'npub' && !!q.trim() && !npubHit && !secretHit && (
         <p className="border border-t-0 border-bone/30 bg-ink/60 px-3 py-2 text-xs text-muted">
           Paste an <code className="font-mono text-bone">npub</code>,{' '}
