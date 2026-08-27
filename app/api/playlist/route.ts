@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { getPlaylistChannel } from '@/lib/pi';
+import { getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
 import { batchEpisodes, episodeKey, MAX_BATCH } from '@/lib/pi-batch';
-import { fnvHash } from '@/lib/util';
-import type { Episode } from '@/lib/types';
+import { fnvHash, mergeRssOverPi } from '@/lib/util';
+import type { Episode, Podcast } from '@/lib/types';
 import type { PlaylistItemRef } from '@/lib/feed-xml';
 
 /**
@@ -55,6 +55,37 @@ function digits(raw: string | null, fallback: number): number | null {
   return Number(raw);
 }
 
+/**
+ * Podcast Index's record for this playlist feed, or null when it holds none.
+ *
+ * **A playlist can be in Podcast Index, and this route used to assert it was
+ * not.** `getPlaylistChannel` builds its podcast from the RSS alone and stamps
+ * `isPreview: true` unconditionally — an absence nobody had observed. PI holds
+ * every playlist in ChadF's collection (It's A Mood is feed 7443544, guid
+ * 30b31f6c-…), so opening one from there replaced a real record with a preview:
+ * the header read "NOT IN PI · PREVIEW" over a feed PI resolves by guid, and
+ * `<FavHeart>` — which renders nothing without a `podcastGuid` — withheld the
+ * show favorite altogether. Both faults are silent, and the second is the
+ * expensive one: a control that is absent reads as a feature that does not
+ * exist, not as a bug.
+ *
+ * A THROW IS NOT A MISS, and is swallowed anyway. It means PI is unreachable,
+ * and this page must still render its rows rather than 500 into the client's PI
+ * breaker and disable metadata resolution for the whole tab. The record we fall
+ * back to is genuinely preview-shaped then — synthetic id, no guid, not
+ * restorable from a URL — which is what the flag gates; only the stamp's wording
+ * over-claims, for one page, which `batchEpisodes` fails in the same breath so
+ * every row already says PI could not be asked, and which is answered
+ * `no-store` and therefore never cached.
+ */
+async function piRecordFor(feedUrl: string): Promise<Podcast | null> {
+  try {
+    return await getPodcastByFeedUrl(feedUrl);
+  } catch {
+    return null;
+  }
+}
+
 export async function GET(req: Request) {
   const limited = rateLimit(req, 'playlist', PLAYLIST_RATE_LIMIT);
   if (limited) return limited;
@@ -75,10 +106,21 @@ export async function GET(req: Request) {
   const limit = Math.min(Math.max(rawLimit, 1), MAX_BATCH);
 
   return withErrorHandling(async () => {
-    const channel = await getPlaylistChannel(url);
+    const [channel, piRecord] = await Promise.all([getPlaylistChannel(url), piRecordFor(url)]);
     if (!channel) return NextResponse.json({ error: 'not found' }, { status: 404 });
 
-    const { podcast, refs } = channel;
+    // The feed's own title, medium, art and value block win — the document was
+    // read moments ago and cannot be stale — while PI keeps the numeric id and
+    // the guid, which only it can supply and which every other device resolves
+    // by. Same precedence /api/search and /api/publisher already apply.
+    //
+    // No blank-record test guards this, unlike those two: `mergeRssOverPi` takes
+    // the title from the RSS either way, so PI's EMPTY one still contributes its
+    // guid — which is the case that matters most here, since a playlist PI
+    // registered but never parsed (ChadF's Greatest Hits, feed 7683902) is
+    // exactly the feed whose favorite heart would otherwise stay hidden.
+    const podcast = piRecord ? mergeRssOverPi(piRecord, channel.podcast) : channel.podcast;
+    const { refs } = channel;
     const page = refs.slice(offset, offset + limit);
     if (!page.length) {
       return NextResponse.json(

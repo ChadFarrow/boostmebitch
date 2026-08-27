@@ -1238,11 +1238,19 @@ function extractRssImageUrl(xml: string): string | undefined {
  * SYNTHETIC negative id and **no `podcastGuid`**.
  *
  * Withholding the guid is deliberate even though a `musicL` playlist does
- * publish a `<podcast:guid>`. Podcast Index has not indexed these feeds (that
- * is what makes them previews), so `/podcasts/byguid` cannot resolve one on any
- * device — and a feed favorite writes that guid to a shared kind:10333 list
- * with no undo, where it would be an unopenable placeholder forever. The guid
- * being present on the wire is not the test; being resolvable is.
+ * publish a `<podcast:guid>`. This function has not asked Podcast Index
+ * anything, so it cannot know the guid resolves — and a feed favorite writes
+ * that guid to a shared kind:10333 list with no undo, where an unresolvable one
+ * is an unopenable placeholder forever. The guid being present on the wire is
+ * not the test; being resolvable is.
+ *
+ * **`isPreview` here therefore means "this record was built without asking PI",
+ * NOT "PI does not hold this feed" — a caller that renders it as the second
+ * must establish the second itself.** Playlists are routinely indexed: nine of
+ * the ten in ChadF's collection are, and `/api/playlist` shipped stamping every
+ * one of them NOT IN PI and hiding its favorite heart, because this record's
+ * shape was read as an answer about the index. That route now asks
+ * `getPodcastByFeedUrl` and merges; any new caller inherits the same duty.
  */
 function previewPodcastFromChannel(rssUrl: string, channelXml: string): Podcast {
   const channelRssImage = extractRssImageUrl(channelXml);
