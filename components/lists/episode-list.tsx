@@ -8,11 +8,12 @@
 // so on a phone `● LIVE` wrapped to two lines and blew up the row height.
 import { Fragment, useEffect, useRef, useState } from 'react';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
+import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime } from '@/lib/format';
-import { hasValueRecipients, isMusicMedium, showShareUrl } from '@/lib/util';
+import { hasValueRecipients, isMusicMedium, isPlaylistMedium, playsAsTracks, showShareUrl } from '@/lib/util';
 import { applyLiveStatuses } from '@/lib/live-status';
-import { loadFeed } from '@/lib/podcast-meta';
+import { loadFeed, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
 import { BoostModal } from '../boost-modal';
 import { BoltIcon, CoinIcon } from '../icons';
@@ -27,6 +28,21 @@ import { useStreamPanel } from '../streaming-settings';
 
 /** Rows revealed per press of "Load more episodes". */
 const PAGE_SIZE = 50;
+
+/**
+ * What this component tracks about a `musicL` playlist between pages.
+ *
+ * `nextOffset` is the server's answer and is passed back verbatim; the counts
+ * ACCUMULATE across pages, because the sentence under the list speaks for
+ * everything loaded so far, not for the last press.
+ */
+interface PlaylistMeta {
+  feedUrl: string;
+  nextOffset: number | null;
+  total: number;
+  notFound: number;
+  couldNotAsk: number;
+}
 
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
   if (status === 'live') {
@@ -90,7 +106,23 @@ function ValueBlockDetails({ value }: { value: ValueBlock }) {
   );
 }
 
-export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUrl?: string }) {
+export function EpisodeList({
+  feedId,
+  feedUrl,
+  playlistUrl,
+}: {
+  feedId: number | null;
+  feedUrl?: string;
+  /**
+   * Set when the CALLER already knows this feed is a `musicL` playlist, which
+   * skips a round trip: `/api/feed` would answer with a correct-looking show
+   * carrying zero rows, because a playlist's tracks are channel-level remote
+   * items that route cannot resolve. When it isn't set the effect below still
+   * recovers — an empty musicL answer is the same signal, one request later —
+   * so a caller that doesn't know the medium yet is not broken, only slower.
+   */
+  playlistUrl?: string;
+}) {
   // `truncated`: the route could not serve the whole feed (PI's per-feed
   // ceiling, or the response byte budget). Rendered at the end of the list —
   // a list that just stops reads as a show that stopped.
@@ -117,6 +149,18 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
   // serves up to PI's full 1000 items, and 10 at a time is a hundred presses
   // to reach the bottom of an archive show.
   const [visibleCount, setVisibleCount] = useState(10);
+  /**
+   * Playlist paging state. A `musicL` feed publishes no `<item>` elements, so
+   * its rows are RESOLVED one Podcast Index lookup at a time and "load more" is
+   * a real request rather than the pure reveal above.
+   *
+   * `nextOffset` comes from the server and is used verbatim — see
+   * `loadPlaylistPage`. Deriving it here from `episodes.length` would skip
+   * tracks the moment the server's dedupe or ref cap removed any.
+   */
+  const [playlist, setPlaylist] = useState<PlaylistMeta | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pageError, setPageError] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Consecutive-miss counters for the two-misses-before-ended rule in
   // applyLiveStatuses — keyed per feedId so a stale count from the previous
@@ -133,6 +177,12 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
   useEffect(() => {
     setValueOpen(false);
     setVisibleCount(10);
+    // All three reset together with `visibleCount`: a total carried over from
+    // the previous show would render a "load more" for tracks this one doesn't
+    // have, and a stale `loadingMore` would leave the button dead.
+    setPlaylist(null);
+    setLoadingMore(false);
+    setPageError(false);
     liveMissesRef.current = {};
     // setLoading(false) matters on this branch: it returns before the fetch
     // below, so a `loading` left true by a PREVIOUS run was never cleared and
@@ -161,32 +211,66 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
     // the store first and this list mounts while `loadEpisodeFromFeed` is still
     // downloading the very same body. Nothing is cached past the promise
     // settling, so the retry button below still re-fetches.
-    loadFeed(feedUrl ? { feedUrl } : { feedId })
-      .then((d) => {
+    // Page 0 of a playlist, applied exactly as a feed response would be.
+    const applyFirstPage = (p: PlaylistResponse, podcast: Podcast) => {
+      const eps = Array.isArray(p.episodes) ? p.episodes : [];
+      setData({ podcast, episodes: eps, truncated: false });
+      setEpisodeQueue(eps);
+      syncSelectedPodcast(podcast);
+      setPlaylist({
+        feedUrl: podcast.url ?? '',
+        nextOffset: p.nextOffset ?? null,
+        total: p.total ?? eps.length,
+        notFound: p.notFound ?? 0,
+        couldNotAsk: p.couldNotAsk ?? 0,
+      });
+    };
+
+    (async () => {
+      try {
+        if (playlistUrl) {
+          const p = await loadPlaylistPage({ feedUrl: playlistUrl });
+          if (gen !== feedGenRef.current) return;
+          if (!p?.podcast) { setLoadError(true); return; }
+          applyFirstPage(p, p.podcast);
+          return;
+        }
+        const d = await loadFeed(feedUrl ? { feedUrl } : { feedId });
         if (gen !== feedGenRef.current) return;
         // An `{ error }` body parses fine and would otherwise put `undefined`
         // into the store as the episode queue.
         const episodes = Array.isArray(d?.episodes) ? d.episodes : [];
         if (!d?.podcast) { setLoadError(true); return; }
+        // A musicL feed answering with no rows is NOT an empty show — its
+        // tracks are channel-level `<podcast:remoteItem>` entries, which
+        // /api/feed does not resolve. `/api/feed?id=` backfills `medium` from
+        // the RSS channel parse, so this is reached even when Podcast Index
+        // (which does not reliably index the tag) gave us nothing to go on.
+        // `episodes.length` is part of the test on purpose: a hybrid feed that
+        // declares musicL and ALSO publishes real items keeps its items.
+        if (!episodes.length && isPlaylistMedium(d.podcast) && d.podcast.url) {
+          const p = await loadPlaylistPage({ feedUrl: d.podcast.url });
+          if (gen !== feedGenRef.current) return;
+          if (p?.podcast) { applyFirstPage(p, p.podcast); return; }
+        }
         setData({ podcast: d.podcast, episodes, truncated: !!d.truncated });
         setEpisodeQueue(episodes);
         // Push the RSS-enriched podcast (funding/medium/podroll) back into the
         // store so the episode detail view — which reads selectedPodcast — shows
         // the SUPPORT link the show page gets. No-op if it's a different show.
         syncSelectedPodcast(d.podcast);
-      })
-      .catch(() => {
+      } catch {
         if (gen === feedGenRef.current) setLoadError(true);
-      })
-      .finally(() => {
+      } finally {
         if (gen === feedGenRef.current) setLoading(false);
-      });
+      }
+    })();
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
     // `reloadKey` is what the retry button below bumps — it re-runs this effect
     // without needing the feed to change.
-  }, [feedId, feedUrl, reloadKey, setEpisodeQueue, syncSelectedPodcast]);
+  }, [feedId, feedUrl, playlistUrl, reloadKey, setEpisodeQueue, syncSelectedPodcast]);
 
   // Above the early returns — hook order has to stay stable, and the hook
   // itself no-ops (returns nulls) while the podcast is still null.
@@ -238,15 +322,74 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
 
   const showHasValue = hasValueRecipients(data.podcast.value);
   const isMusic = isMusicMedium(data.podcast);
-  // First non-pending track — for music feeds episodes are sorted track-order ascending.
-  const firstPlayable = data.episodes.find((e) => e.liveStatus !== 'pending') ?? data.episodes[0];
+  const isPlaylist = isPlaylistMedium(data.podcast);
+  // A row here is a TRACK on both, so it plays on tap and the header cover is a
+  // play button. `isMusic` alone keeps the two things a playlist must NOT do:
+  // render every row at once, and sort by track number.
+  const asTracks = playsAsTracks(data.podcast);
+
+  /**
+   * Fetch the next page of a playlist and APPEND it.
+   *
+   * The generation counter is read at press time and re-checked on resolve, for
+   * the same reason the load effect gives: this writes `episodeQueue`, the array
+   * `<TransportControls>` and `playNext` walk, so a response that lands after
+   * the user has moved to another show must not be applied.
+   *
+   * `setEpisodeQueue` gets the MERGED array, never the page — a queue holding
+   * only the newest page strands a listener who is playing a track from an
+   * earlier one, with ⏭ doing nothing.
+   */
+  function loadNextPage() {
+    if (!playlist || playlist.nextOffset == null || loadingMore) return;
+    const gen = feedGenRef.current;
+    const offset = playlist.nextOffset;
+    setLoadingMore(true);
+    setPageError(false);
+    loadPlaylistPage({ feedUrl: playlist.feedUrl, offset })
+      .then((p) => {
+        if (gen !== feedGenRef.current) return;
+        const page = Array.isArray(p?.episodes) ? p.episodes : [];
+        if (!p?.podcast) { setPageError(true); return; }
+        // `setEpisodeQueue` sits INSIDE the updater so `merged` is computed off
+        // the freshest `prev` rather than off a closure captured at click time.
+        // React 18 Strict Mode double-invokes updaters in dev, so that is only
+        // safe because this call is IDEMPOTENT — same `prev`, same `page`, same
+        // array, and Zustand takes the assignment twice with no effect. (The
+        // rule it is being weighed against is `applyLiveStatuses`' miss COUNTER,
+        // which is not idempotent and is deliberately mutated outside setState.)
+        setData((prev) => {
+          const merged = [...prev.episodes, ...page];
+          setEpisodeQueue(merged);
+          return { ...prev, episodes: merged };
+        });
+        setPlaylist((prev) => (prev ? {
+          ...prev,
+          nextOffset: p.nextOffset ?? null,
+          total: p.total ?? prev.total,
+          notFound: prev.notFound + (p.notFound ?? 0),
+          couldNotAsk: prev.couldNotAsk + (p.couldNotAsk ?? 0),
+        } : prev));
+      })
+      .catch(() => { if (gen === feedGenRef.current) setPageError(true); })
+      .finally(() => { if (gen === feedGenRef.current) setLoadingMore(false); });
+  }
+  // First non-pending track — for music feeds episodes are sorted track-order
+  // ascending. An unresolved playlist placeholder has no enclosure, so it can
+  // never be the thing the header's play button starts.
+  const firstPlayable =
+    data.episodes.find((e) => e.liveStatus !== 'pending' && !e.unresolved)
+    ?? data.episodes.find((e) => !e.unresolved);
   // Is the currently-playing track part of this show?
   const showIsCurrent = !!current && (
     (!!data.podcast.podcastGuid && current.podcast.podcastGuid === data.podcast.podcastGuid) ||
     current.podcast.id === data.podcast.id
   );
-  // Music feeds show the whole album (track order); other shows paginate 10 at a time.
-  const visibleEpisodes = isMusic ? data.episodes : data.episodes.slice(0, visibleCount);
+  // Music feeds show the whole album (track order); other shows paginate 10 at a
+  // time. A PLAYLIST renders everything it has fetched, because on that path the
+  // fetch IS the page — a second reveal axis on top would make one new track
+  // cost two presses.
+  const visibleEpisodes = isMusic || isPlaylist ? data.episodes : data.episodes.slice(0, visibleCount);
   const remaining = data.episodes.length - visibleEpisodes.length;
 
   return (
@@ -263,7 +406,7 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
           reproduces the `mt-3` that came OFF the action cluster when it was
           hoisted out of the text column below. */}
       <header className="relative sm:sticky sm:top-[var(--app-header-h)] z-10 bg-ink/90 backdrop-blur -mx-4 px-4 flex flex-wrap items-start gap-x-4 gap-y-3 pb-4 border-b border-bone/15">
-        {isMusic && firstPlayable ? (
+        {asTracks && firstPlayable ? (
           <button
             type="button"
             onClick={() => {
@@ -374,8 +517,20 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
           const prev = idx > 0 ? visibleEpisodes[idx - 1] : null;
           const isFirstLive = !!e.liveStatus && (!prev || !prev.liveStatus);
           const isFirstRegular = !e.liveStatus && !!prev?.liveStatus;
+          // A playlist's `<podcast:txt purpose="episode">` caption, rendered
+          // once above the run of tracks it introduces. Derived from the SLICED
+          // array like the two dividers above, and a plain comparison with the
+          // previous row — which is what makes it survive "load more" appending
+          // a page with no extra state.
+          const groupHead = e.playlistGroup && e.playlistGroup !== prev?.playlistGroup
+            ? e.playlistGroup : null;
           return (
             <Fragment key={e.id}>
+              {groupHead && (
+                <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-4 pb-1 border-b-0 break-words">
+                  {groupHead}
+                </li>
+              )}
               {isFirstLive && (
                 <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-3 pb-1 border-b-0">
                   Live &amp; upcoming
@@ -393,7 +548,11 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
               onClick={() => {
                 // Tracks carry little extra metadata, so a row tap just plays
                 // the track rather than opening the episode detail view.
-                if (isMusic) {
+                // An unresolved playlist row has an EMPTY enclosure, so it must
+                // do neither: playing it puts a dead track in the player, and
+                // its detail page would be blank.
+                if (e.unresolved) return;
+                if (asTracks) {
                   if (e.liveStatus !== 'pending' && data.podcast) play(e, data.podcast);
                 } else {
                   openEpisode(e);
@@ -401,6 +560,20 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
               }}
             >
               <div className="flex gap-2 sm:gap-3 py-3 pr-1 sm:pr-3">
+              {/* An unresolved playlist row has an empty enclosure, so the
+                  play control is SUPPRESSED rather than disabled — a disabled
+                  button still says "there is a track here to play". */}
+              {e.unresolved ? (
+                <div className="relative w-12 h-12 flex-shrink-0">
+                  <PodcastCover
+                    image={undefined}
+                    artwork={undefined}
+                    title={e.title || '?'}
+                    seed={e.guid ?? String(e.id)}
+                    className="w-full h-full border border-dashed border-bone/25 opacity-50 text-base"
+                  />
+                </div>
+              ) : (
               <button
                 type="button"
                 onClick={(ev) => {
@@ -432,10 +605,15 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
                   </div>
                 )}
               </button>
+              )}
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 min-w-0">
                   {e.liveStatus && <LiveBadge status={e.liveStatus} />}
-                  <div className="text-base font-display font-medium leading-tight truncate">{e.title}</div>
+                  <div className={`text-base font-display font-medium leading-tight truncate ${e.unresolved ? 'text-muted italic' : ''}`}>
+                    {e.unresolved
+                      ? (e.unresolved === 'not-found' ? 'Track not in Podcast Index' : 'Track not looked up')
+                      : e.title}
+                  </div>
                 </div>
                 {/* Wraps, deliberately NOT truncates: at ~150px the date and
                     duration fit line 1 and `· ⚡ V4V` drops to line 2, whereas a
@@ -512,6 +690,50 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
         </p>
       )}
 
+      {/* Playlist paging. Unlike the button above, this one FETCHES: a musicL
+          feed's tracks are resolved a page at a time, one Podcast Index lookup
+          each. `nextOffset` is the server's answer and is never recomputed here. */}
+      {playlist && playlist.nextOffset != null && (
+        <button
+          type="button"
+          onClick={loadNextPage}
+          disabled={loadingMore}
+          className="btn-ghost w-full mt-3 disabled:opacity-60"
+        >
+          {loadingMore
+            ? 'loading tracks…'
+            : `Load more tracks (${playlist.total - data.episodes.length} of ${playlist.total} left)`}
+        </button>
+      )}
+      {pageError && (
+        <p className="text-sm mt-3 flex flex-wrap items-center justify-center gap-3">
+          <span className="text-muted">couldn&apos;t load more tracks — check your connection</span>
+          <button type="button" onClick={loadNextPage} className="btn-ghost btn-compact">↻ RETRY</button>
+        </p>
+      )}
+      {/* Say what is missing. Both counts describe everything loaded so far, and
+          they are SEPARATE sentences because they are separate claims: Podcast
+          Index answering "I don't have this" is settled, while never getting an
+          answer is not a fact about the track at all — which is why only the
+          second offers a retry. Collapsing them would tell somebody a track does
+          not exist because our own rate limit was hit. */}
+      {playlist && playlist.notFound > 0 && (
+        <p className="text-muted text-xs mt-3 text-center">
+          {playlist.notFound} of the {data.episodes.length} tracks loaded aren&apos;t in Podcast Index yet.
+        </p>
+      )}
+      {playlist && playlist.couldNotAsk > 0 && (
+        <p className="text-xs mt-2 flex flex-wrap items-center justify-center gap-3">
+          <span className="text-muted">
+            {playlist.couldNotAsk} track{playlist.couldNotAsk === 1 ? '' : 's'} couldn&apos;t be looked
+            up — that isn&apos;t an answer about them.
+          </span>
+          <button type="button" onClick={() => setReloadKey((n) => n + 1)} className="btn-ghost btn-compact">
+            ↻ RETRY
+          </button>
+        </p>
+      )}
+
       {/* No placeholder: <Podroll> renders its own skeleton while resolving and
           nothing at all if no entry resolves, so a placeholder heading here
           would flash in and then vanish. */}
@@ -536,6 +758,9 @@ export function EpisodeList({ feedId, feedUrl }: { feedId: number | null; feedUr
             podcastGuid={data.podcast.podcastGuid}
             podcastTitle={data.podcast.title}
             episodeGuids={
+              // A playlist is excluded on purpose: these guids belong to OTHER
+              // feeds' items, so asking for this feed's per-episode chatter with
+              // them would pull in notes about somebody else's album.
               isMusic
                 ? data.episodes.map((e) => e.guid).filter((g): g is string => !!g)
                 : undefined

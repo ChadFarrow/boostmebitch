@@ -758,7 +758,22 @@ function paymentIds(
         : split.parentFeedGuid ?? split.remoteItem?.feedGuid;
     return { feedGuid, itemGuid: split.remoteItem?.itemGuid };
   }
-  return { feedGuid: c.podcast.podcastGuid, itemGuid: c.episode.guid };
+  // THE CONTAINER IS NOT ALWAYS THE PARENT, and `Episode.podcastGuid` is the
+  // only thing that can say so. On every feed whose items are its own the two
+  // are the same value, so this is a no-op there. On a `<podcast:medium>musicL`
+  // PLAYLIST they are not: the item is a track resolved out of some other
+  // artist's album, and `c.podcast` is the curated list the listener opened.
+  //
+  // Taking the container's guid there names a feed that does not contain the
+  // item — an `i` tag and a kind:33369 `d` address no consumer can resolve back
+  // to anything. The summary is MONOTONIC, so a wrong address is permanent: it
+  // can never be rewritten downward or withdrawn. And it is the exact mistake
+  // the split branch above spends twenty lines avoiding, arriving through the
+  // one path that has no split to consult.
+  return {
+    feedGuid: c.episode.podcastGuid ?? c.podcast.podcastGuid,
+    itemGuid: c.episode.guid,
+  };
 }
 
 /**

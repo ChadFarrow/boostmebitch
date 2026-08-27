@@ -196,3 +196,132 @@ export function parseFeedNpubs(xml: string): FeedNpub[] | undefined {
   }
   return out.length ? out : undefined;
 }
+
+/**
+ * One `<podcast:remoteItem>` of a `musicL` playlist — a track that lives in
+ * somebody else's album feed.
+ *
+ * Structurally identical to `EpisodeRef` in lib/pi-batch.ts, and deliberately
+ * re-declared rather than imported: this module must keep loading under
+ * `node --experimental-strip-types`, and pi-batch.ts pulls in lib/pi.ts.
+ */
+export interface PlaylistItemRef {
+  feedGuid: string;
+  itemGuid: string;
+  /**
+   * The `<podcast:txt purpose="episode">` heading this track sat under, if the
+   * playlist published one. Free text written by the feed — a caption, never an
+   * identifier, and never a key.
+   */
+  episode?: string;
+}
+
+/**
+ * Cap on an episode caption, which is feed-supplied text rendered as a heading.
+ * Real ones are like "Homegrown Hits - Episode 147"; this only stops a
+ * pathological feed pushing a novel into the list.
+ */
+const MAX_PLAYLIST_EPISODE_LEN = 200;
+
+/**
+ * A `<podcast:podroll>` block, whose remoteItems are NOT playlist tracks.
+ *
+ * `parsePodroll` scopes itself *into* this block, so the two parsers don't
+ * collide from that direction — but a channel-wide scan reads the host's
+ * recommended shows as songs, and there is nothing on the entry itself to tell
+ * them apart. The nesting is the only signal, so it has to be honoured here.
+ */
+const PODROLL_BLOCK_RE = /<podcast:podroll\b[^>]*>[\s\S]*?<\/podcast:podroll>/gi;
+
+/**
+ * Ceiling on how many tracks one playlist contributes.
+ *
+ * The list is feed-supplied and `safeFetch` accepts 8 MB, which is roughly
+ * 88,000 entries — so without a cap one document decides how much this process
+ * allocates and how many pages a client can ask for. The live HGH playlist is
+ * 1217; 5000 is far above any real one. The caller REPORTS what was dropped
+ * rather than truncating in silence, for the reason lib/musicl-resolver.ts
+ * gives about its own cap: silent truncation reads as "we listed everything".
+ */
+export const MAX_PLAYLIST_REFS = 5000;
+
+/**
+ * Per-guid length caps, mirroring app/api/episode-by-guid/batch/route.ts.
+ * A feed guid is a UUID; an item guid is any globally-unique string and real
+ * feeds use permalink URLs, so the two limits differ by a lot.
+ */
+const MAX_FEED_GUID_LEN = 120;
+const MAX_ITEM_GUID_LEN = 2048;
+
+/**
+ * The tracks of a `<podcast:medium>musicL</podcast:medium>` playlist.
+ *
+ * A playlist feed publishes NO `<item>` elements at all: its contents are
+ * channel-level `<podcast:remoteItem feedGuid=… itemGuid=…/>` entries, each
+ * naming one track in another artist's album feed. So this is the whole
+ * document as far as the reader is concerned, which is why three properties
+ * below are correctness rules rather than tidiness.
+ *
+ * **Pass `channelSlice(xml)`, never raw XML.** A `<podcast:liveItem>` carries
+ * its own `<podcast:remoteItem>` — the "now playing" pointer a live show
+ * rewrites per track (see `Episode.liveRemoteItem`) — and reading that as a
+ * playlist entry puts one broadcast's current song into the track list of an
+ * unrelated feed. `channelSlice` already strips those blocks; `<podcast:podroll>`
+ * it does not, so that is stripped here.
+ *
+ * **Order is the data.** A playlist's running order is the order the entries
+ * are written in, and nothing on an entry restates it — unlike an album, whose
+ * tracks carry `<podcast:episode>` numbers. Dedupe therefore keeps the FIRST
+ * occurrence and the array is never sorted. (The live HGH playlist writes 1770
+ * entries of which 1217 are distinct: a song replayed on a later show is listed
+ * again, and rendering it twice is a duplicate row a listener has no way to
+ * explain.)
+ *
+ * **Both guids are required.** PI's /episodes/byguid needs `podcastguid` to
+ * disambiguate, so an entry with only one half is not a lookup key and is
+ * dropped rather than half-resolved.
+ *
+ * Attributes go through `readAttr` for the reason its own comment gives: a feed
+ * writing `x-feedGuid="…"` ahead of the real attribute steers a `\b`-anchored
+ * reader to a different feed entirely, and every other Podcasting 2.0 client
+ * would read the same document correctly. Pinned by `npm run check:playlist`.
+ */
+export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] {
+  const scoped = channelXml.replace(PODROLL_BLOCK_RE, '');
+  const out: PlaylistItemRef[] = [];
+  const seen = new Set<string>();
+  // ONE pass over both tag types, so the caption and the items it captions are
+  // read in DOCUMENT ORDER. Two separate scans could not associate them: a
+  // marker's only claim on a track is that it appears above it.
+  const re = /<podcast:txt\b([^>]*)>([\s\S]*?)<\/podcast:txt>|<podcast:remoteItem\b([^>]*?)\/?>/gi;
+  let episode: string | undefined;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(scoped))) {
+    if (m[1] !== undefined) {
+      // `<podcast:txt>` is a general container — the same feeds carry
+      // `purpose="source-feed"`, and others carry platform verification tokens
+      // and npubs (see NOSTR_TXT_PURPOSES). An unqualified one is not a caption,
+      // so the purpose is READ, through `readAttr` like every other attribute.
+      if (readAttr(m[1], 'purpose')?.toLowerCase() !== 'episode') continue;
+      const raw = m[2].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+      const label = decodeXmlText(raw).trim().slice(0, MAX_PLAYLIST_EPISODE_LEN);
+      // An EMPTY caption clears the group rather than captioning the rest of the
+      // playlist with a blank heading.
+      episode = label || undefined;
+      continue;
+    }
+    const feedGuid = readAttr(m[3], 'feedGuid');
+    const itemGuid = readAttr(m[3], 'itemGuid');
+    if (!feedGuid || !itemGuid) continue;
+    if (feedGuid.length > MAX_FEED_GUID_LEN || itemGuid.length > MAX_ITEM_GUID_LEN) continue;
+    const key = `${feedGuid}:${itemGuid}`;
+    // First occurrence wins, so a track replayed on a later show keeps the
+    // caption of the FIRST (newest) episode it appeared under — which is where
+    // the reader will look for it.
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(episode ? { feedGuid, itemGuid, episode } : { feedGuid, itemGuid });
+    if (out.length >= MAX_PLAYLIST_REFS) break;
+  }
+  return out;
+}

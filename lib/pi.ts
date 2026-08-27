@@ -1,11 +1,11 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
-import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs } from './feed-xml';
+import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRemoteItems, type PlaylistItemRef } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, PLAYLIST_MEDIUMS } from './util';
 import { createBoundedCache } from './bounded-cache';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -125,6 +125,140 @@ export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]
     `/search/byterm?q=${encodeURIComponent(query)}&max=${max}&fulltext`,
   );
   return (data.feeds ?? []).map(buildPodcast);
+}
+
+/**
+ * Every feed Podcast Index holds for one `podcast:medium` value.
+ *
+ * **A miss here is never an outage.** PI's own API documentation enumerates only
+ * the seven BASE mediums for this parameter — the `L` list variants are not in
+ * it — so a request for `musicL` may legitimately be refused by an index that
+ * has simply never been asked for one. That is indistinguishable from a medium
+ * nobody publishes, and both mean the same thing to the caller: no playlists of
+ * this kind. So a 400 answers `[]`, and only auth and 5xx propagate, exactly as
+ * `getPodcastByFeedUrl` treats a feed it does not hold.
+ */
+async function getFeedsByMedium(medium: string, max: number): Promise<Podcast[]> {
+  try {
+    const data = await pi<any>(
+      `/podcasts/bymedium?medium=${encodeURIComponent(medium)}&max=${max}`,
+    );
+    return (data.feeds ?? []).map(buildPodcast);
+  } catch (e) {
+    if (e instanceof PiHttpError && (e.status === 400 || e.status === 404)) return [];
+    throw e;
+  }
+}
+
+/**
+ * How long the playlist roster is servable at all, and how long it is FRESH.
+ *
+ * A list feed is a rare and slow-moving thing — the whole point of the roster is
+ * that there are few enough of them to hold — so a long window costs nothing and
+ * keeps a fan-out of one request per list medium off PI on every search. The
+ * stale window exists so a refresh failure serves the last good roster rather
+ * than dropping the lane, the same two-tier shape `rssXmlCache` uses.
+ */
+const PLAYLIST_ROSTER_FRESH_MS = 6 * 60 * 60_000;
+const PLAYLIST_ROSTER_STALE_MS = 24 * 60 * 60_000;
+/** Per medium. List feeds are rare; this is far above any plausible count. */
+const PLAYLIST_ROSTER_MAX = 1000;
+/**
+ * How long a search will wait on a COLD roster before going without the lane.
+ *
+ * The whole roster is ten small parallel requests, most of which are a 400 for a
+ * medium the index does not carry, so a healthy Podcast Index is far inside
+ * this. It is a ceiling on the worst case, not a budget anyone should be
+ * spending: past it the search proceeds without playlists and the refresh keeps
+ * running for the next one.
+ */
+const ROSTER_COLD_WAIT_MS = 1500;
+
+// ONE entry, but through the shared bounded cache anyway: the horizon and the
+// cap are what stop a module-level cache of fetched content growing forever,
+// and writing "it is only one key" is how the next one acquires a second.
+const playlistRoster = createBoundedCache<Podcast[]>({
+  maxAgeMs: PLAYLIST_ROSTER_STALE_MS,
+  maxEntries: 1,
+});
+const ROSTER_KEY = 'all';
+let rosterInFlight: Promise<Podcast[]> | null = null;
+
+async function refreshPlaylistRoster(): Promise<Podcast[]> {
+  // A FIXED list of ten, not an attacker-chosen one, so this fans out in
+  // parallel rather than probe-first — and each arm already answers [] for a
+  // medium PI will not accept, so an unsupported one costs one cheap 400.
+  const settled = await Promise.allSettled(
+    PLAYLIST_MEDIUMS.map((m) => getFeedsByMedium(m, PLAYLIST_ROSTER_MAX)),
+  );
+
+  // **NEVER CACHE A ROSTER NOTHING ANSWERED FOR.** `allSettled`, not `all` with
+  // a `.catch(() => [])`, because those two are the same value and opposite
+  // claims: a FULFILLED arm is Podcast Index saying "no feeds of this medium"
+  // (including the 400 that means it will not accept the medium at all), while a
+  // REJECTED one — auth, a 5xx, a dropped connection — is us failing to ask.
+  // Flattening the second into the first would write an empty roster on one
+  // transient outage and serve it as fact for six hours, which is the lane
+  // silently ceasing to exist with nothing on screen or in a log to say so. It
+  // is the same rule `readIsTrustworthy` exists for, one subsystem over.
+  const answered = settled.filter((r) => r.status === 'fulfilled');
+  if (!answered.length) return playlistRoster.get(ROSTER_KEY, Date.now())?.value ?? [];
+
+  const feeds = answered.flatMap((r) => (r as PromiseFulfilledResult<Podcast[]>).value);
+  playlistRoster.set(ROSTER_KEY, feeds, Date.now());
+  return feeds;
+}
+
+/**
+ * Playlists matching a typed query, from PI's whole index rather than from
+ * `/search/byterm` — which has no medium parameter and therefore cannot be
+ * asked for one.
+ *
+ * **Never blocks a search on a cold roster.** The first search after a restart
+ * returns no playlist lane and warms the roster behind itself, so the cost of a
+ * cold cache is a lane that is missing once, not a search that waits on ten PI
+ * round trips. A stale-but-servable roster is used as-is and refreshed the same
+ * way. Both are the accelerator rule the read index follows: this lane may be
+ * absent, and its absence must never be reported as "there are no playlists".
+ *
+ * Returns `[]` for every failure, because a search must not fail over its
+ * secondary lane.
+ */
+export async function searchPlaylistFeeds(query: string, limit: number): Promise<Podcast[]> {
+  const hit = playlistRoster.get(ROSTER_KEY, Date.now());
+  if (!hit || hit.ageMs >= PLAYLIST_ROSTER_FRESH_MS) {
+    // Deduped: several concurrent searches on a cold roster share one refresh.
+    if (!rosterInFlight) {
+      rosterInFlight = refreshPlaylistRoster()
+        .catch(() => [])
+        .finally(() => { rosterInFlight = null; });
+    }
+    // COLD: wait for it, but only briefly.
+    //
+    // Skipping outright was wrong for the one search that matters most. A
+    // playlist is a NEW kind of feed, so somebody typing a playlist's name is
+    // very often looking for exactly what this lane exists to find — and on a
+    // serverless runtime "cold" is not a once-per-deploy event, it is every new
+    // instance. Handing that search a missing lane makes the feature look like
+    // it does not work, then work on a retry, which is the hardest failure to
+    // report and the easiest to dismiss.
+    //
+    // Bounded rather than awaited, because the lane must never be able to hold a
+    // search hostage: ten small parallel requests to a healthy index land well
+    // inside this, and a slow or dead one costs the deadline exactly once,
+    // after which the refresh continues in the background and the NEXT search is
+    // served from cache. The timer is cleared either way — an unref'd pending
+    // timeout is a lambda kept alive for nothing.
+    if (!hit) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const feeds = await Promise.race([
+        rosterInFlight,
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ROSTER_COLD_WAIT_MS); }),
+      ]).finally(() => { if (timer) clearTimeout(timer); });
+      return filterPlaylistsByQuery(feeds ?? [], query, limit);
+    }
+  }
+  return filterPlaylistsByQuery(hit?.value ?? [], query, limit);
 }
 
 export async function getPodcast(feedId: number): Promise<Podcast | null> {
@@ -1091,6 +1225,43 @@ function extractRssImageUrl(xml: string): string | undefined {
   return m ? decodeXmlText(m[1]) : undefined;
 }
 
+/**
+ * The channel half of a not-in-PI feed, as a `Podcast`.
+ *
+ * Shared by `getFeedFromRss` and `getPlaylistChannel` rather than written out
+ * twice: the two paths must agree about what the same document is called, what
+ * art it has and — the one that matters — that a preview feed carries a
+ * SYNTHETIC negative id and **no `podcastGuid`**.
+ *
+ * Withholding the guid is deliberate even though a `musicL` playlist does
+ * publish a `<podcast:guid>`. Podcast Index has not indexed these feeds (that
+ * is what makes them previews), so `/podcasts/byguid` cannot resolve one on any
+ * device — and a feed favorite writes that guid to a shared kind:10333 list
+ * with no undo, where it would be an unopenable placeholder forever. The guid
+ * being present on the wire is not the test; being resolvable is.
+ */
+function previewPodcastFromChannel(rssUrl: string, channelXml: string): Podcast {
+  const channelRssImage = extractRssImageUrl(channelXml);
+  const channelItunesImage = extractItunesImageHref(channelXml);
+  const channelImage = channelRssImage ?? channelItunesImage;
+  return {
+    id: -fnvHash(rssUrl),
+    title: extractText(channelXml, 'title') || rssUrl,
+    author: extractText(channelXml, 'itunes:author') ?? extractText(channelXml, 'managingEditor'),
+    description: extractText(channelXml, 'description'),
+    image: channelImage,
+    // Keep itunes:image as a second-chance source when it differs from <image>.
+    artwork: channelItunesImage && channelItunesImage !== channelImage ? channelItunesImage : undefined,
+    url: rssUrl,
+    medium: extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined,
+    value: parseValueBlock(channelXml),
+    funding: parseFunding(channelXml),
+    podroll: parsePodroll(channelXml),
+    nostrNpubs: parseFeedNpubs(channelXml),
+    isPreview: true,
+  };
+}
+
 export async function getFeedFromRss(
   rssUrl: string,
 ): Promise<{ podcast: Podcast; episodes: Episode[] } | null> {
@@ -1102,28 +1273,9 @@ export async function getFeedFromRss(
 
   const channelXml = channelSlice(xml);
 
-  const feedId = -fnvHash(rssUrl);
-  const medium = extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined;
-  const channelRssImage = extractRssImageUrl(channelXml);
-  const channelItunesImage = extractItunesImageHref(channelXml);
-  const channelImage = channelRssImage ?? channelItunesImage;
-
-  const podcast: Podcast = {
-    id: feedId,
-    title: extractText(channelXml, 'title') || rssUrl,
-    author: extractText(channelXml, 'itunes:author') ?? extractText(channelXml, 'managingEditor'),
-    description: extractText(channelXml, 'description'),
-    image: channelImage,
-    // Keep itunes:image as a second-chance source when it differs from <image>.
-    artwork: channelItunesImage && channelItunesImage !== channelImage ? channelItunesImage : undefined,
-    url: rssUrl,
-    medium,
-    value: parseValueBlock(channelXml),
-    funding: parseFunding(channelXml),
-    podroll: parsePodroll(channelXml),
-    nostrNpubs: parseFeedNpubs(channelXml),
-    isPreview: true,
-  };
+  const podcast = previewPodcastFromChannel(rssUrl, channelXml);
+  const feedId = podcast.id;
+  const medium = podcast.medium;
 
   const episodes: Episode[] = [];
   const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
@@ -1180,6 +1332,46 @@ export async function getFeedFromRss(
   episodes.sort(compareEpisodeOrder(medium === 'music'));
 
   return { podcast, episodes };
+}
+
+/** A `musicL` playlist's channel metadata and its track references. */
+export interface PlaylistChannel {
+  podcast: Podcast;
+  /** Deduped, in wire order. See `parsePlaylistRemoteItems`. */
+  refs: PlaylistItemRef[];
+}
+
+/**
+ * Read a `<podcast:medium>musicL</podcast:medium>` playlist feed.
+ *
+ * Returns the channel as a preview `Podcast` plus the whole (deduped) track
+ * reference list — **not** the tracks themselves. Resolving a reference costs a
+ * Podcast Index lookup each, and a real playlist holds four figures of them, so
+ * the fan-out belongs to a caller that can page it (`app/api/playlist`), not
+ * to the parser.
+ *
+ * Returns null for a document that is not a playlist, which is two distinct
+ * refusals collapsed on purpose: an unfetchable URL, and a feed that simply
+ * isn't one. Both mean "there is no playlist here", and the caller's answer to
+ * each is the same 404.
+ *
+ * The medium gate is a gate, not a hint: a feed that publishes ordinary
+ * `<item>` elements is served by `getFeedFromRss`, and reading its podroll or a
+ * stray remote item as a track list would manufacture songs the publisher never
+ * listed. `refs` being empty is a valid playlist that is empty, and is left for
+ * the caller to render as such.
+ *
+ * Goes through the shared `fetchFeedXml`, so paging N times over one document
+ * costs one upstream fetch inside the 60 s window rather than N.
+ */
+export async function getPlaylistChannel(rssUrl: string): Promise<PlaylistChannel | null> {
+  const xml = await fetchFeedXml(rssUrl);
+  if (xml == null) return null;
+  if (!/<channel\b/i.test(xml)) return null;
+  const channelXml = channelSlice(xml);
+  const podcast = previewPodcastFromChannel(rssUrl, channelXml);
+  if (!isPlaylistMedium(podcast)) return null;
+  return { podcast, refs: parsePlaylistRemoteItems(channelXml) };
 }
 
 export async function getEpisodeByGuid(

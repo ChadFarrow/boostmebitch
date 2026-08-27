@@ -10,6 +10,120 @@ export function isMusicMedium(podcast: Pick<Podcast, 'medium'>): boolean {
   return podcast.medium?.toLowerCase() === 'music';
 }
 
+/**
+ * The Podcasting 2.0 **list mediums**.
+ *
+ * The spec gives every medium an `L`-suffixed counterpart meaning "a List of
+ * that kind of content", and says a list feed "is intended to exclusively
+ * contain one or more `<podcast:remoteItem>`s" — no `<item>` elements at all.
+ * So this set, not `musicL` alone, is what "a Podcasting 2.0 playlist" means.
+ *
+ * **An ALLOWLIST, never `endsWith('l')`.** No standard medium happens to end in
+ * `l` today, so the loose test would pass right now and quietly widen the moment
+ * one does — and any feed writing `medium="cool"` would already be read as a
+ * playlist, which is the same over-match `isLnurlOnlyAddress` documents for
+ * suffix tests. Adding a medium here is a deliberate act.
+ *
+ * Lowercase because the wire spelling is mixed-case (`musicL`) and the RSS
+ * parsers lowercase it while Podcast Index returns the tag verbatim.
+ */
+const LIST_MEDIUMS = new Set([
+  'podcastl', 'musicl', 'videol', 'filml', 'audiobookl',
+  'newsletterl', 'blogl', 'publisherl', 'coursel', 'mixedl',
+]);
+
+/**
+ * True when the feed is a Podcasting 2.0 **playlist** — a channel with no
+ * `<item>` elements whose contents are channel-level `<podcast:remoteItem>`
+ * entries pointing at items in other people's feeds.
+ *
+ * **Deliberately NOT folded into `isMusicMedium`.** A playlist wants most of
+ * what that gate turns on — row-tap-to-play, auto-advance, no chapters or
+ * transcripts, TRACK vocabulary — but must not get its other two, and both
+ * would fail silently:
+ *
+ *   - `isMusicMedium` renders the WHOLE list with no pagination, because an
+ *     album is a few dozen tracks and its order is the running order of the
+ *     record. A playlist is an archive: the live HGH one holds 1217 distinct
+ *     tracks, and each row's cover is a separate image.
+ *   - `compareEpisodeOrder(true)` sorts by `<podcast:season>`/`<podcast:episode>`,
+ *     i.e. disc and track number. A playlist's tracks come from hundreds of
+ *     DIFFERENT albums, each numbering from 1, so that sort interleaves every
+ *     album's track 1, then every track 2 — scrambling the one ordering the
+ *     document actually asserts, with nothing on screen reporting a fault.
+ *
+ * So each site opts in by name. Case-insensitive because PI returns the tag's
+ * own `musicL` spelling while the RSS parsers lowercase it.
+ */
+export function isPlaylistMedium(podcast: Pick<Podcast, 'medium'>): boolean {
+  return LIST_MEDIUMS.has(podcast.medium?.toLowerCase() ?? '');
+}
+
+/**
+ * Feeds whose rows are TRACKS rather than episodes: a row tap plays instead of
+ * opening a detail page, the header cover is a play button, playback
+ * auto-advances, and chapters/transcripts are suppressed.
+ *
+ * **Music and `musicL` ONLY — this is deliberately narrower than
+ * `isPlaylistMedium`.** A `podcastL` playlist is a list of PODCAST EPISODES
+ * (the LocalBitcoiners community playlist is one), and an episode row has to
+ * open the detail view: its show notes, chapters, transcript and discussion are
+ * the reason somebody taps it, and a tap that started playback instead would
+ * put them out of reach with no other way in.
+ *
+ * So the two gates answer two different questions — *is this a playlist* (how it
+ * PAGES) versus *are its rows tracks* (how a row BEHAVES) — and a feed can be
+ * the first without being the second. Collapsing them looks like a
+ * simplification and silently turns every podcast playlist into a jukebox.
+ */
+export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
+  return isMusicMedium(podcast) || podcast.medium?.toLowerCase() === 'musicl';
+}
+
+/** Every list medium, for a caller that has to enumerate them (see `getFeedsByMedium`). */
+export const PLAYLIST_MEDIUMS: readonly string[] = [...LIST_MEDIUMS];
+
+/**
+ * Which playlists a typed query should surface.
+ *
+ * Podcast Index's `/search/byterm` has **no medium parameter**, so a playlist it
+ * ranks poorly — or has indexed under a title the query does not lead with — is
+ * unreachable by keyword no matter what the user types. This is the filter for
+ * the separate `/podcasts/bymedium` lane that fills that gap.
+ *
+ * Deliberately simple, and deliberately NOT a relevance ranker: the candidate
+ * set is already narrowed to playlists, which is the strong signal. It matches a
+ * case-folded substring against the title and author, requires **every**
+ * whitespace-separated term to appear (so "mutton music" does not match a feed
+ * that only says "music"), and preserves the order Podcast Index returned.
+ *
+ * `q` is trimmed and a blank one matches NOTHING — an empty search box must not
+ * pour every playlist in the index into the results.
+ *
+ * It is here rather than in the route because `lib/util.ts` loads under
+ * `node --experimental-strip-types`, which is what lets `check:musicl` pin it.
+ */
+export function filterPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author' | 'medium'>>(
+  feeds: readonly T[],
+  q: string,
+  limit: number,
+): T[] {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length || limit <= 0) return [];
+  const out: T[] = [];
+  for (const f of feeds) {
+    // The medium is re-checked here rather than trusted from the caller: this
+    // list is what a search surfaces as "a playlist", and a base-medium feed
+    // reaching it would be stamped as one it is not.
+    if (!isPlaylistMedium(f)) continue;
+    const hay = `${f.title ?? ''} ${f.author ?? ''}`.toLowerCase();
+    if (!terms.every((t) => hay.includes(t))) continue;
+    out.push(f);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 // True when a value block actually has payees — the gate for showing BOOST.
 export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;
@@ -631,9 +745,16 @@ export function payableSplit(
  * importing another for a string.
  */
 export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): string {
-  const music = !!podcast && isMusicMedium(podcast);
-  if (kind === 'feed') return music ? 'ALBUM' : 'SHOW';
-  return music ? 'TRACK' : 'EPISODE';
+  // The two halves key off DIFFERENT gates on purpose. The container word
+  // follows `isPlaylistMedium`: a curated list is not an ALBUM, which would
+  // claim one artist's release. The item word follows `playsAsTracks`, because
+  // a `podcastL` playlist is a playlist whose items are EPISODES — so
+  // "PLAYLIST · EPISODE" is a real and correct pairing, and reading the item
+  // word off the container's medium would call them tracks.
+  const playlist = !!podcast && isPlaylistMedium(podcast);
+  const tracks = !!podcast && playsAsTracks(podcast);
+  if (kind === 'feed') return playlist ? 'PLAYLIST' : tracks ? 'ALBUM' : 'SHOW';
+  return tracks ? 'TRACK' : 'EPISODE';
 }
 
 /**

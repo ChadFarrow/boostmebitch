@@ -394,3 +394,58 @@ export function loadFeed(
 }
 
 const feedInFlight = new Map<string, Promise<FeedResponse>>();
+
+/** What `/api/playlist` answers with. Loose for the same reason `FeedResponse` is. */
+export interface PlaylistResponse {
+  podcast?: Podcast;
+  episodes?: Episode[];
+  /** Deduped ref count for the WHOLE playlist, not this page. */
+  total?: number;
+  offset?: number;
+  /**
+   * The offset of the next page, or null at the end. **Use it verbatim — never
+   * compute `offset + episodes.length` on this side.** The server is the only
+   * party that knows what its own ref cap and dedupe removed, and a client that
+   * derives the offset skips tracks the moment those disagree.
+   */
+  nextOffset?: number | null;
+  /** Rows on this page PI answered "not found" for. */
+  notFound?: number;
+  /** Rows on this page we never got an answer about. Non-zero means the page is
+   *  not a settled answer: it was served `no-store` and a retry is real. */
+  couldNotAsk?: number;
+  error?: string;
+}
+
+/**
+ * One page of a `<podcast:medium>musicL</podcast:medium>` playlist.
+ *
+ * The sibling of `loadFeed`, and separate from it on purpose: a playlist is
+ * fetched by feed URL at an OFFSET, and its "load more" is a real request
+ * rather than the pure reveal `<EpisodeList>` uses for a feed it already holds.
+ * Folding an `offset` into `loadFeed` would have put two unrelated paging
+ * models behind one signature.
+ *
+ * Coalesces on the endpoint string exactly as `loadFeed` does, and for the same
+ * reason: a cold open can have the list and a restore asking for page 0 at
+ * once. The offset is IN the endpoint, so distinct pages never collide, and
+ * nothing is retained past the promise settling — so the retry button really
+ * re-asks.
+ */
+export function loadPlaylistPage(
+  source: { feedUrl: string; offset?: number; limit?: number },
+): Promise<PlaylistResponse> {
+  const params = new URLSearchParams({ url: source.feedUrl });
+  if (source.offset) params.set('offset', String(source.offset));
+  if (source.limit) params.set('limit', String(source.limit));
+  const endpoint = `/api/playlist?${params.toString()}`;
+  const existing = playlistInFlight.get(endpoint);
+  if (existing) return existing;
+  const p = fetch(endpoint)
+    .then((r) => r.json() as Promise<PlaylistResponse>)
+    .finally(() => { playlistInFlight.delete(endpoint); });
+  playlistInFlight.set(endpoint, p);
+  return p;
+}
+
+const playlistInFlight = new Map<string, Promise<PlaylistResponse>>();

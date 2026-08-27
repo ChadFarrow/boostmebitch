@@ -10,10 +10,41 @@ import { EpisodeDetailView } from '@/components/episode-detail-view';
 import { AppHeader } from '@/components/app-header';
 import Link from 'next/link';
 import { useApp } from '@/lib/store';
-import { loadEpisodeFromFeed, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
+import { loadEpisodeFromFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
+import { isMusicMedium, isPlaylistMedium } from '@/lib/util';
 
 import type { Podcast } from '@/lib/types';
+
+/**
+ * ChadF's musicL **publisher** feed — the app's single curated entry point.
+ *
+ * It is a publisher feed rather than a list of playlist URLs, and that is the
+ * whole point: the publisher lists its children, so a playlist added there
+ * appears here the same day with no code change. StableKraft takes the other
+ * road and hardcodes its twelve playlist URLs — in five separate places, which
+ * have already drifted apart from each other and from the collection's own
+ * FEEDS.md, and each of which lists a different subset.
+ *
+ * Nothing else in the app is curated; the rest is search. One constant is the
+ * smallest thing that makes a collection discoverable without pasting a URL,
+ * and `/api/publisher` was already able to render it.
+ */
+const MUSICL_PUBLISHER_URL =
+  'https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/chadf-musicl-publisher.xml';
+
+/**
+ * The stub `handleSelect` needs to open it. Shaped exactly like the one the
+ * `?publisher=` cold restore builds: `id: 0` means nothing ever resolved this
+ * feed, and `medium: 'publisher'` is what routes it to the publisher branch.
+ * It carries no `podcastGuid`, so no heart is offered for it.
+ */
+const MUSICL_PUBLISHER = {
+  id: 0,
+  title: "ChadF's musicL playlists",
+  medium: 'publisher',
+  url: MUSICL_PUBLISHER_URL,
+} as Podcast;
 
 export function HomePage() {
   const [feeds, setFeeds] = useState<Podcast[]>([]);
@@ -23,6 +54,15 @@ export function HomePage() {
   const [publisherSource, setPublisherSource] = useState<Podcast | null>(null);
   const [publisherAlbums, setPublisherAlbums] = useState<Podcast[] | null>(null);
   const [publisherLoading, setPublisherLoading] = useState(false);
+  /**
+   * "We could not load these" is NOT "there are none", and until there was a
+   * button in front of this path both rendered as an empty aside. A publisher
+   * whose children we failed to fetch reading as a publisher with no children
+   * is the silent-withholding failure CLAUDE.md names — and now that BROWSE
+   * PLAYLISTS is one tap from the home page, a Podcast Index outage would have
+   * said "ChadF has no playlists" to everybody who pressed it.
+   */
+  const [publisherError, setPublisherError] = useState(false);
   const router = useRouter();
   // `selected` lives in the Zustand store so cross-component surfaces (e.g.
   // the podcast-name link in a Nostr note card) can route into the detail
@@ -75,13 +115,30 @@ export function HomePage() {
     const params = new URLSearchParams(window.location.search);
     const guid = params.get('podcast');
     const feedId = params.get('feed');
+    const playlistParam = params.get('playlist');
     const episodeGuid = params.get('episode');
     const wantDiscussion = params.get('discussion') === '1';
-    if (!guid && !feedId) { setEntryResolved(true); return; }
+    if (!guid && !feedId && !playlistParam) { setEntryResolved(true); return; }
     if (useApp.getState().selectedPodcast) { setEntryResolved(true); return; }
     (async () => {
       let podcast: Podcast | null = null;
-      if (guid) {
+      // A playlist restores by FEED URL, because a musicL feed Podcast Index has
+      // not indexed has no id or guid to restore by — the same reason
+      // ?publisher=<feedUrl> exists. `/api/playlist` answers with the channel,
+      // so one request both validates the URL and supplies the header.
+      if (playlistParam && !guid && !feedId) {
+        try {
+          // Through `loadPlaylistPage` so the URL is built in one place, and
+          // asking for the DEFAULT page rather than a token `limit=1`: it is
+          // then byte-identical to the request `<EpisodeList>` makes for page 0
+          // a moment later. The two are SEQUENTIAL (this await gates the
+          // selection that mounts the list), so the in-flight map cannot
+          // collapse them — what does is the route's own `max-age=60`, which
+          // makes the second a browser cache hit. A token `limit=1` would have
+          // been a third distinct cache key answering nobody.
+          podcast = (await loadPlaylistPage({ feedUrl: playlistParam })).podcast ?? null;
+        } catch { /* fall back to browse */ }
+      } else if (guid) {
         podcast = await resolvePodcastByGuid(guid);
       } else if (feedId) {
         const id = Number(feedId);
@@ -139,6 +196,14 @@ export function HomePage() {
     // aren't restorable from the URL (a refresh would hit /api/feed?id=<neg> and
     // blank the view), so mirror nothing for them; they're an ephemeral preview.
     const isPreview = !!selected?.isPreview;
+    // A PLAYLIST is the one preview feed worth linking to. Every other preview
+    // is a publisher checking their own not-yet-submitted feed, but a musicL
+    // playlist is a thing people share — and it restores exactly, because
+    // `/api/playlist` keys off the feed URL rather than a Podcast Index id.
+    const playlistUrl = selected && !selected.podcastGuid && isPlaylistMedium(selected)
+      ? selected.url : undefined;
+    if (playlistUrl) url.searchParams.set('playlist', playlistUrl);
+    else url.searchParams.delete('playlist');
     if (selected?.podcastGuid) {
       url.searchParams.set('podcast', selected.podcastGuid);
       url.searchParams.delete('feed');
@@ -186,17 +251,40 @@ export function HomePage() {
     (async () => {
       try {
         const res = await fetch(`/api/publisher?feedUrl=${encodeURIComponent(feedUrl)}`);
-        if (res.status >= 500) { tripPiBreaker(); setPublisherAlbums([]); return; }
+        if (!res.ok) {
+          if (res.status >= 500) tripPiBreaker();
+          setPublisherError(true);
+          setPublisherAlbums([]);
+          return;
+        }
         setPublisherAlbums((await res.json()).feeds ?? []);
-      } catch { setPublisherAlbums([]); }
+      } catch { setPublisherError(true); setPublisherAlbums([]); }
       finally { setPublisherLoading(false); }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * What a publisher's children are CALLED.
+   *
+   * "albums" was hardcoded, and a publisher feed of `musicL` playlists — which
+   * is what ChadF's musicL publisher is — then advertised "9 albums" over nine
+   * things that are not albums. Derived from what actually came back rather than
+   * from the publisher's own medium, because the publisher tag says `publisher`
+   * either way and only the children know what they are.
+   */
+  const publisherChildWord = !publisherAlbums?.length
+    ? 'feeds'
+    : publisherAlbums.every(isPlaylistMedium)
+      ? 'playlists'
+      : publisherAlbums.every((p) => isMusicMedium(p))
+        ? 'albums'
+        : 'feeds';
 
   function clearPublisher() {
     setPublisherSource(null);
     setPublisherAlbums(null);
     setPublisherLoading(false);
+    setPublisherError(false);
   }
 
   // Referentially stable — it's an effect dependency inside <SearchBar>.
@@ -244,13 +332,24 @@ export function HomePage() {
     if (p.medium === 'publisher') {
       setPublisherSource(p);
       setPublisherAlbums(null);
+      setPublisherError(false);
       setPublisherLoading(true);
       try {
         if (!p.url) { setPublisherAlbums([]); return; }
         const res = await fetch(`/api/publisher?feedUrl=${encodeURIComponent(p.url)}`);
+        // A 5xx is the route telling us PI itself is down (its probe is
+        // deliberately uncaught). Trip the breaker like the cold-restore path
+        // already did, and say so rather than rendering an empty collection.
+        if (!res.ok) {
+          if (res.status >= 500) tripPiBreaker();
+          setPublisherError(true);
+          setPublisherAlbums([]);
+          return;
+        }
         const data = await res.json();
         setPublisherAlbums(data.feeds ?? []);
       } catch {
+        setPublisherError(true);
         setPublisherAlbums([]);
       } finally {
         setPublisherLoading(false);
@@ -341,6 +440,22 @@ export function HomePage() {
           <div className="mt-3">
             <FavoritesSyncNotice />
           </div>
+          {/* The one curated entry point in the app, and it is ONE URL rather
+              than a list of playlists on purpose — see MUSICL_PUBLISHER_URL.
+              Hidden as soon as the user searches or drills in, so it never
+              competes with what they asked for. */}
+          {entryResolved && !inDetailView && !publisherSource && !query && !feeds.length && !loading && (
+            <div className="mt-4">
+              <button
+                type="button"
+                onClick={() => handleSelect(MUSICL_PUBLISHER)}
+                className="btn-ghost btn-compact"
+                title="Browse ChadF's Podcasting 2.0 musicL playlists"
+              >
+                ♫ BROWSE PLAYLISTS
+              </button>
+            </div>
+          )}
         </div>
       </section>
 
@@ -382,7 +497,11 @@ export function HomePage() {
               </button>
             )}
             <section className="card p-4 min-h-[40vh]">
-              <EpisodeList feedId={selected!.id} feedUrl={selected!.isPreview ? selected!.url : undefined} />
+              <EpisodeList
+                feedId={selected!.id}
+                feedUrl={selected!.isPreview ? selected!.url : undefined}
+                playlistUrl={isPlaylistMedium(selected!) ? selected!.url : undefined}
+              />
             </section>
           </div>
         ) : showLeftRightLayout ? (
@@ -399,11 +518,32 @@ export function HomePage() {
                 >
                   ← {publisherSource.title}
                 </button>
-                <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
-                  {publisherLoading ? 'loading albums…' : `${publisherAlbums?.length ?? 0} albums`}
-                </div>
-                {publisherLoading ? null : !publisherAlbums?.length ? (
-                  <p className="text-muted text-sm py-4 px-1">no indexed albums found</p>
+                {/* No count while it failed: "0 feeds" over a load error states
+                    as fact the very thing we just said we could not determine. */}
+                {!publisherError && (
+                  <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
+                    {publisherLoading
+                      ? `loading ${publisherChildWord}…`
+                      : `${publisherAlbums?.length ?? 0} ${publisherChildWord}`}
+                  </div>
+                )}
+                {publisherLoading ? null : publisherError ? (
+                  <p className="text-sm py-4 px-1 flex flex-wrap items-center gap-3">
+                    <span className="text-muted">couldn&apos;t load these — check your connection</span>
+                    <button
+                      type="button"
+                      onClick={() => { if (publisherSource) handleSelect(publisherSource); }}
+                      className="btn-ghost btn-compact"
+                    >
+                      ↻ RETRY
+                    </button>
+                  </p>
+                ) : !publisherAlbums?.length ? (
+                  // Not "no INDEXED albums": the route now reads a child straight
+                  // from its RSS when Podcast Index has never seen it, so an empty
+                  // list here means the publisher genuinely listed nothing —
+                  // which is a different sentence from the failure above.
+                  <p className="text-muted text-sm py-4 px-1">this publisher feed lists nothing</p>
                 ) : (
                   <PodcastResults feeds={publisherAlbums} selected={null} onSelect={(p) => { clearPublisher(); setSelected(p); }} />
                 )}

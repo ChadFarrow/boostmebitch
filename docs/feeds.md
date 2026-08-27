@@ -54,6 +54,105 @@ Three things follow, and they are the reason the number isn't simply raised and 
 
 **The one case still truncated is a feed longer than 1000 items.** PI cannot serve past that in one call and has no way to page backwards, so the tail of a very long-running daily show is out of reach through this route. The RSS document holds it — `getRssEpisodeEnrichment` already parses every `<item>` — but RSS-derived episodes carry synthetic negative ids (`-fnvHash`), which `/api/value-splits` and the live-status poller both key off, so unioning them into a PI-backed list is a bigger change than a number.
 
+## musicL playlists (`<podcast:medium>musicL`)
+
+A **playlist** feed publishes **no `<item>` elements at all**. Its contents are channel-level `<podcast:remoteItem feedGuid=… itemGuid=…/>` entries, each naming one item that lives in somebody else's feed.
+
+**It is not just `musicL`.** The spec gives every medium an `L`-suffixed "list" counterpart and says a list feed "is intended to exclusively contain one or more `<podcast:remoteItem>`s", so `LIST_MEDIUMS` in `lib/util.ts` is the whole set — `podcastL`, `musicL`, `videoL`, `filmL`, `audiobookL`, `newsletterL`, `blogL`, `publisherL`, `courseL`, `mixedL`. It is an **allowlist, never `endsWith('l')`**: no standard medium happens to end in `l` today, so the loose test passes right now and silently widens the day one does — and `medium="cool"` would already be a playlist. The LocalBitcoiners community list in the collection is a real `podcastL` with 949 entries and the identical wire shape.
+
+**`isPlaylistMedium` and `playsAsTracks` are deliberately different gates.** The first asks *is this a playlist* (how it PAGES); the second asks *are its rows tracks* (how a row BEHAVES), and only `music`/`musicL` answer yes. A `podcastL` row is a podcast episode, so a tap must open the detail view — its notes, chapters, transcript and discussion are the reason somebody taps it. Collapsing the two looks like a simplification and turns every podcast playlist into a jukebox. `targetWord` follows suit: the container word comes from the first gate, the item word from the second, so **"PLAYLIST · EPISODE" is a correct pairing**. The reference case is [chadf-musicl-playlists/HGH-music-playlist.xml](https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/HGH-music-playlist.xml): 233 KB, **1770 entries of which 1217 are distinct, across 598 feeds**, and not one `<item>`.
+
+Before this shipped the app opened one as a show with no episodes — `getFeedFromRss`'s `<item>` loop finds nothing — which is indistinguishable from a broken feed.
+
+**The entries carry no `feedUrl`.** Only the guid pair, so a track is resolved through Podcast Index (`/episodes/byguid`) and nothing else. That is one PI lookup per track, which is why the whole list is not a request anybody can make.
+
+### The parser lives in `lib/feed-xml.ts`, and its exclusions are the correctness half
+
+`parsePlaylistRemoteItems(channelSlice(xml))`. It is in `feed-xml.ts` rather than `pi.ts` for the same reason `parseFeedNpubs` is: that module loads under `node --experimental-strip-types`, so `npm run check:musicl` pins the **real** parser instead of a copy. `pi.ts` cannot be loaded that way (`PiHttpError` uses a parameter property).
+
+Three things it must exclude, and each one over-accepted is rows in the list the curator never published:
+
+- **`<podcast:podroll>` contents** — stripped by the parser itself. `parsePodroll` scopes itself *into* the block so the two don't collide from that direction, but a channel-wide scan reads the host's recommended **shows** as songs, and nothing on the entry says which it is. The nesting is the only signal.
+- **`<podcast:liveItem>` blocks** — already stripped by `channelSlice`, which is why the input must be that and never raw XML. A live item's own `<podcast:remoteItem>` is the "now playing" pointer (`Episode.liveRemoteItem`), i.e. one broadcast's current song.
+- **An entry missing either guid** — an item guid alone is not a lookup key, and a `feedGuid` + `feedUrl` pair is podroll-shaped.
+
+**Order is the data, and dedupe is mandatory.** A playlist's running order is the order the entries are written in; nothing on an entry restates it, unlike an album whose tracks carry `<podcast:episode>` numbers. So the parser never sorts, and dedupe keeps the **first** occurrence. Dedupe is not cosmetic: `playNext`/`playPrev` locate the current track with `findIndex(e => e.id === …)` and a row's React key is that id, so two rows sharing one make the second unreachable.
+
+`MAX_PLAYLIST_REFS` (5000) caps the list because it is feed-supplied and `safeFetch` accepts 8 MB — roughly 88,000 entries, i.e. one document deciding how much this process allocates.
+
+### `/api/playlist` — one page, and why it is its own route
+
+```
+GET /api/playlist?url=<feedUrl>&offset=0&limit=100
+  → { podcast, episodes, total, offset, nextOffset, notFound, couldNotAsk }
+```
+
+- **A GET, not the existing POST `/api/episode-by-guid/batch`.** That route's body is per-user so it sets no cache header. A playlist page is public and byte-identical for every viewer, and a shared cache answering it is the whole thing that keeps thirteen pages of one playlist off PI's quota. It is also why the guids stay server-side: a short URL is cacheable, a hundred item guids (routinely permalink URLs) are not.
+- **`limit` is clamped to `MAX_BATCH` (100)**, so one page is at most one `batchEpisodes` call and there is no second fan-out ceiling to keep in sync.
+- **`offset`/`limit` are digits-only.** `Number('0x64')` is 100 and `Number('1e3')` is 1000; `parseInt('64abc')` is 64. Each yields a plausible page the caller never asked for, and every distinct spelling of one number is another CDN entry for bytes we already hold — the amplification `artWidth` documents.
+- **`nextOffset` is the server's answer and the client uses it verbatim.** Deriving `offset + limit` on the client desyncs the moment dedupe or the ref cap removes anything, and the symptom is skipped tracks — which nobody can see.
+- Rate limit **30/min**, with `/api/publisher` and the batch routes, because it fans out to PI.
+
+**The `podcast` it returns carries no `podcastGuid`**, even though a playlist does publish a `<podcast:guid>`. `previewPodcastFromChannel` withholds it deliberately: PI has not indexed these feeds, so `/podcasts/byguid` cannot resolve one on any device, and a feed favorite writes that guid to a shared kind:10333 list with no undo — an unopenable placeholder forever. Being present on the wire is not the test; being resolvable is.
+
+### The three-state contract reaches the screen
+
+`batchEpisodes`' answer is carried through, never flattened. **Every ref yields a row** — a dropped row is invisible, and an invisible track makes the playlist look shorter than the curator published it, with no way to reach it because `nextOffset` steps past.
+
+| `batchEpisodes` | Row | Line under the list | Cacheable |
+|---|---|---|---|
+| key present, `Episode` | full row: cover, play, ⚡ V4V, BOOST, heart | — | yes |
+| key present, `null` | placeholder, `unresolved: 'not-found'`, play suppressed | "N … aren't in Podcast Index yet" | yes |
+| key **absent** | placeholder, `unresolved: 'could-not-ask'` | "N … couldn't be looked up" + ↻ RETRY | **no** |
+
+The absent case drives the cache header: `couldNotAsk > 0` answers `Cache-Control: no-store`. Without that a PI outage during one page is frozen into the CDN for five minutes and the retry re-serves the same empty page. `notFound` rows *are* cacheable — PI answered.
+
+A placeholder has an empty `enclosureUrl`, so the client **suppresses** the play control rather than disabling it. The heart stays, on `<FavTrackHeart>`'s precedent: the identifiers come off the wire and are the whole record, and withholding the control until PI has crawled the album would hide it on exactly the independent releases this app exists to pay.
+
+**Known gap, deliberately not closed in v1:** unlike `<FavTrackHeart>` there is no `parentFeedGuid` verdict here, so a playlist `feedGuid` naming a **publisher** feed would write an entry no app can open. `/api/remote-item` answers that question, but it is an RSS fetch plus a PI call per row and a page is 100 rows. Follow-up, not a per-row call.
+
+### Both entry paths, and the fallback that makes the medium optional
+
+`<EpisodeList>` takes `playlistUrl` when the caller already knows the medium (`<HomePage>` reads it off the search result), which skips a round trip. When it doesn't, the effect recovers one request later: **a musicL feed answering with zero rows is the same signal.** `/api/feed?id=` backfills `podcast.medium` from the RSS channel parse, so this works even though PI does not reliably index the tag. `episodes.length === 0` is part of that test on purpose — a hybrid feed that declares musicL and *also* publishes real items keeps its items.
+
+The list is excluded from `<PodcastNostrFeed>`'s `episodeGuids`: those guids belong to other feeds' items, so asking for this feed's per-episode chatter with them pulls in notes about somebody else's album.
+
+### Episode captions (`<podcast:txt purpose="episode">`)
+
+Most of these playlists mark which show each run of tracks came from — HGH has 148 markers, MMM 151 — and the marker always sits **before** the run it captions. `parsePlaylistRemoteItems` reads captions and items in **one pass** so document order associates them; two scans could not, because a marker's only claim on a track is that it appears above it. The caption rides on each row (`Episode.playlistGroup`) rather than in a separate groups array, so a page appended by "load more" carries its own and the heading logic stays a comparison with the previous row — no state to keep in sync across a page boundary.
+
+Three rules, all pinned: the `purpose` is **read** (every one of these feeds also carries `purpose="source-feed"`, and other feeds put verification tokens and npubs under the same tag, so an unqualified `<podcast:txt>` would print a feed URL as a heading); an empty marker **clears** the caption rather than captioning with a blank; and dedupe keeps the **first** occurrence, so a track replayed on a later show keeps the newest episode's caption, which is where a reader looks for it. Three playlists in the collection publish no markers at all (Greatest Hits, LocalBitcoiners, and the publisher feed), so the flat list is a first-class state, not a fallback.
+
+### A publisher feed of playlists, and the one curated link
+
+`chadf-musicl-publisher.xml` is a `medium=publisher` feed whose `<podcast:remoteItem feedUrl=…>` entries name the playlists. `<HomePage>`'s **BROWSE PLAYLISTS** button opens it through the publisher view that already existed — **one URL in the codebase, not a list of playlists.** A playlist added to the publisher feed appears the same day with no code change. (StableKraft takes the other road and hardcodes its twelve playlist URLs in five separate places; those five copies have already drifted from each other and from the collection's own `FEEDS.md`, and each lists a different subset.)
+
+Two things had to change for that to work:
+
+- **`/api/publisher` falls back to RSS for a child Podcast Index does not hold.** Nothing says a publisher's children were ever submitted to PI, and these are served off `raw.githubusercontent.com`. A `null` used to drop the child, so a publisher of unindexed feeds rendered as an **empty collection with no error** — the failure that reads as "this publisher has nothing". PI still wins wherever it answered; this only fills holes. The probe stays **uncaught**, so "PI is down" is still a 5xx and never a page of RSS-derived children pretending PI agreed.
+- **A failed load is no longer rendered as an empty one.** `publisherError` separates "we could not fetch these" (message + retry, and **no count**, since `0 feeds` over a load error asserts the very thing we just said we could not determine) from "this publisher lists nothing". That mattered little while the only way in was pasting a URL; with a button on the home page, a PI outage would otherwise have told every visitor that the collection is empty.
+
+**Known data bug in the collection, which does not affect us:** every `feedGuid` in the publisher feed disagrees with the `<podcast:guid>` of the playlist it points at (all nine). We resolve children by `feedUrl`, so nothing here breaks — but anything resolving that publisher by guid would find the wrong feed or none.
+
+### Surfacing playlists in search
+
+`/search/byterm` has **no medium parameter**, so a playlist Podcast Index ranks poorly — or has indexed under a title the query does not lead with — is unreachable by keyword however the user phrases it. `/podcasts/bymedium` can be asked for a medium directly, so `/api/search` runs it as a second lane beside byterm and prepends what byterm missed.
+
+- **PI's documented enum for that parameter lists only the seven base mediums**, not the `L` variants. Whether the live index accepts `musicL` is therefore not something the docs settle. `getFeedsByMedium` treats a **400 as `[]`** — "no playlists of this kind" is the same answer as "this index will not be asked that" from the caller's point of view — so an index that refuses them costs one cheap 400 per medium and the lane simply stays empty. Only auth and 5xx propagate. Measured against a stub: all ten list mediums are asked, and the eight it rejected were skipped with no effect on the search.
+- **The roster is cached hard, and a cold one is WAITED for — briefly.** List feeds are rare and slow-moving, so one refresh serves six hours (servable for 24). Skipping the lane outright on a cold roster was wrong for the one search that matters most: a playlist is a new kind of feed, so somebody typing a playlist's name is very often looking for exactly what this lane finds — and on a serverless runtime "cold" is not a once-per-deploy event, it is every new instance. A missing lane there makes the feature look broken, then work on a retry, which is the hardest failure to report and the easiest to dismiss. So a cold search waits up to `ROSTER_COLD_WAIT_MS` (1500 ms) and then goes without it, the refresh continuing behind for the next one. Measured against a stub: 0.71 s cold with the lane present on a healthy index, and exactly 1.55 s with no lane when the index takes six seconds — the search is never held hostage. That is the read-index rule again: this lane may be absent, and its absence must never be reported as "there are no playlists".
+- **A refresh that nothing answered for is not cached.** `Promise.allSettled`, not `all` with a `.catch(() => [])`, because those produce the same value from opposite claims: a fulfilled arm is PI saying "none of this medium", a rejected one is us failing to ask. Flattening the second into the first writes an empty roster on one transient outage and serves it as fact for six hours — the lane silently ceasing to exist, with nothing on screen or in a log to say so. Verified by breaking the endpoint mid-run: the previous roster keeps serving and recovers when PI does.
+- **At most `MAX_PLAYLIST_HITS` (6) are prepended**, and only ones byterm did not already return. They jump PI's own ranking, so a broad word like "music" must not push six playlists over the show somebody was looking for; and merging by feed id keeps a playlist PI ranked normally in its earned position rather than promoting it twice. `filterPlaylistsByQuery` (`lib/util.ts`, pinned by `check:musicl`) requires **every** term, re-checks the medium so a base-medium feed can never be stamped as a playlist, and matches nothing for an empty query.
+
+**A pasted feed URL now falls back to RSS on a PI FAILURE, not only on a PI miss.** `getPodcastByFeedUrl` turns 400/404 into `null`, and only that null used to reach `getFeedFromRss` — an auth error or a 5xx propagated out as a 500. So the one input where PI matters least (the user handed us the URL; we can read it ourselves) failed hardest when PI was down: measured, pasting a playlist URL answered 500 while `/api/playlist` served the same feed's 1217 tracks from the same process. The PI error is remembered and **rethrown if the RSS read also comes up empty**, so a real outage still surfaces as a 5xx and "PI is down" never renders as "no such feed".
+
+### No scheduled reparse, and why
+
+StableKraft runs a nightly GitHub Actions job that re-fetches every playlist and writes new tracks into Postgres. That job exists because its read path resolves tracks **from the database with zero network**, so the database has to be filled ahead of time. Ours resolves on demand through `batchEpisodes`, so a playlist edited on GitHub is live within about five minutes (`fetchFeedXml`'s 60 s window plus the route's `s-maxage=300`) with no job at all. Adding a cron would buy nothing and add a thing that can fail silently.
+
+### `?playlist=<feedUrl>` is the deep link
+
+A preview feed is not URL-mirrored, because a publisher checking their own unsubmitted feed has nothing to share. A playlist is the exception — people share these — and it restores exactly, because `/api/playlist` keys off the feed URL rather than a PI id. Same shape as `?publisher=<feedUrl>`.
+
 ## Podroll (`<podcast:podroll>`, host-recommended shows)
 
 A channel-level `<podcast:podroll>` holds `<podcast:remoteItem feedGuid=… feedUrl=…>` entries pointing at other shows the host recommends. PI doesn't index it, so it rides the same RSS pass as `feedMedium`: `parsePodroll(channelXml)` → `feedPodroll` → `podcast.podroll: PodrollItem[]`. Entries without a `feedGuid` are skipped (the spec requires it; `feedUrl` is an optional hint).
