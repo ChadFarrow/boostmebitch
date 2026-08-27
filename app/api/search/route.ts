@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { searchPodcasts, searchPlaylistFeeds, getPodcast, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
+import { rankPlaylistsFirst } from '@/lib/util';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -92,22 +93,18 @@ export async function GET(req: Request) {
     // The lane is an ACCELERATOR and never a dependency: `searchPlaylistFeeds`
     // answers [] for every failure and for a cold roster, so a search can only
     // ever be as good as it was before this existed — never broken by it.
-    const [feeds, playlists] = await Promise.all([
+    const [feeds, rosterHits] = await Promise.all([
       searchPodcasts(query, 50),
       searchPlaylistFeeds(query, MAX_PLAYLIST_HITS).catch(() => [] as Awaited<ReturnType<typeof searchPlaylistFeeds>>),
     ]);
 
-    // Only the ones byterm MISSED — that is the whole value of the lane, and
-    // merging by feed id keeps a playlist PI ranked normally in its earned
-    // position instead of promoting it twice.
-    const seen = new Set(feeds.map((f) => f.id));
-    const extra = playlists.filter((p) => !seen.has(p.id));
-
-    // Prepended, not appended. These matched on a title or author substring AND
-    // on being a playlist at all, which is a strong signal, and there are at
-    // most MAX_PLAYLIST_HITS of them — while byterm returns up to 50, so
-    // appending would bury the one result the lane exists to surface. The
-    // ♫ PLAYLIST stamp is what tells them apart on screen.
-    return NextResponse.json({ feeds: [...extra, ...feeds] }, { headers: SEARCH_CACHE });
+    // Matching playlists lifted above the results PI buried them under, without
+    // displacing PI's own leader. The whole rule — and the measurements behind
+    // it — lives in `rankPlaylistsFirst`, which `check:musicl` pins against the
+    // real `mutton` and `flowgnar` responses.
+    return NextResponse.json(
+      { feeds: rankPlaylistsFirst(feeds, rosterHits, query, MAX_PLAYLIST_HITS) },
+      { headers: SEARCH_CACHE },
+    );
   }, 'search failed');
 }

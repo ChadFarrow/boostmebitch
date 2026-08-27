@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, PLAYLIST_MEDIUMS } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, PLAYLIST_MEDIUMS } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -485,6 +485,75 @@ console.log('\nWhich playlists a typed query surfaces');
       && PLAYLIST_MEDIUMS.length === 10) {
     ok(`PLAYLIST_MEDIUMS enumerates all ${PLAYLIST_MEDIUMS.length} list mediums`);
   } else fail('PLAYLIST_MEDIUMS must enumerate exactly the mediums isPlaylistMedium accepts');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nA matching playlist is lifted out of where PI buried it');
+// ---------------------------------------------------------------------------
+{
+  // VECTORS ARE REAL PRODUCTION RESPONSES, trimmed to the fields that decide the
+  // order. Captured from the deployed /api/search on 2026-08-27 — the numbers in
+  // `rankPlaylistsFirst`'s doc comment are these, and a synthetic list would not
+  // have produced either of them: the `mutton` set is mostly mutton RECIPES and
+  // a dog-behaviour show, which is why the playlist sank to eighth, and the
+  // `flowgnar` set is the case that stops this from being a blind prepend.
+  const MUTTON = [
+    { id: 6594523, title: 'Mutton, Mead & Music', author: 'Øystein Berge', medium: 'podcast' },
+    { id: 6796971, title: "The Luchi & Mutton's Podcast, Dog Behaviour & Nutrition", author: 'Surabhi Venkatesh', medium: 'podcast' },
+    { id: 5368137, title: 'Best of Muttons in the Morning', author: 'Mediacorp', medium: 'podcast' },
+    { id: 1276289, title: 'The Mutton Sandwich Podcast', author: 'Mediacorp', medium: 'podcast' },
+    { id: 484374, title: 'British Baseball Podcast', author: 'Matthew Mutton', medium: 'podcast' },
+    { id: 6803464, title: 'How Mutton Soup Caught Psycho Wife?', author: 'Wronged', medium: 'podcast' },
+    { id: 7588571, title: 'Life in Stereo', author: 'Matthew Mutton', medium: 'podcast' },
+    { id: 7476088, title: 'Mutton, Mead & Music Playlist', author: '', medium: 'musicL' },
+    { id: 7827705, title: 'Adventure Time Together', author: 'Matthew Mutton', medium: 'podcast' },
+  ];
+  const FLOWGNAR = [
+    { id: 6933361, title: 'Flowgnar', author: 'Kyle M. Bondo', medium: 'podcast' },
+    { id: 7475965, title: 'Flowgnar Music Playlist', author: '', medium: 'musicL' },
+  ];
+  const ids = (a) => a.map((f) => f.id);
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  // THE BUG THIS FIXES. Position 8 in the live index, behind a dog-behaviour
+  // show; second after the fix, under the podcast of the same name.
+  const mutton = rankPlaylistsFirst(MUTTON, [], 'mutton', 6);
+  if (mutton[1]?.id === 7476088 && mutton[0].id === 6594523) {
+    ok('mutton: the playlist moves 8th → 2nd, under the same-named podcast');
+  } else fail(`mutton ordering wrong: ${JSON.stringify(ids(mutton).slice(0, 3))}`);
+  if (eq(ids(mutton).slice().sort(), ids(MUTTON).slice().sort())) ok('mutton: every result survives, nothing duplicated');
+  else fail('mutton: promotion must not drop or duplicate a result');
+
+  // THE CASE THAT STOPS IT BEING A BLIND PREPEND. Already correct in the live
+  // index, and must come back byte-identical.
+  const flow = rankPlaylistsFirst(FLOWGNAR, [], 'flowgnar', 6);
+  if (eq(ids(flow), ids(FLOWGNAR))) ok('flowgnar: PI already had it right, so nothing moves');
+  else fail(`flowgnar: must be unchanged, got ${JSON.stringify(ids(flow))}`);
+
+  // A playlist that is ALREADY the leader stays the leader — the head is not
+  // held back against itself, which would demote it to second behind a
+  // non-match.
+  const leadIsList = [FLOWGNAR[1], FLOWGNAR[0]];
+  if (eq(ids(rankPlaylistsFirst(leadIsList, [], 'flowgnar', 6)), ids(leadIsList))) {
+    ok('a playlist already ranked first stays first');
+  } else fail('a leading playlist must not be demoted by its own promotion');
+
+  // Roster-only hits still have a reason to exist, and come AFTER byterm's
+  // ranked answers.
+  const rosterOnly = [{ id: 999, title: 'Mutton Deep Cuts Playlist', author: '', medium: 'podcastL' }];
+  const merged = rankPlaylistsFirst(MUTTON, rosterOnly, 'mutton', 6);
+  if (merged[1]?.id === 7476088 && merged[2]?.id === 999) ok('a roster-only playlist lands after byterm\'s, both above the noise');
+  else fail(`roster merge wrong: ${JSON.stringify(ids(merged).slice(0, 4))}`);
+  if (rankPlaylistsFirst(MUTTON, [MUTTON[7]], 'mutton', 6).filter((f) => f.id === 7476088).length === 1) {
+    ok('a playlist in BOTH lanes appears once');
+  } else fail('a playlist present in both lanes must not be duplicated');
+
+  // A query matching no playlist must leave the results exactly as PI ranked
+  // them — this promotes, it never re-ranks.
+  if (eq(ids(rankPlaylistsFirst(MUTTON, [], 'baseball', 6)), ids(MUTTON))) ok('no playlist match ⇒ PI order untouched');
+  else fail('a non-matching query must not reorder anything');
+  if (eq(rankPlaylistsFirst([], [], 'mutton', 6), [])) ok('an empty result set stays empty');
+  else fail('empty in, empty out');
 }
 
 if (failures) {

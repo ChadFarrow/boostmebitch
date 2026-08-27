@@ -84,6 +84,50 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
 export const PLAYLIST_MEDIUMS: readonly string[] = [...LIST_MEDIUMS];
 
 /**
+ * Search results with matching playlists lifted to the top — but never over
+ * Podcast Index's own leader.
+ *
+ * **The problem this solves is RANK, not absence.** Measured against the live
+ * index: `mutton` returns the Mutton, Mead & Music Playlist at position EIGHT,
+ * under a dog-behaviour show and two mutton-cooking episodes. byterm had it all
+ * along, so a lane that only adds what byterm MISSED changed nothing about the
+ * search somebody would actually run. Playlists are therefore promoted from
+ * wherever they came from, byterm's own results included.
+ *
+ * **`feeds[0]` keeps its place.** It is nearly always the exact-name match, so
+ * displacing it answers a different question than the one asked — `flowgnar`
+ * returns the Flowgnar podcast then the Flowgnar playlist, which is already the
+ * right order and a blind prepend would invert it. Everything BELOW the leader
+ * is where a playlist gets lost, which is exactly where `mutton` buried one. The
+ * one exception is a leader that is itself a playlist: it is already promoted,
+ * so there is nothing to hold back.
+ *
+ * `roster` is the second lane (`/podcasts/bymedium`) and contributes only what
+ * byterm could not reach; its hits come after byterm's, which are ranked
+ * answers rather than substring matches. Order is otherwise preserved
+ * throughout — this promotes, it does not re-rank.
+ */
+export function rankPlaylistsFirst<T extends Pick<Podcast, 'id' | 'title' | 'author' | 'medium'>>(
+  feeds: readonly T[],
+  roster: readonly T[],
+  q: string,
+  limit: number,
+): T[] {
+  const bytermIds = new Set(feeds.map((f) => f.id));
+  const promoted = [
+    ...filterPlaylistsByQuery(feeds, q, limit),
+    ...roster.filter((p) => !bytermIds.has(p.id)),
+  ].slice(0, limit);
+  const promotedIds = new Set(promoted.map((f) => f.id));
+
+  const top = feeds[0];
+  const head = top && !promotedIds.has(top.id) ? [top] : [];
+  const headId = head.length ? head[0].id : undefined;
+  const rest = feeds.filter((f) => !promotedIds.has(f.id) && f.id !== headId);
+  return [...head, ...promoted, ...rest];
+}
+
+/**
  * Which playlists a typed query should surface.
  *
  * Podcast Index's `/search/byterm` has **no medium parameter**, so a playlist it
