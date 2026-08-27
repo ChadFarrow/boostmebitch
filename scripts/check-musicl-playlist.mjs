@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, PLAYLIST_MEDIUMS } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, PLAYLIST_MEDIUMS } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -554,6 +554,57 @@ console.log('\nA matching playlist is lifted out of where PI buried it');
   else fail('a non-matching query must not reorder anything');
   if (eq(rankPlaylistsFirst([], [], 'mutton', 6), [])) ok('an empty result set stays empty');
   else fail('empty in, empty out');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nA feed Podcast Index registered but never parsed');
+// ---------------------------------------------------------------------------
+{
+  // PI's ACTUAL record for ChadF's Greatest Hits playlist, captured from the
+  // live index. The file carries a duplicate `xmlns:podcast`, so no XML parser
+  // can read it — PI holds the URL with an empty title, a DERIVED v5 guid (it
+  // had no <podcast:guid> to record) and the default medium.
+  const PI_BLANK = {
+    id: 7683902, podcastGuid: 'bdf5a0f9-d803-5d6d-81b6-d99bfba58e4e',
+    title: '', author: null, description: '', medium: 'podcast',
+  };
+  const RSS = {
+    id: -1312826522, title: "ChadF's Greatest Hits Music Playlist", author: 'ChadF',
+    medium: 'musicl', image: 'https://example.com/gh.png', isPreview: true,
+    podcastGuid: undefined,
+  };
+
+  for (const [label, v, want] of [
+    ["PI's real Greatest Hits record", PI_BLANK, true],
+    ['a title of only whitespace', { title: '   ' }, true],
+    ['an absent title', {}, true],
+    ['a null record', null, true],
+    ['an undefined record', undefined, true],
+    ['a normal PI record', { title: 'Homegrown Hits Music Playlist' }, false],
+  ]) {
+    if (piRecordIsBlank(v) === want) ok(`${label} → blank: ${want}`);
+    else fail(`${label} should be blank: ${want}`);
+  }
+
+  const merged = mergeRssOverPi(PI_BLANK, RSS);
+  // What only PI can supply, and what the rest of the app resolves by.
+  if (merged.id === 7683902) ok('the repaired record keeps PI\'s feed id');
+  else fail(`must keep PI's id, got ${merged.id}`);
+  if (merged.podcastGuid === PI_BLANK.podcastGuid) ok('and PI\'s guid, which other clients agree on');
+  else fail('must keep PI\'s guid');
+  // What the publisher declares, read from the live feed moments ago.
+  if (merged.title === RSS.title) ok('the title comes from the feed, so the row is visible at all');
+  else fail('the feed\'s title must win over a blank one');
+  if (merged.medium === 'musicl') ok('and the medium, so the playlist path engages');
+  else fail('the feed\'s medium must win over PI\'s default');
+  // PI DOES hold this feed; saying otherwise suppresses share, hearts and URL
+  // mirroring for something that resolves by guid on any device.
+  if (merged.isPreview === undefined) ok('isPreview is cleared — PI really does hold it');
+  else fail('a repaired record must not claim to be a preview');
+  // A feed PI has never seen keeps its own guid rather than inheriting nothing.
+  const noGuid = mergeRssOverPi({ ...PI_BLANK, podcastGuid: undefined }, { ...RSS, podcastGuid: 'abc' });
+  if (noGuid.podcastGuid === 'abc') ok('falls back to the feed\'s guid when PI has none');
+  else fail('must fall back to the feed\'s guid');
 }
 
 if (failures) {

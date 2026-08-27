@@ -3,6 +3,7 @@ import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getPublisherAlbumUrls } from '@/lib/musicl-resolver';
 import { getFeedFromRss, getPodcastByFeedUrl } from '@/lib/pi';
+import { mergeRssOverPi, piRecordIsBlank } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
 // Publisher feeds are effectively static — new albums appear rarely — and this
@@ -39,36 +40,41 @@ export async function GET(req: Request) {
     );
     const fromPi = [probe, ...rest];
 
-    // A child Podcast Index does not hold is read straight from its RSS.
+    // A child Podcast Index does not hold — OR holds BLANK — is read from RSS.
     //
-    // A publisher feed is a list of feed URLs, and nothing says its children
-    // were ever submitted to PI — the ChadF musicL publisher's nine children are
-    // playlist feeds served off raw.githubusercontent.com. Before this, a `null`
-    // here simply dropped the child, so a publisher of unindexed feeds rendered
-    // as an EMPTY collection with no error: the failure mode that reads as "this
-    // publisher has nothing" rather than as "we could not look these up".
+    // Two distinct faults, one repair. Nothing says a publisher's children were
+    // ever submitted to PI (these are served off raw.githubusercontent.com), and
+    // nothing says a child PI *did* register was ever parsed: ChadF's Greatest
+    // Hits playlist is feed 7683902 with an empty title, because its XML carries
+    // a duplicate `xmlns:podcast`. Before this, the first dropped the child and
+    // the second rendered a BLANK CARD — and a collection is exactly where such
+    // a feed turns up, since a publisher lists whatever its author lists.
     //
-    // PI still WINS wherever it answered — it carries a real feed id, richer
-    // metadata and no outbound fetch. This only fills the holes, and it fills
-    // them with the same `isPreview` shape `/api/search` already falls back to
-    // for a pasted URL PI doesn't know. `null` from the fallback too is a
-    // genuine drop: that URL is not a feed.
+    // PI still WINS wherever it answered usefully: a real feed id, richer
+    // metadata, no outbound fetch. `mergeRssOverPi` keeps its id and guid and
+    // takes the rest from the feed. `null` from the fallback too is a genuine
+    // drop: that URL is not a feed.
     //
     // The PI probe above stays UNCAUGHT, so "PI is down" is still a 5xx and
     // never a page of RSS-derived children pretending PI agreed.
-    const missing = fromPi
-      .map((f, i) => (f === null ? albumUrls[i] : null))
+    const needsRss = fromPi
+      .map((f, i) => (f === null || piRecordIsBlank(f) ? albumUrls[i] : null))
       .filter((u): u is string => u !== null);
     const rescued = new Map<string, Podcast>();
-    if (missing.length) {
+    if (needsRss.length) {
       const parsed = await Promise.all(
-        missing.map((url) => getFeedFromRss(url).then((r) => r?.podcast ?? null).catch(() => null)),
+        needsRss.map((url) => getFeedFromRss(url).then((r) => r?.podcast ?? null).catch(() => null)),
       );
-      parsed.forEach((p, i) => { if (p) rescued.set(missing[i], p); });
+      parsed.forEach((p, i) => { if (p) rescued.set(needsRss[i], p); });
     }
 
     const feeds = fromPi
-      .map((f, i) => f ?? rescued.get(albumUrls[i]) ?? null)
+      .map((f, i) => {
+        const rss = rescued.get(albumUrls[i]);
+        if (f && !piRecordIsBlank(f)) return f;
+        if (f && rss) return mergeRssOverPi(f, rss);
+        return f ?? rss ?? null;
+      })
       .filter((f): f is Podcast => f !== null);
     return NextResponse.json({ feeds }, { headers: PUBLISHER_CACHE });
   }, 'publisher resolution failed');

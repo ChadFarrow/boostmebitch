@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { searchPodcasts, searchPlaylistFeeds, getPodcast, getPodcastByFeedUrl, getFeedFromRss } from '@/lib/pi';
-import { rankPlaylistsFirst } from '@/lib/util';
+import { mergeRssOverPi, piRecordIsBlank, rankPlaylistsFirst } from '@/lib/util';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
@@ -76,34 +76,19 @@ export async function GET(req: Request) {
       } catch (e) {
         piError = e;
       }
-      // A PI hit with a BLANK TITLE is not a usable answer. PI can hold a feed
-      // it crawled badly — ChadF's Greatest Hits playlist is real: feed 7683902,
-      // `title: ""`, `medium: "podcast"` over a feed that declares `musicL`.
-      // Returned as-is that is an EMPTY ROW in the results, which is
+      // A PI hit with a BLANK TITLE is not a usable answer — see
+      // `piRecordIsBlank`. Returned as-is it is an EMPTY ROW, which is
       // indistinguishable from the feed not being there at all: "I don't see it
-      // listed", for a feed the user just pasted the URL of.
-      //
-      // So the RSS is read too and layered UNDER PI's record: PI keeps its feed
-      // id and guid — the things only it can supply, and what the rest of the
-      // app resolves by — while the feed itself supplies what PI got wrong or
-      // never got. Only for a blank title, because a PI record with a title is
-      // the one the rest of the index agrees on.
-      if (piHit?.title?.trim()) {
+      // listed", for a feed whose URL the user just pasted.
+      if (!piRecordIsBlank(piHit)) {
         return NextResponse.json({ feeds: [piHit] }, { headers: SEARCH_CACHE });
       }
       const parsed = await getFeedFromRss(query).catch(() => null);
       if (piHit && parsed) {
-        return NextResponse.json({
-          feeds: [{
-            ...parsed.podcast,
-            id: piHit.id,
-            podcastGuid: piHit.podcastGuid ?? parsed.podcast.podcastGuid,
-            // NOT a preview: Podcast Index does hold this feed, and claiming
-            // otherwise would suppress the share link and the favorite heart for
-            // a feed that can be resolved by guid on any device.
-            isPreview: undefined,
-          }],
-        }, { headers: SEARCH_CACHE });
+        return NextResponse.json(
+          { feeds: [mergeRssOverPi(piHit, parsed.podcast)] },
+          { headers: SEARCH_CACHE },
+        );
       }
       if (piHit) return NextResponse.json({ feeds: [piHit] }, { headers: SEARCH_CACHE });
       if (parsed) return NextResponse.json({ feeds: [parsed.podcast] }, { headers: SEARCH_CACHE });

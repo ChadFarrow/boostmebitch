@@ -84,6 +84,52 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
 export const PLAYLIST_MEDIUMS: readonly string[] = [...LIST_MEDIUMS];
 
 /**
+ * True when Podcast Index's record for a feed is not usable on its own.
+ *
+ * PI can hold a feed it registered but never successfully parsed. ChadF's
+ * Greatest Hits playlist is the measured case — **PI feed 7683902**, `title: ""`
+ * and `medium: "podcast"` over a feed that declares a title and `musicL`,
+ * because the file carries a duplicate `xmlns:podcast` and no XML parser can
+ * read it. Rendered as-is that is an EMPTY ROW, which is indistinguishable from
+ * the feed not being there at all.
+ *
+ * The title is the whole test. A feed with no title cannot be seen, chosen or
+ * searched for, whatever else the record carries — and every other field PI got
+ * wrong is only reachable once somebody can see the row.
+ */
+export function piRecordIsBlank(p: Pick<Podcast, 'title'> | null | undefined): boolean {
+  return !p?.title?.trim();
+}
+
+/**
+ * Podcast Index's record for a feed, repaired from the feed's own RSS.
+ *
+ * PI keeps what only it can supply and what the rest of the app resolves by —
+ * the numeric feed id, and the guid other clients agree on. Everything the
+ * publisher declares comes from the feed, which was read moments ago and cannot
+ * be stale. This is the same precedence `/api/feed` applies to `medium` and
+ * `title`, in the one shape both `/api/search` and `/api/publisher` need.
+ *
+ * **`isPreview` is cleared.** PI really does hold this feed, so claiming
+ * otherwise would suppress the share link, the favorite heart and URL mirroring
+ * for a feed that resolves by guid on any device.
+ *
+ * Shared rather than inlined at each call site: this started in `/api/search`
+ * alone, and `/api/publisher` resolves its children through the very same PI
+ * call — so a blank record renders a blank CARD there, on exactly the feeds a
+ * collection is most likely to contain.
+ */
+export function mergeRssOverPi(pi: Podcast, rss: Podcast): Podcast {
+  return {
+    ...rss,
+    id: pi.id,
+    podcastGuid: pi.podcastGuid ?? rss.podcastGuid,
+    itunesId: pi.itunesId ?? rss.itunesId,
+    isPreview: undefined,
+  };
+}
+
+/**
  * Search results with matching playlists lifted to the top — but never over
  * Podcast Index's own leader.
  *
