@@ -211,6 +211,54 @@ export interface ResolvedRemoteItem {
 }
 
 /**
+ * The item's own value block, else the album's channel-level one, out of an
+ * album feed's XML we already hold.
+ *
+ * **The channel fallback is the half that matters.** Most music feeds declare
+ * `<podcast:value>` once, on the channel, and let every track inherit it — so a
+ * reader that only looks inside `<item>` finds nothing on the majority of real
+ * albums and reports a track as unpayable while its splits sit one level up.
+ *
+ * Split out because two callers need exactly this and only one of them may have
+ * the publisher walk below it: see `resolveItemValueFromRss`.
+ */
+function directHit(xml: string, itemGuid: string): ResolvedRemoteItem | null {
+  const direct = findItemByGuid(xml, itemGuid);
+  if (!direct) return null;
+  const itemValue = extractValueBlock(direct.itemXml);
+  if (itemValue) return { value: itemValue, title: direct.title, image: direct.image };
+  const channelValue = extractValueBlock(channelScope(xml));
+  if (channelValue) return { value: channelValue, title: direct.title, image: direct.image };
+  return null;
+}
+
+/**
+ * The value block for one item of a feed we ALREADY know is that item's parent.
+ *
+ * **Deliberately has no publisher walk, and that is the whole reason it is a
+ * separate export.** `resolveRemoteItemFromRss` falls through to fetching up to
+ * `MAX_ALBUM_FEEDS` album feeds when the URL turns out to name a publisher, and
+ * its own comment says why that is capped: the caller's list is feed-supplied,
+ * so nested, the two fan-outs MULTIPLY. `/api/playlist` calls this once per
+ * unvalued track on a page of up to 100, having resolved each track's real
+ * parent feed through Podcast Index first — so there is no publisher to walk,
+ * and a walk reachable from there would turn one page into thousands of
+ * outbound fetches.
+ *
+ * Returns null when the feed does not hold the item, or holds it with no value
+ * block at any level. Rides the same 5-minute `fetchFeedXml` cache, so N tracks
+ * from one album cost one fetch.
+ */
+export async function resolveItemValueFromRss(
+  feedUrl: string,
+  itemGuid: string,
+): Promise<ValueBlock | null> {
+  const xml = await fetchFeedXml(feedUrl);
+  if (!xml) return null;
+  return directHit(xml, itemGuid)?.value ?? null;
+}
+
+/**
  * Try to resolve a (feedGuid, itemGuid) remoteItem reference by fetching
  * the source RSS feed directly. Handles two cases:
  *   - feedGuid points at the album feed → find the item, return its value
@@ -232,17 +280,8 @@ export async function resolveRemoteItemFromRss(
   if (!xml) return null;
 
   // Direct hit: the feedGuid pointed at an album feed that contains the item
-  const direct = findItemByGuid(xml, itemGuid);
-  if (direct) {
-    const itemValue = extractValueBlock(direct.itemXml);
-    if (itemValue) {
-      return { value: itemValue, title: direct.title, image: direct.image };
-    }
-    const channelValue = extractValueBlock(channelScope(xml));
-    if (channelValue) {
-      return { value: channelValue, title: direct.title, image: direct.image };
-    }
-  }
+  const direct = directHit(xml, itemGuid);
+  if (direct) return direct;
 
   // Publisher chain: walk remoteItems[] for an album feed that contains the item
   if (!isPublisherFeed(xml)) return null;

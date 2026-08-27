@@ -220,6 +220,54 @@ export function hasValueRecipients(value?: ValueBlock | null): boolean {
 }
 
 /**
+ * The value block a boost for THIS ITEM may be paid against.
+ *
+ * `episode.value ?? podcast.value` is the obvious version, and it is what every
+ * boost surface read. It is right for an ordinary show — an episode with no
+ * `<podcast:value>` of its own inherits the channel's, which is what
+ * `/api/feed` already does server-side — and it is a WRONG-PAYEE bug the moment
+ * the container is not the item's parent feed.
+ *
+ * A Podcasting 2.0 PLAYLIST is that case. Its rows are `<podcast:remoteItem>`
+ * references to items living in hundreds of OTHER feeds, so the container's
+ * block belongs to the CURATOR. Falling back to it pays the person who made the
+ * list for a song they had no part in, and it does so silently: the modal
+ * renders a valid split, every leg reports ✓, and nothing on screen says the
+ * artist was never in it. Same rule as `<FavEpisodeHeart>`'s `containerIsParent`
+ * guard, arriving at the money path instead of at a favorite.
+ *
+ * TWO independent signals refuse, and neither alone is enough. The MEDIUM is
+ * the direct one — a list feed is never the parent of what it lists. The GUIDS
+ * catch a container whose medium did not say so, and are the same discriminator
+ * the boost modal already uses to write `remote_feed_guid`. They must BOTH be
+ * present to disagree: a feed Podcast Index has not indexed carries no
+ * `podcastGuid` on either side, and refusing there would take BOOST away from
+ * exactly the independent releases this app exists to pay.
+ *
+ * A SHOW-level boost (no episode) always pays the feed's own block, playlist or
+ * not — the listener chose the container, not an item in it.
+ *
+ * Returns the episode's own block untouched whenever it has one, so this is a
+ * no-op on every ordinary feed. That is also what keeps a hybrid list feed —
+ * one that declares a list medium AND publishes real `<item>`s — working:
+ * `/api/feed` has already folded the channel block into `e.value` before this
+ * is ever asked.
+ */
+export function payableValue(
+  episode: Pick<Episode, 'value' | 'podcastGuid'> | null | undefined,
+  podcast: Pick<Podcast, 'value' | 'podcastGuid' | 'medium'> | null | undefined,
+): ValueBlock | null | undefined {
+  if (episode?.value) return episode.value;
+  if (!podcast) return undefined;
+  if (!episode) return podcast.value;
+  if (isPlaylistMedium(podcast)) return undefined;
+  if (episode.podcastGuid && podcast.podcastGuid && episode.podcastGuid !== podcast.podcastGuid) {
+    return undefined;
+  }
+  return podcast.value;
+}
+
+/**
  * Whether a recipient pays over LNURL rather than keysend.
  *
  * `type` alone is not the answer, because an address containing an `@` is a

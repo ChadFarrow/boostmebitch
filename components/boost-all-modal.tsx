@@ -8,7 +8,7 @@ import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './boost-modal/use-share-picker';
-import { getErrorMessage, hasValueRecipients, payableSplit, resolveSenderName, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, resolveSenderName, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
@@ -154,8 +154,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // across awaits, and we need the final list immediately for the
     // post-loop Nostr publish.
     const successfulIdx: number[] = [];
-    // The host show's value block (preferred per-episode, falls back to feed-level).
-    const hostValue = episode.value ?? podcast.value;
+    // The host show's value block: the episode's own, else the feed's — but
+    // never a CONTAINER's when the container is not this item's parent feed.
+    // See `payableValue` in lib/util.ts.
+    const hostValue = payableValue(episode, podcast);
 
     for (let i = 0; i < splits.length; i++) {
       if (cancelled.current) return;

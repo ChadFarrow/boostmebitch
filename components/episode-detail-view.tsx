@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration } from '@/lib/format';
-import { episodeContentsLabel, hasValueRecipients, httpUrl, showShareUrl, stripHtml } from '@/lib/util';
+import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
 import { useChapters } from '@/lib/chapters';
 import { useResolvedSplits } from '@/lib/track-art';
@@ -96,7 +96,7 @@ export function EpisodeDetailView() {
   // Above the early return below, so hook order stays stable.
   const { button: streamButton, panel: streamPanel } = useStreamPanel(
     podcast,
-    hasValueRecipients(episode?.value ?? podcast?.value),
+    hasValueRecipients(payableValue(episode, podcast)),
   );
   const [infoTab, setInfoTab] = useState<InfoTab>('notes');
 
@@ -125,7 +125,7 @@ export function EpisodeDetailView() {
 
   if (!episode || !podcast) return null;
 
-  const value = episode.value ?? podcast.value;
+  const value = payableValue(episode, podcast);
   const hasValue = hasValueRecipients(value);
   const isThisPlaying = current?.episode.id === episode.id;
   const playerVisible = !!current;

@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, PLAYLIST_MEDIUMS } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, PLAYLIST_MEDIUMS } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -605,6 +605,110 @@ console.log('\nA feed Podcast Index registered but never parsed');
   const noGuid = mergeRssOverPi({ ...PI_BLANK, podcastGuid: undefined }, { ...RSS, podcastGuid: 'abc' });
   if (noGuid.podcastGuid === 'abc') ok('falls back to the feed\'s guid when PI has none');
   else fail('must fall back to the feed\'s guid');
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nWhose value block a boost for one row may be paid against');
+// ---------------------------------------------------------------------------
+{
+  // A PLAYLIST'S ROWS LIVE IN OTHER PEOPLE'S FEEDS, so the container's
+  // `<podcast:value>` is the CURATOR's — and `episode.value ?? podcast.value`,
+  // which every boost surface read, hands it the track's payment. Both
+  // directions are silent and both are expensive:
+  //
+  //   OVER-FALL-THROUGH  the modal renders a valid split, every leg reports ✓,
+  //                      and the artist was never in it. The listener has no
+  //                      way to see that from the screen, and the streaming
+  //                      payer makes the same mistake six times an hour with
+  //                      nobody looking at all.
+  //   OVER-REFUSE        BOOST greys out on a feed that really does declare a
+  //                      block. A disabled button reads as a feature this app
+  //                      does not have, not as a bug — which is why the
+  //                      must-still-work half below is as long as the other.
+  //
+  // The exempt vectors are the ones that pin the refusal's LIMITS: an
+  // unindexed feed (no guids anywhere), a show-level boost on a playlist, and
+  // the track block `fillTrackValues` resolves. Each is a property of that
+  // input, not a hole — a naive fallback happens to get them right too.
+  const ARTIST = { type: 'lightning', method: 'keysend', recipients: [{ name: 'Artist', type: 'node', address: '03aaa', split: 100 }] };
+  const CURATOR = { type: 'lightning', method: 'keysend', recipients: [{ name: 'ChadF', type: 'node', address: '03ccc', split: 100 }] };
+  const SHOW = { type: 'lightning', method: 'keysend', recipients: [{ name: 'Host', type: 'node', address: '03sss', split: 100 }] };
+  const ALBUM_GUID = 'a2d2e313-9cbd-5169-b89c-ab07b33ecc33';
+  const LIST_GUID = '30b31f6c-0000-5000-8000-000000000000';
+
+  const vv = [];
+  const val = (label, episode, podcast, expect, opts = {}) =>
+    vv.push({ label, args: [episode, podcast], expect, ...opts });
+
+  // ── must still work ──────────────────────────────────────────────────────
+  val('an episode with no block of its own inherits the show\'s channel block',
+    { }, { value: SHOW, medium: 'podcast' }, SHOW, { alsoNaive: true });
+  val('the episode\'s own block always wins',
+    { value: ARTIST }, { value: SHOW, medium: 'podcast' }, ARTIST, { alsoNaive: true });
+  val('a feed Podcast Index has not indexed still falls through — neither side has a guid',
+    { }, { value: SHOW, medium: 'podcast' }, SHOW, { alsoNaive: true });
+  val('same guid on both sides is the same feed, so the fallback stands',
+    { podcastGuid: ALBUM_GUID }, { value: SHOW, medium: 'podcast', podcastGuid: ALBUM_GUID },
+    SHOW, { alsoNaive: true });
+  val('a SHOW-level boost on a playlist pays the playlist\'s own block',
+    // No episode: the listener chose the container, not an item in it. This is
+    // the medium rule's limit — refusing here would take the playlist's own
+    // BOOST away along with the bug.
+    null, { value: CURATOR, medium: 'musicL', podcastGuid: LIST_GUID },
+    CURATOR, { alsoNaive: true });
+  val('a playlist row that HAS a block is paid against it — what fillTrackValues resolves',
+    { value: ARTIST, podcastGuid: ALBUM_GUID },
+    { value: CURATOR, medium: 'musicL', podcastGuid: LIST_GUID }, ARTIST, { alsoNaive: true });
+
+  // ── must refuse ──────────────────────────────────────────────────────────
+  val('a playlist row with no block of its own is NOT paid to the curator',
+    { podcastGuid: ALBUM_GUID }, { value: CURATOR, medium: 'musicL', podcastGuid: LIST_GUID },
+    undefined);
+  val('the lowercased medium refuses too — PI returns musicL, the RSS parsers lowercase it',
+    { podcastGuid: ALBUM_GUID }, { value: CURATOR, medium: 'musicl', podcastGuid: LIST_GUID },
+    undefined);
+  val('every list medium refuses, not musicL alone',
+    { podcastGuid: ALBUM_GUID }, { value: CURATOR, medium: 'podcastL', podcastGuid: LIST_GUID },
+    undefined);
+  val('a playlist row refuses even when the container has no guid to compare',
+    // The medium answers on its own: a list feed PI never indexed is still a
+    // list feed, and the guid test has nothing to work with there.
+    { podcastGuid: ALBUM_GUID }, { value: CURATOR, medium: 'musicL' }, undefined);
+  val('DIFFERING GUIDS refuse on their own, whatever the container\'s medium says',
+    // The container that forgot to declare a list medium — the same
+    // discriminator the boost modal already uses to write remote_feed_guid.
+    { podcastGuid: ALBUM_GUID }, { value: CURATOR, medium: 'podcast', podcastGuid: LIST_GUID },
+    undefined);
+  val('no podcast at all is undefined, not a throw',
+    { }, undefined, undefined);
+
+  const ser = (v) => (v === undefined ? 'undefined' : JSON.stringify(v));
+  const naive = (episode, podcast) => episode?.value ?? podcast.value;
+  const call = (impl, v) => {
+    try {
+      return ser(impl === 'real' ? payableValue(...v.args) : naive(...v.args));
+    } catch (e) {
+      // A wrong implementation may throw where the real one answers. That
+      // counts as differing — it is the loudest way to be wrong.
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+
+  for (const v of vv) {
+    const got = call('real', v);
+    if (got !== ser(v.expect)) {
+      fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+      continue;
+    }
+    if (v.alsoNaive) { ok(`${v.label} (must-still-work — naive() may agree)`); continue; }
+    if (got !== call('naive', v)) ok(`${v.label} — and naive() gets it wrong`);
+    else {
+      fail(`"${v.label}" passes against naive() too — the vector proves nothing.\n`
+        + '          Either it is a must-still-work input (mark it { alsoNaive: true })\n'
+        + '          or it does not exercise anything payableValue adds.');
+    }
+  }
+  console.log(`  ${vv.length} vector(s) replayed, ${vv.filter((v) => v.alsoNaive).length} exempt as must-still-work`);
 }
 
 if (failures) {
