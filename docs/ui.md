@@ -112,6 +112,15 @@ Section-divider labels ("Live & upcoming" / "Episodes") derive `prev` from the *
 
 - **No pagination** — `visibleEpisodes = isMusic ? data.episodes : …slice(0, visibleCount)`; `remaining` is 0 so "Load more" never renders. Still capped at the ~50 `/api/feed` returns.
 - **Row tap plays the track** instead of `openEpisode(e)` — tracks carry little extra metadata, so the detail page isn't worth it. Non-music rows still open the detail view.
+**A `musicL` PLAYLIST shares the track behaviour and deliberately not the rest** (`isPlaylistMedium` / `playsAsTracks`, `lib/util.ts`):
+
+- **Row tap plays, and the header cover is a play button** — shared, via `playsAsTracks`, because a playlist row is a track.
+- **Paging FETCHES.** A playlist's tracks are resolved one Podcast Index lookup at a time, so "Load more tracks" is a real request (`loadPlaylistPage`) that appends and re-writes `episodeQueue` with the **merged** array — a queue holding only the newest page strands a listener playing a track from an earlier one, with ⏭ doing nothing. Every fetched row renders: a second reveal axis on top of the fetch would make one new track cost two presses.
+- **Not `isMusicMedium`, and that is the point.** Widening it would turn on the two things a playlist must not do — render all 1217 rows at once, and sort by `<podcast:season>`/`<podcast:episode>`. Those numbers are each track's position *on its own album*, so sorting by them interleaves hundreds of unrelated records by track number and destroys the one ordering the document asserts, silently.
+- **Unresolved rows are rendered, not dropped**, with the play control suppressed rather than disabled (empty `enclosureUrl`). The two counts under the list are separate sentences because they are separate claims — see the three-state table in [`feeds.md`](feeds.md).
+- **`targetWord` says PLAYLIST, never ALBUM.** A curated list drawn from hundreds of artists is not one artist's record.
+- `♫ PLAYLIST` stamps the search-results row, through `isPlaylistMedium` and never a raw `=== 'musicL'` — the RSS parsers lowercase the tag and PI returns its own spelling, so a literal comparison stamps one path and silently not the other.
+
 - **Header album art is a play button** when `isMusic && firstPlayable` — the `<PodcastCover>` wraps in a `<button>` with an always-visible `bg-ink/45` scrim + `▶`/`❚❚`. Plays from `firstPlayable` (first non-pending track), or toggles play/pause if a track from this show is current (`showIsCurrent`, matched by `podcastGuid`/`id`).
 
 ## Players (mini + fullscreen)

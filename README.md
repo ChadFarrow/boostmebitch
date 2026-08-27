@@ -108,6 +108,7 @@ app/
   api/value-splits/      → resolve valueTimeSplit remote items  (PI + RSS fallback)
   api/live-value/        → resolve a live item's CURRENT payment target (polled)
   api/publisher/         → publisher feed → album children      (capped fan-out)
+  api/playlist/          → musicL playlist → ONE PAGE of tracks  (remote items via PI batch)
   api/chapters/          → <podcast:chapters> JSON proxy        (hosts send no CORS)
   api/transcript/        → <podcast:transcript> proxy, served inert as text/plain
   api/keysend/           → .well-known/keysend probe proxy      (no CORS upstream)
@@ -142,8 +143,8 @@ lib/
   storage.ts     → typed localStorage accessors for every bmb:* key (+ quota eviction, memory mirror)
   chapters.ts · transcript.ts   → parse + hooks + the "is this podcast-only?" gates
   podcast-meta.ts → the ONE PI metadata resolver (memory + localStorage cache + circuit breaker)
-  musicl-resolver.ts → RSS rescue for remote items PI hasn't indexed
-  types.ts · util.ts  (isMusicMedium, hasValueRecipients, isHlsUrl, fnvHash, httpUrl, recipientOrder)
+  musicl-resolver.ts → RSS rescue for remote items PI hasn't indexed (publisher → album walk)
+  types.ts · util.ts  (isMusicMedium, isPlaylistMedium, playsAsTracks, hasValueRecipients, isHlsUrl, fnvHash, httpUrl, recipientOrder)
   format.tsx     → fmt/fmtDuration/fmtClock/fmtLiveTime/timeAgo, linkify, confetti, boost ping
   boost-sound.ts → audio-session plan for the boost ping AND its tap-time unlock
   nostr/

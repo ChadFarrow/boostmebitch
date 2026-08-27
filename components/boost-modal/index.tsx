@@ -293,6 +293,17 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       // is a payment for the TRACK, and the artist's aggregator reads these two
       // fields to say which one. Both legs carry them, so the host's Helipad
       // can tie their 3% back to the song that triggered it.
+      // A `<podcast:medium>musicL` PLAYLIST is the third shape of the same
+      // thing, and it needs no window or socket to reach it: the item simply
+      // lives in a different feed from the container. `remote_feed_guid` above
+      // took `podcast.podcastGuid`, which on a playlist names the curated list
+      // rather than the album that earned the payment — so the artist's
+      // aggregator is handed a feed their track is not in, and the host cannot
+      // correlate. The episode's own guid is the album's; on every ordinary
+      // feed the two are equal, so this spread changes nothing there.
+      ...(episode?.podcastGuid && episode.podcastGuid !== podcast.podcastGuid
+        ? { remote_feed_guid: episode.podcastGuid, remote_item_guid: episode.guid }
+        : {}),
       ...(redirect?.remoteItem?.feedGuid ? { remote_feed_guid: redirect.remoteItem.feedGuid } : {}),
       ...(redirect?.remoteItem?.itemGuid ? { remote_item_guid: redirect.remoteItem.itemGuid } : {}),
     };

@@ -10,8 +10,9 @@ import { EpisodeDetailView } from '@/components/episode-detail-view';
 import { AppHeader } from '@/components/app-header';
 import Link from 'next/link';
 import { useApp } from '@/lib/store';
-import { loadEpisodeFromFeed, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
+import { loadEpisodeFromFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
+import { isPlaylistMedium } from '@/lib/util';
 
 import type { Podcast } from '@/lib/types';
 
@@ -75,13 +76,30 @@ export function HomePage() {
     const params = new URLSearchParams(window.location.search);
     const guid = params.get('podcast');
     const feedId = params.get('feed');
+    const playlistParam = params.get('playlist');
     const episodeGuid = params.get('episode');
     const wantDiscussion = params.get('discussion') === '1';
-    if (!guid && !feedId) { setEntryResolved(true); return; }
+    if (!guid && !feedId && !playlistParam) { setEntryResolved(true); return; }
     if (useApp.getState().selectedPodcast) { setEntryResolved(true); return; }
     (async () => {
       let podcast: Podcast | null = null;
-      if (guid) {
+      // A playlist restores by FEED URL, because a musicL feed Podcast Index has
+      // not indexed has no id or guid to restore by — the same reason
+      // ?publisher=<feedUrl> exists. `/api/playlist` answers with the channel,
+      // so one request both validates the URL and supplies the header.
+      if (playlistParam && !guid && !feedId) {
+        try {
+          // Through `loadPlaylistPage` so the URL is built in one place, and
+          // asking for the DEFAULT page rather than a token `limit=1`: it is
+          // then byte-identical to the request `<EpisodeList>` makes for page 0
+          // a moment later. The two are SEQUENTIAL (this await gates the
+          // selection that mounts the list), so the in-flight map cannot
+          // collapse them — what does is the route's own `max-age=60`, which
+          // makes the second a browser cache hit. A token `limit=1` would have
+          // been a third distinct cache key answering nobody.
+          podcast = (await loadPlaylistPage({ feedUrl: playlistParam })).podcast ?? null;
+        } catch { /* fall back to browse */ }
+      } else if (guid) {
         podcast = await resolvePodcastByGuid(guid);
       } else if (feedId) {
         const id = Number(feedId);
@@ -139,6 +157,14 @@ export function HomePage() {
     // aren't restorable from the URL (a refresh would hit /api/feed?id=<neg> and
     // blank the view), so mirror nothing for them; they're an ephemeral preview.
     const isPreview = !!selected?.isPreview;
+    // A PLAYLIST is the one preview feed worth linking to. Every other preview
+    // is a publisher checking their own not-yet-submitted feed, but a musicL
+    // playlist is a thing people share — and it restores exactly, because
+    // `/api/playlist` keys off the feed URL rather than a Podcast Index id.
+    const playlistUrl = selected && !selected.podcastGuid && isPlaylistMedium(selected)
+      ? selected.url : undefined;
+    if (playlistUrl) url.searchParams.set('playlist', playlistUrl);
+    else url.searchParams.delete('playlist');
     if (selected?.podcastGuid) {
       url.searchParams.set('podcast', selected.podcastGuid);
       url.searchParams.delete('feed');
@@ -382,7 +408,11 @@ export function HomePage() {
               </button>
             )}
             <section className="card p-4 min-h-[40vh]">
-              <EpisodeList feedId={selected!.id} feedUrl={selected!.isPreview ? selected!.url : undefined} />
+              <EpisodeList
+                feedId={selected!.id}
+                feedUrl={selected!.isPreview ? selected!.url : undefined}
+                playlistUrl={isPlaylistMedium(selected!) ? selected!.url : undefined}
+              />
             </section>
           </div>
         ) : showLeftRightLayout ? (

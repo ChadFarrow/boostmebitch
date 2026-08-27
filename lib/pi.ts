@@ -1,11 +1,11 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
-import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs } from './feed-xml';
+import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRemoteItems, type PlaylistItemRef } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium } from './util';
 import { createBoundedCache } from './bounded-cache';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -1091,6 +1091,43 @@ function extractRssImageUrl(xml: string): string | undefined {
   return m ? decodeXmlText(m[1]) : undefined;
 }
 
+/**
+ * The channel half of a not-in-PI feed, as a `Podcast`.
+ *
+ * Shared by `getFeedFromRss` and `getPlaylistChannel` rather than written out
+ * twice: the two paths must agree about what the same document is called, what
+ * art it has and — the one that matters — that a preview feed carries a
+ * SYNTHETIC negative id and **no `podcastGuid`**.
+ *
+ * Withholding the guid is deliberate even though a `musicL` playlist does
+ * publish a `<podcast:guid>`. Podcast Index has not indexed these feeds (that
+ * is what makes them previews), so `/podcasts/byguid` cannot resolve one on any
+ * device — and a feed favorite writes that guid to a shared kind:10333 list
+ * with no undo, where it would be an unopenable placeholder forever. The guid
+ * being present on the wire is not the test; being resolvable is.
+ */
+function previewPodcastFromChannel(rssUrl: string, channelXml: string): Podcast {
+  const channelRssImage = extractRssImageUrl(channelXml);
+  const channelItunesImage = extractItunesImageHref(channelXml);
+  const channelImage = channelRssImage ?? channelItunesImage;
+  return {
+    id: -fnvHash(rssUrl),
+    title: extractText(channelXml, 'title') || rssUrl,
+    author: extractText(channelXml, 'itunes:author') ?? extractText(channelXml, 'managingEditor'),
+    description: extractText(channelXml, 'description'),
+    image: channelImage,
+    // Keep itunes:image as a second-chance source when it differs from <image>.
+    artwork: channelItunesImage && channelItunesImage !== channelImage ? channelItunesImage : undefined,
+    url: rssUrl,
+    medium: extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined,
+    value: parseValueBlock(channelXml),
+    funding: parseFunding(channelXml),
+    podroll: parsePodroll(channelXml),
+    nostrNpubs: parseFeedNpubs(channelXml),
+    isPreview: true,
+  };
+}
+
 export async function getFeedFromRss(
   rssUrl: string,
 ): Promise<{ podcast: Podcast; episodes: Episode[] } | null> {
@@ -1102,28 +1139,9 @@ export async function getFeedFromRss(
 
   const channelXml = channelSlice(xml);
 
-  const feedId = -fnvHash(rssUrl);
-  const medium = extractText(channelXml, 'podcast:medium')?.toLowerCase() || undefined;
-  const channelRssImage = extractRssImageUrl(channelXml);
-  const channelItunesImage = extractItunesImageHref(channelXml);
-  const channelImage = channelRssImage ?? channelItunesImage;
-
-  const podcast: Podcast = {
-    id: feedId,
-    title: extractText(channelXml, 'title') || rssUrl,
-    author: extractText(channelXml, 'itunes:author') ?? extractText(channelXml, 'managingEditor'),
-    description: extractText(channelXml, 'description'),
-    image: channelImage,
-    // Keep itunes:image as a second-chance source when it differs from <image>.
-    artwork: channelItunesImage && channelItunesImage !== channelImage ? channelItunesImage : undefined,
-    url: rssUrl,
-    medium,
-    value: parseValueBlock(channelXml),
-    funding: parseFunding(channelXml),
-    podroll: parsePodroll(channelXml),
-    nostrNpubs: parseFeedNpubs(channelXml),
-    isPreview: true,
-  };
+  const podcast = previewPodcastFromChannel(rssUrl, channelXml);
+  const feedId = podcast.id;
+  const medium = podcast.medium;
 
   const episodes: Episode[] = [];
   const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
@@ -1180,6 +1198,46 @@ export async function getFeedFromRss(
   episodes.sort(compareEpisodeOrder(medium === 'music'));
 
   return { podcast, episodes };
+}
+
+/** A `musicL` playlist's channel metadata and its track references. */
+export interface PlaylistChannel {
+  podcast: Podcast;
+  /** Deduped, in wire order. See `parsePlaylistRemoteItems`. */
+  refs: PlaylistItemRef[];
+}
+
+/**
+ * Read a `<podcast:medium>musicL</podcast:medium>` playlist feed.
+ *
+ * Returns the channel as a preview `Podcast` plus the whole (deduped) track
+ * reference list — **not** the tracks themselves. Resolving a reference costs a
+ * Podcast Index lookup each, and a real playlist holds four figures of them, so
+ * the fan-out belongs to a caller that can page it (`app/api/playlist`), not
+ * to the parser.
+ *
+ * Returns null for a document that is not a playlist, which is two distinct
+ * refusals collapsed on purpose: an unfetchable URL, and a feed that simply
+ * isn't one. Both mean "there is no playlist here", and the caller's answer to
+ * each is the same 404.
+ *
+ * The medium gate is a gate, not a hint: a feed that publishes ordinary
+ * `<item>` elements is served by `getFeedFromRss`, and reading its podroll or a
+ * stray remote item as a track list would manufacture songs the publisher never
+ * listed. `refs` being empty is a valid playlist that is empty, and is left for
+ * the caller to render as such.
+ *
+ * Goes through the shared `fetchFeedXml`, so paging N times over one document
+ * costs one upstream fetch inside the 60 s window rather than N.
+ */
+export async function getPlaylistChannel(rssUrl: string): Promise<PlaylistChannel | null> {
+  const xml = await fetchFeedXml(rssUrl);
+  if (xml == null) return null;
+  if (!/<channel\b/i.test(xml)) return null;
+  const channelXml = channelSlice(xml);
+  const podcast = previewPodcastFromChannel(rssUrl, channelXml);
+  if (!isPlaylistMedium(podcast)) return null;
+  return { podcast, refs: parsePlaylistRemoteItems(channelXml) };
 }
 
 export async function getEpisodeByGuid(

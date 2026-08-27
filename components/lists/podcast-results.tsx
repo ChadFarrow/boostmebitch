@@ -7,6 +7,7 @@
 // `showV4VStamp` is on for search results (where the value-block is known)
 // and off for favorites (the cache only carries metadata, not value).
 import type { Podcast } from '@/lib/types';
+import { isPlaylistMedium } from '@/lib/util';
 import { PodcastCover } from '../podcast-cover';
 import { FavHeart } from '../fav-heart';
 
@@ -43,6 +44,13 @@ export function PodcastRow({
           )}
           {podcast.medium === 'publisher' && (
             <span className="stamp text-muted border-muted/40">▸ ALBUMS</span>
+          )}
+          {/* Through the helper, not a raw `=== 'musicL'`: the RSS parsers
+              lowercase the tag and Podcast Index returns its own spelling, so a
+              literal comparison stamps one of the two paths and silently not
+              the other. */}
+          {isPlaylistMedium(podcast) && (
+            <span className="stamp text-muted border-muted/40">♫ PLAYLIST</span>
           )}
           {showV4VStamp && podcast.value && (
             <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>

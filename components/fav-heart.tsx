@@ -280,6 +280,27 @@ export function FavEpisodeHeart({
 }) {
   const itemGuid = episode.guid;
   const feedGuid = episode.podcastGuid || podcast?.podcastGuid;
+  /**
+   * **The container feed is not always the item's parent.**
+   *
+   * Every surface that existed when this component was written showed episodes
+   * OF the feed it was handed, so copying that feed's `url`, `medium`, title and
+   * art onto the favorite was the same thing as reading them off the parent. A
+   * `musicL` playlist breaks that: it lists tracks that live in hundreds of
+   * OTHER feeds, so the container's URL is the playlist's and its medium is
+   * `musicl`, and both would be published as facts about the TRACK — to a
+   * shared kind:10333 event other apps read, with no undo.
+   *
+   * The episode's own `podcastGuid` (which `buildEpisode` fills from PI) is the
+   * discriminator. Where it agrees with the container — which is every existing
+   * caller — the output below is byte-identical to what it always was, so this
+   * is not a change to the favorites wire for any surface shipping today.
+   *
+   * It lives here rather than as a prop at the call site because a prop is
+   * something a future surface can forget to pass, and the cost of forgetting
+   * is silent and unrecoverable.
+   */
+  const containerIsParent = !!podcast?.podcastGuid && podcast.podcastGuid === feedGuid;
   const isFav = useApp((s) => s.isFavoriteEpisode(itemGuid));
   const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
   const removeFavoriteEpisode = useApp((s) => s.removeFavoriteEpisode);
@@ -299,15 +320,17 @@ export function FavEpisodeHeart({
         itemGuid: itemGuid!,
         feedGuid: feedGuid!,
         feedId: episode.feedId,
-        feedUrl: podcast?.url,
+        feedUrl: containerIsParent ? podcast?.url : undefined,
         title: episode.title,
-        podcastTitle: episode.feedTitle || podcast?.title,
-        image: episode.image || episode.feedImage || podcast?.image,
+        podcastTitle: episode.feedTitle || (containerIsParent ? podcast?.title : undefined),
+        image: episode.image || episode.feedImage
+          || (containerIsParent ? podcast?.image : undefined),
         enclosureUrl: episode.enclosureUrl,
         datePublished: episode.datePublished,
-        // The PARENT FEED's medium — Podcasting 2.0 has no per-item one, and
-        // `podcast` here is that feed.
-        medium: declaredMedium(podcast),
+        // The PARENT FEED's medium — Podcasting 2.0 has no per-item one. Only
+        // readable off `podcast` when that feed really is the parent; see
+        // `containerIsParent` above.
+        medium: containerIsParent ? declaredMedium(podcast) : undefined,
         addedAt: Date.now(),
       };
       addFavoriteEpisode(fav);

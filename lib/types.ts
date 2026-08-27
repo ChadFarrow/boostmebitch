@@ -189,6 +189,21 @@ export interface Episode {
   value?: ValueBlock | null;
   valueTimeSplits?: ValueTimeSplit[];
   socialInteract?: SocialInteract[];
+  /**
+   * Set ONLY on a placeholder row standing in for a `musicL` playlist track
+   * that could not be turned into a real episode. The two values are not
+   * interchangeable and must never be collapsed — see lib/pi-batch.ts:
+   *
+   *   'not-found'      Podcast Index answered, and does not hold this track.
+   *                    A settled answer, cacheable, and the row says so.
+   *   'could-not-ask'  We never got an answer (PI down, our own rate limit).
+   *                    NOT evidence about the track: the response carrying one
+   *                    of these is `no-store` and the row offers a retry.
+   *
+   * A row carrying this has an empty `enclosureUrl`, so every play control must
+   * be suppressed rather than merely disabled.
+   */
+  unresolved?: 'not-found' | 'could-not-ask';
   /** Podcast 2.0 <podcast:liveItem> status. Set on items returned by PI's
    *  /episodes/live endpoint. We filter out 'ended' upstream, so only
    *  'live' and 'pending' should ever reach the client. */

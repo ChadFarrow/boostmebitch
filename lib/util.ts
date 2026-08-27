@@ -10,6 +10,50 @@ export function isMusicMedium(podcast: Pick<Podcast, 'medium'>): boolean {
   return podcast.medium?.toLowerCase() === 'music';
 }
 
+/**
+ * True when the feed is a Podcasting 2.0 **playlist**
+ * (`<podcast:medium>musicL`) — a channel with no `<item>` elements whose
+ * contents are channel-level `<podcast:remoteItem>` entries pointing at tracks
+ * in other artists' feeds.
+ *
+ * **Deliberately NOT folded into `isMusicMedium`.** A playlist wants most of
+ * what that gate turns on — row-tap-to-play, auto-advance, no chapters or
+ * transcripts, TRACK vocabulary — but must not get its other two, and both
+ * would fail silently:
+ *
+ *   - `isMusicMedium` renders the WHOLE list with no pagination, because an
+ *     album is a few dozen tracks and its order is the running order of the
+ *     record. A playlist is an archive: the live HGH one holds 1217 distinct
+ *     tracks, and each row's cover is a separate image.
+ *   - `compareEpisodeOrder(true)` sorts by `<podcast:season>`/`<podcast:episode>`,
+ *     i.e. disc and track number. A playlist's tracks come from hundreds of
+ *     DIFFERENT albums, each numbering from 1, so that sort interleaves every
+ *     album's track 1, then every track 2 — scrambling the one ordering the
+ *     document actually asserts, with nothing on screen reporting a fault.
+ *
+ * So each site opts in by name. Case-insensitive because PI returns the tag's
+ * own `musicL` spelling while the RSS parsers lowercase it.
+ */
+export function isPlaylistMedium(podcast: Pick<Podcast, 'medium'>): boolean {
+  return podcast.medium?.toLowerCase() === 'musicl';
+}
+
+/**
+ * Feeds whose rows are TRACKS rather than episodes: a row tap plays instead of
+ * opening a detail page, the header cover is a play button, playback
+ * auto-advances, and chapters/transcripts are suppressed.
+ *
+ * This is the half of `isMusicMedium` a playlist shares, named separately so
+ * the half it does NOT share — render-every-row, and the season/episode sort —
+ * stays keyed on `isMusicMedium` alone. Branching each of those sites on
+ * `isMusicMedium || isPlaylistMedium` by hand is how one of them comes to be
+ * missed, and both directions of that miss are silent: a playlist that renders
+ * 1217 rows at once, or a playlist row that opens an empty detail page.
+ */
+export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
+  return isMusicMedium(podcast) || isPlaylistMedium(podcast);
+}
+
 // True when a value block actually has payees — the gate for showing BOOST.
 export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;
@@ -631,9 +675,13 @@ export function payableSplit(
  * importing another for a string.
  */
 export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): string {
+  // A playlist's ITEMS are tracks, exactly as an album's are, but the container
+  // is not a record — calling it an ALBUM claims a musicL feed is one artist's
+  // release when it is a curated list drawn from hundreds of them.
+  const playlist = !!podcast && isPlaylistMedium(podcast);
   const music = !!podcast && isMusicMedium(podcast);
-  if (kind === 'feed') return music ? 'ALBUM' : 'SHOW';
-  return music ? 'TRACK' : 'EPISODE';
+  if (kind === 'feed') return playlist ? 'PLAYLIST' : music ? 'ALBUM' : 'SHOW';
+  return playlist || music ? 'TRACK' : 'EPISODE';
 }
 
 /**

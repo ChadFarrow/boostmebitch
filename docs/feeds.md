@@ -54,6 +54,69 @@ Three things follow, and they are the reason the number isn't simply raised and 
 
 **The one case still truncated is a feed longer than 1000 items.** PI cannot serve past that in one call and has no way to page backwards, so the tail of a very long-running daily show is out of reach through this route. The RSS document holds it — `getRssEpisodeEnrichment` already parses every `<item>` — but RSS-derived episodes carry synthetic negative ids (`-fnvHash`), which `/api/value-splits` and the live-status poller both key off, so unioning them into a PI-backed list is a bigger change than a number.
 
+## musicL playlists (`<podcast:medium>musicL`)
+
+A **playlist** feed publishes **no `<item>` elements at all**. Its contents are channel-level `<podcast:remoteItem feedGuid=… itemGuid=…/>` entries, each naming one track that lives in somebody else's album feed. The reference case is [chadf-musicl-playlists/HGH-music-playlist.xml](https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/HGH-music-playlist.xml): 233 KB, **1770 entries of which 1217 are distinct, across 598 feeds**, and not one `<item>`.
+
+Before this shipped the app opened one as a show with no episodes — `getFeedFromRss`'s `<item>` loop finds nothing — which is indistinguishable from a broken feed.
+
+**The entries carry no `feedUrl`.** Only the guid pair, so a track is resolved through Podcast Index (`/episodes/byguid`) and nothing else. That is one PI lookup per track, which is why the whole list is not a request anybody can make.
+
+### The parser lives in `lib/feed-xml.ts`, and its exclusions are the correctness half
+
+`parsePlaylistRemoteItems(channelSlice(xml))`. It is in `feed-xml.ts` rather than `pi.ts` for the same reason `parseFeedNpubs` is: that module loads under `node --experimental-strip-types`, so `npm run check:musicl` pins the **real** parser instead of a copy. `pi.ts` cannot be loaded that way (`PiHttpError` uses a parameter property).
+
+Three things it must exclude, and each one over-accepted is rows in the list the curator never published:
+
+- **`<podcast:podroll>` contents** — stripped by the parser itself. `parsePodroll` scopes itself *into* the block so the two don't collide from that direction, but a channel-wide scan reads the host's recommended **shows** as songs, and nothing on the entry says which it is. The nesting is the only signal.
+- **`<podcast:liveItem>` blocks** — already stripped by `channelSlice`, which is why the input must be that and never raw XML. A live item's own `<podcast:remoteItem>` is the "now playing" pointer (`Episode.liveRemoteItem`), i.e. one broadcast's current song.
+- **An entry missing either guid** — an item guid alone is not a lookup key, and a `feedGuid` + `feedUrl` pair is podroll-shaped.
+
+**Order is the data, and dedupe is mandatory.** A playlist's running order is the order the entries are written in; nothing on an entry restates it, unlike an album whose tracks carry `<podcast:episode>` numbers. So the parser never sorts, and dedupe keeps the **first** occurrence. Dedupe is not cosmetic: `playNext`/`playPrev` locate the current track with `findIndex(e => e.id === …)` and a row's React key is that id, so two rows sharing one make the second unreachable.
+
+`MAX_PLAYLIST_REFS` (5000) caps the list because it is feed-supplied and `safeFetch` accepts 8 MB — roughly 88,000 entries, i.e. one document deciding how much this process allocates.
+
+### `/api/playlist` — one page, and why it is its own route
+
+```
+GET /api/playlist?url=<feedUrl>&offset=0&limit=100
+  → { podcast, episodes, total, offset, nextOffset, notFound, couldNotAsk }
+```
+
+- **A GET, not the existing POST `/api/episode-by-guid/batch`.** That route's body is per-user so it sets no cache header. A playlist page is public and byte-identical for every viewer, and a shared cache answering it is the whole thing that keeps thirteen pages of one playlist off PI's quota. It is also why the guids stay server-side: a short URL is cacheable, a hundred item guids (routinely permalink URLs) are not.
+- **`limit` is clamped to `MAX_BATCH` (100)**, so one page is at most one `batchEpisodes` call and there is no second fan-out ceiling to keep in sync.
+- **`offset`/`limit` are digits-only.** `Number('0x64')` is 100 and `Number('1e3')` is 1000; `parseInt('64abc')` is 64. Each yields a plausible page the caller never asked for, and every distinct spelling of one number is another CDN entry for bytes we already hold — the amplification `artWidth` documents.
+- **`nextOffset` is the server's answer and the client uses it verbatim.** Deriving `offset + limit` on the client desyncs the moment dedupe or the ref cap removes anything, and the symptom is skipped tracks — which nobody can see.
+- Rate limit **30/min**, with `/api/publisher` and the batch routes, because it fans out to PI.
+
+**The `podcast` it returns carries no `podcastGuid`**, even though a playlist does publish a `<podcast:guid>`. `previewPodcastFromChannel` withholds it deliberately: PI has not indexed these feeds, so `/podcasts/byguid` cannot resolve one on any device, and a feed favorite writes that guid to a shared kind:10333 list with no undo — an unopenable placeholder forever. Being present on the wire is not the test; being resolvable is.
+
+### The three-state contract reaches the screen
+
+`batchEpisodes`' answer is carried through, never flattened. **Every ref yields a row** — a dropped row is invisible, and an invisible track makes the playlist look shorter than the curator published it, with no way to reach it because `nextOffset` steps past.
+
+| `batchEpisodes` | Row | Line under the list | Cacheable |
+|---|---|---|---|
+| key present, `Episode` | full row: cover, play, ⚡ V4V, BOOST, heart | — | yes |
+| key present, `null` | placeholder, `unresolved: 'not-found'`, play suppressed | "N … aren't in Podcast Index yet" | yes |
+| key **absent** | placeholder, `unresolved: 'could-not-ask'` | "N … couldn't be looked up" + ↻ RETRY | **no** |
+
+The absent case drives the cache header: `couldNotAsk > 0` answers `Cache-Control: no-store`. Without that a PI outage during one page is frozen into the CDN for five minutes and the retry re-serves the same empty page. `notFound` rows *are* cacheable — PI answered.
+
+A placeholder has an empty `enclosureUrl`, so the client **suppresses** the play control rather than disabling it. The heart stays, on `<FavTrackHeart>`'s precedent: the identifiers come off the wire and are the whole record, and withholding the control until PI has crawled the album would hide it on exactly the independent releases this app exists to pay.
+
+**Known gap, deliberately not closed in v1:** unlike `<FavTrackHeart>` there is no `parentFeedGuid` verdict here, so a playlist `feedGuid` naming a **publisher** feed would write an entry no app can open. `/api/remote-item` answers that question, but it is an RSS fetch plus a PI call per row and a page is 100 rows. Follow-up, not a per-row call.
+
+### Both entry paths, and the fallback that makes the medium optional
+
+`<EpisodeList>` takes `playlistUrl` when the caller already knows the medium (`<HomePage>` reads it off the search result), which skips a round trip. When it doesn't, the effect recovers one request later: **a musicL feed answering with zero rows is the same signal.** `/api/feed?id=` backfills `podcast.medium` from the RSS channel parse, so this works even though PI does not reliably index the tag. `episodes.length === 0` is part of that test on purpose — a hybrid feed that declares musicL and *also* publishes real items keeps its items.
+
+The list is excluded from `<PodcastNostrFeed>`'s `episodeGuids`: those guids belong to other feeds' items, so asking for this feed's per-episode chatter with them pulls in notes about somebody else's album.
+
+### `?playlist=<feedUrl>` is the deep link
+
+A preview feed is not URL-mirrored, because a publisher checking their own unsubmitted feed has nothing to share. A playlist is the exception — people share these — and it restores exactly, because `/api/playlist` keys off the feed URL rather than a PI id. Same shape as `?publisher=<feedUrl>`.
+
 ## Podroll (`<podcast:podroll>`, host-recommended shows)
 
 A channel-level `<podcast:podroll>` holds `<podcast:remoteItem feedGuid=… feedUrl=…>` entries pointing at other shows the host recommends. PI doesn't index it, so it rides the same RSS pass as `feedMedium`: `parsePodroll(channelXml)` → `feedPodroll` → `podcast.podroll: PodrollItem[]`. Entries without a `feedGuid` are skipped (the spec requires it; `feedUrl` is an optional hint).
