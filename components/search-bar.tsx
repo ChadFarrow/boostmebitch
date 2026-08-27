@@ -9,14 +9,13 @@ import type { Podcast } from '@/lib/types';
 import { SEARCH_TYPES, parseSearchType } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
 import { Avatar } from './avatar';
-import { Chip } from './chip';
 
 /**
  * What produced the results, travelling WITH them.
  *
- * The chip row shows the user's pending selection, which moves the moment they
- * press it; the results on screen are still the previous lane's until a response
- * lands. So a consumer wording an empty state from the chip row would name a
+ * The menu shows the user's pending selection, which moves the moment they pick
+ * it; the results on screen are still the previous lane's until a response
+ * lands. So a consumer wording an empty state from the selector would name a
  * filter that did not produce the list it is describing — "no albums match" over
  * podcast results, for the ~300 ms in between. `type` is the type the SERVER
  * applied (the feed-URL branch ignores the selector and says so), and `total` is
@@ -37,17 +36,17 @@ interface Props {
   /**
    * The selected content type, and the way to change it.
    *
-   * CONTROLLED from the parent rather than held here, because the chip row is
-   * not the only thing that sets it: when a narrowed search comes back empty,
-   * the results panel offers a way back to ALL, and that control has to move
-   * the same state this box reads. Held privately it would move only the
-   * results, leaving the chip row pointing at a lane that is no longer running.
+   * CONTROLLED from the parent rather than held here, because the menu is not
+   * the only thing that sets it: when a narrowed search comes back empty, the
+   * results panel offers a way back to ALL, and that control has to move the
+   * same state this box reads. Held privately it would move only the results,
+   * leaving the menu naming a lane that is no longer running.
    *
    * Not persisted anywhere. A search filter restored from disk is on before you
    * touched it — you come back a week later, search a show, get nothing, and the
-   * box reads as broken with the only explanation sitting in a chip you never
-   * pressed. The favorites page stores its tab because that is a library you
-   * own; this is a question you ask once.
+   * box reads as broken with the only explanation folded away inside a menu you
+   * never opened. The favorites page stores its tab because that is a library
+   * you own; this is a question you ask once.
    */
   type: SearchType;
   onTypeChange: (t: SearchType) => void;
@@ -61,6 +60,83 @@ interface Props {
    * dependency, so it doesn't have to be referentially stable.
    */
   onQueryChange?: (q: string) => void;
+}
+
+/**
+ * The content-type selector: one button naming the current mode, and a menu.
+ *
+ * It replaced a row of five chips, which read fine on a desktop and became a
+ * WRAPPED TWO-LINE BLOCK at 320px — a filter standing taller than the search box
+ * it filters. A dropdown states the current mode in one word and costs one line
+ * at every width. It is also how podcastindex.org presents the same choice,
+ * which is worth something on its own: this app's users are already reading that
+ * site, and a control they recognise needs no explaining.
+ *
+ * **`role="menuitemradio"`, not `menuitem`.** This is one choice out of a fixed
+ * set, and `aria-checked` is what makes the ✓ mean something to a screen reader
+ * rather than being decoration next to a name.
+ *
+ * Dismissal is the mousedown-outside + Escape pair `<AccountMenu>` already uses,
+ * and it needs both: Escape alone strands the menu open under a thumb, and
+ * click-outside alone strands it open for anyone on a keyboard.
+ */
+function SearchTypeMenu({ type, onChange }: { type: SearchType; onChange: (t: SearchType) => void }) {
+  const [open, setOpen] = useState(false);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const active = SEARCH_TYPES.find((s) => s.type === type) ?? SEARCH_TYPES[0];
+
+  useEffect(() => {
+    if (!open) return;
+    function onMouseDown(e: MouseEvent) {
+      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
+    document.addEventListener('mousedown', onMouseDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onMouseDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={wrapperRef} className="relative mb-2 w-fit">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Search type: ${active.label}`}
+        className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider border border-bone/30 text-muted transition hover:border-bone/60 hover:text-bone"
+      >
+        <span className="text-bone">{active.label}</span>
+        <span className="text-[10px] opacity-40">{open ? '▴' : '▾'}</span>
+      </button>
+
+      {open && (
+        <div role="menu" className="absolute left-0 top-full z-30 mt-1 min-w-[190px] card bg-ink p-1 shadow-xl">
+          {SEARCH_TYPES.map((s) => (
+            <button
+              key={s.type}
+              type="button"
+              role="menuitemradio"
+              aria-checked={s.type === type}
+              onClick={() => { onChange(s.type); setOpen(false); }}
+              className={`flex w-full items-center gap-2 px-2 py-2 text-left text-xs font-mono uppercase tracking-wider transition ${
+                s.type === type ? 'text-bolt' : 'text-muted hover:bg-bone/5 hover:text-bone'
+              }`}
+            >
+              {/* A fixed gutter for the ✓, so every label starts at the same x
+                  whether or not its row is the checked one. A tick that shifts
+                  the text makes the list appear to jitter as you move down it. */}
+              <span className="w-3 shrink-0" aria-hidden>{s.type === type ? '✓' : ''}</span>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeChange }: Props) {
@@ -134,7 +210,7 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
   const npubName = npubProfile?.display_name?.trim() || npubProfile?.name?.trim() || null;
 
   // Every edit goes through here — the input, the clear button and the type
-  // chips all — so the "user is searching" signal can't be attached to one and
+  // menu all — so the "user is searching" signal can't be attached to one and
   // forgotten on the others. Deliberately not an effect: the point is that it
   // fires on the gesture, ahead of the debounce and the fetch.
   function edit(next: string) {
@@ -143,7 +219,7 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
   }
 
   /**
-   * The type the last fetch ran under, so the effect can tell a CHIP PRESS from
+   * The type the last fetch ran under, so the effect can tell a MENU PICK from
    * a keystroke.
    *
    * The 280 ms below exists to coalesce typing, and a press is not typing: a
@@ -179,7 +255,7 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
     // for a query that was never about shows.
     //
     // `type === 'npub'` joins that list rather than getting a branch of its own.
-    // The NPUB chip is a mode of the INPUT — it accepts a pasted key and nothing
+    // NPUB is a mode of the INPUT — it accepts a pasted key and nothing
     // else, because this app has no Nostr name search to offer — so there is
     // never a podcast query to send under it. That also makes it the strongest
     // possible form of the secret-key guard: no request is issued at all.
@@ -239,21 +315,12 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
     // below, separated by a gap — which read as a SECOND SEARCH BOX, i.e. exactly
     // the two-input design merging them into one was meant to remove.
     <div className="flex flex-col">
-      {/* ABOVE the input, not below it. The rows under the box hang off it as
-          one control — no gap, no top border — and a chip row wedged into that
-          stack would split the input from the suggestion it belongs to. Above,
-          it reads as what it is: the question the box is about to answer.
-
-          `flex-wrap` because five chips do not fit one line at 320px, and
-          wrapping is the honest failure there — an `overflow-x-auto` strip hides
-          whichever chip falls off the end, and the one that falls off is NPUB. */}
-      <div className="flex flex-wrap items-center gap-1.5 mb-2">
-        {SEARCH_TYPES.map((s) => (
-          <Chip key={s.type} active={type === s.type} onClick={() => onTypeChange(s.type)}>
-            {s.label}
-          </Chip>
-        ))}
-      </div>
+      {/* ABOVE the input, not inside it. The rows UNDER the box hang off it as
+          one control — no gap, no top border — so anything added down there
+          splits the input from the suggestion that belongs to it, and anything
+          added inside competes with the × for a box that is 288px wide at
+          320px. Above costs one line and touches neither. */}
+      <SearchTypeMenu type={type} onChange={onTypeChange} />
       <div className="relative">
         {/* The warning outranks everything, then the parsed key, then the mode.
             A ⚡ over an nsec would say "this is a person" about a secret key. */}
@@ -330,7 +397,7 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
       )}
       {/* NPUB mode with text that is neither a key nor an nsec.
 
-          Without this the chip is a DEAD CONTROL: press it, type a name, and
+          Without this the mode is a DEAD CONTROL: pick it, type a name, and
           nothing happens anywhere on screen — which this repo has already paid
           for twice, and which is the hardest failure to notice because a dead
           control is indistinguishable from a slow one. It says what the mode

@@ -129,23 +129,23 @@ export function HomePage() {
   /**
    * Which lane produced `feeds`, and how many rows the same query has unfiltered.
    *
-   * Held beside the results rather than read off the search bar's chip row,
-   * because the chip moves on the press and the rows do not move until a
+   * Held beside the results rather than read off the search bar's selector,
+   * because the selector moves on the click and the rows do not move until a
    * response lands. Reading the control would let the empty state say "no albums
    * match" over a list of podcasts for the length of one round trip — and the
-   * feed-URL branch ignores the selector entirely, so the chip is not even the
+   * feed-URL branch ignores the selector entirely, so the menu is not even the
    * right answer once the response arrives.
    */
   const [searchInfo, setSearchInfo] = useState<SearchInfo>({ type: 'all', total: 0 });
   /**
-   * The content type the search box is CURRENTLY set to — the chip the user has
-   * pressed, as opposed to `searchInfo.type`, which is the lane that produced
-   * the rows on screen.
+   * The content type the search box is CURRENTLY set to — what the user picked
+   * in the menu, as opposed to `searchInfo.type`, which is the lane that
+   * produced the rows on screen.
    *
-   * Lifted out of <SearchBar> because the chip row is not its only control: a
+   * Lifted out of <SearchBar> because the menu is not its only control: a
    * narrowed search that comes back empty offers a way back to ALL from down in
-   * the results panel, and both have to move one piece of state or the box ends
-   * up pointing at a lane that is no longer running.
+   * the results panel, and both have to move one piece of state or the selector
+   * ends up naming a lane that is no longer running.
    */
   const [searchType, setSearchType] = useState<SearchType>('all');
   const [searchKey, setSearchKey] = useState(0);
@@ -426,14 +426,14 @@ export function HomePage() {
    * Changing the content type is an edit of what the query MEANS, so it goes
    * through `handleQueryChange` exactly as a keystroke does.
    *
-   * Without that, pressing a chip from inside a show refetches and refills
+   * Without that, picking a type from inside a show refetches and refills
    * `feeds` behind a view whose ternary never reaches the branch that renders
-   * them — the show stays open, the chip lights up, and nothing else moves. That
+   * them — the show stays open, the menu updates, and nothing else moves. That
    * is the same bug the search box itself had before `onQueryChange` existed,
    * and it reads the same way: a dead control.
    *
-   * Both callers land here — the chip row in <SearchBar> and the empty state's
-   * way back to ALL — which is the whole reason this state is lifted.
+   * Both callers land here — the menu in <SearchBar> and the empty state's way
+   * back to ALL — which is the whole reason this state is lifted.
    */
   const changeType = useCallback((t: SearchType) => {
     setSearchType(t);
@@ -469,8 +469,8 @@ export function HomePage() {
     setLoading(false);
     // The type resets with everything else. `searchKey` remounts the box, so
     // leaving this set would put the app back on the home page with a filter
-    // still on and an empty box — the state "home" is supposed to mean the
-    // absence of.
+    // still on and an empty box — and now that the filter is folded into a
+    // menu, nothing on screen would be showing it either.
     setSearchType('all');
     setSearchInfo({ type: 'all', total: 0 });
     setSearchKey((n) => n + 1);
@@ -489,9 +489,10 @@ export function HomePage() {
   /**
    * The vocabulary for the lane that produced what is on screen.
    *
-   * Read from `searchInfo`, never from `searchType`: the chip moves on the press
-   * and the rows arrive a round trip later, so the lit chip is a claim about the
-   * future and these two sentences are claims about the list underneath them.
+   * Read from `searchInfo`, never from `searchType`: the selector moves on the
+   * click and the rows arrive a round trip later, so what the menu names is a
+   * claim about the future while these two sentences are claims about the list
+   * underneath them.
    */
   const applied = SEARCH_TYPES.find((s) => s.type === searchInfo.type) ?? SEARCH_TYPES[0];
   const resultNoun = applied.noun;
@@ -500,7 +501,8 @@ export function HomePage() {
    * What an empty result set says.
    *
    * Under ALL it is the sentence that has always been there — a genuine "the
-   * index did not match this phrase". Under a chip that sentence is FALSE: the
+   * index did not match this phrase". Under a narrowed type that sentence is
+   * FALSE: the
    * index may hold plenty for the query and none of it music, and printing "no
    * results" makes a filter the user applied look like an absence in Podcast
    * Index. It is the same distinction `<FavoritesPage>` draws between a filter
@@ -716,8 +718,8 @@ export function HomePage() {
                 )}
               </>
             ) : (
-              // The noun follows the lane that produced the rows, not the chip
-              // that is lit — "12 albums" has to be true of the twelve rows
+              // The noun follows the lane that produced the rows, not what
+              // the menu names — "12 albums" has to be true of the twelve rows
               // under it, and during a round trip those two disagree.
               <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
                 {loading ? 'searching…' : query ? `${feeds.length} ${resultNoun}` : 'feeds'}
