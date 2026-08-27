@@ -11,12 +11,12 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 - **kind:0 profile** — `name`, `display_name`, `picture`, `nip05`, `about` → header avatar, boost-modal "From" auto-fill.
 - **NIP-65 relay list (kind:10002)** — unmarked + `write` entries → publish target.
 - **Favorites (kind:10333, no `d` tag)** — shared cross-app list, one plain replaceable event per pubkey; see Favorites and [the spec](https://github.com/ChadFarrow/PC20-Nostr/blob/main/pc20-favorites.md). The three addresses it replaced (kind:30078 `d:podcast:favorites` and `d:podcast:favorites:items`, kind:30003 `d:boostmebitch:favorites`) are read-only, for the one-time migration.
-- **NIP-51 mutes (kind:10000)** — public + NIP-04 private p-tags. See Mutes.
+- **NIP-51 mutes (kind:10000)** — public p-tags, plus a private half in `content` that is **NIP-04 *or* NIP-44 *or* plaintext**, decided per event by `classifyMuteContent`. See Mutes.
 - **Spark backup (kind:30078, `d:boostmebitch:wallet:spark`)** — NIP-44 v2 encrypted-to-self mnemonic; best-effort silent restore, failures swallowed.
 - **Settings (kind:30078, `d:boostmebitch:settings`)** — NIP-44 encrypted-to-self JSON, currently just `railPref` → `storage.railPref`. `lib/nostr/settings-backup.ts`.
 - **NWC backup (kind:30078, `d:boostmebitch:wallet:nwc`)** — NIP-44 encrypted-to-self `{ uri }`, **opt-in only**. Restored to `bmb:nwc_uri` when this device has none. `lib/nostr/wallet-backup.ts`.
 
-NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` (private mutes), `nip44.{en,de}crypt` (wallet backup). No DMs, no reactions. **kind:3 contacts** are read + written, but only for Follows — on demand when a follow button renders, never in `loadProfile`; `signEvent` already covers it.
+NIP-07 perms ever requested: `getPublicKey`, `signEvent`, `nip04.{en,de}crypt` and `nip44.{en,de}crypt` (private mutes use whichever the event is written in; wallet backup is always NIP-44). No DMs, no reactions. **kind:3 contacts** are read + written, but only for Follows — on demand when a follow button renders, never in `loadProfile`; `signEvent` already covers it.
 
 **Fast-path identity hydration.** On page load, cached `bmb:npub` is decoded synchronously via `nip19.decode` into a bare `{ pubkey, npub }` identity, and `storage.profile` + `storage.favorites` + `storage.muted` land in the store within the same frame. The signer is called lazily, only when something needs to sign.
 
@@ -209,10 +209,13 @@ causes collapse to one `privateUnreadable` state: the caller declined to spend a
 prompt, the signer has no NIP-44, the decrypt threw or timed out, and the
 plaintext was not a tag array. Downstream they mean the same thing — carry the
 ciphertext, derive nothing from it, report it — and collapsing them here is what
-stops a fifth being handled differently by accident. That last cause is the hole
-`lib/nostr/mutes.ts` still has: a `JSON.parse` succeeding on a non-array leaves
-the blob marked readable and empty, and the next republish rewrites `content`
-from those empty lists.
+stops a fifth being handled differently by accident.
+
+That last cause used to be an open hole in `lib/nostr/mutes.ts` and is now
+closed: a `JSON.parse` succeeding on a non-array left the blob marked readable
+and empty, and the next republish rewrote `content` from those empty lists.
+`parseMuteTags` answers `null` for it, the caller parks, and `check:mutes` pins
+it against the version that returned `[]`.
 
 **The cold start never asks Amber to decrypt.** Its approval sheet renders the
 plaintext, and `mutes-hydrator.ts` measured approving one on a Pixel 6 returning
@@ -679,7 +682,59 @@ stale `ok: true` gates the kind:3 publish path.)
 
 ## Mutes (NIP-51 kind:10000)
 
-🚫 on a `<NoteCard>` mutes that author. Interoperates with Damus/Amethyst/Coracle. `MuteListState` (`lib/nostr/mutes.ts`) carries parallel **public** p-tags (event tags) and **private** p-tags (NIP-04-encrypted JSON tag-array in `event.content`). New mutes go private (Damus default); when the signer exposes no `nip04`, the read path parks the raw ciphertext in `unreadablePrivateContent` and the publish path passes it through verbatim — **we never destroy private mutes set in another client** — while new mutes degrade to public p-tags. Non-`p` tags (`e`, `t`, `word`) are preserved verbatim too.
+🚫 on a `<NoteCard>` mutes that author. Interoperates with Damus/Amethyst/Coracle. `MuteListState` (`lib/nostr/mutes.ts`) carries parallel **public** p-tags (event tags) and **private** p-tags (an encrypted JSON tag-array in `event.content`). New mutes go private (Damus default); when the private half cannot be opened, the read path parks the raw ciphertext in `unreadablePrivateContent` and the publish path passes it through verbatim — **we never destroy private mutes set in another client** — while new mutes degrade to public p-tags. Non-`p` tags (`e`, `t`, `word`) are preserved verbatim too.
+
+### The private half is not NIP-04 — it is whatever the writer used
+
+NIP-51 originally specified NIP-04 for private list items and later moved them
+to NIP-44; a few clients leave the tags in `content` unencrypted altogether. So
+the cipher is a property of the bytes, not a constant, and this module read all
+of it as NIP-04 for the whole life of the feature.
+
+The bug that surfaced it: signing in on iOS with **Clave** answered
+`nip04_decrypt failed: Invalid base64`. A NIP-44 payload carries no `?iv=`, so a
+NIP-04 decrypt splits on it, gets `undefined` for the IV, and throws while
+base64-decoding that. Nothing was destroyed — the failure parks the blob — but
+the private half was unreadable forever, and a request that could not succeed
+went to the user's phone on every cold start.
+
+`classifyMuteContent` (`lib/nostr/mute-state.ts`, import-free, pinned by
+`npm run check:mutes`) decides it from the bytes before any signer is asked, and
+**the order of its tests is the correctness property**: a JSON-array test runs
+BEFORE the `?iv=` test, because a `word` mute may hold the literal text `?iv=`
+and a plaintext list would otherwise be sent to a decrypt it never needed. The
+reverse mistake is impossible — the base64 alphabet has no `[`, `"` or `,` — so
+the order is safe rather than lucky.
+
+The verdict is recorded as `MuteListState.privateCipher` and carried through
+`storage.muted` to `publishMuteList`, **which re-encrypts in the form it read**.
+Rewriting a NIP-44 list as NIP-04 makes it unreadable to the client that wrote
+it, from a publish that looks entirely successful on this side. Two places drop
+the field if you forget them, both silently: `coerceToMuteState`
+(`lib/storage.ts`) rebuilds the state field by field, and the local-ahead
+`merged` object in `mutes-hydrator.ts` lists every field by hand.
+
+A `'plaintext'` half is read but never written back: `content` there is
+specified as encrypted, so plaintext is a malformed event rather than another
+writer's choice, and re-encoding loses nothing because we read it. A list this
+app creates from nothing prefers NIP-44, which is what NIP-51 says today.
+
+### A withheld private half now says so
+
+`<MutesSyncNotice>` (`components/mutes-sync-notice.tsx`, mounted beside
+`<FavoritesSyncNotice>` on `/` and `/favorites`) is the mute equivalent of the
+favorites notice, and closes the gap `docs/signers.md` had listed as missing.
+It renders **only** when a private half exists and stayed shut — otherwise a
+permanent banner for every Amber and bunker user, which is how a notice stops
+being read.
+
+Two reasons, two sentences, because the user's next move differs.
+`'withheld'` means we chose not to ask (`unattendedDecryptOk()` is false), so
+nothing is broken and the control spends the prompt on purpose.
+`'private-unreadable'` means we asked and it did not open, which is worth a
+retry and may mean the signer does not implement the cipher the list uses. Both
+run `hydrateMutes(identity, 'user-initiated')` — the one path that spends a
+prompt on an out-of-browser signer.
 
 Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-level + replies before mapping). `bmb:muted:<npub>` is `MuteListState` JSON; `lib/storage.ts` auto-promotes the legacy `{ pubkeys, otherTags }` shape on read. Account menu surfaces a collapsible "Muted accounts (N)" with kind:0 lookups firing only while expanded.
 

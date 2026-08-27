@@ -59,8 +59,15 @@ const CHROME = process.env.CHROME_PATH
   || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const profile = `${tmpdir()}/bmb-e2e-favorites`;
 rmSync(profile, { recursive: true, force: true });
+// Chrome refuses to start as root without this, and a container (or CI) is
+// exactly where this runs as root — without it the script dies at "Chrome never
+// opened its debug port", which reads as a port clash rather than a refusal.
+// Gated on actually BEING root: on a developer's own machine the sandbox stays
+// on, and an unconditional --no-sandbox is the kind of flag that gets copied.
+const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 const chrome = spawn(CHROME, [
   ...(HEADED ? [] : ['--headless=new']),
+  ...(asRoot ? ['--no-sandbox'] : []),
   `--remote-debugging-port=${CDP}`,
   `--user-data-dir=${profile}`,
   '--no-first-run', '--no-default-browser-check', '--disable-gpu',

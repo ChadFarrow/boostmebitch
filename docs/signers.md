@@ -10,7 +10,7 @@ The whole codebase reads `window.nostr`. Four paths feed it, swapped by `lib/nos
 
 - **NIP-07 extension** (Alby, nos2x, Flamingo, nostash on iOS Safari). Already at `window.nostr`; we don't polyfill. Sign-out clears `bmb:npub` and leaves `window.nostr` alone.
 - **Amber on Android** (NIP-55, `lib/nostr/amber.ts`). Polyfills `window.nostr` with an `AmberSigner` dispatching via the `nostrsigner:` URL scheme and reading results from the system clipboard: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<…>` (no callbackUrl, per spec) → user approves → first user gesture (`pointerdown`/`touchstart`/`keydown`) reads the clipboard with fresh transient activation. `restoreAmberSigner(pubkey)` is the synchronous page-load fast path.
-- **NIP-46 bunker** (`lib/nostr/bunker.ts`, wraps nostr-tools `BunkerSigner`). Paste a `bunker://` URI or generate a `nostrconnect://` one. Reconnect on reload is async (`restoreBunkerSigner()` rebuilds from `bmb:bunker:{uri,clientSk}`); signing calls before it resolves throw, but nothing signs unprompted post-load. Works with Clave, nsec.app, Amber-as-bunker, Primal.
+- **NIP-46 bunker** (`lib/nostr/bunker.ts`, wraps nostr-tools `BunkerSigner`). Paste a `bunker://` URI or generate a `nostrconnect://` one. Reconnect on reload is async (`restoreBunkerSigner()` rebuilds from `bmb:bunker:{uri,clientSk}`); signing calls before it resolves throw, but nothing signs unprompted post-load. Works with Clave, nsec.app, Amber-as-bunker, Primal. **A bunker is NOT assumed to answer inside the browser** — see "An out-of-browser signer is two signers" below.
 - **Local key** (`lib/nostr/local-signer.ts`). The only path where *we* hold the key; it exists for Google onboarding, where the user starts with no Nostr identity. Signs in-process via `finalizeEvent`, implements nip04 + nip44 directly. `restoreLocalSigner()` is **async** (IndexedDB read + decrypt), so it follows the bunker pattern, not Amber's. It **refuses a key whose pubkey doesn't match `bmb:npub`** — `putKey` swallows IndexedDB failures, so signing in as B on a device still holding A's ciphertext would run the session off the in-memory copy while disk keeps A, and after a reload sign everything as A while the UI says B.
 
 > **`nostr-tools` is pinned to exact `2.19.4` — do NOT bump or relax the caret.** The `2.20.0+` NIP-46 rewrite added `limit: 0` to the `nostrconnect`/bunker subscription filters (`fromURI` + `setupSubscription`), which on our relays silently drops the remote signer's connect-ack, so **Primal's `nostrconnect://` login hangs and times out**. Latest (`2.23.5`) and `master` still carry it; `npm update` or a `^`/`~` range reintroduces the break. `NOSTRCONNECT_RELAYS` is a 4-relay set (nsec.app/damus/primal/nos.lol) for ack redundancy — a single relay loses the ack when iOS Safari suspends the WebSocket during the app-switch.
@@ -27,12 +27,65 @@ Read NIP-55 carefully and it never promised otherwise: with no `callbackUrl` the
 
 **`callbackUrl` is not a drop-in replacement, and reaching for it as a quick fix is the trap.** Amber returns a `callbackUrl` by **navigating** to it. That reloads the page, which destroys the promise the caller is awaiting, so it needs the pending request to survive a load and the result to be matched back to a re-issued call. And it makes *every* signature a page reload — tolerable for a load-time decrypt, unacceptable during a boost, where `publishBoostNote` signs **after** the sats have already gone out (invariant 1 in [`../CLAUDE.md`](../CLAUDE.md)). Any design here has to answer that case before it answers the easy one.
 
-**Which is why the first fix was to stop asking.** `hydrateMutes` ran on every page load and decrypted the private half of the kind:10000 mute list, so a signed-in Amber user was sent to another app **before touching anything**. It now passes `decryptPrivate: false` when `storage.signer.get() === 'amber'`, and the parked ciphertext still round-trips verbatim. Amber only, deliberately: an extension and a bunker answer inside the browser and the local signer is in-process, so skipping there would cost a fresh device its private mutes for nothing.
+**Which is why the first fix was to stop asking.** `hydrateMutes` ran on every page load and decrypted the private half of the kind:10000 mute list, so a signed-in Amber user was sent to another app **before touching anything**. It now passes `decryptPrivate: false` unless `unattendedDecryptOk()`, and the parked ciphertext still round-trips verbatim.
 
 Two consequences to keep in mind, because neither is free:
 
-- **On Amber, the private mute list is now never decrypted** — `hydrateMutes` is its only caller. Private mutes come from this device's cache, so a *fresh* Amber device applies none of them until something decrypts. That is a silent withholding of the kind [`../CLAUDE.md`](../CLAUDE.md) says must be visible, and it is **not** yet surfaced. A user-initiated "load my private mutes" action is the missing piece. **The callbackUrl work did NOT close this**: `nip04_decrypt` is deliberately absent from both `RESUMABLE_TYPES` and `AMBER_PERSISTABLE_TYPES`, the second because a decrypt result is a plaintext and the records now reach disk.
+- **On Amber the private mute list is never decrypted on a cold start** — `hydrateMutes` is its only caller. Private mutes come from this device's cache, so a *fresh* Amber device applies none of them until something decrypts. That was a silent withholding of the kind [`../CLAUDE.md`](../CLAUDE.md) says must be visible, and the "user-initiated load my private mutes" action this file used to list as the missing piece now exists: `<MutesSyncNotice>` renders when a private half is present and shut, and its button runs `hydrateMutes(identity, 'user-initiated')`. **The callbackUrl work did NOT close this**: `nip04_decrypt` is deliberately absent from both `RESUMABLE_TYPES` and `AMBER_PERSISTABLE_TYPES`, the second because a decrypt result is a plaintext and the records now reach disk.
 - **The `nostrNewer` branch had a latent bug of its own**, independent of Amber: an undecryptable private section made `privatePubkeys` `[]`, and adopting the relay state wholesale overwrote the cached list — silently un-muting everyone the user had muted privately, with no error. It now keeps the cached private entries and takes only the relay's public tags and its newer ciphertext.
+
+### An out-of-browser signer is two signers, not one
+
+`unattendedDecryptOk()` (`lib/nostr/signer.ts`) is the one predicate for "may we
+decrypt on a cycle nobody asked for". It used to exclude Amber alone, on the
+reasoning that a NIP-46 bunker "answers inside the browser".
+
+**That is false for a bunker hosted on the user's own phone**, which Clave,
+Amber-as-bunker and nsec.app's mobile mode all are: the request leaves for
+another app exactly as a NIP-55 intent does. Signing in with Clave on iOS
+demanded four decrypts before the user had touched anything — the private mute
+list, the Spark seed phrase, the NWC spending credential and settings — and the
+first came back `nip04_decrypt failed: Invalid base64`.
+
+Three call sites read it (`mutes-hydrator.ts`, `doLoadProfile`,
+`favorites-hydrator.ts`) and the bunker was missing from all three because each
+had re-derived the test. It is one function now.
+
+**It reads the PERSISTED signer kind, not `window.nostr`, and is not
+interchangeable with `canSignUnattended()`.** Both the bunker and the local
+signer install their adapter asynchronously, so at cold start `window.nostr` may
+not be there yet — `canSignUnattended()` would answer false for a
+local-key/Google user and silently stop their wallet restoring. `bmb:signer` is
+written before the adapter and is deterministic.
+
+The cost is real and accepted: a bunker user's Spark/NWC wallet no longer
+restores itself on load. `walletBackupWithheld` puts that on screen, and
+"Restore from Nostr" is `'user-initiated'`, spends the prompt on purpose, and
+already works.
+
+### A bunker that answers with an error is not a bunker that is gone
+
+`trackBunkerCall` (`lib/nostr/bunker.ts`) flipped `bunkerStale` on **any**
+rejection, so a signer that answered correctly that it could not read a payload
+we had sent in the wrong cipher produced *"Signer disconnected — your iPhone may
+have suspended the relay link."* That sent the user to reconnect a connection
+that was working, and said nothing about the real fault.
+
+An error RESPONSE is proof the round trip completed. The discriminator comes
+from the pinned library: nostr-tools 2.19.4's `lib/esm/nip46.js` decrypts the
+NIP-46 response, reads `{ id, result, error }`, and runs `handler.reject(error)`
+— passing the signer's error **string** through unwrapped. Every other rejection
+on that path is an `Error`: our own `withTimeout`, `sendRequest`'s "this signer
+is not open anymore", and the `AggregateError` from
+`Promise.any(pool.publish(...))`. So `!(e instanceof Error)` is an exact test for
+"the signer answered", and it CLEARS the flag; an `Error` sets it, which fails
+toward offering the reconnect.
+
+**No `check:*` can pin this** — `bunker.ts` imports `nostr-tools` and touches
+browser globals, so it will not load under `node --experimental-strip-types`. It
+rests on the exact `2.19.4` pin above. If that ever moves, re-read `nip46.js` by
+hand: a version that wraps `o.error` in an `Error` reverts this silently rather
+than breaking loudly.
 
 ### Never make Amber render something the user did not ask to see
 

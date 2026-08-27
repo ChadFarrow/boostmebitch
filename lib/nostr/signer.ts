@@ -19,7 +19,9 @@
 //   deactivateLocalSigner()        — restore the original window.nostr
 //   isLocalActive()                — true while LocalSigner is active
 //   canSignUnattended()            — signer won't prompt or hang on a timer
+//   unattendedDecryptOk()          — may we decrypt on a cycle nobody asked for
 
+import { storage } from '@/lib/storage';
 import { AmberSigner } from './amber';
 import { LocalSigner } from './local-signer';
 import type { BunkerAdapter } from './bunker';
@@ -171,6 +173,49 @@ export function isLocalActive(): boolean {
 export function canSignUnattended(): boolean {
   if (typeof window === 'undefined' || !window.nostr) return false;
   return !isAmberActive() && !isBunkerActive();
+}
+
+/**
+ * Whether to spend a signer call decrypting something on a cycle nobody asked
+ * for — page-load hydration, a background restore.
+ *
+ * **A SIGNER THAT LIVES OUTSIDE THE BROWSER IS NOT ASKED UNPROMPTED**, and that
+ * is two signers, not one. Amber renders its approval sheet over whatever app
+ * is in front and, for a decrypt, shows the PLAINTEXT — so an unattended one on
+ * a cold start is a prompt the user did not ask for, over content they did not
+ * ask to see. `mutes-hydrator.ts` measured the worse half on a Pixel 6:
+ * approving returned the user to the LAUNCHER, so the request never resolved
+ * and the prompt came straight back.
+ *
+ * A NIP-46 bunker was excluded from that on the reasoning that it "answers
+ * inside the browser". **That is false for a bunker hosted on the user's own
+ * phone**, which Clave, Amber-as-bunker and nsec.app's mobile mode all are: the
+ * request leaves for another app exactly as a NIP-55 intent does. Sign in with
+ * Clave on iOS and the cold start demanded four decrypts — the private mute
+ * list, the Spark seed phrase, the NWC spending credential and settings —
+ * before the user had touched anything.
+ *
+ * The cost of not asking is bounded and already handled everywhere this is
+ * read: a parked ciphertext round-trips verbatim, this device's cached entries
+ * keep filtering, and the withholding is put on screen with a control that
+ * spends the prompt on purpose. The cost of asking is a prompt nobody wanted,
+ * or — on a signer that cannot answer — a doomed request and a 30 s timeout.
+ *
+ * **It reads the PERSISTED signer kind, not `window.nostr`, and that is not
+ * interchangeable with `canSignUnattended()`.** Both the bunker and the local
+ * signer install their adapter asynchronously, so at cold start `window.nostr`
+ * may not be there yet; `canSignUnattended()` would answer false for a
+ * local-key/Google user and silently stop their wallet restoring. The persisted
+ * kind is written before the adapter and is deterministic.
+ *
+ * `decryptWithTimeout` refuses an unattended Amber decrypt on its own, but that
+ * refusal arrives as a rejection inside a `.catch(() => {})` — invisible. Not
+ * asking is both cheaper and honest, and the library check stays the backstop
+ * for the next caller.
+ */
+export function unattendedDecryptOk(): boolean {
+  const kind = storage.signer.get();
+  return kind !== 'amber' && kind !== 'bunker';
 }
 
 // Deliberately NO getActiveLocal() accessor, unlike getActiveAmber /

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
 import { PodcastResults, EpisodeList } from '@/components/lists';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
+import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
 import { NostrLiveStreams } from '@/components/nostr-live-streams';
 import { DiscussionView } from '@/components/discussion-view';
@@ -498,6 +499,7 @@ export function HomePage() {
               a panel; the component self-hides unless signed in AND degraded. */}
           <div className="mt-3">
             <FavoritesSyncNotice />
+            <MutesSyncNotice />
           </div>
           {/* The one curated entry point in the app, and it is ONE URL rather
               than a list of playlists on purpose — see MUSICL_PUBLISHER_URL.

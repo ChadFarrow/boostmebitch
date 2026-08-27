@@ -16,6 +16,7 @@ import {
   type MuteListState,
 } from './mutes';
 import { resolvePublishRelays } from './relays';
+import { unattendedDecryptOk, type DecryptPurpose } from './signer';
 import type { NostrIdentity } from './auth';
 
 /**
@@ -23,15 +24,25 @@ import type { NostrIdentity } from './auth';
  * Last-write-wins on `event.created_at` (s) vs local cache `updatedAt` (s).
  *
  * On adoption from Nostr we replace the entire local state including the
- * private list (decrypted via window.nostr.nip04 when available). When the
- * local cache is ahead, we merge the relay's other-tags into local so we
- * don't drop hashtag/keyword mutes from another client, then republish.
+ * private list (decrypted through the user's signer, in whichever cipher the
+ * wire used, when we can). When the local cache is ahead, we merge the relay's
+ * other-tags into local so we don't drop hashtag/keyword mutes from another
+ * client, then republish.
+ *
+ * `purpose` is how an explicit retry differs from a page load — the same
+ * distinction `hydrateFavorites` draws. `'user-initiated'` is what
+ * <MutesSyncNotice> passes, and it is the only thing that spends a signer
+ * prompt on an out-of-browser signer.
  */
-export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
-  const setMutedPubkeys = useApp.getState().setMutedPubkeys;
-  // DO NOT SPEND AN AMBER PROMPT HERE. This runs on every page load, before
-  // the user has touched anything, and decrypting the private half of the
-  // mute list is a NIP-04 call — which on Amber leaves the browser for
+export async function hydrateMutes(
+  identity: NostrIdentity,
+  purpose: DecryptPurpose = 'unattended',
+): Promise<void> {
+  const { setMutedPubkeys, setMutesSync } = useApp.getState();
+  setMutesSync('idle');
+  // DO NOT SPEND AN OUT-OF-BROWSER SIGNER PROMPT HERE. This runs on every page
+  // load, before the user has touched anything, and decrypting the private half
+  // of the mute list is a signer call — which on Amber leaves the browser for
   // another app. Measured on a Pixel 6: the app opened, demanded
   // `nip04_decrypt`, and approving returned the user to the LAUNCHER rather
   // than to the page, so the request never resolved and the prompt came
@@ -39,13 +50,18 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
   // Trusted Web Activity, so it is not a packaging problem — see
   // docs/signers.md.
   //
-  // Amber only, deliberately. A NIP-07 extension and a bunker answer inside
-  // the browser, and the local signer is in-process, so for them the decrypt
-  // is cheap and skipping it would cost a fresh device its private mutes for
-  // no benefit. The cost of skipping is bounded: the parked ciphertext still
-  // round-trips verbatim on republish, and the branch below keeps applying
-  // whatever private list this device already cached.
-  const decryptPrivate = storage.signer.get() !== 'amber';
+  // THIS USED TO SAY "AMBER ONLY", on the reasoning that a bunker answers
+  // inside the browser. A bunker hosted on the user's own phone does not, and
+  // Clave is one: signing in with it on iOS fired this decrypt at the phone
+  // uninvited, and the answer that came back was
+  // `nip04_decrypt failed: Invalid base64`. `unattendedDecryptOk` now covers
+  // both; see there.
+  //
+  // The cost of skipping is bounded: the parked ciphertext still round-trips
+  // verbatim on republish, the branch below keeps applying whatever private
+  // list this device already cached, and <MutesSyncNotice> now says so on
+  // screen with a control that spends the prompt on purpose.
+  const decryptPrivate = purpose === 'user-initiated' || unattendedDecryptOk();
   // READ FROM THE RELAYS WE WRITE TO. This used to pass `undefined`, which
   // `fetchMutedPubkeys` reads as DEFAULT_RELAYS, while the republish below has
   // always targeted `resolvePublishRelays` — the user's NIP-65 write set unioned
@@ -59,7 +75,7 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
   // an empty mute list. Same fix, same reason, as `fetchFavoritesList` requiring
   // its relay set rather than defaulting to one.
   const relays = resolvePublishRelays(identity);
-  const muteEvent = await fetchMutedPubkeys(identity.pubkey, relays, { decryptPrivate });
+  const muteEvent = await fetchMutedPubkeys(identity.pubkey, relays, { decryptPrivate, purpose });
 
   // READ THE CACHE AFTER THE AWAIT, NEVER BEFORE IT. This used to be the first
   // line of the function, and the gap it left is not small: this hydration does
@@ -96,6 +112,8 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
       // Make sure the store reflects an empty state for this identity.
       setMutedPubkeys(new Set());
     }
+    // No event on the relays means no private half to withhold. Not a failure.
+    setMutesSync('ok');
     return;
   }
 
@@ -120,6 +138,7 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
       : muteEvent;
     storage.muted.set(identity.npub, adopted);
     setMutedPubkeys(unionMutedPubkeys(adopted));
+    reportPrivateHalf(muteEvent, decryptPrivate);
   } else {
     // Local is ahead. Keep our pubkeys + non-`p` tags, but adopt the relay's
     // non-`p` tags too so cross-client hashtag mutes survive.
@@ -129,16 +148,46 @@ export async function hydrateMutes(identity: NostrIdentity): Promise<void> {
       privatePubkeys: cached.privatePubkeys,
       privateOtherTags: muteEvent.privateOtherTags,
       unreadablePrivateContent: cached.unreadablePrivateContent ?? muteEvent.unreadablePrivateContent,
+      // The RELAY observation is the authority on what cipher the wire holds —
+      // the cached one may predate a rewrite by another client. This object
+      // lists every field by hand, so a new one that isn't named here is
+      // dropped, and `publishMuteList` would then re-encode the list in the
+      // wrong cipher on the very republish this branch is about to schedule.
+      privateCipher: muteEvent.privateCipher ?? cached.privateCipher,
       updatedAt: cached.updatedAt,
     };
     storage.muted.set(identity.npub, merged);
     setMutedPubkeys(unionMutedPubkeys(merged));
+    reportPrivateHalf(muteEvent, decryptPrivate);
     schedulePublishMuteList(
       identity.pubkey,
       () => storage.muted.get(identity.npub),
       relays,
     );
   }
+}
+
+/**
+ * Put the state of the PRIVATE half on screen, or clear it.
+ *
+ * Gated on `unreadablePrivateContent` on purpose: an account with no private
+ * half must never see a banner, and an account whose private half we opened has
+ * nothing to report. Only a half that EXISTS and stayed shut is worth a
+ * sentence, because that is the case that renders as a shorter list with no
+ * other symptom.
+ *
+ * The two reasons are not interchangeable. `decryptPrivate` false means we
+ * chose not to ask — nothing is wrong and the control simply spends the prompt.
+ * True means we asked and it did not open, which is worth a retry and may mean
+ * this signer does not implement the cipher the list is written in.
+ */
+function reportPrivateHalf(read: MuteListState, decryptPrivate: boolean): void {
+  const setMutesSync = useApp.getState().setMutesSync;
+  if (!read.unreadablePrivateContent) {
+    setMutesSync('ok');
+    return;
+  }
+  setMutesSync('degraded', decryptPrivate ? 'private-unreadable' : 'withheld');
 }
 
 // Re-export so `lib/store.ts` can build an empty state for guest users

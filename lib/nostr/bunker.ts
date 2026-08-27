@@ -139,17 +139,55 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
-// Wrap a bunker call with the timeout + stale-flag side effect. Failures
-// (timeout or rejection) flip bunkerStale so UI can surface a reconnect
-// affordance; successful calls reset the flag (covers the case where the
-// transport actually recovered without a restoreBunkerSigner cycle).
+/**
+ * Did this rejection come back OFF THE WIRE, from the remote signer?
+ *
+ * nostr-tools 2.19.4, `lib/esm/nip46.js`: the subscription handler decrypts the
+ * NIP-46 response, reads `{ id, result, error }`, and runs `handler.reject(error)`
+ * — passing the signer's error STRING straight through, unwrapped. Every other
+ * rejection on this path is an `Error` instance: our own `withTimeout` below,
+ * `sendRequest`'s "this signer is not open anymore", and the `AggregateError`
+ * that `Promise.any(pool.publish(...))` throws when no relay accepts. So
+ * "not an Error" is an exact test for "the round trip completed".
+ *
+ * WHY IT MATTERS. An error RESPONSE is proof the link is alive. Treating it as a
+ * dead transport put *"Signer disconnected — your iPhone may have suspended the
+ * relay link."* in front of a user whose signer had just answered, correctly,
+ * that it could not read a payload this app had sent in the wrong cipher. The
+ * banner sent them to reconnect a connection that was working, and said nothing
+ * about the real fault.
+ *
+ * VERSION-COUPLED, and it cannot be pinned by a `check:*` — this module imports
+ * `nostr-tools` and touches browser globals, so it will not load under
+ * `node --experimental-strip-types`. `nostr-tools` is pinned to exact 2.19.4 in
+ * package.json (CLAUDE.md forbids bumping it for an unrelated reason); if that
+ * ever moves, re-read `nip46.js` by hand. If a future version wraps `o.error`
+ * in an `Error`, this silently reverts to the old behaviour rather than
+ * breaking loudly.
+ */
+function isRemoteSignerError(e: unknown): boolean {
+  return !(e instanceof Error);
+}
+
+// Wrap a bunker call with the timeout + stale-flag side effect.
+//
+// The flag means "the transport looks dead, offer a reconnect" — so only a
+// failure that is EVIDENCE of that may set it. A timeout and a local throw
+// qualify; an answer from the signer is the opposite of evidence and clears it,
+// exactly as a success does. An Error we did not author still sets it, which
+// fails toward offering the reconnect — the right direction for a genuine
+// disconnect.
 async function trackBunkerCall<T>(p: Promise<T>, label: string): Promise<T> {
   try {
     const v = await withTimeout(p, BUNKER_CALL_TIMEOUT_MS, label);
     if (bunkerStale) setBunkerStale(false);
     return v;
   } catch (e) {
-    setBunkerStale(true);
+    if (isRemoteSignerError(e)) {
+      if (bunkerStale) setBunkerStale(false);
+    } else {
+      setBunkerStale(true);
+    }
     throw e;
   }
 }
