@@ -132,9 +132,14 @@ export async function GET(req: Request) {
     // notes, so we fetch the RSS and parse both in one pass. Best-effort:
     // failure leaves episodes without socialInteract/contentEncoded rather
     // than breaking the whole feed.
-    const { episodes: enrichMap, feedMedium, feedPodroll, feedFunding, feedNostrNpubs } = podcast?.url
-      ? await getRssEpisodeEnrichment(podcast.url).catch(() => ({ episodes: new Map(), feedMedium: undefined, feedPodroll: undefined, feedFunding: undefined, feedNostrNpubs: undefined }))
-      : { episodes: new Map(), feedMedium: undefined, feedPodroll: undefined, feedFunding: undefined, feedNostrNpubs: undefined };
+    const EMPTY_ENRICHMENT = {
+      episodes: new Map(), feedMedium: undefined, feedPodroll: undefined,
+      feedFunding: undefined, feedNostrNpubs: undefined, feedTitle: undefined,
+    };
+    const { episodes: enrichMap, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle } =
+      podcast?.url
+        ? await getRssEpisodeEnrichment(podcast.url).catch(() => EMPTY_ENRICHMENT)
+        : EMPTY_ENRICHMENT;
     if (!podcast) return NextResponse.json({ error: 'not found' }, { status: 404 });
     // PI's /episodes/live only returns currently-broadcasting items; pending
     // liveItems live in the RSS itself, so we additionally parse the feed XML.
@@ -222,9 +227,27 @@ export async function GET(req: Request) {
       }
       return byEpisodeOrder(a, b);
     });
-    // Backfill the channel-level medium so the client gets the same music
-    // signal the sort used (PI doesn't reliably index `medium`).
-    if (!podcast.medium && feedMedium) podcast.medium = feedMedium;
+    // **THE FEED'S OWN DECLARATION OUTRANKS PODCAST INDEX'S COPY.**
+    //
+    // This used to backfill only when PI supplied NO medium, which let a wrong
+    // PI value win over the publisher's own tag — and PI's copy is a crawl that
+    // can be stale or simply bad. Measured on ChadF's Greatest Hits playlist
+    // (PI feed 7683902): the feed declares `musicL`, PI holds it as `podcast`
+    // with an empty title, so the playlist path never engaged and it opened as
+    // a show with no episodes. That is the exact bug playlist support exists to
+    // fix, arriving through PI rather than through the parser.
+    //
+    // The route was already inconsistent about this: `isMusic` above reads
+    // `|| feedMedium === 'music'`, so the RSS value already decided the SORT
+    // while PI's decided what shipped to the client. `feedMedium` is read from
+    // `channelSlice` of the live feed moments ago; prefer it whenever it exists.
+    if (feedMedium) podcast.medium = feedMedium;
+    // Same reasoning for a BLANK title. PI can hold a feed it crawled badly with
+    // `title: ""`, which renders as an invisible row in search results and a
+    // headerless show page — "I don't see it listed", for a feed that is right
+    // there. Only fills a genuinely empty one; PI's title otherwise wins,
+    // because it is the one the rest of the index agrees on.
+    if (!podcast.title?.trim() && feedTitle) podcast.title = feedTitle;
     // <podcast:podroll> — host-recommended shows. PI doesn't index it, so it
     // comes only from the RSS pass above; attach it for the client to resolve.
     if (feedPodroll) podcast.podroll = feedPodroll;

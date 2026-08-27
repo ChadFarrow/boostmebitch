@@ -930,6 +930,9 @@ export interface RssFeedEnrichment {
   feedPodroll?: PodrollItem[];
   feedFunding?: FundingLink[];
   feedNostrNpubs?: FeedNpub[];
+  /** The channel `<title>`, for the case where Podcast Index holds a BLANK one.
+   *  See the backfills in app/api/feed/route.ts. */
+  feedTitle?: string;
 }
 
 // --- <podcast:transcript> selection ---------------------------------------
@@ -1117,6 +1120,7 @@ export async function getRssEpisodeEnrichment(
   // blocks, and a live item carries its own <podcast:txt> — reading that as the
   // show's npub would tag the guest of one broadcast on every boost forever.
   const feedNostrNpubs = parseFeedNpubs(channelXml);
+  const feedTitle = extractText(channelXml, 'title') || undefined;
 
   const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
   let m: RegExpExecArray | null;
@@ -1145,7 +1149,7 @@ export async function getRssEpisodeEnrichment(
       episodes.set(guid, { socialInteract, contentEncoded, season, episode, transcriptUrl, transcriptType, link, alternateEnclosures, nostrNpubs });
     }
   }
-  return { episodes, feedMedium, feedPodroll, feedFunding, feedNostrNpubs };
+  return { episodes, feedMedium, feedPodroll, feedFunding, feedNostrNpubs, feedTitle };
 }
 
 // --- Non-PI feed preview ---------------------------------------------------
