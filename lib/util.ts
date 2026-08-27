@@ -80,6 +80,50 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
   return isMusicMedium(podcast) || podcast.medium?.toLowerCase() === 'musicl';
 }
 
+/** Every list medium, for a caller that has to enumerate them (see `getFeedsByMedium`). */
+export const PLAYLIST_MEDIUMS: readonly string[] = [...LIST_MEDIUMS];
+
+/**
+ * Which playlists a typed query should surface.
+ *
+ * Podcast Index's `/search/byterm` has **no medium parameter**, so a playlist it
+ * ranks poorly — or has indexed under a title the query does not lead with — is
+ * unreachable by keyword no matter what the user types. This is the filter for
+ * the separate `/podcasts/bymedium` lane that fills that gap.
+ *
+ * Deliberately simple, and deliberately NOT a relevance ranker: the candidate
+ * set is already narrowed to playlists, which is the strong signal. It matches a
+ * case-folded substring against the title and author, requires **every**
+ * whitespace-separated term to appear (so "mutton music" does not match a feed
+ * that only says "music"), and preserves the order Podcast Index returned.
+ *
+ * `q` is trimmed and a blank one matches NOTHING — an empty search box must not
+ * pour every playlist in the index into the results.
+ *
+ * It is here rather than in the route because `lib/util.ts` loads under
+ * `node --experimental-strip-types`, which is what lets `check:musicl` pin it.
+ */
+export function filterPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author' | 'medium'>>(
+  feeds: readonly T[],
+  q: string,
+  limit: number,
+): T[] {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length || limit <= 0) return [];
+  const out: T[] = [];
+  for (const f of feeds) {
+    // The medium is re-checked here rather than trusted from the caller: this
+    // list is what a search surfaces as "a playlist", and a base-medium feed
+    // reaching it would be stamped as one it is not.
+    if (!isPlaylistMedium(f)) continue;
+    const hay = `${f.title ?? ''} ${f.author ?? ''}`.toLowerCase();
+    if (!terms.every((t) => hay.includes(t))) continue;
+    out.push(f);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 // True when a value block actually has payees — the gate for showing BOOST.
 export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;

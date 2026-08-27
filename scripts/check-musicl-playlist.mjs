@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, PLAYLIST_MEDIUMS } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -425,6 +425,66 @@ console.log('\nWhich mediums ARE playlists, and which of those play as tracks');
     if (!tracks(m)) ok(`${m} rows do NOT behave as tracks`);
     else fail(`${m} rows must not behave as tracks — a row tap has to open the detail view`);
   }
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nWhich playlists a typed query surfaces');
+// ---------------------------------------------------------------------------
+{
+  // The candidate set comes from /podcasts/bymedium, which byterm cannot filter
+  // by medium. Whatever survives this filter is PREPENDED to the user's search
+  // results and stamped as a playlist, so both directions cost something: a
+  // non-playlist through here is mislabelled above better-ranked results, and an
+  // over-eager match buries the show somebody was actually looking for.
+  const F = [
+    { title: 'ChadF Homegrown Hits Music Playlist', author: 'ChadFarrow', medium: 'musicL' },
+    { title: 'Mutton, Mead & Music Playlist', author: 'ChadF', medium: 'musicL' },
+    { title: 'LocalBitcoiners Community Playlist', author: 'ChadF', medium: 'podcastL' },
+    { title: 'Homegrown Hits', author: 'Various', medium: 'podcast' },   // the SHOW, not a list
+  ];
+  const q = (s, n = 10) => filterPlaylistsByQuery(F, s, n).map((f) => f.title);
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+  const cases = [
+    ['homegrown', ['ChadF Homegrown Hits Music Playlist'], 'matches a title substring, and NOT the same-named podcast'],
+    ['HOMEGROWN', ['ChadF Homegrown Hits Music Playlist'], 'is case-folded'],
+    ['chadfarrow', ['ChadF Homegrown Hits Music Playlist'], 'matches the author too'],
+    ['mutton music', ['Mutton, Mead & Music Playlist'], 'requires EVERY term, so it does not match on "music" alone'],
+    ['localbitcoiners', ['LocalBitcoiners Community Playlist'], 'surfaces a podcastL, not only musicL'],
+    ['', [], 'an empty query matches NOTHING — an empty box must not pour the index into the results'],
+    ['   ', [], 'a whitespace-only query matches nothing'],
+    ['zzzz', [], 'a miss is empty, not everything'],
+  ];
+  for (const [term, want, why] of cases) {
+    if (eq(q(term), want)) ok(`${JSON.stringify(term)} ${why}`);
+    else fail(`${JSON.stringify(term)} ${why}\n          got  ${JSON.stringify(q(term))}\n          want ${JSON.stringify(want)}`);
+  }
+
+  // Order is Podcast Index's, not ours — this is a filter, not a ranker.
+  if (eq(q('playlist'), [F[0].title, F[1].title, F[2].title])) ok('preserves the order PI returned');
+  else fail('must preserve PI order');
+
+  // The cap is what stops a broad word jumping the queue ahead of the ranked
+  // results. `limit <= 0` returning [] matters: the route passes a constant, and
+  // a 0 read as "no limit" would prepend the whole roster.
+  if (q('playlist', 2).length === 2) ok('honours the limit'); else fail('limit not honoured');
+  if (filterPlaylistsByQuery(F, 'playlist', 0).length === 0) ok('a 0 limit yields nothing, never everything');
+  else fail('limit 0 must yield nothing');
+
+  // The medium is re-checked inside the filter rather than trusted from the
+  // caller, so a base-medium feed that slipped into the roster cannot be
+  // stamped as a playlist.
+  const sneaky = [{ title: 'Homegrown Hits', author: 'Various', medium: 'podcast' }];
+  if (filterPlaylistsByQuery(sneaky, 'homegrown', 5).length === 0) ok('re-checks the medium; a non-playlist never surfaces');
+  else fail('a non-playlist must never surface through the playlist lane');
+
+  // The roster is built by asking PI once per list medium, so the two must not
+  // drift: a medium we RECOGNISE but never ASK about is a playlist the lane can
+  // never surface.
+  if (PLAYLIST_MEDIUMS.every((m) => isPlaylistMedium({ medium: m }))
+      && PLAYLIST_MEDIUMS.length === 10) {
+    ok(`PLAYLIST_MEDIUMS enumerates all ${PLAYLIST_MEDIUMS.length} list mediums`);
+  } else fail('PLAYLIST_MEDIUMS must enumerate exactly the mediums isPlaylistMedium accepts');
 }
 
 if (failures) {

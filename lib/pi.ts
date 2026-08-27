@@ -5,7 +5,7 @@ import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRem
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, PLAYLIST_MEDIUMS } from './util';
 import { createBoundedCache } from './bounded-cache';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
@@ -125,6 +125,108 @@ export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]
     `/search/byterm?q=${encodeURIComponent(query)}&max=${max}&fulltext`,
   );
   return (data.feeds ?? []).map(buildPodcast);
+}
+
+/**
+ * Every feed Podcast Index holds for one `podcast:medium` value.
+ *
+ * **A miss here is never an outage.** PI's own API documentation enumerates only
+ * the seven BASE mediums for this parameter — the `L` list variants are not in
+ * it — so a request for `musicL` may legitimately be refused by an index that
+ * has simply never been asked for one. That is indistinguishable from a medium
+ * nobody publishes, and both mean the same thing to the caller: no playlists of
+ * this kind. So a 400 answers `[]`, and only auth and 5xx propagate, exactly as
+ * `getPodcastByFeedUrl` treats a feed it does not hold.
+ */
+async function getFeedsByMedium(medium: string, max: number): Promise<Podcast[]> {
+  try {
+    const data = await pi<any>(
+      `/podcasts/bymedium?medium=${encodeURIComponent(medium)}&max=${max}`,
+    );
+    return (data.feeds ?? []).map(buildPodcast);
+  } catch (e) {
+    if (e instanceof PiHttpError && (e.status === 400 || e.status === 404)) return [];
+    throw e;
+  }
+}
+
+/**
+ * How long the playlist roster is servable at all, and how long it is FRESH.
+ *
+ * A list feed is a rare and slow-moving thing — the whole point of the roster is
+ * that there are few enough of them to hold — so a long window costs nothing and
+ * keeps a fan-out of one request per list medium off PI on every search. The
+ * stale window exists so a refresh failure serves the last good roster rather
+ * than dropping the lane, the same two-tier shape `rssXmlCache` uses.
+ */
+const PLAYLIST_ROSTER_FRESH_MS = 6 * 60 * 60_000;
+const PLAYLIST_ROSTER_STALE_MS = 24 * 60 * 60_000;
+/** Per medium. List feeds are rare; this is far above any plausible count. */
+const PLAYLIST_ROSTER_MAX = 1000;
+
+// ONE entry, but through the shared bounded cache anyway: the horizon and the
+// cap are what stop a module-level cache of fetched content growing forever,
+// and writing "it is only one key" is how the next one acquires a second.
+const playlistRoster = createBoundedCache<Podcast[]>({
+  maxAgeMs: PLAYLIST_ROSTER_STALE_MS,
+  maxEntries: 1,
+});
+const ROSTER_KEY = 'all';
+let rosterInFlight: Promise<Podcast[]> | null = null;
+
+async function refreshPlaylistRoster(): Promise<Podcast[]> {
+  // A FIXED list of ten, not an attacker-chosen one, so this fans out in
+  // parallel rather than probe-first — and each arm already answers [] for a
+  // medium PI will not accept, so an unsupported one costs one cheap 400.
+  const settled = await Promise.allSettled(
+    PLAYLIST_MEDIUMS.map((m) => getFeedsByMedium(m, PLAYLIST_ROSTER_MAX)),
+  );
+
+  // **NEVER CACHE A ROSTER NOTHING ANSWERED FOR.** `allSettled`, not `all` with
+  // a `.catch(() => [])`, because those two are the same value and opposite
+  // claims: a FULFILLED arm is Podcast Index saying "no feeds of this medium"
+  // (including the 400 that means it will not accept the medium at all), while a
+  // REJECTED one — auth, a 5xx, a dropped connection — is us failing to ask.
+  // Flattening the second into the first would write an empty roster on one
+  // transient outage and serve it as fact for six hours, which is the lane
+  // silently ceasing to exist with nothing on screen or in a log to say so. It
+  // is the same rule `readIsTrustworthy` exists for, one subsystem over.
+  const answered = settled.filter((r) => r.status === 'fulfilled');
+  if (!answered.length) return playlistRoster.get(ROSTER_KEY, Date.now())?.value ?? [];
+
+  const feeds = answered.flatMap((r) => (r as PromiseFulfilledResult<Podcast[]>).value);
+  playlistRoster.set(ROSTER_KEY, feeds, Date.now());
+  return feeds;
+}
+
+/**
+ * Playlists matching a typed query, from PI's whole index rather than from
+ * `/search/byterm` — which has no medium parameter and therefore cannot be
+ * asked for one.
+ *
+ * **Never blocks a search on a cold roster.** The first search after a restart
+ * returns no playlist lane and warms the roster behind itself, so the cost of a
+ * cold cache is a lane that is missing once, not a search that waits on ten PI
+ * round trips. A stale-but-servable roster is used as-is and refreshed the same
+ * way. Both are the accelerator rule the read index follows: this lane may be
+ * absent, and its absence must never be reported as "there are no playlists".
+ *
+ * Returns `[]` for every failure, because a search must not fail over its
+ * secondary lane.
+ */
+export async function searchPlaylistFeeds(query: string, limit: number): Promise<Podcast[]> {
+  const hit = playlistRoster.get(ROSTER_KEY, Date.now());
+  if (!hit || hit.ageMs >= PLAYLIST_ROSTER_FRESH_MS) {
+    // Deduped: several concurrent searches on a cold roster share one refresh.
+    if (!rosterInFlight) {
+      rosterInFlight = refreshPlaylistRoster()
+        .catch(() => [])
+        .finally(() => { rosterInFlight = null; });
+    }
+    // Fire-and-forget when we already hold something servable.
+    if (!hit) return [];
+  }
+  return filterPlaylistsByQuery(hit?.value ?? [], query, limit);
 }
 
 export async function getPodcast(feedId: number): Promise<Podcast | null> {
