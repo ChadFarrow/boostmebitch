@@ -80,6 +80,25 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
   return isMusicMedium(podcast) || podcast.medium?.toLowerCase() === 'musicl';
 }
 
+/**
+ * The key a PER-SHOW device setting is stored under.
+ *
+ * Guid first, PI feed id as the fallback: the guid is what every other client
+ * agrees on and survives a feed being re-registered, while the numeric id is all
+ * a feed Podcast Index has not given a guid has.
+ *
+ * It lives here rather than in `lib/v4v/streaming.ts`, where it started as
+ * `streamShowKey`, because it is not a payment concept — the episode-order
+ * toggle needs the same key, and a display preference reaching into the payment
+ * engine to get it would point the swap-out boundary the wrong way. That is the
+ * mistake `DEFAULT_SENDER_NAME` made in the other direction, and the fix is the
+ * same: put the shared value in `lib/util.ts` and re-export it from where it
+ * used to live, so no call site moves.
+ */
+export function showStorageKey(podcast: Pick<Podcast, 'podcastGuid' | 'id'>): string {
+  return podcast.podcastGuid || String(podcast.id);
+}
+
 /** Every list medium, for a caller that has to enumerate them (see `getFeedsByMedium`). */
 export const PLAYLIST_MEDIUMS: readonly string[] = [...LIST_MEDIUMS];
 

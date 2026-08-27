@@ -110,6 +110,7 @@ const KEYS = {
   streamRate: 'bmb:stream_rate',      // remembered sats-per-minute — a positive number or absent; never 0, and never removed by the toggle
   streamMode: 'bmb:stream_mode',      // 'track' when the unit picker is on "per track"; absent/'rate' = per minute. Show-scope entry overrides the global one, same precedence as the rate.
   streamAmount: 'bmb:stream_amount',  // remembered sats-per-TRACK, kept separate from streamRate so flipping the unit never destroys the other number
+  epOrder: 'bmb:ep_order',            // per-SHOW episode order: 'oldest' when the user flipped that show to oldest-first; absent = newest-first (the feed's own order). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   streamOn: 'bmb:stream_on',          // '1' on | '0' off | absent = no opinion. Absent at global scope means OFF (streaming is opt-in); absent at show scope means "follow the global rate", while an explicit '0' means "never stream this show" and outranks a global rate raised later.
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
   streamedPrefix: 'bmb:streamed',     // + ':<npub>' — settled-stream log. Deliberately NOT bmb:boosts (see the accessor note).
@@ -702,6 +703,37 @@ export const storage = {
     },
     clear: (npub: string | null | undefined) =>
       safeRemove(identityKey(KEYS.writeRelaysPrefix, npub)),
+  },
+
+  /**
+   * Which way round one show's episode list runs.
+   *
+   * PER SHOW, keyed by `showStorageKey(podcast)` — the same key the per-show
+   * streaming override uses. The reason to read a feed oldest-first belongs to
+   * the show, not the person: a serialized drama or a course wants it and a
+   * daily news show does not, so one global flip would be wrong for most of a
+   * library the moment it is right for one show.
+   *
+   * **Absent means newest-first, and flipping back REMOVES the key** rather
+   * than writing `'newest'`, so there is exactly one sentinel for the default —
+   * the `theme` idiom below. That also keeps the cost of the per-show scheme
+   * honest: keys only accumulate for shows somebody deliberately reversed.
+   * Nothing prunes them, which is accepted here for the reason `bmb:stream_*`
+   * accepts it — a few bytes each, and losing one silently would change what a
+   * list says.
+   *
+   * A SETTING, not a cache: it is not in `EVICTABLE_PREFIXES`, so a full store
+   * evicts note blobs before it touches this.
+   */
+  episodeOrder: {
+    getShow: (showKey: string): 'oldest' | null =>
+      (showKey && safeGet(`${KEYS.epOrder}:${showKey}`) === 'oldest' ? 'oldest' : null),
+    setShow: (showKey: string, oldestFirst: boolean) => {
+      if (!showKey) return;
+      const key = `${KEYS.epOrder}:${showKey}`;
+      if (oldestFirst) safeSet(key, 'oldest');
+      else safeRemove(key);
+    },
   },
 
   /** Per-device theme preference. Absent = dark (the app default). Only

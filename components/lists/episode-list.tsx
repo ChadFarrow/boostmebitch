@@ -6,12 +6,14 @@
 // `shrink-0 whitespace-nowrap` on both branches: .stamp is inline-flex with
 // neither, and this sits in a flex row beside a truncating title with no slack,
 // so on a phone `● LIVE` wrapped to two lines and blew up the row height.
-import { Fragment, useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime } from '@/lib/format';
-import { hasValueRecipients, isMusicMedium, isPlaylistMedium, playsAsTracks, showShareUrl } from '@/lib/util';
+import { hasValueRecipients, isMusicMedium, isPlaylistMedium, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
+import { storage } from '@/lib/storage';
+import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
@@ -215,7 +217,8 @@ export function EpisodeList({
     const applyFirstPage = (p: PlaylistResponse, podcast: Podcast) => {
       const eps = Array.isArray(p.episodes) ? p.episodes : [];
       setData({ podcast, episodes: eps, truncated: false });
-      setEpisodeQueue(eps);
+      // No setEpisodeQueue here — one effect derives it from the DISPLAY order,
+      // because the order can also change without a load (the toggle).
       syncSelectedPodcast(podcast);
       setPlaylist({
         feedUrl: podcast.url ?? '',
@@ -254,7 +257,9 @@ export function EpisodeList({
           if (p?.podcast) { applyFirstPage(p, p.podcast); return; }
         }
         setData({ podcast: d.podcast, episodes, truncated: !!d.truncated });
-        setEpisodeQueue(episodes);
+        // The queue is derived from the DISPLAY order by an effect below, not
+        // written here: the order can change without a load (the toggle), and
+        // two writers would let the two disagree.
         // Push the RSS-enriched podcast (funding/medium/podroll) back into the
         // store so the episode detail view — which reads selectedPodcast — shows
         // the SUPPORT link the show page gets. No-op if it's a different show.
@@ -270,7 +275,7 @@ export function EpisodeList({
     }
     // `reloadKey` is what the retry button below bumps — it re-runs this effect
     // without needing the feed to change.
-  }, [feedId, feedUrl, playlistUrl, reloadKey, setEpisodeQueue, syncSelectedPodcast]);
+  }, [feedId, feedUrl, playlistUrl, reloadKey, syncSelectedPodcast]);
 
   // Above the early returns — hook order has to stay stable, and the hook
   // itself no-ops (returns nulls) while the podcast is still null.
@@ -282,8 +287,15 @@ export function EpisodeList({
   // A live item's status is fixed at load time otherwise: /api/feed is fetched
   // once per feedId and nothing asks again. Polls only while this feed has a
   // live item on screen, and patches liveStatus/liveStartTime in place —
-  // setEpisodeQueue and syncSelectedPodcast are deliberately NOT re-fired, so
-  // playback is undisturbed.
+  // `syncSelectedPodcast` is deliberately NOT re-fired, so playback is
+  // undisturbed.
+  //
+  // `episodeQueue` IS re-derived now, because it hangs off `data.episodes`
+  // rather than being written here (see the effect below). That is harmless
+  // where re-running `syncSelectedPodcast` would not be: the patch keeps every
+  // episode id, and `playNext`/`<TransportControls>` locate the current track by
+  // `findIndex` on id rather than by a stored index, so a fresh array with the
+  // same ids costs one re-render and changes nothing about where ⏭ goes.
   const hasLiveItem = data.episodes.some((e) => !!e.liveStatus && e.liveStatus !== 'ended');
   useLiveStatusPoll(feedId, hasLiveItem, (items) => {
     // Plain read of `data` (not a setData updater): useLiveStatusPoll refreshes
@@ -295,6 +307,82 @@ export function EpisodeList({
     liveMissesRef.current = misses;
     if (episodes !== data.episodes) setData((prev) => ({ ...prev, episodes }));
   });
+
+  /**
+   * Which way round this show's list runs, and the key it is remembered under.
+   *
+   * Seeded in an EFFECT rather than a `useState` lazy initializer. This
+   * component reaches routes that are server-rendered, and reading storage
+   * during the first render is the module-scope-vs-server mismatch
+   * `<FavoritesPage>`'s `mounted` gate exists for — React 19 throws the subtree
+   * away and rebuilds it. An effect is the cheaper form of that gate: the first
+   * render is deterministic and the stored value lands on the next commit.
+   *
+   * Keyed on the SHOW, so opening a second show does not inherit the first
+   * one's order — and the `false` in the else branch is what makes that true
+   * rather than leaving the previous show's flag standing.
+   */
+  const [oldestFirst, setOldestFirst] = useState(false);
+  const showKey = data.podcast ? showStorageKey(data.podcast) : '';
+  useEffect(() => {
+    setOldestFirst(showKey ? storage.episodeOrder.getShow(showKey) === 'oldest' : false);
+  }, [showKey]);
+
+  /**
+   * The list as it is DISPLAYED — and the array everything downstream reads.
+   *
+   * **Only the non-live tail reverses.** `/api/feed` sorts in three tiers: live,
+   * then pending, then the feed's own order (date desc, or disc/track asc on an
+   * album). A whole-array `.reverse()` would drop a live broadcast to the bottom
+   * of the page and put the "Live & upcoming" heading under the episodes it
+   * introduces, because those dividers are computed from adjacency in the
+   * rendered slice. A live show is the most time-sensitive thing this list can
+   * hold; the order toggle is about the archive behind it.
+   *
+   * **Never a playlist.** Its pages are FETCHED, so the array here is a prefix
+   * of the real list and reversing it would both misrepresent the list and make
+   * "load more" append into the middle. The control is hidden there, and this
+   * re-checks rather than trusting that — a flag left over from the previous
+   * show would otherwise reverse the first playlist opened after it.
+   *
+   * Memoized because it feeds `setEpisodeQueue` below: a fresh array every
+   * render would rewrite the store every render.
+   */
+  const orderedEpisodes = useMemo(() => {
+    const eps = data.episodes;
+    if (!oldestFirst || !data.podcast || isPlaylistMedium(data.podcast)) return eps;
+    const live = eps.filter((e) => !!e.liveStatus);
+    const rest = eps.filter((e) => !e.liveStatus);
+    // `[...x].reverse()`, never an in-place reverse: `data.episodes` is state.
+    return [...live, ...[...rest].reverse()];
+  }, [data.episodes, data.podcast, oldestFirst]);
+
+  /**
+   * `episodeQueue` follows the DISPLAY, so ⏭ always means "the row below".
+   *
+   * One effect rather than a write at each of the three places `data.episodes`
+   * is set, because the order can change after any of them — flipping the
+   * toggle is not a load. Deriving it here means the queue cannot disagree with
+   * the screen, which is the whole property: reversed, episode 1 is at the top,
+   * and a queue still in feed order would leave ⏭ with nowhere to go from it.
+   *
+   * The generation guard the loaders carry is still what protects this: it
+   * gates `setData`, and this only ever reflects whatever `data` settled on.
+   */
+  useEffect(() => {
+    setEpisodeQueue(orderedEpisodes);
+  }, [orderedEpisodes, setEpisodeQueue]);
+
+  function toggleOrder() {
+    const next = !oldestFirst;
+    setOldestFirst(next);
+    if (showKey) storage.episodeOrder.setShow(showKey, next);
+    // Same reason <FavoritesPage>'s reveal reset includes its sort: after a
+    // flip, "revealed 200" names a different 200, and re-mounting that many
+    // covers against arbitrary third-party artwork is the byte cost the pager
+    // exists to bound.
+    setVisibleCount(10);
+  }
 
   if (!feedId) {
     return (
@@ -336,9 +424,9 @@ export function EpisodeList({
    * `<TransportControls>` and `playNext` walk, so a response that lands after
    * the user has moved to another show must not be applied.
    *
-   * `setEpisodeQueue` gets the MERGED array, never the page — a queue holding
-   * only the newest page strands a listener who is playing a track from an
-   * earlier one, with ⏭ doing nothing.
+   * `setData` gets the MERGED array, never the page — the queue is derived from
+   * it, and a queue holding only the newest page would strand a listener who is
+   * playing a track from an earlier one, with ⏭ doing nothing.
    */
   function loadNextPage() {
     if (!playlist || playlist.nextOffset == null || loadingMore) return;
@@ -351,18 +439,11 @@ export function EpisodeList({
         if (gen !== feedGenRef.current) return;
         const page = Array.isArray(p?.episodes) ? p.episodes : [];
         if (!p?.podcast) { setPageError(true); return; }
-        // `setEpisodeQueue` sits INSIDE the updater so `merged` is computed off
-        // the freshest `prev` rather than off a closure captured at click time.
-        // React 18 Strict Mode double-invokes updaters in dev, so that is only
-        // safe because this call is IDEMPOTENT — same `prev`, same `page`, same
-        // array, and Zustand takes the assignment twice with no effect. (The
-        // rule it is being weighed against is `applyLiveStatuses`' miss COUNTER,
-        // which is not idempotent and is deliberately mutated outside setState.)
-        setData((prev) => {
-          const merged = [...prev.episodes, ...page];
-          setEpisodeQueue(merged);
-          return { ...prev, episodes: merged };
-        });
+        // An updater so `merged` is computed off the freshest `prev` rather
+        // than off a closure captured at click time. It no longer writes the
+        // queue from in here — that is derived from `data` — which also removes
+        // the Strict-Mode question the write used to have to answer.
+        setData((prev) => ({ ...prev, episodes: [...prev.episodes, ...page] }));
         setPlaylist((prev) => (prev ? {
           ...prev,
           nextOffset: p.nextOffset ?? null,
@@ -374,12 +455,14 @@ export function EpisodeList({
       .catch(() => { if (gen === feedGenRef.current) setPageError(true); })
       .finally(() => { if (gen === feedGenRef.current) setLoadingMore(false); });
   }
-  // First non-pending track — for music feeds episodes are sorted track-order
-  // ascending. An unresolved playlist placeholder has no enclosure, so it can
-  // never be the thing the header's play button starts.
+  // First non-pending track IN DISPLAY ORDER — normally track 1 of an album,
+  // and the last track when the list is reversed, because the header's ▶ has to
+  // start where the list starts or the button contradicts the rows under it. An
+  // unresolved playlist placeholder has no enclosure, so it can never be the
+  // thing that button starts.
   const firstPlayable =
-    data.episodes.find((e) => e.liveStatus !== 'pending' && !e.unresolved)
-    ?? data.episodes.find((e) => !e.unresolved);
+    orderedEpisodes.find((e) => e.liveStatus !== 'pending' && !e.unresolved)
+    ?? orderedEpisodes.find((e) => !e.unresolved);
   // Is the currently-playing track part of this show?
   const showIsCurrent = !!current && (
     (!!data.podcast.podcastGuid && current.podcast.podcastGuid === data.podcast.podcastGuid) ||
@@ -389,8 +472,13 @@ export function EpisodeList({
   // time. A PLAYLIST renders everything it has fetched, because on that path the
   // fetch IS the page — a second reveal axis on top would make one new track
   // cost two presses.
-  const visibleEpisodes = isMusic || isPlaylist ? data.episodes : data.episodes.slice(0, visibleCount);
-  const remaining = data.episodes.length - visibleEpisodes.length;
+  // Slices the ORDERED array, never the raw one: slicing first and reversing
+  // after would show the last ten of the first ten.
+  // A playlist is paged by FETCH, so the array here is a prefix of the real
+  // list; one row has no order to choose. Both are "no choice, no control".
+  const canReverse = !isPlaylist && orderedEpisodes.filter((e) => !e.liveStatus).length > 1;
+  const visibleEpisodes = isMusic || isPlaylist ? orderedEpisodes : orderedEpisodes.slice(0, visibleCount);
+  const remaining = orderedEpisodes.length - visibleEpisodes.length;
 
   return (
     <div ref={containerRef}>
@@ -510,6 +598,43 @@ export function EpisodeList({
       )}
       {valueOpen && data.podcast.value && (
         <ValueBlockDetails value={data.podcast.value} />
+      )}
+      {/* The order toggle, and the truncation warning that only exists when it
+          is on.
+
+          ABOVE the list rather than in the header cluster above it: that row is
+          the show's five actions and is already measured tight at 390px, and
+          docs/ui.md says all five stay and none collapse into a menu — a sixth
+          control there means re-measuring the whole cluster.
+
+          Hidden on a playlist (its pages are fetched, so there is no full list
+          to reverse) and on a list too short to have an order at all, which is
+          <RailPicker>'s rule: no choice, no control. */}
+      {canReverse && (
+        <div className="flex flex-wrap items-center gap-2 py-3">
+          <Chip
+            active={oldestFirst}
+            onClick={toggleOrder}
+            title={oldestFirst ? 'Show newest first' : 'Show oldest first'}
+          >
+            {oldestFirst ? '↑ oldest first' : '↓ newest first'}
+          </Chip>
+          {/* THE NOTICE MOVES, and that is the point rather than a nicety.
+              Newest-first, a truncated feed simply ends early and the sentence
+              belongs at the bottom, where the reader arrives at it. Reversed,
+              the episodes we could not fetch are the ones BEFORE the first row —
+              so the list opens on "the oldest we could reach" while looking
+              exactly like episode 1, and the sentence explaining that would sit
+              at the far end of a list nobody has scrolled. It is also ungated
+              here: the bottom copy waits for every row to be revealed, which is
+              the wrong moment for a claim the very first screen is making. */}
+          {oldestFirst && data.truncated && (
+            <p className="text-muted text-xs basis-full">
+              This isn&apos;t the start of the show — it&apos;s longer than the app can load in
+              one go, so the earliest episodes aren&apos;t here.
+            </p>
+          )}
+        </div>
       )}
       <ul className="divide-y divide-bone/10">
         {visibleEpisodes.map((e, idx) => {
@@ -684,7 +809,11 @@ export function EpisodeList({
           Load more episodes ({remaining})
         </button>
       )}
-      {remaining === 0 && data.truncated && (
+      {/* Not when reversed — the same fact is already stated above the list,
+          where the missing episodes actually are. Printing it here too would
+          point at the newest end and say "older episodes exist" about the
+          direction the reader is heading away from. */}
+      {remaining === 0 && data.truncated && !oldestFirst && (
         <p className="text-muted text-xs mt-3 text-center">
           Older episodes exist, but this feed is longer than the app can load in one go.
         </p>
