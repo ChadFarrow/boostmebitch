@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { clearShowSelection, useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed, resolvePodcastByGuid } from '@/lib/podcast-meta';
+import { Chip } from '@/components/chip';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
@@ -476,23 +477,6 @@ function itemHay(r: FavoriteEpisode): string {
 }
 function matches(hay: string, query: string): boolean {
   return !query || hay.includes(query);
-}
-
-function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider border transition ${
-        active
-          ? 'border-bolt text-bolt bg-bolt/10'
-          : 'border-bone/30 text-muted hover:border-bone/60 hover:text-bone'
-      }`}
-    >
-      {children}
-    </button>
-  );
 }
 
 /**

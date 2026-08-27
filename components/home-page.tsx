@@ -1,6 +1,8 @@
 'use client';
 import { useCallback, useEffect, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
+import type { SearchInfo } from '@/components/search-bar';
+import { Chip } from '@/components/chip';
 import { PodcastResults, EpisodeList } from '@/components/lists';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { GlobalNostrFeed } from '@/components/global-nostr-feed';
@@ -12,7 +14,8 @@ import Link from 'next/link';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
-import { isMusicMedium, isPlaylistMedium } from '@/lib/util';
+import { SEARCH_TYPES, isMusicMedium, isPlaylistMedium } from '@/lib/util';
+import type { SearchType } from '@/lib/util';
 
 import type { Podcast } from '@/lib/types';
 
@@ -123,6 +126,28 @@ export function HomePage() {
   const [feeds, setFeeds] = useState<Podcast[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState('');
+  /**
+   * Which lane produced `feeds`, and how many rows the same query has unfiltered.
+   *
+   * Held beside the results rather than read off the search bar's chip row,
+   * because the chip moves on the press and the rows do not move until a
+   * response lands. Reading the control would let the empty state say "no albums
+   * match" over a list of podcasts for the length of one round trip — and the
+   * feed-URL branch ignores the selector entirely, so the chip is not even the
+   * right answer once the response arrives.
+   */
+  const [searchInfo, setSearchInfo] = useState<SearchInfo>({ type: 'all', total: 0 });
+  /**
+   * The content type the search box is CURRENTLY set to — the chip the user has
+   * pressed, as opposed to `searchInfo.type`, which is the lane that produced
+   * the rows on screen.
+   *
+   * Lifted out of <SearchBar> because the chip row is not its only control: a
+   * narrowed search that comes back empty offers a way back to ALL from down in
+   * the results panel, and both have to move one piece of state or the box ends
+   * up pointing at a lane that is no longer running.
+   */
+  const [searchType, setSearchType] = useState<SearchType>('all');
   const [searchKey, setSearchKey] = useState(0);
   const [publisherSource, setPublisherSource] = useState<Podcast | null>(null);
   const [publisherAlbums, setPublisherAlbums] = useState<Podcast[] | null>(null);
@@ -359,9 +384,10 @@ export function HomePage() {
   // An inline arrow here loops: empty query → onResults([], '') → setState →
   // new arrow → effect refires. (setFeeds/setQuery are stable state setters;
   // setSelected is a stable Zustand action.)
-  const handleResults = useCallback((f: Podcast[], q: string) => {
+  const handleResults = useCallback((f: Podcast[], q: string, info: SearchInfo) => {
     setFeeds(f);
     setQuery(q);
+    setSearchInfo(info);
     clearPublisher();
     // Deliberately does NOT change which view is showing — see
     // handleQueryChange. Results arriving is the wrong moment to navigate on:
@@ -396,6 +422,24 @@ export function HomePage() {
     if (st.selectedPodcast || st.selectedEpisode || st.discussionEpisode) setSelected(null);
   }, [setSelected]);
 
+  /**
+   * Changing the content type is an edit of what the query MEANS, so it goes
+   * through `handleQueryChange` exactly as a keystroke does.
+   *
+   * Without that, pressing a chip from inside a show refetches and refills
+   * `feeds` behind a view whose ternary never reaches the branch that renders
+   * them — the show stays open, the chip lights up, and nothing else moves. That
+   * is the same bug the search box itself had before `onQueryChange` existed,
+   * and it reads the same way: a dead control.
+   *
+   * Both callers land here — the chip row in <SearchBar> and the empty state's
+   * way back to ALL — which is the whole reason this state is lifted.
+   */
+  const changeType = useCallback((t: SearchType) => {
+    setSearchType(t);
+    handleQueryChange();
+  }, [handleQueryChange]);
+
   const handleSelect = useCallback(async (p: Podcast) => {
     if (p.medium === 'publisher') {
       setPublisherSource(p);
@@ -423,6 +467,12 @@ export function HomePage() {
     setSelected(null);
     setQuery('');
     setLoading(false);
+    // The type resets with everything else. `searchKey` remounts the box, so
+    // leaving this set would put the app back on the home page with a filter
+    // still on and an empty box — the state "home" is supposed to mean the
+    // absence of.
+    setSearchType('all');
+    setSearchInfo({ type: 'all', total: 0 });
     setSearchKey((n) => n + 1);
     clearPublisher();
     if (typeof window !== 'undefined') window.scrollTo({ top: 0 });
@@ -436,7 +486,63 @@ export function HomePage() {
   // term below is in-memory and null on both sides, so the hazard is gone
   // rather than merely moved. The gate now lives in <FavoritesPage> and
   // <FavoritesLink>, which are the surfaces that actually read those maps.
-  const showLeftRightLayout = loading || feeds.length > 0 || selected || !!publisherSource;
+  /**
+   * The vocabulary for the lane that produced what is on screen.
+   *
+   * Read from `searchInfo`, never from `searchType`: the chip moves on the press
+   * and the rows arrive a round trip later, so the lit chip is a claim about the
+   * future and these two sentences are claims about the list underneath them.
+   */
+  const applied = SEARCH_TYPES.find((s) => s.type === searchInfo.type) ?? SEARCH_TYPES[0];
+  const resultNoun = applied.noun;
+
+  /**
+   * What an empty result set says.
+   *
+   * Under ALL it is the sentence that has always been there — a genuine "the
+   * index did not match this phrase". Under a chip that sentence is FALSE: the
+   * index may hold plenty for the query and none of it music, and printing "no
+   * results" makes a filter the user applied look like an absence in Podcast
+   * Index. It is the same distinction `<FavoritesPage>` draws between a filter
+   * that matches nothing and an empty library, and the same reason
+   * `<EmptyLibrary>` takes a `degraded` flag: withholding while asserting the
+   * opposite is worse than withholding.
+   *
+   * So the narrowed form names the lane, keeps the true cross-type count on
+   * screen, and offers the way out — a control, not a suggestion to go and find
+   * one. `total` is only shown when we actually learned it: a fetch that threw
+   * reports 0, and an invented number here would be the same kind of confident
+   * wrong answer.
+   */
+  const emptyState = searchInfo.type === 'all' ? undefined : (
+    <div className="flex flex-col items-start gap-2">
+      <p className="text-muted text-sm">
+        No {applied.noun} match “{query}”.
+        {searchInfo.total > 0 && ` ${searchInfo.total} result${searchInfo.total === 1 ? '' : 's'} across all types.`}
+      </p>
+      <Chip active={false} onClick={() => changeType('all')}>
+        ← search all types
+      </Chip>
+    </div>
+  );
+
+  /**
+   * `query` is in here, and it has to be: without it a search that matches
+   * NOTHING takes the whole panel off the screen.
+   *
+   * The terms were `loading || feeds.length > 0 || …`, so the moment a request
+   * settled with no rows the aside stopped rendering — and the aside is what
+   * holds both the count line and `<PodcastResults>`' empty state. The result on
+   * screen was the hero, the live-streams row, and no acknowledgement of the
+   * search at all: the "no results yet" sentence flashed during the fetch and
+   * then vanished at exactly the moment it became true. The inner gate one level
+   * down has always included `query` for this reason; this one had not.
+   *
+   * It matters more now, because a narrowed search is a much easier way to reach
+   * zero rows, and the sentence that belongs there is the one explaining that a
+   * filter — not Podcast Index — is why the list is empty.
+   */
+  const showLeftRightLayout = loading || !!query || feeds.length > 0 || selected || !!publisherSource;
   const inDetailView = !!selected;
   const showOrigin = useApp((s) => s.showOrigin);
   const inDiscussion = useApp((s) => !!s.discussionEpisode);
@@ -485,6 +591,8 @@ export function HomePage() {
         <div className="mt-8 max-w-xl">
           <SearchBar
             key={searchKey}
+            type={searchType}
+            onTypeChange={changeType}
             onResults={handleResults}
             onLoading={setLoading}
             onQueryChange={handleQueryChange}
@@ -608,8 +716,11 @@ export function HomePage() {
                 )}
               </>
             ) : (
+              // The noun follows the lane that produced the rows, not the chip
+              // that is lit — "12 albums" has to be true of the twelve rows
+              // under it, and during a round trip those two disagree.
               <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
-                {loading ? 'searching…' : query ? `${feeds.length} feeds` : 'feeds'}
+                {loading ? 'searching…' : query ? `${feeds.length} ${resultNoun}` : 'feeds'}
               </div>
             )}
             {/* Search results only, now that favorites have their own route.
@@ -621,6 +732,7 @@ export function HomePage() {
                 feeds={feeds}
                 selected={null}
                 onSelect={handleSelect}
+                empty={emptyState}
               />
             ) : null}
           </aside>

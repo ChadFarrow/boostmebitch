@@ -37,7 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
-import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, PLAYLIST_MEDIUMS } from '../lib/util.ts';
+import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -709,6 +709,174 @@ console.log('\nWhose value block a boost for one row may be paid against');
     }
   }
   console.log(`  ${vv.length} vector(s) replayed, ${vv.filter((v) => v.alsoNaive).length} exempt as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nWhich kind of thing the search box was asked for');
+// ---------------------------------------------------------------------------
+{
+  // THE SEARCH TYPE SELECTOR. Three pure functions decide what a chip does, and
+  // every one of them fails SILENTLY in at least one direction:
+  //
+  //   `parseSearchType`   picks which Podcast Index endpoint runs, from a
+  //                       caller-supplied query parameter. Over-accept and an
+  //                       unvalidated string reaches a URL we build.
+  //
+  //   `matchesSearchType` decides whether a feed belongs under a chip. UNDER-
+  //                       accept is the expensive direction and it looks like
+  //                       nothing: the row is simply absent, which reads as
+  //                       "Podcast Index does not hold this show" rather than as
+  //                       a filter. That is the whole failure the playlist lane
+  //                       above exists to fix, arriving through a control the
+  //                       user pressed themselves.
+  //
+  //   `mergeSearchLanes`  joins an endpoint that answered the medium question
+  //                       with one that did not. Re-filter the first and it
+  //                       discards exactly the rows it was asked to find.
+  //
+  // ONE naive() PER KIND, and the replay refuses a kind it has no implementation
+  // for rather than comparing two absences — the trap `check:vpsummary` records,
+  // where a whole file's worth of assertions sat green having been compared
+  // against nothing under a header claiming otherwise.
+  const naive = {
+    // What somebody writes: the medium IS the type. It agrees on the two chips
+    // whose name happens to equal a medium string and is wrong everywhere else —
+    // most expensively on PODCASTS, because Podcast Index leaves the tag blank on
+    // a large share of what it holds, so this empties the chip of most of the
+    // index with no error anywhere.
+    matches: (p, type) => p.medium === type,
+    // What somebody writes: filter both lanes by the type and concatenate. It
+    // gets the ordering and the byterm half right, which is what makes it
+    // tempting, and it throws away every trusted-lane row whose PI `medium`
+    // disagrees with the feed's own tag — the measured case, feed 7683902 — plus
+    // it emits a feed present in both lanes twice.
+    merge: (trusted, byterm, type, limit) =>
+      [...trusted, ...byterm].filter((f) => matchesSearchType(f, type)).slice(0, limit),
+    // What somebody writes: default when absent, otherwise take what you were
+    // given. That is the missing allowlist.
+    parse: (v) => v ?? 'all',
+  };
+
+  const ser = (v) => JSON.stringify(v ?? null);
+  const vv = [];
+  const vec = (kind, label, args, expect, opts = {}) => vv.push({ kind, label, args, expect, ...opts });
+
+  // ── matchesSearchType: must still work ───────────────────────────────────
+  vec('matches', 'a music feed is music', [{ medium: 'music' }, 'music'], true, { alsoNaive: true });
+  vec('matches', 'a podcast feed is a podcast', [{ medium: 'podcast' }, 'podcast'], true, { alsoNaive: true });
+  vec('matches', 'a music feed is not a podcast', [{ medium: 'music' }, 'podcast'], false, { alsoNaive: true });
+  vec('matches', 'a playlist is not a podcast', [{ medium: 'musicL' }, 'podcast'], false, { alsoNaive: true });
+  vec('matches', 'a music feed is not a playlist', [{ medium: 'music' }, 'playlist'], false, { alsoNaive: true });
+  // The allowlist, not `endsWith('l')`. naive() happens to agree here because it
+  // compares against the literal 'playlist'; the trap itself is pinned against
+  // `isPlaylistMedium` in the LIST_MEDIUMS section above, which this delegates to.
+  vec('matches', 'medium="cool" is NOT a playlist', [{ medium: 'cool' }, 'playlist'], false, { alsoNaive: true });
+  vec('matches', 'no feed is ever a person', [{ medium: 'music' }, 'npub'], false, { alsoNaive: true });
+
+  // ── matchesSearchType: must refuse the naive reading ─────────────────────
+  // THE ONE THAT MATTERS. PI leaves `medium` off most of what it holds, so an
+  // inclusion test empties the PODCASTS chip of the majority of the index — and
+  // an absent row is indistinguishable from a feed PI does not have.
+  vec('matches', 'a feed with NO medium is still a podcast', [{}, 'podcast'], true);
+  vec('matches', 'an empty-string medium is still a podcast', [{ medium: '' }, 'podcast'], true);
+  // A publisher collection is neither music nor a list, so it lands under
+  // PODCASTS — a mild mislabel, and the alternative is a feed reachable under no
+  // chip but ALL. The row carries its own `▸ ALBUMS` stamp.
+  vec('matches', 'a publisher collection falls in the residual bucket', [{ medium: 'publisher' }, 'podcast'], true);
+  // PI returns the tag's own spelling and the RSS parsers lowercase it, so both
+  // reach this function. A literal comparison matches one path and not the other.
+  vec('matches', 'PI\'s musicL spelling is a playlist', [{ medium: 'musicL' }, 'playlist'], true);
+  vec('matches', 'the parsers\' lowercased musicl is too', [{ medium: 'musicl' }, 'playlist'], true);
+  vec('matches', 'every list medium is a playlist, not musicL alone', [{ medium: 'podcastL' }, 'playlist'], true);
+  vec('matches', 'an upper-case MUSIC is music', [{ medium: 'MUSIC' }, 'music'], true);
+  vec('matches', 'ALL takes everything, whatever the medium says', [{ medium: 'audiobook' }, 'all'], true);
+  vec('matches', 'ALL takes a feed with no medium too', [{}, 'all'], true);
+
+  // ── mergeSearchLanes ─────────────────────────────────────────────────────
+  const M_TRUSTED = [{ id: 101, medium: 'music' }, { id: 102, medium: 'music' }];
+  const M_BYTERM = [{ id: 102, medium: 'music' }, { id: 200, medium: 'podcast' }, { id: 201, medium: 'music' }];
+  vec('merge', 'the trusted lane leads, byterm follows, both filtered and deduped',
+    [M_TRUSTED, M_BYTERM, 'music', 50], [{ id: 101, medium: 'music' }, { id: 102, medium: 'music' }, { id: 201, medium: 'music' }]);
+  // FEED 7683902: PI holds `medium: "podcast"` over a feed that declares musicL.
+  // `/search/music/byterm` answered the medium question by BEING that endpoint,
+  // so re-checking its rows throws away the answer it gave. This is the whole
+  // asymmetry with `filterPlaylistsByQuery`, which re-checks because its output
+  // gets stamped ♫ PLAYLIST on screen and a stamp is a claim.
+  vec('merge', 'a trusted row whose PI medium disagrees is KEPT',
+    [[{ id: 7683902, medium: 'podcast' }], [], 'music', 50], [{ id: 7683902, medium: 'podcast' }]);
+  // The half naive() also gets right, and must not be lost while fixing the half
+  // it does not: byterm says nothing about the medium, so its rows are the ones
+  // that DO have to pass the test. Dropping this test to "keep every row" would
+  // make the MUSIC chip return podcasts.
+  vec('merge', 'a byterm row that fails the type is dropped — nothing vouched for it',
+    [[], [{ id: 300, medium: 'podcast' }], 'music', 50], [], { alsoNaive: true });
+  vec('merge', 'a feed in BOTH lanes appears once, in the trusted lane\'s place',
+    [[{ id: 9, medium: 'music' }], [{ id: 8, medium: 'music' }, { id: 9, medium: 'music' }], 'music', 50],
+    [{ id: 9, medium: 'music' }, { id: 8, medium: 'music' }]);
+  vec('merge', 'the limit caps the joined list', [M_TRUSTED, M_BYTERM, 'music', 2], M_TRUSTED, { alsoNaive: true });
+  vec('merge', 'a 0 limit yields nothing, never everything', [M_TRUSTED, M_BYTERM, 'music', 0], [], { alsoNaive: true });
+  vec('merge', 'an empty trusted lane leaves byterm doing the work alone',
+    [[], M_BYTERM, 'music', 50], [{ id: 102, medium: 'music' }, { id: 201, medium: 'music' }], { alsoNaive: true });
+  vec('merge', 'two empty lanes stay empty', [[], [], 'music', 50], [], { alsoNaive: true });
+
+  // ── parseSearchType ──────────────────────────────────────────────────────
+  vec('parse', 'a known type is itself', ['music'], 'music', { alsoNaive: true });
+  vec('parse', 'an absent parameter is ALL', [null], 'all', { alsoNaive: true });
+  vec('parse', 'an undefined parameter is ALL', [undefined], 'all', { alsoNaive: true });
+  // An unvalidated value here reaches a URL we build against Podcast Index.
+  vec('parse', 'an unknown value is ALL, never passed through', ['../../admin'], 'all');
+  vec('parse', 'an empty string is ALL', [''], 'all');
+  vec('parse', 'case and surrounding space are normalized', ['  MUSIC '], 'music');
+  vec('parse', 'npub survives the round trip — it is a real mode, just not a lane', ['npub'], 'npub', { alsoNaive: true });
+
+  const real = {
+    matches: matchesSearchType,
+    merge: mergeSearchLanes,
+    parse: parseSearchType,
+  };
+  const call = (impl, v) => {
+    const fn = impl === 'real' ? real[v.kind] : naive[v.kind];
+    try {
+      return ser(fn(...v.args));
+    } catch (e) {
+      // A wrong implementation may throw where the real one answers. That counts
+      // as differing — it is the loudest way to be wrong.
+      return `threw ${(e && e.message) || e}`;
+    }
+  };
+
+  for (const v of vv) {
+    // A kind with no naive() would compare `undefined` against `undefined` and
+    // pass forever. Refuse rather than pretend.
+    if (!real[v.kind] || !naive[v.kind]) { fail(`no implementation registered for kind "${v.kind}"`); continue; }
+    const got = call('real', v);
+    if (got !== ser(v.expect)) {
+      fail(`${v.label}\n          got  ${got}\n          want ${ser(v.expect)}`);
+      continue;
+    }
+    if (v.alsoNaive) { ok(`${v.label} (must-still-work — naive() may agree)`); continue; }
+    if (got !== call('naive', v)) ok(`${v.label} — and naive() gets it wrong`);
+    else {
+      fail(`"${v.label}" passes against naive() too — the vector proves nothing.\n`
+        + '          Either it is a must-still-work input (mark it { alsoNaive: true })\n'
+        + '          or it does not exercise anything the real function adds.');
+    }
+  }
+  console.log(`  ${vv.length} vector(s) replayed, ${vv.filter((v) => v.alsoNaive).length} exempt as must-still-work`);
+
+  // Every chip the UI can render must be a type this parser accepts, or a chip
+  // press sends a value the route silently rewrites to ALL — a control that
+  // lights up and quietly does nothing, which is this repo's most-repeated bug.
+  if (SEARCH_TYPES.every((s) => parseSearchType(s.type) === s.type)) {
+    ok(`all ${SEARCH_TYPES.length} selector types round-trip through parseSearchType`);
+  } else fail('a SEARCH_TYPES entry is not accepted by parseSearchType');
+  // Every chip needs its own words. Two chips sharing a noun render two counts
+  // that read identically over different lists — the collision `crossSplitLabel`
+  // documents on the favorites page.
+  if (new Set(SEARCH_TYPES.map((s) => s.noun)).size === SEARCH_TYPES.length
+    && new Set(SEARCH_TYPES.map((s) => s.label)).size === SEARCH_TYPES.length) {
+    ok('every selector type has a distinct label and result noun');
+  } else fail('two selector types share a label or a result noun');
 }
 
 if (failures) {

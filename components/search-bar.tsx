@@ -6,14 +6,51 @@ import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { looksLikeSecretKey, parseNpubInput } from '@/lib/nostr/npub-input';
 import { storage } from '@/lib/storage';
 import type { Podcast } from '@/lib/types';
+import { SEARCH_TYPES, parseSearchType } from '@/lib/util';
+import type { SearchType } from '@/lib/util';
 import { Avatar } from './avatar';
+import { Chip } from './chip';
+
+/**
+ * What produced the results, travelling WITH them.
+ *
+ * The chip row shows the user's pending selection, which moves the moment they
+ * press it; the results on screen are still the previous lane's until a response
+ * lands. So a consumer wording an empty state from the chip row would name a
+ * filter that did not produce the list it is describing — "no albums match" over
+ * podcast results, for the ~300 ms in between. `type` is the type the SERVER
+ * applied (the feed-URL branch ignores the selector and says so), and `total` is
+ * the unfiltered count for the same query, which is what lets a narrowed empty
+ * result avoid claiming Podcast Index holds nothing.
+ */
+export interface SearchInfo {
+  type: SearchType;
+  total: number;
+}
 
 interface Props {
   /** Both callbacks are effect dependencies — pass referentially stable
    *  functions (useCallback / state setters) or the debounce restarts on
    *  every parent render and the empty-query reset loops. */
-  onResults: (feeds: Podcast[], q: string) => void;
+  onResults: (feeds: Podcast[], q: string, info: SearchInfo) => void;
   onLoading: (b: boolean) => void;
+  /**
+   * The selected content type, and the way to change it.
+   *
+   * CONTROLLED from the parent rather than held here, because the chip row is
+   * not the only thing that sets it: when a narrowed search comes back empty,
+   * the results panel offers a way back to ALL, and that control has to move
+   * the same state this box reads. Held privately it would move only the
+   * results, leaving the chip row pointing at a lane that is no longer running.
+   *
+   * Not persisted anywhere. A search filter restored from disk is on before you
+   * touched it — you come back a week later, search a show, get nothing, and the
+   * box reads as broken with the only explanation sitting in a chip you never
+   * pressed. The favorites page stores its tab because that is a library you
+   * own; this is a question you ask once.
+   */
+  type: SearchType;
+  onTypeChange: (t: SearchType) => void;
   /**
    * Fired synchronously on every edit of the query, before any fetch is queued.
    *
@@ -26,10 +63,12 @@ interface Props {
   onQueryChange?: (q: string) => void;
 }
 
-export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
+export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeChange }: Props) {
   const [q, setQ] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
   const router = useRouter();
+
+  const active = SEARCH_TYPES.find((s) => s.type === type) ?? SEARCH_TYPES[0];
 
   /**
    * One box, two kinds of thing to find. An npub is unmistakable — `npub1…`,
@@ -94,14 +133,26 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
   // Never let a half-resolved profile print an empty name where a name goes.
   const npubName = npubProfile?.display_name?.trim() || npubProfile?.name?.trim() || null;
 
-  // Every edit goes through here — the input and the clear button both — so the
-  // "user is searching" signal can't be attached to one and forgotten on the
-  // other. Deliberately not an effect: the point is that it fires on the
-  // gesture, ahead of the debounce and the fetch.
+  // Every edit goes through here — the input, the clear button and the type
+  // chips all — so the "user is searching" signal can't be attached to one and
+  // forgotten on the others. Deliberately not an effect: the point is that it
+  // fires on the gesture, ahead of the debounce and the fetch.
   function edit(next: string) {
     setQ(next);
     onQueryChange?.(next);
   }
+
+  /**
+   * The type the last fetch ran under, so the effect can tell a CHIP PRESS from
+   * a keystroke.
+   *
+   * The 280 ms below exists to coalesce typing, and a press is not typing: a
+   * discrete deliberate action should not sit behind a delay sized for the next
+   * character. Compared against the current prop rather than set by the click
+   * handler, so it stays right no matter which control changed the type — and
+   * the results panel's "search all types" button is a second one.
+   */
+  const lastTypeRef = useRef(type);
 
   // Focus on mount only for fine-pointer (mouse) devices. On touch devices
   // autofocus pops the keyboard and scrolls the viewport to the input — and
@@ -126,27 +177,51 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
     // Reports an EMPTY query rather than `q`, so the page behind the box does
     // not flip into its searching layout and throw away the favorites panel
     // for a query that was never about shows.
-    if (!q.trim() || npubHit || secretHit) { onResults([], ''); return; }
+    //
+    // `type === 'npub'` joins that list rather than getting a branch of its own.
+    // The NPUB chip is a mode of the INPUT — it accepts a pasted key and nothing
+    // else, because this app has no Nostr name search to offer — so there is
+    // never a podcast query to send under it. That also makes it the strongest
+    // possible form of the secret-key guard: no request is issued at all.
+    const byPress = lastTypeRef.current !== type;
+    lastTypeRef.current = type;
+    if (!q.trim() || npubHit || secretHit || type === 'npub') {
+      onResults([], '', { type, total: 0 });
+      return;
+    }
     const gen = ++genRef.current;
     const t = setTimeout(async () => {
       onLoading(true);
       try {
-        const r = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+        const r = await fetch(`/api/search?q=${encodeURIComponent(q)}&type=${type}`);
         const data = await r.json();
         if (gen !== genRef.current) return;
-        onResults(Array.isArray(data?.feeds) ? data.feeds : [], q);
+        const feeds = Array.isArray(data?.feeds) ? data.feeds : [];
+        // The type is read back from the RESPONSE, not from local state: the
+        // feed-URL branch ignores the selector, so echoing `type` here would let
+        // the empty state name a filter the server never applied. `parseSearchType`
+        // is the same allowlist the route validated with, so a missing or odd
+        // field falls back to 'all' rather than to a filter nobody chose.
+        onResults(feeds, q, {
+          type: parseSearchType(data?.type),
+          total: typeof data?.total === 'number' ? data.total : feeds.length,
+        });
       } catch {
         // try/finally with no catch made a dropped connection or a non-JSON
         // body an unhandled rejection. An empty result set is the honest answer
         // here — the surrounding UI already renders "no results" — and the next
         // keystroke retries anyway.
-        if (gen === genRef.current) onResults([], q);
+        //
+        // `total: 0` on purpose: we learned nothing about how many results the
+        // unfiltered query has, and a narrowed empty state offering to "search
+        // all types" over a number we invented would be a worse claim than none.
+        if (gen === genRef.current) onResults([], q, { type, total: 0 });
       } finally {
         if (gen === genRef.current) onLoading(false);
       }
-    }, 280);
+    }, byPress ? 0 : 280);
     return () => clearTimeout(t);
-  }, [q, npubHit, secretHit, onResults, onLoading]);
+  }, [q, type, npubHit, secretHit, onResults, onLoading]);
 
   // Navigation hangs off the suggestion (click or Enter), never off the npub
   // merely PARSING. Someone pasting an npub mid-edit, or pasting one they then
@@ -164,9 +239,26 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
     // below, separated by a gap — which read as a SECOND SEARCH BOX, i.e. exactly
     // the two-input design merging them into one was meant to remove.
     <div className="flex flex-col">
+      {/* ABOVE the input, not below it. The rows under the box hang off it as
+          one control — no gap, no top border — and a chip row wedged into that
+          stack would split the input from the suggestion it belongs to. Above,
+          it reads as what it is: the question the box is about to answer.
+
+          `flex-wrap` because five chips do not fit one line at 320px, and
+          wrapping is the honest failure there — an `overflow-x-auto` strip hides
+          whichever chip falls off the end, and the one that falls off is NPUB. */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-2">
+        {SEARCH_TYPES.map((s) => (
+          <Chip key={s.type} active={type === s.type} onClick={() => onTypeChange(s.type)}>
+            {s.label}
+          </Chip>
+        ))}
+      </div>
       <div className="relative">
+        {/* The warning outranks everything, then the parsed key, then the mode.
+            A ⚡ over an nsec would say "this is a person" about a secret key. */}
         <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted text-xs">
-          {secretHit ? '⚠' : npubHit ? '⚡' : '⌕'}
+          {secretHit ? '⚠' : npubHit || type === 'npub' ? '⚡' : '⌕'}
         </span>
         <input
           ref={inputRef}
@@ -174,7 +266,13 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
           value={q}
           onChange={(e) => edit(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && npubHit) { e.preventDefault(); openBoosts(); } }}
-          placeholder="search podcasts, or paste an npub…"
+          placeholder={active.placeholder}
+          // The placeholder verbatim, not `Search ${noun}`. An aria-label
+          // REPLACES the placeholder as the accessible name, so a shorter one
+          // loses the instruction — and under NPUB "Search people" would promise
+          // a name search this app does not have, to the one user who cannot see
+          // the explainer row saying otherwise.
+          aria-label={active.placeholder}
         />
         {q && (
           <button
@@ -229,6 +327,25 @@ export function SearchBar({ onResults, onLoading, onQueryChange }: Props) {
           </span>
           <span className="text-muted shrink-0">↵</span>
         </button>
+      )}
+      {/* NPUB mode with text that is neither a key nor an nsec.
+
+          Without this the chip is a DEAD CONTROL: press it, type a name, and
+          nothing happens anywhere on screen — which this repo has already paid
+          for twice, and which is the hardest failure to notice because a dead
+          control is indistinguishable from a slow one. It says what the mode
+          accepts, and it says plainly that searching people by name is not
+          something this app can do, rather than leaving that to be inferred from
+          an empty result.
+
+          Ordered after the two branches above so a pasted key gets the
+          suggestion row and an nsec gets the warning; this is the remainder. */}
+      {type === 'npub' && !!q.trim() && !npubHit && !secretHit && (
+        <p className="border border-t-0 border-bone/30 bg-ink/60 px-3 py-2 text-xs text-muted">
+          Paste an <code className="font-mono text-bone">npub</code>,{' '}
+          <code className="font-mono text-bone">nprofile</code> or hex pubkey to see that
+          person&apos;s boosts. Searching people by name isn&apos;t available yet.
+        </p>
       )}
     </div>
   );

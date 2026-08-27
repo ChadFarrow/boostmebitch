@@ -214,6 +214,123 @@ export function filterPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author
   return out;
 }
 
+/**
+ * What kind of thing the search box is being asked for.
+ *
+ * `'all'` is the default and is deliberately not a filter at all — it is the
+ * behaviour that shipped before this existed, byte for byte, so the selector can
+ * only ever narrow from a full answer rather than replace one.
+ *
+ * `'npub'` never reaches the server. It is a mode of the INPUT — the box already
+ * recognises a pasted key and skips Podcast Index entirely for one — and naming
+ * it here is what lets the chip row and the placeholder read from one list.
+ */
+export type SearchType = 'all' | 'music' | 'podcast' | 'playlist' | 'npub';
+
+/**
+ * The selector's vocabulary, in the order it renders.
+ *
+ * One list rather than a literal in the chip row and another in the placeholder:
+ * two copies is how a chip comes to say MUSIC over a box asking for podcasts.
+ * `noun` is the plural the result count uses, so "12 albums" follows the chip
+ * that produced it — the same rule `splitLabels` follows on the favorites page,
+ * where a chip reading ALBUMS over a heading reading "albums & shows" was the
+ * confusion being fixed.
+ */
+export const SEARCH_TYPES: readonly {
+  type: SearchType;
+  label: string;
+  noun: string;
+  placeholder: string;
+}[] = [
+  { type: 'all', label: 'ALL', noun: 'feeds', placeholder: 'search podcasts, or paste an npub…' },
+  { type: 'music', label: '♫ MUSIC', noun: 'albums', placeholder: 'search music albums…' },
+  { type: 'podcast', label: 'PODCASTS', noun: 'shows', placeholder: 'search podcasts…' },
+  { type: 'playlist', label: 'PLAYLISTS', noun: 'playlists', placeholder: 'search playlists…' },
+  { type: 'npub', label: '⚡ NPUB', noun: 'people', placeholder: 'paste an npub, nprofile or hex pubkey…' },
+];
+
+/**
+ * A `type` query parameter, or `'all'` for anything else.
+ *
+ * An ALLOWLIST, and the reason is the same one `getFeedsByMedium`'s caller has:
+ * this value picks which Podcast Index endpoint runs, so an unvalidated one is a
+ * caller-supplied string reaching a URL we build. Absent, misspelt and hostile
+ * all collapse to the default, which is the answer that hides nothing.
+ */
+export function parseSearchType(v: string | null | undefined): SearchType {
+  const t = v?.trim().toLowerCase();
+  const hit = SEARCH_TYPES.find((s) => s.type === t);
+  return hit ? hit.type : 'all';
+}
+
+/**
+ * Whether one feed belongs under a given chip.
+ *
+ * **`'podcast'` is a RESIDUAL bucket — never `medium === 'podcast'`.** Podcast
+ * Index leaves the tag blank on a large share of the feeds it holds (and gets it
+ * outright wrong on some: feed 7683902 declares `musicL` and PI answers
+ * `medium: "podcast"` — see `piRecordIsBlank`). An inclusion test therefore
+ * empties the tab of most of the index, and the emptiness is silent: the row
+ * simply is not there, which reads as "Podcast Index does not have this show".
+ * So the test is "not music, and not a list medium", which leaves a mediumless
+ * feed findable under the one chip where somebody would look for it.
+ *
+ * A `medium=publisher` collection lands there too. That is a mild mislabel and
+ * the right trade — the row carries its own `▸ ALBUMS` stamp, and the
+ * alternative is a feed reachable under no chip but ALL.
+ *
+ * `'npub'` matches nothing: no feed is a person, and this function is only ever
+ * asked about feeds.
+ */
+export function matchesSearchType(p: Pick<Podcast, 'medium'>, type: SearchType): boolean {
+  switch (type) {
+    case 'all': return true;
+    case 'music': return isMusicMedium(p);
+    case 'playlist': return isPlaylistMedium(p);
+    case 'podcast': return !isMusicMedium(p) && !isPlaylistMedium(p);
+    case 'npub': return false;
+  }
+}
+
+/**
+ * Two lanes of search results for one chip, joined.
+ *
+ * `trusted` is an endpoint that answered the MEDIUM QUESTION ITSELF — Podcast
+ * Index's `/search/music/byterm`, or the `/podcasts/bymedium` roster — so its
+ * rows are **not** re-checked against `type`. That is deliberate and it is the
+ * opposite of what `filterPlaylistsByQuery` does one function up: PI's own
+ * record for a feed can carry a medium the feed contradicts, so re-filtering
+ * this lane would throw away exactly the rows it was asked to find. The reason
+ * `filterPlaylistsByQuery` re-checks anyway is that its output gets stamped
+ * `♫ PLAYLIST` on screen, and a stamp is a claim; nothing here stamps anything.
+ *
+ * `byterm` is Podcast Index's ranked keyword answer, which says nothing about
+ * the medium, so every one of its rows must pass `matchesSearchType`.
+ *
+ * Trusted first, byterm after, deduped by feed id, order preserved throughout —
+ * this joins, it does not re-rank. Both arms may legitimately be empty: an index
+ * that will not serve the trusted endpoint leaves the byterm half doing the work
+ * on its own, which is a shorter answer and never a broken one.
+ */
+export function mergeSearchLanes<T extends Pick<Podcast, 'id' | 'medium'>>(
+  trusted: readonly T[],
+  byterm: readonly T[],
+  type: SearchType,
+  limit: number,
+): T[] {
+  if (limit <= 0) return [];
+  const out: T[] = [];
+  const seen = new Set<number>();
+  for (const f of [...trusted, ...byterm.filter((b) => matchesSearchType(b, type))]) {
+    if (seen.has(f.id)) continue;
+    seen.add(f.id);
+    out.push(f);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 // True when a value block actually has payees — the gate for showing BOOST.
 export function hasValueRecipients(value?: ValueBlock | null): boolean {
   return !!value?.recipients?.length;

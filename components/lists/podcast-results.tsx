@@ -67,13 +67,32 @@ export function PodcastResults({
   feeds,
   selected,
   onSelect,
+  empty,
 }: {
   feeds: Podcast[];
   selected: number | null;
   onSelect: (p: Podcast) => void;
+  /**
+   * What to say when there are no rows.
+   *
+   * A prop rather than a string here because the sentence depends on something
+   * this component cannot see: whether a TYPE FILTER is narrowing the list. "no
+   * results yet" is a claim about Podcast Index, and under a chip it is a false
+   * one — the index may hold plenty, none of it music. Same rule the favorites
+   * page follows for its own filter: a filter that matches nothing is not an
+   * empty library, and saying so in the same words is the lie.
+   *
+   * Defaults to the original sentence, which is still right for an unfiltered
+   * search and for the publisher view that also renders this list.
+   */
+  empty?: React.ReactNode;
 }) {
   if (!feeds.length) {
-    return <p className="text-muted text-sm py-8 px-1">no results yet — try another phrase</p>;
+    return (
+      <div className="py-8 px-1">
+        {empty ?? <p className="text-muted text-sm">no results yet — try another phrase</p>}
+      </div>
+    );
   }
   return (
     <ul className="divide-y divide-bone/10">
