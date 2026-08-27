@@ -45,7 +45,7 @@ import { createObservable } from '@/lib/pubsub';
 // DEFAULT_SENDER_NAME lives in lib/util.ts, NOT in the boost modal that owns
 // the "From" field — importing it from `components/` here would invert the v4v
 // swap-out boundary and pull a 'use client' React module into the engine.
-import { getErrorMessage, hasValueRecipients, payableValue, splitAtPosition, DEFAULT_SENDER_NAME, randomId } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableValue, splitAtPosition, showStorageKey, DEFAULT_SENDER_NAME, randomId } from '@/lib/util';
 import { isLiveStreamId } from '@/lib/nostr/live-streams';
 import { canSignUnattended } from '@/lib/nostr/signer';
 import { resolvePublishRelays } from '@/lib/nostr/relays';
@@ -593,10 +593,15 @@ function notifyIfChanged() {
   observable.notify();
 }
 
-/** Key a per-show rate override is stored under. */
-export function streamShowKey(podcast: Podcast): string {
-  return podcast.podcastGuid || String(podcast.id);
-}
+/**
+ * Key a per-show rate override is stored under.
+ *
+ * Delegates to `showStorageKey` (`lib/util.ts`) now that the episode-order
+ * toggle keys off the same value. Kept as a re-export under this name so every
+ * `storage.streaming.*Show*` call site reads the same way it always has, and so
+ * a reader here does not have to know the helper moved.
+ */
+export const streamShowKey = showStorageKey;
 
 /**
  * The rate that applies to a show: the per-show override when one exists —

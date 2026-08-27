@@ -783,8 +783,18 @@ export function FullscreenPlayer({
                             active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
                           }`}
                         >
+                          {/* THE FEED'S TRACK NUMBER, not the row's position.
+                              `i + 1` only ever agreed with the track number by
+                              coincidence — the server sorts an album by
+                              `<podcast:episode>` ascending, so position matched
+                              until a track was missing from the feed or the
+                              list was reversed, at which point this panel
+                              confidently labelled track 1 as "12". Position is
+                              the fallback because a feed that numbers nothing
+                              leaves nothing truer to show, and "which row am I
+                              on" is the honest floor. */}
                           <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
-                            {active && isPlaying ? '❚❚' : i + 1}
+                            {active && isPlaying ? '❚❚' : t.episode ?? i + 1}
                           </span>
                           <span className="truncate flex-1">{t.title}</span>
                           {t.duration ? (

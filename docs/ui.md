@@ -149,6 +149,24 @@ Section-divider labels ("Live & upcoming" / "Episodes") derive `prev` from the *
 - **`targetWord` says PLAYLIST, never ALBUM.** A curated list drawn from hundreds of artists is not one artist's record.
 - `♫ PLAYLIST` stamps the search-results row, through `isPlaylistMedium` and never a raw `=== 'musicL'` — the RSS parsers lowercase the tag and PI returns its own spelling, so a literal comparison stamps one path and silently not the other.
 
+### Reversing the order (issue #239)
+
+A `<Chip>` above the list: `↓ NEWEST FIRST` / `↑ OLDEST FIRST`. Per show, remembered in `bmb:ep_order:<showKey>` — the reason to read a feed oldest-first belongs to the show (a serialized drama, a course), not the person, so one global flip would be wrong for most of a library the moment it is right for one show. Absent means newest-first and flipping back removes the key, so there is one sentinel for the default.
+
+**Client-side only, and it has to be.** `compareEpisodeOrder`'s two callers are both server-side, and reversing there is not available anyway: `fitEpisodesToBudget` trims **from the end**, so a reversed array would drop the newest episodes and could drop live items. `/api/feed` already serves up to `PI_EPISODE_MAX`, so the client holds the whole feed for almost any show and a local reverse is honest.
+
+**Only the non-live tail reverses.** The server sort is three tiers — live, then pending, then the feed's own order — so a whole-array `.reverse()` would drop a live broadcast to the bottom and put the "Live & upcoming" heading *under* the episodes it introduces, since those dividers are computed from adjacency in the rendered slice. A live show is the most time-sensitive thing this list holds; the toggle is about the archive behind it.
+
+**`episodeQueue` follows the DISPLAY, via one derived effect rather than a write at each of the three places `data.episodes` is set.** The order can change without a load, so a per-load write would let the queue and the screen disagree. Reversing the view *only* is the tempting version and it breaks the primary case outright: reversed, episode 1 is the top row and sits **last** in an untouched newest-first queue, so ⏭ has nowhere to go and the listener cannot advance through the show they just asked to read in order. `firstPlayable` follows for the same reason — the header's ▶ has to start where the list starts.
+
+**The truncation notice MOVES, and that is the correctness core.** `/api/feed` sets `truncated` when PI's ceiling or the 3.5 MB budget cut the tail, and newest-first the list simply ends early, so *"Older episodes exist…"* belongs at the bottom where the reader arrives at it. Reversed it is exactly backwards: the episodes we could not fetch are the ones *before* the first row, so the list opens on "the oldest we could reach" while looking like episode 1. The sentence therefore moves **above** the list, is reworded for that direction, and is **ungated** — the bottom copy waits for every row to be revealed, which is the wrong moment for a claim the very first screen is already making. The two never render together.
+
+**No control where there is no choice** (`<RailPicker>`'s rule): hidden on a `musicL` playlist, whose pages are *fetched* so the array is a prefix of the real list, and hidden when there are fewer than two non-live rows. The memo re-checks the playlist medium rather than trusting the hidden control, so a flag left from the previous show cannot reverse the first playlist opened after it. Flipping resets the reveal to 10, for the reason `<FavoritesPage>`'s reset key includes its sort: after a flip, "revealed 200" names a different 200.
+
+**The state is seeded in an EFFECT, not a `useState` initializer.** This list reaches server-rendered routes, and reading storage during the first render is the mismatch `<FavoritesPage>`'s `mounted` gate exists for. `<EpisodeList>` read no storage at all before this, so the hazard is new to it.
+
+**A related latent bug went with it**: the fullscreen album tracklist numbered rows `i + 1`, which only ever agreed with the track number by coincidence of the sort — it now reads the feed's `<podcast:episode>` with position as the fallback. Reversing would have made it label track 1 as "12".
+
 - **Header album art is a play button** when `isMusic && firstPlayable` — the `<PodcastCover>` wraps in a `<button>` with an always-visible `bg-ink/45` scrim + `▶`/`❚❚`. Plays from `firstPlayable` (first non-pending track), or toggles play/pause if a track from this show is current (`showIsCurrent`, matched by `podcastGuid`/`id`).
 
 ## Players (mini + fullscreen)
