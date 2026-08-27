@@ -10,7 +10,7 @@ import type { DiscoveredNote, FavoritesBaseline, FavoritesPrivacy, MuteListState
 // Value import, so it must come from the import-free leaf rather than the
 // './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
 // and unlike the type-only line above a value import does NOT erase.
-import { emptyMuteState } from './nostr/mute-state';
+import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -438,6 +438,11 @@ function coerceToMuteState(parsed: unknown): MuteListState {
   const tagArray = (v: unknown): string[][] =>
     Array.isArray(v) ? v.filter((x): x is string[] => Array.isArray(x)) : [];
   const ts = typeof p.updatedAt === 'number' ? p.updatedAt : 0;
+  // Validated against the literals rather than passed through: a persisted
+  // value this build does not understand must not reach `publishMuteList`,
+  // which chooses an encryption cipher from it.
+  const cipher = (v: unknown): MuteCipher | undefined =>
+    v === 'plaintext' || v === 'nip04' || v === 'nip44' || v === 'unknown' ? v : undefined;
 
   // Legacy shape: only the unscoped `pubkeys` field, no `publicPubkeys`.
   if (Array.isArray(p.pubkeys) && !Array.isArray(p.publicPubkeys)) {
@@ -457,6 +462,13 @@ function coerceToMuteState(parsed: unknown): MuteListState {
     privateOtherTags: tagArray(p.privateOtherTags),
     unreadablePrivateContent:
       typeof p.unreadablePrivateContent === 'string' ? p.unreadablePrivateContent : undefined,
+    // READ THIS BACK, or the field dies on every reload. This function rebuilds
+    // the state field by field, so one it does not name is dropped silently —
+    // and the symptom is not a missing field, it is `publishMuteList` seeing no
+    // observed cipher and rewriting a NIP-44 list as NIP-04 the next time a
+    // local mute fires `schedulePublishMuteList`. Unreadable to the client that
+    // wrote it, with nothing on screen saying so.
+    privateCipher: cipher(p.privateCipher),
     updatedAt: ts,
   };
 }

@@ -241,6 +241,31 @@ interface AppState {
   mutePubkey: (pubkey: string) => void;
   unmutePubkey: (pubkey: string) => void;
   setMutedPubkeys: (next: Set<string>) => void;
+  /**
+   * Whether the last hydration could open the PRIVATE half of the mute list.
+   *
+   * It exists because a withheld private half renders as a SHORTER LIST and
+   * nothing else — indistinguishable from an account that muted fewer people,
+   * which is the silent-guard failure CLAUDE.md forbids. The blob is preserved
+   * verbatim either way, so nothing is lost; the user simply has no way to know
+   * their private mutes are not being applied on this device.
+   *
+   * 'idle' is the pre-hydration and signed-out state, never a failure. 'ok'
+   * covers both "there is no private half" and "we opened it".
+   */
+  mutesSync: 'idle' | 'ok' | 'degraded';
+  /**
+   * WHY it is withheld, because the user's next move differs.
+   *
+   * 'withheld' — we chose not to ask (an out-of-browser signer on a cold
+   * start). Nothing is wrong; the control spends the prompt on purpose.
+   * 'private-unreadable' — we asked and could not open it. Retrying is worth a
+   * try; the cipher may be one this signer does not implement.
+   *
+   * Null while the status is anything but 'degraded'.
+   */
+  mutesSyncReason: 'withheld' | 'private-unreadable' | null;
+  setMutesSync: (s: 'idle' | 'ok' | 'degraded', reason?: 'withheld' | 'private-unreadable') => void;
 
   // Increments whenever a boost is written to localStorage so feed surfaces
   // can re-derive without polling. Source of truth stays in storage.boosts.
@@ -563,6 +588,14 @@ export const useApp = create<AppState>((set, get) => ({
     return { mutedPubkeys: unionMutedPubkeys(nextState) };
   }),
   setMutedPubkeys: (next) => set({ mutedPubkeys: next }),
+
+  mutesSync: 'idle',
+  mutesSyncReason: null,
+  // Reason cleared on every non-degraded status, for the same reason
+  // setFavoritesSync does it: a stale explanation under a healthy status is a
+  // notice about a problem that is over.
+  setMutesSync: (s, reason) =>
+    set({ mutesSync: s, mutesSyncReason: s === 'degraded' ? (reason ?? null) : null }),
 
   boostsTick: 0,
   bumpBoosts: () => set((s) => ({ boostsTick: s.boostsTick + 1 })),

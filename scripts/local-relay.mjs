@@ -76,7 +76,12 @@ export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, l
   const say = log ?? (() => {});
   const wss = new WebSocketServer({ host, port });
 
+  /** Open subscriptions: ws -> Map(subId -> filters). */
+  const subs = new Map();
+
   wss.on('connection', (ws) => {
+    subs.set(ws, new Map());
+    ws.on('close', () => subs.delete(ws));
     ws.on('message', (raw) => {
       let msg;
       try { msg = JSON.parse(raw.toString()); } catch { return; }
@@ -106,6 +111,22 @@ export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, l
         }
         events.set(e.id, e);
         ws.send(JSON.stringify(['OK', e.id, true, '']));
+        // LIVE PUSH. NIP-01 says a relay sends matching NEW events to every open
+        // subscription, and without it this fixture only ever answers what it
+        // already held when the REQ arrived.
+        //
+        // That is invisible to a test that reloads the page to see a result —
+        // which is what e2e-favorites.mjs does — and fatal to anything
+        // request/response, because the reply is published AFTER the requester
+        // subscribed. NIP-46 is entirely that shape: a bunker session could not
+        // complete a single call against this relay, and the symptom was a
+        // connect that simply never resolved.
+        for (const [sock, forSock] of subs) {
+          if (sock === ws || sock.readyState !== sock.OPEN) continue;
+          for (const [sub, filters] of forSock) {
+            if (filters.some((f) => matches(f, e))) sock.send(JSON.stringify(['EVENT', sub, e]));
+          }
+        }
         onEvent?.(e);
         const priv = typeof e.content === 'string' && e.content.length ? ` content=${e.content.length}B` : '';
         say(`  EVENT  kind ${e.kind}  ${e.tags.length} tags${priv}  ${e.id.slice(0, 8)}  (${events.size} stored)`);
@@ -121,12 +142,18 @@ export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, l
           .sort((a, b) => b.created_at - a.created_at);
         for (const e of hits) ws.send(JSON.stringify(['EVENT', sub, e]));
         ws.send(JSON.stringify(['EOSE', sub]));
+        // Registered AFTER the stored hits and the EOSE, so the subscription
+        // carries on receiving whatever arrives next.
+        subs.get(ws)?.set(sub, filters);
         onReq?.(filters, hits);
         say(`  REQ    ${JSON.stringify(filters.map((f) => ({ kinds: f.kinds, authors: f.authors?.map((a) => a.slice(0, 8)) })))} -> ${hits.length}`);
         return;
       }
 
-      if (verb === 'CLOSE') ws.send(JSON.stringify(['CLOSED', msg[1], '']));
+      if (verb === 'CLOSE') {
+        subs.get(ws)?.delete(msg[1]);
+        ws.send(JSON.stringify(['CLOSED', msg[1], '']));
+      }
     });
   });
 

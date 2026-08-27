@@ -2,7 +2,7 @@
 import { useEffect, startTransition } from 'react';
 import { nip19 } from 'nostr-tools';
 import {
-  isAmberActive,
+  unattendedDecryptOk,
   loginWithExtension,
   normalizeAmberPubkey,
   restoreAmberSigner,
@@ -57,6 +57,7 @@ export function NostrAuth() {
   const setFavoriteEpisodes = useApp((s) => s.setFavoriteEpisodes);
   const resetFavoritesSync = useApp((s) => s.resetFavoritesSync);
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
+  const setMutesSync = useApp((s) => s.setMutesSync);
   // One button opens the sign-in modal, which owns the per-method (extension
   // / remote-signer / Amber) flows and their own busy/error state. Open-state
   // lives in the store so other surfaces (fullscreen player, live chat) can
@@ -122,26 +123,33 @@ export function NostrAuth() {
     // `hasSpark()` flips true, so re-evaluating it below would skip the backup
     // check that exists to notice a user's own pasted seed differing from the
     // derived default.
-    // DO NOT SPEND AN UNATTENDED SIGNER PROMPT ON AMBER. Everything this app
-    // stores encrypted-to-self is read here, on page load, before the user has
-    // touched anything — and Amber's approval sheet renders the DECRYPTED
-    // PLAINTEXT so they can see what they are approving. Observed on a Pixel 6:
-    // launching the app put the Spark **seed phrase** on screen, twelve BIP-39
-    // words, full-screen and unmasked, uninvited. The NWC backup is a spending
-    // credential and would do the same.
+    // DO NOT SPEND AN UNATTENDED PROMPT ON A SIGNER THAT LIVES OUTSIDE THE
+    // BROWSER. Everything this app stores encrypted-to-self is read here, on
+    // page load, before the user has touched anything — and Amber's approval
+    // sheet renders the DECRYPTED PLAINTEXT so they can see what they are
+    // approving. Observed on a Pixel 6: launching the app put the Spark **seed
+    // phrase** on screen, twelve BIP-39 words, full-screen and unmasked,
+    // uninvited. The NWC backup is a spending credential and would do the same.
     //
-    // So on Amber we do not ask. `decryptWithTimeout` refuses an `'unattended'`
+    // So we do not ask. `decryptWithTimeout` refuses an `'unattended'`
     // decrypt as a backstop, but refusing there alone would mean querying the
     // relays and then throwing, and the throw would land in an outer
     // `.catch(() => {})` — invisible. Not asking is both cheaper and honest,
     // and `walletBackupWithheld` is what puts it on screen.
     //
-    // Same shape and same reasoning as `hydrateMutes`' `decryptPrivate: false`.
-    // Amber only: an extension and a bunker answer inside the browser and the
-    // local signer is in-process, so none of them render anything.
-    const unattendedDecryptOk = !isAmberActive();
-    setWalletBackupWithheld(!unattendedDecryptOk);
-    const shouldRestoreSpark = unattendedDecryptOk && !hasSpark() && !storage.sparkOptOut.get(id.npub);
+    // Same shape and same reasoning as `hydrateMutes`' `decryptPrivate: false`,
+    // and it now covers a NIP-46 BUNKER too, not Amber alone. The old reading
+    // was that a bunker answers inside the browser; a bunker hosted on the
+    // user's own phone does not, and signing in with Clave on iOS demanded four
+    // decrypts before the user had touched anything. `unattendedDecryptOk`
+    // owns that judgement now — one predicate, three call sites.
+    //
+    // The cost is real and accepted: a bunker user's wallet no longer restores
+    // itself on load. "Restore from Nostr" in the wallet modal is
+    // `'user-initiated'`, spends the prompt on purpose, and already works.
+    const decryptOk = unattendedDecryptOk();
+    setWalletBackupWithheld(!decryptOk);
+    const shouldRestoreSpark = decryptOk && !hasSpark() && !storage.sparkOptOut.get(id.npub);
 
     // Tell the header a wallet is on its way, so it shows "connecting…" rather
     // than offering "Connect wallet" for one the user already has —
@@ -309,14 +317,14 @@ export function NostrAuth() {
     // favorites go. The second is why this is applied through one helper rather
     // than field by field — a privacy choice made on a phone has to reach this
     // device before it publishes the same list in plaintext.
-    const settingsPromise = unattendedDecryptOk
+    const settingsPromise = decryptOk
       ? fetchSettings(enriched, 'unattended')
           .then((s) => applySyncedSettings(id.npub, s))
           .catch(() => {})
       : Promise.resolve();
     // NWC backup: restore the encrypted connection string if this device has
     // no NWC URI yet.
-    const nwcPromise = unattendedDecryptOk && !hasNwc()
+    const nwcPromise = decryptOk && !hasNwc()
       ? fetchEncryptedNwc(enriched, 'unattended')
           .then((uri) => {
             if (uri) { saveNwcUri(uri); storage.nwcBackup.set(id.npub); markNwcRestored(id.npub); }
@@ -563,6 +571,7 @@ export function NostrAuth() {
     setFavoriteEpisodes({});
     resetFavoritesSync();
     setMutedPubkeys(new Set());
+    setMutesSync('idle');
   }
 
   function signout() {
@@ -603,6 +612,7 @@ export function NostrAuth() {
     setFavoriteEpisodes({});
     resetFavoritesSync();
     setMutedPubkeys(new Set());
+    setMutesSync('idle');
     // Same reason as the identity-switch path: useFollows resets this when
     // identity goes null, but not until a FollowButton's effect runs.
     resetFollows();
@@ -653,6 +663,7 @@ export function NostrAuth() {
       // "couldn't reach the relays" notice over B's own freshly-hydrated list.
       resetFavoritesSync();
       setMutedPubkeys(new Set());
+      setMutesSync('idle');
       // The follow singleton is module state shared by every FollowButton.
       // ensureFollowsLoaded resets it on an identity change, but only once a
       // button mounts and its effect runs — until then followsSnapshot() still

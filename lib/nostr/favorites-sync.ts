@@ -118,25 +118,11 @@ export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesP
   return seeded;
 }
 
-/**
- * Whether to spend a signer call decrypting the private half on a cycle nobody
- * asked for.
- *
- * Amber renders its approval sheet over whatever app is in front and, for a
- * decrypt, shows the PLAINTEXT — so an unattended one on a cold start is a
- * prompt the user did not ask for, over content they did not ask to see.
- * `mutes-hydrator.ts` measured the worse half of this on a Pixel 6: approving
- * returned the user to the launcher, so the request never resolved and the
- * prompt came straight back.
- *
- * `decryptWithTimeout` refuses an unattended Amber decrypt on its own, but that
- * refusal arrives as a rejection inside a `.catch(() => {})` — invisible. Not
- * asking is both cheaper and honest, and the library check stays the backstop
- * for the next caller.
- */
-export function unattendedDecryptOk(): boolean {
-  return storage.signer.get() !== 'amber';
-}
+// `unattendedDecryptOk` used to live here, and now lives in ./signer beside
+// `canSignUnattended`, which is the question it is a sibling of and where
+// somebody looking for it would look. Re-exported so every consumer of this
+// module is unaffected — see there for what it decides and why a bunker counts.
+export { unattendedDecryptOk } from './signer';
 
 /**
  * This device's favorites as flat wire entries — both maps in one list, because

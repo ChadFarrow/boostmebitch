@@ -6,6 +6,7 @@ import { clearShowSelection, useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
+import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
 import {
@@ -318,6 +319,7 @@ export function FavoritesPage() {
           hide the reason the list is short. Self-hiding unless signed in AND
           degraded. */}
       <FavoritesSyncNotice />
+      <MutesSyncNotice />
 
       {/* Above the loading/empty/rows split on purpose, so it is reachable in
           every one of them. A signed-in user with nothing saved yet is exactly

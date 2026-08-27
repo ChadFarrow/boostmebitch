@@ -174,7 +174,10 @@ export {
   publishMuteList,
   schedulePublishMuteList,
   unionMutedPubkeys,
+  classifyMuteContent,
+  parseMuteTags,
   type MuteListState,
+  type MuteCipher,
 } from './mutes';
 
 export { hydrateMutes } from './mutes-hydrator';
