@@ -163,6 +163,16 @@ const PLAYLIST_ROSTER_FRESH_MS = 6 * 60 * 60_000;
 const PLAYLIST_ROSTER_STALE_MS = 24 * 60 * 60_000;
 /** Per medium. List feeds are rare; this is far above any plausible count. */
 const PLAYLIST_ROSTER_MAX = 1000;
+/**
+ * How long a search will wait on a COLD roster before going without the lane.
+ *
+ * The whole roster is ten small parallel requests, most of which are a 400 for a
+ * medium the index does not carry, so a healthy Podcast Index is far inside
+ * this. It is a ceiling on the worst case, not a budget anyone should be
+ * spending: past it the search proceeds without playlists and the refresh keeps
+ * running for the next one.
+ */
+const ROSTER_COLD_WAIT_MS = 1500;
 
 // ONE entry, but through the shared bounded cache anyway: the horizon and the
 // cap are what stop a module-level cache of fetched content growing forever,
@@ -223,8 +233,30 @@ export async function searchPlaylistFeeds(query: string, limit: number): Promise
         .catch(() => [])
         .finally(() => { rosterInFlight = null; });
     }
-    // Fire-and-forget when we already hold something servable.
-    if (!hit) return [];
+    // COLD: wait for it, but only briefly.
+    //
+    // Skipping outright was wrong for the one search that matters most. A
+    // playlist is a NEW kind of feed, so somebody typing a playlist's name is
+    // very often looking for exactly what this lane exists to find — and on a
+    // serverless runtime "cold" is not a once-per-deploy event, it is every new
+    // instance. Handing that search a missing lane makes the feature look like
+    // it does not work, then work on a retry, which is the hardest failure to
+    // report and the easiest to dismiss.
+    //
+    // Bounded rather than awaited, because the lane must never be able to hold a
+    // search hostage: ten small parallel requests to a healthy index land well
+    // inside this, and a slow or dead one costs the deadline exactly once,
+    // after which the refresh continues in the background and the NEXT search is
+    // served from cache. The timer is cleared either way — an unref'd pending
+    // timeout is a lambda kept alive for nothing.
+    if (!hit) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const feeds = await Promise.race([
+        rosterInFlight,
+        new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), ROSTER_COLD_WAIT_MS); }),
+      ]).finally(() => { if (timer) clearTimeout(timer); });
+      return filterPlaylistsByQuery(feeds ?? [], query, limit);
+    }
   }
   return filterPlaylistsByQuery(hit?.value ?? [], query, limit);
 }
