@@ -221,9 +221,14 @@ export function filterPlaylistsByQuery<T extends Pick<Podcast, 'title' | 'author
  * behaviour that shipped before this existed, byte for byte, so the selector can
  * only ever narrow from a full answer rather than replace one.
  *
- * `'npub'` never reaches the server. It is a mode of the INPUT — the box already
- * recognises a pasted key and skips Podcast Index entirely for one — and naming
- * it here is what lets the chip row and the placeholder read from one list.
+ * `'npub'` never reaches the server. It is a mode of the INPUT — it recognises a
+ * pasted key and skips Podcast Index entirely — and naming it here is what lets
+ * the menu and the placeholder read from one list.
+ *
+ * It is also the ONLY mode that looks a key up. Every other one treats an npub
+ * as ordinary text and searches for it, which is why `'all'`'s placeholder no
+ * longer offers to take one: a box that invites a paste it will not act on is a
+ * worse control than one that never mentioned it.
  */
 export type SearchType = 'all' | 'music' | 'podcast' | 'playlist' | 'npub';
 
@@ -243,7 +248,7 @@ export const SEARCH_TYPES: readonly {
   noun: string;
   placeholder: string;
 }[] = [
-  { type: 'all', label: 'ALL', noun: 'feeds', placeholder: 'search podcasts, or paste an npub…' },
+  { type: 'all', label: 'ALL', noun: 'feeds', placeholder: 'search podcasts, music and playlists…' },
   { type: 'music', label: '♫ MUSIC', noun: 'albums', placeholder: 'search music albums…' },
   { type: 'podcast', label: 'PODCASTS', noun: 'shows', placeholder: 'search podcasts…' },
   { type: 'playlist', label: 'PLAYLISTS', noun: 'playlists', placeholder: 'search playlists…' },

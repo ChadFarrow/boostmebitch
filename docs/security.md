@@ -101,8 +101,19 @@ Re-check this list when the Next 16 branch lands; do not let it rot into a reaso
 ### A secret key must be refused at the input, not by a parser returning `null`
 
 `components/search-bar.tsx` invites a key. Its placeholder used to read "search
-podcasts…" and now reads "search podcasts, or paste an npub…" — before that
+podcasts…" and then read "search podcasts, or paste an npub…" — before that
 change, nobody had a reason to paste key material into it. That is the setup.
+
+**The content-type selector did not make this smaller, and reading it that way
+is the trap.** `ALL`'s placeholder no longer mentions a key, because only the
+NPUB mode looks one up now — but NPUB's placeholder asks for one outright
+("paste an npub, nprofile or hex pubkey…"), so the box still invites exactly the
+paste this guard exists for, and now does so in the most direct words it has
+ever used. `looksLikeSecretKey` therefore runs in **all five modes**,
+unconditionally, before the fetch. It is not downstream of `parseNpubInput` and
+must never become so: the parse is now scoped to one mode, and a refusal that
+inherited that scope would send an `nsec` typed under `PODCASTS` straight to
+Podcast Index.
 
 The trap is that `parseNpubInput` **does** reject an `nsec`: `nip19.decode`
 returns type `nsec`, which isn't `npub` or `nprofile`, so the function returns
