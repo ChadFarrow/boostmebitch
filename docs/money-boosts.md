@@ -13,6 +13,20 @@ The `⚡ BOOST` button on the `EpisodeList` header opens this mode (gated on `sh
 **Per-track BOOST on each row.** Every `EpisodeList` row carries a far-right `⚡ BOOST` (`boostTrack` state → `<BoostModal episode={boostTrack}>`) when `hasValueRecipients(e.value)`. `ev.stopPropagation()` keeps it off the row's play/open handler. Not music-only — any feed whose tracks carry a value block gets it.
 
 
+## Which value block a boost is paid against (`payableValue`)
+
+`episode.value ?? podcast.value` was the expression at every boost surface — the fullscreen player, the episode page, both modals, and `lib/v4v/streaming.ts`. It is correct for an ordinary show and it is a **wrong-payee bug the moment the container is not the item's parent feed**.
+
+A Podcasting 2.0 PLAYLIST is that case. Its rows are `<podcast:remoteItem>` references to items in hundreds of other feeds, so the container's `<podcast:value>` is the CURATOR's. Falling through to it pays the person who made the list for a song they had no part in, and nothing reports it: the modal renders a valid split, every leg settles ✓, and the boost log records a payment that went where it says it went. The streaming payer runs the same expression on a timer with no confirmation step in front of it. Same rule as `<FavEpisodeHeart>`'s `containerIsParent` guard, arriving at the money path instead of at a favorite — see the container bullet in [`../CLAUDE.md`](../CLAUDE.md).
+
+`payableValue(episode, podcast)` (`lib/util.ts`) is the one expression now, and it is in `lib/util.ts` rather than `lib/v4v/` for the reason every other money helper is: that file loads under `node --experimental-strip-types`, so `check:musicl` pins the shipping function rather than a copy, and `<SplitsPreview>` can read an allocation without importing a wallet.
+
+**TWO independent signals refuse and neither alone is enough.** The list MEDIUM is the direct one — a list feed is never the parent of what it lists — and it answers even for a playlist Podcast Index has never indexed. The GUIDS catch a container whose medium did not say so, and are the same discriminator the boost modal already uses to write `remote_feed_guid`.
+
+**Over-refusing costs as much as over-falling-through, so the refusal is narrow in three deliberate places.** A SHOW-level boost (no episode) always pays the feed's own block, playlist or not — the listener chose the container. An episode carrying its own block is returned untouched, which is also what keeps a *hybrid* list feed working: `/api/feed` folds the channel block into `e.value` server-side before this is ever asked. And the guid test needs BOTH guids present, because a feed PI has not indexed carries neither — refusing there would hide BOOST on exactly the independent releases this app exists to pay. A disabled BOOST button reads as a feature that does not exist, not as a bug.
+
+Where a playlist row's real block comes from is the other half, and it is server-side: see *Whose value block pays a playlist row* in [`feeds.md`](feeds.md).
+
 ## Boost-all tracks (valueTimeSplits)
 
 Music podcasts tag each track in their RSS with a `<podcast:valueTimeSplit>` — a startTime/duration window plus a `<podcast:remoteItem feedGuid itemGuid>` pointing at the track's own album feed. **PI surfaces these as `e.timesplits[]`** — a flat top-level array on the episode, NOT nested under `e.value.valueTimeSplits` despite the field name. Each entry carries `feedGuid`/`itemGuid`/`medium` directly; `parseRawValueTimeSplits` maps that to the consumer-facing nested `ValueTimeSplit.remoteItem`.

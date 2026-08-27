@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
-import { batchEpisodes, episodeKey, MAX_BATCH } from '@/lib/pi-batch';
+import { batchEpisodes, episodeKey, fillTrackValues, MAX_BATCH } from '@/lib/pi-batch';
 import { fnvHash, mergeRssOverPi } from '@/lib/util';
 import type { Episode, Podcast } from '@/lib/types';
 import type { PlaylistItemRef } from '@/lib/feed-xml';
@@ -165,6 +165,20 @@ export async function GET(req: Request) {
       }
     }
 
+    // ── The value block every row's BOOST depends on ────────────────────────
+    // PI's episode record carries one only when the ITEM declares it, and most
+    // music feeds declare `<podcast:value>` once on the album's channel. So
+    // without this pass a playlist's rows arrive payable-in-principle and
+    // unpayable in fact: BOOST greys out on every track, on every playlist, and
+    // the disabled button is indistinguishable from a feature this app does not
+    // have. The container's own block is NOT the fallback — it belongs to the
+    // curator; see `payableValue` in lib/util.ts.
+    //
+    // Placed after the row loop so placeholders are already in the array and
+    // keep their positions: `fillTrackValues` fills by index and passes an
+    // unresolved row through untouched.
+    const { episodes: valued, unasked: unaskedValues } = await fillTrackValues(episodes);
+
     // The server owns the next offset and the client uses it verbatim. Deriving
     // it client-side from `offset + limit` would desync the moment anything on
     // this side changes what a page contains — the ref cap, dedupe, or a future
@@ -173,13 +187,20 @@ export async function GET(req: Request) {
     const nextOffset = offset + page.length < refs.length ? offset + page.length : null;
 
     return NextResponse.json(
-      { podcast, episodes, total: refs.length, offset, nextOffset, notFound, couldNotAsk },
+      { podcast, episodes: valued, total: refs.length, offset, nextOffset, notFound, couldNotAsk },
       {
         headers:
           // A page we could not fully ask about is not an answer, so it must not
           // be cached — the retry has to actually reach PI again. `notFound`
           // rows ARE cacheable: PI answered.
-          couldNotAsk > 0 ? { 'Cache-Control': 'no-store' } : PLAYLIST_CACHE,
+          //
+          // `unaskedValues` is the same rule one level down, and it is NOT added
+          // to the client-visible `couldNotAsk`: that number labels rows on
+          // screen as "couldn't be looked up", and these rows resolved fine —
+          // only their album's value block did not. Cached, they would freeze a
+          // dead BOOST button into the CDN for the window, which is the negative
+          // cache this route's three-state contract exists to refuse.
+          couldNotAsk > 0 || unaskedValues > 0 ? { 'Cache-Control': 'no-store' } : PLAYLIST_CACHE,
       },
     );
   }, 'playlist fetch failed');

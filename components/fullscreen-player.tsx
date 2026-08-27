@@ -19,6 +19,7 @@ import { BoltIcon, PipIcon, FullscreenIcon, ExitFullscreenIcon } from './icons';
 import {
   episodeContentsLabel,
   hasValueRecipients,
+  payableValue,
   isMusicMedium,
   showShareUrl,
   targetWord,
@@ -343,7 +344,7 @@ export function FullscreenPlayer({
   // no-ops while there's nothing playing.
   const { button: streamButton, panel: streamPanel } = useStreamPanel(
     current?.podcast,
-    hasValueRecipients(current?.episode.value ?? current?.podcast.value),
+    hasValueRecipients(payableValue(current?.episode, current?.podcast)),
   );
 
   // Above the early return, like useStreamPanel — it takes an optional guid and
@@ -404,7 +405,10 @@ export function FullscreenPlayer({
   // 256–410px, too tight for the title + seek + transport/BOOST row it pins.
   const mediaPane = isVideo ? 'sm:w-1/2 lg:w-3/5' : 'sm:w-1/2';
   const infoPane = isVideo ? 'sm:w-1/2 lg:w-2/5' : 'sm:w-1/2';
-  const value = episode.value ?? podcast.value;
+  // NOT `episode.value ?? podcast.value`. On a PLAYLIST the container's block
+  // is the curator's, and this one expression decides both the BOOST button and
+  // (through useStreamPanel above) the unattended streaming payer.
+  const value = payableValue(episode, podcast);
   const hasValue = hasValueRecipients(value);
   const description = episode.description ? stripHtml(episode.description) : '';
   const { index: activeIdx, chapter: activeChapter, end: activeChapterEnd } = chapterState(

@@ -102,12 +102,29 @@ GET /api/playlist?url=<feedUrl>&offset=0&limit=100
 | `batchEpisodes` | Row | Line under the list | Cacheable |
 |---|---|---|---|
 | key present, `Episode` | full row: cover, play, ⚡ V4V, BOOST, heart | — | yes |
+
+**The ⚡ and the BOOST in that first row are not free — they are a second resolution pass, and without it every one of them is dead.** See *Whose value block pays a playlist row* below.
 | key present, `null` | placeholder, `unresolved: 'not-found'`, play suppressed | "N … aren't in Podcast Index yet" | yes |
 | key **absent** | placeholder, `unresolved: 'could-not-ask'` | "N … couldn't be looked up" + ↻ RETRY | **no** |
 
 The absent case drives the cache header: `couldNotAsk > 0` answers `Cache-Control: no-store`. Without that a PI outage during one page is frozen into the CDN for five minutes and the retry re-serves the same empty page. `notFound` rows *are* cacheable — PI answered.
 
 A placeholder has an empty `enclosureUrl`, so the client **suppresses** the play control rather than disabling it. The heart stays, on `<FavTrackHeart>`'s precedent: the identifiers come off the wire and are the whole record, and withholding the control until PI has crawled the album would hide it on exactly the independent releases this app exists to pay.
+
+### Whose value block pays a playlist row
+
+**A playlist track arrives from Podcast Index with no value block, and the container's is the CURATOR's.** Both halves of that sentence were bugs, and each is invisible on its own.
+
+`/api/playlist` resolves every row through `/episodes/byguid`, and PI's episode record carries a `value` only when the ITEM declares one. Most music feeds declare `<podcast:value>` once, on the album's CHANNEL, and let every track inherit it — which is exactly the fallback `resolveOneSplit` has always made for a `<podcast:valueTimeSplit>`, and exactly the one this route never made. So the block existed, the artist was payable, and the track shipped with `value: null`. The measured symptom is the whole feature going quiet: BOOST greys out on every track of every playlist, and **a disabled button is indistinguishable from a feature this app does not have** — it was reported as "why can't I boost this playlist or any others", not as a bug in a route.
+
+`fillTrackValues` (`lib/pi-batch.ts`) is the pass, two stages, cheapest first:
+
+1. **`batchPodcasts` over the DISTINCT parent feeds.** PI's *feed* record does carry the channel-level block — it is the same source `/api/feed` already trusts for every ordinary show's `e.value ?? podcast.value` — and the read index answers most of it in one round trip. No RSS at all, and the rows of one album cost one lookup between them.
+2. **Read the album feed, item block then channel block**, for what stage 1 could not answer. That is `resolveItemValueFromRss`, which is `resolveRemoteItemFromRss`'s direct branch and **deliberately has no publisher walk**: that walk fans out to `MAX_ALBUM_FEEDS`, the page's feed list is curator-supplied, and nested the two multiply. Capped at `MAX_TRACK_VALUE_FEEDS` (16) distinct feeds per page, warned when it truncates, and sequential within one feed so the 5-minute `fetchFeedXml` cache serves the second track rather than a second fetch.
+
+Rows are matched to their album by **`episode.podcastGuid`** — PI's answer for which feed the item actually lives in — never by the playlist's own `feedGuid`, which may name a publisher.
+
+**And the container is never the fallback.** `payableValue` (`lib/util.ts`, pinned by `check:musicl`) replaced `episode.value ?? podcast.value` at every boost surface, including the unattended streaming payer. A playlist's own `<podcast:value>` belongs to the person who made the list, so falling through to it pays them for a song they had no part in: the modal renders a valid split, every leg reports ✓, and nothing on screen says the artist was never in it. Two independent signals refuse — the list MEDIUM, and an item whose `podcastGuid` disagrees with the container's — and the refusal is deliberately narrow in three places, because over-refusing hides BOOST on feeds that do declare a block: a SHOW-level boost on a playlist still pays the playlist, an episode with its own block is untouched, and the guid test needs BOTH guids present, since a feed PI has not indexed carries neither. That last one is the independent release this app exists to pay.
 
 **Known gap, deliberately not closed in v1:** unlike `<FavTrackHeart>` there is no `parentFeedGuid` verdict here, so a playlist `feedGuid` naming a **publisher** feed would write an entry no app can open. `/api/remote-item` answers that question, but it is an RSS fetch plus a PI call per row and a page is 100 rows. Follow-up, not a per-row call.
 

@@ -15,7 +15,9 @@
 // copies of that rule is one copy that eventually forgets it.
 
 import { getEpisodeByGuid, getPodcastByFeedUrl, getPodcastByGuid } from './pi';
+import { resolveItemValueFromRss } from './musicl-resolver';
 import { askIndex } from './nostr-index-server';
+import { hasValueRecipients } from './util';
 import type { Episode, Podcast } from './types';
 
 /** Hard cap on identifiers per request. An attacker-chosen list length must
@@ -94,4 +96,130 @@ export async function batchEpisodes(refs: EpisodeRef[]): Promise<Record<string, 
   const missing = wanted.filter((r) => !(episodeKey(r) in out));
   await probeThenBatch(missing, (r) => getEpisodeByGuid(r.feedGuid, r.itemGuid), episodeKey, out);
   return out;
+}
+
+/**
+ * Album feeds one page may READ over RSS to recover a value block.
+ *
+ * The PI stage below answers most rows for free, so this is the tail. It is a
+ * ceiling on distinct FEEDS rather than on rows because the rows of one album
+ * share a single fetch (`fetchFeedXml` caches by URL for five minutes), and it
+ * exists because a page is up to `MAX_BATCH` rows whose feeds are attacker-
+ * chosen — the curator writes the list.
+ */
+const MAX_TRACK_VALUE_FEEDS = 16;
+
+/**
+ * Fill in the value block for tracks Podcast Index resolved WITHOUT one.
+ *
+ * **A playlist row is the only reason this exists, and without it the row's
+ * BOOST button is dead.** A `<podcast:remoteItem>` names an item in somebody
+ * else's feed, so `/api/playlist` resolves each row through `/episodes/byguid`
+ * and nothing else — and PI's episode record carries a `value` only when the
+ * item declares one of its own. Most music feeds declare `<podcast:value>` once,
+ * on the CHANNEL, and let every track inherit it. So the block exists, the
+ * artist is payable, and the track arrives here with `value: null`.
+ *
+ * The container cannot stand in for it: a playlist's own block belongs to the
+ * curator (see `payableValue` in lib/util.ts). Resolving the ALBUM's is the
+ * only correct answer, and it has to happen server-side — the guids never reach
+ * the browser.
+ *
+ * TWO stages, cheapest first:
+ *
+ *   1. `batchPodcasts` over the DISTINCT parent feeds. PI's feed record carries
+ *      the channel-level block, which is the same source `/api/feed` already
+ *      trusts for every ordinary show's fallback, and the read index answers
+ *      most of it in one round trip. No RSS at all.
+ *   2. For what is left, read the album feed itself — item block first, then
+ *      channel — capped at `MAX_TRACK_VALUE_FEEDS` distinct feeds. This covers
+ *      an album PI holds without a parsed value block, which is the case
+ *      `resolveOneSplit` has always fallen back for.
+ *
+ * Rows are matched to their parent by `episode.podcastGuid` (PI's answer for
+ * which feed the item actually lives in), never by the playlist's own
+ * `feedGuid`, which may name a publisher feed.
+ *
+ * Returns a NEW array; unresolved placeholder rows are passed through
+ * untouched, since a row with no enclosure has nothing to boost.
+ *
+ * **`unasked` is the three-state contract reaching the value block**, and the
+ * caller's cache header has to read it. A row whose album Podcast Index
+ * ANSWERED about — with a feed holding no value block — is a real, cacheable
+ * "this track has no splits". A row whose album we could not ask about, because
+ * the probe found PI unreachable or the feed cap cut the page short, is not an
+ * answer at all: cached, it freezes a dead BOOST button into the CDN for the
+ * window and the reader's retry re-serves it.
+ */
+export interface FilledTrackValues {
+  episodes: Episode[];
+  /** Rows left unvalued because we could not ask, never because PI said no. */
+  unasked: number;
+}
+
+export async function fillTrackValues(episodes: Episode[]): Promise<FilledTrackValues> {
+  interface Pending { index: number; feedGuid: string; itemGuid: string }
+  const pending: Pending[] = [];
+  episodes.forEach((e, index) => {
+    if (e.unresolved || hasValueRecipients(e.value)) return;
+    if (!e.podcastGuid || !e.guid) return;
+    pending.push({ index, feedGuid: e.podcastGuid, itemGuid: e.guid });
+  });
+  if (!pending.length) return { episodes, unasked: 0 };
+
+  const out = [...episodes];
+  let unasked = 0;
+  const albums = await batchPodcasts([...new Set(pending.map((p) => p.feedGuid))]);
+
+  // ── Stage 2's work list, built while stage 1 runs over the same rows ──────
+  // Keyed by feed URL so the rows of one album share one fetch.
+  const byFeedUrl = new Map<string, Pending[]>();
+  for (const p of pending) {
+    // `in`, not truthiness: batchPodcasts leaves a key ABSENT when it could not
+    // ask and holds null when PI answered "not found". Both leave the row
+    // unvalued and its BOOST off, which is what the page already looked like —
+    // but only the first is a gap, and reading them the same way is what makes
+    // a rate limit cacheable as "this track has no splits".
+    if (!(p.feedGuid in albums)) { unasked++; continue; }
+    const album = albums[p.feedGuid];
+    if (hasValueRecipients(album?.value)) {
+      out[p.index] = { ...out[p.index], value: album!.value };
+      continue;
+    }
+    const url = album?.url;
+    // PI answered and holds no feed URL to read: that is an answer, not a gap.
+    if (!url) continue;
+    const rows = byFeedUrl.get(url);
+    if (rows) rows.push(p);
+    else byFeedUrl.set(url, [p]);
+  }
+  if (!byFeedUrl.size) return { episodes: out, unasked };
+
+  const feedUrls = [...byFeedUrl.keys()];
+  const searched = feedUrls.slice(0, MAX_TRACK_VALUE_FEEDS);
+  if (feedUrls.length > searched.length) {
+    for (const url of feedUrls.slice(MAX_TRACK_VALUE_FEEDS)) {
+      unasked += byFeedUrl.get(url)!.length;
+    }
+    // Say what was dropped. Silently searching part of a page reads as "these
+    // tracks have no value block", which is the same thing on screen as a
+    // track whose artist really did not publish one.
+    console.warn(
+      `[playlist] ${feedUrls.length} album feeds still need a value block;`
+      + ` reading the first ${MAX_TRACK_VALUE_FEEDS}`,
+    );
+  }
+
+  await Promise.allSettled(searched.map(async (url) => {
+    // Sequential WITHIN one feed on purpose: the first call fetches the RSS and
+    // the rest are cache hits. Firing them together would open one outbound
+    // request per track against the same URL, which is what the cache exists to
+    // prevent.
+    for (const p of byFeedUrl.get(url)!) {
+      const value = await resolveItemValueFromRss(url, p.itemGuid);
+      if (hasValueRecipients(value)) out[p.index] = { ...out[p.index], value };
+    }
+  }));
+
+  return { episodes: out, unasked };
 }

@@ -45,7 +45,7 @@ import { createObservable } from '@/lib/pubsub';
 // DEFAULT_SENDER_NAME lives in lib/util.ts, NOT in the boost modal that owns
 // the "From" field — importing it from `components/` here would invert the v4v
 // swap-out boundary and pull a 'use client' React module into the engine.
-import { getErrorMessage, hasValueRecipients, splitAtPosition, DEFAULT_SENDER_NAME, randomId } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableValue, splitAtPosition, DEFAULT_SENDER_NAME, randomId } from '@/lib/util';
 import { isLiveStreamId } from '@/lib/nostr/live-streams';
 import { canSignUnattended } from '@/lib/nostr/signer';
 import { resolvePublishRelays } from '@/lib/nostr/relays';
@@ -1314,7 +1314,12 @@ function tick() {
     // paid to whichever artist was on when the context opened.
     const value = liveTarget && liveTarget.guid === cur.episode.guid
       ? liveTarget.hostValue ?? cur.podcast.value
-      : cur.episode.value ?? cur.podcast.value;
+      // `payableValue`, never `episode.value ?? podcast.value`: on a PLAYLIST the
+      // container's block belongs to the CURATOR, and this payer spends on a
+      // timer with no confirmation step in front of it — so the wrong-payee
+      // mistake the boost modal would at least render to somebody would here be
+      // made six times an hour with nobody looking.
+      : payableValue(cur.episode, cur.podcast);
     const plan = cachedStreamPlan(cur.podcast);
     const rate = plan.ratePerMin;
     // Live streams are the NIP-57 zap path (see the boost modal's live branch);

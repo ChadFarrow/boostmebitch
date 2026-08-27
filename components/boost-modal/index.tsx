@@ -9,7 +9,7 @@ import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, record
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, payableSplit, resolveSenderName, splitSats, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { getErrorMessage, payableSplit, payableValue, resolveSenderName, splitSats, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
@@ -144,7 +144,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   }, [identity?.npub, identity?.profile?.display_name, identity?.profile?.name]);
 
   const isShowBoost = !episode;
-  const hostValue = (episode?.value ?? podcast.value)!;
+  // The SHOW's block — `payableValue`, not `episode?.value ?? podcast.value`.
+  // A playlist row's parent is not the container, so the container's block must
+  // never stand in for it; see lib/util.ts. Every surface that opens this modal
+  // gates on the same call, so the non-null assertion holds exactly as before.
+  const hostValue = payableValue(episode, podcast)!;
 
   // A <podcast:valueTimeSplit> covering the position this modal opened at
   // redirects the boost to the track playing, exactly as a live show's block
