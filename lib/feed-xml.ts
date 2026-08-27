@@ -208,7 +208,20 @@ export function parseFeedNpubs(xml: string): FeedNpub[] | undefined {
 export interface PlaylistItemRef {
   feedGuid: string;
   itemGuid: string;
+  /**
+   * The `<podcast:txt purpose="episode">` heading this track sat under, if the
+   * playlist published one. Free text written by the feed — a caption, never an
+   * identifier, and never a key.
+   */
+  episode?: string;
 }
+
+/**
+ * Cap on an episode caption, which is feed-supplied text rendered as a heading.
+ * Real ones are like "Homegrown Hits - Episode 147"; this only stops a
+ * pathological feed pushing a novel into the list.
+ */
+const MAX_PLAYLIST_EPISODE_LEN = 200;
 
 /**
  * A `<podcast:podroll>` block, whose remoteItems are NOT playlist tracks.
@@ -277,17 +290,37 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
   const scoped = channelXml.replace(PODROLL_BLOCK_RE, '');
   const out: PlaylistItemRef[] = [];
   const seen = new Set<string>();
-  const riRe = /<podcast:remoteItem\b([^>]*?)\/?>/gi;
+  // ONE pass over both tag types, so the caption and the items it captions are
+  // read in DOCUMENT ORDER. Two separate scans could not associate them: a
+  // marker's only claim on a track is that it appears above it.
+  const re = /<podcast:txt\b([^>]*)>([\s\S]*?)<\/podcast:txt>|<podcast:remoteItem\b([^>]*?)\/?>/gi;
+  let episode: string | undefined;
   let m: RegExpExecArray | null;
-  while ((m = riRe.exec(scoped))) {
-    const feedGuid = readAttr(m[1], 'feedGuid');
-    const itemGuid = readAttr(m[1], 'itemGuid');
+  while ((m = re.exec(scoped))) {
+    if (m[1] !== undefined) {
+      // `<podcast:txt>` is a general container — the same feeds carry
+      // `purpose="source-feed"`, and others carry platform verification tokens
+      // and npubs (see NOSTR_TXT_PURPOSES). An unqualified one is not a caption,
+      // so the purpose is READ, through `readAttr` like every other attribute.
+      if (readAttr(m[1], 'purpose')?.toLowerCase() !== 'episode') continue;
+      const raw = m[2].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+      const label = decodeXmlText(raw).trim().slice(0, MAX_PLAYLIST_EPISODE_LEN);
+      // An EMPTY caption clears the group rather than captioning the rest of the
+      // playlist with a blank heading.
+      episode = label || undefined;
+      continue;
+    }
+    const feedGuid = readAttr(m[3], 'feedGuid');
+    const itemGuid = readAttr(m[3], 'itemGuid');
     if (!feedGuid || !itemGuid) continue;
     if (feedGuid.length > MAX_FEED_GUID_LEN || itemGuid.length > MAX_ITEM_GUID_LEN) continue;
     const key = `${feedGuid}:${itemGuid}`;
+    // First occurrence wins, so a track replayed on a later show keeps the
+    // caption of the FIRST (newest) episode it appeared under — which is where
+    // the reader will look for it.
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ feedGuid, itemGuid });
+    out.push(episode ? { feedGuid, itemGuid, episode } : { feedGuid, itemGuid });
     if (out.length >= MAX_PLAYLIST_REFS) break;
   }
   return out;

@@ -113,9 +113,10 @@ export async function GET(req: Request) {
         couldNotAsk++;
         episodes.push(placeholder(ref, podcast.id, 'could-not-ask'));
         continue;
+
       }
       const ep = resolved[key];
-      if (ep) episodes.push(ep);
+      if (ep) episodes.push(ref.episode ? { ...ep, playlistGroup: ref.episode } : ep);
       else {
         notFound++;
         episodes.push(placeholder(ref, podcast.id, 'not-found'));
@@ -171,5 +172,8 @@ function placeholder(
     enclosureUrl: '',
     feedId,
     unresolved,
+    // Carried even here, so an unresolved row keeps its place under the right
+    // heading instead of silently moving the episode boundary.
+    playlistGroup: ref.episode,
   };
 }

@@ -107,8 +107,8 @@ app/
   api/by-guid/           → /podcasts/byguid | byfeedurl         (favorites, podroll)
   api/value-splits/      → resolve valueTimeSplit remote items  (PI + RSS fallback)
   api/live-value/        → resolve a live item's CURRENT payment target (polled)
-  api/publisher/         → publisher feed → album children      (capped fan-out)
-  api/playlist/          → musicL playlist → ONE PAGE of tracks  (remote items via PI batch)
+  api/publisher/         → publisher feed → children           (capped fan-out, PI then RSS)
+  api/playlist/          → any *L playlist → ONE PAGE of items   (remote items via PI batch)
   api/chapters/          → <podcast:chapters> JSON proxy        (hosts send no CORS)
   api/transcript/        → <podcast:transcript> proxy, served inert as text/plain
   api/keysend/           → .well-known/keysend probe proxy      (no CORS upstream)

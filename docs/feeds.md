@@ -56,7 +56,11 @@ Three things follow, and they are the reason the number isn't simply raised and 
 
 ## musicL playlists (`<podcast:medium>musicL`)
 
-A **playlist** feed publishes **no `<item>` elements at all**. Its contents are channel-level `<podcast:remoteItem feedGuid=… itemGuid=…/>` entries, each naming one track that lives in somebody else's album feed. The reference case is [chadf-musicl-playlists/HGH-music-playlist.xml](https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/HGH-music-playlist.xml): 233 KB, **1770 entries of which 1217 are distinct, across 598 feeds**, and not one `<item>`.
+A **playlist** feed publishes **no `<item>` elements at all**. Its contents are channel-level `<podcast:remoteItem feedGuid=… itemGuid=…/>` entries, each naming one item that lives in somebody else's feed.
+
+**It is not just `musicL`.** The spec gives every medium an `L`-suffixed "list" counterpart and says a list feed "is intended to exclusively contain one or more `<podcast:remoteItem>`s", so `LIST_MEDIUMS` in `lib/util.ts` is the whole set — `podcastL`, `musicL`, `videoL`, `filmL`, `audiobookL`, `newsletterL`, `blogL`, `publisherL`, `courseL`, `mixedL`. It is an **allowlist, never `endsWith('l')`**: no standard medium happens to end in `l` today, so the loose test passes right now and silently widens the day one does — and `medium="cool"` would already be a playlist. The LocalBitcoiners community list in the collection is a real `podcastL` with 949 entries and the identical wire shape.
+
+**`isPlaylistMedium` and `playsAsTracks` are deliberately different gates.** The first asks *is this a playlist* (how it PAGES); the second asks *are its rows tracks* (how a row BEHAVES), and only `music`/`musicL` answer yes. A `podcastL` row is a podcast episode, so a tap must open the detail view — its notes, chapters, transcript and discussion are the reason somebody taps it. Collapsing the two looks like a simplification and turns every podcast playlist into a jukebox. `targetWord` follows suit: the container word comes from the first gate, the item word from the second, so **"PLAYLIST · EPISODE" is a correct pairing**. The reference case is [chadf-musicl-playlists/HGH-music-playlist.xml](https://raw.githubusercontent.com/ChadFarrow/chadf-musicl-playlists/refs/heads/main/docs/HGH-music-playlist.xml): 233 KB, **1770 entries of which 1217 are distinct, across 598 feeds**, and not one `<item>`.
 
 Before this shipped the app opened one as a show with no episodes — `getFeedFromRss`'s `<item>` loop finds nothing — which is indistinguishable from a broken feed.
 
@@ -112,6 +116,27 @@ A placeholder has an empty `enclosureUrl`, so the client **suppresses** the play
 `<EpisodeList>` takes `playlistUrl` when the caller already knows the medium (`<HomePage>` reads it off the search result), which skips a round trip. When it doesn't, the effect recovers one request later: **a musicL feed answering with zero rows is the same signal.** `/api/feed?id=` backfills `podcast.medium` from the RSS channel parse, so this works even though PI does not reliably index the tag. `episodes.length === 0` is part of that test on purpose — a hybrid feed that declares musicL and *also* publishes real items keeps its items.
 
 The list is excluded from `<PodcastNostrFeed>`'s `episodeGuids`: those guids belong to other feeds' items, so asking for this feed's per-episode chatter with them pulls in notes about somebody else's album.
+
+### Episode captions (`<podcast:txt purpose="episode">`)
+
+Most of these playlists mark which show each run of tracks came from — HGH has 148 markers, MMM 151 — and the marker always sits **before** the run it captions. `parsePlaylistRemoteItems` reads captions and items in **one pass** so document order associates them; two scans could not, because a marker's only claim on a track is that it appears above it. The caption rides on each row (`Episode.playlistGroup`) rather than in a separate groups array, so a page appended by "load more" carries its own and the heading logic stays a comparison with the previous row — no state to keep in sync across a page boundary.
+
+Three rules, all pinned: the `purpose` is **read** (every one of these feeds also carries `purpose="source-feed"`, and other feeds put verification tokens and npubs under the same tag, so an unqualified `<podcast:txt>` would print a feed URL as a heading); an empty marker **clears** the caption rather than captioning with a blank; and dedupe keeps the **first** occurrence, so a track replayed on a later show keeps the newest episode's caption, which is where a reader looks for it. Three playlists in the collection publish no markers at all (Greatest Hits, LocalBitcoiners, and the publisher feed), so the flat list is a first-class state, not a fallback.
+
+### A publisher feed of playlists, and the one curated link
+
+`chadf-musicl-publisher.xml` is a `medium=publisher` feed whose `<podcast:remoteItem feedUrl=…>` entries name the playlists. `<HomePage>`'s **BROWSE PLAYLISTS** button opens it through the publisher view that already existed — **one URL in the codebase, not a list of playlists.** A playlist added to the publisher feed appears the same day with no code change. (StableKraft takes the other road and hardcodes its twelve playlist URLs in five separate places; those five copies have already drifted from each other and from the collection's own `FEEDS.md`, and each lists a different subset.)
+
+Two things had to change for that to work:
+
+- **`/api/publisher` falls back to RSS for a child Podcast Index does not hold.** Nothing says a publisher's children were ever submitted to PI, and these are served off `raw.githubusercontent.com`. A `null` used to drop the child, so a publisher of unindexed feeds rendered as an **empty collection with no error** — the failure that reads as "this publisher has nothing". PI still wins wherever it answered; this only fills holes. The probe stays **uncaught**, so "PI is down" is still a 5xx and never a page of RSS-derived children pretending PI agreed.
+- **A failed load is no longer rendered as an empty one.** `publisherError` separates "we could not fetch these" (message + retry, and **no count**, since `0 feeds` over a load error asserts the very thing we just said we could not determine) from "this publisher lists nothing". That mattered little while the only way in was pasting a URL; with a button on the home page, a PI outage would otherwise have told every visitor that the collection is empty.
+
+**Known data bug in the collection, which does not affect us:** every `feedGuid` in the publisher feed disagrees with the `<podcast:guid>` of the playlist it points at (all nine). We resolve children by `feedUrl`, so nothing here breaks — but anything resolving that publisher by guid would find the wrong feed or none.
+
+### No scheduled reparse, and why
+
+StableKraft runs a nightly GitHub Actions job that re-fetches every playlist and writes new tracks into Postgres. That job exists because its read path resolves tracks **from the database with zero network**, so the database has to be filled ahead of time. Ours resolves on demand through `batchEpisodes`, so a playlist edited on GitHub is live within about five minutes (`fetchFeedXml`'s 60 s window plus the route's `s-maxage=300`) with no job at all. Adding a cron would buy nothing and add a thing that can fail silently.
 
 ### `?playlist=<feedUrl>` is the deep link
 

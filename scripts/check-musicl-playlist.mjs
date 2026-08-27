@@ -37,6 +37,7 @@
 // 1217 are distinct). Real wire data carries the shapes nobody invents — a
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
+import { isPlaylistMedium, playsAsTracks } from '../lib/util.ts';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -125,16 +126,85 @@ vec(
   ],
   { alsoNaive: true },
 );
+// ── EPISODE CAPTIONS ────────────────────────────────────────────────────────
+// Three of the six below are `alsoNaive`: applying a caption FORWARD, leaving
+// pre-marker items uncaptioned and treating a blank as no caption are what any
+// reasonable implementation does, so they pin behaviour without discriminating.
+// The three that bite are the ones with a real trap in them — the `purpose`
+// filter, decoding, and dedupe keeping the first caption.
+// `<podcast:txt purpose="episode">` marks which show a run of tracks came from.
+// Every playlist in the collection that has them puts the marker BEFORE its run
+// (HGH has 148, MMM 151), so a caption applies forward, never backward.
 vec(
-  'a <podcast:txt purpose="episode"> marker between entries does not split them',
+  'a marker captions the items that FOLLOW it, one group each',
   wrap(
     `    <podcast:txt purpose="episode">Homegrown Hits - Episode 147</podcast:txt>\n`
     + `    ${ri(G1, I1)}\n`
     + `    <podcast:txt purpose="episode">Homegrown Hits - Episode 146</podcast:txt>\n`
     + `    ${ri(G2, I2)}`,
   ),
-  [{ feedGuid: G1, itemGuid: I1 }, { feedGuid: G2, itemGuid: I2 }],
+  [
+    { feedGuid: G1, itemGuid: I1, episode: 'Homegrown Hits - Episode 147' },
+    { feedGuid: G2, itemGuid: I2, episode: 'Homegrown Hits - Episode 146' },
+  ],
   { alsoNaive: true },
+);
+vec(
+  'items before the first marker carry no caption',
+  wrap(
+    `    ${ri(G1, I1)}\n`
+    + `    <podcast:txt purpose="episode">Episode 2</podcast:txt>\n`
+    + `    ${ri(G2, I2)}`,
+  ),
+  [
+    { feedGuid: G1, itemGuid: I1 },
+    { feedGuid: G2, itemGuid: I2, episode: 'Episode 2' },
+  ],
+  { alsoNaive: true },
+);
+vec(
+  'a NON-episode purpose does not caption anything',
+  // Every playlist in the collection carries `purpose="source-feed"`, and other
+  // feeds carry verification tokens and npubs under the same tag. Reading an
+  // unqualified <podcast:txt> as a caption would print a feed URL as a heading.
+  wrap(
+    `    <podcast:txt purpose="source-feed">https://feed.homegrownhits.xyz/feed.xml</podcast:txt>\n`
+    + `    ${ri(G1, I1)}`,
+  ),
+  [{ feedGuid: G1, itemGuid: I1 }],
+);
+vec(
+  'an empty marker clears the caption rather than captioning with a blank',
+  wrap(
+    `    <podcast:txt purpose="episode">Episode 9</podcast:txt>\n`
+    + `    ${ri(G1, I1)}\n`
+    + `    <podcast:txt purpose="episode">   </podcast:txt>\n`
+    + `    ${ri(G2, I2)}`,
+  ),
+  [{ feedGuid: G1, itemGuid: I1, episode: 'Episode 9' }, { feedGuid: G2, itemGuid: I2 }],
+  { alsoNaive: true },
+);
+vec(
+  'a caption is entity- and CDATA-decoded',
+  wrap(
+    `    <podcast:txt purpose="episode"><![CDATA[Mutton, Mead &amp; Music 150]]></podcast:txt>\n`
+    + `    ${ri(G1, I1)}`,
+  ),
+  [{ feedGuid: G1, itemGuid: I1, episode: 'Mutton, Mead & Music 150' }],
+);
+vec(
+  'a duplicate keeps the caption of its FIRST (newest) appearance',
+  wrap(
+    `    <podcast:txt purpose="episode">Episode 147</podcast:txt>\n`
+    + `    ${ri(G1, I1)}\n`
+    + `    <podcast:txt purpose="episode">Episode 12</podcast:txt>\n`
+    + `    ${ri(G1, I1)}\n`
+    + `    ${ri(G2, I2)}`,
+  ),
+  [
+    { feedGuid: G1, itemGuid: I1, episode: 'Episode 147' },
+    { feedGuid: G2, itemGuid: I2, episode: 'Episode 12' },
+  ],
 );
 
 // ── DEDUPE ──────────────────────────────────────────────────────────────────
@@ -270,11 +340,18 @@ console.log('\nEvery vector is proved against naive()');
    */
   const naive = (xml) => {
     const out = [];
-    for (const m of xml.matchAll(/<podcast:remoteItem\b([^>]*?)\/?>/gi)) {
-      const feedGuid = /feedGuid="([^"]*)"/.exec(m[1])?.[1];
-      const itemGuid = /itemGuid="([^"]*)"/.exec(m[1])?.[1];
+    let episode;
+    const re = /<podcast:txt[^>]*>([\s\S]*?)<\/podcast:txt>|<podcast:remoteItem\b([^>]*?)\/?>/gi;
+    for (const m of xml.matchAll(re)) {
+      // Reads EVERY <podcast:txt> as a caption — no `purpose` check, no entity
+      // or CDATA decoding. Both are the obvious omission, and both are wrong on
+      // the real feeds: every playlist in the collection carries a
+      // `purpose="source-feed"` tag, so this captions its first group with a URL.
+      if (m[1] !== undefined) { episode = m[1].trim() || undefined; continue; }
+      const feedGuid = /feedGuid="([^"]*)"/.exec(m[2])?.[1];
+      const itemGuid = /itemGuid="([^"]*)"/.exec(m[2])?.[1];
       if (!feedGuid || !itemGuid) continue;
-      out.push({ feedGuid, itemGuid });
+      out.push(episode ? { feedGuid, itemGuid, episode } : { feedGuid, itemGuid });
     }
     return out;
   };
@@ -307,8 +384,51 @@ console.log('\nEvery vector is proved against naive()');
   console.log(`  ${vectors.length} vector(s) replayed, ${exempt} exempt as must-still-work`);
 }
 
+// ---------------------------------------------------------------------------
+console.log('\nWhich mediums ARE playlists, and which of those play as tracks');
+// ---------------------------------------------------------------------------
+{
+  // The spec gives EVERY medium an `L`-suffixed "list" counterpart, and says a
+  // list feed contains only `<podcast:remoteItem>`s. So "a Podcasting 2.0
+  // playlist" is that whole set, not `musicL` alone — the LocalBitcoiners
+  // community playlist in ChadFarrow/chadf-musicl-playlists is a real `podcastL`
+  // with 949 entries and the identical wire shape.
+  const isPl = (m) => isPlaylistMedium({ medium: m });
+  const tracks = (m) => playsAsTracks({ medium: m });
+
+  for (const m of ['musicL', 'podcastL', 'videoL', 'filmL', 'audiobookL',
+    'newsletterL', 'blogL', 'publisherL', 'courseL', 'mixedL',
+    // Case is not ours to assume: PI returns the tag verbatim while the RSS
+    // parsers lowercase it, so both spellings must reach the same answer.
+    'musicl', 'PODCASTL']) {
+    if (isPl(m)) ok(`${m} is a playlist`); else fail(`${m} should be a playlist medium`);
+  }
+
+  // MUST NOT be playlists. The `endsWith('l')` shortcut passes every row above
+  // AND every row here today — no standard medium happens to end in `l` — which
+  // is exactly why the allowlist exists: a feed writing `medium="cool"` must not
+  // become a playlist, and the next medium the spec adds must not either.
+  for (const m of ['music', 'podcast', 'publisher', 'video', 'film', 'audiobook',
+    'newsletter', 'blog', 'course', 'mixed', 'cool', 'l', '', undefined]) {
+    if (!isPl(m)) ok(`${JSON.stringify(m)} is not a playlist`);
+    else fail(`${JSON.stringify(m)} must NOT be read as a playlist`);
+  }
+
+  // A `podcastL` is a playlist whose rows are EPISODES. If it played as tracks,
+  // a tap would start playback instead of opening the detail view — putting the
+  // show notes, chapters, transcript and discussion out of reach, which is the
+  // whole reason somebody taps a podcast row.
+  for (const m of ['music', 'musicL', 'musicl']) {
+    if (tracks(m)) ok(`${m} rows behave as tracks`); else fail(`${m} rows should behave as tracks`);
+  }
+  for (const m of ['podcastL', 'videoL', 'blogL', 'podcast', 'publisher']) {
+    if (!tracks(m)) ok(`${m} rows do NOT behave as tracks`);
+    else fail(`${m} rows must not behave as tracks — a row tap has to open the detail view`);
+  }
+}
+
 if (failures) {
-  console.error(`\n${failures} musicL playlist check(s) FAILED.`);
+  console.error(`\n${failures} playlist check(s) FAILED.`);
   process.exit(1);
 }
-console.log('\nAll musicL playlist checks passed.');
+console.log('\nAll playlist checks passed.');

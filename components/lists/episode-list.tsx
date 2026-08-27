@@ -517,8 +517,20 @@ export function EpisodeList({
           const prev = idx > 0 ? visibleEpisodes[idx - 1] : null;
           const isFirstLive = !!e.liveStatus && (!prev || !prev.liveStatus);
           const isFirstRegular = !e.liveStatus && !!prev?.liveStatus;
+          // A playlist's `<podcast:txt purpose="episode">` caption, rendered
+          // once above the run of tracks it introduces. Derived from the SLICED
+          // array like the two dividers above, and a plain comparison with the
+          // previous row — which is what makes it survive "load more" appending
+          // a page with no extra state.
+          const groupHead = e.playlistGroup && e.playlistGroup !== prev?.playlistGroup
+            ? e.playlistGroup : null;
           return (
             <Fragment key={e.id}>
+              {groupHead && (
+                <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-4 pb-1 border-b-0 break-words">
+                  {groupHead}
+                </li>
+              )}
               {isFirstLive && (
                 <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-3 pb-1 border-b-0">
                   Live &amp; upcoming
