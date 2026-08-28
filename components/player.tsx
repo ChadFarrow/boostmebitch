@@ -654,10 +654,28 @@ export function Player() {
         </InPortal>
       )}
 
+      {/* `role="button"` needs `tabIndex` and a key handler to be one. Without
+          them this announces itself as a button to a screen reader, is never
+          reachable by Tab, and does nothing when activated — the control that
+          opens the fullscreen player was pointer-only. A native <button> is not
+          available here: this element wraps the transport controls, the seek
+          input and the BOOST button, and a button may not contain them.
+
+          Space is `preventDefault`ed because the browser would otherwise scroll
+          the page on keydown. The inner controls all `stopPropagation`, so a
+          key pressed while focus is on one of them never reaches this. */}
       <div
         className="fixed bottom-0 left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40 pb-[env(safe-area-inset-bottom)] cursor-pointer"
         onClick={() => setPlayerExpanded(true)}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            setPlayerExpanded(true);
+          }
+        }}
         role="button"
+        tabIndex={0}
         aria-label="Open fullscreen player"
       >
         <audio

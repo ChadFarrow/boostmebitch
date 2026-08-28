@@ -140,7 +140,11 @@ export function ThemeMenuLink() {
     <button
       type="button"
       onClick={toggle}
-      className="text-[11px] text-muted hover:text-bolt transition flex items-center gap-1.5"
+      // `py-1.5` is a TOUCH TARGET, not spacing — the same repair
+      // <CollapsibleHeading> documents. `text-[11px]` gives a 16.5px line box,
+      // and with no vertical padding this sat under WCAG 2.5.8's 24x24 floor.
+      // 16.5 + 12 = 28.5px. The icon is w-3.5 (14px) and never sets the height.
+      className="text-[11px] text-muted hover:text-bolt transition flex items-center gap-1.5 py-1.5"
     >
       {goingLight ? <SunIcon className="w-3.5 h-3.5" /> : <MoonIcon className="w-3.5 h-3.5" />}
       {goingLight ? 'light mode' : 'dark mode'}
