@@ -58,7 +58,7 @@ export default function NpubPage() {
 
   if (!parsed) {
     return (
-      <main className="max-w-2xl mx-auto px-4 py-16 flex flex-col items-center gap-4 text-center text-muted">
+      <main className="max-w-2xl mx-auto px-4 py-16 flex flex-col items-center gap-4 text-center text-muted pt-[calc(4rem+env(safe-area-inset-top))]">
         <span className="text-sm">That npub link isn&apos;t valid.</span>
         {/* Clears the show selection — see `clearShowSelection`. The store is
             module-level and outlives a route change, so a plain link here lands
@@ -77,7 +77,7 @@ export default function NpubPage() {
       <div className="hidden">
         <NostrAuth />
       </div>
-      <main className="max-w-3xl mx-auto px-4 py-10 pb-32 flex flex-col gap-8">
+      <main className="max-w-3xl mx-auto px-4 py-10 pb-32 flex flex-col gap-8 pt-[calc(2.5rem+env(safe-area-inset-top))]">
         {/* Same clear as the invalid-npub branch above — a <NoteCard> on this
             page opens a show through the store, so by the time anyone reaches
             this link there is very likely a selection standing. */}

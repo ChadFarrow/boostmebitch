@@ -31,9 +31,11 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 
 export default function PrivacyPage() {
   return (
-    <main className="max-w-2xl mx-auto px-4 py-10 flex flex-col gap-8 pb-32">
+    <main className="max-w-2xl mx-auto px-4 py-10 flex flex-col gap-8 pb-32 pt-[calc(2.5rem+env(safe-area-inset-top))]">
       <div className="flex flex-col gap-2">
-        <Link href="/" className="text-xs text-muted hover:text-bone w-fit">
+        {/* `py-1.5` is a TOUCH TARGET — this is the page's only way back, and
+            at text-xs with no vertical padding it was a 16px-tall box. */}
+        <Link href="/" className="text-xs text-muted hover:text-bone w-fit py-1.5">
           ← back to Boost Me Bitch
         </Link>
         <h1 className="headline text-3xl">Privacy Policy</h1>

@@ -53,6 +53,22 @@ html, body {
      which traps `position: sticky` descendants (the header) so they scroll
      away instead of pinning to the viewport. */
   overflow-x: clip;
+  /* Stop a scroll that runs past either end of the document from becoming a
+     browser gesture. In an installed PWA that gesture is pull-to-refresh, which
+     reloads the whole app — and this app is a player, so a reload mid-episode
+     drops playback, the position and the queue. There is no "are you sure".
+     `none` rather than `contain` because there is no scrollable ancestor to
+     chain to at the document root; the only thing being refused is the
+     browser's own overscroll action.
+
+     This is the document-level half of a rule the overlays already keep on
+     their own scroll boundaries (`overscroll-contain` in modal-shell.tsx,
+     fullscreen-player.tsx, live-chat.tsx). Those stop a gesture reaching the
+     document at all; this one covers the page itself, which they never see.
+
+     It does NOT create a scroll container and does not affect `position:
+     sticky`, so it is safe beside the `overflow-x: clip` above. */
+  overscroll-behavior-y: none;
 }
 
 /* Subtle paper-grain texture over the whole canvas */
@@ -238,5 +254,41 @@ input[type='range'].seek::-moz-range-thumb {
 @media (hover: none) and (pointer: coarse) {
   input, textarea, select {
     font-size: 16px !important;
+  }
+
+  /* The scrub bar's TAP TARGET, which is not the same thing as the thumb you
+     can see. Measured in Chromium against these very rules: the <input> box is
+     **2px tall** — the track's height and nothing more, because the element is
+     `appearance: none` with no height of its own, and the 12px thumb hangs
+     outside that box on a negative margin. So tap-to-seek anywhere along the
+     track had a 2px target and the thumb a 12px one, on a control that is a
+     primary action in a podcast player. CLAUDE.md's floor is 24x24.
+
+     Giving the element a real height is the only fix that does not steal taps
+     from something else. A negative margin would reclaim the strip above and
+     below, which here is the transport row and the chapter label — the exact
+     trade streaming-settings.tsx refuses for the same reason.
+
+     32px, not 44: the element's height IS the row's height, and this row lives
+     in the mini-bar, the most contested vertical space in the app. 44 would add
+     33px to a bar that is ~72px tall; 32 adds ~21px and still clears the 24px
+     rule with margin. The fullscreen player has room to spare and shares the
+     rule rather than carrying a second one.
+
+     The track stays 2px and the browser centres it in the taller box, so
+     nothing about the design changes — only what a thumb can hit. The thumb
+     grows 12 -> 16px, and `margin-top` is re-derived rather than nudged:
+     (track - thumb) / 2 = (2 - 16) / 2 = -7px. */
+  input[type='range'].seek {
+    height: 32px;
+  }
+  input[type='range'].seek::-webkit-slider-thumb {
+    height: 16px;
+    width: 16px;
+    margin-top: -7px;
+  }
+  input[type='range'].seek::-moz-range-thumb {
+    height: 16px;
+    width: 16px;
   }
 }

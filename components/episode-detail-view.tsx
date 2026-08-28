@@ -326,7 +326,10 @@ export function EpisodeDetailView() {
         {anyInfo && (
           <div className="border-t border-bone/10 pt-4">
             {showInfoTabs ? (
-              <div className="inline-flex max-w-full overflow-x-auto gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
+              // `overscroll-x-contain` — see the rail in podroll.tsx: a swipe
+              // past the end of this pill row must not chain to the document or
+              // become a back-swipe.
+              <div className="inline-flex max-w-full overflow-x-auto overscroll-x-contain gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
                 {infoTabs.map((t) => (
                   <button key={t} type="button" onClick={() => setInfoTab(t)} className={infoTabCls(activeInfo === t)}>
                     {t === 'contents' ? contentsLabel

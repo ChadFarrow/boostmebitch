@@ -171,8 +171,25 @@ export function ModalShell({
     // ends up taller than what you can actually see; centring a tall card in it
     // then pushes the card's header off the top of the screen, which reads as
     // "the modal is cut off" with the body visible and the title gone.
+    //
+    // The BLOCK-axis padding is `max(1rem, env(safe-area-inset-*))`, not the
+    // plain `p-4` the inline axis keeps, and that is the same class of bug one
+    // step further on. `viewportFit: 'cover'` (app/layout.tsx) means this box
+    // starts at the PHYSICAL top of the screen, so 16px of padding put a card
+    // that reaches `max-h-full` under the notch / Dynamic Island — its header,
+    // which is the part naming what the modal is about. The boost modal is the
+    // money surface here, so "which show am I paying" going under the island is
+    // not cosmetic.
+    //
+    // `max()` rather than adding the inset: 1rem is already enough on every
+    // device with no inset, and summing would push the card down a further
+    // notch's worth on the phones that do have one, for nothing.
+    //
+    // The bottom follows the same rule only when the mini-player is NOT being
+    // cleared — `pb-28` is 112px and already covers the home indicator, so that
+    // branch is unchanged.
     <div
-      className={`fixed inset-x-0 top-0 h-[100dvh] ${OVERLAY_Z} bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 ${clearsPlayer ? 'pb-28' : ''}`}
+      className={`fixed inset-x-0 top-0 h-[100dvh] ${OVERLAY_Z} bg-ink/85 backdrop-blur-sm flex items-center justify-center p-4 pt-[max(1rem,env(safe-area-inset-top))] ${clearsPlayer ? 'pb-28' : 'pb-[max(1rem,env(safe-area-inset-bottom))]'}`}
       // A backdrop click closes, but only when the press STARTED on the
       // backdrop. Without the target check, dragging to select text inside the
       // card and releasing outside it would close the modal mid-sentence.

@@ -129,7 +129,10 @@ function EpisodeInfoPanel({
   return (
     <div className="border-t border-bone/10 pt-5">
       {showTabs ? (
-        <div className="inline-flex max-w-full overflow-x-auto gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
+        // `overscroll-x-contain` — see the rail in podroll.tsx. It matters more
+        // here than anywhere: this row sits inside a `fixed` overlay, so a
+        // chained swipe drags the overlay itself off the screen.
+        <div className="inline-flex max-w-full overflow-x-auto overscroll-x-contain gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
           {tabs.map((t) => (
             <button key={t} type="button" onClick={() => setTab(t)} className={tabCls(active === t)}>
               {t === 'contents' ? contentsLabel

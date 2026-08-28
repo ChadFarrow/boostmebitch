@@ -102,7 +102,12 @@ export function Podroll({ items }: { items: PodrollItem[] }) {
           {podcasts.length}
         </span>
       </h3>
-      <div ref={rowRef} className="flex gap-3 overflow-x-auto pb-2 -mx-1 px-1">
+      {/* `overscroll-x-contain`: a swipe that runs past either end of this rail
+          otherwise chains outward to the document, and on iOS that drags the
+          whole fixed layer with it — the same failure live-chat.tsx contains at
+          its own boundary. It also stops the gesture becoming Safari's
+          back-swipe, which on a row of cards is easy to trigger by accident. */}
+      <div ref={rowRef} className="flex gap-3 overflow-x-auto overscroll-x-contain pb-2 -mx-1 px-1">
         {podcasts.map((p) => (
           <article
             key={p.id}

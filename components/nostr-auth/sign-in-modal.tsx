@@ -218,9 +218,13 @@ export function SignInModal({
 
   return (
     <ModalShell onClose={handleClose} label="Sign in" className="w-full max-w-md">
+        {/* The padding IS the tap target — the glyph does not move. It was
+            `top-2 right-3` with no padding, i.e. an ~11px-wide box, under WCAG
+            2.5.8's 24x24 floor. `px-3 py-2` at `top-0 right-0` puts the x
+            exactly where it was (12px in, 8px down) inside a 44x35 button. */}
         <button
           onClick={handleClose}
-          className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
+          className="absolute top-0 right-0 px-3 py-2 text-muted hover:text-bone text-lg z-10"
           aria-label="Close"
         >
           ×

@@ -54,10 +54,21 @@ export const metadata: Metadata = {
     title: 'Boost Me Bitch',
     statusBarStyle: 'black-translucent',
     // iOS picks the splash whose media query matches the device's CSS dimensions
-    // and DPR. Without a match it shows a white screen during launch — so this
-    // list is intentionally redundant: every iPhone shipped from 2018 (XR/XS)
-    // through 2023 (15 Pro Max) finds a hit. iPad / older phones fall back to
+    // and DPR EXACTLY. Without a match it shows a white screen during launch —
+    // on an app whose every surface is near-black — so this list is
+    // intentionally redundant: every iPhone shipped from 2018 (XR/XS) through
+    // the 17 Pro Max and the Air finds a hit. iPad / older phones fall back to
     // white, which is acceptable for "basic" iOS PWA support.
+    //
+    // Entries are shared wherever a geometry is: the iPhone 16 is 393x852, the
+    // same as the 14 Pro, and the 16 Plus is 430x932, the same as the 15 Plus —
+    // so neither needs its own file. Only three geometries were genuinely new.
+    //
+    // The PNGs are generated, not drawn: `node scripts/make-splash.mjs`, whose
+    // DEVICES table is the source for this list. Add a device THERE, run it,
+    // then mirror the entry here — and `--check` re-derives the art's geometry
+    // from disk, so a hand-edited PNG or a stale one fails rather than quietly
+    // shipping a mispositioned logo.
     startupImage: [
       // iPhone SE 2nd/3rd gen, iPhone 6/7/8 — 375 × 667 @2x
       {
@@ -89,6 +100,18 @@ export const metadata: Metadata = {
         media:
           '(device-width: 393px) and (device-height: 852px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)',
       },
+      // iPhone 16 Pro / 17 / 17 Pro — 402 × 874 @3x
+      {
+        url: '/splash/iphone-16pro-17-17pro.png',
+        media:
+          '(device-width: 402px) and (device-height: 874px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)',
+      },
+      // iPhone Air — 420 × 912 @3x
+      {
+        url: '/splash/iphone-air.png',
+        media:
+          '(device-width: 420px) and (device-height: 912px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)',
+      },
       // iPhone 12 Pro Max / 13 Pro Max / 14 Plus — 428 × 926 @3x
       {
         url: '/splash/iphone-12-13promax-14plus.png',
@@ -100,6 +123,12 @@ export const metadata: Metadata = {
         url: '/splash/iphone-14promax-15plus-15promax.png',
         media:
           '(device-width: 430px) and (device-height: 932px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)',
+      },
+      // iPhone 16 Pro Max / 17 Pro Max — 440 × 956 @3x
+      {
+        url: '/splash/iphone-16promax-17promax.png',
+        media:
+          '(device-width: 440px) and (device-height: 956px) and (-webkit-device-pixel-ratio: 3) and (orientation: portrait)',
       },
     ],
   },
@@ -129,6 +158,19 @@ export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
   viewportFit: 'cover',
+  // ONE value, deliberately — do NOT split this into `prefers-color-scheme`
+  // media variants. This app's theme is a manual `bmb:theme` localStorage
+  // toggle, read by the FOUC-blocker below and written by <ThemeToggle>; it is
+  // not derived from the OS preference. A media-keyed theme-color would
+  // therefore be wrong for every user whose OS and app themes disagree — light
+  // OS with the app left dark is the common case — and it would be wrong in the
+  // direction that matters, since the browser paints its chrome that colour
+  // while the page underneath is the other one.
+  //
+  // The iOS half of this problem is not solved here at all: `black-translucent`
+  // makes iOS draw the status bar in white REGARDLESS of theme-color, so light
+  // mode needs a real dark surface behind those glyphs. See the status-bar
+  // strip in the body below.
   themeColor: '#0a0a08',
 };
 
@@ -179,6 +221,42 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <script dangerouslySetInnerHTML={{ __html: FOUC_BLOCKER }} />
       </head>
       <body className="min-h-screen antialiased">
+        {/* The iOS status-bar backdrop, and it is a legibility fix rather than
+            decoration.
+
+            `appleWebApp.statusBarStyle` above is `black-translucent`, which is
+            what puts the app edge-to-edge under the notch — and it makes iOS
+            draw the clock, battery and signal glyphs in WHITE, always, with no
+            way to ask for the dark set. That is fine while the page behind them
+            is `#0a0a08`. It is not fine in light mode, where `--ink` flips to
+            `253 250 243` (globals.css) and white-on-cream leaves the status bar
+            effectively invisible in the installed app.
+
+            `theme-color` cannot fix it: iOS ignores it for the status bar under
+            this style. So the repair is a real surface — a strip exactly as tall
+            as the top safe-area inset, painted the dark ink colour in BOTH
+            themes, for the white glyphs to sit on.
+
+            Three properties, each load-bearing:
+
+            - The colour is HARD-CODED, not `bg-ink`. In dark mode it matches the
+              page and the strip is invisible; in light mode it is the contrast.
+              One code path, no theme conditional, nothing to keep in sync.
+            - It is ZERO-HEIGHT wherever the inset is 0 — desktop, Android, and
+              iOS Safari with its own chrome — so it costs nothing off-iOS and
+              needs no display-mode detection.
+            - `z-[70]`, which is above `<ModalShell>`'s `z-[60]` (the previous
+              maximum) and above <FullscreenPlayer>'s `z-50`. That is deliberate
+              and not an accident of ordering: BOTH of those paint `bg-ink`, so
+              both go cream in light mode, and a strip underneath them would be
+              covered exactly when a modal is open. The status bar has to stay
+              readable over every surface, so this is the topmost layer in the
+              app. Anything new that outranks it re-opens this bug. */}
+        <div
+          aria-hidden
+          className="fixed inset-x-0 top-0 z-[70] pointer-events-none"
+          style={{ height: 'env(safe-area-inset-top, 0px)', background: '#0a0a08' }}
+        />
         <div aria-hidden className="fixed inset-0 pointer-events-none">
           {/* quality={40}, not the default 75. This is the LCP element on every
               route, and it renders under the `bg-ink/75` overlay directly
@@ -206,7 +284,15 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               screen. Living in the layout means it's on every page including
               the homepage. `pb-28` clears the fixed mini-player. */}
           <footer className="px-4 pb-28 pt-10 text-center">
-            <a href="/privacy" className="text-[11px] text-muted hover:text-bone">
+            {/* `inline-block py-1.5` is a TOUCH TARGET, not spacing — the same
+                repair <CollapsibleHeading> documents. text-[11px] is a 14px
+                line box here, under WCAG 2.5.8's 24x24 floor, and this footer
+                renders on EVERY route. An inline <a> ignores vertical padding
+                for layout, so the display change is what makes the box real. */}
+            <a
+              href="/privacy"
+              className="inline-block py-1.5 text-[11px] text-muted hover:text-bone"
+            >
               Privacy Policy
             </a>
           </footer>

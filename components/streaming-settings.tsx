@@ -508,7 +508,13 @@ export function StreamRate({
       </p>
       {!showKey && <StreamReceipts />}
       {onDone && (
-        <button onClick={onDone} className="text-[11px] text-muted hover:text-bone mt-2">
+        <button
+          onClick={onDone}
+          // `py-1.5` is a TOUCH TARGET, not spacing — see <CollapsibleHeading>
+          // in lists/grouping.tsx. text-[11px] is a 16.5px line box, which is
+          // under WCAG 2.5.8's 24x24 floor with no vertical padding. 16.5 + 12 = 28.5.
+          className="text-[11px] text-muted hover:text-bone mt-2 py-1.5"
+        >
           Done
         </button>
       )}
