@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch, readCappedBytes, readBytesUpTo } from '@/lib/safe-fetch';
 import { firstGifFrame } from '@/lib/gif-first-frame';
+import { BRAND } from '@/lib/brand';
 
 /**
  * The picture a boost note shows: the show's artwork beside the sats, the
@@ -209,7 +210,7 @@ export async function GET(req: Request) {
               </span>
             </div>
             <span style={{ fontSize: 40, fontWeight: 700, marginTop: 14, lineHeight: 1.1 }}>
-              {title || 'boostmebitch.com'}
+              {title || BRAND.domain}
             </span>
             {ep ? <span style={{ fontSize: 27, color: MUTED, marginTop: 10 }}>{ep}</span> : null}
           </div>

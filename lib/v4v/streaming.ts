@@ -42,10 +42,11 @@ import type { Episode, Podcast, Boostagram, BoostResult, ValueBlock, ValueTimeSp
 import { useApp } from '@/lib/store';
 import { storage, subscribeStreamRate as onStoredRateChange, type StreamMode } from '@/lib/storage';
 import { createObservable } from '@/lib/pubsub';
-// DEFAULT_SENDER_NAME lives in lib/util.ts, NOT in the boost modal that owns
+// DEFAULT_SENDER_NAME lives in lib/brand.ts, NOT in the boost modal that owns
 // the "From" field — importing it from `components/` here would invert the v4v
 // swap-out boundary and pull a 'use client' React module into the engine.
-import { getErrorMessage, hasValueRecipients, payableValue, splitAtPosition, showStorageKey, DEFAULT_SENDER_NAME, randomId } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableValue, splitAtPosition, showStorageKey, randomId } from '@/lib/util';
+import { BRAND, DEFAULT_SENDER_NAME } from '@/lib/brand';
 import { isLiveStreamId } from '@/lib/nostr/live-streams';
 import { canSignUnattended } from '@/lib/nostr/signer';
 import { resolvePublishRelays } from '@/lib/nostr/relays';
@@ -816,7 +817,7 @@ function buildBoostagram(
   const { episode, podcast } = c;
   const { feedGuid, itemGuid } = paymentIds(c, bucket);
   return {
-    app_name: 'BoostMeBitch',
+    app_name: BRAND.wireName,
     app_version: '0.1.0',
     podcast: podcast.title,
     feedID: podcast.id,

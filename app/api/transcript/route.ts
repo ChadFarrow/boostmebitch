@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch, readCappedText } from '@/lib/safe-fetch';
+import { BRAND } from '@/lib/brand';
 
 // Server-side proxy for Podcasting 2.0 <podcast:transcript> files. Same reason
 // as /api/chapters: many transcript hosts serve without an
@@ -19,7 +20,7 @@ export async function GET(req: Request) {
   if (url.length > 2000) return NextResponse.json({ error: 'invalid url' }, { status: 400 });
   return withErrorHandling(async () => {
     const res = await safeFetch(url, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
+      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
       next: { revalidate: 300 },
       signal: AbortSignal.timeout(8000),
     });

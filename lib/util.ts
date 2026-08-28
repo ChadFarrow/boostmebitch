@@ -1340,33 +1340,16 @@ export function httpUrl(url: string | null | undefined): string | null {
   }
 }
 
-/**
- * What ships as the boostagram's `sender_name` (and lands in the Nostr note
- * body) when the user has no name to send — either they left "From" empty or
- * they picked "Anonymous". A real default, NOT just the input's ghost text:
- * omitting the field entirely left presentation up to each recipient's
- * aggregator, so the same boost showed as blank in one client and "Unknown" in
- * another.
- *
- * **It lives here, not in `components/boost-modal/sender-name.tsx`, because
- * `lib/v4v/streaming.ts` needs it.** That module is inside the v4v swap-out
- * boundary, which exists so `lib/v4v/*` can be replaced wholesale without
- * touching `components/` — an import pointing the other way inverts it, and
- * drags a `'use client'` React component module into the payment engine.
- * `sender-name.tsx` re-exports this, so the modals' import sites are unchanged.
- * It belongs in `lib/util.ts` rather than `lib/v4v/` for the same reason: it is
- * a product string, and swapping the v4v toolkit must not delete it.
- */
-export const DEFAULT_SENDER_NAME = 'boostmebitch.com user';
-
-/**
- * The one place "From" becomes a wire value. Anonymous discards the typed name
- * outright rather than trimming it — see the anonymity note in CLAUDE.md's boost
- * flow: the promise covers the payment, not just the Nostr note.
- */
-export function resolveSenderName(typed: string, anonymous: boolean): string {
-  return (anonymous ? '' : typed.trim()) || DEFAULT_SENDER_NAME;
-}
+// `DEFAULT_SENDER_NAME` and `resolveSenderName` MOVED TO `lib/brand.ts`.
+//
+// They are per-brand now ("boostmebitch.com user" / "boostmebuddy.com user"),
+// and they could not read the brand table from here: this file's import line is
+// load-bearing and must stay TYPE-ONLY, because `check:vts` and `check:musicl`
+// load it under `node --experimental-strip-types`, where a relative value import
+// is an immediate ERR_MODULE_NOT_FOUND rather than a style problem. So the two
+// names went DOWN into an import-free leaf instead of the table coming up.
+// `lib/brand.ts` is still a product-string module for the reason they were here:
+// swapping the v4v toolkit must not delete them.
 
 // Bare http(s) URLs in running text. `<`, `>`, quotes and backtick terminate a
 // match so this can be run over a segment of already-sanitized show-notes HTML

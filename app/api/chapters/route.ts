@@ -3,6 +3,7 @@ import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch, readCappedText } from '@/lib/safe-fetch';
 import { parseChaptersJson } from '@/lib/chapters-json';
+import { BRAND } from '@/lib/brand';
 
 // Server-side proxy for Podcasting 2.0 chapters JSON. Many chapter hosts
 // (e.g. feeds.fountain.fm) serve the file without an Access-Control-Allow-Origin
@@ -18,7 +19,7 @@ export async function GET(req: Request) {
   if (url.length > 2000) return NextResponse.json({ error: 'invalid url' }, { status: 400 });
   return withErrorHandling(async () => {
     const res = await safeFetch(url, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
+      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
       next: { revalidate: 300 },
       signal: AbortSignal.timeout(8000),
     });

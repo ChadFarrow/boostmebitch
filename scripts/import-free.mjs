@@ -4,7 +4,7 @@
 // `lib/nostr/read-trust.ts`, `lib/v4v/lease.ts`, `lib/assetlinks.ts`,
 // `lib/nostr/amber-callback-url.ts`, `lib/nostr/amber-safe-text.ts`,
 // `lib/gif-first-frame.ts`, `lib/chapters-json.ts`,
-// `lib/nostr/value-playback-summary.ts` — and one is allowed bare npm specifiers
+// `lib/nostr/value-playback-summary.ts`, `lib/brand.ts` — and one is allowed bare npm specifiers
 // only (`lib/v4v/nwc-errors.ts`). The rule exists because the check
 // scripts import the REAL shipping module under
 // `node --experimental-strip-types`; a reimplemented copy in the script would

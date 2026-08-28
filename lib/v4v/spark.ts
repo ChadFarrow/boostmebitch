@@ -1,6 +1,7 @@
 'use client';
 
 import { createObservable } from '../pubsub';
+import { BRAND } from '../brand';
 
 // Spark rail — Spark Labs SDK adapter (@buildonspark/spark-sdk). Self-custodial
 // wallet whose mnemonic is bootstrapped from a NIP-44-encrypted backup on Nostr
@@ -281,7 +282,7 @@ export async function sparkReceiveInvoice(args: {
   if (!sdk) throw new Error('Spark wallet not initialized');
   const res = await sdk.createLightningInvoice({
     amountSats: args.amountSats ?? 0,
-    memo: args.description ?? 'BoostMeBitch Spark deposit',
+    memo: args.description ?? `${BRAND.wireName} Spark deposit`,
   });
   return {
     invoice: String(res?.invoice?.encodedInvoice ?? ''),

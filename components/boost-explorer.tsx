@@ -19,6 +19,7 @@ import {
 } from '@/lib/nostr';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { useApp } from '@/lib/store';
+import { BRAND } from '@/lib/brand';
 import { useNoteMeta, episodeRefOf, type NoteRefs } from '@/lib/use-note-meta';
 import { Avatar } from './avatar';
 import { CopyLinkButton } from './copy-link-button';
@@ -283,8 +284,8 @@ export function BoostExplorer({ pubkey, npub }: { pubkey: string; npub: string }
                 {' '}— {sentVisible.length} here, {sentSats.toLocaleString()} sats
               </span>
             )}
-            . Boosts sent without signing in, and anonymous boosts, are signed by
-            boostmebitch.com and carry no sender, so they cannot be listed. Only this
+            . Boosts sent without signing in, and anonymous boosts, are signed by{' '}
+            {BRAND.domain} and carry no sender, so they cannot be listed. Only this
             npub&apos;s most recent notes are scanned, so an account that posts a lot may
             show none. This is not a complete record of what this npub has paid.
           </p>

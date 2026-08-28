@@ -7,6 +7,7 @@ import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
 import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, PLAYLIST_MEDIUMS } from './util';
 import { createBoundedCache } from './bounded-cache';
+import { BRAND } from './brand';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
@@ -22,7 +23,7 @@ function authHeaders() {
     'X-Auth-Key': key,
     'X-Auth-Date': ts,
     'Authorization': hash,
-    'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1',
+    'User-Agent': process.env.APP_NAME ?? BRAND.userAgent,
   };
 }
 
@@ -516,7 +517,7 @@ async function fetchFeedXml(
   let xml: string | null = null;
   try {
     const res = await safeFetch(rssUrl, {
-      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
+      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
       next: { revalidate: Math.max(1, Math.floor(freshMs / 1000)) },
       signal: AbortSignal.timeout(8000),
     });

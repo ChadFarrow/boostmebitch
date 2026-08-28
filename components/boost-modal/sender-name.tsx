@@ -1,11 +1,11 @@
 'use client';
 
 import { useId } from 'react';
-import { DEFAULT_SENDER_NAME } from '@/lib/util';
+import { DEFAULT_SENDER_NAME } from '@/lib/brand';
 
 // Re-exported so every existing import site keeps working. The constant itself
-// lives in lib/util.ts because lib/v4v/streaming.ts needs it and must not
-// import from components/ — see the note there.
+// lives in lib/brand.ts because it is per-brand AND because lib/v4v/streaming.ts
+// needs it and must not import from components/ — see the note there.
 export { DEFAULT_SENDER_NAME };
 
 export function SenderName({

@@ -24,6 +24,7 @@
     "check:readtrust": "node --experimental-strip-types scripts/check-readtrust.mjs",
     "check:lease": "node --experimental-strip-types scripts/check-lease.mjs",
     "check:nwcerror": "node --experimental-strip-types scripts/check-nwcerror.mjs",
+    "check:brand": "node --experimental-strip-types scripts/check-brand.mjs",
     "check:vts": "node --experimental-strip-types scripts/check-value-time-split.mjs",
     "check:feedxml": "node --experimental-strip-types scripts/check-feedxml.mjs",
     "check:assetlinks": "node --experimental-strip-types scripts/check-assetlinks.mjs",

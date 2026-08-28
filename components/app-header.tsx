@@ -6,6 +6,7 @@ import { AuthControl } from '@/components/auth-control';
 import { NostrAuth } from '@/components/nostr-auth';
 import { FavoritesLink } from '@/components/favorites-link';
 import { clearShowSelection } from '@/lib/store';
+import { BRAND } from '@/lib/brand';
 
 /**
  * The app header, shared by `/` and `/favorites`.
@@ -45,7 +46,7 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
   const wordmark = (
     <>
       <BoltIcon className="w-6 h-6 text-bolt shrink-0" />
-      <span className="font-display text-xl sm:text-2xl truncate">Boost Me Bitch</span>
+      <span className="font-display text-xl sm:text-2xl truncate">{BRAND.displayName}</span>
       <span className="text-[10px] text-muted uppercase tracking-widest hidden sm:inline shrink-0">
         podcasting 2.0
       </span>

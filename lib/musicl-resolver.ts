@@ -16,6 +16,7 @@ import type { ValueBlock, ValueRecipient } from './types';
 import { safeFetch, readCappedText } from './safe-fetch';
 import { readAttr } from './feed-xml';
 import { createBoundedCache } from './bounded-cache';
+import { BRAND } from './brand';
 
 const FETCH_TIMEOUT_MS = 5000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -45,7 +46,7 @@ async function fetchFeedXml(url: string): Promise<string | null> {
   try {
     const res = await safeFetch(url, {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
+      headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
     });
     if (!res.ok) return null;
     // Capped for the same reason as lib/pi.ts: the body is retained below.

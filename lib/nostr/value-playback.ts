@@ -23,6 +23,7 @@
 
 import type { EventTemplate, NostrEvent } from 'nostr-tools';
 import { storage } from '../storage';
+import { BRAND } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish } from './publish';
 import { canSignUnattended } from './signer';
@@ -130,7 +131,7 @@ export function buildValuePlaybackReceipt(args: ValuePlaybackReceiptArgs): Event
     tags.push(['position', String(Math.floor(args.positionSec))]);
   }
   if (args.session) tags.push(['session', args.session]);
-  tags.push(['app', args.appName ?? 'BoostMeBitch']);
+  tags.push(['app', args.appName ?? BRAND.wireName]);
   // NIP-31. No client renders this kind — that is the design — so without an
   // `alt` a general-purpose client shows an empty box rather than a sentence.
   tags.push(['alt', altText(args)]);

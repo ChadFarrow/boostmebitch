@@ -36,6 +36,7 @@ import { ServiceWorkerRegister } from '@/components/sw-register';
 import { Player } from '@/components/player';
 import { FavoritesPrivacyPrompt } from '@/components/favorites-privacy';
 import { ErrorBoundary } from '@/components/error-boundary';
+import { BRAND, siteTitle } from '@/lib/brand';
 
 export const metadata: Metadata = {
   // The canonical origin, and it must be the `www` form: the apex 307-redirects
@@ -44,14 +45,14 @@ export const metadata: Metadata = {
   // the vercel.app host — as it did — meant every Nostr/social card pulled its
   // artwork from a domain the app doesn't otherwise use, while the boost-note
   // deep links, NIP-05 and the OAuth origins all say boostmebitch.com.
-  metadataBase: new URL('https://www.boostmebitch.com'),
-  title: 'Boost Me Bitch — Podcast Boost Station',
-  description: 'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
-  manifest: '/manifest.json',
-  applicationName: 'Boost Me Bitch',
+  metadataBase: new URL(BRAND.origin),
+  title: siteTitle(),
+  description: BRAND.description,
+  manifest: BRAND.manifest,
+  applicationName: BRAND.displayName,
   appleWebApp: {
     capable: true,
-    title: 'Boost Me Bitch',
+    title: BRAND.displayName,
     statusBarStyle: 'black-translucent',
     // iOS picks the splash whose media query matches the device's CSS dimensions
     // and DPR EXACTLY. Without a match it shows a white screen during launch —
@@ -141,14 +142,14 @@ export const metadata: Metadata = {
     apple: [{ url: '/icons/apple-touch-icon.png', sizes: '180x180', type: 'image/png' }],
   },
   openGraph: {
-    title: 'Boost Me Bitch — Podcast Boost Station',
-    description: 'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
-    images: [{ url: '/hero.jpg', width: 2400, height: 1339, alt: 'Boost Me Bitch' }],
+    title: siteTitle(),
+    description: BRAND.description,
+    images: [{ url: '/hero.jpg', width: 2400, height: 1339, alt: BRAND.displayName }],
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'Boost Me Bitch',
+    title: BRAND.displayName,
     description: 'Search, listen, and boost Podcasting 2.0 shows over Lightning.',
     images: ['/hero.jpg'],
   },
