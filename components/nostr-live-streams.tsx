@@ -326,6 +326,7 @@ function StreamCard({
 }) {
   const current = useApp((s) => s.current);
   const isPlaying = useApp((s) => s.isPlaying);
+  const togglePlay = useApp((s) => s.togglePlay);
   const isCurrentStream =
     current?.episode.guid === stream.id;
   // Only playable streams (live, with a URL) open the fullscreen player on a
@@ -402,9 +403,20 @@ function StreamCard({
 
       {/* Action buttons */}
       <div className="flex gap-1.5 mt-auto pt-1">
+        {/* Toggles once this card IS the current stream, because it draws ❚❚
+            and a control drawing ❚❚ has to pause. `onPlay()` there writes
+            `isPlaying: true` over `true`, which re-runs neither of the player's
+            effects — a silent no-op. Resuming is safe on this path: the
+            [isPlaying] effect marks a paused live item and bumps `reloadNonce`
+            on the way back, so the stream re-sources at the live edge rather
+            than at the moment it stopped. */}
         <button
           type="button"
-          onClick={(e) => { e.stopPropagation(); onPlay(); }}
+          onClick={(e) => {
+            e.stopPropagation();
+            if (isCurrentStream) togglePlay();
+            else onPlay();
+          }}
           disabled={stream.status === 'planned' || !stream.streamUrl}
           className="btn text-xs py-1 flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
           title={
@@ -413,7 +425,7 @@ function StreamCard({
               : !stream.streamUrl
               ? 'No stream URL'
               : isCurrentStream && isPlaying
-              ? 'Playing'
+              ? 'Pause'
               : 'Play stream'
           }
         >
