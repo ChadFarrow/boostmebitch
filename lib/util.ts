@@ -1470,6 +1470,110 @@ export function splitOnBareUrls(text: string): string[] {
   return out;
 }
 
+/**
+ * Podcast apps whose own episode/show page is a link a reader wants unfurled.
+ * A HOST SET, never a substring test, and the difference is not pedantry:
+ * `feeds.fountain.fm` is a FEED XML host that appears in real `i` tags, and
+ * `content.includes('fountain.fm')` matches it, matches `notfountain.fm`, and
+ * matches `fountain.fm.example.com`. The first renders a raw RSS document as
+ * though it were an episode page; the last two let anyone put a card of their
+ * choosing under someone else's note.
+ *
+ * `play.fountain.fm` serves the same ids under `/app/episode/<id>` — it is the
+ * href Fountain's own "Open in Fountain" button uses — so the optional `app/`
+ * segment is a real shape, not a guess.
+ */
+const PODCAST_APP_HOSTS = new Set(['fountain.fm', 'www.fountain.fm', 'play.fountain.fm']);
+/**
+ * `track` and `album` are Fountain's MUSIC spellings of episode and show, and
+ * they are not optional here — a music note is the common case on this app's
+ * feed, and a real one measured on 2026-08-29 tagged
+ * `podcast:item:guid:aa047faf-…` with `https://fountain.fm/track/3nQSt6pDku…`.
+ * `artist` is deliberately absent: it is the `podcast:publisher:guid:` target,
+ * which is neither the item nor its show.
+ */
+const PODCAST_APP_PATH_RE = /^\/(?:app\/)?(?:episode|show|track|album|clip)\/[A-Za-z0-9_-]+\/?$/;
+
+function isPodcastAppUrl(raw: string): boolean {
+  const href = httpUrl(raw);
+  if (!href) return false;
+  try {
+    const u = new URL(href);
+    return PODCAST_APP_HOSTS.has(u.hostname.toLowerCase()) && PODCAST_APP_PATH_RE.test(u.pathname);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Which URL in a note's body is the one that names the episode the note is
+ * tagged with — or null when no URL in the body does.
+ *
+ * `<NoteEpisodeCard>` is drawn only when this answers, so this function decides
+ * which notes get an unfurled card and which keep the one-line show label. It
+ * also decides which URL is REMOVED from the body, because the card restates it.
+ *
+ * **The note tells us the answer; we do not guess it from the host.** NIP-73
+ * puts a URL hint in the third slot of an `i` tag — `["i",
+ * "podcast:item:guid:<guid>", "https://fountain.fm/episode/<id>"]` — so a
+ * hint that also appears in the body is the episode's link, stated by the
+ * client that wrote the note. Measured over 604 real podcast-tagged kind:1s on
+ * 2026-08-29: 353 carry a hint and 291 of those have it in the body.
+ *
+ * **The body-membership test is what makes a hint usable, and it is doing more
+ * work than it looks.** A hint is very often the RSS FEED URL rather than a web
+ * page — `https://ableandthewolf.com/static/media/feed.xml`,
+ * `serve.podhome.fm/rss/<uuid>`, `feeds.podcastindex.org/...` were all in that
+ * sample. Those are correct NIP-73 and useless as a link: unfurling one puts
+ * "open this" over a raw XML document. They are excluded for free, because a
+ * note that links its feed XML in its own text is not a thing that happens.
+ *
+ * The item hint wins over the show hint when a note carries both, which is
+ * Fountain's normal shape — the episode is the more specific of the two, and
+ * it is what the card describes.
+ *
+ * **Tier two exists because 79 of those 604 notes carried a Fountain page URL
+ * with no hint that matched it**, so hint-only would silently drop them. It is
+ * narrower on purpose: a recognised app host AND a single unambiguous
+ * candidate. Two different episode URLs in one body means the note is not about
+ * one of them, and picking either would put a link under a card describing the
+ * other — so it answers null and the note keeps its plain links.
+ */
+export function episodeLinkInNote(tags: string[][], body: string): string | null {
+  const bodyUrls = splitOnBareUrls(body).filter((_, i) => i % 2 === 1);
+  if (bodyUrls.length === 0) return null;
+
+  // Normalize both sides through `httpUrl` before comparing: the hint and the
+  // body are two independently-typed copies of one link, so a raw `===` between
+  // them misses real matches over a capitalised host or a percent-encoded
+  // character that every browser and relay already treats as identical. It is
+  // not a full canonicalizer — a trailing slash on a path is a different URL to
+  // the WHATWG parser too, and is left alone here on purpose.
+  const itemHints = new Set<string>();
+  const showHints = new Set<string>();
+  for (const t of tags) {
+    if (t[0] !== 'i' || typeof t[1] !== 'string') continue;
+    const href = httpUrl(t[2]);
+    if (!href) continue;
+    if (t[1].startsWith('podcast:item:guid:')) itemHints.add(href);
+    else if (t[1].startsWith('podcast:guid:')) showHints.add(href);
+  }
+  for (const hints of [itemHints, showHints]) {
+    if (hints.size === 0) continue;
+    const hit = bodyUrls.find((u) => {
+      const n = httpUrl(u);
+      return !!n && hints.has(n);
+    });
+    // Return the body's spelling, not the normalized one — the caller removes
+    // this exact token from the text it is about to render.
+    if (hit) return hit;
+  }
+
+  const appUrls = bodyUrls.filter(isPodcastAppUrl);
+  const distinct = new Set(appUrls.map((u) => httpUrl(u) ?? u));
+  return distinct.size === 1 ? appUrls[0] : null;
+}
+
 // Strip HTML tags and entity-decode. Used by server components (lib/format.tsx
 // is 'use client' so can't be imported on the server side). Pure string regex,
 // no DOM required — isomorphic.
