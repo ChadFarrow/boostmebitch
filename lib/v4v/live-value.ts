@@ -73,12 +73,20 @@ export interface LiveTarget {
    * segment (a promo, a photo, a phone number), `'podcast'` for the show's
    * default block. Undefined for every other signal.
    *
-   * **Diagnostics only — it does NOT gate payment.** Per-track streaming credits
-   * every kind of block, because the listener chose an amount for the show and a
-   * promo is the show. A music-only filter was built and removed; see
+   * **It does NOT gate payment.** Per-track streaming credits every kind of
+   * block, because the listener chose an amount for the show and a promo is the
+   * show. A music-only filter was built and removed; see
    * `STREAM_TRACK_MIN_PLAY_MS` in `stream-ledger.ts` for what actually stops a
    * target nobody spent time on. Surfaced as `bmbLive().target.blockType`, which
    * is how "why did that block earn?" gets answered in one line.
+   *
+   * **It does LABEL one, and that is a different thing.** `streamAction`
+   * (lib/util.ts) reads it to choose the boostagram's `action`: `'music'` here
+   * is the only signal that finds a live music show, because every one of them
+   * declares `<podcast:medium>podcast</podcast:medium>`. Deciding *how much*
+   * a block earns stays out of bounds; saying *what kind of thing* earned it is
+   * exactly what the stamp is. `streaming.ts` copies it per bucket in
+   * `adoptLiveTarget`, never reads it live at settle time.
    */
   blockType?: string;
   signal: 'live-value' | 'remote-item' | 'value-time-split' | 'value' | 'none';

@@ -7,6 +7,13 @@
  *   splitTrackAndHost — how the amount divides between the track and the show
  *   payableSplit      — who a leg can actually pay once it is that small
  *   mergeEpisodeContents — which rows of the one contents list may carry a heart
+ *   streamAction      — 'auto' for a leg paying a song, 'stream' for the show
+ *
+ * `streamAction` is the odd one out: it labels a payment rather than aiming or
+ * sizing one, so breaking it costs a mislabel and not a sat. It is pinned here
+ * anyway because the label is permanent in a receiver's own statistics, it is
+ * carried by every leg of every unattended payment, and three separate obvious
+ * implementations of it are wrong — each rejected by a vector below.
  *
  * All live in lib/util.ts and all are imported by more than one caller, which
  * is the entire reason they are pinned. `splitAtPosition` is shared by the boost
@@ -41,6 +48,7 @@
  */
 import {
   mergeEpisodeContents, payableSplit, splitAtPosition, splitSats, splitTrackAndHost,
+  streamAction,
 } from '../lib/util.ts';
 
 let failures = 0;
@@ -378,6 +386,51 @@ const nan = mergeEpisodeContents(
 check('a NaN chapter start is kept and sorts last',
   nan.map((r) => (r.kind === 'track' ? 'track' : r.chapter.title)), ['early', 'track', 'malformed']);
 
+// ── streamAction — 'auto' for a song, 'stream' for the show ─────────────────
+// Which word an unattended streaming payment carries. Wrong here is not a money
+// fault; it is a permanent mislabel in a host's own stats, and every leg of
+// every talk show carries it.
+//
+// The mediums below are what the live feeds actually declare, read 2026-08-28:
+// Bowl After Bowl ships no <podcast:medium> at all, so Podcast Index answers
+// with the default 'podcast'; Homegrown Hits — a live music show — declares
+// 'podcast' outright, as do Red Bar Radio and Behind the Sch3m3s. That is why
+// the feed's medium cannot be the test.
+console.log('\nstreamAction — which action word a streaming leg carries');
+const TALK = { medium: 'podcast' };   // Bowl After Bowl, Homegrown Hits, Red Bar
+const ALBUM = { medium: 'music' };
+const PLAYLIST = { medium: 'musicL' };
+
+check('a talk show\'s own leg streams', streamAction(TALK), 'stream');
+check('a feed declaring no medium at all streams', streamAction({}), 'stream');
+check('an album is auto', streamAction(ALBUM), 'auto');
+check('a musicL playlist is auto', streamAction(PLAYLIST), 'auto');
+check('medium case is ignored', streamAction({ medium: 'MusicL' }), 'auto');
+
+// Split Kit stamps every block it pushes. These three kinds were observed live.
+check('a live Split Kit music block is auto',
+  streamAction(TALK, { blockType: 'music' }), 'auto');
+check('a live chapter block is the SHOW, so it streams',
+  streamAction(TALK, { blockType: 'chapter' }), 'stream');
+check('a live default block streams',
+  streamAction(TALK, { blockType: 'podcast' }), 'stream');
+check('blockType case is ignored',
+  streamAction(TALK, { blockType: 'MUSIC' }), 'auto');
+
+// The two valueTimeSplit windows Podcast Index actually returns for Bowl After
+// Bowl. Neither is a song: one is a 7220s cross-promotion to the Podcasting 2.0
+// show at 33%, and it says so; the other declares nothing.
+check('a window declaring medium="podcast" streams',
+  streamAction(TALK, { remoteItemMedium: 'podcast' }), 'stream');
+check('a window declaring no medium streams',
+  streamAction(TALK, { remoteItemMedium: undefined }), 'stream');
+check('a window that DOES declare music is auto',
+  streamAction(TALK, { remoteItemMedium: 'music' }), 'auto');
+
+// An album never loses its word, whatever a leg carries.
+check('an album leg stays auto under a chapter block',
+  streamAction(ALBUM, { blockType: 'chapter' }), 'auto');
+
 console.log('\nnaive() — the vectors must reject the obvious wrong versions');
 
 function naiveSplitAt(splits, pos) {
@@ -441,6 +494,30 @@ function naiveCoveringWindow(splits, chapters) {
   }));
 }
 
+// Three rejected designs for streamAction, in the order they were proposed.
+
+// 1. "The feed says what it is." It does not: every V4V music show declares
+//    <podcast:medium>podcast</podcast:medium>, so this streams the songs.
+function naiveActionByMedium(podcast) {
+  const m = podcast?.medium?.toLowerCase();
+  return m === 'music' || m === 'musicl' ? 'auto' : 'stream';
+}
+
+// 2. "An open valueTimeSplit window means a song." A window means somebody
+//    other than the show is paid, which is not the same claim.
+function naiveActionByWindow(podcast, leg = {}) {
+  if (naiveActionByMedium(podcast) === 'auto') return 'auto';
+  return leg.remoteItemMedium !== undefined || leg.blockType ? 'auto' : 'stream';
+}
+
+// 3. "Split Kit is running, so it is a music show." On one 71-minute Homegrown
+//    Hits broadcast 10 of 17 block changes were 'chapter' — the host's own
+//    promos, photos and phone numbers.
+function naiveActionBySplitKit(podcast, leg = {}) {
+  if (naiveActionByMedium(podcast) === 'auto') return 'auto';
+  return leg.blockType ? 'auto' : 'stream';
+}
+
 const naiveCaught = [
   ['chapter-wins dedupe strips the heart off a song the host also chaptered',
     naiveChapterWins(HGH_WINDOWS, HGH_CHAPTERS).filter((r) => r.kind === 'track').length
@@ -462,6 +539,12 @@ const naiveCaught = [
     naiveTrackAndHost({ totalSats: 350, remotePercentage: 97 }).trackSats === 340],
   ['no clamp lets a malformed percentage produce a negative host leg',
     naiveTrackAndHost({ totalSats: 100, remotePercentage: 150 }).hostSats < 0],
+  ['medium alone streams a live Split Kit song, because Homegrown Hits declares "podcast"',
+    naiveActionByMedium(TALK, { blockType: 'music' }) === 'stream'],
+  ['"a window is a song" files the Podcasting 2.0 cross-promo as music',
+    naiveActionByWindow(TALK, { remoteItemMedium: 'podcast' }) === 'auto'],
+  ['"Split Kit is running" files the host\'s own promo block as music',
+    naiveActionBySplitKit(TALK, { blockType: 'chapter' }) === 'auto'],
 ];
 for (const [name, caught] of naiveCaught) {
   if (!caught) {

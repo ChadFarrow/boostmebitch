@@ -4,15 +4,44 @@ Read before touching `lib/v4v/streaming.ts`, `stream-ledger.ts`, `live-value.ts`
 
 Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning.
 
-## Streaming sats (`action: 'auto'`)
+## Streaming sats (an unattended `action`)
 
 The third Podcasting 2.0 payment mode, alongside the boost button and boost-all. `lib/v4v/stream-ledger.ts` (pure math) + `lib/v4v/streaming.ts` (the engine). **Off by default** — nothing is spent until the user flips the switch.
 
-It is a ledger and a clock on top of the existing engine, **not a new payment path**: settlement calls the same `sendBoost()`, with `action: 'auto'` on the boostagram (a field `lib/types.ts` and `lib/v4v/boostbox.ts` already carried). Rails, splits, TLV and the lnaddress→keysend upgrade are untouched, so all three rails work — batching at 10 minutes is what keeps Spark (BOLT11-only, an LNURL invoice per leg) affordable.
+It is a ledger and a clock on top of the existing engine, **not a new payment path**: settlement calls the same `sendBoost()`, with an unattended `action` on the boostagram (a field `lib/types.ts` and `lib/v4v/boostbox.ts` already carried). Rails, splits, TLV and the lnaddress→keysend upgrade are untouched, so all three rails work — batching at 10 minutes is what keeps Spark (BOLT11-only, an LNURL invoice per leg) affordable.
 
-**`action` is `'auto'`, not `'stream'` — the two describe different cadences.** `'stream'` is the per-minute drip, one payment per minute per recipient; what we actually send is a ten-minute lump for time already listened, which is what `'auto'` names. Tagging it `'stream'` made each batch read as one minute of listening in the receiver's stats. `'boost'` stays reserved for the button, so a host's deliberate one-tap payments remain separable from ambient ones. **Confirmed against a real Helipad:** `'auto'` lands in the **Stream tab, flagged with an AutoBoost marker** — so the batches stay out of the host's boost feed while still reading as distinct from a per-minute drip, which is exactly the split this tagging exists to produce.
+### Which `action` word a leg carries
 
-**The two wire surfaces disagree on purpose, and `lib/v4v/boostbox.ts` must keep downgrading `'auto'` → `'stream'`.** Keysend legs carry `'auto'` verbatim in the TLV. BoostBox — which is how the *LNURL* legs carry metadata — validates `action` against a strict malli enum, `[:enum "boost" "stream"]` (`src/boostbox/boostbox.clj`), so posting `'auto'` is rejected; the rejection is silent and non-fatal, meaning the leg loses its whole `desc` descriptor and degrades to the bare user message. The action string also lands verbatim in the BOLT11 description BoostBox builds (`rss::payment::<action> <url>`). **Widening that mapping requires widening the enum on the BoostBox side first.**
+**It is decided per LEG, by `streamAction` (`lib/util.ts`): `'auto'` when the leg pays a SONG, `'stream'` when it pays the SHOW.** `'boost'` stays reserved for the button either way, so neither reaches a host's boost feed. **Confirmed against a real Helipad:** `'auto'` lands in the **Stream tab, flagged with an AutoBoost marker**.
+
+It was a flat `'auto'` until 2026-08-28, on the argument that the two words describe **cadence**: `'stream'` is the per-minute drip, one payment per minute per recipient, while what we send is a ten-minute lump for time already listened. That argument is real, it is why a music leg is still `'auto'`, and the cost of the change is the same effect it names — a talk show's ten-minute batch now reads as one minute of listening in a receiver that counts by cadence. It changed anyway, because what a receiver most wants to know is **what earned the sats**: on a talk show that is time on the show, and filing every one of those under AutoBoost buried it in the wrong place in the host's own statistics.
+
+**Both obvious ways to find a music show fail, and each fails in a way that looks like it worked.**
+
+*The feed's own medium finds nothing.* `<podcast:medium>` is a self-declaration and the V4V music shows do not make it. Measured 2026-08-28:
+
+| Feed | Declares |
+|---|---|
+| Bowl After Bowl | no `<podcast:medium>` tag at all — Podcast Index answers with the default `podcast` |
+| Homegrown Hits | `podcast` — and it is a live music show |
+| Red Bar Radio | `podcast` |
+| Behind the Sch3m3s | `podcast` |
+
+Only an album (`music`) or a playlist (`musicL`) ever declares itself. So the medium is an authority for those two and for nothing else.
+
+*An open `<podcast:valueTimeSplit>` window is not a song either.* A window means somebody other than the show is paid, which is a different claim. Bowl After Bowl's RSS carries 186 windows, but 129 of them hold inline `<podcast:valueRecipient>` entries and name no remote item — and `parseRawValueTimeSplits` (`lib/pi.ts`) filters on `feedGuid`, so **the app never sees the windows that really are songs**. Of the ones it does see, two declare `medium="podcast"`: a 7220-second cross-promotion to the Podcasting 2.0 show at 33%. Reading an open window as a song therefore files a talk-show co-promo as music while the actual music stays invisible — exactly backwards.
+
+*So the signal for a live show is Split Kit, and it is the block KIND, not its presence.* Split Kit stamps every block it pushes: `'music'` for a song, `'chapter'` for a host segment (a promo, a photo, a phone number), `'podcast'` for the show's default block. "Split Kit is running, therefore music" is close but wrong — on one 71-minute Homegrown Hits broadcast **10 of 17 block changes were `chapter`**, so the host's own promos would all be filed as music.
+
+Three rules fall out of that, and each has already been proposed and rejected — `check:vts` replays all three against `naive()`:
+
+1. **Absence never implies music.** A leg with nothing to go on is the show's. `'stream'` is the default and every `'auto'` needs a positive reason.
+2. **The block stamp labels a payment; it never decides one.** `LiveTarget.blockType` stays diagnostics-only for gating: every kind of block still earns, because the listener chose an amount for the show and a promo is the show. `STREAM_TRACK_MIN_PLAY_MS` is what stops a target nobody spent time on.
+3. **The stamp is copied per bucket in `adoptLiveTarget`, never read live at settle time.** Same trap as `liveEvents`: the settle that pays a track fires at the NEXT track's boundary, when the watcher already names a different block, so a live read labels every song with the kind of the song that replaced it.
+
+`actionFor` (`lib/v4v/streaming.ts`) is the single call site, and it repeats `targetFor`'s host-fallback test on purpose. A bucket whose split vanished mid-episode pays the SHOW's block; the bucket key alone cannot see that and would keep the song's stamp from when the bucket was adopted, labelling a payment to the host as music. **The boostagram and the kind:3369 receipt both call it, so the two can never disagree about what earned the sats.**
+
+**The two wire surfaces disagree on purpose, and `lib/v4v/boostbox.ts` must keep downgrading `'auto'` → `'stream'`.** Keysend legs carry `'auto'` verbatim in the TLV. BoostBox — which is how the *LNURL* legs carry metadata — validates `action` against a strict malli enum, `[:enum "boost" "stream"]` (`src/boostbox/boostbox.clj`), so posting `'auto'` is rejected; the rejection is silent and non-fatal, meaning the leg loses its whole `desc` descriptor and degrades to the bare user message. The action string also lands verbatim in the BOLT11 description BoostBox builds (`rss::payment::<action> <url>`). **Widening that mapping requires widening the enum on the BoostBox side first.** Since the per-leg rule landed, a talk show's legs already send `'stream'` and pass the enum untouched — which narrows what the downgrade covers to music legs, and does not make it removable.
 
 **Every rule here follows from one property: this spends money unattended, on a timer, with no confirmation step.** A mistake has no screen in front of it to be noticed on.
 

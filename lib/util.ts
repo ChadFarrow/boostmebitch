@@ -81,6 +81,70 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * The Podcasting 2.0 `action` word an UNATTENDED streaming payment carries:
+ * `'auto'` when the leg pays a song, `'stream'` when it pays the show.
+ *
+ * Both words mean an unattended payment, and `'boost'` stays reserved for the
+ * button either way. What separates them for a receiver is what earned the
+ * sats. A music show's ten-minute batch is a period of listening to TRACKS, and
+ * `'auto'` is what a Helipad files under an AutoBoost. A talk show's batch is
+ * time spent on the SHOW, which is what `'stream'` names, and a host reading
+ * their own stats expects to find it there.
+ *
+ * **The obvious test — "does the feed say it is music?" — finds nothing.**
+ * `<podcast:medium>` is a self-declaration and the V4V music shows do not make
+ * it. Measured 2026-08-28: Bowl After Bowl carries no `<podcast:medium>` tag at
+ * all, so Podcast Index reports the default `podcast`; Homegrown Hits, Red Bar
+ * Radio and Behind the Sch3m3s each declare `podcast` outright, and Homegrown
+ * Hits is a live music show. Only an album (`music`) or a playlist (`musicL`)
+ * ever declares itself, so the medium answers for those two and nothing else.
+ *
+ * **The second obvious test — "is a `<podcast:valueTimeSplit>` window open?" —
+ * is worse, because it looks right.** A window means somebody other than the
+ * show is paid; it does not mean a song. Bowl After Bowl's RSS holds 186
+ * windows, but 129 carry inline `<podcast:valueRecipient>` entries and no
+ * remote item, and `parseRawValueTimeSplits` (lib/pi.ts) filters on `feedGuid`
+ * — so the app never sees the ones that really are songs. Of the windows it
+ * DOES see, two declare `medium="podcast"`: a 7220-second cross-promotion to
+ * the Podcasting 2.0 show at 33%. Treating an open window as a song therefore
+ * labels a talk-show co-promo as music while the actual music stays invisible,
+ * which is exactly backwards.
+ *
+ * **So the signal for a live show is Split Kit, which stamps every block it
+ * pushes.** `'music'` for a song, `'chapter'` for a host segment (a promo, a
+ * photo, a phone number), `'podcast'` for the show's default block. "Split Kit
+ * is running" is not enough on its own: on one 71-minute Homegrown Hits
+ * broadcast, 10 of 17 block changes were `chapter`, so the show's own promos
+ * would all be filed as music. The block KIND is the answer, not its presence.
+ *
+ * Absence never implies music. A leg with nothing to go on is the show's, which
+ * is why the default is `'stream'` and every `'auto'` needs a positive reason.
+ *
+ * This LABELS a payment and never decides one. `LiveTarget.blockType` stays
+ * diagnostics-only for gating: every kind of block still earns, because the
+ * listener chose an amount for the show and a promo is the show.
+ */
+export function streamAction(
+  podcast: Pick<Podcast, 'medium'>,
+  leg: {
+    /** Split Kit's block kind for this leg's target, when it came off a
+     *  liveValue socket. Absent for every other signal. */
+    blockType?: string;
+    /** `<podcast:remoteItem medium="…">` on the window this leg pays, when the
+     *  host bothered to declare one. */
+    remoteItemMedium?: string;
+  } = {},
+): 'stream' | 'auto' {
+  // The feed declares itself an album or a playlist: every leg of it is music.
+  if (playsAsTracks(podcast)) return 'auto';
+  // A live song. Case-insensitive: the stamp is a third party's free string.
+  if (leg.blockType?.toLowerCase() === 'music') return 'auto';
+  // The window names its own medium. Rare, but free and correct when present.
+  if (playsAsTracks({ medium: leg.remoteItemMedium })) return 'auto';
+  return 'stream';
+}
+
+/**
  * The key a PER-SHOW device setting is stored under.
  *
  * Guid first, PI feed id as the fallback: the guid is what every other client
