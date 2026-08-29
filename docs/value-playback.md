@@ -18,8 +18,12 @@ added later.
 
 ## What this app publishes, and what it deliberately doesn't
 
-`3369` is emitted for **streaming settles only** — the unattended `action:
-'auto'` payments in `lib/v4v/streaming.ts`. A boost the user pressed keeps its
+`3369` is emitted for **streaming settles only** — the unattended payments in
+`lib/v4v/streaming.ts`, whose `action` is `'auto'` for a leg paying a song and
+`'stream'` for one paying the show (`streamAction`, `lib/util.ts`). The receipt
+carries whichever word the boostagram carried: both read it from `actionFor`, so
+the Lightning payment and the Nostr record of it cannot disagree about what
+earned the sats. A boost the user pressed keeps its
 kind:1 note (`lib/nostr/boost-notes.ts`) or, on a live stream, its NIP-57 zap
 receipt, and gets no 3369.
 

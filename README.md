@@ -213,7 +213,7 @@ These look symmetric but the wire formats differ:
 
 ## Streaming sats
 
-The third Podcasting 2.0 payment mode. **Off by default** — nothing is spent until the switch is flipped. It is a ledger and a clock on top of the existing engine, **not a new payment path**: settlement calls the same `sendBoost()` with `action: 'auto'` on the boostagram, so rails, splits, TLV and the lnaddress→keysend upgrade are untouched.
+The third Podcasting 2.0 payment mode. **Off by default** — nothing is spent until the switch is flipped. It is a ledger and a clock on top of the existing engine, **not a new payment path**: settlement calls the same `sendBoost()` with an unattended `action` on the boostagram, so rails, splits, TLV and the lnaddress→keysend upgrade are untouched.
 
 ```
 lib/v4v/stream-ledger.ts   pure math — accrue, distribute, per-bucket settle, every constant
@@ -240,7 +240,7 @@ components/streaming-settings.tsx   <StreamRate> · <StreamMeter> · <StreamPuls
 
 Sats are **debited before the payment is awaited** (crediting after is a real double-spend), refunded on failure, and mirrored to `bmb:stream_pending` so closing the tab mid-window doesn't discard them. Streaming is ambient: no Nostr note, no confetti, no sound, and its history goes to `bmb:streamed:*` — never the boost log, which the global feed renders.
 
-**`action: 'auto'`, not `'stream'`.** `'stream'` names a per-minute drip; what actually goes out is a ten-minute lump for time already listened. Confirmed against a real Helipad: `'auto'` lands in the Stream tab flagged as an AutoBoost, keeping ambient payments out of the host's boost feed. One exception — BoostBox validates `action` against a strict `"boost" | "stream"` enum, so `lib/v4v/boostbox.ts` downgrades `'auto'` → `'stream'` on that (LNURL-metadata) surface only.
+**`action` is per leg — `'auto'` when it pays a song, `'stream'` when it pays the show** (`streamAction`, `lib/util.ts`). `'boost'` stays reserved for the button, so neither reaches a host's boost feed; confirmed against a real Helipad, `'auto'` lands in the Stream tab flagged as an AutoBoost. Finding a music show is the hard half: every V4V one declares `<podcast:medium>podcast</podcast:medium>`, and an open `<podcast:valueTimeSplit>` is not a song either, so the live signal is Split Kit's block stamp `'music'`. One exception — BoostBox validates `action` against a strict `"boost" | "stream"` enum, so `lib/v4v/boostbox.ts` downgrades `'auto'` → `'stream'` on that (LNURL-metadata) surface only.
 
 **Three readouts:** `<StreamMeter>` (fullscreen — rate, the block's art, the track being credited, accrued sats, countdown), `<StreamPulse>` (a `≋ N` chip on the mini-bar, so a user who never opens the player still sees money leaving), `<StreamedLog>` (the wallet modal — the only record anywhere that carries podcast context; NWC/WebLN/Spark transaction lists don't).
 
@@ -298,7 +298,7 @@ Podcasting 2.0 fields, plus Nostr-aware additions — drops into Helipad / Fount
 | `message` | user input | optional |
 | `sender_name` | Nostr `display_name` / `name`, editable | falls back to `boostmebitch.com user` — and is *replaced* by it on an anonymous boost |
 | `sender_id` | Nostr pubkey hex | omitted when signed out **or** anonymous |
-| `action` | `'boost'` \| `'auto'` | `'boost'` = the button, `'auto'` = a streaming settlement |
+| `action` | `'boost'` \| `'auto'` \| `'stream'` | `'boost'` = the button. A streaming settlement is `'auto'` when the leg pays a song and `'stream'` when it pays the show |
 | `uuid` | `crypto.randomUUID()` | one uuid per boost — Helipad groups legs by it |
 | `remote_feed_guid`, `remote_item_guid` | `<podcast:guid>` / item guid | NIP-73 refs; carry the **track** on boost-all and streaming legs, the **stream** on live-stream legs |
 | `eventGuid`, `blockGuid`, `eventAPI` | Split Kit | only when the target came off a `<podcast:liveValue>` channel; additive, so a normal boostagram is byte-identical to before |

@@ -83,7 +83,7 @@ npm run dev / build / start / lint
 | `check:lease` | `createLeasePool` — the refcount sharing ONE NIP-47 socket | the socket closes **underneath a payment in flight** |
 | `check:nwcerror` | `lib/v4v/nwc-errors.ts` — which of three answers a NIP-47 failure gets, and whether a leg may be retried | a reply timeout shown as ✗ makes the user re-boost, and **every leg pays again** |
 | `check:feedxml` | `readAttr` — the attribute reader EVERY feed parser goes through | a decoy `x-address` steers the payee while every other client reads the feed correctly |
-| `check:vts` | `splitAtPosition`, `splitTrackAndHost`, `payableSplit`, `splitSats` | a boost pays one artist while streaming credits another for the same second |
+| `check:vts` | `splitAtPosition`, `splitTrackAndHost`, `payableSplit`, `splitSats`, `streamAction` | a boost pays one artist while streaming credits another for the same second; and every unattended leg is mislabelled, permanently, in the host's own statistics |
 | `check:readtrust` | `lib/nostr/read-trust.ts` — is an EMPTY read "nobody has it" or "nothing answered" | every "don't write over what you couldn't read" guard is downstream of it, so it doesn't degrade, it DELETES |
 | `check:assetlinks` | `lib/assetlinks.ts` — the Digital Asset Links statement | delegates the origin holding the NWC credential and the nsec; both failure directions silent |
 | `check:amber` | `lib/nostr/amber-callback-url.ts` — the `nostrsigner:` bytes and the returned fragment | failed twice in production, both versions looking right in review |
@@ -270,8 +270,8 @@ These seven you can break from a file that has nothing to do with favorites:
 
 The engine is `lib/v4v/streaming.ts` + `lib/v4v/stream-ledger.ts`. **Off by default.** Full reasoning in [`docs/streaming.md`](docs/streaming.md). **Every rule here follows from one property: this spends money unattended, on a timer, with no confirmation step.** A mistake has no screen in front of it to be noticed on.
 
-- **It is not a new payment path.** Settlement calls the same `sendBoost()` with `action: 'auto'`. Rails, splits, TLV and the lnaddress→keysend upgrade are untouched.
-- **`action` is `'auto'`, not `'stream'`** — a ten-minute lump for time already listened. `lib/v4v/boostbox.ts` must keep downgrading `'auto'` → `'stream'` for LNURL legs, whose enum rejects `'auto'` silently.
+- **It is not a new payment path.** Settlement calls the same `sendBoost()` with an unattended `action`. Rails, splits, TLV and the lnaddress→keysend upgrade are untouched.
+- **`action` is per LEG — `streamAction` (`lib/util.ts`) returns `'auto'` when the leg pays a SONG and `'stream'` when it pays the SHOW.** Both obvious tests fail: `<podcast:medium>` finds no music show (every one declares `podcast`), and an open `<podcast:valueTimeSplit>` is not a song. The live signal is Split Kit's block stamp `'music'`, never its presence. `lib/v4v/boostbox.ts` must keep downgrading `'auto'` → `'stream'` for LNURL legs, whose enum rejects `'auto'` silently. Pinned by `check:vts`.
 - **The ledger is debited BEFORE the payment is awaited.** Crediting after leaves the same sats for the next tick to spend again.
 - **The double-pay guards live on the LEDGER, not the context.** The context is rebuilt on every reload and Fast Refresh while the balance is restored from `bmb:stream_pending`.
 - **Settles are serialized** through a promise `chain`. Never parallelize legs or settles.

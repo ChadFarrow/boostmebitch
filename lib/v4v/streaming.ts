@@ -5,10 +5,10 @@
 //
 // This is a ledger + a clock on top of the existing engine, NOT a new payment
 // path: settlement calls the same `sendBoost()` every boost goes through, with
-// `action: 'auto'` on the boostagram (a field lib/types.ts and
-// lib/v4v/boostbox.ts already carry). Nothing about rails, splits, TLV or the
-// lnaddress→keysend upgrade changes here. See buildBoostagram for why 'auto'
-// and not 'stream'.
+// an unattended `action` on the boostagram (a field lib/types.ts and
+// lib/v4v/boostbox.ts already carry) — 'auto' for a song, 'stream' for the
+// show, decided per leg by `streamAction`. Nothing about rails, splits, TLV or
+// the lnaddress→keysend upgrade changes here. See buildBoostagram and actionFor.
 //
 // The arithmetic lives in ./stream-ledger.ts so `npm run check:stream` can pin
 // it from plain Node. What lives HERE is the part that talks to the store, the
@@ -45,7 +45,7 @@ import { createObservable } from '@/lib/pubsub';
 // resolveSenderName lives in lib/brand.ts, NOT in the boost modal that owns the
 // "From" field — importing it from `components/` here would invert the v4v
 // swap-out boundary and pull a 'use client' React module into the engine.
-import { getErrorMessage, hasValueRecipients, payableValue, splitAtPosition, showStorageKey, randomId } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableValue, splitAtPosition, showStorageKey, randomId, streamAction } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { isLiveStreamId } from '@/lib/nostr/live-streams';
 import { canSignUnattended } from '@/lib/nostr/signer';
@@ -120,6 +120,19 @@ interface StreamContext {
    * attach none at all to the one settle these ids exist for.
    */
   liveEvents?: Map<string, LiveEventIds>;
+  /**
+   * Split Kit's block KIND, PER BUCKET, captured when that bucket was adopted.
+   *
+   * Recorded here for the same reason `liveEvents` is, and it is the same trap:
+   * the settle that pays a track fires at the NEXT track's boundary, by which
+   * time the watcher's snapshot names a different block. Reading `blockType`
+   * live at settle time would label each song with the kind of the song that
+   * replaced it.
+   *
+   * Read only by `actionFor`, to choose the boostagram's `action` word. It does
+   * not gate payment: every kind of block earns, unchanged.
+   */
+  liveBlockTypes?: Map<string, string>;
   /** What the number means: sats per minute, or a fixed sum per track. */
   mode: StreamMode;
   /** Sats credited per track when `mode === 'track'`. */
@@ -239,6 +252,9 @@ function adoptLiveTarget(c: StreamContext, t: LiveTarget | null) {
   if (t.event && (t.event.eventGuid || t.event.blockGuid || t.event.eventAPI)) {
     (c.liveEvents ??= new Map()).set(bucket, t.event);
   }
+  // Same timing, same reason: this is the only moment we know which block this
+  // bucket IS. See StreamContext.liveBlockTypes.
+  if (t.blockType) (c.liveBlockTypes ??= new Map()).set(bucket, t.blockType);
   c.liveBucket = bucket;
 }
 
@@ -797,20 +813,23 @@ function paymentIds(
  * track earned the payment. Don't "simplify" it by putting the track in the
  * primary fields.
  *
- * `action` is **'auto'**, not 'stream'. Both are Podcasting 2.0 values for an
- * unattended payment, and the distinction receivers draw is cadence: 'stream'
- * means the per-minute drip, one payment per minute per recipient. We batch on
- * a ten-minute timer (SETTLE_INTERVAL_MS) precisely because a per-minute LNURL
- * invoice per leg is unaffordable on a BOLT11-only rail — so what arrives at
- * the recipient is a periodic lump for time already listened, which is what
- * 'auto' describes. Tagging it 'stream' made the ten-minute batch read as one
- * minute's worth of listening in the receiver's stats.
+ * `action` is per LEG, and `streamAction` (lib/util.ts) decides it: 'auto' when
+ * this leg pays a SONG, 'stream' when it pays the SHOW. Both are Podcasting 2.0
+ * words for an unattended payment and 'boost' stays reserved for the button
+ * either way, so neither of these reaches a host's boost feed. Confirmed against
+ * a real Helipad: 'auto' lands in the Stream tab carrying an AutoBoost marker.
  *
- * This does NOT make it a boost: 'boost' stays reserved for the button, so
- * the deliberate, one-tap payments a host actually reads stay separable from
- * the ambient ones. Confirmed against a real Helipad: 'auto' lands in the
- * Stream tab carrying an AutoBoost marker, so these stay out of the host's
- * boost feed while still reading as distinct from a per-minute drip.
+ * It used to be a flat 'auto' on the argument that the word describes CADENCE —
+ * 'stream' being the per-minute drip, while we batch on a ten-minute timer
+ * (SETTLE_INTERVAL_MS) because a per-minute LNURL invoice per leg is
+ * unaffordable on a BOLT11-only rail. That reasoning is real and it is why a
+ * music leg is still 'auto', but it made every talk show's ambient payments read
+ * as AutoBoosts in a host's stats when what earned them was time on the SHOW.
+ * The cost of the change is the known one: a talk show's ten-minute batch now
+ * reads as a minute's worth of listening in a receiver that counts by cadence.
+ *
+ * Read `streamAction`'s comment before touching this — which signals can find a
+ * music show is measured there, and the two obvious tests both fail.
  */
 function buildBoostagram(
   c: StreamContext,
@@ -828,7 +847,7 @@ function buildBoostagram(
     url: podcast.url,
     ts: Math.max(0, Math.floor(atPositionSec)),
     value_msat_total: sats * 1000,
-    action: 'auto',
+    action: actionFor(c, bucket),
     uuid: randomId(),
     episode: episode.title,
     itemID: episode.id,
@@ -851,6 +870,26 @@ function targetFor(c: StreamContext, bucket: string): { value: ValueBlock; label
   // host block rather than stranding sats that were already accrued.
   if (!split || !hasValueRecipients(split.value)) return { value: c.value };
   return { value: split.value!, label: split.title };
+}
+
+/**
+ * The `action` word this leg's payment carries. One expression, so the
+ * boostagram and the kind:3369 receipt can never disagree about what earned it.
+ *
+ * **The host-fallback test is the same one `targetFor` makes, and it has to
+ * be.** A bucket whose split vanished mid-episode pays the SHOW's block, and a
+ * bucket key alone cannot see that — it would keep the song's `blockType` from
+ * when the bucket was adopted and label a payment to the host as music. Both
+ * functions therefore ask `hasValueRecipients(split.value)`, and they move
+ * together.
+ */
+function actionFor(c: StreamContext, bucket: string): 'stream' | 'auto' {
+  const split = bucket === HOST_BUCKET ? null : c.splits.get(bucket);
+  if (!split || !hasValueRecipients(split.value)) return streamAction(c.podcast);
+  return streamAction(c.podcast, {
+    blockType: c.liveBlockTypes?.get(bucket),
+    remoteItemMedium: split.remoteItem?.medium,
+  });
 }
 
 /**
@@ -1020,7 +1059,9 @@ function maybePublishReceipt(
       feedGuid,
       itemGuid,
       msat: settledMsat,
-      action: 'auto',
+      // The same word the boostagram carried. A receipt reports what actually
+      // went out, so the two are one expression — see actionFor.
+      action: actionFor(c, bucket),
       startSec: Math.floor(windowStartMs / 1000),
       endSec: Math.floor(Date.now() / 1000),
       positionSec: Math.max(0, Math.floor(atPositionSec)),
