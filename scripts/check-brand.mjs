@@ -25,7 +25,13 @@
 // at a time with `alsoNaive: true` for a legitimate input the wrong version also
 // handles.
 
+import { existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
+
+const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 const MOD = 'lib/brand.ts';
 
@@ -93,10 +99,73 @@ for (const v of ID_VECTORS) {
 // The table itself.
 // ---------------------------------------------------------------------------
 
+// The fields that must not go MISSING. It is not the list anything is scanned
+// with — every loop below walks `Object.keys(brand)` instead, so a field added
+// to the `Brand` interface is scanned the day it is added rather than the day
+// somebody remembers this array. A hand-written second list is how
+// check-assetlinks.mjs came to have a whole section asserted against nothing.
 const REQUIRED = [
   'id', 'displayName', 'shortName', 'wireName', 'domain', 'origin',
   'senderName', 'boostSound', 'manifest', 'userAgent', 'description',
 ];
+
+// ---------------------------------------------------------------------------
+// The literal values, both brands.
+//
+// Everything else in this file tests a field's SHAPE. This is the only thing
+// that pins its VALUE, and the value is the half a person reads: `wireName`
+// goes into every boostagram an artist's aggregator prints, `origin` into the
+// deep link and banner URL of a signed kind:1 that can never be edited, and
+// `senderName` onto every anonymous boost. `wireName: 'BoostMebitch'` and an
+// apex `origin` (which 307-redirects, so the note unfurls no card at all) each
+// pass every shape test above and change what recipients see, silently and
+// permanently.
+//
+// So the table is duplicated here on purpose: editing a brand string has to be
+// a deliberate two-file change, and the diff on this file is the review.
+// ---------------------------------------------------------------------------
+
+const LITERALS = {
+  bmb: {
+    id: 'bmb',
+    displayName: 'Boost Me Bitch',
+    shortName: 'Boost Me',
+    wireName: 'BoostMeBitch',
+    domain: 'boostmebitch.com',
+    origin: 'https://www.boostmebitch.com',
+    senderName: 'boostmebitch.com user',
+    boostSound: '/boost.mp3',
+    manifest: '/manifest.json',
+    userAgent: 'boostmebitch/0.1',
+    description:
+      'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
+  },
+  buddy: {
+    id: 'buddy',
+    displayName: 'Boost Me Buddy',
+    shortName: 'Boost Buddy',
+    wireName: 'BoostMeBuddy',
+    domain: 'boostmebuddy.com',
+    origin: 'https://www.boostmebuddy.com',
+    senderName: 'boostmebuddy.com user',
+    boostSound: '/boost-buddy.mp3',
+    manifest: '/manifest-buddy.json',
+    userAgent: 'boostmebuddy/0.1',
+    description:
+      'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
+  },
+};
+
+console.log('\n  literal values');
+for (const [key, want] of Object.entries(LITERALS)) {
+  const got = BRANDS[key];
+  // Both directions. Missing a field is caught by REQUIRED below; an EXTRA
+  // field is caught here, because a new field must be pinned before it ships.
+  const extra = Object.keys(got ?? {}).filter((f) => !(f in want));
+  ok(`${key} has no field this check does not pin`, extra.length === 0,
+    `unpinned: ${JSON.stringify(extra)} — add them to LITERALS`);
+  for (const [f, v] of Object.entries(want)) eq(`${key}.${f}`, got?.[f], v);
+}
 
 console.log('\n  the table');
 const ids = Object.keys(BRANDS);
@@ -105,7 +174,11 @@ ok('both brands are present', ids.length === 2 && ids.includes('bmb') && ids.inc
 
 for (const [key, b] of Object.entries(BRANDS)) {
   eq(`${key}.id matches its table key`, b.id, key);
+  const fields = Object.keys(b);
   for (const f of REQUIRED) {
+    ok(`${key}.${f} is still present`, fields.includes(f), `keys: ${JSON.stringify(fields)}`);
+  }
+  for (const f of fields) {
     ok(`${key}.${f} is a non-empty string`, typeof b[f] === 'string' && b[f].length > 0,
       `got ${JSON.stringify(b[f])}`);
   }
@@ -123,6 +196,16 @@ for (const [key, b] of Object.entries(BRANDS)) {
     `got ${JSON.stringify(b.boostSound)}`);
   ok(`${key}.manifest is a root-relative asset`, b.manifest.startsWith('/'),
     `got ${JSON.stringify(b.manifest)}`);
+  // Shape is not enough: BOTH deploys build from this one repo, so `public/`
+  // has to hold BOTH assets and the table only chooses. A path naming a file
+  // that isn't there fails silently at runtime in each case — `playBoostSound`
+  // swallows the rejected `play()`, so a buddy boost is just quiet, and a
+  // missing manifest is a PWA that will not install. `/boost-buddy.mp3` shipped
+  // in this table while `public/` held only `boost.mp3`.
+  for (const f of ['boostSound', 'manifest']) {
+    ok(`${key}.${f} names a file that exists in public/`, existsSync(join(REPO, 'public', b[f])),
+      `public${b[f]} is not in the repo`);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -137,7 +220,9 @@ for (const [key, b] of Object.entries(BRANDS)) {
 
 console.log('\n  buddy carries nothing from the other brand');
 const FORBIDDEN = 'bitch';
-for (const f of REQUIRED) {
+// `Object.keys`, never REQUIRED: the field nobody remembered to list is exactly
+// the field that ships the leak.
+for (const f of Object.keys(BRANDS.buddy)) {
   const v = String(BRANDS.buddy[f]).toLowerCase();
   ok(`buddy.${f} does not contain ${JSON.stringify(FORBIDDEN)}`, !v.includes(FORBIDDEN),
     `got ${JSON.stringify(BRANDS.buddy[f])}`);
@@ -155,8 +240,15 @@ ok('the two brands name different manifests', BRANDS.buddy.manifest !== BRANDS.b
 // ---------------------------------------------------------------------------
 
 console.log('\n  derived values');
-eq('BRAND is a member of the table', BRAND, BRANDS[BRAND.id]);
-eq('DEFAULT_SENDER_NAME follows the active brand', DEFAULT_SENDER_NAME, BRAND.senderName);
+// `BRAND` must be whatever `brandIdFrom` says, never a hard-coded member: the
+// whole fallback argument above is worthless if the wiring reads `BRANDS.bmb`.
+eq('BRAND follows brandIdFrom(NEXT_PUBLIC_BRAND)',
+  BRAND, BRANDS[brandIdFrom(process.env.NEXT_PUBLIC_BRAND)]);
+// NOT `eq(DEFAULT_SENDER_NAME, BRAND.senderName)`. That is how it is DEFINED,
+// so the assertion is `x === x` and cannot fail. The vectors below carry the
+// literal instead.
+eq('DEFAULT_SENDER_NAME is the active brand\'s literal',
+  DEFAULT_SENDER_NAME, LITERALS[BRAND.id].senderName);
 eq('siteTitle() names the active brand', siteTitle(), `${BRAND.displayName} — Podcast Boost Station`);
 eq('siteTitle(brand) names the brand it is given', siteTitle(BRANDS.buddy),
   `${BRANDS.buddy.displayName} — Podcast Boost Station`);

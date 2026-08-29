@@ -33,7 +33,20 @@ export interface Brand {
   id: BrandId;
   /** Page header wordmark, `<title>`, and every sentence naming the app. */
   displayName: string;
-  /** PWA `short_name` — the label under a home-screen icon. */
+  /**
+   * PWA `short_name` — the label under a home-screen icon.
+   *
+   * NOTHING READS THIS YET, and that is the trap: the value that actually ships
+   * is the `short_name` written into `public/manifest.json` and
+   * `public/manifest-buddy.json`, which are static files a browser fetches
+   * directly. Editing this field alone changes no home-screen label anywhere.
+   * It is kept because those two files are the thing that should collapse into
+   * an `app/manifest.ts` route reading this table — at which point this becomes
+   * the single source it already looks like. Until then, edit BOTH.
+   *
+   * `description` below has the same shape: it IS read (by `app/layout.tsx`,
+   * for the meta and OG tags) but the manifests carry their own copy too.
+   */
   shortName: string;
   /**
    * The name that goes on the WIRE: the boostagram TLV `app_name` and the
@@ -92,9 +105,11 @@ const BUDDY: Brand = {
   origin: 'https://www.boostmebuddy.com',
   senderName: 'boostmebuddy.com user',
   // A SEPARATE asset, not an overwrite of `/boost.mp3`: both deploys are built
-  // from this one repo, so `public/` holds both files and the brand picks. A
-  // missing file is a silent no-op in `playBoostSound`, so shipping the table
-  // ahead of the audio costs the ping and nothing else.
+  // from this one repo, so `public/` holds both files and the brand picks.
+  // `check:brand` asserts the file is actually THERE, because a missing one is
+  // a silent no-op — `playBoostSound` swallows the rejected `play()`, so the
+  // table shipped naming a file the repo did not have and every buddy boost
+  // was quiet under confetti, with no error anywhere.
   boostSound: '/boost-buddy.mp3',
   manifest: '/manifest-buddy.json',
   userAgent: 'boostmebuddy/0.1',

@@ -42,6 +42,8 @@
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs",
     "probe:mutes": "node --experimental-strip-types scripts/probe-mutes.mjs",
+    "publish:site-profile": "node --experimental-strip-types --env-file=.env.local scripts/publish-site-profile.mjs",
+    "publish:site-profile:buddy": "node --experimental-strip-types --env-file=.env.buddy.local scripts/publish-site-profile.mjs",
     "relay": "node scripts/local-relay.mjs",
     "seed:relay": "node --experimental-strip-types scripts/seed-local-relay.mjs",
     "e2e:favorites": "node scripts/e2e-favorites.mjs",

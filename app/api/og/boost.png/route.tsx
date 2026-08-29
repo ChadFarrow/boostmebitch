@@ -55,8 +55,8 @@ const RASTERIZABLE = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif
 /**
  * Cap and clean a caller-supplied line of text.
  *
- * This route draws whatever text it is given onto a BMB-branded image served
- * from boostmebitch.com, which is the same shape of oracle the site-sign route
+ * This route draws whatever text it is given onto a branded image served from
+ * this deploy's own origin, which is the same shape of oracle the site-sign route
  * bounds rather than authenticates — nobody is signed in when a Nostr client
  * loads a picture. So: no control characters (they break the layout engine, and
  * they hide text from the reader while leaving it in the URL), and a hard length
@@ -224,7 +224,7 @@ export async function GET(req: Request) {
               letterSpacing: 2,
             }}
           >
-            BOOSTMEBITCH.COM
+            {BRAND.domain.toUpperCase()}
           </div>
         </div>
       ),
