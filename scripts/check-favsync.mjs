@@ -59,6 +59,8 @@ import {
   baselineFrom,
   baselineOfList,
   looseIdsWePublished,
+  correctedModeFromWire,
+  mayAdoptRefusedRead,
   baselineHalf,
   decodePrivateFavorites,
   encodePrivateFavorites,
@@ -1786,6 +1788,133 @@ section('A claim that has stopped being true is worse than no claim');
   });
   check('an unreadable half keeps its claims verbatim',
     keptPlan.baseline.privateFeeds, [showId(F_MUSIC2)]);
+}
+
+// ---------------------------------------------------------------------------
+section('a stale RECORDED mode the wire contradicts is corrected, one way only');
+// ---------------------------------------------------------------------------
+//
+// `favPrivacy` rides in the kind:30078 settings backup, whose d-tag is
+// unbranded on purpose — so one stale `'public'` is restored on every sign-in,
+// on every device and both deploys. `seedFavoritesMode` short-circuited on a
+// recorded mode and never asked the wire, and in public mode the private half
+// is filtered by `claimedByBaseline`, which on a device with no baseline drops
+// ALL of it. Measured on a real account: 0 public tags, 880 private, 218 feeds
+// and 230 items rendering as an empty library with no error anywhere.
+{
+  const MODE_VECTORS = [
+    // The measured bug.
+    { args: ['public', false, true], expect: 'private', alsoNaive: true,
+      why: 'a private-only wire corrects a stale recorded public' },
+
+    // MUST NOT MOVE. One plaintext tag from any other writer means the account
+    // may genuinely be public, and moving a real public list into `content` is
+    // an edit every app without NIP-44 reads as an empty list.
+    { args: ['public', true, true], expect: null,
+      why: 'a MIXED wire is not evidence — leave it alone' },
+    { args: ['public', true, false], expect: null, alsoNaive: true,
+      why: 'a genuinely public account is untouched' },
+    { args: ['public', false, false], expect: null, alsoNaive: true,
+      why: 'an empty wire teaches nothing' },
+
+    // MUST NOT REWRITE what is already right — a correction that returns the
+    // value it was given still costs a write on every load.
+    { args: ['private', false, true], expect: null,
+      why: 'already private, nothing to correct' },
+
+    // 'off' is a deliberate opt-out. The wire has no standing to overrule it,
+    // and turning sync back on for someone who switched it off is the one
+    // answer here that is never recoverable by reloading.
+    { args: ['off', false, true], expect: null,
+      why: 'a deliberate opt-out survives the wire' },
+
+    // Never seeded here — that is `seedModeFromWire`'s job, and conflating them
+    // would let this path invent a mode for an account that has never chosen.
+    { args: [null, false, true], expect: null, alsoNaive: false,
+      why: 'an unrecorded mode is seeding, not correcting' },
+  ];
+
+  for (const v of MODE_VECTORS) {
+    check(`correctedModeFromWire(${JSON.stringify(v.args)}) — ${v.why}`,
+      correctedModeFromWire(...v.args), v.expect);
+  }
+
+  // TOTAL naive replay. `naive` is the version somebody would write from the
+  // symptom alone: "the wire has a private half, so this account is private".
+  // It ignores what was RECORDED and whether the wire is mixed — so it moves a
+  // genuinely mixed list, rewrites a mode that was already right, and overrules
+  // a user who deliberately switched sync off.
+  const naive = (_recorded, _hasPublic, hasPrivate) => (hasPrivate ? 'private' : null);
+  let proved = 0, exempt = 0;
+  for (const v of MODE_VECTORS) {
+    if (v.alsoNaive) { exempt += 1; continue; }
+    if (naive(...v.args) === v.expect) {
+      failures += 1;
+      console.error(`  FAIL  (naive) agrees on "${v.why}" — this vector proves nothing`);
+    } else proved += 1;
+  }
+  console.log(`        ${proved} vector(s) proved against naive(), ${exempt} exempt as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+section('a refused read may still be PAINTED when the guard protects nothing');
+// ---------------------------------------------------------------------------
+//
+// `wholesale-delete` means "do not publish this". It never meant "do not render
+// this", and the two were the same branch — so the SAME ACCOUNT on a SECOND
+// ORIGIN (this repo builds two deploys, and localStorage is per-origin) read
+// 880 private entries off the relay and painted none of them. The planner was
+// right to refuse the publish; the refusal was withholding the list from the
+// user to protect a device holding nothing.
+//
+// Recorded as calls so the naive replay at the foot is total.
+{
+  const ADOPT_VECTORS = [
+    // The bug this exists for: a new origin. Nothing cached, nothing ever
+    // agreed here, and a full relay list carried through the merge.
+    // Exempt one vector at a time, never by default: `naive` adopts here too,
+    // and correctly. Its fault is the OTHER direction — it over-adopts — which
+    // is what the two refusals below catch.
+    { args: [{ cacheHasEntries: false, baselineClaimsEntries: false, carriedNodes: 880 }],
+      expect: true, alsoNaive: true, why: 'a second origin adopts the list it can see' },
+
+    // MUST KEEP REFUSING. A baseline naming ids beside a cache holding none is
+    // the 2026-08-21 wipe's exact input — the device DID agree something here
+    // once, so an empty local set is a removal claim, not a fresh start.
+    { args: [{ cacheHasEntries: false, baselineClaimsEntries: true, carriedNodes: 880 }],
+      expect: false, why: 'a baseline claiming ids over an empty cache is the wipe shape' },
+
+    // MUST KEEP REFUSING. Painting nothing is the destructive case itself: it
+    // writes through and destroys cached[feed.feedGuid].
+    { args: [{ cacheHasEntries: false, baselineClaimsEntries: false, carriedNodes: 0 }],
+      expect: false, why: 'there is nothing to adopt, so painting only destroys' },
+
+    // MUST STILL WORK: the guard's original job. A device that holds favorites
+    // keeps them; this branch must not touch that case at all.
+    { args: [{ cacheHasEntries: true, baselineClaimsEntries: false, carriedNodes: 880 }],
+      expect: false, alsoNaive: true, why: 'a device that holds favorites is unaffected' },
+    { args: [{ cacheHasEntries: true, baselineClaimsEntries: true, carriedNodes: 0 }],
+      expect: false, alsoNaive: true, why: 'the ordinary refusal is unchanged' },
+  ];
+
+  for (const v of ADOPT_VECTORS) {
+    check(`mayAdoptRefusedRead — ${v.why}`, mayAdoptRefusedRead(...v.args), v.expect);
+  }
+
+  // TOTAL naive replay. `naive` is the version somebody would actually write:
+  // "the cache is empty, so there is nothing to lose". It misses BOTH halves
+  // that matter — the baseline claim, and the empty read.
+  const naive = (i) => !i.cacheHasEntries;
+  let proved = 0, exempt = 0;
+  for (const v of ADOPT_VECTORS) {
+    if (v.alsoNaive) { exempt += 1; continue; }
+    const n = naive(...v.args);
+    if (n === v.expect) {
+      failures += 1;
+      console.error(`  FAIL  (naive) agrees on "${v.why}" — this vector proves nothing`);
+    } else proved += 1;
+  }
+  console.log(`        ${proved} vector(s) proved against naive(), ${exempt} exempt as must-still-work`);
 }
 
 // ---------------------------------------------------------------------------

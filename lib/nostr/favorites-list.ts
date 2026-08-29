@@ -368,6 +368,52 @@ export function seedModeFromWire(hasPublic: boolean, hasPrivate: boolean): Favor
 }
 
 /**
+ * A RECORDED mode the wire flatly contradicts, corrected — or null to leave it.
+ *
+ * `favPrivacy` rides in the kind:30078 settings backup, whose d-tag is
+ * deliberately unbranded, so every device and both deploys restore the same
+ * value. A stale `'public'` there is therefore not a local slip: it is applied
+ * on every sign-in, everywhere, and `seedFavoritesMode` short-circuits on a
+ * recorded mode and never asks the wire again.
+ *
+ * Measured on a real account: 0 public `i` tags, 880 private ones, and a
+ * restored `'public'`. In public mode the private half is filtered by
+ * `claimedByBaseline`, which on a device with no baseline drops ALL of it — 218
+ * feeds and 230 items, to an empty library, with the cycle reporting no error.
+ * The original device hides it, because its baseline claims those entries; only
+ * a device that has never synced shows the fault.
+ *
+ * THE CORRECTION IS ONE-WAY, AND THAT ASYMMETRY IS THE SAFETY PROPERTY.
+ * `'public'` → `'private'` moves nothing and discloses nothing: it is only
+ * reached when the wire holds NO public entries, so there is nothing in
+ * plaintext to be wrong about. The reverse is the disclosure this file exists
+ * to prevent — a device that decided `'public'` over a private list republishes
+ * every entry as an indexed `i` tag, and `#i` then answers *which pubkeys
+ * favorited this feed*, permanently. So this never returns `'public'`.
+ *
+ * `hasPublic` must be FALSE, not merely outnumbered. One plaintext tag from any
+ * other writer means the account may genuinely be public, and moving a real
+ * public list into `content` is an edit to a shared event that every app
+ * without NIP-44 then reads as empty.
+ *
+ * `'off'` is a deliberate opt-out and is never corrected — the user asked for
+ * no sync at all, and the wire has no standing to overrule that.
+ *
+ * Local only. The caller does not republish the settings backup: that would be
+ * an unattended write during hydration, and it is unnecessary — every device
+ * applies this same correction off the same wire.
+ */
+export function correctedModeFromWire(
+  recorded: FavoritesPrivacy | null,
+  hasPublic: boolean,
+  hasPrivate: boolean,
+): FavoritesPrivacy | null {
+  if (recorded !== 'public') return null;
+  if (hasPublic || !hasPrivate) return null;
+  return 'private';
+}
+
+/**
  * The baseline a published list's GROUPS assert.
  *
  * **Groups only, and deliberately so: what we cannot represent is never
@@ -461,6 +507,53 @@ export function baselineIsTrustworthy(
     (baseline.privateFeeds?.length ?? 0) > 0 ||
     (baseline.privateItems?.length ?? 0) > 0;
   return !claimsSomething || localHasEntries;
+}
+
+/**
+ * May a REFUSED read still be painted?
+ *
+ * `wholesale-delete` answers "do not publish this". It does not, on its own,
+ * answer "do not render this", and conflating the two is why the same account
+ * on a NEW ORIGIN sees an empty library over a full list. The two deploys are
+ * separate origins, so `localStorage` starts empty on the second one; `local`
+ * is therefore empty, `localFed` is 0 on both halves, and the planner correctly
+ * refuses to publish — but the merge it refused is NOT empty. It carries every
+ * relay node. The refusal was withholding a list from the user to protect a
+ * device that holds nothing.
+ *
+ * THE GUARD NEEDS SOMETHING TO PROTECT. All three conditions, and each is a
+ * different way to get this wrong:
+ *
+ * - `cacheHasEntries` false — nothing on disk to destroy. This is the whole
+ *   reason painting is safe here: `setFavorites` writes THROUGH to
+ *   `localStorage`, and the destructive case the guard exists for is painting
+ *   OVER `cached[feed.feedGuid]`, the only record separating a real album
+ *   favorite from a group opened to place a track. An empty cache has no such
+ *   record to lose.
+ * - `baselineClaimsEntries` false — this device has never agreed anything with
+ *   the relay. A baseline naming ids beside a cache holding none is the exact
+ *   input of the 2026-08-21 wipe, and it must keep refusing. Pass the RAW
+ *   stored baseline, not `trustedBaseline`, which has already dropped that
+ *   claim and would report the dangerous shape as clean.
+ * - `carriedNodes > 0` — there is something to adopt. Painting nothing is the
+ *   destructive case itself, so "adopt" over an empty read is the one answer
+ *   that must never be yes.
+ *
+ * Publishing and the baseline are NOT unblocked by this. The caller still
+ * publishes nothing and records nothing, so the adoption is one-way: the next
+ * cycle sees a populated store, `localFed` is non-zero, and the ordinary path
+ * takes over. That is the same adoption `planFavoritesPublish` already
+ * describes when it derives the active half from the merge — this only lets a
+ * device with no history reach it.
+ */
+export function mayAdoptRefusedRead(input: {
+  cacheHasEntries: boolean;
+  baselineClaimsEntries: boolean;
+  carriedNodes: number;
+}): boolean {
+  if (input.cacheHasEntries) return false;
+  if (input.baselineClaimsEntries) return false;
+  return input.carriedNodes > 0;
 }
 
 // ---------------------------------------------------------------------------
