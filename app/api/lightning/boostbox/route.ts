@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
+import { readCappedText, readCappedJson } from '@/lib/safe-fetch';
 
 // Server-side proxy for the BoostBox metadata service.
 // Defaults match the public reference instance so the integration works
@@ -94,7 +95,14 @@ export async function POST(req: Request) {
       // third party's internals, and BoostBox failure is non-fatal anyway
       // (lib/v4v/boostbox.ts falls back to the bare message), so nothing on the
       // client acts on `detail`.
-      const detail = await upstream.text().catch(() => '');
+      // Capped, not `upstream.text()` then `.slice(500)`. Slicing after the read
+      // measures the string we already allocated: an upstream having a bad day
+      // and returning an HTML error page buffers the whole page into this
+      // process first, and only then throws 500 chars of it at the log. The
+      // repo rule is capped reads on every proxied body, and the argument holds
+      // hardest on the error path, which is exactly where a body stops being
+      // the small JSON the happy path expects.
+      const detail = await readCappedText(upstream, 4096).catch(() => '');
       // eslint-disable-next-line no-console
       console.error(`[boostbox] upstream ${upstream.status}:`, detail.slice(0, 500));
       return NextResponse.json(
@@ -103,7 +111,11 @@ export async function POST(req: Request) {
       );
     }
 
-    const data = await upstream.json();
+    // The success body is one small object — a `desc` BoostBox has already
+    // truncated against Lightning's 639-char description limit. 64 KB is orders
+    // of magnitude more than that and still a bound; `upstream.json()` is none
+    // at all, and this runs inside a boost the user is waiting on.
+    const data = await readCappedJson(upstream, 64 * 1024);
     return NextResponse.json(data);
   }, 'BoostBox proxy failed');
 }

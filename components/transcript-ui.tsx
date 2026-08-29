@@ -1,6 +1,6 @@
 'use client';
 import { useEffect, useRef, useState, Fragment } from 'react';
-import { fmt } from '@/lib/format';
+import { fmt, scrollBehavior } from '@/lib/format';
 import type { TranscriptCue } from '@/lib/transcript';
 
 // Split `text` on case-insensitive occurrences of `query`, wrapping matches in a
@@ -71,7 +71,12 @@ export function TranscriptPanel({
     const boxRect = box.getBoundingClientRect();
     const rowRect = row.getBoundingClientRect();
     const target = box.scrollTop + (rowRect.top - boxRect.top) - box.clientHeight / 2 + rowRect.height / 2;
-    box.scrollTo({ top: Math.max(0, target), behavior: 'smooth' });
+    // `scrollBehavior()`, not a literal 'smooth': this one re-fires on every
+    // transcript line for the whole length of an episode, so under a
+    // reduced-motion setting it is not one animation to sit through, it is
+    // continuous drift for an hour. An explicit `behavior` beats the CSS
+    // property by spec, so the globals.css block cannot reach this.
+    box.scrollTo({ top: Math.max(0, target), behavior: scrollBehavior() });
   }, [activeIdx, query]);
 
   if (loading && !cues?.length) {

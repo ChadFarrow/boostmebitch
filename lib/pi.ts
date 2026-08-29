@@ -11,6 +11,32 @@ import { BRAND } from './brand';
 
 const BASE = 'https://api.podcastindex.org/api/1.0';
 
+/**
+ * Deadline for one Podcast Index call.
+ *
+ * Every other outbound fetch in this app carries one — `fetchFeedXml` below is
+ * 8 s, `askIndex` and the art/chapter/transcript proxies each set their own —
+ * and this one, the call the whole app is built on, had none. `fetch` has no
+ * default timeout, so a PI instance that accepted the connection and then went
+ * quiet held the request open until the PLATFORM killed it: on Vercel that is
+ * the function's whole duration budget, spent on one hung socket, with the
+ * reader watching a spinner the entire time. Routes that fan out make it worse
+ * — `/api/by-guid/batch` and `/api/publisher` issue several of these, so one
+ * silent upstream stalls a request that had nothing else left to do.
+ *
+ * 8 s matches `fetchFeedXml`. It is deliberately generous: PI's search endpoint
+ * is genuinely slow on a cold query, and cutting a slow-but-alive answer short
+ * would trade a rare hang for a common failure.
+ *
+ * A timeout throws (an `AbortError`, not a `PiHttpError`), so it reaches the
+ * route as a 500 and trips the client-side breaker. That is the correct
+ * reading: an upstream that will not answer is an outage, which is exactly what
+ * the breaker exists to notice. It is NOT a "PI does not hold this feed", so it
+ * must never be swallowed by the `PiHttpError` 400/404 miss branch — and it
+ * isn't, because that branch tests the class.
+ */
+const PI_TIMEOUT_MS = 8000;
+
 function authHeaders() {
   const key = process.env.PODCAST_INDEX_KEY;
   const secret = process.env.PODCAST_INDEX_SECRET;
@@ -41,6 +67,9 @@ async function pi<T>(path: string, maxBytes?: number): Promise<T> {
     headers: authHeaders(),
     // Podcast Index data is fairly cacheable; 60s is sane for search.
     next: { revalidate: 60 },
+    // See PI_TIMEOUT_MS. This caps how LONG the call runs; `readCappedText`
+    // below caps how MANY BYTES it returns. Neither substitutes for the other.
+    signal: AbortSignal.timeout(PI_TIMEOUT_MS),
   });
   // PI is a trusted upstream (hardcoded BASE), so this is about not letting a
   // bad day there become an OOM here rather than about a hostile body. The
