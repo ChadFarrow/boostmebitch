@@ -216,7 +216,7 @@ Two surfaces share one `<audio>` and the store's playback state: the always-moun
 - **Right pane:** title/seek → control row (`<TransportControls size="lg">` + a `flex-1` `⚡ BOOST`), then a second row of `<FavHeart size="md">` + SHARE + the STREAM button → value-split disclosure → **album tracklist** for music (`Album · N tracks`, `episodeQueue` clickable, current highlighted, `max-h-80` scroll) → `<EpisodeInfoPanel>` → `socialInteract` thread. **For Nostr live streams the right pane is replaced by the live chat.**
 - **HLS video lives alongside the `<audio>`** — see Nostr live streams for the reverse-portal `<video>` and the `isHlsUrl` branching.
 - **`playerExpanded` is store state, not local**, so surfaces outside `<Player>` (a live-stream card) can open it; `<Player>` still owns the render. The header `← back` and ✕ both call `onClose` (collapse, not stop). Signed out, the header shows `◆ Sign in`.
-- **The "About this episode" box wraps long tokens** — `whitespace-pre-wrap break-words`. The fullscreen copy has no inner scroll box (see the `<EpisodeInfoPanel>` note below); the *detail view's* notes do carry `overflow-x-hidden`, and there it is load-bearing next to any `overflow-y-auto`: a computed `overflow-y` of `auto` makes the browser compute `overflow-x` to `auto` too, so one unbreakable token (a bare URL) wider than the box spawns a horizontal scrollbar. Same gotcha as the html/body `overflow-x: clip` note in [`../CLAUDE.md`](../CLAUDE.md).
+- **The "About this episode" box wraps long tokens** — `whitespace-pre-wrap break-words`. The fullscreen copy has no inner scroll box (see the `<EpisodeInfoPanel>` note below); the *detail view's* notes do carry `overflow-x-hidden`, and there it is load-bearing next to any `overflow-y-auto`: a computed `overflow-y` of `auto` makes the browser compute `overflow-x` to `auto` too, so one unbreakable token (a bare URL) wider than the box spawns a horizontal scrollbar. Same gotcha as the html/body `overflow-x: clip` note under *Background art, the canvas-bg gotcha, and modal geometry* below.
 
 ## Chapters (Podcasting 2.0 `<podcast:chapters>`)
 
@@ -561,3 +561,59 @@ So the declaration was **removed** rather than repaired, and has since been rest
 The arithmetic behind the 66%: the bolt in `public/icon.svg` spans x 128–384 and y 96–416, so its half-diagonal from the centre is **204.9px**, against a safe-zone radius of 0.4 × 512 = **204.8px**. It sat exactly on the boundary, which is why the unpadded asset was unusable rather than merely risky. 66% puts the half-diagonal at 135px.
 
 `scripts/make-maskable-icon.mjs` regenerates the file (it renders the SVG in Playwright's Chromium — Playwright is deliberately not a dependency; the script finds a global install). Run it if the logo changes, and commit the PNG. The same asset is the TWA's `maskableIconUrl`, so it is now what Android draws on the launcher for the Zapstore build too — see [`android.md`](android.md).
+
+## Background art, the canvas-bg gotcha, and modal geometry
+
+`app/layout.tsx` renders `public/hero.jpg` as a fixed full-viewport layer under a
+`bg-ink/75` overlay, with `<Image fill priority />`. The overlay's opacity mutes
+the image; in light mode `--ink` flips to cream so the same class becomes a 75%
+bone wash automatically. The same image doubles as the OG image.
+
+- **The page background is set in CSS (`app/globals.css`, on `html, body`), never
+  as a Tailwind class on `<body>`.** A background applied to `<body>` in the JSX
+  propagates to the canvas and paints over the fixed image layer regardless of
+  z-index — the hero breaks with no errors, just a flat-color page. The CSS rule
+  is safe because the hero layer is a *child* of `<body>` and so paints above
+  body's own background box.
+- **`html, body` use `overflow-x: clip`, NOT `hidden`.** `hidden` computes
+  `overflow-y` to `auto`, turning html/body into a scroll container that traps
+  `position: sticky` descendants (the page header scrolled away instead of
+  pinning). `clip` blocks sideways scroll without creating a scroll container.
+  Do not switch it back.
+
+### Modals
+
+Every modal renders through `<ModalShell>` (`components/modal-shell.tsx`) — it
+owns the portal, `role="dialog"`/`aria-modal`/`aria-labelledby`, Escape, the focus
+trap and focus restore, the shared scroll lock, and the geometry below. Six
+hand-rolled copies had already drifted into two z-indexes, two backdrop
+opacities, two centring idioms and `pb-28` on four of six, and none of them had
+dialog semantics or a focus trap at all. Pass `dismissable={false}` while a
+payment is in flight — Escape and backdrop-click must not take the per-leg
+results off screen while legs are still settling.
+
+- **Modals must portal to `document.body` — the layout traps `fixed` overlays.**
+  `app/layout.tsx` wraps page content in `<div className="relative z-0">` (to sit
+  above the fixed hero), and `<Player>` is a body-level **sibling** at `z-30`.
+  `relative z-0` creates a **stacking context**, so a `fixed` modal inside page
+  content is sealed in it — its `z-40`/`z-[60]` only competes *within* the wrapper
+  and can never rise above the mini-player (symptom: the player bar paints over
+  the modal footer). Every overlay `createPortal`s to `document.body`, guarded by
+  a mounted `portalTarget` state so SSR renders nothing. The `BoostModal` opened
+  *from* `<Player>` happened to work pre-portal because it shared the player's
+  body-level context. Modals also add `pb-28` so the centered card clears the
+  mini-player bar.
+- **An overlay is `fixed inset-x-0 top-0 h-[100dvh]`, never `fixed inset-0`, and
+  its card caps at `max-h-full`, never `max-h-[92vh]`.** Two bugs stack in the
+  obvious version. `inset-0` sizes to iOS Safari's **large** (toolbar-hidden)
+  viewport, so the box is taller than what you can see. And `92vh` is measured
+  against the viewport while the card lives inside the overlay's `p-4 pb-28`, so
+  it is up to 60px taller than the box meant to hold it *before* iOS is involved:
+  measured at 390×844 in desktop Chrome, the card ran `-14 → 762` inside a
+  `16 → 732` padding box. Centering then splits the overflow and pushes the header
+  off the top, which reads as "the modal is cut off" with the body visible and the
+  title gone. `max-h-full` resolves against the overlay's content box, so it
+  spends exactly what the padding leaves and needs no edit if the padding changes.
+  Applies to all six overlays (`boost-modal`, `boost-all-modal`, `wallet-modal`,
+  `sign-in-modal`, `profile-editor`, note-card `ZapDialog`).
+

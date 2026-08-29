@@ -117,10 +117,10 @@ the document it was written against. `publishFavoritesTags` therefore **takes**
 (verbatim) or an encryption the plan asked for. A `''` written by habit is
 another app's private favorites deleted.
 
-**2. The private half is behind `PRIVATE_FAVORITES_ENABLED`, false**, because
-StableKraft does not carry `content` yet. `storage.favPrivateOptIn` (set by
-`window.bmbEnablePrivateFavorites()`) is the per-machine hatch for testing it
-first. Flipping the constant is a one-line commit once the other writers ship.
+**2. The private half is behind `PRIVATE_FAVORITES_ENABLED`, and it is now
+true** (#232) — StableKraft carries `content`, so the other writer this was
+waiting on has shipped. `storage.favPrivateOptIn` (set by
+`window.bmbEnablePrivateFavorites()`) remains the per-machine hatch.
 
 **The gate stops you CHOOSING private; it must never retire a list that is
 already private.** It is enforced at the three places a human chooses — the
@@ -133,6 +133,16 @@ leak**: a device that already keeps its favorites in `content` would read
 `'public'`, put `localFavoriteList()` in the public half, and republish the
 whole library as relay-indexed `i` tags beside the encrypted half it was
 ignoring. A build that cannot offer private must not silently do the opposite.
+
+**And it must never gate the DECRYPT.** Put it in `runHydrate`'s
+`decryptPrivate` and an account already in private mode reads back as
+`privateUnreadable` on every load, which makes `wantsPrivateWrite` true, which
+returns `'private-unreadable'` before the paint — degraded forever, with an
+"unlock" that re-enters the same gated path, over a list sitting readable on the
+relays. It also poisons `seedFavoritesMode`, which counts an unreadable half as
+evidence of a private one: never attempting the decrypt makes that true for ANY
+non-empty `content`, so a third app's field seeds mode `'private'` on a build
+that could not use one. Enforce the gate where a human chooses, nowhere else.
 
 **ONE choice for the whole list, not one per entry.** The spec permits a split;
 this app deliberately does not offer one. `localFavoriteList()` goes wholly into
@@ -300,6 +310,20 @@ ordering this feature exists to get right.
   tap and the question comes after: publishing publicly and then asking "public
   or private?" is backwards, and a relay that has the bytes cannot be asked to
   forget them.
+- **The prompt is reached through ONE module-level slot, and a slot registered by
+  a route-scoped component is a silent no-op everywhere else.**
+  `onFavoritesModeNeeded` holds a single callback that only exists while its
+  registrant is mounted. `<FavoritesPrivacyPrompt>` lived in `<AppHeader>`, which
+  renders on `/` and `/favorites` — while `<Player>` is in the ROOT LAYOUT, so
+  `<FullscreenPlayer>` renders hearts on every route. A ♡ pressed on
+  `/npub/<npub>`, `/live/<npub>` or `/stream/<naddr>` reached `promptForMode?.()`
+  as `null`: the heart filled, the store wrote through to localStorage, no dialog
+  appeared, and the favorite reached no relay — until the user happened to
+  re-toggle the same item back on `/`. It is the same shape as the `<HomePage>`
+  route-scoped rule in [`ui.md`](ui.md) and fails the same way, which is the
+  hardest way to notice: **a dead control is indistinguishable from a slow one.**
+  Register from the layout, beside `<Player>`, whenever the thing that triggers
+  the callback can fire from any route.
 - **`'off'` reads and publishes nothing**, and leaves what is already on the
   relay exactly where it is — we do not delete on someone's behalf from a
   settings change. `withdrawThisDevice` is the explicit route, and it is the only
@@ -483,8 +507,8 @@ Rules the merge encodes (`mergeFavoritesList`):
 - **The append pass honours the baseline**, so an entry another app *removed* is
   not resurrected by this device on the next cycle.
 - **An empty baseline deletes nothing** — a device that hasn't hydrated is not
-  making a claim — while an empty local set with a full baseline is a real
-  clear-all.
+  making a claim. An empty local set *beside* a full baseline is **ambiguous**,
+  not a clear-all; see *"I deleted them all" and "the store never loaded"* below.
 - **A local value never overwrites a non-empty one another writer set.** The
   medium is filled only into a gap; "prefer my own resolved value" is what makes
   two apps rewrite the event against each other forever.
@@ -502,6 +526,81 @@ format allows: one bad read, republished, is the entire list. Same rule as kind:
 and kind:0. The read also passes `dTag: ''` as its `ReadExpectation` — which
 `acceptsEvent` treats as matching an **absent** `d` — so an addressable event
 sharing the kind can't be laundered into the user's favorites.
+
+#### "I deleted them all" and "the store never loaded" are the SAME BYTES
+
+An empty local set beside a baseline that claims ids is both an unhydrated store
+— believing it cost a live account 213 groups and 232 items on 2026-08-21 — and
+a user who unfavorited everything. Only the moment of the action tells them
+apart. `baselineIsTrustworthy` and `wholesale-delete` refused both, so deleting a
+whole list silently did nothing: the removal never published, the cycle recorded
+an EMPTY baseline over the real one, and the next reload re-adopted every entry
+off the relay. Reported from a real account and reproduced with the private half
+switched off, so it predates it.
+
+`storage.favCleared` records the intent where it is knowable. The store's
+removers write it, the adders clear it, and **`setFavorites` deliberately does
+not touch it** — painting an empty store during hydration is the very state it
+distinguishes from. It reaches the guards as `emptyIsIntentional` (the planner)
+and a third argument to `baselineIsTrustworthy`, and it is **never inferred from
+state**: the withdrawal dialog is its only other provenance. `onSynced` retires
+it once the removal lands, or a later unhydrated load rides through on
+permission granted for a different act.
+
+It is the most powerful value in this path — `deliberatelyEmpty` makes
+`baselineIsTrustworthy` return true UNCONDITIONALLY *and* waves the merge past
+`wholesale-delete`, so it switches off both wipe guards at once. **"The store is
+empty now" is not the statement of intent that earns it.** `markClearedIfEmpty`
+wrote it whenever both maps came out empty after a removal, reasoning that an
+unhydrated store never calls a remover. True, and not enough: on a device whose
+favorites cache failed to reach disk (quota or blocked storage on iOS Safari,
+both documented) the library renders empty beside a baseline that landed and
+still names every id, so ONE heart tapped on and off disarms both guards.
+Setting it therefore needs two things the obvious version does not ask for: the
+cache write **landed**, and the store **covered** what the baseline claims
+before the removal. Retiring it stays unconditional — a non-empty store is proof
+the user did not clear everything, whatever they did a moment ago.
+
+#### The count is `localFed`, never `nodes.length`
+
+A carried entry is not evidence that this device holds anything. With a private
+half the `wholesale-delete` guard asks the union of both halves, because a mode
+switch legitimately empties one side. The obvious union reads the merged totals,
+and its justification — *both halves are fed from ONE local list* — is false for
+the half that matters: `mergeFavoritesList` also CARRIES another writer's entries
+through untouched, and those are fed by no local state at all.
+
+So ONE foreign entry in the private half makes that side non-zero while the
+public merge is legitimately 0, the guard never fires, and the public half
+publishes as an alt-only tag array — the 2026-08-21 wipe, arriving from the guard
+written to prevent it. That is not exotic: StableKraft writes private entries
+(436 of them when `PRIVATE_FAVORITES_ENABLED` was turned on in #232), so a
+foreign private half is the normal state of a real account, and an unhydrated
+store is what every page load looks like before hydration.
+
+`mergeFavoritesList` therefore reports `ParsedList.localFed` — nodes emitted
+because THIS device holds them — and **both** guards count it: the planner's and
+`runHydrate`'s own cache-based refusal are independent, and fixing one leaves the
+other painting an empty store through to `localStorage`.
+
+#### The baseline is only as good as the cache that backs it
+
+`storage.favBaseline` and `storage.favorites` are separate `localStorage` keys
+with no atomicity and wildly different sizes — bare ids against hundreds of KB of
+titles, authors and artwork URLs. The small one reaches disk while the large one
+does not: `safeSet` mirrors a write it cannot land into memory, and **that mirror
+does not survive a reload**. The next load then reads a baseline naming every
+favorite beside a cache holding none — the exact input that satisfies the removal
+test for all of them.
+
+Both baseline readers (`syncOptionsFor` and the hydrator) therefore go through
+**`trustedBaseline(npub)`**, which drops a baseline claiming ids while the device
+caches nothing; `baselineIsTrustworthy` is the pure half, in the import-free leaf,
+pinned by `check:favsync` spec vector 2c. Note what it deliberately does NOT ask:
+"the baseline names more than we hold" is the ordinary state mid-removal and must
+stay publishable. **A new baseline reader uses that helper** — reading
+`storage.favBaseline` directly is how one caller comes to believe a baseline no
+other caller does.
 
 ### Carry what you can't read
 
@@ -643,6 +742,23 @@ silent, so both report through one in-memory `favoritesSync` flag (`lib/store.ts
   in `nostr-auth`, or B inherits A's notice. It is deliberately **not** reset
   inside `setIdentity`, which runs mid-hydration with the enriched identity and
   would clobber a fresh `'ok'`.
+
+**A refusal is a `null`, not a throw — a caller that acts on success must test
+the return value.** `syncFavorites` (and `withdrawFavorites` through it) returns
+`Promise<PublishedNote | null>`, and returns `null` *without recording anything*
+on a degraded read, on `'wholesale-delete'`, on `'private-unreadable'`, on
+`'private-too-large'`, and when the publish reached no relay —
+`NoRelayAcceptedError` is swallowed into `onDegraded`. Nothing rejects, so
+`await` looks like success and a `try/catch` catches nothing.
+
+The privacy dialog's "Also remove my entries from Nostr" discarded that value:
+one relay wobble and it recorded mode `'off'`, closed clean, and told the user
+their entries were taken down while they sat on the relays — and `'off'` then
+stops both `runHydrate` and `requestFavoritesSync`, so nothing ever retries. The
+refusal has to leave the mode **unrecorded**; that is what keeps the retry real.
+Any new caller that writes durable state on the strength of a cycle inherits
+this — it is `assertPublished`'s rule one layer up, and the same reason that one
+exists.
 
 ### Module split
 
