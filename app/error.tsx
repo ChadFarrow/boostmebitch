@@ -8,6 +8,7 @@
 
 import { useEffect } from 'react';
 import { useApp } from '@/lib/store';
+import { BRAND } from '@/lib/brand';
 
 export default function Error({
   error,
@@ -20,7 +21,7 @@ export default function Error({
 
   useEffect(() => {
     // eslint-disable-next-line no-console
-    console.error('[boostmebitch] route error:', error);
+    console.error(`[${BRAND.id}] route error:`, error);
   }, [error]);
 
   return (

@@ -1,5 +1,6 @@
 'use client';
 import type { ShareNostrAs } from '@/lib/storage';
+import { BRAND } from '@/lib/brand';
 
 // The "Share boost on Nostr" chooser, shared by BoostModal and BoostAllModal.
 //
@@ -49,7 +50,7 @@ export function ShareNostrPicker({
           </div>
           <div className="text-muted mt-0.5 leading-relaxed">
             {share
-              ? `${noteNoun} posted from boostmebitch.com's Nostr account.`
+              ? `${noteNoun} posted from ${BRAND.domain}'s Nostr account.`
               : 'Lightning only — nothing posted publicly.'}
           </div>
         </div>
@@ -68,9 +69,14 @@ export function ShareNostrPicker({
       value: 'site',
       label: 'Anonymous',
       // Kept short enough to fit ONE line at full modal width, like the other
-      // two descs — a second line grows the modal past its 92vh cap and
-      // toggles the scrollbar (width jitter) when flipping options.
-      desc: `${noteNoun} posted from boostmebitch.com's account, not your npub.`,
+      // two descs — a second line grows the modal past its cap and toggles the
+      // scrollbar (width jitter) when flipping options. The budget is PIXELS,
+      // not characters: the two brand domains are both 16 characters, but `uddy`
+      // sets wider than `itch`, so `boostmebuddy.com` is the longer of the two
+      // on screen. Measure this line under the BUDDY brand, at the narrowest
+      // viewport, or the measurement proves nothing about the deploy that can
+      // actually wrap.
+      desc: `${noteNoun} posted from ${BRAND.domain}'s account, not your npub.`,
     },
     {
       value: 'off',

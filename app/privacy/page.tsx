@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { BRAND } from '@/lib/brand';
 
 // Required for Google OAuth app verification: the privacy policy has to be
 // hosted on the same domain as the homepage, linked FROM the homepage, and the
@@ -13,9 +14,9 @@ import Link from 'next/link';
 // with them.
 
 export const metadata: Metadata = {
-  title: 'Privacy Policy — Boost Me Bitch',
+  title: `Privacy Policy — ${BRAND.displayName}`,
   description:
-    'What Boost Me Bitch stores, what it sends, and what it deliberately never receives.',
+    `What ${BRAND.displayName} stores, what it sends, and what it deliberately never receives.`,
 };
 
 const UPDATED = '28 July 2026';
@@ -36,7 +37,7 @@ export default function PrivacyPage() {
         {/* `py-1.5` is a TOUCH TARGET — this is the page's only way back, and
             at text-xs with no vertical padding it was a 16px-tall box. */}
         <Link href="/" className="text-xs text-muted hover:text-bone w-fit py-1.5">
-          ← back to Boost Me Bitch
+          ← back to {BRAND.displayName}
         </Link>
         <h1 className="headline text-3xl">Privacy Policy</h1>
         <p className="text-xs text-muted">Last updated {UPDATED}</p>
@@ -44,7 +45,7 @@ export default function PrivacyPage() {
 
       <Section title="The short version">
         <p>
-          Boost Me Bitch has no user accounts, no analytics, and no tracking. There is no
+          {BRAND.displayName} has no user accounts, no analytics, and no tracking. There is no
           database of users, because there are no users to put in one — everything that
           identifies you lives in your own browser, your own Nostr identity, or your own
           Lightning wallet.
@@ -102,7 +103,7 @@ export default function PrivacyPage() {
           including us.
         </p>
         <p>
-          Boost Me Bitch&apos;s use and transfer of information received from Google APIs
+          {BRAND.displayName}&apos;s use and transfer of information received from Google APIs
           adheres to the{' '}
           <a
             href="https://developers.google.com/terms/api-services-user-data-policy"

@@ -42,10 +42,11 @@ import type { Episode, Podcast, Boostagram, BoostResult, ValueBlock, ValueTimeSp
 import { useApp } from '@/lib/store';
 import { storage, subscribeStreamRate as onStoredRateChange, type StreamMode } from '@/lib/storage';
 import { createObservable } from '@/lib/pubsub';
-// DEFAULT_SENDER_NAME lives in lib/util.ts, NOT in the boost modal that owns
-// the "From" field — importing it from `components/` here would invert the v4v
+// resolveSenderName lives in lib/brand.ts, NOT in the boost modal that owns the
+// "From" field — importing it from `components/` here would invert the v4v
 // swap-out boundary and pull a 'use client' React module into the engine.
-import { getErrorMessage, hasValueRecipients, payableValue, splitAtPosition, showStorageKey, DEFAULT_SENDER_NAME, randomId } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableValue, splitAtPosition, showStorageKey, randomId } from '@/lib/util';
+import { BRAND, resolveSenderName } from '@/lib/brand';
 import { isLiveStreamId } from '@/lib/nostr/live-streams';
 import { canSignUnattended } from '@/lib/nostr/signer';
 import { resolvePublishRelays } from '@/lib/nostr/relays';
@@ -710,14 +711,18 @@ function streamingMayPublish(): boolean {
 function senderFields(): { sender_name: string; sender_id: string | undefined } {
   const identity = useApp.getState().identity;
   const anonymous = streamingIsAnonymous();
-  const typed = anonymous
-    ? ''
-    : storage.senderName.get(identity?.npub)
-      || identity?.profile?.display_name
-      || identity?.profile?.name
-      || '';
+  const typed =
+    storage.senderName.get(identity?.npub)
+    || identity?.profile?.display_name
+    || identity?.profile?.name
+    || '';
   return {
-    sender_name: typed.trim() || DEFAULT_SENDER_NAME,
+    // `resolveSenderName` is the ONE place "From" becomes a wire value, and it
+    // owns the anonymous substitution itself — so the typed name is passed
+    // through rather than blanked here. Two expressions for one rule is how a
+    // later change to it (a length cap, a different substitution) silently
+    // misses the unattended payer, the one surface with no confirmation screen.
+    sender_name: resolveSenderName(typed, anonymous),
     sender_id: anonymous ? undefined : identity?.pubkey,
   };
 }
@@ -816,7 +821,7 @@ function buildBoostagram(
   const { episode, podcast } = c;
   const { feedGuid, itemGuid } = paymentIds(c, bucket);
   return {
-    app_name: 'BoostMeBitch',
+    app_name: BRAND.wireName,
     app_version: '0.1.0',
     podcast: podcast.title,
     feedID: podcast.id,

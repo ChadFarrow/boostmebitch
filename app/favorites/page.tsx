@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { AppHeader } from '@/components/app-header';
 import { FavoritesPage } from '@/components/favorites-page';
+import { BRAND } from '@/lib/brand';
 
 // A real route rather than another branch of `<HomePage>`'s store-driven view
 // switch, for the same reason `/npub/<npub>` is one: those views have no URL to
@@ -9,7 +10,7 @@ import { FavoritesPage } from '@/components/favorites-page';
 // The app-global <Player> is mounted in app/layout.tsx, so navigating here from
 // a playing episode does not interrupt it. `pb-32` clears the mini-player bar.
 export const metadata: Metadata = {
-  title: 'Favorites — Boost Me Bitch',
+  title: `Favorites — ${BRAND.displayName}`,
   description: 'Your saved shows, albums, episodes and tracks.',
 };
 

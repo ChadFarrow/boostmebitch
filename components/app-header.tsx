@@ -6,6 +6,7 @@ import { AuthControl } from '@/components/auth-control';
 import { NostrAuth } from '@/components/nostr-auth';
 import { FavoritesLink } from '@/components/favorites-link';
 import { clearShowSelection } from '@/lib/store';
+import { BRAND } from '@/lib/brand';
 
 /**
  * The app header, shared by `/` and `/favorites`.
@@ -42,10 +43,21 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
   // `html { overflow-x: clip }` CLIPS rather than scrolls — the account menu
   // would be silently cut off. An ellipsis is the better failure.
   // `--app-header-h` assumes this can't wrap.
+  //
+  // THE WORDMARK IS PER-BRAND NOW, AND THE BRANDS ARE NOT THE SAME WIDTH.
+  // Measured under CDP `Emulation.setDeviceMetricsOverride` (mobile: true), in
+  // the real Bricolage Grotesque at the 20px this renders below sm:, signed
+  // out: "Boost Me Bitch" is 141.67px and "Boost Me Buddy" is 154.03px. The
+  // box is 154.03px at 390px and 151.22px at 360px — so the longer wordmark had
+  // ZERO margin on one common phone width and ellipsized on the other, while
+  // the shorter one cleared both. That is why the icon is `w-5` below sm:
+  // rather than `w-6`: 4px, which is the whole margin. Re-measure at 360px on
+  // the BUDDY brand before adding anything to this row; the bmb brand fits
+  // either way and will not show you the failure.
   const wordmark = (
     <>
-      <BoltIcon className="w-6 h-6 text-bolt shrink-0" />
-      <span className="font-display text-xl sm:text-2xl truncate">Boost Me Bitch</span>
+      <BoltIcon className="w-5 h-5 sm:w-6 sm:h-6 text-bolt shrink-0" />
+      <span className="font-display text-xl sm:text-2xl truncate">{BRAND.displayName}</span>
       <span className="text-[10px] text-muted uppercase tracking-widest hidden sm:inline shrink-0">
         podcasting 2.0
       </span>

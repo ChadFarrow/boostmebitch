@@ -37,6 +37,7 @@ import {
 } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { storage } from '../storage';
+import { BRAND } from '../brand';
 
 // Default relays for the GENERATE flow's nostrconnect:// URI. Multiple
 // relays give the connect-ack redundancy: on same-device iOS, Safari
@@ -366,7 +367,7 @@ export function startNostrConnect(
       clientPubkey,
       relays: NOSTRCONNECT_RELAYS,
       secret,
-      name: 'Boost Me Bitch',
+      name: BRAND.displayName,
     });
     nostrconnectMemo = { uri, clientSk, secret };
   }

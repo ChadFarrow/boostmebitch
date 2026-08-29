@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch, readCappedJson } from '@/lib/safe-fetch';
+import { BRAND } from '@/lib/brand';
 
 // A keysend well-known is a handful of fields — a node pubkey, an optional
 // customKey/customValue pair. 64 KB is orders of magnitude of slack, and this
@@ -55,7 +56,7 @@ export async function GET(req: Request) {
     const res = await safeFetch(
       `https://${host}/.well-known/keysend/${encodeURIComponent(name)}`,
       {
-        headers: { 'User-Agent': process.env.APP_NAME ?? 'boostmebitch/0.1' },
+        headers: { 'User-Agent': process.env.APP_NAME ?? BRAND.userAgent },
         next: { revalidate: 3600 },
         // Shorter than the client's own budget so the proxy answers before the
         // caller gives up. This runs inside a boost the user is waiting on.

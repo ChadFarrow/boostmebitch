@@ -9,7 +9,8 @@ import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, record
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, payableSplit, payableValue, resolveSenderName, splitSats, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { getErrorMessage, payableSplit, payableValue, splitSats, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
@@ -266,7 +267,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     if (name) storage.senderName.set(identity?.npub, name);
 
     const boostagram: Boostagram = {
-      app_name: 'BoostMeBitch',
+      app_name: BRAND.wireName,
       app_version: '0.1.0',
       podcast: podcast.title,
       feedID: podcast.id,

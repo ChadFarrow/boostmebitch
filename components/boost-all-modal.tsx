@@ -8,7 +8,8 @@ import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './boost-modal/use-share-picker';
-import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, resolveSenderName, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
@@ -180,7 +181,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       // recipient artist sees `podcast`/`episode` describing the listener's
       // context and `remote_*` identifying which track triggered the boost.
       const trackBoostagram: Boostagram = {
-        app_name: 'BoostMeBitch',
+        app_name: BRAND.wireName,
         app_version: '0.1.0',
         podcast: podcast.title,
         feedID: podcast.id,
@@ -247,7 +248,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       // hostValue is missing, or showLegSats rounded to 0.
       if (showLegSats > 0 && hasValueRecipients(hostValue) && !cancelled.current) {
         const hostBoostagram: Boostagram = {
-          app_name: 'BoostMeBitch',
+          app_name: BRAND.wireName,
           app_version: '0.1.0',
           podcast: podcast.title,
           feedID: podcast.id,
@@ -329,7 +330,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       .filter((t): t is string => !!t);
 
     const summaryBoostagram: Boostagram = {
-      app_name: 'BoostMeBitch',
+      app_name: BRAND.wireName,
       app_version: '0.1.0',
       podcast: podcast.title,
       feedID: podcast.id,

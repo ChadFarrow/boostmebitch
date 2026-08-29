@@ -2,7 +2,10 @@ node_modules
 .next
 out
 .env
-.env.local
+# Every local env file, not just .env.local. The second deploy needs its own
+# (.env.buddy.local) because it carries a DIFFERENT SITE_NOSTR_SK, and a bare
+# `.env.local` line leaves that one untracked-but-committable.
+.env*.local
 .DS_Store
 *.log
 .vercel

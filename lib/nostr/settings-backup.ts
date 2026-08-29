@@ -23,6 +23,21 @@ import type { FavoritesPrivacy } from './favorites-list';
 import type { NostrIdentity } from './auth';
 
 export const SETTINGS_KIND = 30078;
+/**
+ * NOT PER-BRAND, AND IT MUST NEVER BECOME PER-BRAND.
+ *
+ * A kind:30078 is ADDRESSABLE at `(pubkey, kind, d)`, and the pubkey is the
+ * USER's — not the site's. So this address is the same coordinate whichever
+ * deploy the user signed in on, and that is the property worth keeping: someone
+ * who uses boostmebuddy.com on their phone and boostmebitch.com on a laptop
+ * opens ONE wallet backup, not two.
+ *
+ * Branding this string would not migrate anything. It would point the new deploy
+ * at an address nothing has ever written, and every existing backup would read
+ * back as "No backup found on Nostr for this account" — intact, unreachable, and
+ * reported as never having existed. That is the same failure `decodeAmberSafe`'s
+ * legacy branch exists to prevent, arriving from a different direction.
+ */
 export const SETTINGS_D_TAG = 'boostmebitch:settings';
 
 export interface SyncedSettings {

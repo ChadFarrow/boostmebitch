@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch, readCappedBytes, readBytesUpTo } from '@/lib/safe-fetch';
 import { firstGifFrame } from '@/lib/gif-first-frame';
+import { BRAND } from '@/lib/brand';
 
 /**
  * The picture a boost note shows: the show's artwork beside the sats, the
@@ -54,8 +55,8 @@ const RASTERIZABLE = new Set(['image/png', 'image/jpeg', 'image/jpg', 'image/gif
 /**
  * Cap and clean a caller-supplied line of text.
  *
- * This route draws whatever text it is given onto a BMB-branded image served
- * from boostmebitch.com, which is the same shape of oracle the site-sign route
+ * This route draws whatever text it is given onto a branded image served from
+ * this deploy's own origin, which is the same shape of oracle the site-sign route
  * bounds rather than authenticates — nobody is signed in when a Nostr client
  * loads a picture. So: no control characters (they break the layout engine, and
  * they hide text from the reader while leaving it in the URL), and a hard length
@@ -209,7 +210,7 @@ export async function GET(req: Request) {
               </span>
             </div>
             <span style={{ fontSize: 40, fontWeight: 700, marginTop: 14, lineHeight: 1.1 }}>
-              {title || 'boostmebitch.com'}
+              {title || BRAND.domain}
             </span>
             {ep ? <span style={{ fontSize: 27, color: MUTED, marginTop: 10 }}>{ep}</span> : null}
           </div>
@@ -223,7 +224,7 @@ export async function GET(req: Request) {
               letterSpacing: 2,
             }}
           >
-            BOOSTMEBITCH.COM
+            {BRAND.domain.toUpperCase()}
           </div>
         </div>
       ),

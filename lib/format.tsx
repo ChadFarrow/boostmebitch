@@ -7,6 +7,7 @@ import {
   type BoostSoundPlan,
 } from './boost-sound';
 import { isImageUrl } from './util';
+import { BRAND } from './brand';
 
 // ─── Time formatting ──────────────────────────────────────────────────────────
 
@@ -164,7 +165,11 @@ let boostAudioPrimed = false;
 function ensureBoostAudio(): HTMLAudioElement | null {
   if (typeof window === 'undefined') return null;
   if (!boostAudio) {
-    boostAudio = new Audio('/boost.mp3');
+    // Per-brand: each deploy has its own celebration ping, and both files live
+    // in `public/` because both deploys are built from this one repo. A file
+    // that isn't there yet costs the ping and nothing else — every play() here
+    // is already a silent no-op on failure.
+    boostAudio = new Audio(BRAND.boostSound);
     boostAudio.preload = 'auto';
   }
   return boostAudio;

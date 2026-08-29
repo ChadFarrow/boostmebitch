@@ -6,6 +6,7 @@ import { parseNpubInput } from '@/lib/nostr/npub-input';
 import { NostrAuth } from '@/components/nostr-auth';
 import { BoostExplorer } from '@/components/boost-explorer';
 import { clearShowSelection } from '@/lib/store';
+import { BRAND } from '@/lib/brand';
 
 /**
  * Permanent per-npub boost page: `/npub/<npub>`.
@@ -86,7 +87,7 @@ export default function NpubPage() {
           onClick={clearShowSelection}
           className="text-xs text-muted hover:text-bone w-fit"
         >
-          ← back to Boost Me Bitch
+          ← back to {BRAND.displayName}
         </Link>
         <BoostExplorer pubkey={parsed.pubkey} npub={parsed.npub} />
       </main>

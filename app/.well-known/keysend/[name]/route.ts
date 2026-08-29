@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
+import { BRAND } from '@/lib/brand';
 
 // The serving side of the lightning-address → keysend upgrade this app already
 // consumes (lib/v4v/keysend-lookup.ts). A payer that finds `chadf@boostmebitch.com`
@@ -19,6 +20,18 @@ import { rateLimit } from '@/lib/rate-limit';
 // be JSON, CORS-open and cacheable. Mirrors app/.well-known/nostr.json.
 
 interface KeysendName {
+  /**
+   * The domain whose LNbits instance serves this name's `.well-known/lnurlp`,
+   * i.e. the right-hand side of the lightning address this entry belongs to.
+   *
+   * It is a FIELD rather than an assumption because one repo now builds two
+   * deploys from the same source. Without it, boostmebuddy.com would answer
+   * `chadf@boostmebuddy.com` with `status: OK` — an address whose lnurlp side
+   * does not exist on that domain. Keysend-capable rails (NWC, WebLN) would pay
+   * it, and every BOLT11-only wallet (Spark among them) would fail the leg,
+   * which is exactly the lopsided state the note below warns about.
+   */
+  domain: string;
   /** 33-byte compressed secp256k1 node id, hex. */
   pubkey: string;
   /**
@@ -48,7 +61,7 @@ const CHAD_NODE = '02b32faddac6789150d61d656b7e24335131eacfde91949748acca43738ae
 // keysend-capable rails would pay it while every BOLT11-only wallet (Spark
 // among them) fails, since those can only go through LNURL.
 const NAMES: Record<string, KeysendName> = {
-  chadf: { pubkey: CHAD_NODE },
+  chadf: { domain: 'boostmebitch.com', pubkey: CHAD_NODE },
 };
 
 // Same strict shape the reader enforces (lib/v4v/keysend-lookup.ts). Validating
@@ -81,7 +94,11 @@ export async function GET(req: Request, ctx: { params: Promise<{ name: string }>
 
   const { name } = await ctx.params;
   const entry = NAMES[name?.trim().toLowerCase() ?? ''];
-  if (!entry || !NODE_PUBKEY.test(entry.pubkey)) return notFound();
+  // The domain test is not decoration: this file ships to BOTH deploys, and a
+  // name is only payable at the domain that also serves its lnurlp.
+  if (!entry || entry.domain !== BRAND.domain || !NODE_PUBKEY.test(entry.pubkey)) {
+    return notFound();
+  }
 
   const { pubkey, customKey, customValue } = entry;
   return NextResponse.json(

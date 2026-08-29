@@ -1,6 +1,7 @@
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
 import { httpUrl } from '../util';
+import { BRAND } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
 
@@ -105,8 +106,15 @@ function boostArtUrls(podcast: Podcast, episode?: Episode): string[] {
   return out;
 }
 
-/** Where a published note's links and banner must point. */
-const SITE_ORIGIN = 'https://www.boostmebitch.com';
+/**
+ * Where a published note's links and banner must point.
+ *
+ * Per-brand, and each deploy names its OWN origin: a note published from
+ * boostmebuddy.com must deep-link back to boostmebuddy.com, and a kind:1 cannot
+ * be edited, so the choice is permanent per note. Both origins keep serving
+ * `/api/og/boost.png` forever for exactly that reason.
+ */
+const SITE_ORIGIN = BRAND.origin;
 
 /**
  * The picture the note shows: `/api/og/boost.png`, drawn from the artwork, the
@@ -278,7 +286,7 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
     tags.push(['imeta', `url ${banner}`, 'm image/png', 'dim 1200x300']);
   }
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
-  tags.push(['client', boostagram.app_name ?? 'BoostMeBitch']);
+  tags.push(['client', boostagram.app_name ?? BRAND.wireName]);
   tags.push(['t', 'boostagram']);
   tags.push(['t', 'value4value']);
 
