@@ -67,6 +67,31 @@ export interface Brand {
    */
   origin: string;
   /**
+   * The npub of this deploy's OWN Nostr identity — the public half of its
+   * `SITE_NOSTR_SK`, the key that signs a boost note when the user is signed
+   * out or has chosen Anonymous.
+   *
+   * IT IS HERE TO BE CHECKED AGAINST, NOT TO BE READ. Nothing in the app
+   * imports it, and nothing should: the running app derives its pubkey from
+   * the secret (`lib/nostr/site-key.ts`), so at runtime the two cannot
+   * disagree. What this pins is the pairing of a KEY with a BRAND — and that
+   * pairing lives in an env file, which makes it the one part a person sets by
+   * hand and therefore the one part that goes wrong.
+   *
+   * `scripts/publish-site-profile.mjs` is the only tool that writes the site's
+   * kind:0. It reads the brand and the key from the SAME env file and refuses
+   * when the key it loaded does not derive this npub. Without the check, a
+   * `.env.buddy.local` missing its `NEXT_PUBLIC_BRAND` line publishes the
+   * ORIGINAL brand's name, about, avatar and nip05 under the BUDDY identity —
+   * every field the second brand exists to keep apart, live on the relays under
+   * the family-friendly site's own npub. The reverse pairing is worse: it
+   * overwrites the real site's profile with the other one's.
+   *
+   * Committing it discloses nothing. `/.well-known/nostr.json` already serves
+   * this pubkey to anyone who asks — that route is what a NIP-05 badge reads.
+   */
+  siteNpub: string;
+  /**
    * Substituted for the sender's name on an anonymous boost, and used whenever
    * "From" is left empty. See {@link DEFAULT_SENDER_NAME}.
    */
@@ -88,6 +113,7 @@ const BMB: Brand = {
   wireName: 'BoostMeBitch',
   domain: 'boostmebitch.com',
   origin: 'https://www.boostmebitch.com',
+  siteNpub: 'npub18qs0flu9sa682vx8l6h7glq7tyhrec8a9y5mf7g8usr3f0fx7syq9kpq9l',
   senderName: 'boostmebitch.com user',
   boostSound: '/boost.mp3',
   manifest: '/manifest.json',
@@ -103,6 +129,7 @@ const BUDDY: Brand = {
   wireName: 'BoostMeBuddy',
   domain: 'boostmebuddy.com',
   origin: 'https://www.boostmebuddy.com',
+  siteNpub: 'npub1payksynch9rkj3dt0ps093cqja8c0r8fhq244kyngcendqgh885qzjs08q',
   senderName: 'boostmebuddy.com user',
   // A SEPARATE asset, not an overwrite of `/boost.mp3`: both deploys are built
   // from this one repo, so `public/` holds both files and the brand picks.

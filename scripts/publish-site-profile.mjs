@@ -3,8 +3,9 @@
 // render with a name + picture and are discoverable via the outbox model.
 // One-off maintenance script — edit PROFILE / RELAYS below and re-run to update.
 //
-// Usage (loads SITE_NOSTR_SK and NEXT_PUBLIC_BRAND from .env.local):
-//   npm run publish:site-profile
+// Usage — ONE COMMAND PER DEPLOY, each bound to its own env file:
+//   npm run publish:site-profile         (.env.local       -> bmb)
+//   npm run publish:site-profile:buddy   (.env.buddy.local -> buddy)
 //
 // SITE_NOSTR_SK is the same server-only key the app signs boost notes with
 // (nsec or 32-byte hex). The key never leaves your machine here.
@@ -16,8 +17,11 @@
 // profile published under the buddy deploy's key labels every family-friendly
 // note with the other brand's name, avatar and nip05.
 //
-// The brand and the key are read from the SAME env file on purpose: run it once
-// per deploy, with that deploy's .env.local. It prints both before publishing.
+// The brand and the key are read from the SAME env file on purpose, and the
+// pairing is then CHECKED against `Brand.siteNpub` rather than merely printed —
+// see the refusal below. Each deploy has its own file and its own npm script, so
+// publishing the buddy profile never means editing .env.local and putting it
+// back afterwards.
 
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { SimplePool, nip19 } from 'nostr-tools';
@@ -66,10 +70,42 @@ function secretKey() {
 const sk = secretKey();
 const pk = getPublicKey(sk);
 const now = Math.floor(Date.now() / 1000);
-// Print the brand FIRST. The wrong pairing of key and brand is the one mistake
-// here that cannot be taken back, and it is invisible in the output otherwise.
+// Print the brand FIRST, so the output reads in the order a person checks it.
+// The printing is no longer the safeguard, though — the refusal below is.
+const npub = nip19.npubEncode(pk);
 console.log(`Brand:      ${BRAND.id} (${BRAND.displayName}, ${BRAND.domain})`);
-console.log(`Publishing for ${nip19.npubEncode(pk)}`);
+console.log(`Publishing for ${npub}`);
+
+// THE PAIRING IS REFUSED, NOT PRINTED. There are two deploys, two keys and one
+// script, and the brand comes from a line in the same env file as the key — so
+// the pairing is set by hand, which makes it the part that goes wrong. Printing
+// it only helps somebody who reads the output before it publishes, and this
+// script publishes on the next line.
+//
+// `Brand.siteNpub` is the public half of each deploy's SITE_NOSTR_SK, so this
+// compares what was loaded against what the brand says it should be. Both
+// directions are real damage: the wrong way round overwrites the ORIGINAL
+// site's kind:0 with the other brand's name, about, avatar and nip05.
+if (npub !== BRAND.siteNpub) {
+  console.error(`
+✗ REFUSING TO PUBLISH — this key is not this brand's key.
+
+  NEXT_PUBLIC_BRAND says   ${BRAND.id} (${BRAND.displayName})
+  which expects            ${BRAND.siteNpub}
+  but SITE_NOSTR_SK is     ${npub}
+
+  Publishing would put the ${BRAND.displayName} name, about, avatar and nip05
+  on that second identity, where anyone resolving it sees them.
+
+  One env file carries BOTH values, so exactly one line in it is wrong:
+    .env.local        NEXT_PUBLIC_BRAND unset or 'bmb'
+    .env.buddy.local  NEXT_PUBLIC_BRAND=buddy
+
+  If you rotated a key deliberately, update siteNpub in lib/brand.ts AND in
+  scripts/check-brand.mjs (check:brand pins the literal in both), then re-run.
+`);
+  process.exit(1);
+}
 
 // kind:0 metadata profile.
 const profileEvent = finalizeEvent(

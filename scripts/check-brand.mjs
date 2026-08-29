@@ -105,7 +105,7 @@ for (const v of ID_VECTORS) {
 // somebody remembers this array. A hand-written second list is how
 // check-assetlinks.mjs came to have a whole section asserted against nothing.
 const REQUIRED = [
-  'id', 'displayName', 'shortName', 'wireName', 'domain', 'origin',
+  'id', 'displayName', 'shortName', 'wireName', 'domain', 'origin', 'siteNpub',
   'senderName', 'boostSound', 'manifest', 'userAgent', 'description',
 ];
 
@@ -133,6 +133,7 @@ const LITERALS = {
     wireName: 'BoostMeBitch',
     domain: 'boostmebitch.com',
     origin: 'https://www.boostmebitch.com',
+    siteNpub: 'npub18qs0flu9sa682vx8l6h7glq7tyhrec8a9y5mf7g8usr3f0fx7syq9kpq9l',
     senderName: 'boostmebitch.com user',
     boostSound: '/boost.mp3',
     manifest: '/manifest.json',
@@ -147,6 +148,7 @@ const LITERALS = {
     wireName: 'BoostMeBuddy',
     domain: 'boostmebuddy.com',
     origin: 'https://www.boostmebuddy.com',
+    siteNpub: 'npub1payksynch9rkj3dt0ps093cqja8c0r8fhq244kyngcendqgh885qzjs08q',
     senderName: 'boostmebuddy.com user',
     boostSound: '/boost-buddy.mp3',
     manifest: '/manifest-buddy.json',
@@ -192,6 +194,14 @@ for (const [key, b] of Object.entries(BRANDS)) {
   // CamelCase, no spaces — the Helipad-aggregator convention Fountain and
   // StableKraft follow. A space here is what a recipient's tooling splits on.
   ok(`${key}.wireName has no spaces`, !/\s/.test(b.wireName), `got ${JSON.stringify(b.wireName)}`);
+  // The npub is the PUBLIC half of this deploy's SITE_NOSTR_SK, and the publish
+  // script refuses a key that does not derive it. So a malformed value here does
+  // not fail loudly — it makes the guard unsatisfiable, and the only tool that
+  // writes the site's kind:0 stops working for that brand with no way to comply.
+  // bech32 has no `b`, `i`, `o` or `1` in its data part, which is also why the
+  // FORBIDDEN check below can never trip on an npub.
+  ok(`${key}.siteNpub is a bech32 npub`, /^npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}$/.test(b.siteNpub),
+    `got ${JSON.stringify(b.siteNpub)}`);
   ok(`${key}.boostSound is a root-relative asset`, b.boostSound.startsWith('/'),
     `got ${JSON.stringify(b.boostSound)}`);
   ok(`${key}.manifest is a root-relative asset`, b.manifest.startsWith('/'),
@@ -234,6 +244,11 @@ ok('buddy.wireName is not the original', BRANDS.buddy.wireName !== BRANDS.bmb.wi
 // buddy site the other brand's ping with nothing on screen saying so.
 ok('the two brands name different sound files', BRANDS.buddy.boostSound !== BRANDS.bmb.boostSound);
 ok('the two brands name different manifests', BRANDS.buddy.manifest !== BRANDS.bmb.manifest);
+// The whole reason the second identity exists. Sharing one key would sign every
+// family-friendly site note with the original brand's npub, so a reader
+// resolving the author gets the other brand's name, avatar and nip05 — on a
+// kind:1 that cannot be edited afterwards.
+ok('the two brands have different Nostr identities', BRANDS.buddy.siteNpub !== BRANDS.bmb.siteNpub);
 
 // ---------------------------------------------------------------------------
 // Derived values follow the ACTIVE brand.
