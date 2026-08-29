@@ -59,6 +59,7 @@ import {
   baselineFrom,
   baselineOfList,
   looseIdsWePublished,
+  correctedModeFromWire,
   mayAdoptRefusedRead,
   baselineHalf,
   decodePrivateFavorites,
@@ -1787,6 +1788,72 @@ section('A claim that has stopped being true is worse than no claim');
   });
   check('an unreadable half keeps its claims verbatim',
     keptPlan.baseline.privateFeeds, [showId(F_MUSIC2)]);
+}
+
+// ---------------------------------------------------------------------------
+section('a stale RECORDED mode the wire contradicts is corrected, one way only');
+// ---------------------------------------------------------------------------
+//
+// `favPrivacy` rides in the kind:30078 settings backup, whose d-tag is
+// unbranded on purpose — so one stale `'public'` is restored on every sign-in,
+// on every device and both deploys. `seedFavoritesMode` short-circuited on a
+// recorded mode and never asked the wire, and in public mode the private half
+// is filtered by `claimedByBaseline`, which on a device with no baseline drops
+// ALL of it. Measured on a real account: 0 public tags, 880 private, 218 feeds
+// and 230 items rendering as an empty library with no error anywhere.
+{
+  const MODE_VECTORS = [
+    // The measured bug.
+    { args: ['public', false, true], expect: 'private', alsoNaive: true,
+      why: 'a private-only wire corrects a stale recorded public' },
+
+    // MUST NOT MOVE. One plaintext tag from any other writer means the account
+    // may genuinely be public, and moving a real public list into `content` is
+    // an edit every app without NIP-44 reads as an empty list.
+    { args: ['public', true, true], expect: null,
+      why: 'a MIXED wire is not evidence — leave it alone' },
+    { args: ['public', true, false], expect: null, alsoNaive: true,
+      why: 'a genuinely public account is untouched' },
+    { args: ['public', false, false], expect: null, alsoNaive: true,
+      why: 'an empty wire teaches nothing' },
+
+    // MUST NOT REWRITE what is already right — a correction that returns the
+    // value it was given still costs a write on every load.
+    { args: ['private', false, true], expect: null,
+      why: 'already private, nothing to correct' },
+
+    // 'off' is a deliberate opt-out. The wire has no standing to overrule it,
+    // and turning sync back on for someone who switched it off is the one
+    // answer here that is never recoverable by reloading.
+    { args: ['off', false, true], expect: null,
+      why: 'a deliberate opt-out survives the wire' },
+
+    // Never seeded here — that is `seedModeFromWire`'s job, and conflating them
+    // would let this path invent a mode for an account that has never chosen.
+    { args: [null, false, true], expect: null, alsoNaive: false,
+      why: 'an unrecorded mode is seeding, not correcting' },
+  ];
+
+  for (const v of MODE_VECTORS) {
+    check(`correctedModeFromWire(${JSON.stringify(v.args)}) — ${v.why}`,
+      correctedModeFromWire(...v.args), v.expect);
+  }
+
+  // TOTAL naive replay. `naive` is the version somebody would write from the
+  // symptom alone: "the wire has a private half, so this account is private".
+  // It ignores what was RECORDED and whether the wire is mixed — so it moves a
+  // genuinely mixed list, rewrites a mode that was already right, and overrules
+  // a user who deliberately switched sync off.
+  const naive = (_recorded, _hasPublic, hasPrivate) => (hasPrivate ? 'private' : null);
+  let proved = 0, exempt = 0;
+  for (const v of MODE_VECTORS) {
+    if (v.alsoNaive) { exempt += 1; continue; }
+    if (naive(...v.args) === v.expect) {
+      failures += 1;
+      console.error(`  FAIL  (naive) agrees on "${v.why}" — this vector proves nothing`);
+    } else proved += 1;
+  }
+  console.log(`        ${proved} vector(s) proved against naive(), ${exempt} exempt as must-still-work`);
 }
 
 // ---------------------------------------------------------------------------

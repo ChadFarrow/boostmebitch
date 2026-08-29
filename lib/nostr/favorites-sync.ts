@@ -26,6 +26,7 @@ import {
 // module that owns the network calls would only widen what this file depends on.
 import {
   baselineIsTrustworthy,
+  correctedModeFromWire,
   seedModeFromWire,
   EMPTY_BASELINE,
   PRIVATE_FAVORITES_ENABLED,
@@ -104,7 +105,25 @@ export function setFavoritesMode(npub: string, mode: FavoritesPrivacy): boolean 
  */
 export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesPrivacy | null {
   const existing = favoritesMode(npub);
-  if (existing) return existing;
+  const hasPublicNow = read.tags.some((t) => t[0] === 'i');
+  const hasPrivateNow = read.privateUnreadable || read.privateTags.some((t) => t[0] === 'i');
+  if (existing) {
+    // A RECORDED MODE IS NOT THE LAST WORD, because it does not come only from
+    // this device. `favPrivacy` rides in the kind:30078 settings backup, whose
+    // d-tag is unbranded on purpose, so a stale `'public'` is restored on every
+    // sign-in on every device and both deploys — and this function used to
+    // return here without ever asking the wire. In public mode the private half
+    // is then filtered by `claimedByBaseline`, which on a device with no
+    // baseline drops all of it: measured at 218 feeds and 230 items rendering
+    // as an empty library, with no error anywhere. See `correctedModeFromWire`
+    // for why the correction only ever runs public → private.
+    const corrected = correctedModeFromWire(existing, hasPublicNow, hasPrivateNow);
+    if (corrected) {
+      setFavoritesMode(npub, corrected);
+      return corrected;
+    }
+    return existing;
+  }
   const hasPublic = read.tags.some((t) => t[0] === 'i');
   // An opaque `content` counts: we cannot read it, but its presence is still
   // evidence that this account keeps a private half, and seeding 'public' over

@@ -491,25 +491,6 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     ? joinPartitions(claimedByBaseline(publicPart, baseline, 'public'), privatePart)
     : joinPartitions(publicPart, privatePart && claimedByBaseline(privatePart, baseline, 'private'));
 
-  // TEMP-DIAG — remove before merge.
-  // eslint-disable-next-line no-console
-  console.warn('[favorites][diag] ' + JSON.stringify({
-    mode,
-    seeded, recorded, modeAmbiguous,
-    pubTags: read.tags.filter((t) => t[0] === 'i').length,
-    privTags: read.privateTags.filter((t) => t[0] === 'i').length,
-    privUnreadable: read.privateUnreadable,
-    pubPart: { feeds: publicPart.feeds.length, items: publicPart.items.length },
-    privPart: privatePart ? { feeds: privatePart.feeds.length, items: privatePart.items.length } : null,
-    part: { feeds: part.feeds.length, items: part.items.length },
-    itemlessFeeds: part.feeds.filter((f) => f.itemless).length,
-    cachedFeeds: Object.keys(cached).length,
-    baselineClaims: {
-      f: baseline.feeds.length, i: baseline.items.length,
-      pf: baseline.privateFeeds?.length ?? 0, pi: baseline.privateItems?.length ?? 0,
-    },
-  }));
-
   // PUBLIC malformed only. `bmbCleanFavorites` edits `event.tags` and carries
   // `content` verbatim — it has to, since it never decrypts — so offering to
   // remove a malformed entry that lives in the private half would print a
