@@ -142,14 +142,56 @@ export function extractImages(text: string): { body: string; images: string[] } 
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
 /**
+ * Has the reader asked their OS for less motion?
+ *
+ * The CSS half of this lives in `app/globals.css`, and it cannot cover
+ * everything: a `<canvas>` animation is invisible to CSS, and an explicit
+ * `behavior: 'smooth'` passed to `scrollTo`/`scrollIntoView` beats the
+ * `scroll-behavior` property by spec rather than losing to it. Those are
+ * exactly the three motions in this app that a reduced-motion setting is most
+ * likely to have been turned on FOR, so they are decided here instead.
+ *
+ * Read at call time, never cached: the setting is a system toggle, and someone
+ * turning it on mid-session is the person it matters most to.
+ *
+ * Defaults to `false` when the query is unavailable (SSR, an old browser).
+ * Getting that backwards would silently strip the app's feedback for everyone
+ * whose browser simply cannot answer.
+ */
+export function prefersReducedMotion(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false;
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
+}
+
+/** `behavior` for a programmatic scroll, honouring {@link prefersReducedMotion}. */
+export function scrollBehavior(): ScrollBehavior {
+  return prefersReducedMotion() ? 'auto' : 'smooth';
+}
+
+/**
  * Brand-coloured confetti burst: bolt yellow, nostr magenta, bone.
  *
  * `canvas-confetti` is dynamic-imported so it stays out of the initial bundle —
  * format.tsx sits on the critical render path (imported by player, note cards,
  * live chat), but confetti only ever fires after a successful boost. Same
  * lazy-load pattern as hls.js and the Spark SDK.
+ *
+ * Skipped entirely under reduced motion, rather than shortened. 130 particles
+ * thrown across the viewport is the single largest movement this app makes, it
+ * is unprompted from the reader's point of view (it fires when the payment
+ * settles, not when they tapped), and it cannot be dismissed. For someone with
+ * a vestibular disorder that is the exact shape of thing the setting exists to
+ * refuse. Nothing is lost by skipping it: the boost's success is already
+ * reported by the modal's own ✓ and by `playBoostSound`, so the confetti is
+ * decoration on top of two other signals, and the module is never even
+ * downloaded.
  */
 export function fireConfetti(): void {
+  if (prefersReducedMotion()) return;
   const colors = ['#fae500', '#ff2d92', '#f5f1e8'];
   void import('canvas-confetti').then(({ default: confetti }) => {
     confetti({ particleCount: 80, spread: 70, startVelocity: 55, origin: { y: 0.7 }, colors });

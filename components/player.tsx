@@ -340,11 +340,27 @@ export function Player() {
     // before). positionSec 0 (a normal play) → no seek. Live items force 0 for
     // the same reason as the video branch above.
     const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
+    const seekOnLoad = () => { el.currentTime = startAt; };
     if (startAt > 0) {
-      const seekOnLoad = () => { el.currentTime = startAt; };
       el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
     }
     if (isPlaying) el.play().catch(() => setPlaying(false));
+    // `{ once: true }` removes the listener when it FIRES, which is not the same
+    // as removing it when this effect is torn down — and the audio element is a
+    // single long-lived node (it lives in the reverse portal), so an unfired
+    // listener outlives the episode that registered it.
+    //
+    // Switching episodes before `loadedmetadata` arrives is the ordinary way to
+    // get there: tapping the next row while the first is still opening its
+    // stream. A's listener is never removed, `el.src` is repointed at B, and B's
+    // metadata event then runs A's handler — seeking B to A's resume position.
+    // It is worst exactly where it is least expected, on a NEW episode: B has
+    // `startAt === 0`, so it registers no listener of its own to overwrite the
+    // stale one, and a fresh track silently opens partway in.
+    //
+    // The video branch above already removes its copy in cleanup. This is the
+    // same line; the two branches had simply drifted.
+    return () => { el.removeEventListener('loadedmetadata', seekOnLoad); };
   }, [current?.episode.id, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Streaming sats. The engine is a module singleton driven by its own 1 Hz

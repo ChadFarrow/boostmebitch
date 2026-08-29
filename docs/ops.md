@@ -214,3 +214,41 @@ surface must still work — slower, and otherwise unchanged.
 This is the most important step and the easiest to skip. It is the difference
 between an accelerator and a dependency, and the only moment you find out which
 one you built is the moment you need it to be the first.
+
+## Dependency advisories — which ones are actually reachable
+
+`npm audit` is noisy here because Next bundles its own copies of things, so the
+useful question is never the count. It is *which decoder or parser does an
+attacker's bytes actually reach.* Two answers this repo has already had to work
+out, both easy to get backwards:
+
+**`sharp` IS reachable and must be kept current.** `app/api/art/route.ts` fetches
+a feed-supplied URL and hands the body to sharp on every cover it resizes — the
+busiest route in the app. The comment in `next.config.mjs` explaining why
+`images.remotePatterns` is empty says the `/_next/image` pipeline only ever
+decodes `public/hero.jpg`; that is true **of that pipeline** and is not a
+statement about sharp overall. Read as one, it is a licence to sit on a libvips
+advisory while the art route feeds the same library arbitrary bytes all day.
+sharp was pinned at `^0.34.5` against four high-severity libvips CVEs for
+exactly that reason. The route's own guards (`safeFetch`, the 12 MB cap,
+`limitInputPixels`, `artTypeVerdict`) bound *what* reaches the decoder; they do
+not patch the decoder.
+
+**Verify a sharp major before believing it.** 0.34 → 0.35 is a major bump, and
+what matters is not the changelog but whether the exact pipeline still runs:
+`sharp(bytes, { animated: false, limitInputPixels })` → `.resize(w, w, { fit:
+'cover', position: 'centre', withoutEnlargement: true })` → `.webp({ quality:
+78, effort: 4 })` → `.toBuffer()`, across every allowed width, plus the two
+failure directions that are *supposed* to throw (an over-`limitInputPixels`
+input, and bytes that are not an image). A blank cover on twelve surfaces is
+what a silent regression here looks like, and `npm run check:art` will not see
+it — that script pins `artWidth`/`artCandidates`/`artTypeVerdict`, which are
+pure functions that never touch sharp.
+
+**The residual advisory is `postcss` inside `node_modules/next/node_modules`.**
+It is Next's own bundled copy and only `next@16` — a breaking major — moves it.
+The top-level `postcss` this repo controls is current. The advisories are
+build-time source-map and stringifier issues against the CSS being compiled,
+which here is our own `app/globals.css` and Tailwind's output, not anything a
+feed or a visitor supplies. Left in place deliberately; revisit with the Next 16
+upgrade rather than forcing it.

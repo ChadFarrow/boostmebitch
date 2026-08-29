@@ -2,6 +2,7 @@
 // secret. Nothing here writes an event; the only writes are the Podcast Index
 // cache fills, which are answers from PI rather than anything a caller supplied.
 
+import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Db } from './db.ts';
 import {
@@ -52,15 +53,55 @@ const LIVE_WINDOW_SECS = 7 * 86_400;
 // same shape every other index failure already takes.
 const LIVE_MAX_STALENESS_SECS = 300;
 
+/**
+ * Constant-time compare of the presented API key against the configured one.
+ *
+ * `a !== b` on strings returns at the first differing byte, so how long the
+ * comparison takes is a function of how many leading bytes were right. Over a
+ * network that signal is buried in jitter, which is the usual reason to shrug —
+ * but this service answers from a fixed host on a fixed path, so an attacker
+ * can average away the jitter with repetition, and the thing being guessed is a
+ * single long-lived shared secret with no rotation story and no second factor.
+ * The correct compare costs one hash.
+ *
+ * Both sides are hashed first so the inputs handed to `timingSafeEqual` are
+ * always 32 bytes. That is not ceremony: `timingSafeEqual` THROWS on a length
+ * mismatch, so comparing the raw strings would need a length check in front of
+ * it — and that check is itself a fast, reliable oracle for the secret's
+ * length. Hashing removes the question.
+ */
+function keyMatches(presented: string, configured: string): boolean {
+  const a = createHash('sha256').update(presented).digest();
+  const b = createHash('sha256').update(configured).digest();
+  return timingSafeEqual(a, b);
+}
+
 export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyInstance {
   const app = Fastify({ logger: false, bodyLimit: 256 * 1024 });
 
   app.addHook('onRequest', async (req: FastifyRequest, reply: FastifyReply) => {
-    if (req.url === '/health') return;
+    // Match the PATH, not the raw URL. `req.url` carries the query string, so
+    // the exact compare this used to be made `/health?probe=1` an authenticated
+    // route, answering 401 to a caller asking the one question this service
+    // answers to anybody. Railway's check sends a bare `/health` and was
+    // unaffected, which is what kept it invisible — an uptime monitor or a
+    // cache-busting probe is the one that would have found it.
+    if (req.url === '/health' || req.url.startsWith('/health?')) return;
     const key = req.headers['x-index-key'];
-    if (typeof key !== 'string' || key !== cfg.apiKey) {
-      await reply.code(401).send({ error: 'unauthorized' });
+    if (typeof key !== 'string' || !keyMatches(key, cfg.apiKey)) {
+      reply.code(401).send({ error: 'unauthorized' });
+      // `return reply` is Fastify's documented way for an ASYNC hook to say "I
+      // have answered, stop the lifecycle". MEASURED on the pinned Fastify 5:
+      // omitting it also stops — the framework checks `reply.sent` before the
+      // handler, so the route did not run either way. This is therefore the
+      // documented contract rather than a live bug fix, and it is written down
+      // as such so nobody re-derives the alarming version. It is still worth
+      // saying: `reply.sent` is an inference, and every handler below opens a
+      // database query, which is not a thing to leave resting on an inference
+      // across a framework upgrade.
+      return reply;
     }
+    return undefined;
   });
 
   // The only unauthenticated route, and it used to be a static literal that

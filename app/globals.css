@@ -292,3 +292,45 @@ input[type='range'].seek::-moz-range-thumb {
     width: 16px;
   }
 }
+
+/* Reduced motion.
+   ────────────────────────────────────────────────────────────────────────────
+   Honours the reader's OS-level "reduce motion" setting, which this app did not
+   read at all. It is not a niche preference: it is the accommodation for
+   vestibular disorders and migraine, and it is switched on system-wide, so the
+   reader has already said this once and expects not to say it again per site.
+
+   The universal selector with `!important` is the established shape for this
+   rule, and it is deliberate here rather than lazy. The alternative — naming
+   each animated class — silently fails to cover the next `transition` somebody
+   adds, and a reduced-motion rule that covers most of the animations is not an
+   accommodation, it is a surprise.
+
+   Near-zero duration, NOT `animation: none`. The difference matters for the
+   skeletons: `none` would drop `animate-pulse` back to its pre-animation state,
+   while running the animation instantly lands it on its final keyframe
+   (opacity 1 for Tailwind's pulse), so a loading placeholder stays visible and
+   simply stops breathing. Same for `transition`: the end state is still
+   reached, just immediately, so every hover and open/close remains correct —
+   only the travel between states goes away.
+
+   `animation-iteration-count: 1` is what actually stops the infinite ones
+   (`animate-pulse`, `animate-bolt`); duration alone would just make them
+   flicker fast forever.
+
+   Two motions CANNOT be reached from here and are handled in `lib/format.tsx`
+   instead: the boost confetti, which is a <canvas> and invisible to CSS, and
+   the two programmatic smooth scrolls, because an explicit `behavior: 'smooth'`
+   in a `scrollTo` call beats the `scroll-behavior` property by spec. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

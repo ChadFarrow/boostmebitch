@@ -248,6 +248,36 @@ Fan-out callers use **probe-first-then-batch**: await one resolve, check `piMayb
 **A PI miss is not always an HTTP error.** For a feed PI knows but has never crawled, `/podcasts/byfeedurl` answers **200** with `{"status":"true","feed":[],…}` — and `[]` is truthy, so a bare `data.feed ? …` check built a `Podcast` with every field `undefined`. All three lookups in `lib/pi.ts` go through `podcastFromPiFeed`, which normalizes array-or-object and requires an `id`. Symptom when it regresses: a blank search result row, and the RSS-preview fallback in `app/api/search/route.ts` (which only runs on a null) never gets its turn.
 
 
+## Every PI call carries a deadline (`PI_TIMEOUT_MS`)
+
+`pi()` in `lib/pi.ts` is the one function every Podcast Index call goes through,
+and it shipped without a timeout while every *other* outbound fetch in the app
+had one — `fetchFeedXml` 8 s, `askIndex` its own, the art/chapter/transcript
+proxies theirs. `fetch` has no default, so a PI instance that accepted the
+connection and then went quiet held the request open until the **platform**
+killed it: on Vercel that is the function's whole duration budget spent on one
+hung socket, with the reader watching a spinner for all of it. The routes that
+fan out make it worse rather than better — `/api/by-guid/batch` and
+`/api/publisher` issue several of these, so one silent upstream stalls a request
+that had nothing else left to do.
+
+Two things this is easy to get wrong:
+
+- **A timeout is not a byte cap and neither substitutes for the other.**
+  `AbortSignal.timeout` bounds how *long* the call runs; `readCappedText` bounds
+  how *many bytes* come back. `pi()` needs both, and had only the second.
+- **A timeout must NOT be swallowed as a miss.** It throws an `AbortError`, not
+  a `PiHttpError`, so it travels to the route as a 500 and trips the client-side
+  breaker — which is the correct reading, because an upstream that will not
+  answer is an outage and the breaker exists to notice one. The 400/404
+  "PI does not hold this feed" branch tests the exception *class* for exactly
+  this reason; widening it to catch anything thrown would file an outage as a
+  permanent negative-cached miss.
+
+8 s matches `fetchFeedXml` and is deliberately generous: PI's search endpoint is
+genuinely slow on a cold query, and cutting a slow-but-alive answer short trades
+a rare hang for a common failure.
+
 ## Server-side RSS caches (`createBoundedCache`)
 
 Two modules cache whole RSS bodies server-side: `rssXmlCache` in `lib/pi.ts` (what `fetchFeedXml` serves) and `feedCache` in `lib/musicl-resolver.ts` (the publisher → album walk). **Both are keyed by a URL that came out of feed data**, which is the whole reason the bounds matter.

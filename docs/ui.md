@@ -506,6 +506,59 @@ route can afford to skip an oversized cover; this one exists *because* covers
 are oversized, and a 2 MB cap would refuse precisely the images with the most
 to gain.
 
+**The response needs `max-age` as well as `s-maxage`, and this is the route
+where forgetting it costs most.** `s-maxage` binds shared caches only. A browser
+handed a response with no `max-age`, no `ETag` and no `Last-Modified` has no
+freshness lifetime to work from and nothing cheap to revalidate against, so it
+re-downloads in full on every view. That turned the whole optimisation above
+into a one-time win: the proxy took 53 covers from 27.68 MB to 0.62 MB, and then
+the browser paid that 0.62 MB again on every navigation, because an `<img>`'s
+only cache is the HTTP one — there is no client-side store behind this route the
+way `/api/by-guid` has one. It shipped `s-maxage`-only for the life of the
+feature. The private lifetime is deliberately **shorter** than the shared one
+(a day against a week), which is the same argument `/api/feed`'s header makes:
+a private cache under the shared one introduces no staleness class the CDN was
+not already permitted, so a publisher who replaces a cover still reaches
+everyone inside the window the week-long shared cache already allowed.
+
+## Reduced motion
+
+**The reader's OS-level "reduce motion" setting is honoured, and it takes two
+mechanisms because one cannot reach everything.**
+
+The CSS half is a `@media (prefers-reduced-motion: reduce)` block at the foot of
+`app/globals.css`, written as a universal `!important` override rather than a
+list of animated classes. Naming the classes is the version that rots: it covers
+today's animations and silently misses the next `transition` somebody adds, and
+a reduced-motion rule that covers most of the motion is not an accommodation,
+it is a surprise. The durations go to near-zero rather than `animation: none` —
+that difference is what keeps the skeletons visible, because running Tailwind's
+`animate-pulse` instantly lands it on its final keyframe (opacity 1) while
+`none` would drop it back to its pre-animation state. `animation-iteration-count:
+1` is the line that actually stops the infinite ones; duration alone just makes
+them flicker faster.
+
+**Two motions are invisible to that block and are decided in JS instead**
+(`prefersReducedMotion` / `scrollBehavior`, `lib/format.tsx`):
+
+- **The boost confetti is a `<canvas>`,** which no CSS rule reaches. It is
+  *skipped*, not shortened — 130 particles thrown across the viewport is the
+  largest movement this app makes, it fires when the payment settles rather than
+  when the reader tapped, and it cannot be dismissed. Nothing is lost: the
+  modal's ✓ and `playBoostSound` already report the same success, and the
+  dynamic import never happens.
+- **An explicit `behavior: 'smooth'` beats the `scroll-behavior` property by
+  spec**, so the two programmatic smooth scrolls have to ask. The transcript
+  auto-follow is the one that matters — it re-fires on every line for the length
+  of an episode, so under this setting it is not one animation to sit through,
+  it is continuous drift for an hour.
+
+`prefersReducedMotion()` is read at call time and never cached: it is a system
+toggle, and someone turning it on mid-session is exactly the person it is for.
+It answers `false` when the query is unavailable (SSR, an old browser) — the
+other default would strip the app's feedback for everyone whose browser simply
+cannot answer.
+
 ## Fonts and first paint
 
 **Both families are self-hosted by `next/font` in `app/layout.tsx` and reached through `var(--font-display)` / `var(--font-mono)`. Never add an `@import` to `app/globals.css`.**

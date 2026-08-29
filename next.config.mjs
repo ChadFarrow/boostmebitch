@@ -18,10 +18,17 @@ const nextConfig = {
   //   1. It's a server-side fetch to an attacker-chosen host that bypasses
   //      `safeFetch` entirely — the guard every other outbound fetch of a
   //      remote URL goes through, precisely to re-validate each redirect hop.
-  //   2. It feeds attacker-supplied bytes into sharp/libvips, which currently
-  //      carries four high-severity CVEs (`npm audit`). Without the wildcard,
-  //      the only thing that decoder ever sees is our own `public/hero.jpg`,
-  //      so the advisory stops being reachable.
+  //   2. It feeds attacker-supplied bytes into sharp/libvips, which has carried
+  //      high-severity CVEs. Without the wildcard, the only thing the
+  //      `/_next/image` pipeline ever decodes is our own `public/hero.jpg`.
+  //      **That is a statement about THIS pipeline and nothing more — it is not
+  //      a claim that sharp is unreachable from untrusted bytes.** It isn't:
+  //      `app/api/art/route.ts` hands sharp a body fetched from a feed-supplied
+  //      URL on every cover it resizes, which is the app's single busiest
+  //      route. An earlier version of this comment said "the only thing that
+  //      decoder ever sees is our own hero.jpg" full stop, which reads as
+  //      exactly the licence to leave a sharp advisory unpatched that the art
+  //      route makes unsafe. **Keep `sharp` current on its own merits.**
   //   3. It was never used. The app has exactly ONE <Image>, in app/layout.tsx,
   //      with `src="/hero.jpg"` — a local file. Local images under /public need
   //      no remotePatterns. Every REMOTE image in this app (podcast artwork,

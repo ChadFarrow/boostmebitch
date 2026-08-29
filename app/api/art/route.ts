@@ -117,10 +117,27 @@ export async function GET(req: Request) {
   // `immutable`: the cache key is the source URL, and a publisher who replaces
   // their cover keeps the same URL, so a permanent cache would pin the old art
   // forever with no way to clear it short of a query-string change.
+  //
+  // `max-age` as well as `s-maxage`, and this route is where that rule pays
+  // most. `s-maxage` binds SHARED caches only; a browser reading a response
+  // with no `max-age`, no `ETag` and no `Last-Modified` has no freshness
+  // lifetime to work from and no way to revalidate cheaply, so it re-downloads
+  // in full on every view. Artwork is the most-repeated subresource this app
+  // has — a cover per list row, across twelve surfaces, re-requested on each
+  // navigation — so the proxy was winning the 27.68 MB → 0.62 MB it was built
+  // for and then paying that 0.62 MB again on every single page view, on a
+  // phone, on cellular. The disk cache is the only cache an <img> gets; there
+  // is no client-side store behind this one.
+  //
+  // A day for the private cache, a week for the shared one. Deliberately
+  // SHORTER than `s-maxage`, which is the same argument /api/feed's header
+  // makes: a private lifetime under the shared one introduces no staleness
+  // class the CDN was not already permitted, so a replaced cover still reaches
+  // everyone within the window the week-long shared cache already allowed.
   return new NextResponse(new Uint8Array(out), {
     headers: {
       'content-type': 'image/webp',
-      'cache-control': 'public, s-maxage=604800, stale-while-revalidate=86400',
+      'cache-control': 'public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400',
     },
   });
 }

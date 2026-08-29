@@ -10,7 +10,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
-import { fmtDate, fmtDuration, fmtLiveTime } from '@/lib/format';
+import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
 import { hasValueRecipients, isMusicMedium, isPlaylistMedium, playsAsTracks, showShareUrl, showStorageKey } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { Chip } from '@/components/chip';
@@ -271,7 +271,7 @@ export function EpisodeList({
       }
     })();
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
-      containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      containerRef.current?.scrollIntoView({ behavior: scrollBehavior(), block: 'start' });
     }
     // `reloadKey` is what the retry button below bumps — it re-runs this effect
     // without needing the feed to change.
