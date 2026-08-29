@@ -286,6 +286,44 @@ const MAX_ITEM_GUID_LEN = 2048;
  * reader to a different feed entirely, and every other Podcasting 2.0 client
  * would read the same document correctly. Pinned by `npm run check:playlist`.
  */
+/**
+ * The show a playlist was built FROM — `<podcast:txt purpose="source-feed">`.
+ *
+ * Every playlist in the collection carries one, at channel level, naming the
+ * podcast whose episodes the tracks were played on. It is the missing half of
+ * the `purpose="episode"` markers `parsePlaylistRemoteItems` reads: those give
+ * a bare episode title like "Saddle Up", which on screen reads as a random
+ * word until something says which show it is an episode of.
+ *
+ * **Pass `channelSlice(xml)`, never raw XML**, for the same reason that parser
+ * does — a `<podcast:liveItem>` carries its own tags and must not contribute.
+ * The `purpose` is READ rather than assumed: other feeds put verification
+ * tokens and npubs under an unqualified `<podcast:txt>`, so matching the tag
+ * alone would return somebody's Twitter handle as a feed URL.
+ *
+ * Returns the first one, or undefined. Never throws — a playlist without a
+ * marker is ordinary (three in the collection publish none at all).
+ */
+export function parsePlaylistSourceFeed(channelXml: string): string | undefined {
+  const re = /<podcast:txt\b([^>]*)>([\s\S]*?)<\/podcast:txt>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(channelXml))) {
+    // Through `readAttr`, never a local regex — `-` is a non-word character, so
+    // a `\b`-anchored test for `purpose` matches inside `x-purpose` and a decoy
+    // attribute ahead of the real one would steer this. Same rule the ref
+    // parser above follows.
+    if (readAttr(m[1], 'purpose')?.toLowerCase() !== 'source-feed') continue;
+    const raw = m[2].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+    const url = decodeXmlText(raw).trim();
+    // It is going to be FETCHED, so the shape is checked here rather than at
+    // the call site: a non-http string is not worth carrying, and the length
+    // cap matches every other feed-supplied URL in this module. `safeFetch`
+    // still re-validates it — this is a cheap reject, not the security guard.
+    if (/^https?:\/\//i.test(url) && url.length <= 2048) return url;
+  }
+  return undefined;
+}
+
 export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] {
   const scoped = channelXml.replace(PODROLL_BLOCK_RE, '');
   const out: PlaylistItemRef[] = [];
