@@ -46,7 +46,7 @@ const PROFILE = {
   lud16: 'chadf@getalby.com',
 };
 
-// THE RELAY LIST IS READ OUT OF `lib/nostr/relays.ts`, NOT COPIED FROM IT.
+// BOTH RELAY LISTS ARE READ OUT OF `lib/nostr/relays.ts`, NOT COPIED FROM IT.
 //
 // kind:10002 is a CLAIM about where this identity writes, and the thing it has
 // to be true about is `DEFAULT_RELAYS` — `publishBoostNoteViaSite` hands exactly
@@ -62,21 +62,44 @@ const PROFILE = {
 // source text instead, and a parse that finds nothing THROWS rather than falling
 // back to a default. A wrong relay list is a quiet, permanent claim; a crashed
 // maintenance script is neither.
-const RELAYS = (() => {
+function relayConst(name) {
   const src = readFileSync(
     new URL('../lib/nostr/relays.ts', import.meta.url), 'utf8',
   );
-  const block = src.match(/export const DEFAULT_RELAYS = \[([\s\S]*?)\]/);
+  const block = src.match(new RegExp(`export const ${name} = \\[([\\s\\S]*?)\\]`));
   if (!block) {
     throw new Error(
-      'could not find DEFAULT_RELAYS in lib/nostr/relays.ts — the declaration '
-      + 'moved or changed shape. Fix this parse; do NOT hard-code the list here.',
+      `could not find ${name} in lib/nostr/relays.ts — the declaration moved or `
+      + 'changed shape. Fix this parse; do NOT hard-code the list here.',
     );
   }
   const urls = [...block[1].matchAll(/'(wss:\/\/[^']+)'/g)].map((m) => m[1]);
-  if (!urls.length) throw new Error('DEFAULT_RELAYS parsed as empty — refusing to publish an empty relay list');
+  if (!urls.length) throw new Error(`${name} parsed as empty — refusing to publish against an empty relay list`);
   return urls;
-})();
+}
+
+// WHAT THE kind:10002 SAYS. A NIP-65 list is a claim about where this identity
+// WRITES, and the only true answer is `DEFAULT_RELAYS`.
+const RELAYS = relayConst('DEFAULT_RELAYS');
+
+// WHERE THESE TWO EVENTS GO, which is a DIFFERENT question and must not be
+// collapsed into the one above.
+//
+// `PROFILE_RELAYS` (purplepag.es) is the de facto profile outbox: Damus and
+// Amethyst resolve kind:0 and kind:10002 there, and this app unions it into
+// every one of those lookups too. kind:0 and kind:10002 are precisely the two
+// kinds this script publishes — so writing them everywhere EXCEPT the relay that
+// exists to serve them is the one gap that makes a correct publish invisible.
+//
+// Measured 2026-08-29: after a publish to DEFAULT_RELAYS only, purplepag.es
+// still served the bmb relay list from 2026-08-07, naming the `relay.nostr.band`
+// that had been measured out. purplepag.es does crawl, so it had picked up a
+// kind:0 on its own — but a crawl is not a delivery, and the stale list sat
+// there while every direct relay held the new one.
+//
+// This union stays OUT of the kind:10002 tags on purpose. The site does not
+// write its boost notes to purplepag.es, so naming it there would be false.
+const PUBLISH_TO = [...new Set([...RELAYS, ...relayConst('PROFILE_RELAYS')])];
 
 function secretKey() {
   const raw = process.env.SITE_NOSTR_SK?.trim();
@@ -146,11 +169,11 @@ const relayListEvent = finalizeEvent(
 const pool = new SimplePool();
 for (const [label, event] of [['profile (kind:0)', profileEvent], ['relay list (kind:10002)', relayListEvent]]) {
   console.log(`\n${label} — ${event.id}`);
-  const results = await Promise.allSettled(pool.publish(RELAYS, event));
+  const results = await Promise.allSettled(pool.publish(PUBLISH_TO, event));
   results.forEach((r, i) => {
-    console.log(`  ${r.status === 'fulfilled' ? '✓' : '✗'} ${RELAYS[i]}${r.status === 'rejected' ? ` — ${r.reason}` : ''}`);
+    console.log(`  ${r.status === 'fulfilled' ? '✓' : '✗'} ${PUBLISH_TO[i]}${r.status === 'rejected' ? ` — ${r.reason}` : ''}`);
   });
 }
-pool.close(RELAYS);
+pool.close(PUBLISH_TO);
 console.log('\nDone.');
 process.exit(0); // SimplePool leaves sockets open; exit so the script doesn't hang
