@@ -23,6 +23,8 @@
 // publishing the buddy profile never means editing .env.local and putting it
 // back afterwards.
 
+import { readFileSync } from 'node:fs';
+
 import { finalizeEvent, getPublicKey } from 'nostr-tools/pure';
 import { SimplePool, nip19 } from 'nostr-tools';
 import { BRAND } from '../lib/brand.ts';
@@ -44,16 +46,37 @@ const PROFILE = {
   lud16: 'chadf@getalby.com',
 };
 
-// Must match DEFAULT_RELAYS in lib/nostr/relays.ts — where publishBoostNoteViaSite
-// actually writes the site's boost notes. The kind:10002 below declares these as
-// the site's read+write relays so outbox-model clients find its notes.
-const RELAYS = [
-  'wss://relay.damus.io',
-  'wss://relay.primal.net',
-  'wss://nos.lol',
-  'wss://relay.nostr.band',
-  'wss://relay.fountain.fm',
-];
+// THE RELAY LIST IS READ OUT OF `lib/nostr/relays.ts`, NOT COPIED FROM IT.
+//
+// kind:10002 is a CLAIM about where this identity writes, and the thing it has
+// to be true about is `DEFAULT_RELAYS` — `publishBoostNoteViaSite` hands exactly
+// that array to `publishSignedEvent`. A copy here said "must match" and then did
+// not: `wss://relay.nostr.band` was measured out of `DEFAULT_RELAYS` on
+// 2026-08-25 for connecting and never sending EOSE, and this file kept it, so
+// the published NIP-65 list sent every outbox client to a fifth relay that holds
+// none of the site's notes and pins each query to its full ceiling.
+//
+// The obvious fix — `import { DEFAULT_RELAYS } from '../lib/nostr/relays.ts'` —
+// is not available: that module imports `./pool` and `../storage`, which touch
+// `window` and cannot load under plain Node. So the array is parsed out of the
+// source text instead, and a parse that finds nothing THROWS rather than falling
+// back to a default. A wrong relay list is a quiet, permanent claim; a crashed
+// maintenance script is neither.
+const RELAYS = (() => {
+  const src = readFileSync(
+    new URL('../lib/nostr/relays.ts', import.meta.url), 'utf8',
+  );
+  const block = src.match(/export const DEFAULT_RELAYS = \[([\s\S]*?)\]/);
+  if (!block) {
+    throw new Error(
+      'could not find DEFAULT_RELAYS in lib/nostr/relays.ts — the declaration '
+      + 'moved or changed shape. Fix this parse; do NOT hard-code the list here.',
+    );
+  }
+  const urls = [...block[1].matchAll(/'(wss:\/\/[^']+)'/g)].map((m) => m[1]);
+  if (!urls.length) throw new Error('DEFAULT_RELAYS parsed as empty — refusing to publish an empty relay list');
+  return urls;
+})();
 
 function secretKey() {
   const raw = process.env.SITE_NOSTR_SK?.trim();
