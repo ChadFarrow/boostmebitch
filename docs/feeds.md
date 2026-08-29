@@ -111,6 +111,22 @@ The absent case drives the cache header: `couldNotAsk > 0` answers `Cache-Contro
 
 A placeholder has an empty `enclosureUrl`, so the client **suppresses** the play control rather than disabling it. The heart stays, on `<FavTrackHeart>`'s precedent: the identifiers come off the wire and are the whole record, and withholding the control until PI has crawled the album would hide it on exactly the independent releases this app exists to pay.
 
+### The playlist track accelerator (`lib/playlist-db.ts`)
+
+A page is 100 refs and every one is a Podcast Index lookup — thirteen pages for Homegrown Hits. The **StableKraft Postgres on Railway** already holds ~13,800 of those tracks with their value blocks, so `/api/playlist` asks it first and leaves PI the misses. Measured: **96 of 100** rows on one HGH page, **319 of 342** refs on It's A Mood in a single **117 ms** query.
+
+**It is an accelerator, never an authority** — the read index's contract, and it holds three separate ways, none visible from the route:
+
+- **The FEED still decides membership and order.** The database is asked about `(feedGuid, itemGuid)` pairs parsed from the curator's own document; it never enumerates a playlist. So there is no feed-URL-to-playlist-id mapping to keep in sync and nothing to redeploy when a playlist is added — the "one URL, not a list of playlists" design survives intact. **That was the second design.** Keying on `SystemPlaylist.id` needed a hardcoded 12-entry table, because the artwork filenames are inconsistent (`b4ts-playlist-art.webp` against `IAM-music-playlist.webp`) and `link` is the show's website — i.e. exactly the drift this doc criticises StableKraft for.
+- **A miss is not an answer.** Which is what makes the data being 5-7 months stale harmless rather than wrong: a track added last week is simply not there and goes to PI.
+- **Every failure is `null`, never empty.** Unset `PLAYLIST_DB_URL`, an unreachable host, a moved column — all revert to the pre-existing path. Verified against a dead host: all 20 rows still came back from PI, all payable.
+
+**Matched on BOTH guids, never the item guid alone.** On It's A Mood, 319 refs match the pair and 332 match the item guid by itself. Those 13 extra are rows where this database's `Feed.guid` disagrees with the guid the curator wrote — and the feed guid is what `payableValue` compares to decide whether a value block belongs to the track or the container. The looser match buys 4% more rows by guessing at the question that decides who gets paid.
+
+**A row is REFUSED when the database holds a field the mapper does not carry.** An accelerator answering with LESS than the call it replaces is a silent downgrade, and the two fields are the expensive kind: `valueTimeSplits` decides who is paid *during* a track, so dropping it moves money from a featured artist to the track owner with every leg reporting ✓. Rather than map a second money-critical shape, both it and `alternateEnclosures` are read only to fall through — 8 and 33 rows of 8,807, so it costs 41 PI lookups and buys certainty. `chaptersUrl` IS carried (381 rows), because it is a plain URL the client re-validates.
+
+**The shape agreeing is not the shape being valid**, which is why `lib/playlist-db-map.ts` is a validator rather than a cast, pinned by `npm run check:playlistdb` against blocks captured from the wire. Measured over all 13,783 blocks and 25,477 recipients: **139 blocks are the JSON value `null`** (the column is `not null`, so SQL calls them present and a cast hands `null.recipients` to the splitter), **225 splits are strings of digits**, and `customKey`/`customValue` arrive as `null` rather than absent — which `JSON.stringify` keeps and would ride into the TLV record. The digit strings already pay correctly, because `splitSats` reaches its weight through `Math.max(0, split||0)` and `Math.max` coerces; the repair is about the runtime value matching the `number` our type promises. The **strict** digits test is defensive rather than observed, and earns its cost for a measured reason: `Math.max` reads `'0x64'` as **100** and `'1e3'` as **1000**, so the loose forms have to be refused there or they are never refused at all.
+
 ### Whose value block pays a playlist row
 
 **A playlist track arrives from Podcast Index with no value block, and the container's is the CURATOR's.** Both halves of that sentence were bugs, and each is invisible on its own.

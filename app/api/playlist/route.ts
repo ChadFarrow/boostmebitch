@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
+import { resolvePlaylistTracks } from '@/lib/playlist-db';
 import { batchEpisodes, episodeKey, fillTrackValues, MAX_BATCH } from '@/lib/pi-batch';
 import { fnvHash, mergeRssOverPi } from '@/lib/util';
 import type { Episode, Podcast } from '@/lib/types';
@@ -139,7 +140,25 @@ export async function GET(req: Request) {
       );
     }
 
-    const resolved = await batchEpisodes(page);
+    // ── The accelerator, in front of Podcast Index ──────────────────────────
+    // A page is 100 refs and every one of them is a PI lookup. The StableKraft
+    // database already holds 13,783 of these tracks with their value blocks, so
+    // it is asked first and PI is left with the misses — measured on It's A
+    // Mood, 319 of 342 refs answered by ONE 117 ms query.
+    //
+    // It is an accelerator and never an authority, which is three separate
+    // things (see lib/playlist-db.ts): the FEED still decides membership and
+    // order, so there is no playlist-id mapping to keep in sync; a miss is not
+    // an answer, so months-stale data is harmless rather than wrong; and any
+    // failure is `null`, which reverts to asking PI for everything. Unset
+    // `PLAYLIST_DB_URL` and this whole branch disappears.
+    const fromDb = await resolvePlaylistTracks(page, podcast.id);
+    const stillNeeded = fromDb
+      ? page.filter((ref) => !fromDb.has(episodeKey(ref)))
+      : page;
+
+    // `batchEpisodes({})` would be a wasted round trip on a fully-cached page.
+    const resolved = stillNeeded.length ? await batchEpisodes(stillNeeded) : {};
 
     // THE THREE-STATE ANSWER, carried through rather than flattened. See
     // lib/pi-batch.ts: a key with a value resolved, a key holding null is PI
@@ -158,6 +177,11 @@ export async function GET(req: Request) {
     let couldNotAsk = 0;
     for (const ref of page) {
       const key = episodeKey(ref);
+      // A database hit is a resolved row and is NOT counted as `notFound` or
+      // `couldNotAsk` — those two describe what Podcast Index said, and PI was
+      // never asked about this ref.
+      const cached = fromDb?.get(key);
+      if (cached) { episodes.push(cached); continue; }
       if (!(key in resolved)) {
         couldNotAsk++;
         episodes.push(placeholder(ref, podcast.id, 'could-not-ask'));
