@@ -43,6 +43,7 @@ import {
   fetchFavoritesList,
   groupLocalFavorites,
   looksLikeFeedGuid,
+  mayAdoptRefusedRead,
   mergeFavoritesList,
   partitionList,
   planFavoritesPublish,
@@ -395,17 +396,54 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   // excuses the planner's: the user asked. Without it the cache half still
   // fires on the load right after a delete-all, where the cache is empty but
   // some other entry is not.
+  //
+  // ONE EXCEPTION, AND IT IS ABOUT RENDERING, NOT PUBLISHING. The refusal above
+  // is `return`, so it withholds the PAINT as well — and on a device that holds
+  // nothing there is nothing for that to protect. This repo builds two deploys,
+  // and `localStorage` is per-origin, so the same account arriving at the second
+  // one has an empty cache, an empty `local`, `localFed` 0 on both halves, and a
+  // merge CARRYING every relay node. The planner is right to refuse the publish;
+  // rendering an empty library over 880 entries is not part of that decision.
+  //
+  // `mayAdoptRefusedRead` is the rule, in the import-free leaf so `check:favsync`
+  // holds it. The baseline it asks about is the RAW stored one, never
+  // `trustedBaseline` — that has already dropped a claim made over an empty
+  // cache, which is precisely the dangerous shape this must keep refusing.
+  const rawBaseline = storage.favBaseline.get(identity.npub);
+  const carriedNodes = merged.nodes.length + (privateMerged?.nodes.length ?? 0);
+  const adoptable = mayAdoptRefusedRead({
+    cacheHasEntries,
+    baselineClaimsEntries: rawBaseline.feeds.length > 0
+      || rawBaseline.items.length > 0
+      || (rawBaseline.privateFeeds?.length ?? 0) > 0
+      || (rawBaseline.privateItems?.length ?? 0) > 0,
+    carriedNodes,
+  });
   if (!deliberatelyEmpty && (plan.reason === 'wholesale-delete' || (mergedTotal === 0 && cacheHasEntries))) {
-    setFavoritesSync('degraded', 'wholesale-delete');
-    // eslint-disable-next-line no-console
-    console.warn(
-      '[favorites] REFUSING to adopt an empty merge — this device holds favorites '
-      + `(cache: ${Object.keys(cached).length} feeds, ${Object.keys(cachedEpisodes).length} items; `
-      + `relay: ${read.tags.filter((t) => t[0] === 'i').length} public entries, `
-      + `${read.privateTags.filter((t) => t[0] === 'i').length} private) and both halves came out `
-      + 'empty. Keeping local state, publishing nothing, recording no baseline.',
-    );
-    return;
+    if (adoptable) {
+      // Fall THROUGH to the paint, and only the paint. `plan` is untouched, so
+      // nothing is published and `onSynced` is never called — no baseline is
+      // recorded for a list this device has not agreed to. The adoption is
+      // one-way: the next cycle sees a populated store, `localFed` is non-zero,
+      // and the ordinary path takes over from there.
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[favorites] this device holds nothing yet, so there is nothing for the wipe guard '
+        + `to protect — adopting the ${carriedNodes} entr(y/ies) the relay carries so they render. `
+        + 'Still publishing nothing and recording no baseline.',
+      );
+    } else {
+      setFavoritesSync('degraded', 'wholesale-delete');
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[favorites] REFUSING to adopt an empty merge — this device holds favorites '
+        + `(cache: ${Object.keys(cached).length} feeds, ${Object.keys(cachedEpisodes).length} items; `
+        + `relay: ${read.tags.filter((t) => t[0] === 'i').length} public entries, `
+        + `${read.privateTags.filter((t) => t[0] === 'i').length} private) and both halves came out `
+        + 'empty. Keeping local state, publishing nothing, recording no baseline.',
+      );
+      return;
+    }
   }
 
 

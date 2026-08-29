@@ -267,6 +267,71 @@ check('...and neither is an unresolved placeholder', sh.placeholder, false);
 check('it does NOT claim the library is empty', sh.emptyClaim, false);
 check('and no degraded notice is up', sh.notice, false);
 
+console.log('\n--- 5. A SECOND ORIGIN: same account, empty device, list must still render ---');
+// One repo, two deploys, and `localStorage` is PER-ORIGIN — so an account that
+// arrives at boostmebuddy.com with a full list on the relay has no cache, no
+// baseline and no recorded mode. `local` is empty, `localFed` is 0 on both
+// halves, and `planFavoritesPublish` says `wholesale-delete`, which is correct:
+// it must not publish an empty list over a full one. What it must ALSO not do
+// is withhold the list from the screen — there is nothing on this device for
+// that refusal to protect. Measured live on boostmebuddy.com: 880 private
+// entries read, 0 rendered.
+//
+// Dropping exactly the per-account favorites keys is what makes this a NEW
+// ORIGIN rather than a signed-out browser: the signer here rides a CDP binding,
+// so sign-in survives, which is the real shape. `bmb:fav_privacy` goes too —
+// its absence is why `seedFavoritesMode` has to read the mode off the wire.
+//
+// WHAT THIS SCENARIO DOES AND DOES NOT PROVE. It asserts the cacheless device
+// renders the list and publishes nothing. It does NOT drive the
+// `wholesale-delete` branch, and it passes with that fix reverted — measured,
+// not assumed. `planFavoritesPublish` returns `'unchanged'` (line ~206) BEFORE
+// it reaches the wipe guard (~line 270) whenever the merge re-serializes byte
+// for byte to what the relay holds, which is exactly what a list this harness
+// wrote itself does. Reaching the guard needs a read that does NOT round-trip
+// identically — a list another app wrote, which is the reported case — and
+// forging one here is impossible on purpose, since SimplePool verifies every
+// signature. So this is a REGRESSION guard for the render path. The proof that
+// the fix bites is `check:favsync`'s `mayAdoptRefusedRead` vectors, two of
+// which fail against `naive()`.
+const beforeAdopt = published.length;
+await js(`(() => {
+  for (const k of Object.keys(localStorage)) {
+    if (/^bmb:(favorites|favepisodes|favbaseline|fav_cleared|fav_privacy)/.test(k)) {
+      localStorage.removeItem(k);
+    }
+  }
+  return true;
+})()`);
+await send('Page.navigate', { url: `${APP}/favorites` }); await wait(14000);
+const adopted = await js(`JSON.stringify({
+  rows: document.querySelectorAll('main li').length,
+  rowText: [...document.querySelectorAll('main li')].map(li => li.innerText.slice(0, 60)),
+  favorited: /favorited/i.test(document.body.innerText),
+  emptyClaim: /nothing saved yet|nothing on this device/i.test(document.body.innerText),
+  notice: /couldn.t (confirm|open)/i.test(document.body.innerText),
+})`);
+console.log('   ', adopted);
+const ad = JSON.parse(adopted);
+// ONE row, not two, and that is the CORRECT contract rather than a shortfall.
+// `runHydrate` skips a group that is not `itemless` when this device has no
+// cache entry for it (`if (!feed.itemless && !hit) continue`): a group holding
+// a favorited item may exist only to NAME that item's parent, and reading it as
+// an album favorite manufactures albums the user never chose — 159 of 197
+// groups on the list that rule was written against. The album here holds the
+// track, so on a device with no cache it is placement, not a favorite. It
+// self-corrects the moment its last item goes; inventing a favorite never does.
+// The ITEM always renders — `part.items` has no such skip.
+check('the list renders on a device that has never seen it', ad.rows, 1);
+check('...and it is the ITEM, which is what a cacheless device can be sure of',
+  /example\.com\/ep/.test(ad.rowText[0] ?? ''), true);
+check('...and reads as favorited', ad.favorited, true);
+check('it does NOT claim the library is empty', ad.emptyClaim, false);
+check('and no degraded notice is up', ad.notice, false);
+// The adoption is RENDER-ONLY. Publishing an empty local list over a full relay
+// list is the wipe this guard exists for, and it stays refused.
+check('and it published NOTHING while adopting', published.length, beforeAdopt);
+
 console.log('\n--- publish timeline ---');
 published.forEach((e, i) => {
   const iTags = e.tags.filter((t) => t[0] === 'i').length;

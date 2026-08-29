@@ -463,6 +463,53 @@ export function baselineIsTrustworthy(
   return !claimsSomething || localHasEntries;
 }
 
+/**
+ * May a REFUSED read still be painted?
+ *
+ * `wholesale-delete` answers "do not publish this". It does not, on its own,
+ * answer "do not render this", and conflating the two is why the same account
+ * on a NEW ORIGIN sees an empty library over a full list. The two deploys are
+ * separate origins, so `localStorage` starts empty on the second one; `local`
+ * is therefore empty, `localFed` is 0 on both halves, and the planner correctly
+ * refuses to publish — but the merge it refused is NOT empty. It carries every
+ * relay node. The refusal was withholding a list from the user to protect a
+ * device that holds nothing.
+ *
+ * THE GUARD NEEDS SOMETHING TO PROTECT. All three conditions, and each is a
+ * different way to get this wrong:
+ *
+ * - `cacheHasEntries` false — nothing on disk to destroy. This is the whole
+ *   reason painting is safe here: `setFavorites` writes THROUGH to
+ *   `localStorage`, and the destructive case the guard exists for is painting
+ *   OVER `cached[feed.feedGuid]`, the only record separating a real album
+ *   favorite from a group opened to place a track. An empty cache has no such
+ *   record to lose.
+ * - `baselineClaimsEntries` false — this device has never agreed anything with
+ *   the relay. A baseline naming ids beside a cache holding none is the exact
+ *   input of the 2026-08-21 wipe, and it must keep refusing. Pass the RAW
+ *   stored baseline, not `trustedBaseline`, which has already dropped that
+ *   claim and would report the dangerous shape as clean.
+ * - `carriedNodes > 0` — there is something to adopt. Painting nothing is the
+ *   destructive case itself, so "adopt" over an empty read is the one answer
+ *   that must never be yes.
+ *
+ * Publishing and the baseline are NOT unblocked by this. The caller still
+ * publishes nothing and records nothing, so the adoption is one-way: the next
+ * cycle sees a populated store, `localFed` is non-zero, and the ordinary path
+ * takes over. That is the same adoption `planFavoritesPublish` already
+ * describes when it derives the active half from the merge — this only lets a
+ * device with no history reach it.
+ */
+export function mayAdoptRefusedRead(input: {
+  cacheHasEntries: boolean;
+  baselineClaimsEntries: boolean;
+  carriedNodes: number;
+}): boolean {
+  if (input.cacheHasEntries) return false;
+  if (input.baselineClaimsEntries) return false;
+  return input.carriedNodes > 0;
+}
+
 // ---------------------------------------------------------------------------
 // The private half's plaintext
 // ---------------------------------------------------------------------------

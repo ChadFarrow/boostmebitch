@@ -59,6 +59,7 @@ import {
   baselineFrom,
   baselineOfList,
   looseIdsWePublished,
+  mayAdoptRefusedRead,
   baselineHalf,
   decodePrivateFavorites,
   encodePrivateFavorites,
@@ -1786,6 +1787,67 @@ section('A claim that has stopped being true is worse than no claim');
   });
   check('an unreadable half keeps its claims verbatim',
     keptPlan.baseline.privateFeeds, [showId(F_MUSIC2)]);
+}
+
+// ---------------------------------------------------------------------------
+section('a refused read may still be PAINTED when the guard protects nothing');
+// ---------------------------------------------------------------------------
+//
+// `wholesale-delete` means "do not publish this". It never meant "do not render
+// this", and the two were the same branch — so the SAME ACCOUNT on a SECOND
+// ORIGIN (this repo builds two deploys, and localStorage is per-origin) read
+// 880 private entries off the relay and painted none of them. The planner was
+// right to refuse the publish; the refusal was withholding the list from the
+// user to protect a device holding nothing.
+//
+// Recorded as calls so the naive replay at the foot is total.
+{
+  const ADOPT_VECTORS = [
+    // The bug this exists for: a new origin. Nothing cached, nothing ever
+    // agreed here, and a full relay list carried through the merge.
+    // Exempt one vector at a time, never by default: `naive` adopts here too,
+    // and correctly. Its fault is the OTHER direction — it over-adopts — which
+    // is what the two refusals below catch.
+    { args: [{ cacheHasEntries: false, baselineClaimsEntries: false, carriedNodes: 880 }],
+      expect: true, alsoNaive: true, why: 'a second origin adopts the list it can see' },
+
+    // MUST KEEP REFUSING. A baseline naming ids beside a cache holding none is
+    // the 2026-08-21 wipe's exact input — the device DID agree something here
+    // once, so an empty local set is a removal claim, not a fresh start.
+    { args: [{ cacheHasEntries: false, baselineClaimsEntries: true, carriedNodes: 880 }],
+      expect: false, why: 'a baseline claiming ids over an empty cache is the wipe shape' },
+
+    // MUST KEEP REFUSING. Painting nothing is the destructive case itself: it
+    // writes through and destroys cached[feed.feedGuid].
+    { args: [{ cacheHasEntries: false, baselineClaimsEntries: false, carriedNodes: 0 }],
+      expect: false, why: 'there is nothing to adopt, so painting only destroys' },
+
+    // MUST STILL WORK: the guard's original job. A device that holds favorites
+    // keeps them; this branch must not touch that case at all.
+    { args: [{ cacheHasEntries: true, baselineClaimsEntries: false, carriedNodes: 880 }],
+      expect: false, alsoNaive: true, why: 'a device that holds favorites is unaffected' },
+    { args: [{ cacheHasEntries: true, baselineClaimsEntries: true, carriedNodes: 0 }],
+      expect: false, alsoNaive: true, why: 'the ordinary refusal is unchanged' },
+  ];
+
+  for (const v of ADOPT_VECTORS) {
+    check(`mayAdoptRefusedRead — ${v.why}`, mayAdoptRefusedRead(...v.args), v.expect);
+  }
+
+  // TOTAL naive replay. `naive` is the version somebody would actually write:
+  // "the cache is empty, so there is nothing to lose". It misses BOTH halves
+  // that matter — the baseline claim, and the empty read.
+  const naive = (i) => !i.cacheHasEntries;
+  let proved = 0, exempt = 0;
+  for (const v of ADOPT_VECTORS) {
+    if (v.alsoNaive) { exempt += 1; continue; }
+    const n = naive(...v.args);
+    if (n === v.expect) {
+      failures += 1;
+      console.error(`  FAIL  (naive) agrees on "${v.why}" — this vector proves nothing`);
+    } else proved += 1;
+  }
+  console.log(`        ${proved} vector(s) proved against naive(), ${exempt} exempt as must-still-work`);
 }
 
 // ---------------------------------------------------------------------------
