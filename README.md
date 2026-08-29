@@ -31,7 +31,7 @@ npm run dev
 
 Get Podcast Index keys at <https://api.podcastindex.org/>.
 
-**Checks — there is no test runner.** `npm run typecheck` (`tsc --noEmit`, strict) · `npm run lint` (ESLint 9 flat config) · `npm run build`, plus fifteen scripts that stand in for the tests this repo doesn't have (six of them below; `package.json` has the rest). Each imports the **real** module (`node --experimental-strip-types`) and pins a function whose silent breakage costs a user something irreversible — treat a failure as a stop, and fix the code rather than the vector:
+**Checks — there is no test runner.** `npm run typecheck` (`tsc --noEmit`, strict) · `npm run lint` (ESLint 9 flat config) · `npm run build`, plus twenty-one `check:*` scripts that stand in for the tests this repo doesn't have (six of them below; `package.json` has the rest), and `npm run check:claudemd`, which guards the size of `CLAUDE.md` itself. Each imports the **real** module (`node --experimental-strip-types`) and pins a function whose silent breakage costs a user something irreversible — treat a failure as a stop, and fix the code rather than the vector:
 
 | Command | Guards |
 | --- | --- |
@@ -43,6 +43,8 @@ Get Podcast Index keys at <https://api.podcastindex.org/>.
 | `npm run check:assetlinks` | `buildAssetLinks` — the Digital Asset Links statement that lets the Android app represent this origin, and so reach the Chrome profile holding the wallet credential |
 
 `npm run probe:live -- <feedUrl>` is a discovery tool, not a check: it polls a feed and reports which live-value signal that publisher actually moves.
+
+**Testing against local data.** A dev server on localhost still publishes to the public relays under whatever npub is signed in — including the kind:10333 favorites event other apps read, which is replaceable and keeps no history. Three scripts close that gap: `npm run relay` (an in-memory NIP-01 relay on `ws://127.0.0.1:7447` with real replaceable-event semantics), `npm run seed:relay -- <npub>` (copies an account's real kind:10333 into it, read-only against the public relays), and `npm run e2e:favorites` (the whole read-merge-publish loop against a throwaway key, `--headed` to watch it).
 
 > Stop the dev server before `npm run build` — the build rewrites `.next` and the running server then serves a mismatched chunk manifest.
 
@@ -168,13 +170,18 @@ lib/
     keysend-lookup.ts → .well-known/keysend probe (the lnaddress → keysend upgrade)
     nwc.ts · spark.ts · spark-derive.ts · webln.ts   → the three rails + the derived Spark seed
     lnaddr.ts · bolt11.ts · boostbox.ts · wallets.ts
-scripts/  check-{spark-derivation,sanitizer,ssrf-guard,stream-ledger,live-block}.mjs
-          probe-live-item.mjs · publish-site-profile.mjs
+scripts/  check-*.mjs      → 21 pins (see `package.json`) + check-claudemd.mjs
+          local-relay.mjs · seed-local-relay.mjs · e2e-favorites.mjs  → testing without a real account
+          import-free.mjs · probe-live-item.mjs · publish-site-profile.mjs
+services/
+  nostr-index/   → separate Railway deployable: relay read cache (own deps + checks)
 public/
   hero.jpg · manifest.json · sw.js · icons/ · splash/
 ```
 
 `lib/v4v/*` and `lib/nostr/` are the **only** files that talk to wallets / signers; components import them through the `lib/nostr/` barrel and the `lib/v4v/*` entry points, so the toolkit can be swapped without touching `components/`.
+
+**`services/nostr-index/` is a separate deployable, not part of this app.** It holds relay WebSockets open continuously — which a serverless function cannot — and caches public events so a feed costs one request instead of four serial relay stages. It has its own `package.json`, dependencies and checks, is excluded from this repo's `tsconfig.json` and `eslint.config.mjs`, and never imports from `lib/` (nor `lib/` from it). It runs on **Railway and is CLI-uploaded, so it does not deploy when you merge** — ship it with `railway up` from that directory. The app reaches it only through `lib/nostr-index-server.ts`, server-side; unset `NOSTR_INDEX_URL` and every path falls back to relays.
 
 ---
 

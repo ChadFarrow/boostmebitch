@@ -66,4 +66,66 @@ localStorage fixes that and puts the record on disk, so the tab lifetime — the
 
 **External:** the Spark mnemonic lives encrypted on Nostr as kind:30078. The `SparkWallet` keeps its own state (leaves, transfer history) keyed off the seed + `accountNumber`; we don't manage a storage dir for it.
 
+## `safeSet` must never silently swallow a failed write
 
+A settings control here has no local state — it writes through `storage` and
+renders whatever reads back. So a discarded write does not degrade the UI, it
+**freezes the control**: tap it, nothing moves, no error anywhere. That shipped,
+and the reported symptom was *"I can't turn on streaming sats in Safari on iOS"*
+— the switch was the most visible casualty precisely because it is a pure
+read-through.
+
+Two causes, both silent and both real on iOS Safari:
+
+- **A full store.** `setItem` throws `QuotaExceededError` for *every* subsequent
+  write, down to a one-byte `bmb:stream_on`. Safari's per-origin quota is the
+  tightest in the wild and this app caches whole nostr events (`bmb:feed:*` and
+  `bmb:social:*` are unbounded in size, `bmb:profile4:*`/`bmb:pmeta:*` in count),
+  so a long-lived install fills it. **Reads keep working**, which is why nothing
+  else on screen looks wrong and why this is invisible in testing — a fresh
+  profile never reproduces it.
+- **A blocked store.** Private Browsing, "Block All Cookies", content blockers —
+  `setItem` throws `SecurityError` and no amount of freeing space helps.
+
+`safeSet` returns whether the value reached disk, and handles both:
+
+- On a full store it **evicts one cache namespace at a time and retries**, in
+  `EVICTABLE_PREFIXES` order (`bmb:social` → `bmb:feed` → `bmb:profile4` →
+  `bmb:pmeta` → `bmb:epmeta`) — the note blobs first because they are nearly all
+  the bytes, the small-but-numerous caches last because losing them costs a
+  visible refetch. Everything on that list is network-regenerable: **no setting,
+  no identity, no credential.** The rule is **a cache never displaces a setting,
+  and a setting always displaces a cache** — so a failing write of an *evictable*
+  key is left to fail rather than dropping other caches to fit one more cache.
+- When the write still cannot land, the value goes into `memoryMirror` and
+  `safeGet` reads through it, so the control the user just touched works for the
+  session. `safeRemove` deletes the mirror entry **first** — clearing only disk
+  would let the in-memory copy resurrect a disconnected wallet or a cleared
+  override on the next read — and `safeKeys` unions it, or a memory-held setting
+  is invisible to the scans that count it (`showsExplicitlyOn`).
+- Session-only values are surfaced, never hidden: `storage.nwcUri.isEphemeral()`
+  and `storage.streaming.isEphemeral(showKey?)` back soft "won't survive a
+  reload" hints. This generalizes the hand-rolled `memoryFallback.nwcUri` that
+  used to sit in `lib/store.ts` for the same reason.
+
+## A cache write that did not reach disk must not leave its baseline behind
+
+`safeSet` returns whether the value persisted, and `storage.favorites.set` /
+`favoriteEpisodes.set` now return it too — **do not drop that answer**.
+
+`bmb:favBaseline:*` is a few hundred bytes and the favorites it speaks for are
+hundreds of KB, written to different keys with no atomicity. So the small one
+lands while the large one falls back to `safeSet`'s in-memory mirror, which no
+reload survives. `dropBaselineIfWriteFailed` (`lib/store.ts`) clears the baseline
+on a failed write. It covers the case `trustedBaseline` cannot see — a **stale**
+cache that is non-empty and therefore looks believable, where the gap between the
+two is a silent partial delete.
+
+**It clears the PUBLIC half only, and writing the two-field literal is how that
+broke.** `storage.favBaseline.get` reads `{feeds, items}` back with
+`privateFeeds: []` / `privateItems: []`, so a failed public-half write disowned
+every private claim as a side effect — and the private entries live in a
+different place and were not affected by it. Unclaimed, `mergeFavoritesList`
+reads them as another writer's and carries them through every republish:
+unremovable, while the app still renders a heart for them. **A baseline writer
+touches the half it is speaking for and preserves the other.**
