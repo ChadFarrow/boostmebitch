@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PodcastResults } from '@/components/lists';
 import { useApp } from '@/lib/store';
@@ -27,6 +27,16 @@ const PLAYLISTS_ORIGIN = { path: '/playlists', label: 'playlists' };
  * shortfall line and the retry drifting apart between them — the fault this
  * module's own header records from when one file held two copies of the fetch.
  */
+/**
+ * How many rows get a track count, and how many of those run at once.
+ *
+ * Sized against `/api/playlist`'s own 30-per-minute per-IP limit, which this
+ * page SHARES with opening a playlist. 12 across BOTH sections leaves the
+ * visitor most of the budget for the thing they came to do.
+ */
+const MAX_COUNTED_ROWS = 12;
+const COUNT_CONCURRENCY = 3;
+
 const SECTIONS: readonly { url: string; heading: string; blurb: string }[] = [
   {
     url: MUSICL_PUBLISHER_URL,
@@ -137,31 +147,75 @@ export function PlaylistsPage() {
    * is an annotation, and holding the covers back for it would trade the whole
    * page against a line of small text.
    *
-   * **Both sections share this pass, and a shortfall here is cosmetic by
-   * design.** `/api/playlist` is rate limited to 30/min per IP, so a page of two
-   * collections can exceed it where one did not. `playlistTrackCount` answers
-   * null rather than throwing, and a row with no count simply shows none — so
-   * the ceiling costs annotations, never playlists.
+   * **The ceiling is NOT cosmetic, which an earlier version of this comment
+   * claimed.** `/api/playlist` allows 30 per minute per IP and it is the same
+   * bucket the visitor's next TAP on a row spends — so an uncapped pass does
+   * not merely lose annotations, it makes opening a playlist 429 and
+   * `<EpisodeList>` render its load error. Two sections make that likelier, not
+   * less: 17 rows today, and both lists grow without a deploy.
+   *
+   * So the pass is CAPPED and the rest of the rows simply show no count, which
+   * is how an annotation should degrade. `COUNT_CONCURRENCY` spreads even those
+   * rather than firing them as one spike.
+   *
+   * **The dependency is a STRING, and that is the other half.** `sections` is a
+   * new array on every `patch`, and mount produces four of them (two loading,
+   * then each collection resolving) — so depending on it cancelled every
+   * request in flight and re-issued the whole set, four times over. One RETRY
+   * past `/api/playlist`'s 60 s `max-age` then doubled it again. `urlKey`
+   * changes only when the set of countable URLs does.
+   *
+   * `askedRef` is what stops a re-run re-asking about a URL already answered,
+   * without making `counts` a dependency (which would re-arm the effect on
+   * every arriving count).
    *
    * Gated on `isPlaylistMedium` because a publisher feed may list albums, and
    * "tracks" is the wrong noun for one. Deduped by URL across the sections.
    */
+  const urlKey = useMemo(
+    () => [...new Set(
+      sections
+        .flatMap((s) => s.playlists ?? [])
+        .filter((p) => p.url && isPlaylistMedium(p))
+        .map((p) => p.url!),
+    )].join('\n'),
+    [sections],
+  );
+  const askedRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
-    const rows = sections
-      .flatMap((s) => s.playlists ?? [])
-      .filter((p) => p.url && isPlaylistMedium(p));
-    if (!rows.length) return;
-    const urls = [...new Set(rows.map((p) => p.url!))];
+    if (!urlKey) return;
+    // **The cap is a TOTAL for the page, not a per-run one**, and the claim is
+    // made EAGERLY. Both matter because this effect legitimately runs more than
+    // once: the two collections resolve in separate tasks, so `urlKey` grows,
+    // and React's development StrictMode invokes every effect twice. Claiming a
+    // URL only as a worker reached it left the rest unclaimed, so the next run
+    // re-asked about requests still in flight — measured at 30 requests for 17
+    // rows, worse than the uncapped version it replaced.
+    const budget = MAX_COUNTED_ROWS - askedRef.current.size;
+    if (budget <= 0) return;
+    const urls = urlKey.split('\n')
+      .filter((u) => !askedRef.current.has(u))
+      .slice(0, budget);
+    if (!urls.length) return;
+    for (const u of urls) askedRef.current.add(u);
+
     let live = true;
-    void Promise.allSettled(
-      urls.map(async (url) => {
+    let next = 0;
+    const worker = async () => {
+      while (live) {
+        const url = urls[next++];
+        if (!url) return;
         const total = await playlistTrackCount(url);
-        if (!live || total === null) return;
+        if (!live || total === null) continue;
         setCounts((prev) => (prev[url] === total ? prev : { ...prev, [url]: total }));
-      }),
+      }
+    };
+    void Promise.allSettled(
+      Array.from({ length: Math.min(COUNT_CONCURRENCY, urls.length) }, worker),
     );
     return () => { live = false; };
-  }, [sections]);
+  }, [urlKey]);
 
   /**
    * Open a playlist: set the store, THEN navigate to `/`.
