@@ -230,6 +230,57 @@ vec('a Date object publishedAt lands in SECONDS, not milliseconds', 'row',
     datePublished: Math.round(Date.parse('2025-11-23T08:24:25.000Z') / 1000),
   });
 
+// ── The seconds-vs-milliseconds branch ─────────────────────────────────────
+// `publishedAt` arrives as a STRING today and as a Date under some drivers, so
+// the NUMBER branch had no vector at all — and it shipped with its threshold
+// five orders of magnitude low (`< 1e6`), which sent a genuine seconds value
+// down the millisecond branch and divided it a second time. Every such track
+// dated to January 1970, on the row AND inside `FavoriteEpisode.datePublished`,
+// i.e. inside the shared kind:10333 event that has no undo.
+//
+// Both carry the real `value` block so `datePublished` is the ONLY field that
+// can separate them from naive() — the date branch is what is under test here,
+// not the value mapping two vectors above already pin.
+const PUB_MS = Date.parse('2025-11-23T08:24:25.000Z');
+const PUB_S = Math.round(PUB_MS / 1000);
+vec('a numeric publishedAt ALREADY in seconds is left alone', 'row',
+  [{ ...ROW, publishedAt: PUB_S }, { id: ID, feedId: 7 }], {
+    id: ID, guid: ROW.itemGuid, title: 'Red-Nose Rendezvous', enclosureUrl: ROW.audioUrl,
+    feedId: 7, podcastGuid: ROW.feedGuid, duration: 264, datePublished: PUB_S,
+    value: KEYSEND_SINGLE,
+  });
+vec('a numeric publishedAt in milliseconds is converted exactly once', 'row',
+  [{ ...ROW, publishedAt: PUB_MS }, { id: ID, feedId: 7 }], {
+    id: ID, guid: ROW.itemGuid, title: 'Red-Nose Rendezvous', enclosureUrl: ROW.audioUrl,
+    feedId: 7, podcastGuid: ROW.feedGuid, duration: 264, datePublished: PUB_S,
+    value: KEYSEND_SINGLE,
+  });
+
+// ── The refusal tests SHAPE, not "is this a non-empty array" ───────────────
+// `pg` decodes a Json column into a JS array today, so the guard shipped as
+// `Array.isArray(raw) && raw.length > 0` and every OTHER shape read as "no
+// data", skipping the refusal it exists to perform. The shapes below are the
+// ones a Prisma schema change produces without touching this repo: Json → String
+// hands the array back as text, and an app writing an object map hands back an
+// object. A row accepted without its valueTimeSplits pays the track owner
+// instead of the featured artist, with every leg reporting ✓.
+vec('valueTimeSplits as a JSON STRING still refuses the row', 'row',
+  [{ ...ROW, valueTimeSplits: '[{"startTime":8,"remoteItem":{"feedGuid":"x"}}]' },
+   { id: ID, feedId: 7 }], null);
+vec('valueTimeSplits as an object map still refuses the row', 'row',
+  [{ ...ROW, valueTimeSplits: { 0: { startTime: 8 } } }, { id: ID, feedId: 7 }], null);
+vec('alternateEnclosures as a JSON string still refuses the row', 'row',
+  [{ ...ROW, alternateEnclosures: '[{"type":"audio/mpeg"}]' }, { id: ID, feedId: 7 }], null);
+
+// `ROW.image` is null, so no vector reached the image mapping at all. Carrying
+// the real value block again leaves `image` as the only discriminator.
+vec('a row image is carried onto the Episode', 'row',
+  [{ ...ROW, image: 'https://example.test/art.jpg' }, { id: ID, feedId: 7 }], {
+    id: ID, guid: ROW.itemGuid, title: 'Red-Nose Rendezvous', enclosureUrl: ROW.audioUrl,
+    feedId: 7, podcastGuid: ROW.feedGuid, duration: 264, datePublished: PUB_S,
+    image: 'https://example.test/art.jpg', value: KEYSEND_SINGLE,
+  });
+
 /**
  * The obvious implementation: trust the database, because the field names
  * match. It renders every one of the must-still-work vectors identically —

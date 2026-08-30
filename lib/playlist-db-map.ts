@@ -181,7 +181,7 @@ export function dbRowToEpisode(
   const enclosureUrl = typeof row.audioUrl === 'string' ? row.audioUrl.trim() : '';
   if (!guid || !enclosureUrl) return null;
   // Anything we would drop sends the whole row to Podcast Index instead.
-  if (nonEmpty(row.valueTimeSplits) || nonEmpty(row.alternateEnclosures)) return null;
+  if (carriesData(row.valueTimeSplits) || carriesData(row.alternateEnclosures)) return null;
   const title = typeof row.title === 'string' ? row.title : '';
 
   const ep: Episode = {
@@ -216,9 +216,28 @@ export function dbRowToEpisode(
   return ep;
 }
 
-/** True for an array with something in it — the shape both refusals test. */
-function nonEmpty(raw: unknown): boolean {
-  return Array.isArray(raw) && raw.length > 0;
+/**
+ * Whether the column carries something this mapper would drop.
+ *
+ * **It answers "is this certainly absent?" and refuses everything else** — the
+ * inverse of testing for a non-empty array, which is how it shipped. `pg`
+ * decodes a `Json` column into a JS array today, so `Array.isArray(raw) &&
+ * raw.length > 0` looked equivalent; it is not. An object map (`{"0": {...}}`),
+ * a column whose Prisma type moves from `Json` to `String` (so the array
+ * arrives as the *text* `'[{"startTime":8,...}]'`), or any driver change that
+ * hands back something else all read as FALSE, which silently skips the refusal
+ * — and the refusal is the whole guard. `valueTimeSplits` decides who is paid
+ * *during* a track, so a row accepted without it pays the track owner instead
+ * of the featured artist, with every leg reporting ✓.
+ *
+ * `null`, `undefined` and `[]` are the only shapes observed to mean "no data",
+ * so they are the only ones that pass. Anything else costs one Podcast Index
+ * lookup, which is the same price every other refusal in this file pays.
+ */
+function carriesData(raw: unknown): boolean {
+  if (raw === null || raw === undefined) return false;
+  if (Array.isArray(raw)) return raw.length > 0;
+  return true;
 }
 
 /** Seconds since the epoch, matching what `buildEpisode` puts on an Episode. */
@@ -231,10 +250,17 @@ function pubDate(raw: unknown): number | undefined {
         ? raw
         : NaN;
   if (!Number.isFinite(ms)) return undefined;
-  // A `number` column could already be seconds. Anything below this is not a
-  // plausible millisecond timestamp (it is 1970-01-12) and is treated as
-  // seconds already, which is the only reading that does not put every track in
-  // the 1970s or the year 56000.
-  const secs = Math.abs(ms) < 1e6 ? Math.round(ms) : Math.round(ms / 1000);
+  // A `number` column could already be seconds, so the magnitude decides which.
+  // **The boundary is 1e11, and the units are the trap.** A real seconds epoch
+  // is ~1.8e9 and a real millisecond one ~1.8e12, so the split has to sit
+  // between them; 1e11 is 1973 read as milliseconds and the year 5138 read as
+  // seconds, so no timestamp a podcast feed can carry is ambiguous across it.
+  // This shipped as `< 1e6` — five orders of magnitude low — which sent every
+  // genuine seconds value down the millisecond branch and divided it again,
+  // dating every such track to January 1970. (The comment that stood here read
+  // 1e6 as 1970-01-12, which is 1e6 SECONDS; 1e6 milliseconds is 1970-01-01.)
+  // `datePublished` is rendered in the row and is also written into
+  // `FavoriteEpisode.datePublished`, i.e. into the shared kind:10333 event.
+  const secs = Math.abs(ms) < 1e11 ? Math.round(ms) : Math.round(ms / 1000);
   return secs > 0 ? secs : undefined;
 }

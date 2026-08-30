@@ -60,6 +60,14 @@ export function HomePage() {
    * said "ChadF has no playlists" to everybody who pressed it.
    */
   const [publisherError, setPublisherError] = useState(false);
+  // **What the publisher feed LISTED, and whether Podcast Index was asked.**
+  // `/api/publisher` returns both, and this surface discarded them — so the two
+  // faults `<PlaylistsPage>` fixes were still live for anyone arriving through
+  // a shared `?publisher=` link or a search hit: every RSS-read child stamped
+  // NOT IN PI over feeds PI does hold, and the survivor count printed as the
+  // size of the collection. Same route, same body, same repair.
+  const [publisherListed, setPublisherListed] = useState(0);
+  const [publisherNoPi, setPublisherNoPi] = useState(false);
   const router = useRouter();
   // `selected` lives in the Zustand store so cross-component surfaces (e.g.
   // the podcast-name link in a Nostr note card) can route into the detail
@@ -291,6 +299,8 @@ export function HomePage() {
         const collection = await loadCollection(feedUrl);
         if (!collection) { setPublisherError(true); setPublisherAlbums([]); return; }
         setPublisherAlbums(collection.feeds);
+        setPublisherListed(collection.listed);
+        setPublisherNoPi(collection.couldNotAskPi);
       } catch { setPublisherError(true); setPublisherAlbums([]); }
       finally { setPublisherLoading(false); }
     })();
@@ -385,12 +395,16 @@ export function HomePage() {
       setPublisherSource(p);
       setPublisherAlbums(null);
       setPublisherError(false);
+      setPublisherListed(0);
+      setPublisherNoPi(false);
       setPublisherLoading(true);
       try {
         if (!p.url) { setPublisherAlbums([]); return; }
         const collection = await loadCollection(p.url);
         if (!collection) { setPublisherError(true); setPublisherAlbums([]); return; }
         setPublisherAlbums(collection.feeds);
+        setPublisherListed(collection.listed);
+        setPublisherNoPi(collection.couldNotAskPi);
       } catch {
         setPublisherError(true);
         setPublisherAlbums([]);
@@ -641,7 +655,16 @@ export function HomePage() {
                   <div className="text-[11px] uppercase tracking-widest text-muted mb-2 px-1">
                     {publisherLoading
                       ? `loading ${publisherChildWord}…`
-                      : `${publisherAlbums?.length ?? 0} ${publisherChildWord}`}
+                      // "N of M" whenever children dropped out. The bare number
+                      // is a statement about the collection, and the route drops
+                      // a child it can neither find in PI nor read from RSS —
+                      // right, since one dead entry must not cost the reader the
+                      // other nine, but it leaves the survivors indistinguishable
+                      // from the whole. Reported as "4 playlists" over a
+                      // collection of eleven while PI was rate limiting.
+                      : (publisherAlbums?.length ?? 0) < publisherListed
+                        ? `${publisherAlbums?.length ?? 0} of ${publisherListed} ${publisherChildWord}`
+                        : `${publisherAlbums?.length ?? 0} ${publisherChildWord}`}
                   </div>
                 )}
                 {publisherLoading ? null : publisherError ? (
@@ -656,13 +679,21 @@ export function HomePage() {
                     </button>
                   </p>
                 ) : !publisherAlbums?.length ? (
-                  // Not "no INDEXED albums": the route now reads a child straight
-                  // from its RSS when Podcast Index has never seen it, so an empty
-                  // list here means the publisher genuinely listed nothing —
-                  // which is a different sentence from the failure above.
-                  <p className="text-muted text-sm py-4 px-1">this publisher feed lists nothing</p>
+                  // Not "no INDEXED albums": the route reads a child straight
+                  // from its RSS when Podcast Index has never seen it. But an
+                  // empty list is only "listed nothing" when `listed` is ALSO
+                  // zero — otherwise the feed named children and every one of
+                  // them failed to resolve, which is the opposite claim.
+                  publisherListed > 0 ? null : (
+                    <p className="text-muted text-sm py-4 px-1">this publisher feed lists nothing</p>
+                  )
                 ) : (
-                  <PodcastResults feeds={publisherAlbums} selected={null} onSelect={(p) => { clearPublisher(); setSelected(p); }} />
+                  // `piUnasked`: with PI rate limiting every child comes back
+                  // from RSS as `isPreview`, and without this each row is
+                  // stamped NOT IN PI — a claim about the feed built out of our
+                  // own failure to ask. Reported as "why does it say not in PI
+                  // when some are?".
+                  <PodcastResults feeds={publisherAlbums} selected={null} piUnasked={publisherNoPi} onSelect={(p) => { clearPublisher(); setSelected(p); }} />
                 )}
               </>
             ) : (

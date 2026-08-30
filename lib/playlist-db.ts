@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 import { dbRowToEpisode, type DbTrackRow } from './playlist-db-map';
 import { fnvHash } from './util';
 import { episodeKey } from './pi-batch';
-import type { Episode } from './types';
+import type { Episode, ValueBlock } from './types';
 import type { PlaylistItemRef } from './feed-xml';
 
 /**
@@ -32,12 +32,21 @@ import type { PlaylistItemRef } from './feed-xml';
  *    to the caller as absent, and `/api/playlist` resolves them through PI
  *    exactly as before. That is what makes the data being months out of date
  *    harmless: a track added last week is simply not here.
+ *
+ *    **That argument covers MEMBERSHIP and stops there.** A stale HIT on a
+ *    value block is an answer, and `payableValue` reads it before it looks
+ *    anywhere else — so the blocks are handed back separately and applied only
+ *    where nothing fresher could answer. Measured on one 8-row page of It's A
+ *    Mood: 8 of 8 snapshots disagreed with the live feed, two of them naming a
+ *    different destination node outright. See `PlaylistDbTracks.values`.
  * 3. **Every failure is `null`, never an empty result.** An unset env var, an
  *    unreachable host, a schema that moved underneath us — all of it reverts to
  *    the pre-existing path. Unset `PLAYLIST_DB_URL` and this file does nothing.
  *
- * **It is another application's database.** We hold no migrations here and must
- * never write to it. The queries name only columns observed on 2026-08-29, and
+ * **It is another application's database — the same owner, a different schema.**
+ * We hold no migrations here and must never write to it, and StableKraft's
+ * schema moves without this repo being touched, which is what makes every field
+ * untrusted regardless of who owns the server. The queries name only columns observed on 2026-08-29, and
  * `lib/playlist-db-map.ts` treats every field as untrusted — see its header for
  * what the data actually contains, which is not what its field names promise.
  */
@@ -59,6 +68,20 @@ function getPool(): Pool | null {
   if (pool) return pool;
   const connectionString = process.env.PLAYLIST_DB_URL;
   if (!connectionString) return null;
+  // Accepts a real multi-line PEM (Vercel) or one with escaped newlines, which
+  // is the only way a certificate fits on one line of `.env.local`.
+  const ca = process.env.PLAYLIST_DB_CA?.replace(/\\n/g, '\n').trim();
+  if (!ca) {
+    // FAIL CLOSED, and say so. Without the CA there is no way to tell this
+    // database from anything that answers on its address, and the whole module
+    // is an optimisation — so it turns itself off and every track resolves
+    // through Podcast Index exactly as it did before the accelerator existed.
+    // Warned rather than silent because the symptom otherwise is only that a
+    // playlist page got slower, which nobody reports.
+    poolFailed = true;
+    console.warn('[playlist-db] PLAYLIST_DB_CA is not set — accelerator disabled, using Podcast Index');
+    return null;
+  }
   try {
     pool = new Pool({
       connectionString,
@@ -73,12 +96,26 @@ function getPool(): Pool | null {
       // that matters most — a cold page a reader is waiting for.
       query_timeout: 2_500,
       statement_timeout: 2_500,
-      // Railway terminates TLS with its own certificate chain. This is a
-      // read-only accelerator for public podcast metadata and every field it
-      // returns is re-validated before use, so the trade is deliberate rather
-      // than overlooked — but it is the reason nothing secret may ever be read
-      // through this connection.
-      ssl: { rejectUnauthorized: false },
+      // **Pinned to the database's own root CA, because the alternative is no
+      // verification at all.** Measured on 2026-08-29: the server presents a
+      // self-signed leaf (`CN=localhost`, SAN `DNS:localhost`) issued by a
+      // self-signed `CN=root-ca`, reached over Railway's public TCP proxy. So
+      // the traffic crosses the open internet, the default check cannot pass,
+      // and `rejectUnauthorized: false` — how this shipped — accepts ANY
+      // certificate instead.
+      //
+      // That is an INTEGRITY problem, not the confidentiality one the previous
+      // comment here argued. `dbValueBlock` validates the SHAPE of a value
+      // block and never a payee, so an active MITM could return well-formed
+      // rows naming their own node, and nothing downstream would notice. The
+      // value block no longer outranks Podcast Index (see
+      // `resolvePlaylistTracks`), which bounds that; the pin is what closes it.
+      //
+      // `checkServerIdentity` is overridden because the leaf's CN is
+      // `localhost` and the hostname is the Railway proxy — the names cannot
+      // match, so the CA pin is doing the whole job. That is sound here and
+      // only here: the CA signs exactly one server.
+      ssl: { ca, checkServerIdentity: () => undefined },
     });
     // A pool emits 'error' for an idle client dropped by the server. Without a
     // listener that is an unhandled 'error' event, which takes the process
@@ -89,6 +126,31 @@ function getPool(): Pool | null {
     poolFailed = true;
     return null;
   }
+}
+
+export interface PlaylistDbTracks {
+  /**
+   * The rows this database answered, keyed by `episodeKey`. **Their `value` is
+   * deliberately absent** — see `values`.
+   */
+  tracks: Map<string, Episode>;
+  /**
+   * Each answered track's value block, held APART from its episode.
+   *
+   * `payableValue` returns `episode.value` before it looks anywhere else, so a
+   * block left on the episode outranks whatever Podcast Index or the artist's
+   * own RSS says moments later — and this database is a crawl, months behind.
+   * An artist who changed a node pubkey or moved off a Lightning-address host
+   * since then would be paid at the old destination on the strength of a row
+   * we happened to hold, with every leg reporting ✓.
+   *
+   * So the caller applies these only to rows nothing fresher could value. The
+   * accelerator can still make a track payable that PI cannot resolve at all —
+   * which is strictly better than the page had before it — but it can never
+   * overrule a live answer. Membership and metadata are accelerated; money is
+   * not.
+   */
+  values: Map<string, ValueBlock>;
 }
 
 /**
@@ -109,8 +171,8 @@ function getPool(): Pool | null {
 export async function resolvePlaylistTracks(
   refs: PlaylistItemRef[],
   feedId: number,
-): Promise<Map<string, Episode> | null> {
-  if (!refs.length) return new Map();
+): Promise<PlaylistDbTracks | null> {
+  if (!refs.length) return { tracks: new Map(), values: new Map() };
   const p = getPool();
   if (!p) return null;
 
@@ -152,7 +214,8 @@ export async function resolvePlaylistTracks(
     return null;
   }
 
-  const out = new Map<string, Episode>();
+  const tracks = new Map<string, Episode>();
+  const values = new Map<string, ValueBlock>();
   for (const row of rows) {
     const key = episodeKey({
       feedGuid: String(row.feedGuid ?? ''),
@@ -160,7 +223,7 @@ export async function resolvePlaylistTracks(
     });
     const ref = wanted.get(key);
     if (!ref) continue;      // pair disagreed — leave it for Podcast Index
-    if (out.has(key)) continue;
+    if (tracks.has(key)) continue;
     const ep = dbRowToEpisode(row as unknown as DbTrackRow, {
       // The SHARED `fnvHash`, so this row and the route's `placeholder` for the
       // same ref are one track rather than two. Imported directly: only
@@ -173,7 +236,13 @@ export async function resolvePlaylistTracks(
       // they do not the playlist document is the one the reader is looking at.
       playlistGroup: ref.episode,
     });
-    if (ep) out.set(key, ep);
+    if (!ep) continue;
+    // Lifted off the episode rather than never mapped, so `dbRowToEpisode`
+    // stays a faithful reading of the row and this module owns the precedence
+    // policy. See `PlaylistDbTracks.values`.
+    const { value, ...track } = ep;
+    tracks.set(key, track);
+    if (value) values.set(key, value);
   }
-  return out;
+  return { tracks, values };
 }

@@ -317,11 +317,17 @@ export function PlaylistsPage() {
                   return n === undefined ? null : `${n.toLocaleString()} tracks`;
                 }}
               />
-            ) : state.failed ? null : (
-              // Not "no playlists" in the largest type on the page: this is
-              // reachable only once the fetch SUCCEEDED and the feed genuinely
-              // listed nothing, which is a different sentence from the failure
-              // above.
+            ) : state.failed || state.listed > 0 ? null : (
+              // **Gated on `listed`, never on how many rows rendered.**
+              // "Nothing" is a claim about the COLLECTION; `rows.length === 0`
+              // is a fact about what we resolved, and the two part company
+              // exactly when the page is least able to tell. With Podcast Index
+              // rate limiting and the RSS repair also failing this printed
+              // "this collection lists nothing" directly under "0 of 11
+              // playlists" and "11 more couldn't be loaded just now" — three
+              // lines, two contradicting the third, and the confident one
+              // wrong. With `listed > 0` the shortfall line already carries the
+              // story and its own retry.
               <p className="text-muted text-sm py-4 px-1">this collection lists nothing</p>
             )}
           </section>

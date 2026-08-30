@@ -779,9 +779,17 @@ export function FullscreenPlayer({
                     const active = t.id === episode.id;
                     return (
                       <li key={t.id}>
+                        {/* The active row draws ❚❚, so it has to pause.
+                            `play()` on the current track writes
+                            `isPlaying: true` over `true` and re-runs neither of
+                            the player's two effects, so the press was a silent
+                            no-op. */}
                         <button
                           type="button"
-                          onClick={() => play(t, podcast)}
+                          onClick={() => {
+                            if (active) togglePlay();
+                            else play(t, podcast);
+                          }}
                           className={`w-full flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
                             active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
                           }`}
