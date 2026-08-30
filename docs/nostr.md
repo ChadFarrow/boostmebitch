@@ -949,6 +949,88 @@ Episodes (and RSS live items) can carry `<podcast:socialInteract protocol="nostr
 
 **Inline images in notes.** `NoteCard` pulls image URLs (`jpg/jpeg/png/gif/webp/avif/bmp`, optional query string) out of the body via `extractImages` and renders `<img>` thumbnails (clickable, lazy, `max-h-80`) instead of raw links — every note surface, not just the thread. Detection is extension-based, so URLs without one (some `i.nostr.build/<hash>`) aren't caught; that would need NIP-92 `imeta` parsing. Uses `<img>`, not `next/image` (arbitrary hosts), like `PodcastCover`.
 
+## Unfurling the episode a note links (`<NoteEpisodeCard>`)
+
+A note that links a Fountain episode used to render as a 16px thumbnail beside
+one truncating line of 11px grey text, with the raw URL repeated underneath in
+magenta. **Every fact was already on screen.** The report that started this work
+read as "show info for fountain links", and the first instinct — fetch the
+Fountain page and scrape it — was wrong: the note already carries both guids,
+`discover.ts` already parses them, `useNoteMeta` already resolves them, and the
+card already drew them. It was a presentation problem wearing a data problem's
+clothes. Check what is already on the event before building a fetcher.
+
+**The note names its own link.** NIP-73 puts a URL hint in the THIRD slot of an
+`i` tag — `["i", "podcast:item:guid:<guid>", "https://fountain.fm/episode/<id>"]`
+— so `episodeLinkInNote` (`lib/util.ts`, pinned by `check:notelink`) asks the
+note which of its URLs names the episode rather than pattern-matching a host.
+Measured over 604 real podcast-tagged kind:1s on 2026-08-29: 353 carry a hint,
+291 of those have it in the body. `DiscoveredNote` does not keep that third slot,
+so the card reads `note.rawEvent.tags`.
+
+**A hint is a CANDIDATE, not the answer — every tier ends at the host
+allowlist.** The `i` tag and the body are written by the same author, so "the
+note pointed at this" is worth nothing when the author is hostile: they satisfy
+it by writing both halves. Without the allowlist an attacker publishes a kind:1
+carrying a real show's `podcast:guid:` and `podcast:item:guid:`, an `i` tag
+whose third slot is their own URL, and that URL in the body — and the card
+unfurls under the genuine show's artwork and title, with PLAY / ♡ / BOOST beside
+a link of their choosing. **The upgrade is what makes it worth doing**:
+`removeUrl` takes the raw URL out of the body, so what a reader would have seen
+as a full magenta link becomes a small `host ↗` chip under real artwork. The
+cost is coverage — a hint on an unrecognised host now leaves the note rendering
+as it did before the feature existed, which is nobody's regression.
+
+**Requiring the hint to appear in the BODY is still doing real work, but it was
+never the safety property.** A hint is very often the RSS FEED URL rather than a
+web page — `ableandthewolf.com/static/media/feed.xml`,
+`serve.podhome.fm/rss/<uuid>`, `feeds.fountain.fm/<id>` were all in that sample.
+Correct NIP-73, useless as a link: unfurling one puts a card over a raw XML
+document. The reasoning used to be that a note does not link its own feed XML in
+its text, so membership excluded them for free — but `check:notelink` carries a
+real Helipad boost note that does exactly that, and the vector asserted the feed
+URL as the answer for the life of the feature. The allowlist excludes them by
+construction instead of by luck.
+
+**`feeds.fountain.fm` is why the host test is a SET, never a suffix test.**
+79 of those 604 notes carried a Fountain page URL that no hint named, so a
+hint-only rule would silently drop them — hence tier two, an explicit host set
+plus a path allowlist. Every loose spelling accepts the feed subdomain:
+`includes('fountain.fm')`, `hostname.endsWith('fountain.fm')` and
+`/fountain\.fm/` all say yes to a raw RSS document, and the last two also say
+yes to `fountain.fm.example.com`, which lets anyone put a card of their choosing
+under someone else's note. Tier two refuses ambiguity outright: two different
+episode URLs in one body means the note is not about one of them.
+
+**Music is not an edge case.** Fountain spells episode and show as `/track/` and
+`/album/`, and `/artist/` is the `podcast:publisher:guid:` target — which is
+neither the item nor its show and must never be the answer. Note that
+`'podcast:publisher:guid:x'.startsWith('podcast:guid:')` is false, which is why
+that prefix test is written against the whole string.
+
+**Not every tagged note is unfurled, and that is a deliberate ceiling.** 171 of
+243 cards on the live global feed carry NIP-73 podcast tags; unfurling all of
+them turns the feed into a wall of artwork and pushes each author's own sentence
+below the fold. The link in the body is the author pointing at something.
+Everything else keeps the one-line label — which is suppressed when the card
+shows, because it states the same two facts with the same two click targets.
+
+**PLAY and BOOST both wait on `/api/feed`; the heart does not.** `useNoteMeta`
+resolves PI's *indexed* record, which carries no value block — only `/api/feed`
+applies `e.value ?? podcast.value`. Opening the boost modal with the indexed
+record gives a BOOST button with no recipients, so both spending controls are
+disabled until `loadEpisodeFromFeed` answers and say so when it fails. A
+favorite is two guids and a label, all of which PI already answered with, so the
+heart must not wait on a feed download. `loadFeed` coalesces, so PLAY-then-BOOST
+on one card is one download.
+
+**The show name and the episode title are two destinations, not one.** Collapsing
+them onto a single handler deletes the only route to the show from a note about
+its episode. The show line also failed WCAG 2.5.8 at **97.5 × 15px** — at
+`text-[10px]` the line box is 15px, so the control looked finished and was 9px
+short. Measure under CDP device emulation; `--window-size` lays out at desktop
+width and crops.
+
 
 ## Value playback receipts (kind:3369)
 

@@ -139,6 +139,31 @@ export function extractImages(text: string): { body: string; images: string[] } 
   };
 }
 
+/**
+ * Drop one already-identified URL from note text, tidying the whitespace it
+ * leaves behind — the same closing move `extractImages` makes for an image it
+ * lifted out of the body and into its own element.
+ *
+ * The caller passes a token `episodeLinkInNote` returned, which is by
+ * construction an exact substring of this text, so this matches on that
+ * substring rather than re-tokenizing. That is deliberate: `splitTrailingPunct`
+ * here and `trimUrlTail` in `lib/util.ts` disagree about a balanced `)` at the
+ * end of a URL, and re-deriving the token would reintroduce that disagreement
+ * as "the card rendered but the raw link stayed underneath it anyway".
+ *
+ * Only the first occurrence goes. A note that pastes the same link twice meant
+ * to, and the card already speaks for one of them.
+ */
+export function removeUrl(text: string, url: string): string {
+  if (!url) return text;
+  const at = text.indexOf(url);
+  if (at < 0) return text;
+  return (text.slice(0, at) + text.slice(at + url.length))
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 // ─── UI ───────────────────────────────────────────────────────────────────────
 
 /**

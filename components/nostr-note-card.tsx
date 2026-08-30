@@ -12,11 +12,12 @@ import { sendZap } from '@/lib/v4v/zap';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
-import { getErrorMessage } from '@/lib/util';
-import { linkify, extractImages, stripNostrUris, timeAgo } from '@/lib/format';
+import { episodeLinkInNote, getErrorMessage } from '@/lib/util';
+import { linkify, extractImages, removeUrl, stripNostrUris, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
 import { PodcastCover } from './podcast-cover';
 import { FollowButton } from './follow-button';
+import { NoteEpisodeCard } from './note-episode-card';
 
 type ActionState = 'idle' | 'busy' | 'done' | 'error';
 
@@ -65,9 +66,23 @@ function NoteCardImpl({
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)
       : null;
-  const { body: contentBody, images: contentImages } = extractImages(
+  const { body: rawBody, images: contentImages } = extractImages(
     stripNostrUris(note.content),
   );
+  /**
+   * Does this note link the episode it is tagged with, and did both halves
+   * resolve? Then <NoteEpisodeCard> unfurls it below, and the URL comes OUT of
+   * the body — the card restates the destination, so leaving the raw link under
+   * it prints the same fact twice, once as a wall of magenta.
+   *
+   * `rawEvent.tags` rather than the parsed `podcastGuid`/`episodeGuids`: the
+   * answer needs the third slot of each `i` tag (NIP-73's URL hint), which the
+   * parsed shape does not keep. Guarded because a note restored from a
+   * localStorage cache written before `rawEvent` existed has none.
+   */
+  const episodeLink = episodeLinkInNote(note.rawEvent?.tags ?? [], rawBody);
+  const unfurl = podcast && episode?.guid ? episodeLink : null;
+  const contentBody = unfurl ? removeUrl(rawBody, unfurl) : rawBody;
 
   const [composerMode, setComposerMode] = useState<'reply' | 'quote' | null>(null);
   const [composerDraft, setComposerDraft] = useState('');
@@ -243,7 +258,10 @@ function NoteCardImpl({
           {note.client && <span className="text-muted">via {note.client}</span>}
         </div>
 
-        {podcast && (
+        {/* Suppressed when the card unfurls below: it names the same show and
+            the same episode, with the same two click targets, in 11px grey. Two
+            statements of one fact read as two different things at a glance. */}
+        {podcast && !unfurl && (
           <div className="flex items-center gap-2 mt-1.5 text-[11px] text-muted">
             {/* Both URLs, via <PodcastCover> — a bare <img src={podcast.image}>
                 is the shape this component exists to replace. PI mirrors RSS
@@ -345,6 +363,19 @@ function NoteCardImpl({
               </a>
             ))}
           </div>
+        )}
+
+        {/* After the images rather than before: both are attachments to the
+            author's sentence, and the card is the one that carries controls, so
+            it belongs next to the action bar it reads as an extension of. */}
+        {unfurl && podcast && episode && episodeGuid && (
+          <NoteEpisodeCard
+            podcast={podcast}
+            episode={episode}
+            href={unfurl}
+            onOpenShow={() => openShow(podcast)}
+            onOpenEpisode={() => openBoostedEpisode(podcast, episodeGuid)}
+          />
         )}
 
         <div className="flex items-center gap-3 mt-2 text-[11px] flex-wrap">
