@@ -1,5 +1,6 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
+import { PiHttpError } from './pi-error';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
 import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRemoteItems, type PlaylistItemRef } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
@@ -55,12 +56,7 @@ function authHeaders() {
 
 /** Thrown by `pi()` on a non-2xx, carrying the status so callers can tell a
  *  "PI doesn't know this" miss from a genuine outage. */
-export class PiHttpError extends Error {
-  constructor(readonly status: number, body: string) {
-    super(`PI ${status}: ${body}`);
-    this.name = 'PiHttpError';
-  }
-}
+export { PiHttpError } from './pi-error';
 
 async function pi<T>(path: string, maxBytes?: number): Promise<T> {
   const res = await fetch(BASE + path, {
@@ -95,12 +91,22 @@ async function pi<T>(path: string, maxBytes?: number): Promise<T> {
   //
   // Losing the status is not cosmetic. `getPodcastByFeedUrl` and every sibling
   // wrapper turn a 400/404 into a MISS by testing `e instanceof PiHttpError`,
-  // and `lib/podcast-meta.ts` files 429/408 under COULD_NOT_ASK — an uncached
-  // null that deliberately does NOT trip the client-side PI breaker. With the
-  // class gone, a rate limit trips the breaker and disables metadata resolution
-  // for the whole tab, which is the exact failure docs/feeds.md exists to
-  // prevent. An empty detail string is the right fallback: the status carries
-  // the meaning, the body is a courtesy.
+  // and `piCouldNotAskStatus` (lib/pi-error.ts) reads 429/408 off the same
+  // class so `withErrorHandling` can answer with that status instead of 500.
+  // THAT is what puts a PI rate limit into `lib/podcast-meta.ts`'s
+  // COULD_NOT_ASK bucket — an uncached null that deliberately does not trip the
+  // client-side breaker.
+  //
+  // **Naming the chain because an earlier version of this comment skipped the
+  // middle of it** and claimed podcast-meta already filed a PI 429 under
+  // COULD_NOT_ASK. It did not: podcast-meta's own comment says its 429 arm is
+  // `lib/rate-limit.ts` — OUR limiter — "not Podcast Index at all". PI's 429
+  // rethrows out of the wrapper, `withErrorHandling` made it a 500, and 500 is
+  // what trips the breaker. So restoring this class was necessary and was not
+  // sufficient; the api-handler mapping is the other half.
+  //
+  // An empty detail string is the right fallback: the status carries the
+  // meaning, the body is a courtesy.
   if (!res.ok) {
     throw new PiHttpError(res.status, await readCappedText(res, 4 * 1024).catch(() => ''));
   }
