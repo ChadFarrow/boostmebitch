@@ -55,7 +55,7 @@ function HeartButton({
   synced: boolean;
   onToggle: (e: React.MouseEvent) => void;
   label: string;
-  /** Replaces FAVORITE/FAVORITED. See `nameTarget` on the exported hearts. */
+  /** Replaces FAVORITE. See `nameTarget` on the exported hearts. */
   word?: string;
 }) {
   return (
@@ -69,7 +69,24 @@ function HeartButton({
       }
       className={heartClasses(isFav, size)}
     >
-      <span className={size === 'md' ? 'text-lg leading-none' : 'text-base leading-none'}>
+      {/* FIXED-WIDTH GLYPH BOX, and it is the other half of the no-shift rule
+          below. Making the word state-independent was not enough: ♥ and ♡ are
+          not the same width. Neither is in JetBrains Mono, so each falls back
+          per glyph — measured under CDP at both sizes, ♥ is 0.849em and ♡ is
+          0.653em, so toggling still resized the chip by ~3.2px at 'sm' and
+          ~3.5px at 'md' and still moved BOOST.
+
+          `w-[0.9em]` clears the wider glyph at both sizes and scales with the
+          font size, so one value covers 'sm' and 'md'. It is a CAP as much as a
+          floor: on a platform whose fallback font is wider than this
+          measurement, the glyph overflows the box symmetrically — `text-center`
+          — and the chip's width still does not change. A `min-w` would have
+          fixed macOS and let the shift straight back in somewhere else. */}
+      <span
+        className={`inline-block w-[0.9em] text-center ${
+          size === 'md' ? 'text-lg leading-none' : 'text-base leading-none'
+        }`}
+      >
         {isFav ? '♥' : '♡'}
       </span>
       {/* 'sm' is the list-row chip: at 390px it competes with a BOOST button and
@@ -80,13 +97,25 @@ function HeartButton({
           dimensioned to match .btn-ghost (see the note at the top of this file).
           `hidden` is display:none, so the label is not a flex item and gap-1.5
           contributes nothing — the mobile chip is exactly a 44x44 glyph square. */}
-      {/* When `word` is set it names the target and the FILLED, magenta heart
-          is what says "favorited" — the glyph already carried that state, so
-          repeating it in text was the redundancy that made two adjacent hearts
-          indistinguishable. The aria-label is unaffected either way: it always
-          spells out the whole action ("Unfavorite podcast"). */}
+      {/* THE WORD DOES NOT CHANGE WITH STATE, AND THAT IS A LAYOUT RULE, not a
+          copy preference. It read FAVORITE / FAVORITED, one character apart, so
+          toggling a heart RESIZED THE CHIP — and this control is the last item
+          in right-aligned clusters, so the resize pushed its neighbours. In a
+          playlist row, favoriting a track shunted that row's BOOST ~11px left
+          while every other row's stayed put; in the show header it moved SHARE.
+          Reported 2026-08-29 as happening "across the site", which it was: one
+          component, every surface. Reserving the wider width would also have
+          fixed it, at the cost of ~8px of dead space in every unfavorited chip.
+
+          Dropping the swap costs nothing, because the state was never carried
+          by the word: the glyph fills to ♥ and the border and text go magenta.
+          That is the argument this file already made for the `word` case, where
+          repeating the state in text was the redundancy that made two adjacent
+          hearts indistinguishable — it just applies equally when `word` is
+          unset. The aria-label is untouched and still spells out the whole
+          action ("Unfavorite podcast"), so nothing is lost to a screen reader. */}
       <span className={size === 'md' ? undefined : 'hidden sm:inline'}>
-        {word ?? (isFav ? 'FAVORITED' : 'FAVORITE')}
+        {word ?? 'FAVORITE'}
       </span>
     </button>
   );

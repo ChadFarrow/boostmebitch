@@ -120,6 +120,18 @@ The lane each option runs, and why the selector is a server concern rather than 
 
 **`<Chip>` is shared now** (`components/chip.tsx`), lifted out of `<FavoritesPage>` where it was module-private; the empty state's way back to ALL is one. Its `px-2.5 py-1 text-[11px]` puts it at 27px, and the menu's own trigger and rows clear the same WCAG 2.5.8 24×24 floor — measure under CDP rather than estimating, per the favorites-page note above.
 
+## The favorite heart must not resize (`components/fav-heart.tsx`)
+
+`<FavHeart>` is the LAST item in right-aligned clusters, so any width it gains on toggle pushes its neighbours. Favoriting a playlist track shunted that row's BOOST ~11px left while every other row stayed put; the show header moved SHARE the same way. Reported 2026-08-29 as happening "across the site", which it was — one component, every surface.
+
+**Two independent causes, and fixing either alone leaves the bug.** The label read `FAVORITE` / `FAVORITED`, one character apart. And the glyphs are not the same width: neither ♥ nor ♡ is in JetBrains Mono, so each falls back on its own — measured under CDP at **0.849em for ♥ against 0.653em for ♡**, at both sizes. Removing only the word swap still left a ~3.2px jump.
+
+So the word is now state-independent, and the glyph sits in a `w-[0.9em] text-center` box. **Nothing is lost by dropping `FAVORITED`**: the fill, the border and the text all go magenta, which is the argument this file already made for the `nameTarget` case, where repeating the state in text was the redundancy that made two adjacent hearts indistinguishable. The `aria-label` still spells out the whole action ("Unfavorite podcast"), so a screen reader is unaffected.
+
+**`w-[0.9em]` is a CAP as much as a floor.** It is in `em` so one value covers both sizes, and it clears the wider glyph here — but on a platform whose fallback font is wider, the glyph overflows the box symmetrically and the chip's width still does not change. A `min-w` would have fixed macOS and let the shift back in somewhere else. Verified 0px change at both sizes in both states.
+
+**The rule generalises: a control whose label or glyph changes with state must reserve its width**, and it is worth checking under toggle rather than by eye — 3px is invisible on its own and obvious when the row beside it moves.
+
 ## The app header (`components/app-header.tsx`)
 
 One header, rendered by `/` and `/favorites`. It was inline JSX in `<HomePage>` while `/npub`, `/live` and `/stream` went bare — fine for those three, since two are player overlays and the third is something you read, but a favorites page is a place people stay and every affordance its empty state points at (sign in, connect a wallet) lives in this cluster. `<NostrAuth>` riding along is load-bearing rather than decorative: it owns identity hydration and is the only caller of `hydrateFavorites` outside the sync notice's retry, so a favorites page without it shows a signed-in visitor stale local state and never backfills it.
