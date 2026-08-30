@@ -1597,6 +1597,51 @@ export function episodeLinkInNote(tags: string[][], body: string): string | null
   return distinct.size === 1 ? appUrls[0] : null;
 }
 
+/**
+ * The URLs in a note's body that the note's own `r` tags already name.
+ *
+ * Used for ONE thing: a boost note this app published prints its landing links
+ * as text, and our own card restates every fact they carry. `formatContent`
+ * writes a listen link and an in-app deep link into the body, and
+ * `buildBoostNoteTemplate` writes the same two strings as `r` tags — so the note
+ * itself tells us which of its URLs are machine-written. Measured over 148 real
+ * notes carrying this app's `client` tag on 2026-08-30: every one of them had
+ * exactly three URLs in its body, and every one wrapped to four magenta lines
+ * on a phone under a card already showing the show, the episode and the sats.
+ *
+ * **It returns the BODY's spelling, never the tag's, and that is the whole
+ * reason this is not a one-liner over `tags`.** The caller feeds each answer to
+ * `removeUrl`, which is an `indexOf` — hand it the tag's spelling and a body
+ * that differs by a percent-encoded character or a capitalised host removes
+ * NOTHING, silently, leaving the note looking exactly as it did before. The
+ * comparison is normalized through `httpUrl` for the same reason
+ * `episodeLinkInNote` normalizes: two independently-typed copies of one link.
+ *
+ * An `r` tag that is not in the body is not returned at all. Duplicates are
+ * kept, because `removeUrl` deletes one occurrence per call.
+ *
+ * **This decides nothing about trust and is not a substitute for the host
+ * allowlist above.** It only ever HIDES text the note already printed, so the
+ * failure directions are "a link stays visible" and "a link the author wrote is
+ * hidden" — never "a card unfurls under someone else's artwork". The caller
+ * gates it on the note being one this app published.
+ */
+export function landingLinksInNote(tags: string[][], body: string): string[] {
+  const bodyUrls = splitOnBareUrls(body).filter((_, i) => i % 2 === 1);
+  if (bodyUrls.length === 0) return [];
+  const tagged = new Set<string>();
+  for (const t of tags) {
+    if (t[0] !== 'r' || typeof t[1] !== 'string') continue;
+    const href = httpUrl(t[1]);
+    if (href) tagged.add(href);
+  }
+  if (tagged.size === 0) return [];
+  return bodyUrls.filter((u) => {
+    const n = httpUrl(u);
+    return !!n && tagged.has(n);
+  });
+}
+
 // Strip HTML tags and entity-decode. Used by server components (lib/format.tsx
 // is 'use client' so can't be imported on the server side). Pure string regex,
 // no DOM required — isomorphic.

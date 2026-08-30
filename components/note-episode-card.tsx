@@ -95,8 +95,18 @@ export function NoteEpisodeCard({
   podcast: Podcast;
   /** PI's indexed item record, or null when PI could not name one. */
   episode?: Episode | null;
-  /** The URL the note itself used to point at this episode. */
-  href: string;
+  /**
+   * The URL the note itself used to point at this episode, when that URL goes
+   * somewhere this app is not.
+   *
+   * **Absent for a boost note THIS APP published**, whose only links are a
+   * listen link and a deep link back here. A footnote reading
+   * `boostmebitch.com ↗` under a card on boostmebitch.com points at the page
+   * the reader is already on, and the argument for keeping it does not apply:
+   * the link is not something an author wrote and `<NoteCard>` hid, it is
+   * something we wrote and the card restates.
+   */
+  href?: string | null;
   /**
    * Two destinations, not one. The show name and the episode title are
    * different places, exactly as they are in the one-line label this card
@@ -109,7 +119,7 @@ export function NoteEpisodeCard({
   onOpenShow: () => void;
   onOpenEpisode?: () => void;
 }) {
-  const host = hostOf(href);
+  const host = href ? hostOf(href) : null;
   // ONE test, resolved once into the record and the handler together, so the
   // two cannot disagree: an item with no guid is not openable and not
   // favoritable, and `<NoteCard>` already declines to build a handler for one.
@@ -203,6 +213,12 @@ export function NoteEpisodeCard({
               would delete the link from exactly the card that needs it most:
               the show-only variant exists because PI could not name the item,
               and the author's page is then the only place the reader can go. */}
+          {/* Rendered when it has something to say, which is not the same as
+              "when there is an item": the outbound link lives here, so gating
+              on `item` deletes it from the show-only variant. With neither — a
+              show-only card on a note we published ourselves — there is no row,
+              because `mt-0.5` around nothing is still vertical space. */}
+          {item?.datePublished || item?.duration || href ? (
           <div className="text-[11px] text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
             {item?.datePublished ? <span>{fmtDate(item.datePublished)}</span> : null}
             {item?.duration ? (
@@ -234,17 +250,20 @@ export function NoteEpisodeCard({
                 `stopPropagation` because the tap area around it navigates:
                 without it one press opens the third-party tab AND moves this
                 app underneath it. */}
-            <a
-              href={href}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="inline-flex items-center min-h-[24px] ml-1 hover:text-bone hover:underline underline-offset-2"
-              title={href}
-            >
-              {host} ↗
-            </a>
+            {href ? (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                className="inline-flex items-center min-h-[24px] ml-1 hover:text-bone hover:underline underline-offset-2"
+                title={href}
+              >
+                {host} ↗
+              </a>
+            ) : null}
           </div>
+          ) : null}
         </div>
       </div>
 
