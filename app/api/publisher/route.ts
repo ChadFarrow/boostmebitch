@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getPublisherAlbumUrls } from '@/lib/musicl-resolver';
-import { getFeedFromRss, getPodcastByFeedUrl } from '@/lib/pi';
+import { PiHttpError, getFeedFromRss, getPodcastByFeedUrl } from '@/lib/pi';
 import { mergeRssOverPi, piRecordIsBlank } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -10,6 +10,13 @@ import type { Podcast } from '@/lib/types';
 // is by far the most expensive route here (one RSS fetch plus a PI call per
 // album). It was the only 200 in app/api without a cache header.
 const PUBLISHER_CACHE = { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' };
+
+// An answer assembled without Podcast Index is never cached. It is a real answer
+// — the children are read from their own RSS, which is the authoritative
+// document — but it is missing the feed ids and guids only PI can supply, and
+// caching it would serve that thinner record to everyone for five minutes after
+// PI came back. Same rule /api/playlist applies when `couldNotAsk` is non-zero.
+const NO_STORE = { 'Cache-Control': 'no-store' };
 
 // Hard ceiling on the PI fan-out. The album list comes from a third-party
 // publisher feed, so its length is attacker-chosen: without a cap, one cheap
@@ -23,22 +30,49 @@ export async function GET(req: Request) {
   if (limited) return limited;
   const { searchParams } = new URL(req.url);
   const feedUrl = searchParams.get('feedUrl')?.trim();
-  if (!feedUrl) return NextResponse.json({ feeds: [] });
+  if (!feedUrl) return NextResponse.json({ feeds: [], listed: 0 });
   if (feedUrl.length > 2048) return NextResponse.json({ error: 'invalid feedUrl' }, { status: 400 });
   return withErrorHandling(async () => {
     const albumUrls = (await getPublisherAlbumUrls(feedUrl)).slice(0, MAX_PUBLISHER_ALBUMS);
-    if (!albumUrls.length) return NextResponse.json({ feeds: [] }, { headers: PUBLISHER_CACHE });
+    if (!albumUrls.length) {
+      return NextResponse.json({ feeds: [], listed: 0 }, { headers: PUBLISHER_CACHE });
+    }
 
     // Probe-first-then-batch, the repo's convention for PI fan-outs: resolve one
     // before firing the rest so a degraded PI costs a single call instead of N.
-    // Deliberately NOT caught — getPodcastByFeedUrl already swallows PI's 400/404
-    // "feed not found" into null, so a throw here means PI itself is down, and
-    // the resulting 5xx is what trips the client-side breaker in lib/podcast-meta.
-    const probe = await getPodcastByFeedUrl(albumUrls[0]);
-    const rest = await Promise.all(
-      albumUrls.slice(1).map((url) => getPodcastByFeedUrl(url).catch(() => null)),
-    );
-    const fromPi = [probe, ...rest];
+    // getPodcastByFeedUrl already swallows PI's 400/404 "feed not found" into
+    // null, so a throw here is PI itself failing — and the resulting 5xx is what
+    // trips the client-side breaker in lib/podcast-meta.
+    //
+    // **Except a rate limit, which is not an outage.** docs/feeds.md is explicit
+    // that a 429 is never an answer about the data: it belongs in COULD_NOT_ASK,
+    // uncached and deliberately NOT tripping the breaker. Rethrowing it here
+    // did the opposite — one 429 took the whole collection to a 500 and
+    // disabled metadata resolution for the tab, on a page whose children are
+    // plain XML on raw.githubusercontent.com that we can read without PI at all.
+    // Reported 2026-08-29 with the page dead across repeated reloads while
+    // `/api/playlist` served the same feeds from the same process, because that
+    // route already swallows this (see `piRecordFor`) and answers from RSS.
+    //
+    // So a 429/408 skips the PI fan-out entirely — asking N more times cannot
+    // help and spends quota we have already been told we do not have — and
+    // every child falls through to the RSS repair below. The answer is honest
+    // rather than degraded: the feed document is the authority, PI is the
+    // accelerator. It is `no-store`, and `isPreview` still tells the client
+    // which records came back without a PI id.
+    let couldNotAskPi = false;
+    let fromPi: (Podcast | null)[];
+    try {
+      const probe = await getPodcastByFeedUrl(albumUrls[0]);
+      const rest = await Promise.all(
+        albumUrls.slice(1).map((url) => getPodcastByFeedUrl(url).catch(() => null)),
+      );
+      fromPi = [probe, ...rest];
+    } catch (e) {
+      if (!(e instanceof PiHttpError) || (e.status !== 429 && e.status !== 408)) throw e;
+      couldNotAskPi = true;
+      fromPi = albumUrls.map(() => null);
+    }
 
     // A child Podcast Index does not hold — OR holds BLANK — is read from RSS.
     //
@@ -76,6 +110,45 @@ export async function GET(req: Request) {
         return f ?? rss ?? null;
       })
       .filter((f): f is Podcast => f !== null);
-    return NextResponse.json({ feeds }, { headers: PUBLISHER_CACHE });
+    // `listed` is how many children the publisher NAMED, against `feeds.length`
+    // for how many we could resolve. Both repairs above can still come up
+    // empty — a child PI does not hold and whose RSS also fails to read — and
+    // the drop is silent by design, because one dead entry must not cost the
+    // reader the other nine.
+    //
+    // But a caller with only the survivors cannot tell a collection of four
+    // from a collection of ten with six missing, and it will print the number
+    // it has as a fact. That is the failure this repo keeps paying for:
+    // withholding while asserting the opposite. Reported rather than repaired
+    // here, because the route genuinely cannot tell WHY a child would not
+    // resolve, and only the surface knows whether it is about to make a claim.
+    // **Resolving NONE of them is a failure, not an empty collection.** A 200
+    // with `feeds: []` is indistinguishable from a publisher that lists
+    // nothing, and `<HomePage>` renders exactly that: "this publisher feed
+    // lists nothing", under a comment asserting the emptiness is genuine.
+    // Before the 429 branch above existed the probe threw, the route 500'd, and
+    // the reader got "couldn't load these" and a RETRY — so answering 200 here
+    // would be a regression introduced by the repair. The reader can retry a
+    // 502; nobody retries a sentence stating the collection is empty.
+    //
+    // Keyed on resolving zero of a non-empty list rather than on
+    // `couldNotAskPi`, because the other route to the same screen is PI
+    // answering normally while every child's RSS read fails.
+    if (!feeds.length) {
+      return NextResponse.json(
+        { error: 'could not resolve any of this publisher\'s feeds' },
+        { status: 502, headers: NO_STORE },
+      );
+    }
+    return NextResponse.json(
+      { feeds, listed: albumUrls.length, couldNotAskPi },
+      // A SHORT collection is not cacheable either, for the same reason the
+      // unasked one is not: `feeds.length < listed` means children dropped out,
+      // and freezing the survivors into a shared cache for five minutes (and
+      // fifteen with stale-while-revalidate) serves that shortfall to everyone
+      // long after the transient host failure that caused it. /api/playlist
+      // applies the same rule with `couldNotAsk > 0 || unaskedValues > 0`.
+      { headers: couldNotAskPi || feeds.length < albumUrls.length ? NO_STORE : PUBLISHER_CACHE },
+    );
   }, 'publisher resolution failed');
 }
