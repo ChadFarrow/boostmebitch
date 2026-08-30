@@ -1,13 +1,8 @@
 'use client';
-import { useState } from 'react';
-import { useApp } from '@/lib/store';
-import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import type { Episode, Podcast } from '@/lib/types';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart } from './fav-heart';
-import { BoostModal } from './boost-modal';
-import { BoltIcon } from './icons';
 
 /**
  * The episode a note is *about*, unfurled under the note's own words.
@@ -25,27 +20,29 @@ import { BoltIcon } from './icons';
  * the author saying "this is what I am pointing at". Everything else keeps the
  * one-line label.
  *
- * ── Why PLAY and BOOST both wait on `/api/feed` ──────────────────────────────
+ * ── It POINTS at the episode. It does not play or pay for one ───────────────
  *
- * `episode` here is Podcast Index's *indexed* record, resolved from the note's
- * guids by `useNoteMeta`. It is good enough to print a title, a date and a
- * cover, and it is NOT good enough to play or to boost: only `/api/feed` applies
- * the `e.value ?? podcast.value` channel fallback, so the PI record routinely
- * carries no value block at all. Opening the boost modal with it produces a
- * BOOST button with no recipients — a payment surface that cannot pay, which
- * looks like our bug and is really a missing fetch.
+ * The row is OPEN, the favorite heart, and the outbound link — nothing that
+ * needs a feed download and nothing that spends money. It shipped with PLAY and
+ * BOOST as well, and at 390px those four controls wrapped into a ragged
+ * 2 / 2 / 1 block with the host link stranded on a line of its own. OPEN
+ * reaches the episode page, which already carries a full-size PLAY and BOOST,
+ * so the card was offering a second, smaller copy of both one tap earlier.
  *
- * So both actions go through {@link hydrate} first and are disabled until it
- * answers. That is the same rule the boost modal states for a valueTimeSplit
- * target: a control that spends money stays disabled while the thing it would
- * spend on is still resolving. It is a money gate, not a spinner. A failed
- * hydrate says so on the card rather than falling back to the thin record,
- * because a boost modal listing nobody is worse than a button that admits it
- * could not load.
+ * **A spending or playing control put back here CANNOT use the `episode`
+ * prop.** That is Podcast Index's *indexed* record, resolved from the note's
+ * guids by `useNoteMeta`: good enough for a title, a date and a cover, and not
+ * good enough to play or to boost. Only `/api/feed` applies the
+ * `e.value ?? podcast.value` channel fallback, so the PI record routinely
+ * carries no value block at all, and a boost modal opened with it lists no
+ * recipients — a payment surface that cannot pay, which reads as our bug and is
+ * really a missing fetch. The removed version fetched the real episode through
+ * `loadEpisodeFromFeed` first and kept both controls DISABLED until it
+ * answered, because a control that spends money must not be pressable while the
+ * thing it would spend on is still resolving. Any replacement inherits that.
  *
- * `loadEpisodeFromFeed` goes through `loadFeed`, which coalesces a request
- * already in flight, so PLAY-then-BOOST on one card costs one feed download and
- * two cards for the same show cost one between them.
+ * The heart is exempt and always was: a favorite is the two guids plus a label,
+ * all of which the indexed record already carries.
  *
  * OPEN is handed down as `onOpen` rather than re-implemented: `<NoteCard>`
  * already owns that sequence (select the show first, then load the real episode,
@@ -71,43 +68,6 @@ export function NoteEpisodeCard({
   onOpenShow: () => void;
   onOpenEpisode: () => void;
 }) {
-  const play = useApp((s) => s.play);
-  const [busy, setBusy] = useState<null | 'play' | 'boost'>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const [boostFor, setBoostFor] = useState<{ episode: Episode; podcast: Podcast } | null>(null);
-
-  /**
-   * The real episode, out of the show's own feed. Returns null when the feed
-   * could not be read or no longer carries this guid — a show that dropped the
-   * item from its feed is a real and ordinary state, and the card says so
-   * instead of pretending with the indexed record.
-   */
-  async function hydrate(): Promise<{ episode: Episode; podcast: Podcast } | null> {
-    if (!episode.guid) return null;
-    const loaded = await loadEpisodeFromFeed(podcast.id, episode.guid);
-    if (!loaded?.episode) return null;
-    return { episode: loaded.episode, podcast: loaded.podcast };
-  }
-
-  async function run(kind: 'play' | 'boost') {
-    if (busy) return;
-    setBusy(kind);
-    setErr(null);
-    try {
-      const full = await hydrate();
-      if (!full) {
-        setErr('could not load this episode from its feed');
-        return;
-      }
-      if (kind === 'play') play(full.episode, full.podcast);
-      else setBoostFor(full);
-    } catch {
-      setErr('could not load this episode from its feed');
-    } finally {
-      setBusy(null);
-    }
-  }
-
   const host = hostOf(href);
 
   return (
@@ -161,64 +121,31 @@ export function NoteEpisodeCard({
       </div>
 
       <div className="flex items-center gap-1.5 flex-wrap px-2.5 pb-2.5">
-        <button
-          type="button"
-          onClick={() => run('play')}
-          disabled={busy !== null}
-          className="btn-ghost disabled:opacity-50"
-          aria-label={`Play ${episode.title}`}
-        >
-          {busy === 'play' ? '…' : '▶'} PLAY
-        </button>
         <button type="button" onClick={onOpenEpisode} className="btn-ghost">
           OPEN
         </button>
-        {/* The heart runs off the indexed record on purpose: a favorite is the
-            two guids plus a label, all of which PI already answered with, so it
-            must not wait on a feed download the way the two spending controls
-            do. <FavEpisodeHeart> renders nothing without both guids.
-
-            `size="md"` because every other control in this row is a plain
-            .btn-ghost. 'sm' is the LIST-ROW chip: no `py`, `text-xs`, and no
-            `min-h` from sm: up, so on desktop it sat ~9px shorter than PLAY,
-            OPEN and BOOST beside it, and below sm: it drops the word FAVORITE
-            entirely — one lone glyph in a row of four labelled buttons. 'md' is
-            the variant dimensioned to .btn-ghost, which is why the show header
-            and <EpisodeDetailView> already pass it in exactly this cluster. */}
+        {/* `size="md"` because the controls beside it are plain .btn-ghost.
+            'sm' is the LIST-ROW chip: no `py`, `text-xs`, and no `min-h` from
+            sm: up, so it sits ~9px shorter than OPEN and drops its word below
+            sm: — one lone glyph beside two labelled controls. 'md' is the
+            variant dimensioned to .btn-ghost, which is why the show header and
+            <EpisodeDetailView> already pass it in exactly this cluster.
+            <FavEpisodeHeart> renders nothing without both guids. */}
         <FavEpisodeHeart episode={episode} podcast={podcast} size="md" />
-        <button
-          type="button"
-          onClick={() => run('boost')}
-          disabled={busy !== null}
-          className="btn-ghost text-bolt border-bolt/50 disabled:opacity-50"
-          aria-label={`Boost ${episode.title}`}
-        >
-          {busy === 'boost' ? '…' : <BoltIcon />} BOOST
-        </button>
+        {/* `ml-auto` only once there is room for one line. Below sm: the row
+            wraps, and a right-aligned item on a wrapped line is alone on it —
+            the stranded FOUNTAIN.FM line that made this row look broken on a
+            390px screen. Flowing left, the wrap is even. */}
         <a
           href={href}
           target="_blank"
           rel="noopener noreferrer"
-          className="btn-ghost ml-auto text-muted hover:text-bone"
+          className="btn-ghost sm:ml-auto text-muted hover:text-bone"
           title={href}
         >
           {host} ↗
         </a>
       </div>
-
-      {err && (
-        <p role="status" className="px-2.5 pb-2.5 text-[11px] text-nostr">
-          {err}
-        </p>
-      )}
-
-      {boostFor && (
-        <BoostModal
-          episode={boostFor.episode}
-          podcast={boostFor.podcast}
-          onClose={() => setBoostFor(null)}
-        />
-      )}
     </div>
   );
 }
