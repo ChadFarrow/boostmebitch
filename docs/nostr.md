@@ -968,14 +968,31 @@ Measured over 604 real podcast-tagged kind:1s on 2026-08-29: 353 carry a hint,
 291 of those have it in the body. `DiscoveredNote` does not keep that third slot,
 so the card reads `note.rawEvent.tags`.
 
-**Requiring the hint to appear in the BODY is doing the real work.** A hint is
-very often the RSS FEED URL rather than a web page —
-`ableandthewolf.com/static/media/feed.xml`, `serve.podhome.fm/rss/<uuid>`,
-`feeds.fountain.fm/<id>` were all in that sample. Correct NIP-73, useless as a
-link: unfurling one puts a card over a raw XML document. A note does not link
-its own feed XML in its text, so the membership test excludes them for free.
+**A hint is a CANDIDATE, not the answer — every tier ends at the host
+allowlist.** The `i` tag and the body are written by the same author, so "the
+note pointed at this" is worth nothing when the author is hostile: they satisfy
+it by writing both halves. Without the allowlist an attacker publishes a kind:1
+carrying a real show's `podcast:guid:` and `podcast:item:guid:`, an `i` tag
+whose third slot is their own URL, and that URL in the body — and the card
+unfurls under the genuine show's artwork and title, with PLAY / ♡ / BOOST beside
+a link of their choosing. **The upgrade is what makes it worth doing**:
+`removeUrl` takes the raw URL out of the body, so what a reader would have seen
+as a full magenta link becomes a small `host ↗` chip under real artwork. The
+cost is coverage — a hint on an unrecognised host now leaves the note rendering
+as it did before the feature existed, which is nobody's regression.
 
-**`feeds.fountain.fm` is why the host fallback is a SET, never a suffix test.**
+**Requiring the hint to appear in the BODY is still doing real work, but it was
+never the safety property.** A hint is very often the RSS FEED URL rather than a
+web page — `ableandthewolf.com/static/media/feed.xml`,
+`serve.podhome.fm/rss/<uuid>`, `feeds.fountain.fm/<id>` were all in that sample.
+Correct NIP-73, useless as a link: unfurling one puts a card over a raw XML
+document. The reasoning used to be that a note does not link its own feed XML in
+its text, so membership excluded them for free — but `check:notelink` carries a
+real Helipad boost note that does exactly that, and the vector asserted the feed
+URL as the answer for the life of the feature. The allowlist excludes them by
+construction instead of by luck.
+
+**`feeds.fountain.fm` is why the host test is a SET, never a suffix test.**
 79 of those 604 notes carried a Fountain page URL that no hint named, so a
 hint-only rule would silently drop them — hence tier two, an explicit host set
 plus a path allowlist. Every loose spelling accepts the feed subdomain:

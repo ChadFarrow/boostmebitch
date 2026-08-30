@@ -1520,13 +1520,31 @@ function isPodcastAppUrl(raw: string): boolean {
  * client that wrote the note. Measured over 604 real podcast-tagged kind:1s on
  * 2026-08-29: 353 carry a hint and 291 of those have it in the body.
  *
- * **The body-membership test is what makes a hint usable, and it is doing more
- * work than it looks.** A hint is very often the RSS FEED URL rather than a web
- * page — `https://ableandthewolf.com/static/media/feed.xml`,
- * `serve.podhome.fm/rss/<uuid>`, `feeds.podcastindex.org/...` were all in that
- * sample. Those are correct NIP-73 and useless as a link: unfurling one puts
- * "open this" over a raw XML document. They are excluded for free, because a
- * note that links its feed XML in its own text is not a thing that happens.
+ * **A hint is a CANDIDATE, never the answer — every tier ends at the same host
+ * allowlist.** The note supplies both halves of the hint test: the `i` tag and
+ * the body are written by the same author, so "the client that wrote the note
+ * said so" is worth nothing when the author is hostile. Without the allowlist
+ * an attacker publishes a kind:1 carrying a real show's `podcast:guid:` and
+ * `podcast:item:guid:`, an `i` tag whose third slot is their own URL, and that
+ * URL in the body — and the card unfurls under the genuine show's artwork and
+ * title, with PLAY / ♡ / BOOST beside a link of their choosing. The upgrade is
+ * what makes it worth doing: `removeUrl` takes the raw URL OUT of the body, so
+ * what the reader would have seen as a full magenta link becomes a small
+ * `host ↗` chip under real artwork.
+ *
+ * It also settles the RSS FEED URL case, which the body-membership test was
+ * carrying on its own. A hint is very often the feed rather than a web page —
+ * `https://ableandthewolf.com/static/media/feed.xml`, `serve.podhome.fm/rss/…`,
+ * `feeds.podcastindex.org/…` were all in that sample. Those are correct NIP-73
+ * and useless as a link: unfurling one puts "open this" over a raw XML
+ * document. Body membership excluded most of them by luck — a note that links
+ * its own feed XML is rare, not impossible — and `check:notelink` carries a
+ * real Helipad note that does exactly that. The allowlist excludes them by
+ * construction.
+ *
+ * The cost is coverage, and it is the right direction: a hint on a host we do
+ * not recognise now leaves the note rendering exactly as it did before this
+ * feature existed, which is no regression for anybody.
  *
  * The item hint wins over the show hint when a note carries both, which is
  * Fountain's normal shape — the episode is the more specific of the two, and
@@ -1562,7 +1580,12 @@ export function episodeLinkInNote(tags: string[][], body: string): string | null
     if (hints.size === 0) continue;
     const hit = bodyUrls.find((u) => {
       const n = httpUrl(u);
-      return !!n && hints.has(n);
+      // `isPodcastAppUrl` LAST and never optional: the two tests answer
+      // different questions. Body membership says the author pointed at this;
+      // the allowlist says the destination is one we are willing to put under
+      // someone else's artwork. A hostile author passes the first by writing
+      // both sides of it.
+      return !!n && hints.has(n) && isPodcastAppUrl(u);
     });
     // Return the body's spelling, not the normalized one — the caller removes
     // this exact token from the text it is about to render.

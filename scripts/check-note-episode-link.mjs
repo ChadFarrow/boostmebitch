@@ -170,14 +170,41 @@ check(
 // the everyday version of that — the URL is the same URL to every browser and
 // every relay, and only string equality disagrees.
 //
-// Deliberately on a NON-Fountain host: on fountain.fm the app-page fallback
-// returns the same answer by a different route, so the vector would pass
-// without exercising the normalization it exists to prove.
+// TWO candidates in the body, so the app-page fallback cannot answer this by a
+// different route: it refuses an ambiguous body outright. Only the normalized
+// hint match can pick the second one, and naive() takes the first.
+//
+// This vector used to run on a non-Fountain host, chosen so the fallback would
+// not mask it. That premise is gone: a hint on a host outside the allowlist is
+// no longer an answer at all, because the note supplies both sides of the hint
+// test. See the attack vector below.
 check(
-  'hint and body differ only by host case, on a host with no fallback',
-  [['i', 'podcast:item:guid:x', 'https://Pods.Example.COM/e/abc123']],
-  'listen: https://pods.example.com/e/abc123',
-  'https://pods.example.com/e/abc123',
+  'hint and body differ only by host case',
+  [['i', 'podcast:item:guid:x', 'https://Fountain.FM/episode/BBBBBB']],
+  'two of them: https://fountain.fm/episode/AAAAAA and https://fountain.fm/episode/BBBBBB',
+  'https://fountain.fm/episode/BBBBBB',
+);
+
+// ── The reason every tier ends at the host allowlist ───────────────────────
+// The `i` tag and the body are written by the same author, so a hostile one
+// satisfies "the note pointed at this" by writing both halves. Without the
+// allowlist this note unfurls a card under the REAL show's artwork and title,
+// with PLAY / ♡ / BOOST beside a link of the author's choosing — and
+// `removeUrl` deletes the raw URL from the body, so what a reader would have
+// seen as a full magenta link becomes a small `host ↗` chip.
+//
+// alsoNaive because naive() refuses it for the wrong reason: it can only ever
+// return a URL containing 'fountain.fm', so it never had to make this choice.
+// The vector is here to pin the refusal, not to discriminate.
+check(
+  'a hint the note itself supplies is not a licence to link anywhere',
+  [
+    ['i', 'podcast:item:guid:baa182e9-d088-4cc1-a3f7-e4af48ff112a', 'https://evil.example/phish'],
+    ['i', 'podcast:guid:acddbb03-064b-5098-87ca-9b146beb12e8', 'https://evil.example/phish'],
+  ],
+  'new episode out now https://evil.example/phish',
+  null,
+  { alsoNaive: true },
 );
 
 // The returned token is the BODY's spelling, because the caller deletes exactly
@@ -219,11 +246,15 @@ check(
     ['i', 'podcast:guid:7683299', 'https://feeds.fountain.fm/uv4pyDVtNAiiCCx5emOU'],
   ],
   'HELIPAD!!!!!\n\n⚡ 333 sats\n📱 via BoostMeBitch\n\nhttps://feeds.fountain.fm/uv4pyDVtNAiiCCx5emOU',
-  // The hint IS in the body here, so tier one answers — and that is correct:
-  // the note linked it, so the author pointed at it. What must not happen is
-  // tier TWO treating the host as an app page when no hint named it. The next
-  // vector is that case.
-  'https://feeds.fountain.fm/uv4pyDVtNAiiCCx5emOU',
+  // NULL, and this vector used to assert the URL. The hint is in the body, so
+  // tier one matched it and the function returned a raw RSS document as the
+  // card's only outbound control — while docs/nostr.md says unfurling one
+  // "puts a card over a raw XML document" and must not happen. Body membership
+  // was carrying the whole feed-URL exclusion on the reasoning that a note
+  // linking its own feed XML does not occur; this note, captured verbatim off
+  // the relays, is that note. The host allowlist now excludes it by
+  // construction rather than by luck.
+  null,
   { alsoNaive: true },
 );
 
