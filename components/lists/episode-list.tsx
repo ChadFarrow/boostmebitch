@@ -44,6 +44,16 @@ interface PlaylistMeta {
   total: number;
   notFound: number;
   couldNotAsk: number;
+  /**
+   * The show this playlist was built from — see `PlaylistResponse.sourceShow`.
+   *
+   * Read from page 0 and NOT accumulated, unlike the counts above: it is a
+   * property of the playlist, so every page reports the same string and a later
+   * page has nothing to add. It stays on `PlaylistMeta` rather than in its own
+   * state because it arrives on the same response and must not be able to
+   * disagree with the rows it captions.
+   */
+  sourceShow?: string | null;
 }
 
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
@@ -226,6 +236,7 @@ export function EpisodeList({
         total: p.total ?? eps.length,
         notFound: p.notFound ?? 0,
         couldNotAsk: p.couldNotAsk ?? 0,
+        sourceShow: p.sourceShow ?? null,
       });
     };
 
@@ -658,8 +669,23 @@ export function EpisodeList({
             ? e.playlistGroup : null;
           return (
             <Fragment key={e.id}>
+              {/* The show NAMES the episode, because the episode title alone
+                  does not say what it is. These markers are bare titles —
+                  "Saddle Up", "Cycles", "FM Rodeo" — and above a run of songs
+                  they read as random words; reported 2026-08-29 as "I see the
+                  name but it looks random". The show comes from the playlist's
+                  own `<podcast:txt purpose="source-feed">`, so it is the
+                  document's answer rather than one derived from the playlist
+                  title. It degrades to the bare title when that feed could not
+                  be read, which is the state this shipped in. Some playlists
+                  need it less than others — ITDV writes "Episode 72 - Miles for
+                  miles", which says what it is already — but the qualifier is
+                  not worth branching on per feed. */}
               {groupHead && (
                 <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-4 pb-1 border-b-0 break-words">
+                  {playlist?.sourceShow && (
+                    <span className="text-bone/70">{playlist.sourceShow} · </span>
+                  )}
                   {groupHead}
                 </li>
               )}

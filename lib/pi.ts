@@ -2,7 +2,7 @@
 import crypto from 'node:crypto';
 import { PiHttpError } from './pi-error';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
-import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRemoteItems, type PlaylistItemRef } from './feed-xml';
+import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRemoteItems, parsePlaylistSourceFeed, type PlaylistItemRef } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
@@ -1437,6 +1437,8 @@ export interface PlaylistChannel {
   podcast: Podcast;
   /** Deduped, in wire order. See `parsePlaylistRemoteItems`. */
   refs: PlaylistItemRef[];
+  /** `<podcast:txt purpose="source-feed">` — see `parsePlaylistSourceFeed`. */
+  sourceFeedUrl?: string;
 }
 
 /**
@@ -1469,7 +1471,36 @@ export async function getPlaylistChannel(rssUrl: string): Promise<PlaylistChanne
   const channelXml = channelSlice(xml);
   const podcast = previewPodcastFromChannel(rssUrl, channelXml);
   if (!isPlaylistMedium(podcast)) return null;
-  return { podcast, refs: parsePlaylistRemoteItems(channelXml) };
+  return {
+    podcast,
+    refs: parsePlaylistRemoteItems(channelXml),
+    sourceFeedUrl: parsePlaylistSourceFeed(channelXml),
+  };
+}
+
+/**
+ * The TITLE of the show a playlist was built from, or null.
+ *
+ * The playlist's episode markers are bare titles — "Saddle Up", "Cycles" — and
+ * on screen they read as random words with nothing saying what they are. The
+ * show's own name is the missing context, and the only authority for it is the
+ * source feed's `<title>`.
+ *
+ * One fetch, and it is affordable because of where it lands rather than
+ * because it is small: these feeds are 350-520 KB, but `fetchFeedXml` holds a
+ * bounded module cache and `/api/playlist` is CDN-cached on top, so a whole
+ * playlist's thirteen pages share one read and most requests never reach this
+ * process at all. Deliberately NOT a Podcast Index lookup: PI would be a second
+ * quota call for a string the document already carries, on the one path where
+ * a rate limit is already the thing that hurts.
+ *
+ * Never throws. A source feed that is unreachable, or that is not a feed, just
+ * costs the heading its qualifier.
+ */
+export async function getFeedTitle(rssUrl: string): Promise<string | null> {
+  const xml = await fetchFeedXml(rssUrl);
+  if (xml == null || !/<channel\b/i.test(xml)) return null;
+  return extractText(channelSlice(xml), 'title')?.trim() || null;
 }
 
 export async function getEpisodeByGuid(

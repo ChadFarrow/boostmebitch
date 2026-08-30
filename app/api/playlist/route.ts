@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
+import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
 import { batchEpisodes, episodeKey, fillTrackValues, MAX_BATCH } from '@/lib/pi-batch';
 import { fnvHash, mergeRssOverPi } from '@/lib/util';
 import type { Episode, Podcast } from '@/lib/types';
@@ -121,12 +121,19 @@ export async function GET(req: Request) {
     // exactly the feed whose favorite heart would otherwise stay hidden.
     const podcast = piRecord ? mergeRssOverPi(piRecord, channel.podcast) : channel.podcast;
     const { refs } = channel;
+    // The show the playlist was built from. Its episode markers are bare titles
+    // — "Saddle Up" — so without this the heading above a run of tracks is a
+    // word with no stated relationship to anything. Resolved AFTER the channel
+    // because it is a second document, and awaited rather than raced with the
+    // page: it is one cached read (see `getFeedTitle`) and the heading is part
+    // of the answer, not an enrichment that can arrive later.
+    const sourceShow = channel.sourceFeedUrl ? await getFeedTitle(channel.sourceFeedUrl) : null;
     const page = refs.slice(offset, offset + limit);
     if (!page.length) {
       return NextResponse.json(
         {
           podcast, episodes: [], total: refs.length, offset,
-          nextOffset: null, notFound: 0, couldNotAsk: 0,
+          nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow,
         },
         { headers: PLAYLIST_CACHE },
       );
@@ -187,7 +194,7 @@ export async function GET(req: Request) {
     const nextOffset = offset + page.length < refs.length ? offset + page.length : null;
 
     return NextResponse.json(
-      { podcast, episodes: valued, total: refs.length, offset, nextOffset, notFound, couldNotAsk },
+      { podcast, episodes: valued, total: refs.length, offset, nextOffset, notFound, couldNotAsk, sourceShow },
       {
         headers:
           // A page we could not fully ask about is not an answer, so it must not

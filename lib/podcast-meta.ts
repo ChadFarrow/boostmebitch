@@ -411,6 +411,15 @@ export interface PlaylistResponse {
   nextOffset?: number | null;
   /** Rows on this page PI answered "not found" for. */
   notFound?: number;
+  /**
+   * The title of the show this playlist was built from, from its
+   * `<podcast:txt purpose="source-feed">`. Null when the playlist names no
+   * source, or when that feed could not be read.
+   *
+   * It qualifies the per-run episode headings, which are otherwise bare titles
+   * ("Saddle Up") with nothing saying what they are.
+   */
+  sourceShow?: string | null;
   /** Rows on this page we never got an answer about. Non-zero means the page is
    *  not a settled answer: it was served `no-store` and a retry is real. */
   couldNotAsk?: number;
