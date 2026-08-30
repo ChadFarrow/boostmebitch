@@ -1,7 +1,8 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
+import { PiHttpError } from './pi-error';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
-import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRemoteItems, type PlaylistItemRef } from './feed-xml';
+import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRemoteItems, parsePlaylistSourceFeed, type PlaylistItemRef } from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
@@ -55,12 +56,7 @@ function authHeaders() {
 
 /** Thrown by `pi()` on a non-2xx, carrying the status so callers can tell a
  *  "PI doesn't know this" miss from a genuine outage. */
-export class PiHttpError extends Error {
-  constructor(readonly status: number, body: string) {
-    super(`PI ${status}: ${body}`);
-    this.name = 'PiHttpError';
-  }
-}
+export { PiHttpError } from './pi-error';
 
 async function pi<T>(path: string, maxBytes?: number): Promise<T> {
   const res = await fetch(BASE + path, {
@@ -81,7 +77,39 @@ async function pi<T>(path: string, maxBytes?: number): Promise<T> {
   // chose: a body over the cap THROWS, and a throw here is a 500 on the whole
   // show page, so a request big enough to outgrow the shared ceiling has to
   // raise it rather than inherit it.
-  if (!res.ok) throw new PiHttpError(res.status, await readCappedText(res, 4 * 1024));
+  //
+  // **The `.catch` is load-bearing: without it the cap defeats the exception it
+  // was meant to trim.** `readCappedText` THROWS past its ceiling rather than
+  // truncating, and that throw happens while evaluating the argument to
+  // `PiHttpError` — so the status never reaches a `PiHttpError` at all and a
+  // plain `Error` propagates instead. PI answers a rate limit with a ~7 KB
+  // Cloudflare HTML page, comfortably over 4 KB, so EVERY 429 arrived at
+  // `lib/api-handler.ts` as an unhandled throw and went out as a 500. Measured
+  // 2026-08-29: `/api/search`, `/api/publisher` and `/api/playlist` all failing
+  // together with `response too large (exceeded 4096 bytes)` as the only clue,
+  // which reads as an app bug rather than as "you are rate limited".
+  //
+  // Losing the status is not cosmetic. `getPodcastByFeedUrl` and every sibling
+  // wrapper turn a 400/404 into a MISS by testing `e instanceof PiHttpError`,
+  // and `piCouldNotAskStatus` (lib/pi-error.ts) reads 429/408 off the same
+  // class so `withErrorHandling` can answer with that status instead of 500.
+  // THAT is what puts a PI rate limit into `lib/podcast-meta.ts`'s
+  // COULD_NOT_ASK bucket — an uncached null that deliberately does not trip the
+  // client-side breaker.
+  //
+  // **Naming the chain because an earlier version of this comment skipped the
+  // middle of it** and claimed podcast-meta already filed a PI 429 under
+  // COULD_NOT_ASK. It did not: podcast-meta's own comment says its 429 arm is
+  // `lib/rate-limit.ts` — OUR limiter — "not Podcast Index at all". PI's 429
+  // rethrows out of the wrapper, `withErrorHandling` made it a 500, and 500 is
+  // what trips the breaker. So restoring this class was necessary and was not
+  // sufficient; the api-handler mapping is the other half.
+  //
+  // An empty detail string is the right fallback: the status carries the
+  // meaning, the body is a courtesy.
+  if (!res.ok) {
+    throw new PiHttpError(res.status, await readCappedText(res, 4 * 1024).catch(() => ''));
+  }
   return JSON.parse(await readCappedText(res, maxBytes)) as T;
 }
 
@@ -1409,6 +1437,8 @@ export interface PlaylistChannel {
   podcast: Podcast;
   /** Deduped, in wire order. See `parsePlaylistRemoteItems`. */
   refs: PlaylistItemRef[];
+  /** `<podcast:txt purpose="source-feed">` — see `parsePlaylistSourceFeed`. */
+  sourceFeedUrl?: string;
 }
 
 /**
@@ -1441,7 +1471,36 @@ export async function getPlaylistChannel(rssUrl: string): Promise<PlaylistChanne
   const channelXml = channelSlice(xml);
   const podcast = previewPodcastFromChannel(rssUrl, channelXml);
   if (!isPlaylistMedium(podcast)) return null;
-  return { podcast, refs: parsePlaylistRemoteItems(channelXml) };
+  return {
+    podcast,
+    refs: parsePlaylistRemoteItems(channelXml),
+    sourceFeedUrl: parsePlaylistSourceFeed(channelXml),
+  };
+}
+
+/**
+ * The TITLE of the show a playlist was built from, or null.
+ *
+ * The playlist's episode markers are bare titles — "Saddle Up", "Cycles" — and
+ * on screen they read as random words with nothing saying what they are. The
+ * show's own name is the missing context, and the only authority for it is the
+ * source feed's `<title>`.
+ *
+ * One fetch, and it is affordable because of where it lands rather than
+ * because it is small: these feeds are 350-520 KB, but `fetchFeedXml` holds a
+ * bounded module cache and `/api/playlist` is CDN-cached on top, so a whole
+ * playlist's thirteen pages share one read and most requests never reach this
+ * process at all. Deliberately NOT a Podcast Index lookup: PI would be a second
+ * quota call for a string the document already carries, on the one path where
+ * a rate limit is already the thing that hurts.
+ *
+ * Never throws. A source feed that is unreachable, or that is not a feed, just
+ * costs the heading its qualifier.
+ */
+export async function getFeedTitle(rssUrl: string): Promise<string | null> {
+  const xml = await fetchFeedXml(rssUrl);
+  if (xml == null || !/<channel\b/i.test(xml)) return null;
+  return extractText(channelSlice(xml), 'title')?.trim() || null;
 }
 
 export async function getEpisodeByGuid(

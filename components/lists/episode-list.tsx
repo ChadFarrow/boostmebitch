@@ -44,6 +44,16 @@ interface PlaylistMeta {
   total: number;
   notFound: number;
   couldNotAsk: number;
+  /**
+   * The show this playlist was built from — see `PlaylistResponse.sourceShow`.
+   *
+   * Read from page 0 and NOT accumulated, unlike the counts above: it is a
+   * property of the playlist, so every page reports the same string and a later
+   * page has nothing to add. It stays on `PlaylistMeta` rather than in its own
+   * state because it arrives on the same response and must not be able to
+   * disagree with the rows it captions.
+   */
+  sourceShow?: string | null;
 }
 
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
@@ -226,6 +236,7 @@ export function EpisodeList({
         total: p.total ?? eps.length,
         notFound: p.notFound ?? 0,
         couldNotAsk: p.couldNotAsk ?? 0,
+        sourceShow: p.sourceShow ?? null,
       });
     };
 
@@ -638,7 +649,14 @@ export function EpisodeList({
       )}
       <ul className="divide-y divide-bone/10">
         {visibleEpisodes.map((e, idx) => {
+          // Two flags, because they answer different questions. `playing` is
+          // identity — "is this row the current item" — and it drives the row
+          // tint and keeps the artwork's control visible while paused.
+          // `isThisPlaying` is the transport state, and only the glyph and the
+          // labels may read it: an identity-only glyph draws ❚❚ over a paused
+          // episode, which is the icon lying about what a press will do.
           const playing = current?.episode.id === e.id;
+          const isThisPlaying = playing && isPlaying;
           const prev = idx > 0 ? visibleEpisodes[idx - 1] : null;
           const isFirstLive = !!e.liveStatus && (!prev || !prev.liveStatus);
           const isFirstRegular = !e.liveStatus && !!prev?.liveStatus;
@@ -651,8 +669,23 @@ export function EpisodeList({
             ? e.playlistGroup : null;
           return (
             <Fragment key={e.id}>
+              {/* The show NAMES the episode, because the episode title alone
+                  does not say what it is. These markers are bare titles —
+                  "Saddle Up", "Cycles", "FM Rodeo" — and above a run of songs
+                  they read as random words; reported 2026-08-29 as "I see the
+                  name but it looks random". The show comes from the playlist's
+                  own `<podcast:txt purpose="source-feed">`, so it is the
+                  document's answer rather than one derived from the playlist
+                  title. It degrades to the bare title when that feed could not
+                  be read, which is the state this shipped in. Some playlists
+                  need it less than others — ITDV writes "Episode 72 - Miles for
+                  miles", which says what it is already — but the qualifier is
+                  not worth branching on per feed. */}
               {groupHead && (
                 <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-4 pb-1 border-b-0 break-words">
+                  {playlist?.sourceShow && (
+                    <span className="text-bone/70">{playlist.sourceShow} · </span>
+                  )}
                   {groupHead}
                 </li>
               )}
@@ -678,7 +711,17 @@ export function EpisodeList({
                 // its detail page would be blank.
                 if (e.unresolved) return;
                 if (asTracks) {
-                  if (e.liveStatus !== 'pending' && data.podcast) play(e, data.podcast);
+                  if (e.liveStatus === 'pending' || !data.podcast) return;
+                  // THE SAME BRANCH THE ARTWORK BUTTON USES, and the row must
+                  // not be the exception. `play()` on the current item sets
+                  // `positionSec: 0`, so on a STALLED track — the buffer-starved
+                  // case player.tsx's `stalledRef` branch exists for — the
+                  // reload it triggers reads that zero and restarts the song
+                  // from the top, while the artwork button two elements away
+                  // resumes where the listener was. One press, two behaviours,
+                  // on one row.
+                  if (playing) togglePlay();
+                  else play(e, data.podcast);
                 } else {
                   openEpisode(e);
                 }
@@ -699,17 +742,29 @@ export function EpisodeList({
                   />
                 </div>
               ) : (
+              /* A control drawing ❚❚ has to pause. Calling `play()` on the
+                 current item is a silent no-op: it writes `isPlaying: true`
+                 over `true`, so neither the player's [isPlaying] effect nor its
+                 [current.episode.id] source effect re-runs, and the press does
+                 nothing at all. Same branch the album header above and
+                 <EpisodeDetailView> already use. */
               <button
                 type="button"
                 onClick={(ev) => {
                   ev.stopPropagation();
                   if (e.liveStatus === 'pending') return;
-                  if (data.podcast) play(e, data.podcast);
+                  if (playing) togglePlay();
+                  else if (data.podcast) play(e, data.podcast);
                 }}
                 disabled={e.liveStatus === 'pending'}
                 className="relative w-12 h-12 flex-shrink-0 disabled:cursor-not-allowed"
-                title={e.liveStatus === 'pending' ? 'Not started yet' : playing ? 'Now playing' : 'Play'}
-                aria-label={playing ? 'Now playing' : 'Play'}
+                title={
+                  e.liveStatus === 'pending' ? 'Not started yet'
+                  : isThisPlaying ? 'Pause'
+                  : playing ? 'Resume'
+                  : 'Play'
+                }
+                aria-label={isThisPlaying ? 'Pause' : playing ? 'Resume' : 'Play'}
               >
                 <PodcastCover
                   image={e.image}
@@ -718,6 +773,11 @@ export function EpisodeList({
                   seed={e.guid ?? String(e.id)}
                   className="w-full h-full border border-bone/40 group-hover:border-bolt text-base"
                 />
+                {/* The SCRIM follows identity and the GLYPH follows the
+                    transport, which is why this differs from the album header
+                    above. Gating the scrim on `isThisPlaying` too would fade
+                    the control out the moment the listener paused — no visible
+                    way back, on the one row they are most likely to press. */}
                 {e.liveStatus !== 'pending' && (
                   <div
                     className={`absolute inset-0 grid place-items-center bg-ink/55 transition pointer-events-none ${
@@ -726,7 +786,7 @@ export function EpisodeList({
                         : 'opacity-0 group-hover:opacity-100 text-bone group-hover:text-bolt'
                     }`}
                   >
-                    {playing ? '❚❚' : '▶'}
+                    {isThisPlaying ? '❚❚' : '▶'}
                   </div>
                 )}
               </button>

@@ -5,6 +5,7 @@ import { BoltIcon } from '@/components/icons';
 import { AuthControl } from '@/components/auth-control';
 import { NostrAuth } from '@/components/nostr-auth';
 import { FavoritesLink } from '@/components/favorites-link';
+import { PlaylistsLink } from '@/components/playlists-link';
 import { clearShowSelection } from '@/lib/store';
 import { BRAND } from '@/lib/brand';
 
@@ -120,6 +121,16 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
               is the WALLET half (balance chip, connect / sign-in buttons) and
               <NostrAuth> draws <AccountMenu> as well as owning identity
               hydration. */}
+          {/* lg: and up only, and the breakpoint is measured rather than a
+              taste. This row has ZERO slack from sm: up to ~810px — the
+              wordmark is already taking exactly what it needs — and a
+              .btn-ghost carrying an uppercased word is ~140px, a peer of
+              FAVORITES rather than a glyph. At 640px it took "Boost Me Bitch"
+              from 169px to 31px. Below lg: the way into /playlists is the
+              hero's BROWSE PLAYLISTS button instead. Full measurements, and
+              the warning to re-measure on the BUDDY brand, are in
+              <PlaylistsLink>. */}
+          <PlaylistsLink current={pathname === '/playlists'} />
           <FavoritesLink current={pathname === '/favorites'} />
           <AuthControl />
           <NostrAuth />

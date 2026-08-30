@@ -16,11 +16,39 @@ export function PodcastRow({
   selected,
   onSelect,
   showV4VStamp,
+  meta,
+  piUnasked,
 }: {
   podcast: Podcast;
   selected: boolean;
   onSelect: (p: Podcast) => void;
   showV4VStamp: boolean;
+  /**
+   * Extra text for the secondary line, beside the author.
+   *
+   * Optional, so every existing caller is untouched. `/playlists` uses it for a
+   * track count that arrives AFTER the row paints — which is why the caller
+   * decides what to render rather than passing a number: "we have not been told
+   * yet" and "we asked and got no answer" are the same thing on screen, and
+   * both must render nothing rather than a zero.
+   */
+  meta?: React.ReactNode;
+  /**
+   * True when Podcast Index was never asked about this row, which SUPPRESSES
+   * the `NOT IN PI` stamp.
+   *
+   * `isPreview` means "this record was built from RSS", and the stamp reads it
+   * as "Podcast Index does not hold this feed". Those are the same thing only
+   * when we actually asked. Under a PI rate limit `/api/publisher` answers from
+   * the children's own RSS without asking at all, and the stamp then printed
+   * `NOT IN PI` on ten playlists Podcast Index does hold — It's A Mood is feed
+   * 7443544. Reported 2026-08-29: "why does it say not in PI when some are?".
+   *
+   * Suppressing rather than rewording is deliberate. There is no third stamp
+   * worth spending a row on for a state that lasts one load and self-corrects,
+   * and the honest claim is simply that we do not know.
+   */
+  piUnasked?: boolean;
 }) {
   return (
     <li
@@ -39,7 +67,7 @@ export function PodcastRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
-          {podcast.isPreview && (
+          {podcast.isPreview && !piUnasked && (
             <span className="stamp text-muted border-muted/40">NOT IN PI</span>
           )}
           {podcast.medium === 'publisher' && (
@@ -56,7 +84,15 @@ export function PodcastRow({
             <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
           )}
         </div>
-        <div className="text-xs text-muted truncate">{podcast.author}</div>
+        <div className="text-xs text-muted truncate">
+          {podcast.author}
+          {meta ? (
+            <>
+              {podcast.author ? ' · ' : ''}
+              {meta}
+            </>
+          ) : null}
+        </div>
       </div>
       <FavHeart podcast={podcast} />
     </li>
@@ -68,10 +104,16 @@ export function PodcastResults({
   selected,
   onSelect,
   empty,
+  meta,
+  piUnasked,
 }: {
   feeds: Podcast[];
   selected: number | null;
   onSelect: (p: Podcast) => void;
+  /** Per-row extra text for the secondary line — see `<PodcastRow>`'s `meta`. */
+  meta?: (p: Podcast) => React.ReactNode;
+  /** Podcast Index was never asked — see `<PodcastRow>`'s `piUnasked`. */
+  piUnasked?: boolean;
   /**
    * What to say when there are no rows.
    *
@@ -103,6 +145,8 @@ export function PodcastResults({
           selected={selected === p.id}
           onSelect={onSelect}
           showV4VStamp
+          meta={meta?.(p)}
+          piUnasked={piUnasked}
         />
       ))}
     </ul>
