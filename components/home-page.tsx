@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
 import type { SearchInfo } from '@/components/search-bar';
 import { Chip } from '@/components/chip';
@@ -222,6 +222,20 @@ export function HomePage() {
     window.history.replaceState({}, '', url.toString());
   }, [selected?.podcastGuid, selected?.id, selected, selectedEpisode?.guid, selectedEpisode, discussionEpisode]);
 
+  /**
+   * The query string as it was when the page LOADED.
+   *
+   * A `useRef` initializer runs during render, ahead of every effect, which is
+   * the point: the mirror effects rewrite the URL on mount from state that has
+   * not hydrated yet, so by the time a restore effect runs, the params it exists
+   * to read are already gone. Unlike reading `location` in the render body this
+   * never reaches the rendered output, so it cannot cause a hydration mismatch —
+   * the reason `entryResolved` is a state flag and this is not.
+   */
+  const initialSearch = useRef<string>(
+    typeof window === 'undefined' ? '' : window.location.search,
+  );
+
   // Publisher view → ?publisher=<feedUrl>. Separate effect because the publisher
   // aside only renders in browse mode (no podcast/episode selected).
   useEffect(() => {
@@ -236,9 +250,16 @@ export function HomePage() {
   // wins, so skip if a podcast/feed param is present. The publisher record isn't
   // fetched anywhere today, so reconstruct a minimal stub (back-button label
   // shows "Publisher" on a cold restore) and refetch the album list.
+  //
+  // **It reads the query as it was at LOAD, never `window.location.search`.**
+  // The mirror effect directly above is declared first and therefore runs first,
+  // and on mount `publisherSource` is null — so it DELETED the param through
+  // `replaceState` before this effect ever looked at it. Every `?publisher=`
+  // link ever shared opened the plain home page with the address bar silently
+  // rewritten. Measured on this branch and on main before the fix.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(initialSearch.current);
     const feedUrl = params.get('publisher');
     if (!feedUrl || params.get('podcast') || params.get('feed')) return;
     if (publisherSource || !piMaybeUp()) return;
