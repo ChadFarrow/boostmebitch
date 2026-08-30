@@ -685,7 +685,17 @@ export function EpisodeList({
                 // its detail page would be blank.
                 if (e.unresolved) return;
                 if (asTracks) {
-                  if (e.liveStatus !== 'pending' && data.podcast) play(e, data.podcast);
+                  if (e.liveStatus === 'pending' || !data.podcast) return;
+                  // THE SAME BRANCH THE ARTWORK BUTTON USES, and the row must
+                  // not be the exception. `play()` on the current item sets
+                  // `positionSec: 0`, so on a STALLED track — the buffer-starved
+                  // case player.tsx's `stalledRef` branch exists for — the
+                  // reload it triggers reads that zero and restarts the song
+                  // from the top, while the artwork button two elements away
+                  // resumes where the listener was. One press, two behaviours,
+                  // on one row.
+                  if (playing) togglePlay();
+                  else play(e, data.podcast);
                 } else {
                   openEpisode(e);
                 }

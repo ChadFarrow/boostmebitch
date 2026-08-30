@@ -403,33 +403,54 @@ function StreamCard({
 
       {/* Action buttons */}
       <div className="flex gap-1.5 mt-auto pt-1">
-        {/* Toggles once this card IS the current stream, because it draws ❚❚
-            and a control drawing ❚❚ has to pause. `onPlay()` there writes
-            `isPlaying: true` over `true`, which re-runs neither of the player's
-            effects — a silent no-op. Resuming is safe on this path: the
-            [isPlaying] effect marks a paused live item and bumps `reloadNonce`
-            on the way back, so the stream re-sources at the live edge rather
-            than at the moment it stopped. */}
+        {/* **Only the PAUSE case toggles.** A control drawing ❚❚ has to pause,
+            and `onPlay()` there writes `isPlaying: true` over `true` — a silent
+            no-op, since neither of the player's effects re-runs. But RESUME
+            must NOT toggle: `onPlay()` is `play(streamToEpisode(stream, …))`,
+            rebuilt from the newest kind:30311, and `togglePlay()` replays
+            whatever `current.episode.enclosureUrl` was seeded with. A host who
+            restarts mid-broadcast republishes the event with a new `streaming`
+            tag, so the card refreshes while `current` does not, and resuming
+            through the toggle re-sources a dead URL. Sending everything except
+            the pause down `onPlay()` costs nothing — it is the same live edge
+            either way — and removes the question. */}
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
-            if (isCurrentStream) togglePlay();
+            if (isCurrentStream && isPlaying) togglePlay();
             else onPlay();
           }}
-          disabled={stream.status === 'planned' || !stream.streamUrl}
+          // A stream we are PLAYING stays pressable whatever the event now
+          // says. `stream.status` and `stream.streamUrl` are live-refreshed, so
+          // a host republishing without a `streaming` tag mid-broadcast would
+          // otherwise disable the only control that can stop the audio — while
+          // it renders ❚❚ and keeps playing.
+          disabled={(stream.status === 'planned' || !stream.streamUrl) && !(isCurrentStream && isPlaying)}
           className="btn text-xs py-1 flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
           title={
-            stream.status === 'planned'
+            isCurrentStream && isPlaying
+              ? 'Pause'
+              : stream.status === 'planned'
               ? "Stream hasn't started yet"
               : !stream.streamUrl
               ? 'No stream URL'
-              : isCurrentStream && isPlaying
-              ? 'Pause'
+              : isCurrentStream
+              ? 'Resume'
               : 'Play stream'
           }
+          // REQUIRED, like the BOOST button below: `title` is not an accessible
+          // name, so without this the name is the text content — which read
+          // "❚❚ PLAY", announcing a pause control as "play".
+          aria-label={
+            isCurrentStream && isPlaying ? 'Pause' : isCurrentStream ? 'Resume' : 'Play stream'
+          }
         >
-          {isCurrentStream && isPlaying ? '❚❚' : '▶'} PLAY
+          {/* The WORD moves with the glyph. It read "❚❚ PLAY" — the icon said
+              pause and the label said play, on the same control, which is the
+              lie this branch exists to remove. Same vocabulary as
+              <EpisodeDetailView>: PAUSE / RESUME / PLAY. */}
+          {isCurrentStream && isPlaying ? '❚❚ PAUSE' : isCurrentStream ? '▶ RESUME' : '▶ PLAY'}
         </button>
         {/* hasValueRecipients, not a bare truthiness check: resolveStreamV4V can
             return a block with an empty `recipients` array, which opened the
