@@ -124,17 +124,31 @@ export async function GET(req: Request) {
     const { refs } = channel;
     // The show the playlist was built from. Its episode markers are bare titles
     // — "Saddle Up" — so without this the heading above a run of tracks is a
-    // word with no stated relationship to anything. Resolved AFTER the channel
-    // because it is a second document, and awaited rather than raced with the
-    // page: it is one cached read (see `getFeedTitle`) and the heading is part
-    // of the answer, not an enrichment that can arrive later.
-    const sourceShow = channel.sourceFeedUrl ? await getFeedTitle(channel.sourceFeedUrl) : null;
+    // word with no stated relationship to anything. Resolved AFTER the channel,
+    // because only the channel names the source feed.
+    //
+    // **STARTED here and awaited at the return, rather than awaited here.** It
+    // is part of the answer, so it cannot become an enrichment that arrives
+    // later — but it is a whole second document off a third-party host, and
+    // nothing below it depends on the title, so waiting for it before the page
+    // work even begins put an 8-second fetch timeout in series ahead of every
+    // Podcast Index lookup this page makes. Now it runs beside them and is
+    // already in hand by the time the rows are built.
+    //
+    // The `.catch` is required by the change, not decoration: a promise created
+    // here and awaited several `await`s later would otherwise be an unhandled
+    // rejection. `null` is `getFeedTitle`'s own answer for a feed it cannot
+    // read, and it is strictly better than what an uncaught throw did before —
+    // 500 the whole page over a missing heading.
+    const sourceShowPromise = channel.sourceFeedUrl
+      ? getFeedTitle(channel.sourceFeedUrl).catch(() => null)
+      : Promise.resolve(null);
     const page = refs.slice(offset, offset + limit);
     if (!page.length) {
       return NextResponse.json(
         {
           podcast, episodes: [], total: refs.length, offset,
-          nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow,
+          nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow: await sourceShowPromise,
         },
         { headers: PLAYLIST_CACHE },
       );
@@ -250,7 +264,11 @@ export async function GET(req: Request) {
     const nextOffset = offset + page.length < refs.length ? offset + page.length : null;
 
     return NextResponse.json(
-      { podcast, episodes: valued, total: refs.length, offset, nextOffset, notFound, couldNotAsk, sourceShow },
+      {
+        podcast, episodes: valued, total: refs.length, offset, nextOffset, notFound, couldNotAsk,
+        // Started before the page work; by here it has almost always settled.
+        sourceShow: await sourceShowPromise,
+      },
       {
         headers:
           // A page we could not fully ask about is not an answer, so it must not

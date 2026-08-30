@@ -66,6 +66,24 @@ Before this shipped the app opened one as a show with no episodes — `getFeedFr
 
 **The entries carry no `feedUrl`.** Only the guid pair, so a track is resolved through Podcast Index (`/episodes/byguid`) and nothing else. That is one PI lookup per track, which is why the whole list is not a request anybody can make.
 
+### What a `?podcast=<guid>` deep link to a playlist costs
+
+**Every request on this path is in SERIES with the one before it, so anything that adds a hop is paid in full by the reader**, and the shape is not visible from any one file. Driven in a real browser against a production build with the API stubbed (`npm run e2e:playlist`), a cold link to ChadF's Greatest Hits used to be:
+
+| | |
+|---|---|
+| `/api/by-guid` | 277 ms after navigation — it cannot start until the bundle has downloaded, parsed, hydrated and run `<HomePage>`'s mount effect |
+| `/api/feed?id=` | PI's blank record for feed 7683902 carries the default `medium: "podcast"`, and that field is what `<HomePage>` reads to decide whether it holds a playlist. So the client asked for the feed: the full PI episode fetch, the RSS enrichment pass and both live-item lookups, **for a feed that publishes no `<item>` at all**. Zero episodes, every byte of it discarded. |
+| `/api/playlist` | **twice**, 14 ms apart. `syncSelectedPodcast` writes the RSS-repaired record into the store, `playlistUrl` flips from `undefined` to a URL, and `<EpisodeList>`'s effect re-runs on the changed prop. In production `loadPlaylistPage`'s in-flight map collapses the pair, so this one is cheap — but it also resets `playlist` state mid-load. |
+
+Three changes, in descending order of what they cost a reader:
+
+- **`/api/by-guid` repairs a blank record from the feed's own RSS** (`repairIfBlank`), exactly as `/api/search` and `/api/publisher` already do for the visible half of the same fault. The medium is then right at the first answer, so the `/api/feed` hop and the duplicate both disappear. Gated on `piRecordIsBlank`: favorites hydration issues one request to this route per favorited show, and an unconditional RSS read would put a third-party feed download behind every one.
+- **`app/page.tsx` preloads that first request from the HTML head.** The URL is fully known from `searchParams` at render time, so waiting for hydration bought nothing; the hint moved it to 67 ms, overlapped with the JavaScript download. **The href must be spelled exactly as `lib/podcast-meta.ts` spells it, and `crossOrigin` is part of the spelling** — without it React does not emit the tag at all, and with the wrong value the credentials mode disagrees with `fetch`'s default and the browser fetches twice. Every one of those failures leaves a working page that is silently a round trip slower, which is why the e2e asserts a *count* and compares the tag against the URL the client actually asked for.
+- **One page is 50 tracks**, under `/api/playlist`'s own `MAX_BATCH` ceiling of 100. That number is the most the route will serve, not the most a reader should wait for: every row is a PI lookup and the value pass behind it reads up to `MAX_TRACK_VALUE_FEEDS` album feeds before the response is sent. `loadPlaylistPage` owns the default, which is what keeps the two page-0 callers byte-identical rather than identical by convention.
+
+**`npm run e2e:playlist` is the only thing that sees any of this.** No `check:*` can: they pin pure functions, and this is a request graph produced by a server route, a client effect and a browser hint agreeing with each other. `--blank` replays the old shape rather than asserting, so the cost stays demonstrable.
+
 ### The parser lives in `lib/feed-xml.ts`, and its exclusions are the correctness half
 
 `parsePlaylistRemoteItems(channelSlice(xml))`. It is in `feed-xml.ts` rather than `pi.ts` for the same reason `parseFeedNpubs` is: that module loads under `node --experimental-strip-types`, so `npm run check:musicl` pins the **real** parser instead of a copy. `pi.ts` cannot be loaded that way (`PiHttpError` uses a parameter property).
@@ -363,6 +381,7 @@ that was not already permitted.**
 
 | Route | Was | Now | Why it mattered |
 |---|---|---|---|
+| `/api/by-guid` | `s-maxage=300` | `max-age=60, s-maxage=300` | See below — the deep-link preload fires ahead of the client's own two cache layers, so the request leaves the browser on every such load. |
 | `/api/feed` | `s-maxage=300` | `max-age=60, s-maxage=300` | The largest body the app serves — up to `PI_EPISODE_MAX` episodes with their show notes, trimmed only at 3.5 MB. `<EpisodeList>` unmounts whenever an episode opens, so show → episode → back → episode fetched the whole feed once per step. |
 | `/api/chapters` | `s-maxage=3600` | `max-age=3600, s-maxage=3600` | Keyed by the URL the feed names; a music show's chapters JSON is a row and an image URL per track, re-fetched on every episode open. |
 | `/api/transcript` | `s-maxage=3600` | `max-age=3600, s-maxage=3600` | Same, and the largest of the per-episode documents. |
@@ -371,10 +390,19 @@ The one field on a feed that goes stale inside a minute is a live item's status,
 and it is not read from this cache at all: `/api/live-status` polls at
 `max-age=10` and `applyLiveStatuses` patches the rows in place.
 
-`/api/by-guid` and `/api/episode-by-guid` are deliberately left alone — the
-client already holds them for seven days in `bmb:pmeta:*` / `bmb:epmeta:*`, so a
-browser cache would be a third layer answering a question two layers above it
-have already answered.
+`/api/episode-by-guid` is deliberately left alone — the client already holds it
+for seven days in `bmb:epmeta:*`, so a browser cache would be a third layer
+answering a question two layers above it have already answered.
+
+**`/api/by-guid` was in that sentence too, and the deep-link preload is what took
+it out.** The argument rested on `resolveVia` consulting `podcastMem` and then
+`bmb:pmeta:*` before it ever reaches the network — true, and still true. But
+`app/page.tsx` now emits a `<link rel="preload" as="fetch">` for that request,
+and a preload fires from the HTML head, *before* any of those layers are
+consulted. So on every deep-link document load the request really does leave the
+browser, whether or not the client will end up wanting it. `max-age=60` is what
+bounds the repeat cost of that hint — a reload, or a second link to the same show
+inside the minute — and it is the smallest private window that does so.
 
 ## Batched Podcast Index resolution
 

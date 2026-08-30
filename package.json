@@ -49,6 +49,7 @@
     "seed:relay": "node --experimental-strip-types scripts/seed-local-relay.mjs",
     "e2e:favorites": "node scripts/e2e-favorites.mjs",
     "e2e:mutes": "node scripts/e2e-mutes.mjs",
+    "e2e:playlist": "node scripts/e2e-playlist.mjs",
     "probe:index": "node --experimental-strip-types scripts/probe-index.mjs",
     "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs",
     "check:playlistdb": "node --experimental-strip-types scripts/check-playlist-db.mjs",
