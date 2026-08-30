@@ -427,6 +427,17 @@ export interface PlaylistResponse {
 }
 
 /**
+ * How many tracks one playlist page asks for.
+ *
+ * Under `/api/playlist`'s own `MAX_BATCH` ceiling of 100 on purpose: that number
+ * is the most the route will serve, not the most a reader should wait for. Every
+ * row on a page is a Podcast Index lookup, and the value pass behind it reads up
+ * to sixteen album feeds before the response is sent, so the page size is very
+ * nearly the whole time-to-first-track.
+ */
+export const PLAYLIST_PAGE_SIZE = 50;
+
+/**
  * One page of a `<podcast:medium>musicL</podcast:medium>` playlist.
  *
  * The sibling of `loadFeed`, and separate from it on purpose: a playlist is
@@ -446,7 +457,21 @@ export function loadPlaylistPage(
 ): Promise<PlaylistResponse> {
   const params = new URLSearchParams({ url: source.feedUrl });
   if (source.offset) params.set('offset', String(source.offset));
-  if (source.limit) params.set('limit', String(source.limit));
+  // ALWAYS written, and written HERE rather than at the call sites. `/api/feed`
+  // and this route both answer a page every reader waits on, and the two things
+  // that made the size worth choosing pull in opposite directions: a page is one
+  // Podcast Index lookup per row plus a value pass over every distinct album in
+  // it, so halving it roughly halves the time to the first track — while a
+  // playlist of three hundred tracks costs a press per page after that.
+  //
+  // Owning the default in here is what keeps the two page-0 callers byte-
+  // identical. `<EpisodeList>`'s first load and `<HomePage>`'s `?playlist=`
+  // restore both ask for page 0, sequentially, and only an identical URL lets
+  // the second come out of the browser cache — a coupling the comment at that
+  // call site relies on and which nothing enforced while each caller could spell
+  // the request its own way. `lib/playlist-collection.ts` still passes its own
+  // `limit: 1` probe, which is a different question and stays explicit.
+  params.set('limit', String(source.limit ?? PLAYLIST_PAGE_SIZE));
   const endpoint = `/api/playlist?${params.toString()}`;
   const existing = playlistInFlight.get(endpoint);
   if (existing) return existing;
