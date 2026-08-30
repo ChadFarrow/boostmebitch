@@ -176,8 +176,16 @@ export function NoteEpisodeCard({
         {/* The heart runs off the indexed record on purpose: a favorite is the
             two guids plus a label, all of which PI already answered with, so it
             must not wait on a feed download the way the two spending controls
-            do. <FavEpisodeHeart> renders nothing without both guids. */}
-        <FavEpisodeHeart episode={episode} podcast={podcast} size="sm" />
+            do. <FavEpisodeHeart> renders nothing without both guids.
+
+            `size="md"` because every other control in this row is a plain
+            .btn-ghost. 'sm' is the LIST-ROW chip: no `py`, `text-xs`, and no
+            `min-h` from sm: up, so on desktop it sat ~9px shorter than PLAY,
+            OPEN and BOOST beside it, and below sm: it drops the word FAVORITE
+            entirely — one lone glyph in a row of four labelled buttons. 'md' is
+            the variant dimensioned to .btn-ghost, which is why the show header
+            and <EpisodeDetailView> already pass it in exactly this cluster. */}
+        <FavEpisodeHeart episode={episode} podcast={podcast} size="md" />
         <button
           type="button"
           onClick={() => run('boost')}
