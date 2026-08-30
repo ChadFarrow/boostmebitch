@@ -70,9 +70,11 @@ export function episodeRefOf(
  *  - **The attempted-sets are refs, not state.** Putting them in the dep array
  *    beside the effect's own `setPodcasts` created a fetch storm, where
  *    cancelled-but-already-in-flight requests kept hitting the network on every
- *    render cycle. One attempt per key for the life of the tab.
- *  - **`cancelled` guards every setState**, so a resolve that lands after the
- *    list changed doesn't write stale metadata over the new one.
+ *    render cycle. One attempt per key.
+ *  - **A SUPERSEDED RUN STILL WRITES ITS ANSWER, and a key it did not answer
+ *    for is RELEASED.** These two are one rule seen from both ends, and the
+ *    thing they protect is not freshness — it is that the attempted-set is the
+ *    ONLY reader this data has. See {@link record} below.
  *
  * A miss is ordinary and renders as the show line alone: PI has not crawled
  * every independent release, which is exactly the audience this app exists for.
@@ -95,28 +97,21 @@ export function useNoteMeta(items: NoteRefs[] | null): {
     ).filter((g) => UUID_RE.test(g) && !attempted.current.has(g));
     if (guids.length === 0) return;
     for (const g of guids) attempted.current.add(g);
-    let cancelled = false;
     (async () => {
       const [first, ...rest] = guids;
       const firstPodcast = await resolvePodcastByGuid(first);
-      if (cancelled) return;
-      setPodcasts((prev) => ({ ...prev, [first]: firstPodcast }));
-      if (!piMaybeUp()) return;
+      record(setPodcasts, attempted, [[first, firstPodcast]]);
+      // The breaker is open, so `rest` was never asked about. Hand the keys
+      // back — `resetPiBreaker()` or a later commit is what retries them.
+      if (!piMaybeUp()) return release(attempted, rest);
       await warmPodcastCache(rest);
-      if (cancelled) return;
       const restPodcasts = await Promise.all(rest.map(resolvePodcastByGuid));
-      if (cancelled) return;
-      setPodcasts((prev) => {
-        const next = { ...prev };
-        rest.forEach((g, i) => { next[g] = restPodcasts[i]; });
-        return next;
-      });
+      record(setPodcasts, attempted, rest.map((g, i) => [g, restPodcasts[i]]));
     })();
-    return () => { cancelled = true; };
   }, [items]);
 
   // Same again for the episode each item was boosted from — probe-first, one
-  // attempt per pair for the life of the tab, breaker-gated. Only the title is
+  // attempt per pair until something answers, breaker-gated. Only the title is
   // wanted here; opening the row goes back to `/api/feed` for the real episode
   // (see <NoteCard>'s handler), because PI's indexed record carries no value
   // block.
@@ -131,27 +126,80 @@ export function useNoteMeta(items: NoteRefs[] | null): {
     if (pending.size === 0) return;
     for (const key of pending.keys()) attemptedEpisodes.current.add(key);
     const entries = [...pending.entries()];
-    let cancelled = false;
     (async () => {
       const [[firstKey, firstRef], ...rest] = entries;
       const firstEpisode = await resolveEpisodeByGuid(firstRef.feedGuid, firstRef.itemGuid);
-      if (cancelled) return;
-      setEpisodes((prev) => ({ ...prev, [firstKey]: firstEpisode }));
-      if (!piMaybeUp()) return;
+      record(setEpisodes, attemptedEpisodes, [[firstKey, firstEpisode]]);
+      if (!piMaybeUp()) return release(attemptedEpisodes, rest.map(([k]) => k));
       await warmEpisodeCache(rest.map(([, r]) => r));
-      if (cancelled) return;
       const restEpisodes = await Promise.all(
         rest.map(([, r]) => resolveEpisodeByGuid(r.feedGuid, r.itemGuid)),
       );
-      if (cancelled) return;
-      setEpisodes((prev) => {
-        const next = { ...prev };
-        rest.forEach(([k], i) => { next[k] = restEpisodes[i]; });
-        return next;
-      });
+      record(setEpisodes, attemptedEpisodes, rest.map(([k], i) => [k, restEpisodes[i]]));
     })();
-    return () => { cancelled = true; };
   }, [items]);
 
   return { podcasts, episodes };
+}
+
+/** A `useRef` set, typed without naming React's ref type. */
+type KeySet = { current: Set<string> };
+
+/**
+ * Write what an attempt answered, and hand back every key it did not answer for.
+ *
+ * ── Why the write is unconditional ───────────────────────────────────────────
+ *
+ * This used to be guarded by a `cancelled` flag set from the effect's cleanup,
+ * on the reasoning that a resolve landing after the list changed must not write
+ * stale metadata. THERE IS NO STALE WRITE AVAILABLE HERE. Both maps are keyed
+ * by the guid the answer is about and both consumers look their own key up
+ * (`podcasts[note.podcastGuid] ?? null`), so a late answer can only fill in the
+ * entry it names. It cannot overwrite a different note's.
+ *
+ * What the guard actually did was throw the answer away, because the key was
+ * already in the attempted-set and NOTHING RE-READS IT. `useNostrFeed` commits
+ * a cold feed four times — the localStorage cache, the index pass, the relay
+ * roots, then the assembled tree — and each commit is a new `notes` array, so
+ * the effect's cleanup fired on a resolve that was mid-flight. The second run
+ * then found every key already attempted and returned immediately.
+ *
+ * The data was not even missing: `warmEpisodeCache` had already filled
+ * `episodeMem`, so the answer sat in the module cache with no reader left. That
+ * is the shape of the report — one note kept the plain "→ show · author" line
+ * with no episode card, a reload reproduced it exactly, and navigating away and
+ * back fixed it instantly and with no network, because a remount is a fresh
+ * attempted-set reading the cache that was filled the first time.
+ *
+ * ── Why a null hands the key back ────────────────────────────────────────────
+ *
+ * `resolvePodcastByGuid` / `resolveEpisodeByGuid` return null for two different
+ * things, and lib/podcast-meta.ts is careful to cache only one of them: PI
+ * answering "not found" is cached, while a 429 from our own rate limiter, a
+ * timeout, an aborted fetch or an open breaker is left UNCACHED so that a retry
+ * can still resolve it. Keeping the key means that retry never happens — the
+ * one guard downstream of every rule in that file.
+ *
+ * Releasing on ANY null is what makes this cheap enough to be unconditional. A
+ * genuine "not found" is in `podcastMem`/`episodeMem`, so the next run answers
+ * it from memory and issues no request at all; only the entries that were never
+ * asked about reach the network a second time. The retry is bounded by how many
+ * times the note list commits, not by the render count.
+ */
+function record<T>(
+  set: (updater: (prev: Record<string, T | null>) => Record<string, T | null>) => void,
+  attempted: KeySet,
+  answers: [string, T | null][],
+): void {
+  set((prev) => {
+    const next = { ...prev };
+    for (const [key, value] of answers) next[key] = value;
+    return next;
+  });
+  release(attempted, answers.filter(([, v]) => v === null).map(([k]) => k));
+}
+
+/** Let these keys be asked about again on the next commit. */
+function release(attempted: KeySet, keys: string[]): void {
+  for (const key of keys) attempted.current.delete(key);
 }
