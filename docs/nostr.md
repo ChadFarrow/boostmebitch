@@ -1015,6 +1015,30 @@ below the fold. The link in the body is the author pointing at something.
 Everything else keeps the one-line label — which is suppressed when the card
 shows, because it states the same two facts with the same two click targets.
 
+**The card is gated on the SHOW resolving, never on the ITEM — a presentation
+decision must not be decided by Podcast Index's coverage.** It was gated on both
+for two releases (`podcast && episode?.guid ? episodeLink : null`), and that read
+as the feature working intermittently: one note unfurled, the note under it kept
+three lines of magenta URL, and nothing on either card said why. PI missing an
+item is ordinary, not exotic — it answers "not found" for a
+`<podcast:liveItem>` and for anything it has not crawled, and `episodeRefOf`
+never asks at all when a note tags more than one `podcast:item:guid:` (a
+boost-all across an album's tracks, which is deliberate: that note is not about
+one episode). None of that is visible to the reader or to the author, so the
+same link on the same feature gave opposite results for reasons neither could
+act on.
+
+**With no item record the card names the SHOW, and it does not invent an
+episode.** Show art, the show's author over the show's title, no date, no
+duration, no heart, and the same `host ↗` chip — the exact page the author
+linked. That is the pair of facts the one-line label already stated, minus the
+wall of magenta the component exists to remove. The author line is text, never a
+button: an author is not a destination this app can open. `<FavEpisodeHeart>` is
+dropped rather than swapped for a show heart — a show favorite is a different
+subject, and the alternative is the "which target did I just favorite" trap that
+`nameTarget` exists for. `podcast` stays a hard gate: with neither half resolved
+there is no art and no title, so there is no card to draw.
+
 **PLAY and BOOST both wait on `/api/feed`; the heart does not.** `useNoteMeta`
 resolves PI's *indexed* record, which carries no value block — only `/api/feed`
 applies `e.value ?? podcast.value`. Opening the boost modal with the indexed

@@ -79,9 +79,19 @@ function NoteCardImpl({
    * answer needs the third slot of each `i` tag (NIP-73's URL hint), which the
    * parsed shape does not keep. Guarded because a note restored from a
    * localStorage cache written before `rawEvent` existed has none.
+   *
+   * **The gate is the SHOW, not the item.** It used to be both, and that quietly
+   * turned a presentation decision into a Podcast Index availability decision:
+   * PI answers "not found" for a `<podcast:liveItem>` and for anything it has
+   * not crawled, and `episodeRefOf` never even asks when a note tags more than
+   * one item guid — so a note pointing at a Fountain episode kept three lines of
+   * magenta URL while the note above it, on a feed PI happened to hold, unfurled
+   * correctly. Same feature, same link, opposite result, decided by data neither
+   * the reader nor the author can see. `<NoteEpisodeCard>` now names the show
+   * when that is all we resolved; it never invents an episode.
    */
   const episodeLink = episodeLinkInNote(note.rawEvent?.tags ?? [], rawBody);
-  const unfurl = podcast && episode?.guid ? episodeLink : null;
+  const unfurl = podcast ? episodeLink : null;
   const contentBody = unfurl ? removeUrl(rawBody, unfurl) : rawBody;
 
   const [composerMode, setComposerMode] = useState<'reply' | 'quote' | null>(null);
@@ -368,13 +378,18 @@ function NoteCardImpl({
         {/* After the images rather than before: both are attachments to the
             author's sentence, and the card is the one that carries controls, so
             it belongs next to the action bar it reads as an extension of. */}
-        {unfurl && podcast && episode && episodeGuid && (
+        {unfurl && podcast && (
           <NoteEpisodeCard
             podcast={podcast}
             episode={episode}
             href={unfurl}
             onOpenShow={() => openShow(podcast)}
-            onOpenEpisode={() => openBoostedEpisode(podcast, episodeGuid)}
+            // Built only when there is a guid to look up — the card falls back
+            // to the show when there isn't, rather than offering an OPEN that
+            // resolves to nothing.
+            onOpenEpisode={
+              episodeGuid ? () => openBoostedEpisode(podcast, episodeGuid) : undefined
+            }
           />
         )}
 
