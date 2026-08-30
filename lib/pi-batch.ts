@@ -147,14 +147,29 @@ const MAX_TRACK_VALUE_FEEDS = 16;
  * caller's cache header has to read it. A row whose album Podcast Index
  * ANSWERED about — with a feed holding no value block — is a real, cacheable
  * "this track has no splits". A row whose album we could not ask about, because
- * the probe found PI unreachable or the feed cap cut the page short, is not an
- * answer at all: cached, it freezes a dead BOOST button into the CDN for the
- * window and the reader's retry re-serves it.
+ * the probe found PI unreachable, is not an answer at all: cached, it freezes a
+ * dead BOOST button into the CDN for the window and the reader's retry re-serves
+ * it.
+ *
+ * **`capped` is reported SEPARATELY, and the difference is whether a retry could
+ * ever answer differently.** Both counters describe a row this pass left
+ * unvalued, so one number for the two reads as an economy — and it cost every
+ * long playlist its cache. `unasked` is transient: PI was unreachable this
+ * second and may answer the next, so the page must not be stored. `capped` is
+ * this module's OWN ceiling (`MAX_TRACK_VALUE_FEEDS`) applied to a fixed list of
+ * refs in a fixed order, so the same request yields the same rows every time —
+ * there is nothing for a retry to discover, and refusing to cache it only makes
+ * every reader in the window pay the whole page again. A page whose tracks span
+ * more than sixteen albums is the ordinary case for a greatest-hits playlist,
+ * which is how a `no-store` written for an outage came to apply to a healthy
+ * response.
  */
 export interface FilledTrackValues {
   episodes: Episode[];
   /** Rows left unvalued because we could not ask, never because PI said no. */
   unasked: number;
+  /** Rows left unvalued because their album was past `MAX_TRACK_VALUE_FEEDS`. */
+  capped: number;
 }
 
 export async function fillTrackValues(episodes: Episode[]): Promise<FilledTrackValues> {
@@ -165,10 +180,11 @@ export async function fillTrackValues(episodes: Episode[]): Promise<FilledTrackV
     if (!e.podcastGuid || !e.guid) return;
     pending.push({ index, feedGuid: e.podcastGuid, itemGuid: e.guid });
   });
-  if (!pending.length) return { episodes, unasked: 0 };
+  if (!pending.length) return { episodes, unasked: 0, capped: 0 };
 
   const out = [...episodes];
   let unasked = 0;
+  let capped = 0;
   const albums = await batchPodcasts([...new Set(pending.map((p) => p.feedGuid))]);
 
   // ── Stage 2's work list, built while stage 1 runs over the same rows ──────
@@ -193,13 +209,16 @@ export async function fillTrackValues(episodes: Episode[]): Promise<FilledTrackV
     if (rows) rows.push(p);
     else byFeedUrl.set(url, [p]);
   }
-  if (!byFeedUrl.size) return { episodes: out, unasked };
+  if (!byFeedUrl.size) return { episodes: out, unasked, capped };
 
   const feedUrls = [...byFeedUrl.keys()];
   const searched = feedUrls.slice(0, MAX_TRACK_VALUE_FEEDS);
   if (feedUrls.length > searched.length) {
     for (const url of feedUrls.slice(MAX_TRACK_VALUE_FEEDS)) {
-      unasked += byFeedUrl.get(url)!.length;
+      // `capped`, not `unasked` — see FilledTrackValues. This ceiling is ours
+      // and it is deterministic, so the row is as settled as the pass can make
+      // it; an outage is the other counter.
+      capped += byFeedUrl.get(url)!.length;
     }
     // Say what was dropped. Silently searching part of a page reads as "these
     // tracks have no value block", which is the same thing on screen as a
@@ -221,5 +240,5 @@ export async function fillTrackValues(episodes: Episode[]): Promise<FilledTrackV
     }
   }));
 
-  return { episodes: out, unasked };
+  return { episodes: out, unasked, capped };
 }

@@ -213,6 +213,10 @@ export async function GET(req: Request) {
     // Placed after the row loop so placeholders are already in the array and
     // keep their positions: `fillTrackValues` fills by index and passes an
     // unresolved row through untouched.
+    //
+    // `capped` is deliberately not read — see the cache header below for why it
+    // must not join `unaskedValues` there, which is the whole reason
+    // `fillTrackValues` reports the two separately.
     const { episodes: valued, unasked: unaskedValues } = await fillTrackValues(episodes);
 
     // ── The accelerator's own value block, as the LAST resort ───────────────
@@ -259,6 +263,20 @@ export async function GET(req: Request) {
           // only their album's value block did not. Cached, they would freeze a
           // dead BOOST button into the CDN for the window, which is the negative
           // cache this route's three-state contract exists to refuse.
+          //
+          // **`fillTrackValues`' `capped` count is deliberately NOT in this
+          // test, and folding it in was the most expensive line on a long
+          // playlist.** It counts rows that pass skipped because their album was
+          // past its own `MAX_TRACK_VALUE_FEEDS` ceiling — a deterministic
+          // decision about a fixed list of refs in a fixed order, so the retry
+          // this `no-store` buys returns the identical body. A page whose tracks
+          // span more than sixteen albums is the ordinary shape of a
+          // greatest-hits playlist, so this route answered `no-store` on a
+          // healthy response for exactly the feeds that cost the most to build:
+          // no CDN entry, no browser entry, and every visitor and every reload
+          // paying a full page of Podcast Index lookups again. Nothing is
+          // withheld by caching it — those rows are as valued as any retry could
+          // make them.
           couldNotAsk > 0 || unaskedValues > 0 ? { 'Cache-Control': 'no-store' } : PLAYLIST_CACHE,
       },
     );
