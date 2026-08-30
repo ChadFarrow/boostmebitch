@@ -2,8 +2,9 @@ import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
+import { resolvePlaylistTracks } from '@/lib/playlist-db';
 import { batchEpisodes, episodeKey, fillTrackValues, MAX_BATCH } from '@/lib/pi-batch';
-import { fnvHash, mergeRssOverPi } from '@/lib/util';
+import { fnvHash, hasValueRecipients, mergeRssOverPi } from '@/lib/util';
 import type { Episode, Podcast } from '@/lib/types';
 import type { PlaylistItemRef } from '@/lib/feed-xml';
 
@@ -139,7 +140,30 @@ export async function GET(req: Request) {
       );
     }
 
-    const resolved = await batchEpisodes(page);
+    // ── The accelerator, in front of Podcast Index ──────────────────────────
+    // A page is 100 refs and every one of them is a PI lookup. The StableKraft
+    // database already holds 13,783 of these tracks with their value blocks, so
+    // it is asked first and PI is left with the misses — measured on It's A
+    // Mood, 319 of 342 refs answered by ONE 117 ms query.
+    //
+    // It is an accelerator and never an authority, which is three separate
+    // things (see lib/playlist-db.ts): the FEED still decides membership and
+    // order, so there is no playlist-id mapping to keep in sync; a miss is not
+    // an answer, so months-stale data is harmless rather than wrong; and any
+    // failure is `null`, which reverts to asking PI for everything. Unset
+    // `PLAYLIST_DB_URL` and this whole branch disappears.
+    //
+    // It answers with the tracks and their value blocks HELD APART, and that
+    // separation is the money rule: `payableValue` reads `episode.value` first,
+    // so a block carried straight through here would outrank the live one
+    // `fillTrackValues` reads below. See `PlaylistDbTracks.values`.
+    const db = await resolvePlaylistTracks(page, podcast.id);
+    const stillNeeded = db
+      ? page.filter((ref) => !db.tracks.has(episodeKey(ref)))
+      : page;
+
+    // `batchEpisodes({})` would be a wasted round trip on a fully-cached page.
+    const resolved = stillNeeded.length ? await batchEpisodes(stillNeeded) : {};
 
     // THE THREE-STATE ANSWER, carried through rather than flattened. See
     // lib/pi-batch.ts: a key with a value resolved, a key holding null is PI
@@ -158,6 +182,11 @@ export async function GET(req: Request) {
     let couldNotAsk = 0;
     for (const ref of page) {
       const key = episodeKey(ref);
+      // A database hit is a resolved row and is NOT counted as `notFound` or
+      // `couldNotAsk` — those two describe what Podcast Index said, and PI was
+      // never asked about this ref.
+      const cached = db?.tracks.get(key);
+      if (cached) { episodes.push(cached); continue; }
       if (!(key in resolved)) {
         couldNotAsk++;
         episodes.push(placeholder(ref, podcast.id, 'could-not-ask'));
@@ -185,6 +214,29 @@ export async function GET(req: Request) {
     // keep their positions: `fillTrackValues` fills by index and passes an
     // unresolved row through untouched.
     const { episodes: valued, unasked: unaskedValues } = await fillTrackValues(episodes);
+
+    // ── The accelerator's own value block, as the LAST resort ───────────────
+    // Applied only to rows the live sources could not value, never over one
+    // they could. This database is a crawl and is months behind, so it is the
+    // worst answer available about who gets paid — but it is still better than
+    // no BOOST button at all on a track Podcast Index cannot resolve, which is
+    // what this page showed before the accelerator existed.
+    //
+    // Index-aligned with `page`: `episodes` pushes exactly one row per ref in
+    // order and `fillTrackValues` fills by index and returns the same length,
+    // which is the property the row loop above already depends on.
+    //
+    // `unaskedValues` is deliberately NOT decremented for a row filled here. It
+    // means "we could not ask", and we still could not — the cache header must
+    // keep saying so, or a page served while PI was unreachable freezes a
+    // months-old payee into the CDN for the window.
+    if (db?.values.size) {
+      for (let i = 0; i < valued.length; i++) {
+        if (hasValueRecipients(valued[i].value)) continue;
+        const snapshot = db.values.get(episodeKey(page[i]));
+        if (snapshot) valued[i] = { ...valued[i], value: snapshot };
+      }
+    }
 
     // The server owns the next offset and the client uses it verbatim. Deriving
     // it client-side from `offset + limit` would desync the moment anything on
