@@ -1,5 +1,6 @@
 'use client';
 import { useApp } from '@/lib/store';
+import { nextPlayableIndex } from '@/lib/util';
 import { SkipBackIcon, SkipForwardIcon } from './icons';
 
 type NavOverride = { onClick: () => void; disabled: boolean; label: string };
@@ -83,11 +84,17 @@ export function TransportControls({
   if (!current) return null;
 
   const idx = episodeQueue.findIndex((e) => e.id === current.episode.id);
+  // **Enabled means "there is a row this press can land on", which is not the
+  // same as "there is a row".** A playlist queue holds one entry per
+  // `<podcast:remoteItem>`, including the ones Podcast Index could not resolve,
+  // and those have an empty enclosure — so `idx < length - 1` lit ⏭ up over a
+  // step `playNext` now refuses to take, which is a control that looks live and
+  // does nothing. Both read `nextPlayableIndex`, so they cannot disagree.
   const onPrev = prev?.onClick ?? (() => playPrev());
-  const prevDisabled = prev ? prev.disabled : !(idx > 0);
+  const prevDisabled = prev ? prev.disabled : nextPlayableIndex(episodeQueue, idx, -1) < 0;
   const prevLabel = prev?.label ?? 'Previous track';
   const onNext = next?.onClick ?? (() => playNext());
-  const nextDisabled = next ? next.disabled : !(idx >= 0 && idx < episodeQueue.length - 1);
+  const nextDisabled = next ? next.disabled : nextPlayableIndex(episodeQueue, idx, 1) < 0;
   const nextLabel = next?.label ?? 'Next track';
 
   // `hidden sm:flex` rather than `flex` when the sides are desktop-only. Both

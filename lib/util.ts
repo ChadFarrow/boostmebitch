@@ -81,6 +81,58 @@ export function playsAsTracks(podcast: Pick<Podcast, 'medium'>): boolean {
 }
 
 /**
+ * Whether a row can be played at all.
+ *
+ * **A playlist row is the only one that can answer no, and it is not an edge
+ * case — it is a normal row on a normal list.** `/api/playlist` yields one row
+ * per `<podcast:remoteItem>` whatever Podcast Index said about it, because a
+ * dropped row makes the playlist look shorter than the curator published it. An
+ * unresolved row therefore carries the two guids and an EMPTY `enclosureUrl`,
+ * and `play()` with an empty enclosure puts a dead track in the player: the
+ * transport says it is playing, nothing comes out, and the only way back is to
+ * pick another row by hand.
+ *
+ * `<EpisodeList>` already suppresses the tap and the header's ▶ on such a row.
+ * This is the same test for the paths that arrive at a row without anybody
+ * choosing it — auto-advance at the end of a track, and ⏮/⏭.
+ */
+export function isPlayableRow(e: Pick<Episode, 'enclosureUrl' | 'unresolved'>): boolean {
+  return !e.unresolved && !!e.enclosureUrl;
+}
+
+/**
+ * The index of the next row that can actually be played, walking `step` from
+ * `from`, or `-1` when there is none.
+ *
+ * **It SKIPS rather than stops, and the difference is the whole point on a
+ * playlist.** An unresolved track sits between two playable ones — Podcast Index
+ * has not crawled that album yet — so stopping there ends the listening session
+ * on a row that renders as "Track not in Podcast Index". Every failure this
+ * guards is silent: playback simply stops, or it "plays" something with no
+ * audio, and neither says why.
+ *
+ * **One helper, read by three callers on purpose.** `playNext`/`playPrev` decide
+ * where playback goes, `<TransportControls>` decides whether ⏮/⏭ are enabled,
+ * and a button that looks enabled and does nothing when pressed is the same
+ * dead control this repo has shipped twice. They cannot disagree while they read
+ * one function.
+ *
+ * `from < 0` means the playing item is not in this queue at all, which is not a
+ * position to step from.
+ */
+export function nextPlayableIndex(
+  queue: readonly Pick<Episode, 'enclosureUrl' | 'unresolved'>[],
+  from: number,
+  step: 1 | -1,
+): number {
+  if (from < 0) return -1;
+  for (let i = from + step; i >= 0 && i < queue.length; i += step) {
+    if (isPlayableRow(queue[i])) return i;
+  }
+  return -1;
+}
+
+/**
  * The Podcasting 2.0 `action` word an UNATTENDED streaming payment carries:
  * `'auto'` when the leg pays a song, `'stream'` when it pays the show.
  *

@@ -32,6 +32,12 @@ import { useStreamPanel } from '../streaming-settings';
 const PAGE_SIZE = 50;
 
 /**
+ * How close to the end of a loaded playlist the PLAYING track has to be before
+ * the next page is fetched for it. See the effect that reads it.
+ */
+const PLAYLIST_PREFETCH_RUNUP = 3;
+
+/**
  * What this component tracks about a `musicL` playlist between pages.
  *
  * `nextOffset` is the server's answer and is passed back verbatim; the counts
@@ -383,6 +389,40 @@ export function EpisodeList({
   useEffect(() => {
     setEpisodeQueue(orderedEpisodes);
   }, [orderedEpisodes, setEpisodeQueue]);
+
+  /**
+   * Fetch the next page of a playlist while the listener is still on this one.
+   *
+   * **Auto-advance ends at the end of the QUEUE, and on a playlist the queue is
+   * a page rather than the list.** A feed hands over every episode at once, so
+   * "the last row" really is the last one; a `musicL` playlist is resolved a
+   * page at a time — one Podcast Index lookup per track — so without this,
+   * playback stops at track 50 of 300 with a LOAD MORE TRACKS button the
+   * listener cannot see, having put the phone down. That is the same silence
+   * the auto-advance fix exists to remove, arriving one page later.
+   *
+   * Hung off what is PLAYING, not off scrolling, and gated on the playing item
+   * being in this queue: a page is a real request against our Podcast Index
+   * quota, so it is spent for somebody who is listening through the list, never
+   * for a page sitting open in a background tab. Three rows of run-up is enough
+   * at any ordinary track length and small enough that a listener who stops
+   * early has cost nothing.
+   *
+   * `loadingMore` is what stops it repeating: it is set synchronously by
+   * `loadNextPage`, so the re-renders between the press and the response bail
+   * here, and once the page lands the run-up is 50 rows again.
+   */
+  useEffect(() => {
+    if (!playlist || playlist.nextOffset == null || loadingMore) return;
+    if (!current) return;
+    const idx = orderedEpisodes.findIndex((e) => e.id === current.episode.id);
+    if (idx < 0 || orderedEpisodes.length - idx > PLAYLIST_PREFETCH_RUNUP) return;
+    loadNextPage();
+    // `loadNextPage` is a function declaration and so is new on every render;
+    // listing it would run this effect every render for no gain. Everything it
+    // reads is in the list below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playlist, loadingMore, current, orderedEpisodes]);
 
   function toggleOrder() {
     const next = !oldestFirst;

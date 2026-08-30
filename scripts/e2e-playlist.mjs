@@ -37,7 +37,7 @@
 // It asserts on the REQUEST GRAPH, which is what was wrong; the bodies exist
 // only to get the client to the next step.
 import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const APP = 'http://localhost:3000';
@@ -64,10 +64,37 @@ const REPAIRED = {
   ...PI_BLANK, title: "ChadF's Greatest Hits Music Playlist", author: 'ChadF',
   medium: 'musicl', image: 'https://example.com/gh.png',
 };
-const TRACKS = Array.from({ length: 3 }, (_, i) => ({
-  id: 100 + i, guid: `track-${i}`, podcastGuid: `album-${i}`, title: `Track ${i}`,
-  enclosureUrl: `https://example.com/${i}.mp3`, feedId: 7683902,
-}));
+/**
+ * Three rows, and the MIDDLE ONE IS UNRESOLVED — which is an ordinary row on an
+ * ordinary playlist, not a contrived one. `/api/playlist` yields one row per
+ * `<podcast:remoteItem>` whatever Podcast Index said, so a track from an album
+ * PI has not crawled arrives with the two guids and an empty enclosure.
+ *
+ * The two playable ones point at DISTINCT urls even though the bytes are
+ * identical, because `audio.currentSrc` is how the autoplay scenario below
+ * identifies which track is playing. One shared url would make "advanced to the
+ * next track" and "still on the first" indistinguishable.
+ */
+const TRACKS = [
+  {
+    id: 100, guid: 'track-0', podcastGuid: 'album-0', title: 'Track 0',
+    enclosureUrl: '/api/e2e-audio.mp3?t=0', feedId: 7683902,
+  },
+  {
+    id: 101, guid: 'track-1', podcastGuid: 'album-1', title: '',
+    enclosureUrl: '', feedId: 7683902, unresolved: 'not-found',
+  },
+  {
+    id: 102, guid: 'track-2', podcastGuid: 'album-2', title: 'Track 2',
+    enclosureUrl: '/api/e2e-audio.mp3?t=2', feedId: 7683902,
+  },
+];
+const PLAYABLE_TRACKS = TRACKS.filter((t) => !t.unresolved);
+// A real decodable file, so `ended` is fired by the browser finishing playback
+// rather than by anything this script simulates. It is short, which is why the
+// scenario can simply wait for it. Served from /api/ so the one interception
+// pattern already in place covers it.
+const AUDIO = readFileSync(new URL('../public/boost.mp3', import.meta.url));
 
 const appUp = await fetch(APP).then((r) => r.ok).catch(() => false);
 if (!appUp) {
@@ -86,6 +113,11 @@ const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 const chrome = spawn(CHROME, [
   ...(HEADED ? [] : ['--headless=new']),
   ...(asRoot ? ['--no-sandbox'] : []),
+  // The autoplay scenario starts playback from a scripted click, which is not a
+  // user gesture as far as the media policy is concerned. Nothing under test
+  // depends on the policy — the app is always started by a real tap — so this
+  // removes a variable rather than papering over one.
+  '--autoplay-policy=no-user-gesture-required',
   `--remote-debugging-port=${CDP}`, `--user-data-dir=${profile}`,
   '--no-first-run', '--no-default-browser-check', '--disable-gpu', 'about:blank',
 ], { stdio: 'ignore' });
@@ -139,6 +171,21 @@ handlers.push(async (m) => {
   const { requestId, request } = m.params;
   const u = new URL(request.url);
   if (u.pathname.startsWith('/api/')) seen.push({ ms: Date.now() - t0, path: u.pathname, search: u.search });
+  // The audio the two playable rows point at. `accept-ranges: none` keeps this
+  // to one plain request — a ranged media fetch would arrive here in pieces
+  // that this stub does not answer.
+  if (u.pathname === '/api/e2e-audio.mp3') {
+    await send('Fetch.fulfillRequest', {
+      requestId, responseCode: 200,
+      responseHeaders: [
+        { name: 'content-type', value: 'audio/mpeg' },
+        { name: 'accept-ranges', value: 'none' },
+        { name: 'content-length', value: String(AUDIO.length) },
+      ],
+      body: AUDIO.toString('base64'),
+    });
+    return;
+  }
   await send('Fetch.fulfillRequest', {
     requestId, responseCode: 200,
     responseHeaders: [{ name: 'content-type', value: 'application/json' }],
@@ -216,6 +263,56 @@ else fail(`expected ${TRACKS.length} track rows, got ${rows}`);
 
 if (header.includes('Greatest Hits')) ok('the show header carries the feed\'s own title, not PI\'s blank one');
 else fail(`header reads "${header}"`);
+
+// ---- autoplay -------------------------------------------------------------
+//
+// **The one thing about this page that no request graph can show.** A playlist
+// is the surface in this app whose whole purpose is to play one song after
+// another, and it was the surface that would not: `<Player>`'s `onEnded` gated
+// auto-advance on `isMusicMedium`, which is `music` alone, so every `musicL`
+// track ended in silence with the transport still showing ❚❚.
+//
+// It is driven end to end — a real click on a real row, a real decodable file,
+// and the browser's own `ended` event — because the bug lived in the wiring
+// between a store action, a media event and a medium test, and each of those
+// three reads correctly on its own.
+console.log('\nAutoplay');
+const clicked = await js(`(() => {
+  const rows = [...document.querySelectorAll('ul.divide-y > li')];
+  const row = rows.find((el) => el.textContent.includes('Track 0'));
+  if (!row) return 'no row';
+  row.click();
+  return 'clicked';
+})()`);
+if (clicked !== 'clicked') fail(`could not start playback: ${clicked}`);
+
+const srcHas = async (mark, ms) => {
+  for (let i = 0; i < ms / 250; i += 1) {
+    const src = await js('document.querySelector("audio")?.currentSrc ?? ""');
+    if (src.includes(mark)) return true;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+};
+
+if (await srcHas('t=0', 5000)) {
+  ok('a row tap plays the track');
+  // Long enough for the file (about a second) plus the advance. A failure here
+  // is the real one: the track ended and nothing followed it.
+  if (await srcHas('t=2', 15000)) {
+    ok('the next track starts on its own when a track ends');
+    // The middle row is unresolved and has an empty enclosure, so arriving at
+    // Track 2 is also the proof that auto-advance stepped OVER it rather than
+    // handing the player a dead track.
+    ok(`and it skipped the unresolved row between them (${TRACKS.length - PLAYABLE_TRACKS.length} of ${TRACKS.length})`);
+  } else {
+    const src = await js('document.querySelector("audio")?.currentSrc ?? ""');
+    const playing = await js('!document.querySelector("audio")?.paused');
+    fail(`playback did not advance to the next track (src ${src || '(none)'}, playing ${playing})`);
+  }
+} else {
+  fail('the first track never started, so the advance could not be tested');
+}
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall good');
 process.exit(failures ? 1 : 0);

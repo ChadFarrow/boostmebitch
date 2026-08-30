@@ -5,6 +5,7 @@ import type { NostrIdentity, PublishReason } from './nostr';
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
+import { nextPlayableIndex } from './util';
 
 /** Which view the sign-in modal opens on. See `signInIntent` below. */
 export type SignInIntent = 'default' | 'google';
@@ -45,8 +46,16 @@ interface AppState {
   // lands after the user moved on can't retarget their payment.
   syncCurrentValue: (guid: string, value: ValueBlock | null) => void;
   setEpisodeQueue: (episodes: Episode[]) => void;
-  playNext: () => void;
-  playPrev: () => void;
+  /**
+   * Advance to the next PLAYABLE row, and say whether there was one.
+   *
+   * The boolean exists for `<Player>`'s `onEnded`: without it the end of the
+   * last track left `isPlaying` true over an element that had stopped, so the
+   * transport drew ❚❚ over silence — the glyph lying about what a press will
+   * do. Callers that only want the move ignore the return.
+   */
+  playNext: () => boolean;
+  playPrev: () => boolean;
 
   // Whether the fullscreen "Now Playing" player is expanded. Lifted into the
   // store so surfaces outside <Player> (e.g. a live-stream card) can open it.
@@ -393,6 +402,30 @@ function dropBaselineIfWriteFailed(landed: boolean, npub: string | undefined, wh
   );
 }
 
+/**
+ * The state patch that moves playback one PLAYABLE row along `step`, or `null`
+ * when there is nowhere to go.
+ *
+ * Shared by `playNext` and `playPrev` because the two differ by the sign alone,
+ * and the interesting half — which rows may be landed on — is `nextPlayableIndex`
+ * in lib/util.ts, where it can be read by `<TransportControls>` too.
+ *
+ * `podcast` is carried from the current item rather than looked up: the queue is
+ * one feed's display order, so every row in it belongs to the same show.
+ */
+function stepTo(s: AppState, step: 1 | -1): Partial<AppState> | null {
+  if (!s.current) return null;
+  const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
+  const to = nextPlayableIndex(s.episodeQueue, idx, step);
+  if (to < 0) return null;
+  return {
+    current: { episode: s.episodeQueue[to], podcast: s.current.podcast },
+    isPlaying: true,
+    positionSec: 0,
+    videoMode: false,
+  };
+}
+
 export const useApp = create<AppState>((set, get) => ({
   identity: null,
   setIdentity: (i) => set({ identity: i }),
@@ -423,20 +456,14 @@ export const useApp = create<AppState>((set, get) => ({
       return { current: { ...s.current, episode: { ...s.current.episode, value } } };
     }),
   setEpisodeQueue: (episodes) => set({ episodeQueue: episodes }),
-  playNext: () => set((s) => {
-    if (!s.current) return s;
-    const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
-    const next = idx >= 0 ? s.episodeQueue[idx + 1] : undefined;
-    if (!next) return s;
-    return { current: { episode: next, podcast: s.current.podcast }, isPlaying: true, positionSec: 0, videoMode: false };
-  }),
-  playPrev: () => set((s) => {
-    if (!s.current) return s;
-    const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
-    const prev = idx > 0 ? s.episodeQueue[idx - 1] : undefined;
-    if (!prev) return s;
-    return { current: { episode: prev, podcast: s.current.podcast }, isPlaying: true, positionSec: 0, videoMode: false };
-  }),
+  // Both step through `nextPlayableIndex`, never `idx ± 1`. A playlist's queue
+  // holds a row for every `<podcast:remoteItem>` including the ones Podcast
+  // Index could not resolve, and those carry an EMPTY enclosure — so the plain
+  // arithmetic hands the player a dead track, which reports as playing and is
+  // silent. See `isPlayableRow`; `<TransportControls>` reads the same helper so
+  // ⏮/⏭ cannot be enabled over a step these refuse to take.
+  playNext: () => { const patch = stepTo(get(), 1); if (patch) set(patch); return !!patch; },
+  playPrev: () => { const patch = stepTo(get(), -1); if (patch) set(patch); return !!patch; },
 
   playerExpanded: false,
   setPlayerExpanded: (b) => set({ playerExpanded: b }),

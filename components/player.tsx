@@ -10,7 +10,7 @@ import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
 import { useMediaSession } from './player/use-media-session';
 import { fmt } from '@/lib/format';
-import { hasValueRecipients, isHlsUrl, isMusicMedium, pickVideoAlternate, pipNeedsOwnButton, pipSupported, togglePip } from '@/lib/util';
+import { hasValueRecipients, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
@@ -706,9 +706,22 @@ export function Player() {
             }
           }}
           onLoadedMetadata={(e) => { setDuration(e.currentTarget.duration); setAudioErr(null); }}
+          // **`playsAsTracks`, not `isMusicMedium` — an ALBUM is not the only
+          // thing whose rows are tracks.** `isMusicMedium` is `music` alone, so
+          // a `musicL` PLAYLIST stopped dead at the end of every track: the one
+          // surface in the app whose entire purpose is to play one song after
+          // another was the one that would not. `playsAsTracks` is the gate the
+          // rest of the app already uses for exactly this question, and its own
+          // documentation names auto-advance as one of the behaviours it
+          // decides. The two had simply drifted.
+          //
+          // The RETURN VALUE is the other half. `playNext` no-ops at the end of
+          // the queue, so `isPlaying` stayed true over an element that had
+          // stopped and the transport drew ❚❚ over silence — true of albums
+          // since before playlists existed. Ask whether it moved.
           onEnded={() => {
-            if (current && isMusicMedium(current.podcast)) playNext();
-            else setPlaying(false);
+            if (current && playsAsTracks(current.podcast) && playNext()) return;
+            setPlaying(false);
           }}
           // `waiting` fires the moment playback runs dry; `stalled` when the
           // browser has had no data for a while. Neither is an error and neither
