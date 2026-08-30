@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { SearchBar } from '@/components/search-bar';
 import type { SearchInfo } from '@/components/search-bar';
 import { Chip } from '@/components/chip';
@@ -230,6 +230,20 @@ export function HomePage() {
     window.history.replaceState({}, '', url.toString());
   }, [selected?.podcastGuid, selected?.id, selected, selectedEpisode?.guid, selectedEpisode, discussionEpisode]);
 
+  /**
+   * The query string as it was when the page LOADED.
+   *
+   * A `useRef` initializer runs during render, ahead of every effect, which is
+   * the point: the mirror effects rewrite the URL on mount from state that has
+   * not hydrated yet, so by the time a restore effect runs, the params it exists
+   * to read are already gone. Unlike reading `location` in the render body this
+   * never reaches the rendered output, so it cannot cause a hydration mismatch —
+   * the reason `entryResolved` is a state flag and this is not.
+   */
+  const initialSearch = useRef<string>(
+    typeof window === 'undefined' ? '' : window.location.search,
+  );
+
   // Publisher view → ?publisher=<feedUrl>. Separate effect because the publisher
   // aside only renders in browse mode (no podcast/episode selected).
   useEffect(() => {
@@ -244,14 +258,41 @@ export function HomePage() {
   // wins, so skip if a podcast/feed param is present. The publisher record isn't
   // fetched anywhere today, so reconstruct a minimal stub (back-button label
   // shows "Publisher" on a cold restore) and refetch the album list.
+  //
+  // **It reads the query as it was at LOAD, never `window.location.search`.**
+  // The mirror effect directly above is declared first and therefore runs first,
+  // and on mount `publisherSource` is null — so it DELETED the param through
+  // `replaceState` before this effect ever looked at it. Every `?publisher=`
+  // link ever shared opened the plain home page with the address bar silently
+  // rewritten. Measured on this branch and on main before the fix.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(initialSearch.current);
     const feedUrl = params.get('publisher');
-    if (!feedUrl || params.get('podcast') || params.get('feed')) return;
-    if (publisherSource || !piMaybeUp()) return;
+    // `playlist` belongs in this skip set beside `podcast` and `feed`: all
+    // three are a DETAIL the visitor asked for, and the aside is context. It
+    // was missing, and this branch never ran at all before the fix above — so
+    // `?publisher=…&playlist=…` would newly restore a publisher aside on top of
+    // the show the link actually names.
+    if (!feedUrl || params.get('podcast') || params.get('feed') || params.get('playlist')) return;
+    if (publisherSource) return;
     setPublisherSource({ id: 0, title: 'Publisher', medium: 'publisher', url: feedUrl } as Podcast);
     setPublisherAlbums(null);
+    // **A withheld restore must say so.** `piMaybeUp()` reads `bmb:pi:dead`,
+    // which is sessionStorage and survives a reload — so a visitor who loaded
+    // any page while PI was down and then opened a shared `?publisher=` link in
+    // the same tab hit a bare `return`. The mirror effect above has already
+    // stripped the param via `replaceState`, so they got the plain home page
+    // with the address bar quietly rewritten: indistinguishable from the bug
+    // this effect was just written to fix. The source is set first, so the
+    // "← Publisher" header and a RETRY are on screen; the retry runs
+    // `handleSelect`, which is not gated on the breaker and can still answer
+    // from RSS.
+    if (!piMaybeUp()) {
+      setPublisherError(true);
+      setPublisherAlbums([]);
+      return;
+    }
     setPublisherLoading(true);
     (async () => {
       try {

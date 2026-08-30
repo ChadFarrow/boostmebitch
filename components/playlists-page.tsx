@@ -1,9 +1,15 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { PodcastResults } from '@/components/lists';
 import { useApp } from '@/lib/store';
-import { MUSICL_PUBLISHER_URL, loadCollection, playlistTrackCount } from '@/lib/playlist-collection';
+import {
+  MUSICL_PUBLISHER_URL,
+  COMMUNITY_COLLECTION_URL,
+  COMMUNITY_COLLECTION_TITLE,
+  loadCollection,
+  playlistTrackCount,
+} from '@/lib/playlist-collection';
 import { isPlaylistMedium } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -11,133 +17,205 @@ import type { Podcast } from '@/lib/types';
 const PLAYLISTS_ORIGIN = { path: '/playlists', label: 'playlists' };
 
 /**
+ * The collections this page shows, in order.
+ *
+ * Two, and they are separate SHAPES as well as separate headings: the first is
+ * a real publisher feed, so a playlist added there appears the same day with no
+ * deploy; the second is a curated URL list, because its playlists have other
+ * authors and no publisher feed lists them together. Naming them here rather
+ * than inlining two copies of the section is what stops the count line, the
+ * shortfall line and the retry drifting apart between them — the fault this
+ * module's own header records from when one file held two copies of the fetch.
+ */
+/**
  * How many rows get a track count, and how many of those run at once.
  *
  * Sized against `/api/playlist`'s own 30-per-minute per-IP limit, which this
- * page SHARES with opening a playlist. 12 leaves the visitor most of the budget
- * for the thing they came to do; the concurrency stops even those twelve
- * arriving as one spike beside `<EpisodeList>`'s own paging.
+ * page SHARES with opening a playlist. 12 across BOTH sections leaves the
+ * visitor most of the budget for the thing they came to do.
  */
 const MAX_COUNTED_ROWS = 12;
 const COUNT_CONCURRENCY = 3;
 
+const SECTIONS: readonly { url: string; heading: string; blurb: string }[] = [
+  {
+    url: MUSICL_PUBLISHER_URL,
+    heading: "ChadF's playlists",
+    blurb: 'Published as a Podcasting 2.0 publisher feed, so this list updates itself.',
+  },
+  {
+    url: COMMUNITY_COLLECTION_URL,
+    heading: COMMUNITY_COLLECTION_TITLE,
+    // NOT "made by other people": entry 2 of COMMUNITY_PLAYLIST_URLS is ChadF's
+    // own, made on v4vmusic rather than by the tooling that writes the publisher
+    // feed. Every visitor read a false attribution about that row — the same
+    // class of wrong claim splitting the collections was meant to prevent, just
+    // pointing the other way. What is true of ALL of them is the host.
+    blurb: 'Built on other hosts, and mostly by other people in the V4V community.',
+  },
+];
+
 /**
- * The curated playlist collection, as a page.
+ * One collection's rows, its count, and how much of it is missing.
  *
- * Four states, and conflating any two of them reproduces a bug this repo has
- * already paid for twice (`<EmptyLibrary>`, and the favorites degraded read):
- * loading is not empty, a failed load is not "this collection lists nothing",
- * and no count may be printed over either — "0 playlists" above a load error
- * states as fact the very thing we just said we could not determine.
+ * Held per section rather than merged into one list, because every number on
+ * screen is a claim about a NAMED collection: merging them would let one feed's
+ * outage print a short total over the other's complete one, with nothing saying
+ * which half was short.
  */
-export function PlaylistsPage() {
-  const [playlists, setPlaylists] = useState<Podcast[] | null>(null);
+interface SectionState {
+  playlists: Podcast[] | null;
   /**
    * How many entries the collection NAMES, which is not always how many
    * resolved. See `loadCollection`: a child Podcast Index cannot answer for and
    * whose RSS also fails to read is dropped, silently and on purpose, so one
-   * dead entry does not cost the reader the other nine. Holding this is what
-   * stops the count line stating the survivors as the whole.
+   * dead entry does not cost the reader the others. Holding this is what stops
+   * the count line stating the survivors as the whole.
    */
-  const [listed, setListed] = useState(0);
+  listed: number;
   /**
    * Podcast Index was rate limiting, so these rows were read from the feeds'
-   * own RSS. The list is complete and the documents are authoritative; what is
+   * own RSS. The list is COMPLETE and the documents are authoritative; what is
    * missing is PI's id and guid, so `<FavHeart>` withholds the favorite for one
    * load and the rows must not claim `NOT IN PI` about feeds nobody asked about.
-   *
-   * It drives the stamp and nothing else. It carried a line of explanation too,
-   * removed at Chad's direction 2026-08-29: the state lasts one load, the answer
-   * is `no-store` so a reload really re-asks, and a paragraph about an upstream
-   * rate limit is not what this page is for. The FALSE stamp was the actual bug
-   * — a missing heart is a small silence, a wrong claim is not.
    */
-  const [noPi, setNoPi] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
+  noPi: boolean;
+  loading: boolean;
+  failed: boolean;
+}
+
+const INITIAL: SectionState = {
+  playlists: null, listed: 0, noPi: false, loading: true, failed: false,
+};
+
+/**
+ * The curated playlist collections, as a page.
+ *
+ * Four states per section, and conflating any two of them reproduces a bug this
+ * repo has already paid for twice (`<EmptyLibrary>`, and the favorites degraded
+ * read): loading is not empty, a failed load is not "this collection lists
+ * nothing", and no count may be printed over either — "0 playlists" above a load
+ * error states as fact the very thing we just said we could not determine.
+ */
+export function PlaylistsPage() {
+  const [sections, setSections] = useState<readonly SectionState[]>(
+    () => SECTIONS.map(() => INITIAL),
+  );
   /**
    * feed URL → deduped track count, filled in after the rows paint.
    *
-   * A row missing from this map renders NO count, which covers both "still
-   * asking" and "never got an answer". Those are the same thing on screen and
-   * deliberately so: the alternative is a number we did not learn.
+   * One map for the whole page, keyed by feed URL, so a playlist listed by both
+   * collections is counted once. A row missing from this map renders NO count,
+   * which covers both "still asking" and "never got an answer". Those are the
+   * same thing on screen and deliberately so: the alternative is a number we did
+   * not learn.
    */
   const [counts, setCounts] = useState<Record<string, number>>({});
   const selectPodcast = useApp((s) => s.selectPodcast);
   const setShowOrigin = useApp((s) => s.setShowOrigin);
   const router = useRouter();
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setFailed(false);
-    const collection = await loadCollection(MUSICL_PUBLISHER_URL);
-    setLoading(false);
+  const patch = useCallback((i: number, next: Partial<SectionState>) => {
+    setSections((prev) => prev.map((s, j) => (j === i ? { ...s, ...next } : s)));
+  }, []);
+
+  const load = useCallback(async (i: number) => {
+    patch(i, { loading: true, failed: false });
+    const collection = await loadCollection(SECTIONS[i].url);
     if (!collection) {
       // Keep whatever is already on screen. A retry that fails must not empty a
       // list the visitor can still read.
-      setFailed(true);
+      patch(i, { loading: false, failed: true });
       return;
     }
-    setPlaylists(collection.feeds);
-    setListed(collection.listed);
-    setNoPi(collection.couldNotAskPi);
-  }, []);
+    patch(i, {
+      loading: false,
+      playlists: collection.feeds,
+      listed: collection.listed,
+      noPi: collection.couldNotAskPi,
+    });
+  }, [patch]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { SECTIONS.forEach((_, i) => void load(i)); }, [load]);
 
   /**
-   * Track counts, one request per row, AFTER the collection has painted.
+   * Track counts, one request per row, AFTER the collections have painted.
    *
    * Deliberately not folded into `/api/publisher`: that route answers for any
    * publisher feed and would then read every child's RSS to serve a number only
    * this page shows. Deliberately not awaited before painting either — a count
-   * is an annotation, and holding ten covers back for it would trade the whole
+   * is an annotation, and holding the covers back for it would trade the whole
    * page against a line of small text.
    *
+   * **The ceiling is NOT cosmetic, which an earlier version of this comment
+   * claimed.** `/api/playlist` allows 30 per minute per IP and it is the same
+   * bucket the visitor's next TAP on a row spends — so an uncapped pass does
+   * not merely lose annotations, it makes opening a playlist 429 and
+   * `<EpisodeList>` render its load error. Two sections make that likelier, not
+   * less: 17 rows today, and both lists grow without a deploy.
+   *
+   * So the pass is CAPPED and the rest of the rows simply show no count, which
+   * is how an annotation should degrade. `COUNT_CONCURRENCY` spreads even those
+   * rather than firing them as one spike.
+   *
+   * **The dependency is a STRING, and that is the other half.** `sections` is a
+   * new array on every `patch`, and mount produces four of them (two loading,
+   * then each collection resolving) — so depending on it cancelled every
+   * request in flight and re-issued the whole set, four times over. One RETRY
+   * past `/api/playlist`'s 60 s `max-age` then doubled it again. `urlKey`
+   * changes only when the set of countable URLs does.
+   *
+   * `askedRef` is what stops a re-run re-asking about a URL already answered,
+   * without making `counts` a dependency (which would re-arm the effect on
+   * every arriving count).
+   *
    * Gated on `isPlaylistMedium` because a publisher feed may list albums, and
-   * "tracks" is the wrong noun for one. `allSettled` because a row that fails
-   * must not take the other nine with it; `playlistTrackCount` already answers
-   * null rather than throwing, so this is belt and braces.
-   *
-   * **CAPPED, and the cap is what keeps the feature working.** Every one of
-   * these is a `/api/playlist` request, and that route allows 30 per minute per
-   * IP — the same bucket the visitor's next TAP on a row spends. The collection
-   * is a publisher feed capped server-side at `MAX_PUBLISHER_ALBUMS` (100) and
-   * the whole design is that a playlist added there appears here the same day
-   * with no deploy, so "there are only eleven today" is not a bound. Past 30
-   * rows an uncapped burst exhausts the budget on a cold first visit: the
-   * surplus counts vanish silently, and then opening a playlist 429s and
-   * `<EpisodeList>` renders its load error. The annotation would have taken out
-   * the page it annotates.
-   *
-   * So a bounded number of rows get a count and the rest simply do not, which
-   * is the right way for an annotation to degrade. `CONCURRENCY` keeps even
-   * that within the per-minute budget rather than firing it as one spike.
+   * "tracks" is the wrong noun for one. Deduped by URL across the sections.
    */
+  const urlKey = useMemo(
+    () => [...new Set(
+      sections
+        .flatMap((s) => s.playlists ?? [])
+        .filter((p) => p.url && isPlaylistMedium(p))
+        .map((p) => p.url!),
+    )].join('\n'),
+    [sections],
+  );
+  const askedRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
-    if (!playlists?.length) return;
+    if (!urlKey) return;
+    // **The cap is a TOTAL for the page, not a per-run one**, and the claim is
+    // made EAGERLY. Both matter because this effect legitimately runs more than
+    // once: the two collections resolve in separate tasks, so `urlKey` grows,
+    // and React's development StrictMode invokes every effect twice. Claiming a
+    // URL only as a worker reached it left the rest unclaimed, so the next run
+    // re-asked about requests still in flight — measured at 30 requests for 17
+    // rows, worse than the uncapped version it replaced.
+    const budget = MAX_COUNTED_ROWS - askedRef.current.size;
+    if (budget <= 0) return;
+    const urls = urlKey.split('\n')
+      .filter((u) => !askedRef.current.has(u))
+      .slice(0, budget);
+    if (!urls.length) return;
+    for (const u of urls) askedRef.current.add(u);
+
     let live = true;
-    const rows = playlists
-      .filter((p) => p.url && isPlaylistMedium(p))
-      .slice(0, MAX_COUNTED_ROWS);
-    // A worker pool rather than `Promise.allSettled` over everything: same
-    // total requests, spread out. Each worker takes the next index until the
-    // list runs out, and every worker stops the moment the effect is cleaned up.
     let next = 0;
     const worker = async () => {
       while (live) {
-        const p = rows[next++];
-        if (!p) return;
-        const total = await playlistTrackCount(p.url!);
+        const url = urls[next++];
+        if (!url) return;
+        const total = await playlistTrackCount(url);
         if (!live || total === null) continue;
-        setCounts((prev) => (prev[p.url!] === total ? prev : { ...prev, [p.url!]: total }));
+        setCounts((prev) => (prev[url] === total ? prev : { ...prev, [url]: total }));
       }
     };
     void Promise.allSettled(
-      Array.from({ length: Math.min(COUNT_CONCURRENCY, rows.length) }, worker),
+      Array.from({ length: Math.min(COUNT_CONCURRENCY, urls.length) }, worker),
     );
     return () => { live = false; };
-  }, [playlists]);
+  }, [urlKey]);
 
   /**
    * Open a playlist: set the store, THEN navigate to `/`.
@@ -158,11 +236,6 @@ export function PlaylistsPage() {
     router.push('/');
   }
 
-  const rows = playlists ?? [];
-  // Never negative: `listed` is 0 before the first successful load, and an
-  // older deploy of the route reports it as the row count rather than as 0.
-  const missing = Math.max(0, listed - rows.length);
-
   return (
     <>
       <h1 className="headline text-3xl sm:text-4xl">playlists</h1>
@@ -171,80 +244,95 @@ export function PlaylistsPage() {
         boost pays the artist, not the list.
       </p>
 
-      {/* The count states what is on screen, and only once it is known. It is
-          suppressed while loading and suppressed on a failure, for the reason
-          the publisher aside on `/` suppresses it: a number over an error is a
-          claim about the collection, and the error says we have none. */}
-      {(loading || !failed) && (
-        <div className="text-[11px] uppercase tracking-widest text-muted mt-6 mb-2 px-1">
-          {loading
-            ? 'loading playlists…'
-            : missing > 0
-              ? `${rows.length} of ${listed} playlists`
-              : `${rows.length} playlists`}
-        </div>
-      )}
+      {SECTIONS.map((section, i) => {
+        const state = sections[i];
+        const rows = state.playlists ?? [];
+        // Never negative: `listed` is 0 before the first successful load, and an
+        // older deploy of the route reports it as the row count rather than as 0.
+        const missing = Math.max(0, state.listed - rows.length);
+        return (
+          <section key={section.url} className="mt-8">
+            <h2 className="font-display text-lg">{section.heading}</h2>
+            <p className="mt-1 max-w-xl text-xs leading-relaxed text-muted">{section.blurb}</p>
 
-      {/* A partial collection says so, in the same breath as the count.
-          `/api/publisher` drops a child it can neither find in Podcast Index
-          nor read from RSS, which is right — one dead entry must not cost the
-          reader the other nine — but the survivors are then indistinguishable
-          from the whole, and this line would otherwise print a short number as
-          a fact about the collection. Reported 2026-08-29 as "4 playlists" over
-          a collection of eleven, while Podcast Index was rate limiting.
-          It is not the load ERROR: the fetch succeeded and the rows below are
-          real, so this sits quietly under the count rather than replacing the
-          list, and it offers the same retry because the usual cause is
-          transient. */}
-      {!loading && !failed && missing > 0 && (
-        <p className="text-xs text-muted mb-3 px-1 flex flex-wrap items-center gap-3">
-          <span>
-            {missing === 1
-              ? "1 more couldn't be loaded just now"
-              : `${missing} more couldn't be loaded just now`}
-          </span>
-          <button type="button" onClick={() => void load()} className="btn-ghost btn-compact">
-            ↻ RETRY
-          </button>
-        </p>
-      )}
+            {/* The count states what is on screen, and only once it is known. It
+                is suppressed while loading and suppressed on a failure, for the
+                reason the publisher aside on `/` suppresses it: a number over an
+                error is a claim about the collection, and the error says we have
+                none. */}
+            {(state.loading || !state.failed) && (
+              <div className="text-[11px] uppercase tracking-widest text-muted mt-4 mb-2 px-1">
+                {state.loading
+                  ? 'loading playlists…'
+                  : missing > 0
+                    ? `${rows.length} of ${state.listed} playlists`
+                    : `${rows.length} playlists`}
+              </div>
+            )}
 
-      {/* Above the list, not instead of it: a retry that fails still leaves the
-          previously loaded rows readable underneath. */}
-      {failed && (
-        <p className="text-sm py-4 px-1 flex flex-wrap items-center gap-3">
-          <span className="text-muted">couldn&apos;t load these — check your connection</span>
-          <button type="button" onClick={() => void load()} className="btn-ghost btn-compact">
-            ↻ RETRY
-          </button>
-        </p>
-      )}
+            {/* A partial collection says so, in the same breath as the count.
+                `/api/publisher` drops a child it can neither find in Podcast
+                Index nor read from RSS, which is right — one dead entry must not
+                cost the reader the other nine — but the survivors are then
+                indistinguishable from the whole, and this line would otherwise
+                print a short number as a fact about the collection. Reported
+                2026-08-29 as "4 playlists" over a collection of eleven, while
+                Podcast Index was rate limiting.
+                It is not the load ERROR: the fetch succeeded and the rows below
+                are real, so this sits quietly under the count rather than
+                replacing the list, and it offers the same retry because the
+                usual cause is transient. */}
+            {!state.loading && !state.failed && missing > 0 && (
+              <p className="text-xs text-muted mb-3 px-1 flex flex-wrap items-center gap-3">
+                <span>
+                  {missing === 1
+                    ? "1 more couldn't be loaded just now"
+                    : `${missing} more couldn't be loaded just now`}
+                </span>
+                <button type="button" onClick={() => void load(i)} className="btn-ghost btn-compact">
+                  ↻ RETRY
+                </button>
+              </p>
+            )}
 
-      {loading && !rows.length ? null : rows.length ? (
-        <PodcastResults
-          feeds={rows}
-          selected={null}
-          onSelect={openPlaylist}
-          piUnasked={noPi}
-          meta={(p) => {
-            const n = p.url ? counts[p.url] : undefined;
-            return n === undefined ? null : `${n.toLocaleString()} tracks`;
-          }}
-        />
-      ) : failed || listed > 0 ? null : (
-        // **Gated on `listed`, never on how many rows rendered.** "Nothing" is a
-        // claim about the COLLECTION, and `rows.length === 0` is a fact about
-        // what we managed to resolve — the two part company exactly when the
-        // page is least able to tell. With Podcast Index rate limiting and the
-        // RSS repair also failing, `listed` is 11 and `rows` is empty, and this
-        // branch printed "this collection lists nothing" directly under "0 of 11
-        // playlists" and "11 more couldn't be loaded just now": three lines, two
-        // of them contradicting the third, and the confident one wrong.
-        //
-        // With `listed > 0` the shortfall line above already carries the whole
-        // story and its own retry, so there is nothing left to say here.
-        <p className="text-muted text-sm py-4 px-1">this collection lists nothing</p>
-      )}
+            {/* Above the list, not instead of it: a retry that fails still
+                leaves the previously loaded rows readable underneath. */}
+            {state.failed && (
+              <p className="text-sm py-4 px-1 flex flex-wrap items-center gap-3">
+                <span className="text-muted">couldn&apos;t load these — check your connection</span>
+                <button type="button" onClick={() => void load(i)} className="btn-ghost btn-compact">
+                  ↻ RETRY
+                </button>
+              </p>
+            )}
+
+            {state.loading && !rows.length ? null : rows.length ? (
+              <PodcastResults
+                feeds={rows}
+                selected={null}
+                onSelect={openPlaylist}
+                piUnasked={state.noPi}
+                meta={(p) => {
+                  const n = p.url ? counts[p.url] : undefined;
+                  return n === undefined ? null : `${n.toLocaleString()} tracks`;
+                }}
+              />
+            ) : state.failed || state.listed > 0 ? null : (
+              // **Gated on `listed`, never on how many rows rendered.**
+              // "Nothing" is a claim about the COLLECTION; `rows.length === 0`
+              // is a fact about what we resolved, and the two part company
+              // exactly when the page is least able to tell. With Podcast Index
+              // rate limiting and the RSS repair also failing this printed
+              // "this collection lists nothing" directly under "0 of 11
+              // playlists" and "11 more couldn't be loaded just now" — three
+              // lines, two contradicting the third, and the confident one
+              // wrong. With `listed > 0` the shortfall line already carries the
+              // story and its own retry.
+              <p className="text-muted text-sm py-4 px-1">this collection lists nothing</p>
+            )}
+          </section>
+        );
+      })}
     </>
   );
 }

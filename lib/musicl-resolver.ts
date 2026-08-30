@@ -180,10 +180,24 @@ function publisherRemoteItemUrls(xml: string): string[] {
   return urls;
 }
 
-/** Fetch a publisher feed and return the feedUrls of all its remoteItem album feeds. */
-export async function getPublisherAlbumUrls(feedUrl: string): Promise<string[]> {
+/**
+ * The feedUrls of a publisher feed's remoteItem album feeds.
+ *
+ * **`null` means the feed could not be READ; `[]` means it was read and listed
+ * nothing.** They were the same answer, and the difference is the whole
+ * sentence on screen: `fetchFeedXml` swallows every failure — a 404, a timeout,
+ * a refused scheme, an HTML error page served as 200 — so an unreachable host
+ * produced an empty array, `/api/publisher` answered a **cached** 200
+ * `{feeds: [], listed: 0}`, and the page printed "this collection lists
+ * nothing" about a document nobody had read, held at the edge for five minutes.
+ *
+ * A document that parses but is not a publisher feed still answers `[]`: that
+ * one WAS read, and "it lists no albums" is true of it.
+ */
+export async function getPublisherAlbumUrls(feedUrl: string): Promise<string[] | null> {
   const xml = await fetchFeedXml(feedUrl);
-  if (!xml || !isPublisherFeed(xml)) return [];
+  if (!xml) return null;
+  if (!isPublisherFeed(xml)) return [];
   return publisherRemoteItemUrls(xml);
 }
 
