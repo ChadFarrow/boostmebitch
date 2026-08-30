@@ -247,11 +247,22 @@ check('no republish on reload', published.length, count);
 check('created_at is unchanged', published[published.length - 1].created_at, at);
 
 console.log('\n--- 4. THE LIST STILL RENDERS, decrypted from `content` ---');
+// **Read the heart's ACCESSIBLE NAME, not the page text.** This scanned
+// `innerText` for /favorited/i, which coupled the one browser harness this repo
+// has to a word on a chip: dropping FAVORITED for a layout reason (the glyph and
+// the word both changed width, so toggling a heart shunted its neighbours) turned
+// both of these assertions red on a change that broke nothing. It was also weak —
+// it matched the string anywhere on the page, including copy that has nothing to
+// do with a row. `aria-label` is `Unfavorite <label>` exactly when a heart is in
+// the favorited state, it is what a screen reader announces, and counting the
+// ROWS that carry one proves what these scenarios actually care about: every row
+// that rendered is a favorite.
 // innerText is uppercased by CSS on this page, so match case-insensitively.
 const shown = await js(`JSON.stringify({
   saved: (document.body.innerText.match(/([0-9]+)\\s+saved/i) || [])[1] ?? null,
   rows: document.querySelectorAll('main li').length,
-  favorited: /favorited/i.test(document.body.innerText),
+  favorited: [...document.querySelectorAll('main li')]
+    .filter((li) => li.querySelector('[aria-label^="Unfavorite"]')).length,
   placeholder: /couldn.t load this/i.test(document.body.innerText),
   emptyClaim: /nothing saved yet|nothing on this device/i.test(document.body.innerText),
   notice: /couldn.t (confirm|open)/i.test(document.body.innerText),
@@ -262,7 +273,7 @@ check('the count still says 2', sh.saved, '2');
 // The title on screen comes from Podcast Index, not from the fixture — a
 // resolved title outranks the cache, which is the documented behaviour.
 check('both rows render, decrypted out of `content`', sh.rows, 2);
-check('...and read as favorited', sh.favorited, true);
+check('...and BOTH read as favorited', sh.favorited, 2);
 check('...and neither is an unresolved placeholder', sh.placeholder, false);
 check('it does NOT claim the library is empty', sh.emptyClaim, false);
 check('and no degraded notice is up', sh.notice, false);
@@ -307,7 +318,9 @@ await send('Page.navigate', { url: `${APP}/favorites` }); await wait(14000);
 const adopted = await js(`JSON.stringify({
   rows: document.querySelectorAll('main li').length,
   rowText: [...document.querySelectorAll('main li')].map(li => li.innerText.slice(0, 60)),
-  favorited: /favorited/i.test(document.body.innerText),
+  // See the note in scenario 4: the heart's accessible name, not page text.
+  favorited: [...document.querySelectorAll('main li')]
+    .filter((li) => li.querySelector('[aria-label^="Unfavorite"]')).length,
   emptyClaim: /nothing saved yet|nothing on this device/i.test(document.body.innerText),
   notice: /couldn.t (confirm|open)/i.test(document.body.innerText),
 })`);
@@ -325,7 +338,7 @@ const ad = JSON.parse(adopted);
 check('the list renders on a device that has never seen it', ad.rows, 1);
 check('...and it is the ITEM, which is what a cacheless device can be sure of',
   /example\.com\/ep/.test(ad.rowText[0] ?? ''), true);
-check('...and reads as favorited', ad.favorited, true);
+check('...and it reads as favorited', ad.favorited, 1);
 check('it does NOT claim the library is empty', ad.emptyClaim, false);
 check('and no degraded notice is up', ad.notice, false);
 // The adoption is RENDER-ONLY. Publishing an empty local list over a full relay
