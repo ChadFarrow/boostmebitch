@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getErrorMessage } from './util';
+import { piCouldNotAskStatus } from './pi-error';
 
 /**
  * Wrap a route handler body so unhandled throws return a consistent 500 JSON.
@@ -21,6 +22,19 @@ import { getErrorMessage } from './util';
  * This does NOT touch the deliberate messages routes write themselves —
  * `'missing url'`, `` `upstream ${res.status}` `` and friends are 400/502
  * `return`s that never reach this catch. Only an actual throw lands here.
+ *
+ * **The STATUS is not always 500, and that is a correctness rule rather than a
+ * nicety.** A Podcast Index rate limit reaches here as a throw like any other,
+ * and answering 500 tells `lib/podcast-meta.ts` that PI is DOWN — which trips
+ * the client-side breaker and disables metadata resolution for the life of the
+ * tab, cancelling every other lookup in flight. That is the "227 favorites to
+ * 0" failure. `piCouldNotAskStatus` returns 429/408 for exactly that case, and
+ * podcast-meta's `COULD_NOT_ASK` set already treats those as "nobody asked":
+ * an uncached null, no breaker, and the next page load resolves normally.
+ *
+ * The BODY is unchanged — still `fallback`, never `e.message`. The whole reason
+ * this wrapper exists is that `PiHttpError`'s message is Podcast Index's raw
+ * response body, and a 429's body is a Cloudflare HTML page.
  */
 export async function withErrorHandling(
   fn: () => Promise<NextResponse>,
@@ -31,6 +45,6 @@ export async function withErrorHandling(
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error(`[api] ${fallback}:`, getErrorMessage(e, 'unknown error'));
-    return NextResponse.json({ error: fallback }, { status: 500 });
+    return NextResponse.json({ error: fallback }, { status: piCouldNotAskStatus(e) ?? 500 });
   }
 }

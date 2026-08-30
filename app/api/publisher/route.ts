@@ -122,9 +122,33 @@ export async function GET(req: Request) {
     // withholding while asserting the opposite. Reported rather than repaired
     // here, because the route genuinely cannot tell WHY a child would not
     // resolve, and only the surface knows whether it is about to make a claim.
+    // **Resolving NONE of them is a failure, not an empty collection.** A 200
+    // with `feeds: []` is indistinguishable from a publisher that lists
+    // nothing, and `<HomePage>` renders exactly that: "this publisher feed
+    // lists nothing", under a comment asserting the emptiness is genuine.
+    // Before the 429 branch above existed the probe threw, the route 500'd, and
+    // the reader got "couldn't load these" and a RETRY — so answering 200 here
+    // would be a regression introduced by the repair. The reader can retry a
+    // 502; nobody retries a sentence stating the collection is empty.
+    //
+    // Keyed on resolving zero of a non-empty list rather than on
+    // `couldNotAskPi`, because the other route to the same screen is PI
+    // answering normally while every child's RSS read fails.
+    if (!feeds.length) {
+      return NextResponse.json(
+        { error: 'could not resolve any of this publisher\'s feeds' },
+        { status: 502, headers: NO_STORE },
+      );
+    }
     return NextResponse.json(
       { feeds, listed: albumUrls.length, couldNotAskPi },
-      { headers: couldNotAskPi ? NO_STORE : PUBLISHER_CACHE },
+      // A SHORT collection is not cacheable either, for the same reason the
+      // unasked one is not: `feeds.length < listed` means children dropped out,
+      // and freezing the survivors into a shared cache for five minutes (and
+      // fifteen with stale-while-revalidate) serves that shortfall to everyone
+      // long after the transient host failure that caused it. /api/playlist
+      // applies the same rule with `couldNotAsk > 0 || unaskedValues > 0`.
+      { headers: couldNotAskPi || feeds.length < albumUrls.length ? NO_STORE : PUBLISHER_CACHE },
     );
   }, 'publisher resolution failed');
 }
