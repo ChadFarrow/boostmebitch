@@ -169,9 +169,16 @@ export async function loadCollection(feedUrl: string): Promise<Collection | null
     if (!/^https?:\/\//i.test(feedUrl)) return null;
     const res = await fetch(`/api/publisher?feedUrl=${encodeURIComponent(feedUrl)}`);
     if (!res.ok) {
-      // A 5xx is the route saying PI itself is down — its probe is deliberately
-      // uncaught. Trip the breaker rather than rendering an empty collection.
-      if (res.status >= 500) tripPiBreaker();
+      // A 5xx is normally the route saying PI itself is down, so it trips the
+      // breaker rather than rendering an empty collection. **Except when the
+      // route names a different upstream**: it answers 502 `upstream: 'feed'`
+      // when the PUBLISHER's own document could not be read, and PI had nothing
+      // to do with that. Tripping there would disable metadata resolution for
+      // the whole tab because raw.githubusercontent.com blipped.
+      if (res.status >= 500) {
+        const why = await res.json().catch(() => null);
+        if (why?.upstream !== 'feed') tripPiBreaker();
+      }
       return null;
     }
     const body = await res.json();

@@ -33,7 +33,21 @@ export async function GET(req: Request) {
   if (!feedUrl) return NextResponse.json({ feeds: [], listed: 0 });
   if (feedUrl.length > 2048) return NextResponse.json({ error: 'invalid feedUrl' }, { status: 400 });
   return withErrorHandling(async () => {
-    const albumUrls = (await getPublisherAlbumUrls(feedUrl)).slice(0, MAX_PUBLISHER_ALBUMS);
+    const listedUrls = await getPublisherAlbumUrls(feedUrl);
+    // **Could not READ it — never cache that, and never call it empty.**
+    // `upstream: 'feed'` is load-bearing: `loadCollection` trips the Podcast
+    // Index breaker on any 5xx, and PI is not what failed here. Tripping it
+    // over a blip at the publisher's own host would disable metadata resolution
+    // for the whole tab, which is the 227-favorites failure arriving through a
+    // new door.
+    if (listedUrls === null) {
+      return NextResponse.json(
+        { error: 'could not read the publisher feed', upstream: 'feed' },
+        { status: 502, headers: NO_STORE },
+      );
+    }
+    const albumUrls = listedUrls.slice(0, MAX_PUBLISHER_ALBUMS);
+    // Read, and it genuinely lists nothing. Cacheable, because that is an answer.
     if (!albumUrls.length) {
       return NextResponse.json({ feeds: [], listed: 0 }, { headers: PUBLISHER_CACHE });
     }

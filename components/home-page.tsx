@@ -261,10 +261,30 @@ export function HomePage() {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(initialSearch.current);
     const feedUrl = params.get('publisher');
-    if (!feedUrl || params.get('podcast') || params.get('feed')) return;
-    if (publisherSource || !piMaybeUp()) return;
+    // `playlist` belongs in this skip set beside `podcast` and `feed`: all
+    // three are a DETAIL the visitor asked for, and the aside is context. It
+    // was missing, and this branch never ran at all before the fix above — so
+    // `?publisher=…&playlist=…` would newly restore a publisher aside on top of
+    // the show the link actually names.
+    if (!feedUrl || params.get('podcast') || params.get('feed') || params.get('playlist')) return;
+    if (publisherSource) return;
     setPublisherSource({ id: 0, title: 'Publisher', medium: 'publisher', url: feedUrl } as Podcast);
     setPublisherAlbums(null);
+    // **A withheld restore must say so.** `piMaybeUp()` reads `bmb:pi:dead`,
+    // which is sessionStorage and survives a reload — so a visitor who loaded
+    // any page while PI was down and then opened a shared `?publisher=` link in
+    // the same tab hit a bare `return`. The mirror effect above has already
+    // stripped the param via `replaceState`, so they got the plain home page
+    // with the address bar quietly rewritten: indistinguishable from the bug
+    // this effect was just written to fix. The source is set first, so the
+    // "← Publisher" header and a RETRY are on screen; the retry runs
+    // `handleSelect`, which is not gated on the breaker and can still answer
+    // from RSS.
+    if (!piMaybeUp()) {
+      setPublisherError(true);
+      setPublisherAlbums([]);
+      return;
+    }
     setPublisherLoading(true);
     (async () => {
       try {

@@ -36,7 +36,12 @@ const SECTIONS: readonly { url: string; heading: string; blurb: string }[] = [
   {
     url: COMMUNITY_COLLECTION_URL,
     heading: COMMUNITY_COLLECTION_TITLE,
-    blurb: 'Made by other people in the V4V community, on their own hosts.',
+    // NOT "made by other people": entry 2 of COMMUNITY_PLAYLIST_URLS is ChadF's
+    // own, made on v4vmusic rather than by the tooling that writes the publisher
+    // feed. Every visitor read a false attribution about that row — the same
+    // class of wrong claim splitting the collections was meant to prevent, just
+    // pointing the other way. What is true of ALL of them is the host.
+    blurb: 'Built on other hosts, and mostly by other people in the V4V community.',
   },
 ];
 
