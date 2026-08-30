@@ -974,12 +974,21 @@ note pointed at this" is worth nothing when the author is hostile: they satisfy
 it by writing both halves. Without the allowlist an attacker publishes a kind:1
 carrying a real show's `podcast:guid:` and `podcast:item:guid:`, an `i` tag
 whose third slot is their own URL, and that URL in the body — and the card
-unfurls under the genuine show's artwork and title, with PLAY / ♡ / BOOST beside
-a link of their choosing. **The upgrade is what makes it worth doing**:
-`removeUrl` takes the raw URL out of the body, so what a reader would have seen
-as a full magenta link becomes a small `host ↗` chip under real artwork. The
-cost is coverage — a hint on an unrecognised host now leaves the note rendering
-as it did before the feature existed, which is nobody's regression.
+unfurls under the genuine show's artwork and title, with ♡ beside a link of
+their choosing. **The upgrade is what makes it worth doing**: `removeUrl` takes
+the raw URL out of the body, so what a reader would have seen as a full magenta
+link becomes a small `host ↗` footnote under real artwork. The cost is coverage
+— a hint on an unrecognised host now leaves the note rendering as it did before
+the feature existed, which is nobody's regression.
+
+**That strip is also why the card OWES the reader a route to the link, and why
+the meta line is not gated on the item.** The body no longer holds the URL, so
+`host ↗` is the only surviving trace of a link the author chose to write. It may
+be DEMOTED — it is an 11px footnote on the date line rather than a button,
+because another app should not be drawn the same size as our own control — but
+removing it edits somebody else's note. The show-only variant below is the card
+that needs it most: it exists precisely because PI could not name the item, so
+the author's own page is the only place the reader can still go.
 
 **Requiring the hint to appear in the BODY is still doing real work, but it was
 never the safety property.** A hint is very often the RSS FEED URL rather than a
@@ -1039,18 +1048,31 @@ subject, and the alternative is the "which target did I just favorite" trap that
 `nameTarget` exists for. `podcast` stays a hard gate: with neither half resolved
 there is no art and no title, so there is no card to draw.
 
-**PLAY and BOOST both wait on `/api/feed`; the heart does not.** `useNoteMeta`
+**The card carries ONE control, and no playing or spending one.** It shipped
+with PLAY, OPEN, ♡ and BOOST; at 390px those four wrapped into a ragged
+2 / 2 / 1 block with the host link stranded on a line of its own. PLAY and BOOST
+went first — OPEN reached an episode page carrying a full-size copy of both — and
+OPEN followed, because the headline beside it is a button with the same handler.
+The card body is now the tap target, the headline stays a real `<button>` so a
+keyboard reaches it, and the action row holds the heart alone. It is dropped
+whole rather than emptied when there is no item, since `<FavEpisodeHeart>`
+returns null without both guids and a padded empty box reads as a control that
+failed to draw.
+
+If a playing or spending control comes back it needs its own fetch. `useNoteMeta`
 resolves PI's *indexed* record, which carries no value block — only `/api/feed`
 applies `e.value ?? podcast.value`. Opening the boost modal with the indexed
-record gives a BOOST button with no recipients, so both spending controls are
-disabled until `loadEpisodeFromFeed` answers and say so when it fails. A
-favorite is two guids and a label, all of which PI already answered with, so the
-heart must not wait on a feed download. `loadFeed` coalesces, so PLAY-then-BOOST
-on one card is one download.
+record gives a BOOST button with no recipients: a payment surface that cannot
+pay, reading as our bug and really a missing fetch. The removed version went
+through `loadEpisodeFromFeed` first and kept both controls DISABLED until it
+answered. The heart is exempt and always was — a favorite is two guids and a
+label, all of which PI already answered with, so it must not wait on a feed
+download.
 
 **The show name and the episode title are two destinations, not one.** Collapsing
 them onto a single handler deletes the only route to the show from a note about
-its episode. The show line also failed WCAG 2.5.8 at **97.5 × 15px** — at
+its episode — which is now also why the show name and the outbound link both call
+`stopPropagation`: the area around them navigates to the episode. The show line also failed WCAG 2.5.8 at **97.5 × 15px** — at
 `text-[10px]` the line box is 15px, so the control looked finished and was 9px
 short. Measure under CDP device emulation; `--window-size` lays out at desktop
 width and crops.

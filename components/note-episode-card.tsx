@@ -22,12 +22,16 @@ import { FavEpisodeHeart } from './fav-heart';
  *
  * ── It POINTS at the episode. It does not play or pay for one ───────────────
  *
- * The row is OPEN, the favorite heart, and the outbound link — nothing that
- * needs a feed download and nothing that spends money. It shipped with PLAY and
- * BOOST as well, and at 390px those four controls wrapped into a ragged
- * 2 / 2 / 1 block with the host link stranded on a line of its own. OPEN
- * reaches the episode page, which already carries a full-size PLAY and BOOST,
- * so the card was offering a second, smaller copy of both one tap earlier.
+ * One control: the favorite heart. The card BODY is the tap target, the show
+ * name is a second target inside it, and the outbound link is an 11px footnote
+ * on the meta line.
+ *
+ * It shipped with PLAY, OPEN, ♡ and BOOST, which at 390px wrapped into a ragged
+ * 2 / 2 / 1 block with the host link stranded on a line of its own. PLAY and
+ * BOOST went first: OPEN reached an episode page that already carries a
+ * full-size copy of both, so the card was offering a second, smaller pair one
+ * tap earlier. OPEN then went too, because the headline beside it is a button
+ * with the same handler — one destination does not need two controls.
  *
  * **A spending or playing control put back here CANNOT use the `episode`
  * prop.** That is Podcast Index's *indexed* record, resolved from the note's
@@ -44,8 +48,19 @@ import { FavEpisodeHeart } from './fav-heart';
  * The heart is exempt and always was: a favorite is the two guids plus a label,
  * all of which the indexed record already carries.
  *
- * OPEN is handed down as `onOpen` rather than re-implemented: `<NoteCard>`
- * already owns that sequence (select the show first, then load the real episode,
+ * ── The outbound link is DEMOTED, never deleted ──────────────────────────────
+ *
+ * `host ↗` points at somebody else's app on our card, so it earns a footnote
+ * rather than a button. It cannot be removed, and that is not a taste question:
+ * `<NoteCard>` calls `removeUrl` and takes the author's raw URL OUT of the
+ * note's text whenever this card unfurls, because the card restates it. Delete
+ * the link here and the author's own link is gone from their note with nothing
+ * on screen recording that they wrote one. **That is why the meta line is not
+ * gated on `item`** — the link lives in it, and the show-only variant below is
+ * the card that needs it most.
+ *
+ * Both destinations are handed down rather than re-implemented: `<NoteCard>`
+ * owns the open sequence (select the show first, then load the real episode,
  * then open it) and its ordering constraints are written up there.
  *
  * ── `episode` is OPTIONAL, and that is the whole reason this card gets drawn ──
@@ -61,8 +76,8 @@ import { FavEpisodeHeart } from './fav-heart';
  *
  * **What the card claims is what it was handed.** With no item record it names
  * the SHOW — show art, the show's author over the show's title, no date, no
- * duration, no heart — and keeps the `host ↗` chip, which is the exact page the
- * author linked. That is the same pair of facts the one-line label states, minus
+ * duration, no heart, and therefore no action row at all — and keeps the
+ * `host ↗` footnote, which is the exact page the author linked. That is the same pair of facts the one-line label states, minus
  * the wall of magenta, which is what this component exists to remove. It does
  * NOT invent an episode: an unresolved item has no title, so nothing here
  * renders one.
@@ -103,10 +118,32 @@ export function NoteEpisodeCard({
   const openable = episode?.guid && onOpenEpisode ? { item: episode, open: onOpenEpisode } : null;
   const item = openable?.item ?? null;
   const openItem = openable?.open ?? onOpenShow;
+  // The same "resolve it once" rule one line down. <FavEpisodeHeart> returns
+  // null without an item guid AND a feed guid, and the heart is now the only
+  // thing in the action row — so asking separately gives an empty box with
+  // `pb-2.5` of padding under a show-only card, which reads as a control that
+  // failed to draw. This mirrors the heart's own guard exactly; if that guard
+  // changes, this moves with it.
+  const favoritable = !!item?.guid && !!(item.podcastGuid || podcast.podcastGuid);
 
   return (
     <div className="mt-2 border border-line rounded bg-ink/40 overflow-hidden">
-      <div className="flex gap-3 p-2.5">
+      {/* THE BODY IS THE TAP TARGET, and it is deliberately a plain `div`.
+          `role="button"` + `tabIndex` would need a key handler to actually be
+          one (see <Player>'s note on the same trade) and would nest the buttons
+          below inside a button role. It does not need to be focusable, because
+          the headline under it is a real <button> carrying this same handler —
+          the tap area is an ADDITION to that control, never a replacement, so a
+          keyboard reaches everything it always did. Same shape as
+          <EpisodeList>'s row, whose inner controls stop propagation rather than
+          the row giving up its handler.
+
+          `openItem`, not `onOpenEpisode`: with no item resolved every control
+          on this card opens the SHOW, and the tap area is not the exception. */}
+      <div
+        className="flex gap-3 p-2.5 cursor-pointer transition hover:bg-bone/5"
+        onClick={openItem}
+      >
         {/* Always both URLs — PI mirrors RSS <image> as `image` and
             <itunes:image> as `artwork` and they routinely disagree. The
             episode's own art wins when it has any, which for a music feed is
@@ -134,7 +171,7 @@ export function NoteEpisodeCard({
           {item ? (
             <button
               type="button"
-              onClick={onOpenShow}
+              onClick={(e) => { e.stopPropagation(); onOpenShow(); }}
               className="flex items-center min-h-[24px] text-left text-[10px] tracking-wider uppercase text-muted hover:text-bolt max-w-full"
               title={podcast.title}
             >
@@ -148,59 +185,82 @@ export function NoteEpisodeCard({
               <span className="truncate">{podcast.author}</span>
             </div>
           ) : null}
+          {/* Kept a real button even though the area around it now carries the
+              same handler: that is what makes this reachable by keyboard.
+              `stopPropagation` so one press is one navigation. */}
           <button
             type="button"
-            onClick={openItem}
+            onClick={(e) => { e.stopPropagation(); openItem(); }}
             className="block text-left font-display text-sm text-bone hover:text-bolt leading-snug line-clamp-2"
             title={item?.title ?? podcast.title}
           >
             {item?.title ?? podcast.title}
           </button>
-          {/* Dropped whole with no item rather than left as an empty box —
-              `mt-0.5` on nothing is still vertical space, and the card is two
-              lines shorter here than the episode version already. */}
-          {item ? (
-            <div className="text-[11px] text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
-              {item.datePublished ? <span>{fmtDate(item.datePublished)}</span> : null}
-              {item.duration ? (
-                <>
-                  {item.datePublished ? <span aria-hidden>·</span> : null}
-                  <span>{fmtDuration(item.duration)}</span>
-                </>
-              ) : null}
-            </div>
-          ) : null}
+          {/* THIS ROW IS NO LONGER OPTIONAL, because the outbound link lives in
+              it now. With no item it carries the link alone; the date and the
+              duration are what drop, not the box. Gating the whole row on
+              `item` — which is what it did while the link was a button below —
+              would delete the link from exactly the card that needs it most:
+              the show-only variant exists because PI could not name the item,
+              and the author's page is then the only place the reader can go. */}
+          <div className="text-[11px] text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
+            {item?.datePublished ? <span>{fmtDate(item.datePublished)}</span> : null}
+            {item?.duration ? (
+              <>
+                {item.datePublished ? <span aria-hidden>·</span> : null}
+                <span>{fmtDuration(item.duration)}</span>
+              </>
+            ) : null}
+            {/* NO `·` before this one, unlike the pair above. The row wraps at
+                390px and a separator is its own flex item, so the dot stayed
+                behind on the date line while the link went to the next —
+                trailing punctuation pointing at nothing. `ml-1` buys the
+                spacing the dot was there for, in a way a wrap cannot strand,
+                and it is also the right amount when the link is alone. */}
+            {/* A FOOTNOTE, NOT AN ACTION. It was a .btn-ghost the same size and
+                weight as our own control, which is a lot of a card spent
+                pointing at another app. It is still here, and deleting it is
+                not the tidier version: <NoteCard> takes the author's raw URL
+                OUT of the note's text when this card unfurls (`removeUrl`), on
+                the grounds that the card restates it. Remove this and the link
+                the author wrote is gone from their note, with nothing on screen
+                recording that they wrote one.
+
+                `min-h-[24px]` is WCAG 2.5.8 and it is not decoration: the
+                exemption is for a link set inside a sentence, and this is a
+                standalone one. At `text-[11px]` the line box is ~16px, the same
+                shortfall the show line above was fixed for.
+
+                `stopPropagation` because the tap area around it navigates:
+                without it one press opens the third-party tab AND moves this
+                app underneath it. */}
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="inline-flex items-center min-h-[24px] ml-1 hover:text-bone hover:underline underline-offset-2"
+              title={href}
+            >
+              {host} ↗
+            </a>
+          </div>
         </div>
       </div>
 
-      <div className="flex items-center gap-1.5 flex-wrap px-2.5 pb-2.5">
-        <button type="button" onClick={openItem} className="btn-ghost">
-          OPEN
-        </button>
-        {/* `size="md"` because the controls beside it are plain .btn-ghost.
-            'sm' is the LIST-ROW chip: no `py`, `text-xs`, and no `min-h` from
-            sm: up, so it sits ~9px shorter than OPEN and drops its word below
-            sm: — one lone glyph beside two labelled controls. 'md' is the
-            variant dimensioned to .btn-ghost, which is why the show header and
-            <EpisodeDetailView> already pass it in exactly this cluster.
-            <FavEpisodeHeart> renders nothing without both guids — and with no
-            item there is no episode favorite to offer, only a SHOW favorite,
-            which is a different subject and belongs to the show page. */}
-        {item ? <FavEpisodeHeart episode={item} podcast={podcast} size="md" /> : null}
-        {/* `ml-auto` only once there is room for one line. Below sm: the row
-            wraps, and a right-aligned item on a wrapped line is alone on it —
-            the stranded FOUNTAIN.FM line that made this row look broken on a
-            390px screen. Flowing left, the wrap is even. */}
-        <a
-          href={href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="btn-ghost sm:ml-auto text-muted hover:text-bone"
-          title={href}
-        >
-          {host} ↗
-        </a>
-      </div>
+      {/* One control, so no flex row and nothing to wrap. `size="md"` is the
+          variant dimensioned to .btn-ghost; 'sm' is the LIST-ROW chip, which
+          drops the word FAVORITE below sm: and would leave this card's only
+          action as a bare glyph. With no item there is no episode favorite to
+          offer — only a SHOW favorite, which is a different subject and belongs
+          to the show page — so the row goes rather than emptying. The heart
+          stops propagation itself, and it also sits OUTSIDE the tap area above
+          rather than relying on that. */}
+      {favoritable && item ? (
+        <div className="px-2.5 pb-2.5">
+          <FavEpisodeHeart episode={item} podcast={podcast} size="md" />
+        </div>
+      ) : null}
     </div>
   );
 }
