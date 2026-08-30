@@ -11,6 +11,17 @@ import type { Podcast } from '@/lib/types';
 const PLAYLISTS_ORIGIN = { path: '/playlists', label: 'playlists' };
 
 /**
+ * How many rows get a track count, and how many of those run at once.
+ *
+ * Sized against `/api/playlist`'s own 30-per-minute per-IP limit, which this
+ * page SHARES with opening a playlist. 12 leaves the visitor most of the budget
+ * for the thing they came to do; the concurrency stops even those twelve
+ * arriving as one spike beside `<EpisodeList>`'s own paging.
+ */
+const MAX_COUNTED_ROWS = 12;
+const COUNT_CONCURRENCY = 3;
+
+/**
  * The curated playlist collection, as a page.
  *
  * Four states, and conflating any two of them reproduces a bug this repo has
@@ -87,17 +98,43 @@ export function PlaylistsPage() {
    * "tracks" is the wrong noun for one. `allSettled` because a row that fails
    * must not take the other nine with it; `playlistTrackCount` already answers
    * null rather than throwing, so this is belt and braces.
+   *
+   * **CAPPED, and the cap is what keeps the feature working.** Every one of
+   * these is a `/api/playlist` request, and that route allows 30 per minute per
+   * IP — the same bucket the visitor's next TAP on a row spends. The collection
+   * is a publisher feed capped server-side at `MAX_PUBLISHER_ALBUMS` (100) and
+   * the whole design is that a playlist added there appears here the same day
+   * with no deploy, so "there are only eleven today" is not a bound. Past 30
+   * rows an uncapped burst exhausts the budget on a cold first visit: the
+   * surplus counts vanish silently, and then opening a playlist 429s and
+   * `<EpisodeList>` renders its load error. The annotation would have taken out
+   * the page it annotates.
+   *
+   * So a bounded number of rows get a count and the rest simply do not, which
+   * is the right way for an annotation to degrade. `CONCURRENCY` keeps even
+   * that within the per-minute budget rather than firing it as one spike.
    */
   useEffect(() => {
     if (!playlists?.length) return;
     let live = true;
-    const rows = playlists.filter((p) => p.url && isPlaylistMedium(p));
-    void Promise.allSettled(
-      rows.map(async (p) => {
+    const rows = playlists
+      .filter((p) => p.url && isPlaylistMedium(p))
+      .slice(0, MAX_COUNTED_ROWS);
+    // A worker pool rather than `Promise.allSettled` over everything: same
+    // total requests, spread out. Each worker takes the next index until the
+    // list runs out, and every worker stops the moment the effect is cleaned up.
+    let next = 0;
+    const worker = async () => {
+      while (live) {
+        const p = rows[next++];
+        if (!p) return;
         const total = await playlistTrackCount(p.url!);
-        if (!live || total === null) return;
+        if (!live || total === null) continue;
         setCounts((prev) => (prev[p.url!] === total ? prev : { ...prev, [p.url!]: total }));
-      }),
+      }
+    };
+    void Promise.allSettled(
+      Array.from({ length: Math.min(COUNT_CONCURRENCY, rows.length) }, worker),
     );
     return () => { live = false; };
   }, [playlists]);
@@ -194,10 +231,18 @@ export function PlaylistsPage() {
             return n === undefined ? null : `${n.toLocaleString()} tracks`;
           }}
         />
-      ) : failed ? null : (
-        // Not "no playlists" in the largest type on the page: this is reachable
-        // only once the fetch SUCCEEDED and the feed genuinely listed nothing,
-        // which is a different sentence from the failure above.
+      ) : failed || listed > 0 ? null : (
+        // **Gated on `listed`, never on how many rows rendered.** "Nothing" is a
+        // claim about the COLLECTION, and `rows.length === 0` is a fact about
+        // what we managed to resolve — the two part company exactly when the
+        // page is least able to tell. With Podcast Index rate limiting and the
+        // RSS repair also failing, `listed` is 11 and `rows` is empty, and this
+        // branch printed "this collection lists nothing" directly under "0 of 11
+        // playlists" and "11 more couldn't be loaded just now": three lines, two
+        // of them contradicting the third, and the confident one wrong.
+        //
+        // With `listed > 0` the shortfall line above already carries the whole
+        // story and its own retry, so there is nothing left to say here.
         <p className="text-muted text-sm py-4 px-1">this collection lists nothing</p>
       )}
     </>
