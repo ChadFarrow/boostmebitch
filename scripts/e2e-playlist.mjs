@@ -90,6 +90,24 @@ const TRACKS = [
   },
 ];
 const PLAYABLE_TRACKS = TRACKS.filter((t) => !t.unresolved);
+
+/**
+ * An ordinary podcast, for the code-split scenario at the end — the episode and
+ * discussion views only mount for a feed whose rows are episodes.
+ */
+const SHOW_GUID = 'e2e-0000-0000-0000-000000000001';
+const EPISODE_GUID = 'e2e-episode-1';
+const SHOW = {
+  id: 424242, podcastGuid: SHOW_GUID, title: 'An Ordinary Show', author: 'Someone',
+  description: 'A show with episodes.', medium: 'podcast', url: 'https://example.com/show.xml',
+};
+const SHOW_EPISODE = {
+  id: 900, guid: EPISODE_GUID, title: 'An Ordinary Episode', feedId: SHOW.id,
+  enclosureUrl: 'https://example.com/ep.mp3', datePublished: 1700000000,
+  description: 'Notes.',
+  // The discussion view renders only for an episode that names a thread.
+  socialInteract: [{ uri: 'https://example.com/thread', protocol: 'activitypub' }],
+};
 // A real decodable file, so `ended` is fired by the browser finishing playback
 // rather than by anything this script simulates. It is short, which is why the
 // scenario can simply wait for it. Served from /api/ so the one interception
@@ -149,7 +167,14 @@ const js = async (expression) => {
 };
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
-function answer(pathname) {
+function answer(pathname, search) {
+  const q = new URLSearchParams(search);
+  // The ordinary show, for the code-split scenario. Keyed off the identifier so
+  // one stub serves both shapes and the playlist assertions above are untouched.
+  if (pathname === '/api/by-guid' && q.get('guid') === SHOW_GUID) return { podcast: SHOW };
+  if (pathname === '/api/feed' && q.get('id') === String(SHOW.id)) {
+    return { podcast: SHOW, episodes: [SHOW_EPISODE] };
+  }
   if (pathname === '/api/by-guid') return { podcast: BLANK ? PI_BLANK : REPAIRED };
   // What `/api/feed` answers for a musicL feed: the medium backfilled from the
   // RSS channel parse, and NO episodes, because a playlist publishes no <item>.
@@ -189,7 +214,7 @@ handlers.push(async (m) => {
   await send('Fetch.fulfillRequest', {
     requestId, responseCode: 200,
     responseHeaders: [{ name: 'content-type', value: 'application/json' }],
-    body: b64(answer(u.pathname)),
+    body: b64(answer(u.pathname, u.search)),
   });
 });
 
@@ -313,6 +338,49 @@ if (await srcHas('t=0', 5000)) {
 } else {
   fail('the first track never started, so the advance could not be tested');
 }
+
+// ---- code-split surfaces --------------------------------------------------
+//
+// **A `next/dynamic` import of a NAMED export renders nothing when it is wired
+// wrong, and says nothing about it.** `.then((m) => m.Wrong)` resolves to
+// `undefined`, React renders an empty slot, and the only symptom is a section
+// that is missing from a page — which is indistinguishable from the section's
+// own "nothing to show" state, and on three of these four that state is the
+// normal one for most visitors.
+//
+// Four surfaces were split out of the first-load bundle (329 kB → 307 kB): the
+// two home-page Nostr sections, the episode detail view and the discussion
+// view. Each is gated by a condition that is false on the first commit, which
+// is exactly why the split is free — and exactly why nobody would notice one of
+// them never coming back. So each is mounted here, once.
+console.log('\nCode-split surfaces');
+const mounts = async (url, needle, what) => {
+  await send('Page.navigate', { url });
+  for (let i = 0; i < 40; i += 1) {
+    const hit = await js(`document.body.innerText.includes(${JSON.stringify(needle)})`);
+    if (hit) { ok(`${what} mounts`); return; }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  fail(`${what} never appeared — check its dynamic() import resolves the named export`);
+};
+
+// The home page, where both Nostr sections sit below the hero. Their own
+// skeletons carry these headings, so this does not wait on a relay.
+await mounts(`${APP}/`, 'Live on Nostr', '<NostrLiveStreams>');
+if (!(await js('document.body.innerText.includes("Global boost feed")'))) {
+  fail('<GlobalNostrFeed> never appeared — check its dynamic() import resolves the named export');
+} else ok('<GlobalNostrFeed> mounts');
+
+await mounts(
+  `${APP}/?podcast=${SHOW_GUID}&episode=${encodeURIComponent(EPISODE_GUID)}`,
+  'An Ordinary Episode',
+  '<EpisodeDetailView>',
+);
+await mounts(
+  `${APP}/?podcast=${SHOW_GUID}&episode=${encodeURIComponent(EPISODE_GUID)}&discussion=1`,
+  'Discussion',
+  '<DiscussionView>',
+);
 
 console.log(failures ? `\n${failures} failure(s)` : '\nall good');
 process.exit(failures ? 1 : 0);

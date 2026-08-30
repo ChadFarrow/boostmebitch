@@ -7,6 +7,7 @@
 // neither, and this sits in a flex row beside a truncating title with no slack,
 // so on a phone `● LIVE` wrapped to two lines and blew up the row height.
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
@@ -21,12 +22,36 @@ import { BoostModal } from '../boost-modal';
 import { BoltIcon, CoinIcon } from '../icons';
 import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';
-import { PodcastNostrFeed } from '../podcast-nostr-feed';
 import { DeferredOnScroll } from '../deferred-on-scroll';
-import { Podroll } from '../podroll';
 import { FavEpisodeHeart, FavHeart } from '../fav-heart';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
+
+/**
+ * The two surfaces below the list, deferred in BYTES as well as on screen.
+ *
+ * Both already render inside `<DeferredOnScroll>`, which waits for the reader
+ * to scroll near them — so the module graph was making every visitor download
+ * and parse them up front for something the page deliberately does not show
+ * yet. `<DeferredOnScroll>` defers the RENDER; these defer the download, and
+ * the two now agree.
+ *
+ * Measured on a production build: `/` first-load JS 314 kB → 307 kB. It is the
+ * larger of the two available cuts here precisely because both of these are the
+ * last first-load users of the Nostr note card — a saving that only appeared
+ * once `<GlobalNostrFeed>` had been split out of `<HomePage>` as well. That is
+ * the shape of this whole bundle: the core is densely shared, so cutting one
+ * edge to a module usually saves nothing at all, and cutting the LAST edge
+ * saves everything behind it.
+ *
+ * `ssr: false` costs nothing: `<DeferredOnScroll>` renders its placeholder
+ * until an observer fires, so neither of these is ever in the server HTML.
+ */
+const PodcastNostrFeed = dynamic(
+  () => import('../podcast-nostr-feed').then((m) => m.PodcastNostrFeed),
+  { ssr: false },
+);
+const Podroll = dynamic(() => import('../podroll').then((m) => m.Podroll), { ssr: false });
 
 /** Rows revealed per press of "Load more episodes". */
 const PAGE_SIZE = 50;

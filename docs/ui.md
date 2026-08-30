@@ -607,6 +607,32 @@ It answers `false` when the query is unavailable (SSR, an old browser) — the
 other default would strip the app's feedback for everyone whose browser simply
 cannot answer.
 
+## First-load JavaScript, and why cutting one edge usually saves nothing
+
+**The bundle is a densely shared core, so intuitions about "this library is heavy" are worth nothing here — measure by deletion before touching anything.** Alias a dependency to `false` in `next.config.mjs`'s webpack hook, rebuild, and read `next build`'s First Load JS for `/`. That is the only number that answers "what does this cost a visitor".
+
+What that measurement found, against a 329 kB baseline:
+
+| Cut | First Load JS for `/` | |
+|---|---|---|
+| baseline | 329 kB | |
+| − `@getalby/sdk` + `qrcode.react` | 305 kB | the whole wallet stack is **24 kB**, not the ~130 kB a string-grep over the chunks suggested |
+| − `nostr-tools` | 266 kB | the largest single library, and needed on every load — identity restore and favorites hydration both run on mount |
+| defer `<Player>` entirely (`ssr: false`) | **329 kB** | **no change at all** |
+
+That last row is the important one. `<Player>` is the most stateful component in the app and pulls in the streaming engine, the boost modal and the fullscreen player — and removing it from the first-load graph saved nothing, because every module it reaches is also reached by `<EpisodeList>`, `<AppHeader>` and `lib/store.ts`. **Cutting one edge to a shared module saves zero bytes; only cutting the LAST edge saves anything.** A split that looks obviously worthwhile can therefore be worth precisely nothing, and the build is the only way to know which kind you have.
+
+What did work, for −22 kB (329 → 307):
+
+- **The four surfaces `<HomePage>` can show but usually does not** — `<GlobalNostrFeed>`, `<NostrLiveStreams>`, `<EpisodeDetailView>`, `<DiscussionView>`. Every one is behind a gate that is false on the first commit, and the two Nostr sections are false for the entire life of a `?podcast=` deep link, so all four were downloaded and parsed on every visit to render nothing.
+- **`<Podroll>` and `<PodcastNostrFeed>`**, which already render inside `<DeferredOnScroll>`. The render was deferred and the download was not; now both are. This is where the note-card code finally left the first-load graph — a saving that only existed *because* `<GlobalNostrFeed>` had been split too, which is the last-edge rule in action.
+
+`ssr: false` is free on all six: not one of them is in the server HTML today, because every gate above is false at that point. The split changes what the browser downloads and never what it first paints.
+
+**What was measured and deliberately not taken:** splitting `<BoostModal>` and `<FullscreenPlayer>` is a further −9 kB. That puts a chunk fetch between pressing BOOST and the modal appearing, on the app's money path, and between tapping the mini-bar and the fullscreen player opening. Nine kilobytes is not worth a control that can look dead — see the dead-control rule this file documents twice already.
+
+**A `next/dynamic` import of a named export fails silently when it is wrong**: `.then((m) => m.Wrong)` resolves to `undefined`, React renders an empty slot, and a missing section is indistinguishable from that section's own empty state — which, on three of these four, is what most visitors see anyway. `npm run e2e:playlist` mounts all four and fails if any never appears.
+
 ## Fonts and first paint
 
 **Both families are self-hosted by `next/font` in `app/layout.tsx` and reached through `var(--font-display)` / `var(--font-mono)`. Never add an `@import` to `app/globals.css`.**

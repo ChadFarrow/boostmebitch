@@ -1,15 +1,12 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import { SearchBar } from '@/components/search-bar';
 import type { SearchInfo } from '@/components/search-bar';
 import { Chip } from '@/components/chip';
 import { PodcastResults, EpisodeList } from '@/components/lists';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
-import { GlobalNostrFeed } from '@/components/global-nostr-feed';
-import { NostrLiveStreams } from '@/components/nostr-live-streams';
-import { DiscussionView } from '@/components/discussion-view';
-import { EpisodeDetailView } from '@/components/episode-detail-view';
 import { AppHeader } from '@/components/app-header';
 import Link from 'next/link';
 import { useApp } from '@/lib/store';
@@ -20,6 +17,46 @@ import type { SearchType } from '@/lib/util';
 
 import { loadCollection } from '@/lib/playlist-collection';
 import type { Podcast } from '@/lib/types';
+
+/**
+ * The four heavy surfaces this page can show but usually does not, split out of
+ * the first-load bundle.
+ *
+ * **Each one is already gated by a condition that is FALSE on the first commit,
+ * and three of the four are false for the whole life of a deep link** — which
+ * is what makes this a code-splitting question rather than a rendering one. The
+ * two Nostr sections wait for `entryResolved && !inDetailView`, so a
+ * `/?podcast=…` visitor never sees them at all; the episode and discussion views
+ * wait for a store field that is null on the server and on the first client
+ * render. Statically imported, all four were downloaded, parsed and evaluated
+ * before the page could hydrate, on every visit, to render nothing.
+ *
+ * `ssr: false` costs nothing here for the same reason: not one of them is in
+ * the server HTML today, because every gate above is false at that point. So
+ * this changes what the browser DOWNLOADS and never what it first paints.
+ *
+ * The trade is a chunk fetch at the moment each gate first opens. It is paid on
+ * the same tick as work these surfaces already do — the two feeds open relay
+ * subscriptions, the episode view fetches chapters and a transcript — and
+ * `<HomePage>` keeps rendering its own layout around them either way, so no
+ * placeholder is needed for something that was blank a moment ago regardless.
+ */
+const GlobalNostrFeed = dynamic(
+  () => import('@/components/global-nostr-feed').then((m) => m.GlobalNostrFeed),
+  { ssr: false },
+);
+const NostrLiveStreams = dynamic(
+  () => import('@/components/nostr-live-streams').then((m) => m.NostrLiveStreams),
+  { ssr: false },
+);
+const DiscussionView = dynamic(
+  () => import('@/components/discussion-view').then((m) => m.DiscussionView),
+  { ssr: false },
+);
+const EpisodeDetailView = dynamic(
+  () => import('@/components/episode-detail-view').then((m) => m.EpisodeDetailView),
+  { ssr: false },
+);
 
 export function HomePage() {
   const [feeds, setFeeds] = useState<Podcast[]>([]);
