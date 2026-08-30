@@ -12,7 +12,8 @@ import { sendZap } from '@/lib/v4v/zap';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
-import { episodeLinkInNote, getErrorMessage } from '@/lib/util';
+import { episodeLinkInNote, landingLinksInNote, getErrorMessage } from '@/lib/util';
+import { BRANDS } from '@/lib/brand';
 import { linkify, extractImages, removeUrl, stripNostrUris, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
 import { PodcastCover } from './podcast-cover';
@@ -20,6 +21,40 @@ import { FollowButton } from './follow-button';
 import { NoteEpisodeCard } from './note-episode-card';
 
 type ActionState = 'idle' | 'busy' | 'done' | 'error';
+
+/**
+ * The `client` tag values this app publishes under, both brands.
+ *
+ * Derived from the table rather than written out: one repo builds two deploys,
+ * and a reader signed into either can see the other's notes on the same global
+ * feed. Hard-coding a name here would leave the other brand's boosts rendering
+ * as the untouched wall of magenta this exists to remove — and would put the
+ * other brand's word in a file `check:brand` reads.
+ */
+const OUR_CLIENTS = new Set(Object.values(BRANDS).map((b) => b.wireName));
+const OUR_ORIGINS = new Set(Object.values(BRANDS).map((b) => b.origin));
+
+/**
+ * Is this URL one of our own boost banners?
+ *
+ * Host AND exact pathname, never `includes('/api/og/boost.png')`: the argument
+ * is a URL out of a stranger's note, and a substring test says yes to
+ * `https://evil.example/api/og/boost.png` — which would let any author delete
+ * their own picture from our render by naming it. Harmless today and exactly
+ * the shape that stops being harmless later.
+ *
+ * The path is safe to match on because it can never move: every boost note ever
+ * published writes it into a signed kind:1, so it is a permanent public
+ * contract (see docs/nostr.md).
+ */
+function isBoostBanner(raw: string): boolean {
+  try {
+    const u = new URL(raw);
+    return OUR_ORIGINS.has(u.origin) && u.pathname === '/api/og/boost.png';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Single Nostr note card with an action bar (reply / repost / quote / zap).
@@ -91,8 +126,66 @@ function NoteCardImpl({
    * when that is all we resolved; it never invents an episode.
    */
   const episodeLink = episodeLinkInNote(note.rawEvent?.tags ?? [], rawBody);
-  const unfurl = podcast ? episodeLink : null;
-  const contentBody = unfurl ? removeUrl(rawBody, unfurl) : rawBody;
+  /**
+   * A boost note THIS APP wrote, and therefore the one note on the feed whose
+   * body text we are restating rather than quoting.
+   *
+   * `formatContent` prints a listen link and an in-app deep link; on a phone
+   * those wrap to four magenta lines under a card already naming the show, the
+   * episode and the sats. Measured across 148 of these on the live relays on
+   * 2026-08-30: every one carried three body URLs, and the third — the boost
+   * banner — was already being pulled out by `extractImages` and drawn.
+   *
+   * **The `client` tag is not a trust claim and nothing here treats it as one.**
+   * Anyone can publish a kind:1 wearing it. All it buys is (a) hiding text that
+   * note printed itself and (b) drawing the card from `useNoteMeta`'s Podcast
+   * Index lookup of the note's own `i` tags — which is the same data the
+   * one-line label already showed for exactly these notes. **No href is passed**,
+   * so this path never puts an author-chosen URL under a show's artwork, which
+   * is the thing `isPodcastAppUrl`'s host allowlist exists to prevent.
+   */
+  const ourNote = note.isBoost && !!note.client && OUR_CLIENTS.has(note.client);
+  /**
+   * Does the card unfurl, and does it carry an outbound link?
+   *
+   * Two questions, and they used to be one variable. A third-party note answers
+   * both with the same URL. Ours answers the first with "yes, because we wrote
+   * the note" and the second with "nothing" — a footnote reading
+   * `boostmebitch.com ↗` on boostmebitch.com points at the page you are on.
+   *
+   * `rawEvent.tags` rather than the parsed `podcastGuid`/`episodeGuids`: the
+   * answer needs the third slot of each `i` tag (NIP-73's URL hint), which the
+   * parsed shape does not keep. Guarded because a note restored from a
+   * localStorage cache written before `rawEvent` existed has none.
+   *
+   * **The gate is the SHOW, not the item.** It used to be both, and that quietly
+   * turned a presentation decision into a Podcast Index availability decision:
+   * PI answers "not found" for a `<podcast:liveItem>` and for anything it has
+   * not crawled, and `episodeRefOf` never even asks when a note tags more than
+   * one item guid — so a note pointing at a Fountain episode kept three lines of
+   * magenta URL while the note above it, on a feed PI happened to hold, unfurled
+   * correctly. Same feature, same link, opposite result, decided by data neither
+   * the reader nor the author can see. `<NoteEpisodeCard>` now names the show
+   * when that is all we resolved; it never invents an episode.
+   */
+  const unfurl = !!podcast && (!!episodeLink || ourNote);
+  const cardHref = podcast ? episodeLink : null;
+  // The card restates the destination, so leaving the raw link under it prints
+  // the same fact twice, once as a wall of magenta. For our own notes that is
+  // both landing links, which the note names in its own `r` tags.
+  const contentBody = (ourNote ? landingLinksInNote(note.rawEvent?.tags ?? [], rawBody) : [])
+    .reduce((text, url) => removeUrl(text, url), cardHref ? removeUrl(rawBody, cardHref) : rawBody);
+  /**
+   * The boost banner goes when the card is showing, and ONLY then.
+   *
+   * It exists so a client with no card of its own draws a picture — which is
+   * every other client, and the reason the route's URL is a permanent contract.
+   * Here it states the artwork, the show, the episode and the sats a second
+   * time, directly above a card carrying all four and a favorite heart. On a
+   * note whose show did not resolve there is no card, so the banner stays: it
+   * is then the only thing on screen naming what was boosted.
+   */
+  const images = unfurl ? contentImages.filter((u) => !isBoostBanner(u)) : contentImages;
 
   const [composerMode, setComposerMode] = useState<'reply' | 'quote' | null>(null);
   const [composerDraft, setComposerDraft] = useState('');
@@ -325,9 +418,9 @@ function NoteCardImpl({
           </p>
         )}
 
-        {contentImages.length > 0 && (
+        {images.length > 0 && (
           <div className="mt-2 flex flex-col gap-2">
-            {contentImages.map((src) => (
+            {images.map((src) => (
               <a
                 key={src}
                 href={src}
@@ -382,7 +475,7 @@ function NoteCardImpl({
           <NoteEpisodeCard
             podcast={podcast}
             episode={episode}
-            href={unfurl}
+            href={cardHref}
             onOpenShow={() => openShow(podcast)}
             // Built only when there is a guid to look up — the card falls back
             // to the show when there isn't, rather than offering an OPEN that

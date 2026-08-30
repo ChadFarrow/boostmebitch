@@ -61,7 +61,7 @@
  * `podcast:publisher:guid:` target, which is neither the item nor its show, and
  * a note tagging all three (a real shape, below) must not resolve to it.
  */
-import { episodeLinkInNote } from '../lib/util.ts';
+import { episodeLinkInNote, landingLinksInNote } from '../lib/util.ts';
 
 let failures = 0;
 
@@ -82,7 +82,19 @@ function compare(label, actual, expected) {
 /** Record a call AND assert it. `alsoNaive` marks a must-still-work input. */
 function check(label, tags, body, expected, { alsoNaive = false } = {}) {
   compare(label, episodeLinkInNote(tags, body), expected);
-  vectors.push({ label, args: [tags, body], alsoNaive });
+  vectors.push({ label, kind: 'episodeLink', args: [tags, body], alsoNaive });
+}
+
+/**
+ * The same, for `landingLinksInNote`. A SECOND `kind` rather than a second
+ * script, because both functions answer "which of this note's URLs is the card
+ * already restating" and both feed `removeUrl` — split across two files they
+ * drift, and the replay at the foot of this one walks every recorded call
+ * whatever its kind, so a vector still cannot be added without being proved.
+ */
+function checkLanding(label, tags, body, expected, { alsoNaive = false } = {}) {
+  compare(label, landingLinksInNote(tags, body), expected);
+  vectors.push({ label, kind: 'landing', args: [tags, body], alsoNaive });
 }
 
 function section(name) {
@@ -383,6 +395,97 @@ check(
 );
 
 // ---------------------------------------------------------------------------
+section('landingLinksInNote — the links a boost note we published wrote itself');
+// ---------------------------------------------------------------------------
+
+// Verbatim, off relay.damus.io / nos.lol / relay.primal.net on 2026-08-30, from
+// the 148 notes on that pull carrying this app's own `client` tag. Every single
+// one had the same shape: two `r` tags, both printed in the body, plus a third
+// body URL — the boost banner — which is NOT r-tagged and which `extractImages`
+// pulls out and draws. That asymmetry is the whole reason this reads tags
+// instead of matching our own hostname: the banner lives on the same origin as
+// the deep link, and a host test would hide the picture too.
+const SALTY_R_TAGS = [
+  ['r', 'https://podcastindex.org/podcast/7986910'],
+  ['r', 'https://www.boostmebitch.com/?podcast=5d161187-b707-4699-b04f-012769e110be&episode=37e1c082-66b3-41dd-829d-68d5c829e327'],
+];
+const SALTY_BODY = '⚡ Boost ⚡\n\nTest boost with offensive message\n\nphifer boosted 420 sats → Salty Sessions\n📻 Salty Sessions with Salty Crayon\n\nhttps://podcastindex.org/podcast/7986910\nhttps://www.boostmebitch.com/?podcast=5d161187-b707-4699-b04f-012769e110be&episode=37e1c082-66b3-41dd-829d-68d5c829e327\n\nhttps://www.boostmebitch.com/api/og/boost.png?art=https%3A%2F%2Fassets.podhome.fm%2Fbeee04e1-5e83-489f-9834-08de8b7e7dd5%2F63923685862705643380s%2520day.gif&art2=https%3A%2F%2Fassets.podhome.fm%2Fbeee04e1-5e83-489f-9834-08de8b7e7dd5%2F639220423166827866Pirate%2520Rdio%2520Live.gif&title=Salty+Sessions&ep=Salty+Sessions+with+Salty+Crayon&sats=420';
+checkLanding(
+  'both landing links, and NOT the banner sharing their origin',
+  SALTY_R_TAGS,
+  SALTY_BODY,
+  [
+    'https://podcastindex.org/podcast/7986910',
+    'https://www.boostmebitch.com/?podcast=5d161187-b707-4699-b04f-012769e110be&episode=37e1c082-66b3-41dd-829d-68d5c829e327',
+  ],
+  // Must-still-work, and honestly so: `formatContent` and
+  // `buildBoostNoteTemplate` build the tag and the body line from the SAME
+  // string, so on a real note they are byte-identical and the wrong version
+  // agrees. That is exactly why the real vectors cannot carry this on their own
+  // — the two below are the ones that separate the implementations, and this
+  // one is here to prove the common case still works.
+  { alsoNaive: true },
+);
+
+// Verbatim, same pull: a show-level boost. No `&episode=`, no 📻 line, and a
+// trailing `nostr:` mention — which `stripNostrUris` removes upstream, so it is
+// left here exactly as the relay served it to prove this function does not care.
+checkLanding(
+  'show-level boost, with a nostr: mention still in the body',
+  [
+    ['r', 'https://podcastindex.org/podcast/7968805'],
+    ['r', 'https://www.boostmebitch.com/?podcast=7c6f7875-2b73-491e-b32c-e2c8d6e91d53'],
+  ],
+  '⚡ Boost ⚡\n\nChadF and 33 others boosted 100 sats → Chad and Reeds Podcast\n\nhttps://podcastindex.org/podcast/7968805\nhttps://www.boostmebitch.com/?podcast=7c6f7875-2b73-491e-b32c-e2c8d6e91d53\n\nhttps://www.boostmebitch.com/api/og/boost.png?art=https%3A%2F%2Fassets.podhome.fm%2F11708875-2ff3-4c2e-a00b-08dee99f0b15%2F639217942893260082e72b12f4-3295-40b6-abaa-9945ff051a09.jpg&title=Chad+and+Reeds+Podcast&sats=100\n\nnostr:npub1tjmdpxuwjp4p3p6jjete9lkx6tnu9ytgtjhagsk8df372kdz2trqtdjv95',
+  [
+    'https://podcastindex.org/podcast/7968805',
+    'https://www.boostmebitch.com/?podcast=7c6f7875-2b73-491e-b32c-e2c8d6e91d53',
+  ],
+  { alsoNaive: true }, // same reason as above
+);
+
+// AN R TAG THE BODY NEVER PRINTED IS NOT AN ANSWER. `removeUrl` is an indexOf,
+// so returning it is harmless the day you write it and wrong the day a caller
+// counts them or shows "n links hidden". The real Salty tags, one body line
+// deleted.
+checkLanding(
+  'an r tag absent from the body is not returned',
+  SALTY_R_TAGS,
+  '⚡ Boost ⚡\n\nphifer boosted 420 sats → Salty Sessions\n\nhttps://podcastindex.org/podcast/7986910',
+  ['https://podcastindex.org/podcast/7986910'],
+);
+
+// THE BODY'S SPELLING, NEVER THE TAG'S — the one that decides the shape of the
+// implementation. These two URLs are the same address to every browser and
+// relay, and different strings to `indexOf`. Hand back the tag and the caller
+// removes nothing, silently, forever.
+checkLanding(
+  'returns the body spelling when the tag differs by case and encoding',
+  [['r', 'https://WWW.BoostMeBitch.com/?podcast=abc%2Ddef']],
+  'boosted\n\nhttps://www.boostmebitch.com/?podcast=abc%2Ddef',
+  ['https://www.boostmebitch.com/?podcast=abc%2Ddef'],
+);
+
+// Must still work: a note with no r tags at all keeps every URL it printed.
+// Most of the feed is this, and the wrong version gets it right too.
+checkLanding(
+  'no r tags, nothing hidden',
+  [['i', 'podcast:guid:31740861-81e8-5dda-8801-a2abb2634271']],
+  'read this https://example.com/post',
+  [],
+  { alsoNaive: true },
+);
+
+// A malformed r tag is data, not a crash. Same hostile-input rule the tier-one
+// vectors carry: a tag array is whatever its author put there.
+checkLanding(
+  'malformed r tags are skipped',
+  [['r'], ['r', null], ['r', 42], ['r', 'not a url'], ['r', 'https://example.com/a']],
+  'x https://example.com/a',
+  ['https://example.com/a'],
+);
+
+// ---------------------------------------------------------------------------
 section('total replay against naive()');
 // ---------------------------------------------------------------------------
 
@@ -409,6 +512,21 @@ function naive(tags, body) {
   return urls.find((u) => u.includes('fountain.fm')) ?? null;
 }
 
+/**
+ * The obvious wrong `landingLinksInNote`: hand back the `r` tag's own spelling
+ * for every r tag, without asking whether that string is in the body.
+ *
+ * Plausible rather than a strawman — it is what "remove the links the note tags"
+ * looks like written straight through, and it is wrong in the way that costs
+ * nothing visible: the caller feeds each answer to `removeUrl`, an `indexOf`,
+ * so a spelling the body does not contain removes NOTHING and the note renders
+ * exactly as it did before. It also returns tags the body never printed.
+ */
+function naiveLanding(tags, body) {
+  void body;
+  return (tags ?? []).filter((t) => t[0] === 'r').map((t) => t[1]);
+}
+
 {
   const repr = (v) => {
     try {
@@ -419,7 +537,9 @@ function naive(tags, body) {
   };
   const call = (which, v) => {
     try {
-      return repr(which === 'real' ? episodeLinkInNote(...v.args) : naive(...v.args));
+      const real = v.kind === 'landing' ? landingLinksInNote : episodeLinkInNote;
+      const wrong = v.kind === 'landing' ? naiveLanding : naive;
+      return repr(which === 'real' ? real(...v.args) : wrong(...v.args));
     } catch (e) {
       // A wrong implementation is allowed to throw where the real one returns.
       // That still counts as differing — it is the loudest way to be wrong.
