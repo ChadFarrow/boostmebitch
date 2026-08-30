@@ -47,6 +47,28 @@ import { FavEpisodeHeart } from './fav-heart';
  * OPEN is handed down as `onOpen` rather than re-implemented: `<NoteCard>`
  * already owns that sequence (select the show first, then load the real episode,
  * then open it) and its ordering constraints are written up there.
+ *
+ * ── `episode` is OPTIONAL, and that is the whole reason this card gets drawn ──
+ *
+ * The card used to require Podcast Index to have resolved the item as well as
+ * the show, so a note that plainly pointed at a Fountain episode kept the raw
+ * magenta URL whenever PI had the feed and not the item — which is ordinary, not
+ * exotic: PI answers "not found" for a `<podcast:liveItem>`, for an item it has
+ * not crawled yet, and for every note that tags more than one item guid (a
+ * boost-all across an album), where `episodeRefOf` never asks in the first
+ * place. The reported symptom was three lines of magenta URL under a note whose
+ * show had resolved fine, one card below another note that unfurled correctly.
+ *
+ * **What the card claims is what it was handed.** With no item record it names
+ * the SHOW — show art, the show's author over the show's title, no date, no
+ * duration, no heart — and keeps the `host ↗` chip, which is the exact page the
+ * author linked. That is the same pair of facts the one-line label states, minus
+ * the wall of magenta, which is what this component exists to remove. It does
+ * NOT invent an episode: an unresolved item has no title, so nothing here
+ * renders one.
+ *
+ * The gate that stays is `podcast`: with neither half resolved there is no art
+ * and no title, so there is no card to draw and the note keeps its plain link.
  */
 export function NoteEpisodeCard({
   podcast,
@@ -56,7 +78,8 @@ export function NoteEpisodeCard({
   onOpenEpisode,
 }: {
   podcast: Podcast;
-  episode: Episode;
+  /** PI's indexed item record, or null when PI could not name one. */
+  episode?: Episode | null;
   /** The URL the note itself used to point at this episode. */
   href: string;
   /**
@@ -64,11 +87,22 @@ export function NoteEpisodeCard({
    * different places, exactly as they are in the one-line label this card
    * replaces — collapsing them onto a single handler would quietly delete the
    * only route to the show from a note about one of its episodes.
+   *
+   * They collapse to one only when there IS one: with no `episode`, every
+   * control on the card opens the show, because the show is all we resolved.
    */
   onOpenShow: () => void;
-  onOpenEpisode: () => void;
+  onOpenEpisode?: () => void;
 }) {
   const host = hostOf(href);
+  // ONE test, resolved once into the record and the handler together, so the
+  // two cannot disagree: an item with no guid is not openable and not
+  // favoritable, and `<NoteCard>` already declines to build a handler for one.
+  // Read apart, a later edit gets a card headlined with an episode whose OPEN
+  // goes to the show, which reads as a broken link rather than missing data.
+  const openable = episode?.guid && onOpenEpisode ? { item: episode, open: onOpenEpisode } : null;
+  const item = openable?.item ?? null;
+  const openItem = openable?.open ?? onOpenShow;
 
   return (
     <div className="mt-2 border border-line rounded bg-ink/40 overflow-hidden">
@@ -78,10 +112,10 @@ export function NoteEpisodeCard({
             episode's own art wins when it has any, which for a music feed is
             the track cover rather than the album's. */}
         <PodcastCover
-          image={episode.image || podcast.image}
+          image={item?.image || podcast.image}
           artwork={podcast.artwork}
-          title={episode.title}
-          seed={episode.guid ?? podcast.podcastGuid ?? String(podcast.id)}
+          title={item?.title ?? podcast.title}
+          seed={item?.guid ?? podcast.podcastGuid ?? String(podcast.id)}
           className="w-16 h-16 sm:w-20 sm:h-20 object-cover border border-bone/20 flex-shrink-0"
           lowPriority
         />
@@ -91,37 +125,56 @@ export function NoteEpisodeCard({
               looked finished and was 9px short — the violation a review cannot
               see, because nothing about the rendering is wrong. Measured at
               390px under CDP device emulation; a narrow window would have
-              reported the desktop layout cropped and told us nothing. */}
+              reported the desktop layout cropped and told us nothing.
+
+              With no item the show has moved DOWN into the headline, so this
+              slot carries the show's author instead — as text, never a button:
+              an author is not a destination this app can open, and a control
+              that goes nowhere is worse than no control. */}
+          {item ? (
+            <button
+              type="button"
+              onClick={onOpenShow}
+              className="flex items-center min-h-[24px] text-left text-[10px] tracking-wider uppercase text-muted hover:text-bolt max-w-full"
+              title={podcast.title}
+            >
+              <span className="truncate">{podcast.title}</span>
+            </button>
+          ) : podcast.author ? (
+            <div
+              className="flex items-center min-h-[24px] text-[10px] tracking-wider uppercase text-muted max-w-full"
+              title={podcast.author}
+            >
+              <span className="truncate">{podcast.author}</span>
+            </div>
+          ) : null}
           <button
             type="button"
-            onClick={onOpenShow}
-            className="flex items-center min-h-[24px] text-left text-[10px] tracking-wider uppercase text-muted hover:text-bolt max-w-full"
-            title={podcast.title}
-          >
-            <span className="truncate">{podcast.title}</span>
-          </button>
-          <button
-            type="button"
-            onClick={onOpenEpisode}
+            onClick={openItem}
             className="block text-left font-display text-sm text-bone hover:text-bolt leading-snug line-clamp-2"
-            title={episode.title}
+            title={item?.title ?? podcast.title}
           >
-            {episode.title}
+            {item?.title ?? podcast.title}
           </button>
-          <div className="text-[11px] text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
-            {episode.datePublished ? <span>{fmtDate(episode.datePublished)}</span> : null}
-            {episode.duration ? (
-              <>
-                {episode.datePublished ? <span aria-hidden>·</span> : null}
-                <span>{fmtDuration(episode.duration)}</span>
-              </>
-            ) : null}
-          </div>
+          {/* Dropped whole with no item rather than left as an empty box —
+              `mt-0.5` on nothing is still vertical space, and the card is two
+              lines shorter here than the episode version already. */}
+          {item ? (
+            <div className="text-[11px] text-muted mt-0.5 flex items-center gap-1.5 flex-wrap">
+              {item.datePublished ? <span>{fmtDate(item.datePublished)}</span> : null}
+              {item.duration ? (
+                <>
+                  {item.datePublished ? <span aria-hidden>·</span> : null}
+                  <span>{fmtDuration(item.duration)}</span>
+                </>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
 
       <div className="flex items-center gap-1.5 flex-wrap px-2.5 pb-2.5">
-        <button type="button" onClick={onOpenEpisode} className="btn-ghost">
+        <button type="button" onClick={openItem} className="btn-ghost">
           OPEN
         </button>
         {/* `size="md"` because the controls beside it are plain .btn-ghost.
@@ -130,8 +183,10 @@ export function NoteEpisodeCard({
             sm: — one lone glyph beside two labelled controls. 'md' is the
             variant dimensioned to .btn-ghost, which is why the show header and
             <EpisodeDetailView> already pass it in exactly this cluster.
-            <FavEpisodeHeart> renders nothing without both guids. */}
-        <FavEpisodeHeart episode={episode} podcast={podcast} size="md" />
+            <FavEpisodeHeart> renders nothing without both guids — and with no
+            item there is no episode favorite to offer, only a SHOW favorite,
+            which is a different subject and belongs to the show page. */}
+        {item ? <FavEpisodeHeart episode={item} podcast={podcast} size="md" /> : null}
         {/* `ml-auto` only once there is room for one line. Below sm: the row
             wraps, and a right-aligned item on a wrapped line is alone on it —
             the stranded FOUNTAIN.FM line that made this row look broken on a
