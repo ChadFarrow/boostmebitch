@@ -32,9 +32,15 @@ const MAX_ALBUM_FEEDS = 100;
 // INSTANCES because the policies genuinely differ: 5 min vs 60 s freshness,
 // 5 s vs 8 s fetch timeout, and pi.ts additionally serves stale-on-error.
 const FEED_CACHE_MAX = 100;
+// Same reasoning as `rssXmlCache` in lib/pi.ts: 100 entries at the 8 MB read
+// cap is 800 MB of ceiling, and the publisher walk fills it from one request
+// against a feed-supplied URL. The count bounds churn; only this bounds memory.
+const FEED_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 const feedCache = createBoundedCache<string>({
   maxAgeMs: CACHE_TTL_MS,
   maxEntries: FEED_CACHE_MAX,
+  maxBytes: FEED_CACHE_MAX_BYTES,
+  sizeOf: (xml) => xml.length,
 });
 
 async function fetchFeedXml(url: string): Promise<string | null> {

@@ -51,7 +51,8 @@
     "e2e:mutes": "node scripts/e2e-mutes.mjs",
     "probe:index": "node --experimental-strip-types scripts/probe-index.mjs",
     "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs",
-    "check:playlistdb": "node --experimental-strip-types scripts/check-playlist-db.mjs"
+    "check:playlistdb": "node --experimental-strip-types scripts/check-playlist-db.mjs",
+    "check:cache": "node --experimental-strip-types scripts/check-bounded-cache.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",

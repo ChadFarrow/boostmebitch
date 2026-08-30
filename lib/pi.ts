@@ -544,6 +544,14 @@ export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
 const RSS_FRESH_MS = 60_000;
 const RSS_STALE_MS = 10 * 60_000;
 const RSS_CACHE_MAX = 200;
+// **The entry cap is not the memory bound.** Bodies are read at
+// `MAX_BODY_BYTES` (8 MB), so 200 entries is 1.6 GB of ceiling — and
+// `/api/publisher` walks up to 100 children of a feed-supplied publisher
+// document in ONE request, each landing here. Measured for scale: all ten of
+// ChadF's playlist source feeds together are 9.5 MB and the largest is 2.5 MB,
+// so 64 MB is several times the real working set and still bounds the worst
+// case to something a function can hold.
+const RSS_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 // The sweep/delete-then-set/cap bookkeeping is `createBoundedCache`, shared with
 // lib/musicl-resolver.ts — both caches shipped the same unbounded-growth bug
 // because the mechanism had been copied. Only the POLICY is local: the horizon
@@ -552,6 +560,8 @@ const RSS_CACHE_MAX = 200;
 const rssXmlCache = createBoundedCache<string>({
   maxAgeMs: RSS_STALE_MS,
   maxEntries: RSS_CACHE_MAX,
+  maxBytes: RSS_CACHE_MAX_BYTES,
+  sizeOf: (xml) => xml.length,
 });
 
 // `maxAgeMs` shortens the fresh window for ONE caller without shortening it for
