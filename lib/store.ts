@@ -652,6 +652,12 @@ function persistMuted(identity: NostrIdentity | null, state: MuteListState) {
     identity.pubkey,
     () => storage.muted.get(identity.npub),
     resolvePublishRelays(identity),
+    // Remember the ciphertext this publish wrote. We built it, so we know its
+    // plaintext — and encryption is non-deterministic, so this is the only
+    // chance to record it. Without this a signer that gets no unattended
+    // decrypt (Amber, a bunker) meets an unrecognized private half on the next
+    // load, every time the user mutes anybody.
+    (content) => storage.muted.rememberPrivateContent(identity.npub, content),
   );
 }
 

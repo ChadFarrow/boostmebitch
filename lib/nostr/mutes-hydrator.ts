@@ -11,6 +11,7 @@ import { storage } from '@/lib/storage';
 import {
   emptyMuteState,
   fetchMutedPubkeys,
+  privateHalfAlreadyOpened,
   schedulePublishMuteList,
   unionMutedPubkeys,
   type MuteListState,
@@ -39,7 +40,13 @@ export async function hydrateMutes(
   purpose: DecryptPurpose = 'unattended',
 ): Promise<void> {
   const { setMutedPubkeys, setMutesSync } = useApp.getState();
-  setMutesSync('idle');
+  // NOT ON A USER-INITIATED RETRY. `<MutesSyncNotice>` renders on
+  // `mutesSync === 'degraded'`, so clearing it here unmounted the notice the
+  // instant its button was pressed: `loading…` never appeared, and a retry that
+  // then FAILED read as a success that undid itself a moment later. On a page
+  // load this still matters — it drops a status left by the previous identity —
+  // and `reportPrivateHalf` overwrites it either way before this returns.
+  if (purpose !== 'user-initiated') setMutesSync('idle');
   // DO NOT SPEND AN OUT-OF-BROWSER SIGNER PROMPT HERE. This runs on every page
   // load, before the user has touched anything, and decrypting the private half
   // of the mute list is a signer call — which on Amber leaves the browser for
@@ -107,6 +114,7 @@ export async function hydrateMutes(
         identity.pubkey,
         () => storage.muted.get(identity.npub),
         relays,
+        (content) => storage.muted.rememberPrivateContent(identity.npub, content),
       );
     } else {
       // Make sure the store reflects an empty state for this identity.
@@ -116,6 +124,17 @@ export async function hydrateMutes(
     setMutesSync('ok');
     return;
   }
+
+  // IS THE PARKED BLOB ONE WE HAVE ALREADY OPENED? If so it is not a withheld
+  // half at all — this device holds its plaintext, so the read is as good as a
+  // successful decrypt and nothing needs to be asked of the signer.
+  //
+  // This is what stops the notice being permanent. `unattendedDecryptOk()` is
+  // false for Amber and for a bunker, and rightly so, so those signers park the
+  // private half on EVERY page load. Before this, the user pressed "load", the
+  // half opened, and the next load parked the identical bytes and said the half
+  // stayed shut again — the button worked and could not stick.
+  const reopened = privateHalfAlreadyOpened(muteEvent, cached);
 
   const nostrNewer = muteEvent.updatedAt >= cached.updatedAt;
   if (nostrNewer) {
@@ -134,11 +153,26 @@ export async function hydrateMutes(
           ...muteEvent,
           privatePubkeys: cached.privatePubkeys,
           privateOtherTags: cached.privateOtherTags,
+          // DROPPING THE PARK IS THE POINT, not a tidy-up. While
+          // `unreadablePrivateContent` is set the state is opaque to everything
+          // downstream: `<MutesSyncNotice>` renders, and `publishMuteList`
+          // round-trips the blob and ignores `privatePubkeys` entirely — so a
+          // new mute on this device filters locally and never reaches a relay.
+          // Clearing it on bytes we have decoded makes both behave as they would
+          // have if the decrypt had just run, which is the truth of the matter.
+          unreadablePrivateContent: reopened ? undefined : muteEvent.unreadablePrivateContent,
+          // Carried only on a match. Otherwise another client has rewritten the
+          // private half, the cached plaintext describes a document that is no
+          // longer there, and the claim must not survive into the next cycle.
+          knownPrivateContent: reopened ? cached.knownPrivateContent : undefined,
         }
       : muteEvent;
     storage.muted.set(identity.npub, adopted);
     setMutedPubkeys(unionMutedPubkeys(adopted));
-    reportPrivateHalf(muteEvent, decryptPrivate);
+    // REPORT ON THE RESOLVED STATE, not on the raw read. `adopted` is what the
+    // app is actually working from, and it is the only one of the two that knows
+    // the blob was reopened.
+    reportPrivateHalf(adopted, decryptPrivate);
   } else {
     // Local is ahead. Keep our pubkeys + non-`p` tags, but adopt the relay's
     // non-`p` tags too so cross-client hashtag mutes survive.
@@ -146,23 +180,33 @@ export async function hydrateMutes(
       publicPubkeys: cached.publicPubkeys,
       publicOtherTags: muteEvent.publicOtherTags,
       privatePubkeys: cached.privatePubkeys,
-      privateOtherTags: muteEvent.privateOtherTags,
-      unreadablePrivateContent: cached.unreadablePrivateContent ?? muteEvent.unreadablePrivateContent,
+      // A reopened read carries no private tags of its own — it parked instead of
+      // decoding — so taking the relay's would drop the hashtag and keyword mutes
+      // sitting in the half we DO hold the plaintext of.
+      privateOtherTags: reopened ? cached.privateOtherTags : muteEvent.privateOtherTags,
+      unreadablePrivateContent: reopened
+        ? undefined
+        : cached.unreadablePrivateContent ?? muteEvent.unreadablePrivateContent,
       // The RELAY observation is the authority on what cipher the wire holds —
       // the cached one may predate a rewrite by another client. This object
       // lists every field by hand, so a new one that isn't named here is
       // dropped, and `publishMuteList` would then re-encode the list in the
       // wrong cipher on the very republish this branch is about to schedule.
       privateCipher: muteEvent.privateCipher ?? cached.privateCipher,
+      // Named by hand like every other field here, and for the same reason the
+      // comment above gives about `privateCipher`: one this object forgets is
+      // dropped on every reload.
+      knownPrivateContent: reopened ? cached.knownPrivateContent : undefined,
       updatedAt: cached.updatedAt,
     };
     storage.muted.set(identity.npub, merged);
     setMutedPubkeys(unionMutedPubkeys(merged));
-    reportPrivateHalf(muteEvent, decryptPrivate);
+    reportPrivateHalf(merged, decryptPrivate);
     schedulePublishMuteList(
       identity.pubkey,
       () => storage.muted.get(identity.npub),
       relays,
+      (content) => storage.muted.rememberPrivateContent(identity.npub, content),
     );
   }
 }

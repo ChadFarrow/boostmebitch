@@ -449,6 +449,14 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
     } else if (req.method === 'connect') reply = { id: req.id, result: 'ack' };
     else if (req.method === 'get_public_key') reply = { id: req.id, result: pk };
     else if (req.method === 'ping') reply = { id: req.id, result: 'pong' };
+    else if (req.method === 'nip44_decrypt') {
+      // A bunker holds the user's key, so it can open a payload encrypted to
+      // self. NIP-46 params are [third_party_pubkey, ciphertext]. Answering for
+      // real is what lets scenario 5c test the SUCCESS path — 5b only ever
+      // proved that an error answer is not a dead transport.
+      try { reply = { id: req.id, result: nip44.v2.decrypt(req.params[1], convo) }; }
+      catch (e) { reply = { id: req.id, error: String((e && e.message) || e) }; }
+    }
     else reply = { id: req.id, error: `unsupported: ${req.method}` };
 
     const out = finalizeEvent({
@@ -508,6 +516,43 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
 
   const disconnected = await js(`/signer disconnected/i.test(document.body.innerText)`);
   check('the app does NOT claim the signer is disconnected', disconnected, false);
+
+  console.log('\n  5c. opening the half once STICKS — it is not re-asked on the next load');
+  // THE REPORTED BUG, and the reason this scenario exists at all. Everything
+  // above was already true: the gate held, the notice appeared, the button sent
+  // the right decrypt. And it still could not be fixed by pressing the button,
+  // because nothing remembered the answer — the next load parked the identical
+  // bytes and said the half stayed shut again.
+  //
+  // No pure check can see this. It is three separate modules agreeing across a
+  // page load: the read records which ciphertext it opened, storage carries that
+  // field, and the hydrator compares it to what the wire is holding now.
+  answerWithError = null;
+  seen.length = 0;
+  const mutedKey = `localStorage.getItem('bmb:muted:' + ${JSON.stringify(npub)})`;
+  const readMuted = async () => { const raw = await js(mutedKey); return raw ? JSON.parse(raw) : null; };
+
+  await js(`(() => { const b=[...document.querySelectorAll('[role="status"] button')].find(x=>/load|retry/i.test(x.textContent)); if(b) b.click(); return !!b; })()`);
+  await wait(12000);
+
+  check('the half opened, so the notice is gone', await noticeText(), null);
+  const opened = await readMuted();
+  check('the private mute is applied', opened?.privatePubkeys?.includes(PRIVATE_MUTE), true);
+  check('the park is gone', opened?.unreadablePrivateContent ?? null, null);
+  check('...and the ciphertext it was opened from is remembered',
+    opened?.knownPrivateContent, nip44Content);
+
+  seen.length = 0;
+  await send('Page.navigate', { url: APP }); await wait(20000);
+
+  check('after a reload the notice does NOT come back', await noticeText(), null);
+  // The gate is unchanged — this must still cost no prompt. If the fix worked by
+  // simply asking again, this is the check that says so.
+  check('...and the bunker was not asked to decrypt again',
+    seen.some((m) => m.endsWith('_decrypt')), false);
+  const reloaded = await readMuted();
+  check('...and the private mute survived the reload',
+    reloaded?.privatePubkeys?.includes(PRIVATE_MUTE), true);
 
   relayWs.close();
 }

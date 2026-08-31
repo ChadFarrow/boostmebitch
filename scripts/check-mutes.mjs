@@ -44,7 +44,11 @@
 // drifts. mute-state.ts is importable by plain Node because it has NO imports
 // at all — keep it that way.
 
-import { classifyMuteContent, parseMuteTags } from '../lib/nostr/mute-state.ts';
+import {
+  classifyMuteContent,
+  parseMuteTags,
+  privateHalfAlreadyOpened,
+} from '../lib/nostr/mute-state.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 let failures = 0;
@@ -74,6 +78,21 @@ function checkParse(label, plaintext, expected, { alsoNaive = false } = {}) {
   eq(label, parseMuteTags(plaintext), expected);
   record('parse', label, [plaintext], alsoNaive);
 }
+
+function checkOpened(label, read, cached, expected, { alsoNaive = false } = {}) {
+  eq(label, privateHalfAlreadyOpened(read, cached), expected);
+  record('opened', label, [read, cached], alsoNaive);
+}
+
+/** A mute state carrying only the two fields this predicate reads. */
+const wire = (unreadablePrivateContent) => ({
+  publicPubkeys: [], publicOtherTags: [], privatePubkeys: [], privateOtherTags: [],
+  unreadablePrivateContent, updatedAt: 1,
+});
+const disk = (knownPrivateContent) => ({
+  publicPubkeys: [], publicOtherTags: [], privatePubkeys: [], privateOtherTags: [],
+  knownPrivateContent, updatedAt: 1,
+});
 
 // ---------------------------------------------------------------------------
 // REAL ENCODER OUTPUT, not a hand-built string.
@@ -248,6 +267,64 @@ console.log('\nparseMuteTags — a decrypt that "worked" can still hand back rub
 }
 
 // ---------------------------------------------------------------------------
+console.log('\na private half is reused only when it is byte-for-byte the same document');
+// ---------------------------------------------------------------------------
+//
+// WHY THIS EARNS VECTORS. Answering true here licences two things at once:
+// suppressing <MutesSyncNotice>, and — because the caller then drops the park —
+// republishing the private half from THIS device's decoded entries instead of
+// round-tripping the blob. Both are correct on the document we actually read
+// and destructive on any other. So the only safe answer is exact equality, and
+// the failure is silent in both directions: too strict is a notice that will not
+// go away, too loose is another client's private mute list overwritten on their
+// device with no undo.
+// ---------------------------------------------------------------------------
+{
+  checkOpened('the same ciphertext we decoded last time',
+    wire(REAL_NIP44), disk(REAL_NIP44), true, { alsoNaive: true });
+
+  // THE ONE THAT MATTERS. Another client rewrote the private half, so the bytes
+  // differ and this device's plaintext describes a document that is gone.
+  // Answering true here would republish our stale entries over their new ones.
+  checkOpened('a ciphertext another client rewrote since',
+    wire(REAL_NIP04), disk(REAL_NIP44), false);
+
+  // Encryption is non-deterministic, so a re-encryption of the SAME entries is a
+  // different string — and we have no way to tell it from somebody else's edit.
+  checkOpened('the same list re-encrypted under a fresh nonce',
+    wire(REAL_NIP44), disk(REAL_NIP44.replace('AkdMGfmt', 'AkdMGfmu')), false);
+
+  // A prefix, a truncation and a length match are each a way somebody might
+  // "optimize" the comparison. All three must answer false.
+  checkOpened('a cached value that is a prefix of the wire blob',
+    wire(REAL_NIP44), disk(REAL_NIP44.slice(0, 140)), false);
+  checkOpened('a wire blob that is a prefix of the cached value',
+    wire(REAL_NIP44.slice(0, 140)), disk(REAL_NIP44), false);
+
+  // Nothing parked: either there is no private half or the caller just read it.
+  // Both are already handled without this predicate, and answering true would
+  // let a cached claim speak for a read that never happened.
+  checkOpened('no private half on the wire at all', wire(undefined), disk(REAL_NIP44), false);
+  // Exempt: naive() also answers false, because an empty cached string is
+  // falsy. Kept because it pins the early return on the WIRE side — a `''` blob
+  // must never be treated as a document, whatever the cache says.
+  checkOpened('an empty parked blob', wire(''), disk(''), false, { alsoNaive: true });
+
+  // This device has never opened anything. The notice is correct here.
+  // Exempt: naive() gets this one right too. It is the ordinary first-run state
+  // and the notice depends on it, so it is here as the control the vectors above
+  // are measured against.
+  checkOpened('a parked blob and no cached plaintext',
+    wire(REAL_NIP44), disk(undefined), false, { alsoNaive: true });
+
+  // A cache written by an older build, or half-cleared by an eviction, carries a
+  // non-string where the field should be. It must read as "we know nothing",
+  // never as a truthy claim.
+  checkOpened('a cached field that is not a string',
+    wire(REAL_NIP44), { ...disk(undefined), knownPrivateContent: true }, false);
+}
+
+// ---------------------------------------------------------------------------
 console.log('\nevery vector fails against the obvious wrong implementation');
 // ---------------------------------------------------------------------------
 {
@@ -276,11 +353,17 @@ console.log('\nevery vector fails against the obvious wrong implementation');
         return [];
       }
     },
+    // "We opened a private half once, so we know this one." The field reads as a
+    // flag rather than as a claim about specific bytes, which is the natural way
+    // to write it and the way that republishes our stale entries over whatever
+    // another client wrote since.
+    opened: (_read, cached) => !!cached.knownPrivateContent,
   };
 
   const real = {
     classify: classifyMuteContent,
     parse: parseMuteTags,
+    opened: privateHalfAlreadyOpened,
   };
 
   const call = (impl, v) => {
