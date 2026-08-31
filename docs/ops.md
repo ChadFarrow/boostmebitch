@@ -50,11 +50,37 @@ per-brand backup in the app, which is the odd one out, not the tidy one.
   to abort on, and an abort reaches us as `popup_closed` — indistinguishable
   from every other fault on that path, so this cost is real and permanently
   invisible from our side. **Do not "fix" it by branding a d-tag or by minting a
-  second project without reading the paragraph below.**
+  second project** — the rename below is the fix that keeps the wallet shared.
 - Verification, quota and suspension attach to the PROJECT, so one complaint or
   one failed re-review takes Google sign-in off BOTH sites together. Adding a
   domain to a verified project can itself re-open the review — see the branding
   entry above.
+
+**The wanted arrangement — a per-brand consent screen AND one wallet from either
+site — is not available, so do not go looking for it.** `appDataFolder` is per
+project, and nothing opens one project's folder to another. The encryption is not
+what blocks it: `sub` identifies the Google ACCOUNT, not the client, so
+`deriveBackupKey(sub, pin)` returns the same key under either project and only
+the blob's LOCATION is out of reach. Every way of putting the blob somewhere both
+projects can read costs more than the naming problem it solves:
+
+| Route | What it costs |
+|---|---|
+| Derive the nsec from `sub` + PIN, no blob | **Breaks the identity outright.** The npub is public, so 10⁶ candidates are checked against it directly. See the prohibition in [`signers.md`](signers.md) — this is the one that will be proposed, because it is the only construction needing no shared storage |
+| Blob on a relay at a `sub`-derived address, or on our own server | Deletes the app-private-storage layer that `backup-crypto.ts` names as one of the two mitigations carrying this construction, leaving a 6-digit PIN in front of a blob anyone can fetch. A server also means a user datastore this app deliberately does not have, and a privacy-policy edit re-opens verification |
+| Full `drive` scope so a second app can read the file | **Restricted** scope: annual CASA assessment, and the app could read the user's entire Drive |
+
+**So resolve it at the consent screen instead: give the shared project a
+BRAND-NEUTRAL app name.** Both brands share the words *Boost Me*, so an app named
+`Boost Me` reads correctly on either site and puts NEITHER brand's exclusive word
+in front of the other's users — which is the actual leak, rather than the
+mismatch. The wallet stays shared because the project stays shared, and the fix
+is a console field rather than a weaker backup. Two costs, both ordinary: the app
+name is verified together with the logo, home page URL and privacy policy URL, so
+a rename **re-opens the review** (see the branding entry above); and one home
+page and one privacy policy URL must be picked, on a verified domain, so visitors
+to the other brand see a link to this one's `/privacy`. Both pages carry the same
+text — `app/privacy/page.tsx` renders from `BRAND`.
 
 **If this is ever revisited, the split ORPHANS every existing backup by default.** A
 new project gets a new, EMPTY appdata, so every blob written under the shared

@@ -173,6 +173,10 @@ It sits in `signer.ts` because this module owns `requireNip44` — but it is sha
 
 Ported from **Wisp** (github.com/barrydeen/wisp, `v1.1.0`). The central insight, because the obvious version is wrong: **Google is not an identity provider here — it's a zero-knowledge blob store.** The key is generated locally at random (`generateSecretKey()`); nothing derives from the Google account. Wisp shipped deterministic `sub`-derived nsecs once and reverted.
 
+> **NEVER DERIVE THE NSEC FROM `sub` + PIN, AND KNOW THE ARGUMENT THAT WILL BRING IT BACK.** It arrives as a feature request, not as a crypto proposal: *"two deploys have their own Google projects, so let both derive the same key and the same wallet comes up on either site."* It does solve that — `appDataFolder` is per Cloud project, so a derived key is the one construction needing no shared storage at all. **It also destroys the identity outright.** The npub is PUBLIC — it is on every note the user signs — so an attacker enumerates the 10⁶ (or 10⁸) PINs, derives each candidate key, and compares pubkeys. One pass, no blob required, and the Argon2id cost buys nothing here because the attacker has an oracle: the answer is on the relays. The PIN stops being a secret protecting a stolen blob and becomes the ENTIRE key. And `sub` is not a secret either — every app the user signs into with Google receives the same value.
+>
+> The random key plus an encrypted blob is what makes the PIN merely the second of two layers; `backup-crypto.ts` names both, and app-private Drive storage is the first. Any scheme that removes the blob, or moves it somewhere a stranger can fetch (a relay at a `sub`-derived address, our own server), gives up that first layer and leaves a 6-digit secret alone in front of the identity. **The shared-wallet goal is answered in [`ops.md`](ops.md) — one Cloud project with a brand-neutral app name — and that answer costs a console field instead of the security model.**
+
 Construction (`lib/nostr/backup-crypto.ts`, mirroring Wisp's `BackupCrypto.kt`):
 
 ```
