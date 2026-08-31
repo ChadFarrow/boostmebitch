@@ -126,11 +126,15 @@ async function fetchSub(accessToken: string): Promise<string> {
  * "my sign-in didn't work" is not evidence about this code until you know which
  * of GIS's faults happened, and GIS's own copy never reaches the page.
  *
- * It names the ORIGIN and the CLIENT ID because the failure this repo actually
- * shipped is a mismatch between exactly those two — one deploy's build using a
- * client that does not authorize the domain it is served from. Neither is a
- * secret: the client id is inlined into the bundle by design, and the origin is
- * the address bar.
+ * It names the ORIGIN and the CLIENT ID because one repo builds two deploys, so
+ * "which client did this build actually use, on which domain" is the first
+ * question and nothing on screen answers it. Neither value is a secret: the
+ * client id is inlined into the bundle by design, and the origin is the address
+ * bar.
+ *
+ * READ THE SHAPE BEFORE THE LINE. A refused origin fails EVERY time, on every
+ * device, for everyone. So an intermittent failure is not the console — it is
+ * the transport, and the same `popup_closed` covers both.
  */
 function logGisError(e: unknown): void {
   const ev = (e as GsiErrorEvent | null) ?? {};
@@ -138,8 +142,9 @@ function logGisError(e: unknown): void {
   console.warn(
     `[google] sign-in failed: type=${ev.type ?? 'unknown'} message=${ev.message ?? '(none)'} ` +
       `origin=${origin} client_id=${googleClientId() ?? '(unset)'}. ` +
-      'If the window showed "Error 400: origin_mismatch" or "Access blocked", this origin is not ' +
-      "on that client's Authorized JavaScript origins — a Google Cloud console change, not a code one.",
+      'If the window showed "Error 400: origin_mismatch" or "Access blocked", check this origin ' +
+      "against that client's Authorized JavaScript origins. A closed window and a network fault " +
+      'reach this same line with nothing shown, so reproduce it before you change the console.',
   );
 }
 
@@ -161,18 +166,21 @@ function gisErrorMessage(e: unknown, clickStarted: boolean): string {
       : 'The Google sign-in window could not open. Tap Retry.';
   }
   if (type === 'popup_closed') {
-    // GIS reports "the user closed the window" and "Google refused this origin"
-    // through this SAME type, and the second one is not the user's doing: an
-    // origin missing from the OAuth client's Authorized JavaScript origins gets
-    // an account chooser, then an error page, then a closed window — which is
-    // indistinguishable from a cancel from in here. Saying "cancelled" told a
-    // second deploy's users they had backed out of a flow that was refused
-    // before consent, and hid the one thing that fixes it. Name both, and say
-    // which half is ours. `logGisError` above carries the origin and client id
-    // for the screenshot.
+    // THREE different faults reach this one GIS type, and only the first is the
+    // user's doing: they closed the window; Google refused the origin (an
+    // account chooser, then an error page, then a closed window); or the popup
+    // died on a network fault mid-flow. "Cancelled" named the first and read as
+    // an accusation for the other two — someone whose sign-in broke on its own
+    // was told they had backed out of it.
+    //
+    // So the copy must not pick one either. It says what to DO (retry, which
+    // fixes a cancel and a transient alike) and what an error page MEANS (not
+    // yours to fix) without claiming which happened. `logGisError` above carries
+    // the origin and client id, and the repeat/one-off shape is what separates a
+    // console problem from a transport one.
     return (
-      "Google sign-in didn't finish. If the Google window showed an error instead of asking " +
-      "you to continue, this site isn't set up with Google yet — that's ours to fix, not yours."
+      "Google sign-in didn't finish. Tap Retry — if the Google window shows an error rather " +
+      "than asking you to continue, that part isn't something you can fix."
     );
   }
   return getErrorMessage(e, 'Google sign-in failed');
