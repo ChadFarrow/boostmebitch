@@ -265,6 +265,17 @@ export interface Boostagram {
   message?: string;
   sender_name?: string;
   sender_id?: string;     // nostr pubkey if signed in
+  /** Where the recipient may send a reply boost back to. A NODE PUBKEY, never
+   *  the lightning address it was resolved from — that is the shape Helipad's
+   *  documented example carries, and an email-shaped string here cannot be
+   *  keysent to. `reply_custom_key`/`reply_custom_value` are the sub-account
+   *  routing pair for a shared custodial node and go on the wire together or
+   *  not at all. All three are built by `replyFieldsFor`
+   *  (lib/v4v/keysend-lookup.ts) and dropped entirely on an anonymous boost,
+   *  like `sender_id` — a lightning address names its owner. */
+  reply_address?: string;
+  reply_custom_key?: string;
+  reply_custom_value?: string;
   action: 'boost' | 'stream' | 'auto';
   name?: string;             // recipient name, set per leg in lib/v4v/boost.ts
   uuid?: string;             // unique boost ID — shared across all legs

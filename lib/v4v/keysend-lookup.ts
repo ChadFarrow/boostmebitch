@@ -11,6 +11,13 @@
 // Everything here is best-effort: any failure returns null and the caller
 // falls back to the LNURL path that has always worked.
 //
+// The module now answers TWO questions off the same document, and keeping them
+// apart is load-bearing. `lookupKeysendTarget` answers "may we PAY this
+// address as a keysend recipient" and applies the two divert rules below.
+// `lookupReplyTarget` answers "what is this address's node id", for the
+// sender's OWN address going into a boostagram's `reply_address`, and applies
+// neither — see the note on that function for why each rule is wrong there.
+//
 // Two deliberate exceptions run the other way, both sending an address BACK to
 // LNURL after it qualified for the upgrade. LNURL_ONLY_DOMAINS is knowledge we
 // hold in advance: a few providers accept keysend perfectly well but never show
@@ -189,26 +196,19 @@ export function parseKeysendResponse(data: any): KeysendTarget | null {
 }
 
 /**
- * Resolve `name@domain` to a keysend target, or null when the address doesn't
- * publish one (the common case — most LN providers are LNURL-only).
+ * Fetch and parse `address`'s `.well-known/keysend` document, memoized.
+ *
+ * The shared core of the two questions below. It answers only "does this
+ * address publish a usable keysend target", which is a fact about the
+ * DOCUMENT, and deliberately holds no opinion about whether we should route
+ * anything to it.
  *
  * Never throws: a missing endpoint, a timeout, a non-2xx, junk JSON and a
- * malformed pubkey all resolve to null so the boost leg stays on LNURL.
+ * malformed pubkey all resolve to null.
  */
-export async function lookupKeysendTarget(address: string): Promise<KeysendTarget | null> {
+async function fetchKeysendDocument(address: string): Promise<KeysendTarget | null> {
   const [name, domain] = address.split('@');
   if (!name || !domain) return null;
-
-  // Ahead of the cache, not just the fetch: these domains DO answer the probe,
-  // so a cached hit would be a real keysend target we then have to remember to
-  // ignore at every read. Refusing to look is the only version with one place
-  // to get wrong.
-  if (isLnurlOnlyAddress(address)) return null;
-
-  // Same placement, and for the same reason: a demoted address still publishes
-  // a perfectly valid keysend document, so a cached hit would be a real target
-  // that every reader then has to remember not to use. One refusal, one place.
-  if (keysendRecentlyFailed(address)) return null;
 
   const key = address.toLowerCase();
   const hit = cache.get(key);
@@ -230,6 +230,89 @@ export async function lookupKeysendTarget(address: string): Promise<KeysendTarge
   // a failed round trip on every leg of every boost.
   cache.set(key, { value, expires: Date.now() + (value ? HIT_TTL_MS : MISS_TTL_MS) });
   return value;
+}
+
+/**
+ * Resolve `name@domain` to a keysend target we may PAY, or null when the
+ * address doesn't publish one (the common case — most LN providers are
+ * LNURL-only) or when one of the two divert rules above sends it back to
+ * LNURL.
+ *
+ * Never throws — see fetchKeysendDocument.
+ */
+export async function lookupKeysendTarget(address: string): Promise<KeysendTarget | null> {
+  // Ahead of the cache, not just the fetch: these domains DO answer the probe,
+  // so a cached hit would be a real keysend target we then have to remember to
+  // ignore at every read. Refusing to look is the only version with one place
+  // to get wrong.
+  if (isLnurlOnlyAddress(address)) return null;
+
+  // Same placement, and for the same reason: a demoted address still publishes
+  // a perfectly valid keysend document, so a cached hit would be a real target
+  // that every reader then has to remember not to use. One refusal, one place.
+  if (keysendRecentlyFailed(address)) return null;
+
+  return fetchKeysendDocument(address);
+}
+
+/**
+ * Resolve the SENDER's own lightning address to the node a recipient can send
+ * a reply boost to, or null when it publishes no keysend document.
+ *
+ * **It deliberately skips `lookupKeysendTarget`'s two divert rules, and that is
+ * the whole reason this exists instead of a second call to it.** Both of those
+ * rules answer "should we PAY this address as a recipient", which is a
+ * different question from "what is this address's node id":
+ *
+ *   - `isLnurlOnlyAddress` is there because Fountain never shows the RECIPIENT
+ *     the TLV that arrived, so the upgrade's justification is void when we pay
+ *     them. Nothing is being paid here — we are naming a node in a field
+ *     somebody else may later keysend to — so a Fountain user would lose their
+ *     reply address for a reason that is not about them.
+ *   - `keysendRecentlyFailed` is a demotion learned from a keysend WE sent to
+ *     that address while paying it. It would drop the reply address for six
+ *     hours with nothing on screen to explain it, and the failure it recorded
+ *     says nothing about whether the address's owner can be replied to.
+ *
+ * It shares the one `cache` on purpose: that map answers a question about the
+ * document, which is the same question both callers ask. `failedTargets` is
+ * the map that answers a question about the node, and only the paying caller
+ * reads it — the same split this file already draws where the two are declared.
+ */
+export async function lookupReplyTarget(address: string): Promise<KeysendTarget | null> {
+  return fetchKeysendDocument(address);
+}
+
+/** The boostagram fields naming where a recipient may send a reply boost. */
+export interface ReplyFields {
+  reply_address?: string;
+  reply_custom_key?: string;
+  reply_custom_value?: string;
+}
+
+/**
+ * Turn a resolved reply target into the boostagram fields that carry it.
+ *
+ * `reply_address` is a NODE PUBKEY, never the lightning address it was
+ * resolved from. That is the shape Helipad's own documented example carries,
+ * and an email-shaped string in that field cannot be keysent to at all.
+ *
+ * The custom pair goes on the wire together or not at all — the same rule
+ * `firstCustomPair` obeys above, for the same reason: on a shared custodial
+ * node that pair IS the sub-account routing, so half of it names the wrong
+ * account rather than no account.
+ *
+ * Returns `{}` rather than fields set to undefined, so an address that
+ * resolves to nothing leaves the boostagram byte-identical to one sent before
+ * this existed.
+ */
+export function replyFieldsFor(target: KeysendTarget | null | undefined): ReplyFields {
+  if (!target?.pubkey) return {};
+  const pair =
+    target.customKey && target.customValue
+      ? { reply_custom_key: target.customKey, reply_custom_value: target.customValue }
+      : {};
+  return { reply_address: target.pubkey, ...pair };
 }
 
 /** Test seam — drops the memoized lookups AND the failure demotions. */
