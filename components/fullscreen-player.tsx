@@ -602,7 +602,18 @@ export function FullscreenPlayer({
                 // The one surface that paints a cover large. Every other
                 // caller takes the 320 default, which is a list tile at 2x.
                 w={640}
-                className="w-full h-full rounded-xl border border-bone/10 shadow-2xl text-5xl"
+                // The whole picture, letterboxed — never a crop. Episode art
+                // is not reliably square: a show that reuses its video
+                // thumbnail publishes 16:9, and `object-cover` in a square box
+                // took a 16:9 episode cover's title off both edges. Cropping
+                // is right for a tile, where the row's geometry matters more
+                // than the edges of the art; here the picture IS the content.
+                // The box stays square so nothing below it moves when the art
+                // changes shape mid-episode (chapter art, a live block's
+                // cover, a valueTimeSplit's track), and `bg-bone/5` makes the
+                // letterbox read as a canvas rather than a gap in the layout.
+                fit="contain"
+                className="w-full h-full rounded-xl border border-bone/10 bg-bone/5 shadow-2xl text-5xl"
               />
             </div>
           )}

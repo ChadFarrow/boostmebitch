@@ -532,6 +532,36 @@ buys a third cache key for bytes we already hold, while `parseInt('320abc')`
 accepts unbounded junk. All three render correctly, which is why none of it
 looks wrong.
 
+**The route RESIZES; the surface decides whether to CROP. `fit: 'inside'`,
+never `fit: 'cover'`.** It shipped as a centre-cropped square, which reads as
+free — every tile that renders `<PodcastCover>` is a square with `object-cover`
+anyway, so the browser makes exactly the same crop from an aspect-preserving
+copy. The cost is invisible from the tile and lands on the one surface that
+paints the picture large: episode art is **not reliably square**, a show that
+reuses its video thumbnail publishes 16:9, and `<FullscreenPlayer>`'s hero got
+that cover with the episode title sliced off both edges — with no way back,
+because the pixels were discarded server-side before any CSS ran. Both
+dimensions stay bounded at `width`, so a tall poster still cannot cost more
+bytes than the square did. The cache key is `(url, width)` and does not encode
+the fit, so a cover already in the CDN keeps its cropped square for the rest of
+its week; the letterbox below renders it unchanged in the meantime and it
+self-heals on expiry.
+
+**`<PodcastCover fit="contain">` is a PROP, never a class the caller passes.**
+`object-cover` and `object-contain` are display utilities of equal specificity,
+so a `className` that merely names the other one leaves the choice to
+Tailwind's emit order — the same trap `sideShow` documents, failing by silently
+keeping the crop. `'cover'` stays the default because a list row's geometry
+matters more than the edges of its art. `'contain'` is for a surface where the
+picture *is* the content, and it keeps its **square box**: the fullscreen hero
+letterboxes inside `aspect-square` (with a faint `bg-bone/5` canvas, so the gap
+reads as deliberate) rather than resizing itself, because that art changes
+shape mid-episode — chapter art, a live block's cover, a `valueTimeSplit`'s
+track — and a box that tracked each one would move the title, transport and
+BOOST under the reader's thumb. The fallback initial-tile has no intrinsic
+ratio to size itself from, so the component gives it `aspect-square` under
+`fit="contain"` or it collapses to the height of one letter.
+
 **Do not add a redirect-to-origin fallback inside the route.** A 302 is a 200
 to the browser's `onError`, so it would defeat the ladder above, teach the CDN
 to cache a redirect, and hide from us that the proxy is failing at all.
