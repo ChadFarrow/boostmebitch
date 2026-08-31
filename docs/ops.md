@@ -49,7 +49,8 @@ per-brand backup in the app, which is the odd one out, not the tidy one.
   consent screen contradicting the address bar is the pattern users are taught
   to abort on, and an abort reaches us as `popup_closed` — indistinguishable
   from every other fault on that path, so this cost is real and permanently
-  invisible from our side. **Do not "fix" it by branding a d-tag or by minting a
+  invisible from our side. The `Boost Me` rename below removes the leak half of
+  it; the mismatch with the address bar stays. **Do not "fix" it by branding a d-tag or by minting a
   second project** — the rename below is the fix that keeps the wallet shared.
 - Verification, quota and suspension attach to the PROJECT, so one complaint or
   one failed re-review takes Google sign-in off BOTH sites together. Adding a
@@ -70,17 +71,34 @@ projects can read costs more than the naming problem it solves:
 | Blob on a relay at a `sub`-derived address, or on our own server | Deletes the app-private-storage layer that `backup-crypto.ts` names as one of the two mitigations carrying this construction, leaving a 6-digit PIN in front of a blob anyone can fetch. A server also means a user datastore this app deliberately does not have, and a privacy-policy edit re-opens verification |
 | Full `drive` scope so a second app can read the file | **Restricted** scope: annual CASA assessment, and the app could read the user's entire Drive |
 
-**So resolve it at the consent screen instead: give the shared project a
-BRAND-NEUTRAL app name.** Both brands share the words *Boost Me*, so an app named
-`Boost Me` reads correctly on either site and puts NEITHER brand's exclusive word
-in front of the other's users — which is the actual leak, rather than the
-mismatch. The wallet stays shared because the project stays shared, and the fix
-is a console field rather than a weaker backup. Two costs, both ordinary: the app
-name is verified together with the logo, home page URL and privacy policy URL, so
-a rename **re-opens the review** (see the branding entry above); and one home
-page and one privacy policy URL must be picked, on a verified domain, so visitors
-to the other brand see a link to this one's `/privacy`. Both pages carry the same
-text — `app/privacy/page.tsx` renders from `BRAND`.
+**So it is resolved at the consent screen instead: the shared project's app name
+is `Boost Me` — decided 2026-08-31.** Both brands begin with those two words, so
+the screen reads correctly on either site and puts NEITHER brand's exclusive word
+in front of the other's users, which is the actual leak rather than the mismatch.
+The wallet stays shared because the project stays shared. It costs a console
+field instead of a weaker backup.
+
+**Change the app name and NOTHING ELSE.** The name, logo, home page URL and
+privacy policy URL are verified as one set, so every field touched widens the
+re-review (see the branding entry above). The home page stays
+`https://www.boostmebitch.com` and the privacy policy stays that domain's
+`/privacy` — both already verified, and moving either buys nothing. A reviewer
+opening that home page finds `Boost Me` as the leading words of the wordmark and
+as `short_name` in `public/manifest.json`, so the shortened name corroborates
+rather than conflicts.
+
+Two consequences to expect, neither a fault: the rename re-opens brand
+verification, and until it clears both sites may show the unverified-app notice
+with a 100-user cap — a working sign-in, not a broken one. And a visitor on
+`boostmebuddy.com` sees a privacy link to the other domain. Both pages carry the
+same text; `app/privacy/page.tsx` renders from `BRAND`.
+
+`BMB` was considered and rejected. It is genuinely ambiguous between the two
+brands, which is the hard part, but it appears nowhere a visitor or a reviewer
+can see it — only in code comments and the `bmb:` storage prefix. An app name
+that matches nothing on the page reads closer to a phishing redirect than a wrong
+name does, which is the problem the rename exists to solve. It becomes a good
+choice only if it is first put on both sites.
 
 **If this is ever revisited, the split ORPHANS every existing backup by default.** A
 new project gets a new, EMPTY appdata, so every blob written under the shared
