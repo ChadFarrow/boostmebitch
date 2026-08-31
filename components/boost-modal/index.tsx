@@ -18,6 +18,7 @@ import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from './message-input';
 import { SenderName } from './sender-name';
+import { useReplyAddress } from './use-reply-address';
 import { SplitsPreview, LightningStatus } from './splits-preview';
 import { LiveNowPlaying, NowPayingRow, splitTargetLabel } from '../live-now-playing';
 import { useActiveSplit } from './use-active-split';
@@ -123,6 +124,13 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // substitution when a named user just leaves "From" empty. Computed at
   // component scope (not inside go()) because <SenderName> renders off it.
   const senderName = resolveSenderName(name, anonymous);
+
+  // Where a recipient can boost this user back, resolved from their profile's
+  // lightning address. Empty until it resolves, and never gated on — see the
+  // hook. The anonymity check is applied at the wire site below, beside
+  // `sender_id`, rather than in here: keeping every identity decision on
+  // adjacent lines is what stops the fourth one being forgotten.
+  const replyFields = useReplyAddress(identity);
 
   useEffect(() => {
     // pickRail() honors the stored rail pref when that rail is still
@@ -277,6 +285,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       message: msg || undefined,
       sender_name: senderName,
       sender_id: anonymous ? undefined : identity?.pubkey,
+      // Same gate, and it is not optional: a lightning address resolves to the
+      // person who owns it just as surely as a pubkey does, so an "anonymous"
+      // boost that carried a reply address would break the promise on screen
+      // by a third route. Spread rather than assigned so an unresolved lookup
+      // adds no keys at all.
+      ...(anonymous ? {} : replyFields),
       action: 'boost',
       uuid: crypto.randomUUID(),
       remote_feed_guid: podcast.podcastGuid,

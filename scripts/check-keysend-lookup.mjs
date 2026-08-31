@@ -23,6 +23,16 @@
 //   here, not a safe default, which is why the must-NOT-match half below is
 //   longer than the must-match half.
 //
+// It now pins a SECOND question off the same document. `lookupReplyTarget`
+// resolves the sender's OWN lightning address to the node id that goes into a
+// boostagram's `reply_address`, and it must skip both divert rules above:
+// they decide whether to PAY an address, which is not what naming a reply node
+// asks. Reusing `lookupKeysendTarget` there would drop the reply address of
+// every Fountain user and of anyone whose address failed a keysend in the last
+// six hours — invisibly, since the boost still sends and every leg shows a ✓.
+// `replyFieldsFor` is pinned alongside it for the both-halves-or-neither rule
+// on the routing pair.
+//
 // `--experimental-strip-types` lets this .mjs import the real .ts module. That
 // is the whole point: a reimplemented copy of the matcher stays green while the
 // shipping one drifts, which is the exact failure being guarded.
@@ -32,8 +42,10 @@ import {
   isLnurlOnlyAddress,
   keysendRecentlyFailed,
   lookupKeysendTarget,
+  lookupReplyTarget,
   noteKeysendFailure,
   parseKeysendResponse,
+  replyFieldsFor,
   clearKeysendLookupCache,
 } from '../lib/v4v/keysend-lookup.ts';
 
@@ -238,6 +250,151 @@ console.log('\nparseKeysendResponse — the divert did not leak into the parser'
     customKey: '696969',
     customValue: 'vS6fLGA1BS6fLGA1',
   });
+}
+
+console.log('\nreplyFieldsFor — the sender\'s own node, as boostagram fields');
+{
+  const PUBKEY = '03ae9f91a0cb8ff43840e3c322c4c61f019d8c1c3cea15a25cfc425ac605e61a4a';
+
+  // Nothing resolved is the ordinary case — most people's lightning address
+  // publishes no keysend document, and a signed-out user has no address at
+  // all. It must add no keys whatever, not keys set to undefined: the
+  // boostagram is JSON.stringify'd onto the wire, so `{}` is the only result
+  // that leaves a boost byte-identical to one sent before this existed.
+  check('no target adds no fields', replyFieldsFor(null), {});
+  check('an undefined target adds no fields', replyFieldsFor(undefined), {});
+  check('a target with no pubkey adds no fields', replyFieldsFor({}), {});
+
+  // A self-hosted node: a pubkey and nothing else. There is no sub-account to
+  // route to, so the pair is genuinely absent rather than missing.
+  check('a bare node is just the address', replyFieldsFor({ pubkey: PUBKEY }), {
+    reply_address: PUBKEY,
+  });
+
+  // The shared-custodial case, which is the common one — Alby and friends put
+  // every user behind one node and tell them apart by this pair.
+  check('a shared node carries its routing pair',
+    replyFieldsFor({ pubkey: PUBKEY, customKey: '696969', customValue: 'vS6fLGA1BS6fLGA1' }),
+    { reply_address: PUBKEY, reply_custom_key: '696969', reply_custom_value: 'vS6fLGA1BS6fLGA1' });
+
+  // The half-pair vectors, and the reason this function exists rather than a
+  // three-line spread at the call site. On a shared node that pair IS the
+  // sub-account routing, so a key with no value names a node with no account —
+  // a reply that pays SOMEBODY, just not the person who sent the boost. Both
+  // halves or neither; there is no useful middle.
+  check('a key with no value drops the pair',
+    replyFieldsFor({ pubkey: PUBKEY, customKey: '696969' }),
+    { reply_address: PUBKEY });
+  check('a value with no key drops the pair',
+    replyFieldsFor({ pubkey: PUBKEY, customValue: 'vS6fLGA1BS6fLGA1' }),
+    { reply_address: PUBKEY });
+  check('an empty-string half drops the pair',
+    replyFieldsFor({ pubkey: PUBKEY, customKey: '696969', customValue: '' }),
+    { reply_address: PUBKEY });
+}
+
+console.log('\n(naive) copying the pair field by field, which is the obvious version');
+{
+  const PUBKEY = '03ae9f91a0cb8ff43840e3c322c4c61f019d8c1c3cea15a25cfc425ac605e61a4a';
+  // What anyone writes first: three assignments, one per field. It agrees on
+  // every whole target, which is why it would ship — the only inputs that tell
+  // the two apart are the half-pairs above.
+  const naive = (t) =>
+    !t ? {} : {
+      reply_address: t.pubkey,
+      reply_custom_key: t.customKey,
+      reply_custom_value: t.customValue,
+    };
+
+  const disagree = [
+    ['a key with no value', { pubkey: PUBKEY, customKey: '696969' }],
+    ['a value with no key', { pubkey: PUBKEY, customValue: 'vS6fLGA1BS6fLGA1' }],
+    ['an empty-string half', { pubkey: PUBKEY, customKey: '696969', customValue: '' }],
+  ];
+  for (const [label, target] of disagree) {
+    check(`(naive) disagrees on ${label}`,
+      JSON.stringify(replyFieldsFor(target)) !== JSON.stringify(naive(target)), true);
+  }
+
+  const agree = [
+    ['no target', null],
+    ['a bare node', { pubkey: PUBKEY }],
+    ['a full pair', { pubkey: PUBKEY, customKey: '696969', customValue: 'vS6fLGA1BS6fLGA1' }],
+  ];
+  for (const [label, target] of agree) {
+    check(`(naive) agrees on ${label}`,
+      JSON.stringify(replyFieldsFor(target)) === JSON.stringify(naive(target)), true);
+  }
+}
+
+console.log('\nlookupReplyTarget — a reply address is not a payment decision');
+{
+  // The finding this whole feature rests on. lookupKeysendTarget refuses two
+  // classes of address before it looks at anything, and BOTH rules answer
+  // "should we PAY this address as a recipient". A reply address asks a
+  // different question — "what is this address's node id" — so reusing that
+  // function would silently drop the reply address of every Fountain user, and
+  // of anyone whose address happened to fail a keysend in the last six hours.
+  //
+  // Neither loss is visible from this app: the boost sends, every leg shows a
+  // ✓, and the only symptom is a missing Reply button on somebody else's
+  // Helipad. That is precisely the shape of the fountain.fm bug this file was
+  // written for, one layer up.
+  const realFetch = globalThis.fetch;
+  const doc = {
+    status: 'OK',
+    tag: 'keysend',
+    pubkey: '03ae9f91a0cb8ff43840e3c322c4c61f019d8c1c3cea15a25cfc425ac605e61a4a',
+    customData: [{ customKey: '696969', customValue: 'vS6fLGA1BS6fLGA1' }],
+  };
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return { ok: true, json: async () => doc };
+  };
+  try {
+    clearKeysendLookupCache();
+    // Fountain: keysend works and the document is real; we route PAYMENTS away
+    // from it only because Fountain never shows the recipient the TLV. Nothing
+    // about that concerns a node we are merely naming in a field.
+    check('a Fountain address is unpayable by keysend',
+      await lookupKeysendTarget('chadf@fountain.fm'), null);
+    check('…but it still resolves as a reply address',
+      (await lookupReplyTarget('chadf@fountain.fm'))?.pubkey, doc.pubkey);
+
+    // The demotion is a fact about a keysend WE sent while paying. It says
+    // nothing about whether the address's owner can be replied to, and it would
+    // expire hours later with nothing on screen to explain the gap.
+    clearKeysendLookupCache();
+    noteKeysendFailure('pi@example.com');
+    check('a demoted address is unpayable by keysend',
+      await lookupKeysendTarget('pi@example.com'), null);
+    check('…but it still resolves as a reply address',
+      (await lookupReplyTarget('pi@example.com'))?.pubkey, doc.pubkey);
+
+    // The must-still-work half, in both directions. The two callers share one
+    // cache on purpose — it answers a question about the DOCUMENT, which is the
+    // same question either one asks — so a reply lookup must be served by a
+    // payment lookup's probe and vice versa, without a second round trip.
+    clearKeysendLookupCache();
+    calls = 0;
+    check('an ordinary address resolves for payment',
+      (await lookupKeysendTarget('artist@getalby.com'))?.pubkey, doc.pubkey);
+    check('…probing once', calls, 1);
+    check('…and the reply lookup is served from that same cache',
+      (await lookupReplyTarget('artist@getalby.com'))?.pubkey, doc.pubkey);
+    check('…without probing again', calls, 1);
+
+    // A malformed address must not reach the proxy at all.
+    clearKeysendLookupCache();
+    calls = 0;
+    check('an address with no domain resolves to nothing',
+      await lookupReplyTarget('notanaddress'), null);
+    check('…without any fetch', calls, 0);
+  } finally {
+    globalThis.fetch = realFetch;
+    clearKeysendLookupCache();
+  }
 }
 
 console.log('\n(naive) the obvious matcher these vectors exist to reject');

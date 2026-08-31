@@ -196,7 +196,7 @@ Entry points: **⚡ BOOST in the player** (current episode, `ts` = playback posi
 
 Per-recipient progress + errors render live; confetti fires when a leg lands. **When "Share on Nostr" is on and at least one payment landed**, a kind:1 boost note is published — signed by your own key when signed in, or by the site's Nostr identity server-side (`app/api/nostr/site-sign`, `SITE_NOSTR_SK`) when you're not.
 
-**Anonymity is about the payment, not just the note.** The share picker's three states are **My feed / Anonymous / Don't post**. Anonymous drops `sender_id` (your pubkey — recipient aggregators resolve it to your avatar and name) *and* replaces `sender_name` with `boostmebitch.com user`, on every leg of every mode including boost-all's per-track, host-share and summary legs. That default name is also what a boost with an empty "From" field sends, so a recipient never renders a blank sender.
+**Anonymity is about the payment, not just the note.** The share picker's three states are **My feed / Anonymous / Don't post**. Anonymous drops `sender_id` (your pubkey — recipient aggregators resolve it to your avatar and name), drops the `reply_*` fields (a lightning address names its owner just as surely) *and* replaces `sender_name` with `boostmebitch.com user`, on every leg of every mode including boost-all's per-track, host-share and summary legs. That default name is also what a boost with an empty "From" field sends, so a recipient never renders a blank sender.
 
 **Live-stream boosts → real zaps.** When you boost a Nostr live stream signed-in, with an active signer and a host whose Lightning address supports NIP-57 (checked *before* paying, so no double-pay), the boost is sent as a real **zap** (`sendZap`, `lib/v4v/zap.ts`) tagged to the stream — the recipient's LN service then publishes a kind:9735 receipt that renders as a boost in Fountain / tunestr / zap.stream **and** in BMB's chat. Otherwise it falls back to a normal boostagram payment plus a kind:1311 "⚡ Boosted N sats" chat line.
 
@@ -298,6 +298,8 @@ Podcasting 2.0 fields, plus Nostr-aware additions — drops into Helipad / Fount
 | `message` | user input | optional |
 | `sender_name` | Nostr `display_name` / `name`, editable | falls back to `boostmebitch.com user` — and is *replaced* by it on an anonymous boost |
 | `sender_id` | Nostr pubkey hex | omitted when signed out **or** anonymous |
+| `reply_address` | the sender's own `lud16`, resolved to a node pubkey | omitted when signed out, when the address publishes no `.well-known/keysend`, **or** when anonymous. Sent from the boost modal only |
+| `reply_custom_key`, `reply_custom_value` | that endpoint's routing pair | sub-account routing for a shared custodial node; both or neither |
 | `action` | `'boost'` \| `'auto'` \| `'stream'` | `'boost'` = the button. A streaming settlement is `'auto'` when the leg pays a song and `'stream'` when it pays the show |
 | `uuid` | `crypto.randomUUID()` | one uuid per boost — Helipad groups legs by it |
 | `remote_feed_guid`, `remote_item_guid` | `<podcast:guid>` / item guid | NIP-73 refs; carry the **track** on boost-all and streaming legs, the **stream** on live-stream legs |

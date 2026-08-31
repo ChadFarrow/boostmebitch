@@ -101,10 +101,11 @@ Priming routes through the same plan (`'skip'` primes nothing, `'transient'` pri
 
 The picker state both modals run on — whether to post a Nostr note, whose identity signs it, and the `anonymous` flag derived from those two — lives in `useSharePicker` (`components/boost-modal/use-share-picker.ts`). **A new boost surface uses that hook rather than re-deriving the flag.**
 
-It used to be a verbatim copy in each modal: the same two `useState`s seeded from the same two storage keys, the same two write-through handlers, the same expression. That is not a cosmetic duplication, because `anonymous` is a promise made to the user *on screen* that has to hold across three separate wire sites — the boostagram's `sender_id`, its `sender_name`, and the note body `formatContent` builds. The app has shipped that promise broken twice, and each time the cause was one surface learning a rule the other didn't:
+It used to be a verbatim copy in each modal: the same two `useState`s seeded from the same two storage keys, the same two write-through handlers, the same expression. That is not a cosmetic duplication, because `anonymous` is a promise made to the user *on screen* that has to hold across four separate wire sites — the boostagram's `sender_id`, its `sender_name`, its `reply_address`, and the note body `formatContent` builds. The app has shipped that promise broken twice, and each time the cause was one surface learning a rule the other didn't:
 
 - **`sender_id`** — the user's pubkey, which recipient aggregators resolve to a profile picture and name. It rode along on an "anonymous" boost while the note itself was correctly site-signed, so the PFP leaked despite the promise.
 - **`sender_name`** — leaked the same way afterwards, and then leaked *a second time* through `BoostAllModal`'s hand-built summary `contentOverride`, **after** the single-boost path had already been fixed.
+- **`reply_address`** — the newest one, and the reason the count above is worth keeping current. It is a node id resolved from the sender's own lightning address, so it names its owner as surely as a pubkey does. It is dropped on the same line as `sender_id` in the boostagram literal, not inside the hook that resolves it, so a reader sees every identity decision at once.
 
 One definition is the structural fix for that class of bug: there is no longer a second place for the rule to be learned late.
 
@@ -228,6 +229,33 @@ The bug was ours: this app appended a message the server had already included, a
 Separately, and for the same recipients: **`payOne` dispatches on `isLnAddressRecipient` (`lib/util.ts`), not on `type === 'lnaddress'`.** An address containing an `@` is a Lightning address whatever the wire claims, and both publishing sides mislabel these as `"node"` — The Split Kit stores that type for lnaddress destinations (which is why `live-block.ts:78` re-infers, and why the fixtures in `check-live-block.mjs` carry `type:'node', address:'artist@fountain.fm'`), and hand-written `<podcast:valueRecipient>` tags do it too. The three feed-side parsers — `lib/pi.ts` twice and `lib/musicl-resolver.ts` — take the declared type verbatim, so before this a feed declaring `type="node" address="user@fountain.fm"` fired a keysend at an email-shaped string, which no rail can route: the leg failed outright, every time. `live-block.ts` keeps its own inline copy of the rule rather than importing the helper, because its only import is `import type` and `check-live-block.mjs` relies on that to load it under plain Node — **the two must stay in step.**
 
 The endpoint's routing pair **wins** over the feed's (a feed-side `customKey` on an lnaddress recipient is ignored by the LNURL path anyway, while the endpoint's pair selects the sub-account); the feed's is used only when the endpoint supplies none. An upgraded leg **skips BoostBox** — LNURL-only by design, and the TLV now carries the metadata. `BoostResult.recipient` reports the **original lnaddress recipient**, not the resolved pubkey, so per-leg rows and `bmb:boosts:*` stay readable. Lookups are cached module-scope (6 h hit / 15 min miss) so a boost-all over 20 tracks sharing an artist address probes once. **Zaps stay LNURL:** `lib/v4v/zap.ts` must not take the keysend upgrade — a keysend can't make the recipient's LN service publish a kind:9735 receipt. They do now carry the BoostBox descriptor, though: `sendZap` takes an optional `metadata` and builds its LUD-21 comment through the same `buildLnurlComment` as `payLnurl`, so a live-stream boost to a Fountain host gets the `rss::payment` descriptor instead of the bare typed message it used to. The POST lives in `zap.ts` rather than the modal because `boostbox.ts` is not on the surface components may reach, and because the desc-whole-or-not-at-all rule should exist once. **It goes in the `comment` param, never the kind:9734 `content`** — that content is the zap message Nostr clients render, and a descriptor there shows up as `rss::payment::boost <url>` inside the user's own prose.
+
+### The reply address (Helipad's Reply button)
+
+Helipad offers a **Reply** button on a received boost only when the boostagram named somewhere to reply to. Three fields carry it, and this app fills them from the boost modal:
+
+```
+reply_address      the sender's node pubkey
+reply_custom_key   ┐ the sub-account routing pair on a shared custodial node
+reply_custom_value ┘
+```
+
+**`reply_address` is a node pubkey, not a lightning address.** Helipad's own documented example is a `03…` hex key, and a reply is a keysend, which cannot route at an email-shaped string. So the app resolves the sender's `lud16` through the same `.well-known/keysend` document the recipient-side upgrade reads. `replyFieldsFor` (`lib/v4v/keysend-lookup.ts`) turns that target into the three fields and is pinned by `check:keysend`; the pair goes on the wire **together or not at all**, because on a shared node it *is* the sub-account and half of it names the wrong account rather than no account.
+
+The two reply-pair fields are **not** in Helipad's README example, unlike `reply_address`. They are best-effort: harmless where they are ignored, and without them a reply to an Alby-style address has no account to land in. As everywhere else in this file, that is a statement about what leaves this app — **do not write down what Helipad does with any of it.**
+
+**The address comes from the user's kind:0 `lud16`, with no input and no `bmb:*` key.** It is already published where every other client reads it, so a second copy on this device would be one more thing to go stale. `lud06` is not a fallback: it is a bech32 LNURL with no `name@domain` to build a well-known path from. `useReplyAddress` (`components/boost-modal/use-reply-address.ts`) resolves it.
+
+**It must never gate the send button, and that is the difference from `useActiveSplit`.** That hook's `'loading'` state is a money gate — a boost sent before it resolves pays the wrong person. This one is not: an unresolved lookup costs a boost that carries no reply address, which is what every boost carried before the feature existed. So there is no loading state, nothing is awaited inside `go()`, and a slow provider delays no payment.
+
+**`lookupReplyTarget` is a separate function from `lookupKeysendTarget`, and calling the latter here would be a silent bug.** The paying lookup applies two divert rules first, and both answer *should we pay this address as a recipient* — a different question from *what is this address's node id*:
+
+- `isLnurlOnlyAddress` refuses `@fountain.fm` because Fountain never shows the **recipient** the TLV that arrived. Nothing is being paid when we name a reply node, so a Fountain user would lose their Reply button for a reason that is not about them.
+- `keysendRecentlyFailed` is a six-hour demotion learned from a keysend **we** sent while paying that address. It says nothing about whether its owner can be replied to, and it would drop the field with nothing on screen to explain the gap.
+
+Both losses are invisible from this side: the boost sends, every leg shows a ✓, and the only symptom is a missing button on somebody else's Helipad — the same shape as the fountain.fm bug the divert list itself was written for. The two functions share one `cache` on purpose, because that map answers a question about the **document**; `failedTargets` answers a question about the **node**, and only the paying caller reads it.
+
+**Deliberately boost-modal only.** `<BoostAllModal>`'s three boostagram sites and `lib/v4v/streaming.ts`'s `senderFields()` do not carry the reply fields. Streaming is unattended and per-minute, so a Reply button on each of six settlements an hour is noise rather than a feature; boost-all is a queue of legs the sender is not sitting in front of either. Adding them later is a decision, not a bug fix — and it inherits the anonymity rule above.
 
 ### The unanswered wallet
 
