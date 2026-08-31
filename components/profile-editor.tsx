@@ -20,18 +20,20 @@ import { useCallback, useEffect, useState } from 'react';
 import { ModalShell } from './modal-shell';
 import { coerceProfileMetadata, fetchRawProfile, publishProfile, type NostrIdentity } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
-import { getErrorMessage } from '@/lib/util';
+import { getErrorMessage, isLightningAddress } from '@/lib/util';
 
 /** The keys this editor manages. Everything else in the fetched content is
  *  passed through untouched — that's the whole contract, and it's why dropping
  *  a field from this list does NOT delete it from the user's profile. `about`
- *  and `lud16` were both here and were removed: a user who set either in
- *  another client keeps it, because we merge rather than rebuild.
+ *  was here and was removed: a user who set it in another client keeps it,
+ *  because we merge rather than rebuild.
  *
- *  Note what dropping `lud16` costs, since it isn't visible from here: it's the
- *  field other clients read to decide whether to show a zap button. Nobody who
- *  onboards through Google gets one, so they remain unzappable outside this app
- *  until something else writes it. */
+ *  `lud16` was dropped too and is BACK, because the cost of leaving it out was
+ *  never visible from this file. It is the field other clients read to decide
+ *  whether to show a zap button, and it is the only source this app has for a
+ *  boostagram's `reply_address` — the node a recipient's Helipad offers a Reply
+ *  button for. Nothing else here writes it, so anybody who onboarded through
+ *  Google had neither, with no way to fix it from inside the app. */
 const FIELDS = [
   {
     key: 'display_name',
@@ -51,12 +53,18 @@ const FIELDS = [
     placeholder: 'https://…',
     hint: 'A direct link to an image. There is no upload — paste a URL.',
   },
+  {
+    key: 'lud16',
+    label: 'Lightning address',
+    placeholder: 'you@getalby.com',
+    hint: 'Optional. Lets other apps zap you, and lets a podcaster boost you back when you boost them.',
+  },
 ] as const;
 
 type FieldKey = (typeof FIELDS)[number]['key'];
 type Draft = Record<FieldKey, string>;
 
-const EMPTY_DRAFT: Draft = { display_name: '', name: '', picture: '' };
+const EMPTY_DRAFT: Draft = { display_name: '', name: '', picture: '', lud16: '' };
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -118,6 +126,7 @@ export function ProfileEditor({
         display_name: dn || nm,
         name: nm,
         picture: str(c.picture),
+        lud16: str(c.lud16),
       });
       // Only surface the handle when it's genuinely a second, different name.
       // One of them being absent isn't a disagreement — it's a profile that
@@ -151,8 +160,15 @@ export function ProfileEditor({
   // else one day.
   const picInvalid = pic !== '' && !/^https?:\/\//i.test(pic) && !/^data:image\//i.test(pic);
 
+  // Same posture as the picture check above, and for a sharper reason: this
+  // value is published as the thing other clients PAY. A blank box is fine —
+  // it deletes the key — but a typo'd one is a profile that silently cannot be
+  // zapped or replied to, and nothing on the reader's side reports it.
+  const lud = draft.lud16.trim();
+  const ludInvalid = lud !== '' && !isLightningAddress(lud);
+
   async function save() {
-    if (base === null || picInvalid) return;
+    if (base === null || picInvalid || ludInvalid) return;
     setPhase('saving');
     setErr(null);
     try {
@@ -276,6 +292,10 @@ export function ProfileEditor({
                   <span className="text-[10px] text-nostr">
                     Must be an image link starting with https://
                   </span>
+                ) : f.key === 'lud16' && ludInvalid ? (
+                  <span className="text-[10px] text-nostr">
+                    Must look like you@example.com — a name, an @, and a domain.
+                  </span>
                 ) : (
                   f.hint && <span className="text-[10px] text-muted">{f.hint}</span>
                 )}
@@ -287,7 +307,7 @@ export function ProfileEditor({
             <div className="flex items-center gap-3 pt-1">
               <button
                 onClick={() => void save()}
-                disabled={busy || picInvalid || phase === 'saved'}
+                disabled={busy || picInvalid || ludInvalid || phase === 'saved'}
                 className="btn-bolt text-xs disabled:opacity-40"
               >
                 {busy ? 'Publishing…' : phase === 'saved' ? 'Published ✓' : 'Publish'}
