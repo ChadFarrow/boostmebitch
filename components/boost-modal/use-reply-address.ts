@@ -21,9 +21,14 @@ import { lookupReplyTarget, replyFieldsFor, type ReplyFields } from '@/lib/v4v/k
  * before this existed. So there is no loading state to read, nothing here is
  * awaited inside `go()`, and a slow provider delays nothing.
  *
+ * The lookup is an OPTIMISATION, not a requirement. `replyFieldsFor` falls back
+ * to the raw lightning address, which a receiver resolves for itself, so a
+ * provider with no keysend document still gets a reply address. Resolving it
+ * here is worth doing anyway: a pubkey is the only form an older receiver
+ * understands.
+ *
  * `lud06` is deliberately not a fallback. It is a bech32-encoded LNURL with no
- * `name@domain` to build a `.well-known/keysend` path from, so there is
- * nothing to look up.
+ * `name@domain` to hand over or to build a `.well-known/keysend` path from.
  */
 export function useReplyAddress(identity: NostrIdentity | null | undefined): ReplyFields {
   // Trimmed and lowercased here so a profile written with stray whitespace or
@@ -42,12 +47,14 @@ export function useReplyAddress(identity: NostrIdentity | null | undefined): Rep
     // sent mid-lookup silently loses a reply address we already had.
     lookupReplyTarget(address)
       .then((target) => {
-        if (!cancelled) setFields(replyFieldsFor(target));
+        if (!cancelled) setFields(replyFieldsFor(target, address));
       })
       // lookupReplyTarget never throws, but a caller that assumes so and is
       // wrong loses the fields silently — say what the empty result means.
       .catch(() => {
-        if (!cancelled) setFields({});
+        // Still offer the address itself — the lookup failing says nothing
+        // about whether the recipient can resolve it.
+        if (!cancelled) setFields(replyFieldsFor(null, address));
       });
     return () => {
       cancelled = true;

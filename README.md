@@ -298,8 +298,8 @@ Podcasting 2.0 fields, plus Nostr-aware additions — drops into Helipad / Fount
 | `message` | user input | optional |
 | `sender_name` | Nostr `display_name` / `name`, editable | falls back to `boostmebitch.com user` — and is *replaced* by it on an anonymous boost |
 | `sender_id` | Nostr pubkey hex | omitted when signed out **or** anonymous |
-| `reply_address` | the sender's own `lud16`, resolved to a node pubkey | omitted when signed out, when the address publishes no `.well-known/keysend`, **or** when anonymous. Sent from the boost modal only |
-| `reply_custom_key`, `reply_custom_value` | that endpoint's routing pair | sub-account routing for a shared custodial node; both or neither |
+| `reply_address` | the sender's own `lud16` | a node pubkey when the address publishes `.well-known/keysend`, else the address itself — a receiver tells them apart by the `@`. Omitted when signed out, when there is no `lud16`, **or** when anonymous. Sent from the boost modal only |
+| `reply_custom_key`, `reply_custom_value` | that endpoint's routing pair | sub-account routing for a shared custodial node. Both or neither, and the key is a **number** — a receiver reading it as an integer rejects a quoted one |
 | `action` | `'boost'` \| `'auto'` \| `'stream'` | `'boost'` = the button. A streaming settlement is `'auto'` when the leg pays a song and `'stream'` when it pays the show |
 | `uuid` | `crypto.randomUUID()` | one uuid per boost — Helipad groups legs by it |
 | `remote_feed_guid`, `remote_item_guid` | `<podcast:guid>` / item guid | NIP-73 refs; carry the **track** on boost-all and streaming legs, the **stream** on live-stream legs |

@@ -286,33 +286,69 @@ export async function lookupReplyTarget(address: string): Promise<KeysendTarget 
 /** The boostagram fields naming where a recipient may send a reply boost. */
 export interface ReplyFields {
   reply_address?: string;
-  reply_custom_key?: string;
+  /** A TLV record NUMBER, not a string. Helipad reads it with serde's
+   *  `as_u64()`, which returns None for a JSON string — and it then answers
+   *  the reply with `400 "No reply_custom_key found in boost"` because the
+   *  value is present and the key is not. A quoted key does not degrade the
+   *  reply, it breaks it. */
+  reply_custom_key?: number;
   reply_custom_value?: string;
 }
 
 /**
- * Turn a resolved reply target into the boostagram fields that carry it.
+ * Build the boostagram fields that say where this sender can be paid back.
  *
- * `reply_address` is a NODE PUBKEY, never the lightning address it was
- * resolved from. That is the shape Helipad's own documented example carries,
- * and an email-shaped string in that field cannot be keysent to at all.
+ * **`reply_address` takes EITHER a node pubkey or a lightning address**, and
+ * the receiver tells them apart by the `@`. That is the Podcast Index
+ * maintainer's wording (podcast-namespace discussion #525) and it is what
+ * Helipad's `LnAddress::resolve` implements: no `@` means keysend to that
+ * pubkey using the pair we supplied, an `@` means Helipad resolves the address
+ * itself — `.well-known/keysend` first, then `.well-known/lnurlp` for a BOLT11.
  *
- * The custom pair goes on the wire together or not at all — the same rule
- * `firstCustomPair` obeys above, for the same reason: on a shared custodial
- * node that pair IS the sub-account routing, so half of it names the wrong
- * account rather than no account.
+ * So there are two usable forms and this prefers the pubkey, because it is the
+ * only one an older receiver understands: a Helipad predating that resolver
+ * hex-decodes whatever it finds here, and an `@` string fails that outright.
+ * The address is the fallback, and it reaches strictly more people — an
+ * LNURL-only provider has no keysend document for us to resolve, but Helipad
+ * can still pay it over LNURL.
  *
- * Returns `{}` rather than fields set to undefined, so an address that
- * resolves to nothing leaves the boostagram byte-identical to one sent before
- * this existed.
+ * The pair goes on the wire **together or not at all**, and the receiver
+ * enforces exactly that: Helipad rejects a boost carrying one half with a 400.
+ * On a shared custodial node that pair IS the sub-account, so half of it names
+ * the wrong account rather than no account.
+ *
+ * **A pair we cannot express as a number falls back to the address rather than
+ * to a bare pubkey.** The endpoint published routing, so dropping it would
+ * keysend to the shared node with no sub-account selected — sats that arrive
+ * somewhere nobody asked for. Handing over the address instead lets the
+ * receiver resolve the same pair for itself.
+ *
+ * Returns `{}` rather than fields set to undefined, so a sender with nothing to
+ * offer leaves the boostagram byte-identical to one sent before this existed.
  */
-export function replyFieldsFor(target: KeysendTarget | null | undefined): ReplyFields {
-  if (!target?.pubkey) return {};
-  const pair =
-    target.customKey && target.customValue
-      ? { reply_custom_key: target.customKey, reply_custom_value: target.customValue }
-      : {};
-  return { reply_address: target.pubkey, ...pair };
+export function replyFieldsFor(
+  target: KeysendTarget | null | undefined,
+  address?: string | null,
+): ReplyFields {
+  const fallback = address?.includes('@') ? { reply_address: address } : {};
+  if (!target?.pubkey) return fallback;
+
+  if (!target.customKey || !target.customValue) {
+    // No routing published: a bare pubkey is the whole address of that node.
+    return { reply_address: target.pubkey };
+  }
+
+  // `firstCustomPair` already refused a non-numeric key, so this only rejects a
+  // key too large to survive as a JSON number — and Helipad reads a zero key as
+  // absent, which would strand the value half.
+  const key = Number(target.customKey);
+  if (!Number.isSafeInteger(key) || key <= 0) return fallback;
+
+  return {
+    reply_address: target.pubkey,
+    reply_custom_key: key,
+    reply_custom_value: target.customValue,
+  };
 }
 
 /** Test seam — drops the memoized lookups AND the failure demotions. */

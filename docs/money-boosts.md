@@ -235,14 +235,20 @@ The endpoint's routing pair **wins** over the feed's (a feed-side `customKey` on
 Helipad offers a **Reply** button on a received boost only when the boostagram named somewhere to reply to. Three fields carry it, and this app fills them from the boost modal:
 
 ```
-reply_address      the sender's node pubkey
+reply_address      the sender's node pubkey, or their lightning address
 reply_custom_key   ┐ the sub-account routing pair on a shared custodial node
 reply_custom_value ┘
 ```
 
-**`reply_address` is a node pubkey, not a lightning address.** Helipad's own documented example is a `03…` hex key, and a reply is a keysend, which cannot route at an email-shaped string. So the app resolves the sender's `lud16` through the same `.well-known/keysend` document the recipient-side upgrade reads. `replyFieldsFor` (`lib/v4v/keysend-lookup.ts`) turns that target into the three fields and is pinned by `check:keysend`; the pair goes on the wire **together or not at all**, because on a shared node it *is* the sub-account and half of it names the wrong account rather than no account.
+**`reply_address` takes EITHER a node pubkey or a lightning address, and the receiver tells them apart by the `@`.** That is the Podcast Index maintainer's wording ([podcast-namespace #525](https://github.com/Podcastindex-org/podcast-namespace/discussions/525)) and it is what Helipad's `LnAddress::resolve` implements: no `@` keysends to that pubkey using the pair we supplied; an `@` makes Helipad resolve the address itself, `.well-known/keysend` first and `.well-known/lnurlp` after. **The field is in neither blip-10 nor the satoshis.stream registry** — blip-10 has `sender_key` and nothing else — so #525 and the receiving code are the whole of the specification.
 
-The two reply-pair fields are **not** in Helipad's README example, unlike `reply_address`. They are best-effort: harmless where they are ignored, and without them a reply to an Alby-style address has no account to land in. As everywhere else in this file, that is a statement about what leaves this app — **do not write down what Helipad does with any of it.**
+**We prefer the pubkey and fall back to the address, and the order is the point.** The pubkey is the only form an older receiver understands: one predating that resolver hex-decodes whatever it finds in the field, and an `@` string fails outright. The address reaches strictly more people, because an LNURL-only provider publishes no keysend document for us to resolve while the receiver can still pay it over LNURL. So the lookup is an optimisation, not a requirement, and a failed lookup still sends something useful.
+
+**`reply_custom_key` is a NUMBER on the wire, and this is not a style choice.** Helipad reads it with `as_u64()`, which returns nothing for a JSON string. A quoted key therefore leaves the value half present with the key half absent, and Helipad answers that with `400 "No reply_custom_key found in boost"` — the reply does not degrade, it fails. It shipped here quoted once. A zero is read as absent for the same reason.
+
+**The pair goes on the wire together or not at all, and a pair we cannot express falls back to the ADDRESS, never to a bare pubkey.** Helipad enforces the both-or-neither rule itself, with a 400 for either half alone. The subtler half is ours: when an endpoint published routing and we drop it, a keysend reaches the shared node with no sub-account selected, so the sats arrive somewhere nobody asked for. Handing over the address instead lets the receiver resolve the same pair.
+
+As everywhere else in this file, all of that is read off the receiving code rather than assumed — and **it stays a statement about what leaves this app.** Helipad is one reader among several, and the next one may implement less of #525 than it does.
 
 **The address comes from the user's kind:0 `lud16`, with no input and no `bmb:*` key.** It is already published where every other client reads it, so a second copy on this device would be one more thing to go stale. `lud06` is not a fallback: it is a bech32 LNURL with no `name@domain` to build a well-known path from. `useReplyAddress` (`components/boost-modal/use-reply-address.ts`) resolves it.
 

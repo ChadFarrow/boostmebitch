@@ -30,8 +30,13 @@
 // asks. Reusing `lookupKeysendTarget` there would drop the reply address of
 // every Fountain user and of anyone whose address failed a keysend in the last
 // six hours — invisibly, since the boost still sends and every leg shows a ✓.
-// `replyFieldsFor` is pinned alongside it for the both-halves-or-neither rule
-// on the routing pair.
+// `replyFieldsFor` is pinned alongside it for three rules the receiving code
+// enforces and nothing here would otherwise catch: the routing key is a JSON
+// NUMBER (Helipad reads it with as_u64() and answers a quoted one with a 400,
+// so the reply fails rather than degrades), the pair is both halves or
+// neither, and a pair we cannot express falls back to the lightning ADDRESS
+// rather than to a bare pubkey — dropping published routing keysends to a
+// shared node with no sub-account selected.
 //
 // `--experimental-strip-types` lets this .mjs import the real .ts module. That
 // is the whole point: a reimplemented copy of the matcher stays green while the
@@ -252,54 +257,82 @@ console.log('\nparseKeysendResponse — the divert did not leak into the parser'
   });
 }
 
-console.log('\nreplyFieldsFor — the sender\'s own node, as boostagram fields');
+console.log('\nreplyFieldsFor — where the sender can be paid back');
 {
   const PUBKEY = '03ae9f91a0cb8ff43840e3c322c4c61f019d8c1c3cea15a25cfc425ac605e61a4a';
+  const ADDR = 'chadf@getalby.com';
 
-  // Nothing resolved is the ordinary case — most people's lightning address
-  // publishes no keysend document, and a signed-out user has no address at
-  // all. It must add no keys whatever, not keys set to undefined: the
-  // boostagram is JSON.stringify'd onto the wire, so `{}` is the only result
-  // that leaves a boost byte-identical to one sent before this existed.
-  check('no target adds no fields', replyFieldsFor(null), {});
+  // Nothing to offer at all — signed out, or a profile with no lud16. It must
+  // add no keys whatever, not keys set to undefined: the boostagram is
+  // JSON.stringify'd onto the wire, so `{}` is the only result that leaves a
+  // boost byte-identical to one sent before this existed.
+  check('no target and no address adds no fields', replyFieldsFor(null), {});
   check('an undefined target adds no fields', replyFieldsFor(undefined), {});
-  check('a target with no pubkey adds no fields', replyFieldsFor({}), {});
 
-  // A self-hosted node: a pubkey and nothing else. There is no sub-account to
-  // route to, so the pair is genuinely absent rather than missing.
-  check('a bare node is just the address', replyFieldsFor({ pubkey: PUBKEY }), {
+  // The field takes EITHER form and the receiver tells them apart by the `@`,
+  // so an address that resolved to nothing is still worth sending: the receiver
+  // does its own lookup and can fall back to LNURL, which we cannot.
+  check('an unresolved address is sent as itself', replyFieldsFor(null, ADDR), {
+    reply_address: ADDR,
+  });
+  check('…and so is one whose target had no pubkey', replyFieldsFor({}, ADDR), {
+    reply_address: ADDR,
+  });
+  // Only if it IS an address. A bare word has no `@`, so a receiver would read
+  // it as a pubkey and try to hex-decode it.
+  check('a non-address string is not sent', replyFieldsFor(null, 'chadf'), {});
+  check('an empty address is not sent', replyFieldsFor(null, ''), {});
+
+  // A self-hosted node: a pubkey and no routing. Preferred over the address
+  // because it is the only form an older receiver understands.
+  check('a bare node is just the pubkey', replyFieldsFor({ pubkey: PUBKEY }, ADDR), {
     reply_address: PUBKEY,
   });
 
-  // The shared-custodial case, which is the common one — Alby and friends put
-  // every user behind one node and tell them apart by this pair.
-  check('a shared node carries its routing pair',
-    replyFieldsFor({ pubkey: PUBKEY, customKey: '696969', customValue: 'vS6fLGA1BS6fLGA1' }),
-    { reply_address: PUBKEY, reply_custom_key: '696969', reply_custom_value: 'vS6fLGA1BS6fLGA1' });
+  // The shared-custodial case, which is the common one. THE KEY IS A NUMBER:
+  // a receiver reading it as an integer treats a quoted one as absent, sees a
+  // value with no key, and rejects the whole reply rather than degrading it.
+  check('a shared node carries its routing pair as a number',
+    replyFieldsFor({ pubkey: PUBKEY, customKey: '696969', customValue: 'vS6fLGA1BS6fLGA1' }, ADDR),
+    { reply_address: PUBKEY, reply_custom_key: 696969, reply_custom_value: 'vS6fLGA1BS6fLGA1' });
+  check('…and the key is genuinely a number, not a numeric string',
+    typeof replyFieldsFor({ pubkey: PUBKEY, customKey: '696969', customValue: 'x' }, ADDR)
+      .reply_custom_key,
+    'number');
 
-  // The half-pair vectors, and the reason this function exists rather than a
-  // three-line spread at the call site. On a shared node that pair IS the
-  // sub-account routing, so a key with no value names a node with no account —
-  // a reply that pays SOMEBODY, just not the person who sent the boost. Both
-  // halves or neither; there is no useful middle.
-  check('a key with no value drops the pair',
-    replyFieldsFor({ pubkey: PUBKEY, customKey: '696969' }),
+  // Half a pair is the failure this function exists to prevent, and the
+  // receiver enforces it too — one half earns a 400, not a degraded reply. A
+  // bare pubkey is NOT the safe answer when routing was published: it keysends
+  // to the shared node with no sub-account, so the sats arrive somewhere nobody
+  // asked for. Hand over the address and let the receiver resolve the pair.
+  check('a key with no value falls back to the pubkey alone',
+    replyFieldsFor({ pubkey: PUBKEY, customKey: '696969' }, ADDR),
     { reply_address: PUBKEY });
-  check('a value with no key drops the pair',
-    replyFieldsFor({ pubkey: PUBKEY, customValue: 'vS6fLGA1BS6fLGA1' }),
+  check('a value with no key falls back to the pubkey alone',
+    replyFieldsFor({ pubkey: PUBKEY, customValue: 'vS6fLGA1BS6fLGA1' }, ADDR),
     { reply_address: PUBKEY });
-  check('an empty-string half drops the pair',
-    replyFieldsFor({ pubkey: PUBKEY, customKey: '696969', customValue: '' }),
-    { reply_address: PUBKEY });
+
+  // A published pair we cannot put on the wire as a number. Falling back to the
+  // pubkey here would misroute; the address is the honest answer.
+  check('an unsafe key prefers the address over a bare pubkey',
+    replyFieldsFor({ pubkey: PUBKEY, customKey: '99999999999999999999', customValue: 'x' }, ADDR),
+    { reply_address: ADDR });
+  check('a zero key prefers the address — a receiver reads 0 as absent',
+    replyFieldsFor({ pubkey: PUBKEY, customKey: '0', customValue: 'x' }, ADDR),
+    { reply_address: ADDR });
 }
 
-console.log('\n(naive) copying the pair field by field, which is the obvious version');
+console.log('\n(naive) the obvious versions these vectors exist to reject');
 {
   const PUBKEY = '03ae9f91a0cb8ff43840e3c322c4c61f019d8c1c3cea15a25cfc425ac605e61a4a';
-  // What anyone writes first: three assignments, one per field. It agrees on
-  // every whole target, which is why it would ship — the only inputs that tell
-  // the two apart are the half-pairs above.
-  const naive = (t) =>
+  const ADDR = 'chadf@getalby.com';
+  // What anyone writes first: copy the three fields across as they arrive.
+  // It agrees on a bare node and on nothing at all, which is why it would ship.
+  // The half-pairs, the quoted key and the unresolved address are the only
+  // inputs that tell the two apart — and each is a reply the receiver refuses.
+  // `_a` is ignored on purpose — not carrying the address at all is one of the
+  // things the naive version gets wrong.
+  const naive = (t, _a) =>
     !t ? {} : {
       reply_address: t.pubkey,
       reply_custom_key: t.customKey,
@@ -307,23 +340,24 @@ console.log('\n(naive) copying the pair field by field, which is the obvious ver
     };
 
   const disagree = [
-    ['a key with no value', { pubkey: PUBKEY, customKey: '696969' }],
-    ['a value with no key', { pubkey: PUBKEY, customValue: 'vS6fLGA1BS6fLGA1' }],
-    ['an empty-string half', { pubkey: PUBKEY, customKey: '696969', customValue: '' }],
+    ['a quoted routing key', { pubkey: PUBKEY, customKey: '696969', customValue: 'v' }, ADDR],
+    ['a key with no value', { pubkey: PUBKEY, customKey: '696969' }, ADDR],
+    ['a value with no key', { pubkey: PUBKEY, customValue: 'v' }, ADDR],
+    ['an unresolved address', null, ADDR],
+    ['a zero key', { pubkey: PUBKEY, customKey: '0', customValue: 'v' }, ADDR],
   ];
-  for (const [label, target] of disagree) {
+  for (const [label, target, addr] of disagree) {
     check(`(naive) disagrees on ${label}`,
-      JSON.stringify(replyFieldsFor(target)) !== JSON.stringify(naive(target)), true);
+      JSON.stringify(replyFieldsFor(target, addr)) !== JSON.stringify(naive(target, addr)), true);
   }
 
   const agree = [
-    ['no target', null],
-    ['a bare node', { pubkey: PUBKEY }],
-    ['a full pair', { pubkey: PUBKEY, customKey: '696969', customValue: 'vS6fLGA1BS6fLGA1' }],
+    ['nothing at all', null, ''],
+    ['a bare node', { pubkey: PUBKEY }, ADDR],
   ];
-  for (const [label, target] of agree) {
+  for (const [label, target, addr] of agree) {
     check(`(naive) agrees on ${label}`,
-      JSON.stringify(replyFieldsFor(target)) === JSON.stringify(naive(target)), true);
+      JSON.stringify(replyFieldsFor(target, addr)) === JSON.stringify(naive(target, addr)), true);
   }
 }
 
