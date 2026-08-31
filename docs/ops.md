@@ -50,6 +50,28 @@ So the cost of the cutover is exactly the number of people who created an
 account through Google on `boostmebuddy.com` before it happens. At zero it is
 free. It only grows.
 
+**AND THE CUTOVER IS NOT OBVIOUSLY RIGHT — decide it, don't inherit it.** The
+shared client is not only a brand leak; it also buys a real property. One Google
+account holds ONE key backup today, and both deploys open it, so a person who
+signs up on buddy recovers the same key on bitch. That is the same property this
+repo protects on purpose for `boostmebitch:wallet:spark`, `…:wallet:nwc` and
+`boostmebitch:settings`, all of which are deliberately not per-brand. A split
+makes the Drive blob the ONLY per-brand backup in the app, and a Google-onboarded
+buddy user then cannot recover their identity on boostmebitch.com through Google
+at all.
+
+What the split buys, beyond the name on the consent screen: people abort a
+consent screen that contradicts the address bar, which is the phishing pattern
+they are taught to abort on — and an abort is invisible from this side, since it
+arrives as `popup_closed` like everything else; verification status, quota and
+suspension attach to the PROJECT, so one complaint or one failed re-review takes
+Google sign-in off BOTH sites at once; and the consent screen links the other
+domain's privacy policy. Note that adding a domain to a verified project can
+itself re-open the review — see the branding entry above.
+
+So: a separate front door with its own users wants its own project, and wants it
+while the cutover is free. One product wearing two skins is better off sharing.
+
 1. **Count first.** If anyone besides you has signed up that way, decide
    deliberately: cut over and orphan them, or stay shared. There is no third
    option and no repair after the fact.
