@@ -21,6 +21,7 @@ export function PodcastCover({
   seed,
   className,
   w = DEFAULT_ART_WIDTH,
+  fit = 'cover',
   lowPriority,
 }: {
   image?: string | null;
@@ -41,6 +42,28 @@ export function PodcastCover({
    * resize; `artWidth` in lib/util.ts is the guard, pinned by check:art.
    */
   w?: ArtWidth;
+  /**
+   * Whether the art may be CROPPED to fill its box.
+   *
+   * `'cover'` (the default) is right for a tile: the box is a square the
+   * layout depends on, and a cover that is not square gets its edges trimmed
+   * rather than the row's geometry changing.
+   *
+   * `'contain'` is for a surface where the picture is the content rather than
+   * a thumbnail. Episode art is NOT reliably square — a show that reuses its
+   * video thumbnail publishes 16:9 — and a cropped one loses whatever the
+   * artist put near the edges, most visibly the episode title printed across
+   * the bottom of it. It letterboxes inside the same square box instead, so
+   * the surrounding layout is unchanged and the fallback tile still has a
+   * definite height.
+   *
+   * **It is a PROP and not a class the caller passes.** `object-cover` and
+   * `object-contain` are display utilities of equal specificity, so a
+   * `className` that merely names the other one leaves the choice to
+   * Tailwind's emit order — the same trap `sideShow` in <TransportControls>
+   * documents, and it fails by silently keeping the crop.
+   */
+  fit?: 'cover' | 'contain';
   /**
    * "This image must never compete with audio playback."
    *
@@ -100,7 +123,7 @@ export function PodcastCover({
         // against other in-flight requests. That is the half <Player> needs,
         // where chapter art competes with the audio enclosure on one connection.
         {...(lowPriority ? { fetchPriority: 'low' as const } : {})}
-        className={`${className ?? ''} object-cover`}
+        className={`${className ?? ''} ${fit === 'contain' ? 'object-contain' : 'object-cover'}`}
         onError={() => setIdx((i) => i + 1)}
       />
     );
@@ -113,7 +136,11 @@ export function PodcastCover({
   const initial = title?.trim()?.[0]?.toUpperCase() || '♪';
   return (
     <div
-      className={`${className ?? ''} flex items-center justify-center font-display text-bone/90 select-none`}
+      // The initial tile keeps its own square under `fit="contain"`: a
+      // contain-fitting caller sizes the IMG from the box it is given, and a
+      // <div> has no intrinsic ratio to inherit that from — without this it
+      // collapses to the height of one letter.
+      className={`${className ?? ''} ${fit === 'contain' ? 'aspect-square' : ''} flex items-center justify-center font-display text-bone/90 select-none`}
       style={{ background: bg }}
       aria-hidden="true"
     >

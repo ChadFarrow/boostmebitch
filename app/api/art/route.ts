@@ -106,7 +106,16 @@ export async function GET(req: Request) {
       // raster. sharp refuses those above this ceiling rather than allocating.
       limitInputPixels: 100_000_000,
     })
-      .resize(width, width, { fit: 'cover', position: 'centre', withoutEnlargement: true })
+      // `inside`, NEVER `cover`: this route RESIZES, and the surface that
+      // draws the picture decides whether to CROP it. A server-side square
+      // crop is a decision no caller can undo — every tile here is a square
+      // with `object-cover`, so the browser makes the identical crop from an
+      // aspect-preserving copy, while a surface that wants the WHOLE picture
+      // (<FullscreenPlayer>'s hero, where an episode's 16:9 art had its title
+      // sliced off both edges) has no way back to the pixels this already
+      // threw away. Both dimensions still bound at `width`, so a tall poster
+      // cannot cost more bytes than the square did.
+      .resize(width, width, { fit: 'inside', withoutEnlargement: true })
       .webp({ quality: 78, effort: 4 })
       .toBuffer();
   } catch {
