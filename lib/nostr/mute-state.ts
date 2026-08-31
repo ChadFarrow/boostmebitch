@@ -48,6 +48,23 @@ export interface MuteListState {
    *  another client. */
   unreadablePrivateContent?: string;
   /**
+   * The EXACT `content` string whose plaintext produced `privatePubkeys` and
+   * `privateOtherTags` on this device.
+   *
+   * It exists so a private half we have already opened is not opened again. An
+   * out-of-browser signer gets no unattended decrypt (`unattendedDecryptOk`), so
+   * without this every cold start parks the same ciphertext, applies the cached
+   * entries, and tells the user their private list stayed shut — forever, on a
+   * list this device decoded weeks ago. The user presses the button, it works,
+   * and the notice is back on the next load.
+   *
+   * It is only ever meaningful COMPARED BYTE FOR BYTE against the content the
+   * wire is carrying right now — see `privateHalfAlreadyOpened`. On its own it
+   * says nothing: another client may have rewritten the private half since, and
+   * the cached entries would then describe a document that no longer exists.
+   */
+  knownPrivateContent?: string;
+  /**
    * Which cipher the wire actually used, recorded on the read so the republish
    * cannot change it.
    *
@@ -76,6 +93,36 @@ export function emptyMuteState(): MuteListState {
     privateOtherTags: [],
     updatedAt: 0,
   };
+}
+
+/**
+ * Has this device already opened the exact private half the relay is carrying?
+ *
+ * `read` is what `fetchMutedPubkeys` just returned; `cached` is `storage.muted`.
+ * True means the parked blob is one whose plaintext we hold, so the caller may
+ * treat the half as READ: apply `cached.privatePubkeys`, drop the park, and say
+ * nothing on screen.
+ *
+ * **The comparison is exact string equality and must stay one.** Not a prefix,
+ * not a length, not a hash. Everything this predicate licences — suppressing the
+ * notice, and republishing the private half from decoded entries rather than
+ * round-tripping the blob — is safe only because the two strings are the same
+ * document. A loose test hands another client's rewritten list the trust we
+ * earned on the one we actually read, and the republish then writes OUR older
+ * entries over THEIR newer ones, silently, on their device, with no undo.
+ *
+ * A wire carrying no parked blob answers false, and that is not a near-miss: it
+ * means either there is no private half or the caller just read it, and both are
+ * already handled without asking here.
+ */
+export function privateHalfAlreadyOpened(
+  read: MuteListState,
+  cached: MuteListState,
+): boolean {
+  const blob = read.unreadablePrivateContent;
+  if (!blob) return false;
+  return typeof cached.knownPrivateContent === 'string'
+    && cached.knownPrivateContent === blob;
 }
 
 // ---------------------------------------------------------------------------

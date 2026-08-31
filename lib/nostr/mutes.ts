@@ -41,6 +41,7 @@ export {
   emptyMuteState,
   classifyMuteContent,
   parseMuteTags,
+  privateHalfAlreadyOpened,
   type MuteListState,
   type MuteCipher,
 } from './mute-state';
@@ -98,6 +99,11 @@ function partitionTags(tags: string[][]): { pubkeys: string[]; other: string[][]
  * `purpose` rides down to `decryptWithTimeout` on the NIP-44 branch, which
  * refuses an `'unattended'` decrypt on Amber as a backstop. It belongs to the
  * CALL, never hardcoded here — see the note on `decryptWithTimeout`.
+ *
+ * A half we DID open records the ciphertext it came from in
+ * `knownPrivateContent`, so a later load that is not allowed to ask the signer
+ * can recognize the same document and reuse this device's plaintext instead of
+ * parking it again. See `privateHalfAlreadyOpened` in ./mute-state.
  */
 export async function fetchMutedPubkeys(
   pubkey: string,
@@ -121,6 +127,12 @@ export async function fetchMutedPubkeys(
     let privateOtherTags: string[][] = [];
     let unreadablePrivateContent: string | undefined;
     let privateCipher: MuteCipher | undefined;
+    // Set ONLY where the half was actually decoded, and set to the ciphertext we
+    // decoded rather than to a flag: the next cold start compares it byte for
+    // byte against what the wire is carrying, which is the only thing that makes
+    // reusing this device's plaintext safe. Every `park()` below leaves it
+    // undefined, and so does the catch.
+    let knownPrivateContent: string | undefined;
 
     if (newest.content) {
       privateCipher = classifyMuteContent(newest.content);
@@ -141,6 +153,7 @@ export async function fetchMutedPubkeys(
           const split = partitionTags(tags);
           privatePubkeys = split.pubkeys;
           privateOtherTags = split.other;
+          knownPrivateContent = newest.content;
         } else {
           park('it looked like a plaintext tag array and did not parse as one');
         }
@@ -174,6 +187,7 @@ export async function fetchMutedPubkeys(
               const split = partitionTags(tags);
               privatePubkeys = split.pubkeys;
               privateOtherTags = split.other;
+              knownPrivateContent = newest.content;
             } else {
               // A decrypt that "succeeded" against the wrong key looks exactly
               // like this. Parking is the whole point: the shipping code took
@@ -199,6 +213,7 @@ export async function fetchMutedPubkeys(
       privatePubkeys,
       privateOtherTags,
       unreadablePrivateContent,
+      knownPrivateContent,
       privateCipher,
       updatedAt: newest.created_at,
     };
@@ -232,6 +247,7 @@ export async function publishMuteList(
   ownerPubkey: string,
   state: MuteListState,
   relays: string[],
+  onPrivateContentKnown?: (content: string) => void,
 ): Promise<PublishedNote> {
   const tags: string[][] = [];
   for (const t of state.publicOtherTags) tags.push(t);
@@ -241,6 +257,22 @@ export async function publishMuteList(
   if (state.unreadablePrivateContent) {
     // Preserve verbatim — we never decoded it, so we mustn't rewrite it.
     content = state.unreadablePrivateContent;
+    // AND SAY WHAT THAT COSTS. `mutePubkey` adds every new mute to
+    // `privatePubkeys` (Damus's default), and this branch ignores that field
+    // entirely — so while the blob is parked a new mute filters on this device,
+    // persists on this device, and never reaches a relay. That is the right
+    // trade, because merging into a document we cannot read would destroy it,
+    // but it was completely silent: the mute is simply absent on the user's
+    // other device. Opening the half once (the <MutesSyncNotice> button) clears
+    // the park and this stops applying.
+    if (state.privatePubkeys.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[mutes] ${state.privatePubkeys.length} private mute(s) are NOT in this publish — `
+        + 'the private half is an unopened blob and merging into it would destroy it. '
+        + 'They filter on this device only until the private half is opened.',
+      );
+    }
   } else if (state.privatePubkeys.length > 0 || state.privateOtherTags.length > 0) {
     const innerTags: string[][] = [
       ...state.privateOtherTags,
@@ -283,7 +315,28 @@ export async function publishMuteList(
     tags,
     content,
   };
-  return signAndPublish(template, relays);
+  const note = await signAndPublish(template, relays);
+
+  // TELL THE CALLER WHICH CIPHERTEXT IT NOW HOLDS THE PLAINTEXT OF.
+  //
+  // Encryption is non-deterministic — a fresh nonce per call — so this string
+  // cannot be recomputed later from the same entries. Without capturing it here,
+  // a device that opens its private half once and then mutes anybody is back to
+  // an unrecognized blob on the next load: it published a ciphertext it built
+  // itself and then forgot it, so the notice returns after every mute. That is
+  // the reported bug wearing a different hat.
+  //
+  // Gated on a relay actually accepting it, because that is what decides which
+  // bytes the next read will find. If nothing accepted, the relays still carry
+  // the previous ciphertext and the caller must keep describing THAT one.
+  //
+  // Not called on the parked branch: there the content is a blob we never
+  // decoded, and claiming to know it is the one way this mechanism could
+  // republish our entries over another client's.
+  if (!state.unreadablePrivateContent && note.acceptedRelays.length > 0) {
+    onPrivateContentKnown?.(content);
+  }
+  return note;
 }
 
 // Debounced wrapper — collapses rapid mute/unmute toggles into a single
@@ -294,7 +347,11 @@ export function schedulePublishMuteList(
   ownerPubkey: string,
   getState: () => MuteListState,
   relays: string[],
+  onPrivateContentKnown?: (content: string) => void,
   delayMs = 1500,
 ) {
-  _schedulePublish(() => publishMuteList(ownerPubkey, getState(), relays), delayMs);
+  _schedulePublish(
+    () => publishMuteList(ownerPubkey, getState(), relays, onPrivateContentKnown),
+    delayMs,
+  );
 }

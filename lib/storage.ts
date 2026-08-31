@@ -463,6 +463,14 @@ function coerceToMuteState(parsed: unknown): MuteListState {
     privateOtherTags: tagArray(p.privateOtherTags),
     unreadablePrivateContent:
       typeof p.unreadablePrivateContent === 'string' ? p.unreadablePrivateContent : undefined,
+    // SAME RULE, AND THIS FIELD IS THE REASON THE RULE EXISTS TWICE. Dropping it
+    // here does not lose a mute — it makes every cold start on an out-of-browser
+    // signer fail to recognize a private half this device already opened, park
+    // it again, and tell the user it stayed shut. Which is exactly the bug the
+    // field was added to fix, reintroduced by an omission rather than by a
+    // change of behaviour.
+    knownPrivateContent:
+      typeof p.knownPrivateContent === 'string' ? p.knownPrivateContent : undefined,
     // READ THIS BACK, or the field dies on every reload. This function rebuilds
     // the state field by field, so one it does not name is dropped silently —
     // and the symptom is not a missing field, it is `publishMuteList` seeing no
@@ -1182,6 +1190,21 @@ export const storage = {
      */
     set: (npub: string | null | undefined, v: MuteListState): boolean =>
       safeSet(identityKey(KEYS.mutedPrefix, npub), JSON.stringify(v)),
+    /**
+     * Record the ciphertext whose plaintext this device holds, leaving every
+     * other field alone.
+     *
+     * Read-modify-write rather than a field on the caller's own `set`, because
+     * the two writers are a publish that has just landed and a hydrate that has
+     * just read — and the publish fires from a debounce, up to 1.5 s after the
+     * state it was built from was persisted. Writing the whole state from there
+     * would take a mute the user made in between back off the list.
+     */
+    rememberPrivateContent: (npub: string | null | undefined, content: string): boolean => {
+      const cur = storage.muted.get(npub);
+      if (cur.knownPrivateContent === content) return true;
+      return storage.muted.set(npub, { ...cur, knownPrivateContent: content });
+    },
   },
 
   /**

@@ -852,6 +852,61 @@ retry and may mean the signer does not implement the cipher the list uses. Both
 run `hydrateMutes(identity, 'user-initiated')` — the one path that spends a
 prompt on an out-of-browser signer.
 
+### A half we have opened once is not asked about again
+
+**The notice above was PERMANENT, and a permanent notice is the failure it was
+written to avoid.** `unattendedDecryptOk()` is false for Amber and for a bunker
+on every page load, so those signers parked the private half every time. The
+user pressed **load**, the half opened, the notice went — and the next load
+parked the identical bytes and said it stayed shut again. Reported as *"still
+getting this error"*, and the button was working perfectly each time.
+
+Nothing remembered the answer. `MuteListState` recorded the decoded
+`privatePubkeys` but not **which ciphertext they came from**, so a later read
+could not tell a blob it had never seen from the one it decoded last week.
+
+`MuteListState.knownPrivateContent` is that missing fact: the exact `content`
+string whose plaintext produced `privatePubkeys` / `privateOtherTags` on this
+device. `privateHalfAlreadyOpened(read, cached)` (`lib/nostr/mute-state.ts`,
+pinned by `check:mutes`) compares it to what the wire is carrying **right now**,
+and `hydrateMutes` then treats a match as a successful read: cached private
+entries, no park, nothing on screen, no signer touched.
+
+Three properties, each a way to get it wrong:
+
+- **The comparison is exact string equality, and must stay one.** Not a prefix,
+  not a length, not a hash. Answering true licences two things at once —
+  suppressing the notice, and *dropping the park*, which lets `publishMuteList`
+  rebuild the private half from this device's entries instead of round-tripping
+  the blob. Both are correct on the document we actually read and destructive on
+  any other: a loose test republishes our stale entries over another client's
+  newer ones, on their device, with no undo.
+- **A publish must record the ciphertext it wrote.** Encryption is
+  non-deterministic, so a re-encryption of the same entries is a different
+  string that cannot be recomputed later. `publishMuteList` calls back with the
+  content it published — gated on a relay having accepted it, since that is what
+  decides which bytes the next read finds — and `storage.muted.rememberPrivateContent`
+  stores it. Without this the notice returns every time the user mutes anybody,
+  which is the same bug wearing a different hat.
+- **A rewrite by another client must bring the notice back.** The bytes differ,
+  the match fails, the half parks. That is correct: there is a new document this
+  device has not read.
+
+**Dropping the park also fixes a silent half nobody had reported.** While
+`unreadablePrivateContent` is set, `publishMuteList` writes the blob verbatim
+and ignores `privatePubkeys` **entirely** — but `mutePubkey` puts every new mute
+there (Damus's default). So on an out-of-browser signer a new mute filtered on
+that device, persisted on that device, and **never reached a relay**: absent on
+the user's other client, with nothing on screen. Carrying the blob is still
+right while it is genuinely unopened, so that branch now says what it costs in a
+`console.warn` rather than dropping the entries in silence.
+
+Pinned end to end by `npm run e2e:mutes` scenario **5c**: a real NIP-46 bunker,
+press the button, reload, and assert the notice does not return, no decrypt is
+re-sent, and the private mute survives. Neutering the predicate reproduces the
+user's exact sentence on the reload, which is how the assertion was proved to
+bite.
+
 Filtering is at render time (`<NoteCard>` early-returns null; feeds filter top-level + replies before mapping). `bmb:muted:<npub>` is `MuteListState` JSON; `lib/storage.ts` auto-promotes the legacy `{ pubkeys, otherTags }` shape on read. Account menu surfaces a collapsible "Muted accounts (N)" with kind:0 lookups firing only while expanded.
 
 **A reconcile reads its local side AFTER the network round trip, never before it.** `hydrateMutes` took `storage.muted.get(npub)` as its first line and then awaited `fetchMutedPubkeys`, so every decision below was made against a snapshot taken up to ten seconds earlier — this hydration does not even *start* until the NIP-65 write set resolves (up to 4 s), then spends up to another 4 s on `fetchLatestEvent`, plus a NIP-04 decrypt. That window is not idle time: it is the user scrolling the feed the page has already painted, which is exactly when a spam account gets muted. A mute made in it was invisible to the reconcile, and both branches then wrote a state without it — to the store, so the note reappeared on screen a few seconds after being hidden, and to `bmb:muted:<npub>`, so it did not survive the reload either. The local-ahead branch also *republished* the loss, so the deletion propagated to the relays and to the user's other clients. Reported as "I keep muting this account but it keeps showing up", which is precisely what it does: the mute works, then a background promise undoes it. **Everything after the read is synchronous, so reading late closes the window rather than narrowing it** — a `setTimeout`-free tail is what makes that true, and a new `await` added below that line reopens the bug. `favorites-hydrator.ts` already reads its merge inputs (`localFavoriteEntries()`, `trustedBaseline()`) after its own await; mutes was the one that did not.
