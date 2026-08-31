@@ -548,6 +548,39 @@ export function isLnAddressRecipient(r: Pick<ValueRecipient, 'type' | 'address'>
 }
 
 /**
+ * Does `value` look like a lightning address something could actually resolve?
+ *
+ * Deliberately stricter than `isLnAddressRecipient`, which asks a different
+ * question: that one classifies a payee a FEED declared, where an `@` is enough
+ * because being wrong only picks the wrong rail. This one gates a string the
+ * user is about to PUBLISH to their kind:0, where every other client reads it
+ * as the zap target and as the boostagram's `reply_address`. A malformed one
+ * there is not a rail mistake, it is a profile that quietly cannot be paid.
+ *
+ * The domain must be a bare hostname. A port, path, credentials or query would
+ * make the `.well-known` URL a reader builds point somewhere other than the
+ * address it printed.
+ *
+ * **This is a usability gate, not a security boundary.** `app/api/keysend`
+ * re-validates the same shape server-side and must keep doing so — a server
+ * never trusts a shape a client says it checked. Two checks here is defence in
+ * depth, not drift.
+ */
+export function isLightningAddress(value: string): boolean {
+  const v = value.trim();
+  if (!v || /\s/.test(v)) return false;
+  const at = v.indexOf('@');
+  if (at <= 0 || at !== v.lastIndexOf('@')) return false;
+  const domain = v.slice(at + 1).toLowerCase();
+  if (!domain.includes('.')) return false;
+  try {
+    return new URL(`https://${domain}`).hostname === domain;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Fit the LUD-21 comment into the recipient's `commentAllowed` budget.
  *
  * Split into two arguments because they truncate differently, and the naive

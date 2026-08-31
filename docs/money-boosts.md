@@ -250,7 +250,7 @@ reply_custom_value ┘
 
 As everywhere else in this file, all of that is read off the receiving code rather than assumed — and **it stays a statement about what leaves this app.** Helipad is one reader among several, and the next one may implement less of #525 than it does.
 
-**The address comes from the user's kind:0 `lud16`, with no input and no `bmb:*` key.** It is already published where every other client reads it, so a second copy on this device would be one more thing to go stale. `lud06` is not a fallback: it is a bech32 LNURL with no `name@domain` to build a well-known path from. `useReplyAddress` (`components/boost-modal/use-reply-address.ts`) resolves it.
+**The address comes from the user's kind:0 `lud16` and there is no `bmb:*` key for it.** It is already published where every other client reads it, so a second copy on this device would be one more thing to go stale. The one place it can be TYPED is `<ProfileEditor>`, which writes the profile rather than a local setting — see the `lud16` note in [`docs/nostr.md`](nostr.md), which had asked to be revisited before that field was added. `lud06` is not a fallback: it is a bech32 LNURL with no `name@domain` to hand over or to build a well-known path from. `useReplyAddress` (`components/boost-modal/use-reply-address.ts`) resolves it.
 
 **It must never gate the send button, and that is the difference from `useActiveSplit`.** That hook's `'loading'` state is a money gate — a boost sent before it resolves pays the wrong person. This one is not: an unresolved lookup costs a boost that carries no reply address, which is what every boost carried before the feature existed. So there is no loading state, nothing is awaited inside `go()`, and a slow provider delays no payment.
 
