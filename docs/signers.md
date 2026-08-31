@@ -194,7 +194,7 @@ The Google `sub` is **salt, not a secret** — it makes the salt per-account wit
 - **`refreshAccessToken()` is silent-first (`prompt: ''`)** — it runs mid-flow after a Drive 401 with no activation left, where a popup would be blocked. On failure it throws `GoogleReauthRequiredError`, pointing at the panel's Retry (a real click).
 - **`gisErrorMessage` maps `error_callback` by `type`.** `popup_failed_to_open` and `popup_closed` are not the same thing — calling a blocked popup "cancelled" blames the user for something they didn't do.
 
-**`lib/nostr/drive-backup.ts`** — blobs live in Drive **`appDataFolder`** (app-private, invisible in the user's Drive UI) as `bmb_bk_<uuid>.bin`.
+**`lib/nostr/drive-backup.ts`** — blobs live in Drive **`appDataFolder`** (app-private, invisible in the user's Drive UI) as `bmb_bk_<uuid>.bin`. **"App" there means the Google Cloud PROJECT, so changing a deploy's `NEXT_PUBLIC_GOOGLE_CLIENT_ID` to a client in a different project hands it an EMPTY appdata and orphans every existing backup** — silently, and straight into `setupPin`'s new-account path. The cost and the ordering are in [`ops.md`](ops.md).
 
 - **Fresh UUID per upload, never an overwrite** — a create can't lose a race the way a read-modify-write can, and restore tries every file anyway.
 - **No identifying metadata** — the npub exists only inside the ciphertext, so Google can't link a Google account to a Nostr identity.

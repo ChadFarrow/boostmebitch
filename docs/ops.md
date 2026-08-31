@@ -19,12 +19,61 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 **Console facts worth not re-deriving:**
 
 - **Both scopes are non-sensitive** (`openid` + `drive.appdata`), so brand verification was the only review — no demo video, no scope justification, no annual CASA assessment. The restricted Drive scopes are `drive`, `drive.readonly`, `drive.metadata`, `drive.activity`, `drive.scripts`; the only sensitive one is `drive.apps.readonly`. **Adding a sensitive or restricted scope later moves the app onto the heavy path** — check a scope's classification on the Data Access page *before* building against it, and register every scope you request there (the GIS token client requests them at runtime, so the console can't discover them; `openid` is absent from the picker because it's OIDC, which is normal).
-- **The apex 307-redirects to `www`**, so `https://www.boostmebitch.com` is the origin GIS sees and the `www` form is in the console's App-domain fields. Authorized JavaScript origins: `https://www.boostmebitch.com`, `https://boostmebitch.com`, `http://localhost`, `http://localhost:3000`. No redirect URIs — the token client is origin-scoped.
-- **A refused origin and a cancelled popup are the SAME GIS code, so separate them by SHAPE before you touch the console.** Google refuses an origin the OAuth client does not list, and it does so *after* the account chooser: a popup opens, the user taps their account, an error page appears, the window closes. GIS reports `popup_closed` — the identical code it sends when the user simply closes the window, and when the popup dies on a network fault. Nothing on screen tells them apart. **The discriminator is repeatability: a refused origin fails 100% of the time, on every device, for everyone.** Measured on 2026-08-31: a "cancelled" on `boostmebuddy.com` on desktop, with the same account working on mobile minutes later and on the same desktop after that. That is the transport, not the console — and the first read of it in this repo was wrong in exactly that way. Read the `[google]` console line (`lib/nostr/google-auth.ts`), which names the fault type, the origin and the client id the build actually used.
+- **The apex 307-redirects to `www`**, so `https://www.boostmebitch.com` is the origin GIS sees and the `www` form is in the console's App-domain fields. Authorized JavaScript origins: `https://www.boostmebitch.com`, `https://boostmebitch.com`, `http://localhost`, `http://localhost:3000`, **and the `boostmebuddy.com` forms** — the second brand was pointed at THIS client rather than one of its own (2026-08-31 or earlier). No redirect URIs — the token client is origin-scoped. That sharing is a known, deliberate state with a cost and an expiry date; see the brand entry below and the cutover section at the end of this part.
+- **A refused origin and a cancelled popup are the SAME GIS code, so separate them by SHAPE before you touch the console.** Google refuses an origin the OAuth client does not list, and it does so *after* the account chooser: a popup opens, the user taps their account, an error page appears, the window closes. GIS reports `popup_closed` — the identical code it sends when the user simply closes the window, and when the popup dies on a network fault. Nothing on screen tells them apart. **The discriminator is repeatability: a refused origin fails 100% of the time, on every device, for everyone.** Measured on 2026-08-31: a "cancelled" on `boostmebuddy.com` on desktop, with the same account working on mobile minutes later and on the same desktop after that. **`boostmebuddy.com` was already an authorized origin when that failure happened**, which is what makes the reading conclusive rather than merely likely — it was the transport, and the first read of it in this repo said console and was wrong. Read the `[google]` console line (`lib/nostr/google-auth.ts`), which names the fault type, the origin and the client id the build actually used.
 - **Each brand needs its own Google Cloud PROJECT, not another origin on this one.** Google verifies the consent-screen name, logo, home page and privacy policy **per project**, so one client serving both deploys shows **`BoostMeBitch`** to everyone signing in on the family-friendly site. That is the leak `npm run check:brand` exists to stop, one layer below where that script can see. The brand-correct arrangement is one project per brand: its own consent-screen name and logo, its own brand verification against its own domain, its own OAuth client with its own origins, and its own `NEXT_PUBLIC_GOOGLE_CLIENT_ID` in that brand's Vercel project. Until verification lands, that brand's consent screen carries the unverified-app notice and a 100-user cap — a working sign-in, not a broken one. **Leave `NEXT_PUBLIC_GOOGLE_CLIENT_ID` unset on a deploy with no client of its own**: `isGoogleAuthConfigured()` then hides the entry point, which is honest, where a shared client is off-brand.
 - **`*.vercel.app` can't be an authorized domain** (you can't Search-Console-verify a domain Vercel owns), so **Google sign-in does not work on preview deployments.** Test on localhost or production.
 - **DNS is at Namecheap, not Vercel** — nameservers `dns1/dns2.registrar-servers.com`, apex A record and `www` CNAME pointing at Vercel. `boostmebitch.com` is verified as a Search Console **domain property** via a TXT record at host `@`, alongside Namecheap's pre-existing email-forwarding SPF record. **Never delete that record or fold it into the SPF one** — it un-verifies the domain and invalidates the brand approval.
 - **Editing branding re-opens the review.** App name, logo (`public/icons/icon-120.png` — 120×120 is what Google wants; deliberately not in `manifest.json`, since no browser asks for that size), home page URL and privacy policy URL are verified as a set.
+
+### Giving `boostmebuddy.com` its own Google Cloud project
+
+Both deploys share one OAuth client today, so the family-friendly site shows the
+**`BoostMeBitch`** consent screen. The fix is a second Cloud project. **Do it
+while almost nobody has signed in with Google on `boostmebuddy.com`, because the
+cutover is one-way and there is no migration.**
+
+**THE HAZARD, AND IT IS DATA LOSS, NOT INCONVENIENCE.** The encrypted key blob
+lives in Drive `appDataFolder`, which is **per-app** private space — see
+`lib/nostr/drive-backup.ts`. "App" means the Cloud project, not the domain. So a
+new project gets a new, EMPTY appDataFolder, and every blob written under the
+shared client becomes invisible from the buddy deploy. Nothing is deleted, and
+that is what makes it dangerous: `<GoogleAuthPanel>` reads `files.length === 0`,
+which is its one legitimate route to `setupPin`, so a returning user is walked
+into minting a SECOND identity and orphaning their first. The panel's
+files-listed-but-none-downloaded hard stop cannot catch this — the list is
+genuinely empty. Their real key is still reachable from `boostmebitch.com` (same
+client, same appdata) and from any browser that still holds it, but nothing on
+screen will say so.
+
+So the cost of the cutover is exactly the number of people who created an
+account through Google on `boostmebuddy.com` before it happens. At zero it is
+free. It only grows.
+
+1. **Count first.** If anyone besides you has signed up that way, decide
+   deliberately: cut over and orphan them, or stay shared. There is no third
+   option and no repair after the fact.
+2. New Google Cloud project. Enable the **Drive API**.
+3. Consent screen: name `Boost Me Buddy`, logo `public/icons/icon-120.png`, home
+   page `https://www.boostmebuddy.com`, privacy policy
+   `https://www.boostmebuddy.com/privacy`. Google verifies those four as a set.
+4. Scopes: `openid` and `drive.appdata`. Both non-sensitive, so brand
+   verification is the only review — no demo video, no CASA.
+5. Verify `boostmebuddy.com` as a Search Console **domain property** (a DNS TXT
+   record at Namecheap, beside the existing email-forwarding SPF record — never
+   fold the two together), then submit for brand verification.
+6. OAuth client. Authorized JavaScript origins `https://www.boostmebuddy.com`
+   and `https://boostmebuddy.com`, plus the two `localhost` forms. No redirect
+   URIs.
+7. Set `NEXT_PUBLIC_GOOGLE_CLIENT_ID` on the **boostmebuddy** Vercel project to
+   the new client id and redeploy. **This is the moment the appdata changes**,
+   so step 1 is due before this one, not after.
+8. Remove the `boostmebuddy.com` origins from the boostmebitch client, so one
+   client serves one brand again.
+
+Until step 7 the buddy consent screen shows the other brand's name. After it,
+and before verification lands, it shows the unverified-app notice and a 100-user
+cap — a working sign-in, not a broken one.
 
 ## The Nostr read index (Railway)
 
