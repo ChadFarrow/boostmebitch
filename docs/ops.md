@@ -56,7 +56,7 @@ per-brand backup in the app, which is the odd one out, not the tidy one.
   domain to a verified project can itself re-open the review — see the branding
   entry above.
 
-**If this is ever revisited, the split is ONE-WAY and there is no migration.** A
+**If this is ever revisited, the split ORPHANS every existing backup by default.** A
 new project gets a new, EMPTY appdata, so every blob written under the shared
 client goes invisible from whichever deploy moves. Nothing is deleted, which is
 what makes it dangerous: `<GoogleAuthPanel>` reads `files.length === 0` — its one
@@ -64,7 +64,15 @@ legitimate route to `setupPin` — and walks a returning user into minting a SEC
 identity beside their orphaned first. The files-listed-but-none-downloaded hard
 stop cannot catch it, because the list genuinely is empty. So the cost equals the
 number of people who onboarded through Google on the moving deploy, it only ever
-grows, and the count is due BEFORE the client id changes, not after. The rest is
+grows, and the count is due BEFORE the client id changes, not after.
+
+A migration is buildable and nobody has built it: `sub` identifies the Google
+ACCOUNT rather than the client, so the derived key is unchanged across projects
+and the blob would copy verbatim — but a copier needs a token for each client in
+one page session, which is two consent popups, and it only helps the people who
+come back and run it. Verify that `sub` claim against both projects before
+relying on it; nothing here has tested it. Treat the cutover as orphaning until
+such a tool exists and has been run. The rest is
 ordinary: new project, Drive API, consent screen (name, 120×120 logo, that
 brand's home page and `/privacy`), scopes `openid` + `drive.appdata`, the domain
 verified as a Search Console property via a Namecheap TXT record kept separate
