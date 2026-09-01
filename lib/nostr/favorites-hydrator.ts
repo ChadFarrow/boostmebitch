@@ -528,9 +528,14 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
       .map((i) => i.itemGuid),
   );
 
-  const part = mode === 'private'
-    ? joinPartitions(publicPart, privatePart)
-    : joinPartitions(publicPart, privatePart);
+  // No longer a per-mode branch: the mode decides what is CARRIED, above, and
+  // both halves are joined the same way either way. It was a ternary with two
+  // identical arms for one commit — harmless, and exactly the kind of leftover
+  // that reads as a distinction the next person tries to preserve. Public
+  // first in both directions, because `joinPartitions` keeps the first copy of
+  // a guid and the public half is the one whose entries carry a resolved
+  // `medium` more often.
+  const part = joinPartitions(publicPart, privatePart);
 
   // PUBLIC malformed only. `bmbCleanFavorites` edits `event.tags` and carries
   // `content` verbatim — it has to, since it never decrypts — so offering to
