@@ -563,10 +563,18 @@ function InspectPrivateHalf() {
         return;
       }
       if (read.privateUnreadable) {
+        // TWO answers in one sentence, because `privateUnreadable` is one state
+        // for four causes and only one of them is permanent. A signer that goes
+        // away does not reject — it HANGS, and `withDecryptTimeout` lands the
+        // hang in this same branch — so the common case is a retry, and copy
+        // that reads as a verdict sends the user to look for a problem with
+        // their list instead of opening their signer.
         setProblem(
-          'This list has an encrypted half that your signer could not open. '
-          + 'The app carries it untouched and never shows it — and while that is true, '
-          + 'switching to Private is refused, because writing a new encrypted half would destroy this one.',
+          'Your signer did not open the encrypted half. If it opened a moment ago it most '
+          + 'likely timed out — bring your signer to the front, unlock it, and press this '
+          + 'again. If it never opens, the half was written in a cipher this signer cannot '
+          + 'read: the app carries it untouched and never shows it, and switching to Private '
+          + 'stays refused, because writing a new encrypted half would destroy this one.',
         );
         return;
       }
@@ -698,7 +706,7 @@ function MergeEncryptedHalf() {
         setMsg({
           tone: 'no',
           text: read.privateUnreadable
-            ? 'This list has an encrypted half your signer could not open, so it cannot be merged — only carried.'
+            ? 'Your signer did not open the encrypted half, so it cannot be merged — only carried. If it opened a moment ago it most likely timed out; bring your signer to the front and try again.'
             : 'Nothing to do: this account has no encrypted half.',
         });
         return;
