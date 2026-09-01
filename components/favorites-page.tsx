@@ -5,8 +5,9 @@ import { useRouter } from 'next/navigation';
 import { clearShowSelection, useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import {
-  buildFavoritesExport, exportIsComplete, favoritesExportFilename,
+  backupRefusal, backupSummary, favoritesBackupFilename, serializeFavoritesBackup,
 } from '@/lib/favorites-export';
+import { fetchFavoritesList, resolvePublishRelays } from '@/lib/nostr';
 import { getErrorMessage } from '@/lib/util';
 import { loadEpisodeFromFeed, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { Chip } from '@/components/chip';
@@ -316,14 +317,7 @@ export function FavoritesPage() {
             not been read yet, and an empty claim here is a lie for anyone
             returning. */}
         {mounted && total > 0 && (
-          <span className="flex items-center gap-3">
-            <span className="text-[11px] uppercase tracking-widest text-muted">{total} saved</span>
-            {/* Beside the count on purpose: the count is what the file is a
-                copy OF, and the two numbers have to agree. It sits ABOVE the
-                filter row for the same reason — the download is the whole
-                library, never the tab you happen to be on. */}
-            <DownloadFavorites feeds={feedRows} items={itemRows} />
-          </span>
+          <span className="text-[11px] uppercase tracking-widest text-muted">{total} saved</span>
         )}
       </div>
 
@@ -339,6 +333,16 @@ export function FavoritesPage() {
           inside the rows branch would hide it from them. Self-hiding signed
           out, where all three options describe the same behaviour. */}
       <FavoritesPrivacyControl />
+
+      {/* Directly under the privacy control, which is the other question about
+          the list ON THE RELAYS — and on its own full-width row rather than in
+          the header cluster beside `N saved`, because a refusal here is a
+          sentence, not a word, and beside the count it wrapped to four lines in
+          a column two thirds of the page wide. It is deliberately NOT gated on
+          `total`: this reads the relays, so a device holding nothing local can
+          still hold the account's list, and the empty branch below is exactly
+          where somebody checking what is stored would look. */}
+      <DownloadFavorites />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
@@ -466,51 +470,58 @@ export function FavoritesPage() {
 }
 
 /**
- * Write the whole library to a JSON file on the user's disk.
+ * Save the kind:10333 event to a file, exactly as the relays hold it.
  *
- * Module-private: there is exactly one consumer, and the pure half — the
- * document and its filename — is `lib/favorites-export.ts`, which is where the
- * reasoning about what the file may claim lives. This half owns only the Blob
- * and the `<a download>`.
+ * Module-private: one consumer, and the pure half — the refusal rule, the
+ * serializer, the filename — is `lib/favorites-export.ts`. This half owns the
+ * relay read, the Blob and the `<a download>`.
  *
- * Three decisions worth stating, because each has an obvious wrong version:
+ * **It re-reads the relays; it does not serialize the store.** The store is a
+ * merged, resolved, device-local view — the very thing a backup must not be,
+ * because it cannot be published back. `fetchFavoritesList` is the same reader
+ * the sync cycle uses, filter and `dTag: ''` intake expectation included, so
+ * this cannot drift into accepting an event the sync path would reject.
  *
- *  - **It exports the STORE maps, never the filtered view.** The page hands it
- *    `feedRows`/`itemRows`, not `feeds`/`items`. A file called "my favorites"
- *    that quietly held whichever tab was open is the same class of lie as a
- *    heading count that shrinks to match the visible slice — and the person
- *    who opens the file has nothing on screen to tell them a filter was on.
- *  - **A snapshot that may be incomplete says so ON THE CONTROL, not only in
- *    the file.** `title` is invisible to a touch user, and this is the one
- *    moment the caveat is actionable: waiting a second, or pressing the sync
- *    notice's retry, is what makes the file whole. `<FavoritesSyncNotice>`
- *    covers a degraded read and nothing covers a read still in flight, which
- *    is the state a user reaches by pressing ♥ in the header and going
- *    straight for the download.
- *  - **It reads `identity` and `favoritesSync` itself** rather than taking them
- *    as props. Both are what decide `complete`, and a surface that forgot to
- *    pass one would write a file confidently claiming to be the whole library.
- *    The store is the one place that knows.
+ * **A read it cannot trust produces NO file.** The two failures are not
+ * symmetric: no file sends the user back tomorrow, while a file holding an
+ * older event than the relays now have looks identical to a good one and
+ * replaces the newer list the moment it is restored. `backupRefusal` owns that
+ * decision and the reason is rendered, never swallowed.
+ *
+ * **It never decrypts.** A private half rides into the file as the ciphertext
+ * the relay served, which is both what a backup needs and what keeps a signer
+ * prompt — and the user's plaintext favorites on disk — out of a control
+ * nobody asked that of. `backupSummary` says so on screen, because a private
+ * list looks empty in a raw event.
  */
-function DownloadFavorites({
-  feeds,
-  items,
-}: { feeds: FavoritePodcast[]; items: FavoriteEpisode[] }) {
-  const npub = useApp((s) => s.identity?.npub ?? null);
-  const sync = useApp((s) => s.favoritesSync);
-  const [error, setError] = useState<string | null>(null);
-  const partial = !exportIsComplete(npub, sync);
+function DownloadFavorites() {
+  const identity = useApp((s) => s.identity);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ tone: 'ok' | 'no'; text: string } | null>(null);
 
-  function download() {
-    setError(null);
+  // Signed out there is no event and no key to have signed one.
+  if (!identity) return null;
+
+  async function download() {
+    if (!identity) return;
+    setBusy(true);
+    setMsg(null);
     try {
-      const doc = buildFavoritesExport({ feeds, items, npub, sync });
-      // Indented: this lands in a text editor as often as in another app.
-      const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+      const read = await fetchFavoritesList(identity.pubkey, resolvePublishRelays(identity));
+      const refusal = backupRefusal({
+        trustworthy: read.trustworthy,
+        exists: read.exists,
+        mode: storage.favPrivacy.get(identity.npub),
+      });
+      if (refusal || !read.event) {
+        setMsg({ tone: 'no', text: refusal ?? 'no event came back from the relays' });
+        return;
+      }
+      const blob = new Blob([serializeFavoritesBackup(read.event)], { type: 'application/json' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = favoritesExportFilename();
+      a.download = favoritesBackupFilename(read.event);
       // In the document before the click: Firefox ignores a click on a
       // detached anchor, so the download silently never starts.
       document.body.appendChild(a);
@@ -518,13 +529,13 @@ function DownloadFavorites({
       a.remove();
       // Next macrotask, not immediately: revoking inside the same task can
       // cancel a download that has not yet been handed to the browser. It
-      // touches no React state, so an unmount in between is harmless and this
-      // needs no clearTimeout.
+      // touches no React state, so an unmount in between is harmless.
       setTimeout(() => URL.revokeObjectURL(url), 0);
+      setMsg({ tone: 'ok', text: backupSummary(read.event) });
     } catch (e) {
-      // Storage-blocked and private-mode browsers can refuse `createObjectURL`,
-      // and a button that does nothing reads as broken. Say what happened.
-      setError(getErrorMessage(e, 'could not write the file'));
+      setMsg({ tone: 'no', text: getErrorMessage(e, 'the relay read failed') });
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -533,17 +544,17 @@ function DownloadFavorites({
       <button
         type="button"
         onClick={download}
-        className="btn-ghost text-xs"
-        title={
-          partial
-            ? 'Download what this device holds. The full list has not been read from the relays.'
-            : 'Download your favorites as a JSON file.'
-        }
+        disabled={busy}
+        className="btn-ghost text-xs disabled:opacity-50"
+        title="Save the Nostr event holding your favorites, exactly as the relays store it."
       >
-        ⇩ download
-        {partial && <span className="text-muted normal-case tracking-normal">(this device)</span>}
+        {busy ? 'reading relays…' : '⇩ backup'}
       </button>
-      {error && <span className="text-[11px] text-muted">download failed — {error}</span>}
+      {msg && (
+        <span className={`text-[11px] ${msg.tone === 'ok' ? 'text-muted' : 'text-bone'}`}>
+          {msg.tone === 'ok' ? msg.text : `no backup written — ${msg.text}`}
+        </span>
+      )}
     </span>
   );
 }
