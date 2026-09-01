@@ -1,17 +1,24 @@
 'use client';
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { Event as NostrEvent } from 'nostr-tools';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { clearShowSelection, useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import {
-  backupRefusal, backupSummary, favoritesBackupFilename, serializeFavoritesBackup,
+  backupRefusal, backupSummary, favoritesBackupFilename, parseFavoritesBackup,
+  serializeFavoritesBackup,
 } from '@/lib/favorites-export';
 import {
-  auditHalves, auditSummary, type PrivateOnlyEntry,
+  auditHalves, auditSummary, favoriteIds, type PrivateOnlyEntry,
 } from '@/lib/favorites-audit';
-import { fetchFavoritesList, resolvePublishRelays, syncFavoritesNow } from '@/lib/nostr';
-import { EMPTY_PARSED, baselineOfList, type ParsedList } from '@/lib/nostr/favorites-list';
+import {
+  fetchFavoritesList, hydrateFavorites, publishFavoritesTags, resolvePublishRelays,
+  syncFavoritesNow,
+} from '@/lib/nostr';
+import {
+  EMPTY_PARSED, baselineOfList, parseFavoritesList, type ParsedList,
+} from '@/lib/nostr/favorites-list';
 import { getErrorMessage } from '@/lib/util';
 import {
   loadEpisodeFromFeed, resolveEpisodeByGuid, resolvePodcastByGuid,
@@ -494,6 +501,7 @@ function RelayTools() {
       <DownloadFavorites />
       <InspectPrivateHalf />
       <MergeEncryptedHalf />
+      <RestoreBackup />
     </div>
   );
 }
@@ -793,6 +801,197 @@ function MergeEncryptedHalf() {
       )}
     </span>
   );
+}
+
+/**
+ * Put a `⇩ BACKUP` file back on the relays. The most destructive control here.
+ *
+ * **It republishes the CONTENT of the backup, not the backup event.** A
+ * replaceable event is superseded by `created_at`, so re-sending the original
+ * signed bytes would be ignored by every relay already holding something newer
+ * — which is exactly the case a restore is for. So this signs a NEW event
+ * carrying the backup's `tags` and `content` verbatim. The signature in the
+ * file is therefore not what lands; it is what proves the file is genuine
+ * before we agree to publish it.
+ *
+ * **Every check in `parseFavoritesBackup` is a refusal to publish something
+ * the user did not sign** — a verified signature, this account's pubkey, and
+ * kind 10333. An edited file fails, which is correct: the value of a backup is
+ * that it IS the event, and an edited one is a new list wearing an old
+ * signature.
+ *
+ * **It refuses on a read it cannot trust, and that is not the usual reason.**
+ * Elsewhere the danger of a bad read is writing over data we could not see.
+ * Here the write happens regardless — the user asked for it — so the read is
+ * what makes the CONFIRMATION honest. Without it the panel cannot say what is
+ * being replaced, and "restore" with no statement of the cost is the one thing
+ * this control must never be.
+ *
+ * **Afterwards the device is reset to a fresh-device state on purpose.** The
+ * store and the baseline are cleared before `hydrateFavorites` runs, and the
+ * ordering is the whole correctness argument: leave the OLD favorites in the
+ * store and the next cycle reads them as local additions and republishes them,
+ * silently undoing the restore; leave the OLD baseline and it claims ids the
+ * restored list does not have, so the next cycle publishes their removal. An
+ * empty store beside an empty baseline is the one combination that means
+ * "adopt what the relay holds", which is precisely what we want and is the
+ * path a new browser already takes. `favCleared` is cleared too, or the
+ * wholesale-delete guard reads the empty store as a deliberate clear-all.
+ */
+function RestoreBackup() {
+  const identity = useApp((s) => s.identity);
+  const setFavorites = useApp((s) => s.setFavorites);
+  const setFavoriteEpisodes = useApp((s) => s.setFavoriteEpisodes);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [plan, setPlan] = useState<RestorePlan | null>(null);
+  const [msg, setMsg] = useState<{ tone: 'ok' | 'no'; text: string } | null>(null);
+
+  if (!identity) return null;
+
+  async function chosen(file: File | undefined) {
+    if (!identity || !file) return;
+    setBusy(true);
+    setPlan(null);
+    setMsg(null);
+    try {
+      const parsed = parseFavoritesBackup(await file.text(), identity.pubkey);
+      if (!parsed.ok) {
+        setMsg({ tone: 'no', text: `Not restored — ${parsed.error}.` });
+        return;
+      }
+      // The confirmation has to name what is being REPLACED, so the current
+      // state is read before anything is offered. A degraded read means the
+      // panel would have to guess, and a restore panel that guesses is worse
+      // than no restore.
+      const read = await fetchFavoritesList(identity.pubkey, resolvePublishRelays(identity));
+      if (!read.trustworthy) {
+        setMsg({
+          tone: 'no',
+          text: 'The relays could not be read, so this cannot say what the restore would replace. '
+            + 'Nothing was changed — try again in a moment.',
+        });
+        return;
+      }
+      setPlan({
+        event: parsed.event,
+        backupCount: favoriteIds(parseFavoritesList(parsed.event.tags)).length,
+        backupHasPrivate: parsed.event.content.length > 0,
+        currentCount: read.exists ? favoriteIds(read.list).length : 0,
+        currentExists: read.exists,
+        currentAt: read.updatedAt,
+      });
+    } catch (e) {
+      setMsg({ tone: 'no', text: getErrorMessage(e, 'That file could not be read.') });
+    } finally {
+      setBusy(false);
+      // Always: without it, choosing the same file twice fires no change event.
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  }
+
+  async function apply(p: RestorePlan) {
+    if (!identity) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      // `publishFavoritesTags` asserts the publish reached a relay, so a
+      // resolved promise here is not the empty claim `publishSignedEvent`
+      // would have made.
+      await publishFavoritesTags(p.event.tags, p.event.content, resolvePublishRelays(identity));
+      // Fresh-device state, in this order. See the note above.
+      storage.favBaseline.set(identity.npub, { feeds: [], items: [] });
+      storage.favCleared.set(identity.npub, false);
+      setFavorites({});
+      setFavoriteEpisodes({});
+      await hydrateFavorites(identity, 'user-initiated');
+      setPlan(null);
+      setMsg({
+        tone: 'ok',
+        text: `Restored ${p.backupCount} favorites from the backup. `
+          + 'The list on screen is what the relays now hold.',
+      });
+    } catch (e) {
+      setMsg({
+        tone: 'no',
+        text: `${getErrorMessage(e, 'The restore failed.')} `
+          + 'If it reached no relay, nothing changed; reload and check before trying again.',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="flex flex-col items-start gap-1">
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        onChange={(e) => chosen(e.target.files?.[0])}
+      />
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        disabled={busy}
+        className="btn-ghost text-xs disabled:opacity-50"
+        title="Publish a backup file back to the relays, replacing the list stored there."
+      >
+        {busy && !plan ? 'reading file…' : '⇧ restore from backup'}
+      </button>
+      {plan && (
+        <span className="card p-3 flex flex-col gap-2 items-start max-w-prose">
+          <span className="text-[11px] text-bone">
+            Replace the list on the relays with this backup?
+          </span>
+          <span className="text-[11px] text-muted">
+            The backup holds {plan.backupCount} favorites, saved{' '}
+            {new Date(plan.event.created_at * 1000).toLocaleString()}
+            {plan.backupHasPrivate ? ', with an encrypted half' : ''}.{' '}
+            {plan.currentExists
+              ? `The relays currently hold ${plan.currentCount}, last written ${new Date(plan.currentAt * 1000).toLocaleString()}.`
+              : 'The relays currently hold no list for this account.'}
+          </span>
+          {/* The number that decides it, stated as a loss rather than a diff:
+              "replaces 287 with 284" is arithmetic a person has to do under
+              pressure, and getting it wrong costs entries. */}
+          {plan.currentExists && plan.currentCount > plan.backupCount && (
+            <span className="text-[11px] text-bone">
+              That is {plan.currentCount - plan.backupCount} fewer than you have now. Anything
+              added since this backup was taken will be gone.
+            </span>
+          )}
+          <span className="text-[11px] text-muted">
+            This replaces the whole event, including for every other app that reads your
+            favorites. It cannot be undone except by restoring another backup.
+          </span>
+          <span className="flex gap-2">
+            <button type="button" className="btn text-xs" disabled={busy} onClick={() => apply(plan)}>
+              {busy ? 'restoring…' : 'restore'}
+            </button>
+            <button type="button" className="btn-ghost text-xs" disabled={busy} onClick={() => setPlan(null)}>
+              cancel
+            </button>
+          </span>
+        </span>
+      )}
+      {msg && (
+        <span className={`text-[11px] max-w-prose ${msg.tone === 'ok' ? 'text-muted' : 'text-bone'}`}>
+          {msg.text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+interface RestorePlan {
+  event: NostrEvent;
+  backupCount: number;
+  backupHasPrivate: boolean;
+  currentCount: number;
+  currentExists: boolean;
+  currentAt: number;
 }
 
 interface MergePlan {
