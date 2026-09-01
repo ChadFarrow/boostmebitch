@@ -1,4 +1,4 @@
-import type { EventTemplate } from 'nostr-tools';
+import type { Event, EventTemplate } from 'nostr-tools';
 import {
   assertPublished,
   NoRelayAcceptedError,
@@ -43,6 +43,22 @@ import { payloadSurvivesAmber } from './amber-callback-url';
 export * from './favorites-list';
 
 export interface FavoritesRead {
+  /**
+   * The signed event exactly as the relay sent it, or null when none exists.
+   *
+   * Every other field here is DERIVED from it, and this one is kept because a
+   * derivation cannot be verified or republished: `id` and `sig` are what let
+   * anything outside this app prove the list is the user's own, and they are
+   * not reconstructible from `tags` (the id is a hash over the whole event,
+   * and re-signing needs the secret key). It is what `<DownloadFavorites>`
+   * writes to disk — a backup that cannot be re-published by another Nostr
+   * tool is not a backup of a replaceable event, it is a transcript of one.
+   *
+   * Read-only. Nothing in the sync path may take tags from here instead of
+   * from `tags`: those two are the same array today and a future intake filter
+   * would have to change one of them.
+   */
+  event: Event | null;
   /** The parsed node list, in wire order. */
   list: ParsedList;
   /**
@@ -117,6 +133,7 @@ export interface FavoritesReadOptions {
 }
 
 const EMPTY_READ: FavoritesRead = {
+  event: null,
   list: { nodes: [], foreignTags: [], foreignKinds: [] },
   tags: [],
   updatedAt: 0,
@@ -221,6 +238,7 @@ export async function fetchFavoritesList(
 
   return {
     ...priv,
+    event,
     content: event.content,
     list: parseFavoritesList(event.tags),
     tags: event.tags,
