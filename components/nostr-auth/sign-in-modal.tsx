@@ -235,9 +235,16 @@ export function SignInModal({
             <>
               <div className="stamp text-bolt border-bolt/60 mb-2">◆ GOOGLE</div>
               <h3 className="font-display text-2xl leading-tight">Continue with Google</h3>
+              {/* The wallet clause matches <AuthControl>'s menu subtitle on
+                  purpose: this panel is the screen that row opens, so a wallet
+                  promised there and unmentioned here reads as a promise
+                  withdrawn. Both are conditioned on "new" — only the
+                  new-account branch calls provisionSparkFromKey; a returning
+                  user restores the wallet they already have. */}
               <p className="text-[11px] text-muted mt-2">
                 New to Nostr? This creates a key for you and backs it up to your own
-                Google Drive, encrypted with a PIN only you know.
+                Google Drive, encrypted with a PIN only you know. You get a Lightning
+                wallet with it, ready to boost.
               </p>
             </>
           ) : (

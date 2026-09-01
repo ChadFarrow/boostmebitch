@@ -153,7 +153,16 @@ export function AuthControl() {
                   <span className="text-bone w-4 shrink-0 text-center leading-5">◉</span>
                   <span className="flex flex-col">
                     <span>Continue with Google</span>
-                    <span className="text-[11px] text-muted">New here? Creates an account for you</span>
+                    {/* Names the wallet as well as the account, because the
+                        new-account branch really does provision one
+                        (`provisionSparkFromKey`) — and without it this option
+                        reads as strictly less capable than "Connect wallet"
+                        below, which is the one that says Lightning. A person
+                        who wants to boost picked the wallet row and ended up
+                        with no identity. Only the NEW-account branch derives a
+                        wallet; a returning user restores the one they have, so
+                        "New here?" carries the condition for both halves. */}
+                    <span className="text-[11px] text-muted">New here? Creates an account and a Lightning wallet</span>
                   </span>
                 </button>
               )}
