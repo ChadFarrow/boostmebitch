@@ -40,6 +40,7 @@ import {
   baselineFrom,
   baselineHalf,
   claimedByBaseline,
+  type ListHalf,
   fetchFavoritesList,
   groupLocalFavorites,
   looksLikeFeedGuid,
@@ -487,9 +488,49 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   // `claimedByBaseline`.
   const publicPart = partitionList(merged);
   const privatePart = privateMerged ? partitionList(privateMerged) : null;
+
+  // The inactive half is RENDERED WHOLE and PUBLISHED SELECTIVELY, and those
+  // used to be one decision. `claimedByBaseline` filtered it down to what this
+  // device claims for BOTH purposes, so an entry another app put there — or one
+  // of ours written by an app whose baseline we cannot see — was dropped from
+  // the store and therefore from the screen. On the account this was found on
+  // that was 287 entries showing as none, with the app reporting 'ok'. It is
+  // the failure the format's private-half note names outright: filtering the
+  // half you do not write down to your own claims "hides the user's own
+  // favorites from them, on the device they just made the choice on".
+  //
+  // The filter still decides what we PUBLISH — that half of it was never wrong.
+  // Everything it excludes is now marked `carried` instead of deleted, and
+  // `localFavoriteEntries()` skips those, so the wire is unchanged by this.
+  const inactivePart = mode === 'private' ? publicPart : privatePart;
+  const activePart = mode === 'private' ? privatePart : publicPart;
+  const inactiveHalf: ListHalf = mode === 'private' ? 'public' : 'private';
+  const claimedInactive = inactivePart
+    ? claimedByBaseline(inactivePart, baseline, inactiveHalf)
+    : null;
+
+  // Present in the ACTIVE half wins: a feed in both halves is ours to publish,
+  // and `joinPartitions` keeps only the first copy anyway. Without this
+  // subtraction the same entry would be rendered as carried and then omitted
+  // from the publish it belongs in.
+  const activeFeedIds = new Set((activePart?.feeds ?? []).map((f) => f.feedGuid));
+  const activeItemIds = new Set((activePart?.items ?? []).map((i) => i.itemGuid));
+  const claimedFeedIds = new Set((claimedInactive?.feeds ?? []).map((f) => f.feedGuid));
+  const claimedItemIds = new Set((claimedInactive?.items ?? []).map((i) => i.itemGuid));
+  const carriedFeeds = new Set(
+    (inactivePart?.feeds ?? [])
+      .filter((f) => !claimedFeedIds.has(f.feedGuid) && !activeFeedIds.has(f.feedGuid))
+      .map((f) => f.feedGuid),
+  );
+  const carriedItems = new Set(
+    (inactivePart?.items ?? [])
+      .filter((i) => !claimedItemIds.has(i.itemGuid) && !activeItemIds.has(i.itemGuid))
+      .map((i) => i.itemGuid),
+  );
+
   const part = mode === 'private'
-    ? joinPartitions(claimedByBaseline(publicPart, baseline, 'public'), privatePart)
-    : joinPartitions(publicPart, privatePart && claimedByBaseline(privatePart, baseline, 'private'));
+    ? joinPartitions(publicPart, privatePart)
+    : joinPartitions(publicPart, privatePart);
 
   // PUBLIC malformed only. `bmbCleanFavorites` edits `event.tags` and carries
   // `content` verbatim — it has to, since it never decrypts — so offering to
@@ -529,9 +570,14 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     // addedAt 0 = "not known yet", so the first real resolve stamps its own
     // rather than inheriting a placeholder's. A resolved medium always wins over
     // the wire hint; the hint only fills a gap.
-    nextShows[feed.feedGuid] = hit
+    const carried = carriedFeeds.has(feed.feedGuid);
+    const painted = hit
       ? (hit.medium ? hit : { ...hit, medium: feed.medium })
       : { id: 0, podcastGuid: feed.feedGuid, medium: feed.medium, addedAt: 0 };
+    // Set or CLEARED on every cycle, never left from last time: an entry stops
+    // being carried the moment this device claims it, and a stale `true` would
+    // quietly drop it from the next publish.
+    nextShows[feed.feedGuid] = carried ? { ...painted, carried: true } : { ...painted, carried: undefined };
     if (!hit || !hit.artwork) unresolvedShows.push(feed.feedGuid);
   }
 
@@ -543,9 +589,13 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     // one. If that feed is also favorited under its own podcast:guid, its entry
     // wins: never derive a feed's medium from one of its items.
     const hint = (item.feedGuid ? nextShows[item.feedGuid]?.medium : undefined) ?? item.medium;
-    nextEpisodes[item.itemGuid] = hit
+    const carriedItem = carriedItems.has(item.itemGuid);
+    const paintedItem = hit
       ? (hit.medium ? hit : { ...hit, medium: hint })
       : { itemGuid: item.itemGuid, feedGuid: item.feedGuid, medium: hint, addedAt: 0 };
+    nextEpisodes[item.itemGuid] = carriedItem
+      ? { ...paintedItem, carried: true }
+      : { ...paintedItem, carried: undefined };
     // PI's /episodes/byguid wants a parent guid, so an entry without one can't
     // be resolved. Nor can one whose parent ref isn't guid-shaped — that gate
     // decides only whether to spend a request, never whether the favorite is

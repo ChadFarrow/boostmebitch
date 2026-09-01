@@ -853,6 +853,97 @@ export interface MergeInput {
 }
 
 /**
+ * Whether a switch to Private takes the WHOLE list, including entries this
+ * device did not write.
+ *
+ * **OFF, and the prerequisite is on this app, not the format.** The spec's
+ * sequencing is explicit: an app must be able to READ and RENDER the other half
+ * before anything moves entries into it on that app's behalf, or the move is
+ * indistinguishable from a deletion on that app's screen. This build now
+ * renders a carried half (see `carried` in lib/types.ts) — but the other writer
+ * of this list, Project StableKraft, has its own move ON already and cites this
+ * app's rendering as the reason. That citation was true of the code and false
+ * of the behaviour until the change that added this flag, so entries it has
+ * already moved may be sitting in a half that neither app displayed.
+ *
+ * So the order is: ship the rendering, confirm on a real account that a moved
+ * entry now appears, THEN turn this on. Flipping it first adds to a pile that
+ * may still be invisible somewhere.
+ *
+ * **The asymmetry does NOT depend on this flag and must survive its removal.**
+ * public → private may move another app's entries; private → public may not —
+ * that is a disclosure, and it stays limited to what our baseline claims.
+ */
+export const WHOLE_LIST_PRIVACY_MOVE = false;
+
+/**
+ * Fold one half's nodes into another's, for the whole-list move into private.
+ *
+ * **A concatenation is the obvious version and it is wrong.** An entry can be a
+ * group in BOTH halves at once — nothing in the format forbids it, and a switch
+ * that publishes into one half while its removal from the other stays
+ * baseline-gated lands there by itself. Measured on a real account: 284
+ * favorites public, 287 encrypted, all 284 in both. Concatenating then emits
+ * one feed as TWO groups, which double-counts it for every reader and gives its
+ * items two parents to sit under. The same defect shipped in the format's
+ * reference implementation and in the other writer of this list, in opposite
+ * directions; it is spec test vector 15.
+ *
+ * Folding rather than dropping the duplicate, because the incoming group may
+ * carry items the one already here does not — this is a MOVE, and an item under
+ * a duplicate group is as much the user's as the group itself.
+ *
+ * **Order is the receiving half's.** Tag order is the data, so the side already
+ * in place keeps its positions and incoming items append. Loose nodes fold on
+ * their identifier: a duplicate there is one entry named twice, not two.
+ */
+export function foldHalves(here: ParsedList, moving: ParsedList): ParsedList {
+  const nodes: ListNode[] = here.nodes.map((n) => (n.t === 'group'
+    ? { t: 'group', group: { ...n.group, itemGuids: [...n.group.itemGuids] } }
+    : n));
+  const groupAt = new Map<string, number>();
+  const looseIds = new Set<string>();
+  nodes.forEach((n, i) => {
+    if (n.t === 'group') groupAt.set(n.group.feedGuid, i);
+    else if (n.loose.tag[1]) looseIds.add(n.loose.tag[1]);
+  });
+
+  for (const node of moving.nodes) {
+    if (node.t === 'loose') {
+      const id = node.loose.tag[1];
+      if (id && looseIds.has(id)) continue;
+      if (id) looseIds.add(id);
+      nodes.push(node);
+      continue;
+    }
+    const at = groupAt.get(node.group.feedGuid);
+    if (at === undefined) {
+      groupAt.set(node.group.feedGuid, nodes.length);
+      nodes.push({ t: 'group', group: { ...node.group, itemGuids: [...node.group.itemGuids] } });
+      continue;
+    }
+    const existing = nodes[at];
+    if (existing.t !== 'group') continue;
+    for (const guid of node.group.itemGuids) {
+      if (!existing.group.itemGuids.includes(guid)) existing.group.itemGuids.push(guid);
+    }
+    // The medium hint only ever FILLS a gap. Overwriting one the feed declared
+    // with one it did not is how a hint becomes wrong.
+    if (!existing.group.medium && node.group.medium) existing.group.medium = node.group.medium;
+  }
+
+  const foreignTags = [...here.foreignTags];
+  for (const tag of moving.foreignTags) {
+    if (!foreignTags.some((t) => JSON.stringify(t) === JSON.stringify(tag))) foreignTags.push(tag);
+  }
+  const foreignKinds = [...here.foreignKinds];
+  for (const kind of moving.foreignKinds) {
+    if (!foreignKinds.includes(kind)) foreignKinds.push(kind);
+  }
+  return { nodes, foreignTags, foreignKinds };
+}
+
+/**
  * Combine the relay's list with this device's, using the baseline to tell a
  * foreign entry from one we removed.
  *

@@ -385,7 +385,24 @@ export interface FavoritePodcast {
   /** unix ms — used for sort + last-write-wins merge. 0 means "not known yet",
    *  so a first real resolve stamps its own rather than inheriting a
    *  placeholder's; see the resolve merge in favorites-hydrator.ts. */
-  addedAt: number;
+  addedAt: number;  /**
+   * On the list, but NOT this device's to publish.
+   *
+   * The kind:10333 event has two halves and this app writes into one of them.
+   * Entries in the other half that our baseline does not claim are another
+   * writer's — or our own, written by an app whose baseline we cannot see. They
+   * are still the user's favorites, so they are RENDERED; they are not ours to
+   * assert, so `localFavoriteEntries()` skips them and they never enter a tag
+   * array this device signs.
+   *
+   * **Both halves of that sentence are load-bearing.** Dropping them instead —
+   * which is what `claimedByBaseline` did before this field existed — hides a
+   * user's own favorites from them on the device they just made the choice on,
+   * which is the failure the format's own private-half note warns about.
+   * Publishing them instead turns a private entry into a plaintext `i` tag on
+   * the next cycle, which relays index and which cannot be taken back.
+   */
+  carried?: boolean;
 }
 
 /**
@@ -415,4 +432,22 @@ export interface FavoriteEpisode {
    *  medium. Same "absent means unknown" rule as {@link FavoritePodcast}. */
   medium?: string;
   addedAt: number;        // unix ms — 0 means "not known yet"
+  /**
+   * On the list, but NOT this device's to publish.
+   *
+   * The kind:10333 event has two halves and this app writes into one of them.
+   * Entries in the other half that our baseline does not claim are another
+   * writer's — or our own, written by an app whose baseline we cannot see. They
+   * are still the user's favorites, so they are RENDERED; they are not ours to
+   * assert, so `localFavoriteEntries()` skips them and they never enter a tag
+   * array this device signs.
+   *
+   * **Both halves of that sentence are load-bearing.** Dropping them instead —
+   * which is what `claimedByBaseline` did before this field existed — hides a
+   * user's own favorites from them on the device they just made the choice on,
+   * which is the failure the format's own private-half note warns about.
+   * Publishing them instead turns a private entry into a plaintext `i` tag on
+   * the next cycle, which relays index and which cannot be taken back.
+   */
+  carried?: boolean;
 }
