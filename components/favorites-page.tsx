@@ -579,7 +579,7 @@ function InspectPrivateHalf() {
         return;
       }
       const audit = auditHalves(read.list, read.privateList ?? EMPTY_PARSED);
-      setLines(auditSummary(audit));
+      setLines(auditSummary(audit, storage.favPrivacy.get(identity.npub) ?? undefined));
       setNamed(await nameEntries(audit.privateOnlyEntries));
     } catch (e) {
       setProblem(getErrorMessage(e, 'The read failed.'));

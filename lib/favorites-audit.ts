@@ -171,7 +171,7 @@ export function auditHalves(publicList: ParsedList, privateList: ParsedList): Ha
  * and what it means for a switch to Private — which is the decision this
  * whole control exists to inform.
  */
-export function auditSummary(audit: HalfAudit): string[] {
+export function auditSummary(audit: HalfAudit, mode?: string): string[] {
   const lines: string[] = [];
   // Noun AND verb, because a count of one is the ordinary case here and
   // "1 entry sit in both halves" is the kind of wrong that makes a reader
@@ -190,7 +190,16 @@ export function auditSummary(audit: HalfAudit): string[] {
     lines.push(`${s(audit.inBoth, 'entry', 'entries')} ${verb(audit.inBoth, 'sits', 'sit')} in BOTH halves — already public, and encrypted a second time.`);
   }
   if (audit.privateOnly > 0) {
-    lines.push(`${s(audit.privateOnly, 'entry', 'entries')} ${verb(audit.privateOnly, 'exists', 'exist')} only in the encrypted half. Nothing in this app shows ${verb(audit.privateOnly, 'it', 'them')} while your favorites are set to Public.`);
+    // The mode is READ, never assumed. This sentence hardcoded "set to Public"
+    // and was printed to a user whose whole list had just moved into the
+    // encrypted half — telling them their setting was the thing it was not.
+    // Absent means never chosen, which is its own answer and not 'public'.
+    const where = mode === 'private'
+      ? 'They are hidden until this device claims them.'
+      : mode
+        ? `Nothing in this app shows ${verb(audit.privateOnly, 'it', 'them')} while your favorites are set to ${mode === 'off' ? 'Not on Nostr' : 'Public'}.`
+        : `Nothing in this app shows ${verb(audit.privateOnly, 'it', 'them')} until this account's favorites setting is chosen.`;
+    lines.push(`${s(audit.privateOnly, 'entry', 'entries')} ${verb(audit.privateOnly, 'exists', 'exist')} only in the encrypted half. ${where}`);
   }
   if (audit.inBoth > 0 && audit.privateOnly === 0) {
     lines.push('So the encrypted half is a duplicate of entries you already publish in the clear. Switching to Private would hide them going forward; it cannot retract what the relays already served.');
