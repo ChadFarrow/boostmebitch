@@ -49,7 +49,17 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // roughly half of what CLAUDE.md would otherwise have been, which is the number to
 // keep an eye on. Raising it because an entry is hard to shorten is the other thing,
 // and that is what this comment exists to make you say out loud.
-const BUDGET = 15200
+//
+// Raised a second time, 15,200 -> 15,300, for one row: `check:fanout`, the
+// twenty-ninth check script. The table is an INDEX — it names the count in its
+// own first line — so a script that exists and is not listed makes the file
+// wrong rather than merely incomplete, and no other entry could pay for it
+// without losing a measured fact. Trimming had already cost "twelve surfaces"
+// off `check:art` and "for somebody else's song" off `check:musicl` before
+// that was obvious; both are restored. So: the repo grew by a check script and
+// the budget grew by a row, which is the ratio the note above says to watch.
+// It is NOT licence for the next rule — that one displaces something.
+const BUDGET = 15300
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')

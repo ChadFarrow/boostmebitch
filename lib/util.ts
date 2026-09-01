@@ -2011,3 +2011,71 @@ export async function mapLimit<T, R>(
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return out;
 }
+
+/**
+ * How many Podcast Index calls one batch handler may have in flight.
+ *
+ * NOT a parameter, deliberately. A caller that could pass its own ceiling
+ * could pass `Infinity`, and this constant exists because the unbounded
+ * version shipped: `probeThenBatch` ended with a bare
+ * `Promise.allSettled(rest.map(resolve))`, and one request carries up to a
+ * hundred refs. Keeping the number here is what lets `check:fanout` pin it by
+ * RUNNING the shipping function rather than reading its source.
+ *
+ * Matches the browser's own hydration ceiling: the point of a batch door is
+ * one REQUEST, not one burst.
+ */
+export const PI_FANOUT = 6;
+
+/**
+ * Resolve `items`, probe-first, then the rest at a bounded concurrency.
+ *
+ * **The shape is three separate rules and each one has a cost.**
+ *
+ * *Probe first, alone.* The first item runs by itself and its failure is
+ * UNCAUGHT here — the callers' resolvers already turn Podcast Index's 400/404
+ * "not found" into a null, so a throw means PI itself is unreachable. Bail and
+ * leave every key absent rather than recording absences nobody observed.
+ *
+ * *Then bounded.* This ran as `Promise.allSettled(rest.map(resolve))` and that
+ * is what made a 231-track favorites list resolve 4 titles — the same 4 every
+ * session. One request carries up to a hundred refs, so it fired up to 99
+ * concurrent PI calls out of a single handler; PI rate-limits the burst; the
+ * rejections leave keys absent, so the client falls through to its per-item
+ * pass, which bursts again. A "could not ask" is deliberately never cached, so
+ * every page load repeated the identical failure and only a cached SUCCESS
+ * survived. The count could not move.
+ *
+ * *A rejection leaves the key ABSENT, never null.* Absent means "we could not
+ * ask" and the caller may try again; null means "asked, and there is none".
+ * Collapsing them turns a rate limit into a permanent negative cache.
+ *
+ * Lives here rather than in `lib/pi-batch.ts` because that module imports
+ * `lib/pi.ts`, which reads `process.env` and cannot load under plain Node —
+ * so a check script could only ever have read its source. Here the pin runs
+ * the real thing.
+ */
+export async function probeThenBatch<T, R>(
+  items: T[],
+  resolve: (item: T) => Promise<R | null>,
+  key: (item: T) => string,
+  out: Record<string, R | null>,
+): Promise<void> {
+  if (!items.length) return;
+  const [first, ...rest] = items;
+  try {
+    out[key(first!)] = await resolve(first!);
+  } catch {
+    return;
+  }
+  const settled = await mapLimit(rest, PI_FANOUT, async (item) => {
+    try {
+      return { ok: true as const, value: await resolve(item) };
+    } catch {
+      return { ok: false as const };
+    }
+  });
+  settled.forEach((r, i) => {
+    if (r.ok) out[key(rest[i]!)] = r.value;
+  });
+}

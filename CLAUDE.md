@@ -68,20 +68,20 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9 flat config in `eslint.config.mjs` — `next/core-web-vitals` + `next/typescript`, `no-explicit-any` off for PI's untyped JSON), and `next build`. Path alias `@/*` → repo root.
 
-**Twenty-eight `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
+**Twenty-nine `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
-| `check:spark` | `sparkMnemonicFromKey`, `deriveBackupKey` | every derived wallet moves; every backup becomes undecryptable |
+| `check:spark` | `sparkMnemonicFromKey`, `deriveBackupKey` | every derived wallet moves; every backup becomes unreadable |
 | `check:sanitizer` | `safeUrlAttr` — the show-notes URL allowlist | a feed runs JS in the origin holding the spending credential |
-| `check:ssrf` | `assertSafeFetchUrl` | feed data points the server at cloud metadata |
+| `check:ssrf` | `assertSafeFetchUrl` | feed data aims the server at cloud metadata |
 | `check:liveblock` | `parseLiveBlock` — Split Kit live-value → value block | a live show pays the wrong node or drops an artist |
 | `check:keysend` | `lib/v4v/keysend-lookup.ts` — which of two payment rails each lnaddress leg leaves on | under-match discards the boostagram while the sats land and the modal shows ✓; over-match lets a lookalike domain divert recipients. Needs a **warm-cache** vector or it guards nothing |
 | `check:lnurl` | `buildLnurlComment` — descriptor + message inside `commentAllowed` | the comment is an LNURL leg's ONLY metadata channel; a tight budget cuts the URL into a dead link |
 | `check:npub` | `parseFeedNpubs` — feed npubs → `p`-tags | a note `p`-tags a stranger under the site's identity, permanently |
 | `check:stream` | `lib/v4v/stream-ledger.ts` — accrual, settlement and the money constants | streaming drains a wallet at 60× the rate, pays nothing, or pays the same song on every reload |
 | `check:favsync` | `lib/nostr/favorites-list.ts` — the kind:10333 wire format, the merge, both baseline halves and the private half | favorites another app wrote are deleted with no undo — including the **private** half, erased by republishing `content: ''` |
-| `check:lease` | `createLeasePool` — the refcount sharing ONE NIP-47 socket | the socket closes **underneath a payment in flight** |
+| `check:lease` | `createLeasePool` — the refcount sharing ONE NIP-47 socket | the socket closes **under a payment in flight** |
 | `check:nwcerror` | `lib/v4v/nwc-errors.ts` — which of three answers a NIP-47 failure gets, and whether a leg may be retried | a reply timeout shown as ✗ makes the user re-boost, and **every leg pays again** |
 | `check:feedxml` | `readAttr` — the attribute reader EVERY feed parser goes through | a decoy `x-address` steers the payee while every other client reads the feed correctly |
 | `check:vts` | `splitAtPosition`, `splitTrackAndHost`, `payableSplit`, `splitSats`, `streamAction` | a boost pays one artist while streaming credits another for the same second; and every unattended leg is mislabelled, permanently, in the host's own statistics |
@@ -90,14 +90,15 @@ npm run dev / build / start / lint
 | `check:amber` | `lib/nostr/amber-callback-url.ts` — the `nostrsigner:` bytes and the returned fragment | failed twice in production, both versions looking right in review |
 | `check:ambersafe` | `lib/nostr/amber-safe-text.ts` — getting an NWC string past Amber | every NWC backup from Android failed; the legacy branch keeps old ones readable |
 | `check:vpsummary` | `lib/nostr/value-playback-summary.ts` — the kind:33369 arithmetic and its publish predicate | two writers at ONE address rewrite each other forever |
-| `check:nwcbudget` | `parseNwcBudget`, `spendableSats` — a NIP-47 `get_budget` answer, and which number is spendable | `get_balance` is the WRONG number on a connection to your own node — the chip advertised 9,017,493 sats over a budget that would refuse the next boost. Reading it too eagerly is worse: `{}`, an "unlimited" zero total and an absent field must all fall back, or a wallet that can pay renders as empty |
+| `check:nwcbudget` | `parseNwcBudget`, `spendableSats` — a NIP-47 `get_budget` answer, and which number is spendable | `get_balance` is the WRONG number on a connection to your own node — the chip advertised 9,017,493 sats over a budget that would refuse the next boost. Reading it too eagerly is worse: `{}`, an "unlimited" zero and an absent field must all fall back, or a wallet that can pay renders empty |
 | `check:musicl` | `parsePlaylistRemoteItems`, `isPlaylistMedium`, `playsAsTracks`, **`payableValue`** | a playlist publishes NO `<item>`, so this parser IS the feed. Over-accept and a podroll entry becomes a track whose heart names a FEED as an item; under-accept and it renders as a playlist with no tracks. `payableValue` is here because `episode.value ?? podcast.value` pays the CURATOR for somebody else's song |
 | `check:mutes` | `classifyMuteContent`, `parseMuteTags`, `privateHalfAlreadyOpened` — which cipher a kind:10000 private half is written in | `content` there has never had ONE encoding, so the cipher is a property of the bytes. Read it wrong and the private half is unreadable forever; write it wrong and this app re-encodes another client's list into a cipher it cannot open, from a publish that looks successful here |
 | `check:chapters` | `lib/chapters-json.ts` — the one corruption a feed chapters document may carry | repair too much and a chapter TITLE loses characters; too little and the feature is gone |
 | `check:art` | `artWidth`, `artCandidates`, `artTypeVerdict` | a failing proxy blanks every cover on twelve surfaces |
-| `check:gif` | `lib/gif-first-frame.ts` — the block walk cutting an animated cover to frame one | attacker-chosen bytes on a truncated prefix; both failures render as missing artwork |
+| `check:gif` | `lib/gif-first-frame.ts` — the block walk cutting an animated cover to frame one | attacker-chosen bytes on a truncated prefix; both failures look like missing artwork |
 | `check:notelink` | `episodeLinkInNote` — which URL a note card unfurls to | the note writes both the `i` tag and the body, so without a host allowlist an attacker's link sits under a real show's artwork, raw URL deleted |
 | `check:cache` | `createBoundedCache` — the age, entry AND byte bounds both RSS caches share | an entry cap is not a memory bound: one `/api/publisher` walk retained up to 800 MB against a 1.6 GB ceiling |
+| `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a burst is rate-limited, its failures uncached, so every load repeats it: 4 of 228 tracks, forever |
 | `check:playlistdb` | `dbValueBlock`, `dbRowToEpisode` — another app's DB row as a track we pay | its field names match ours, so a cast type-checks and pays the wrong payee |
 | `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName` | one leaked string is the family-friendly feature failing, permanently, on the deploy nobody is looking at. `brandIdFrom` must fall back to `bmb` for anything unrecognized: `Buddy`, `BUDDY` or a pasted trailing newline in a Vercel dashboard is not a build error, it is the other brand served everywhere |
 

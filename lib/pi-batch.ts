@@ -17,66 +17,16 @@
 import { getEpisodeByGuid, getPodcastByFeedUrl, getPodcastByGuid } from './pi';
 import { resolveItemValueFromRss } from './musicl-resolver';
 import { askIndex } from './nostr-index-server';
-import { hasValueRecipients, mapLimit } from './util';
-import type { Episode, Podcast } from './types';
-
-/**
- * How many Podcast Index calls one batch handler may have in flight.
- *
- * Matches the browser's own hydration ceiling rather than exceeding it: the
- * point of the batch door is one REQUEST, not one burst. Raising it trades a
- * little latency for the failure this constant exists to prevent, and PI's
- * limiter answers a burst with 429s that this app deliberately does not cache
- * — so the cost is not a slow page, it is a page that never fills in.
- */
-const PI_FANOUT = 6;
+import { hasValueRecipients, probeThenBatch } from './util';
 
 /** Hard cap on identifiers per request. An attacker-chosen list length must
- *  never turn one request into an unbounded PI fan-out. */
+ *  never turn one request into an unbounded PI fan-out. The per-request
+ *  CONCURRENCY ceiling is `PI_FANOUT`, beside `probeThenBatch` in lib/util.ts
+ *  — this bounds how many are asked for, that bounds how many at once, and
+ *  shipping only the first is what made a 231-track list resolve four. */
 export const MAX_BATCH = 100;
+import type { Episode, Podcast } from './types';
 
-// Probe-first-then-batch, the same shape lib/nostr/favorites-hydrator.ts and
-// /api/publisher already use: one sequential lookup first, and if PI is down
-// the remaining N-1 are never attempted. One outage costs one failure rather
-// than N, and those N are left ABSENT — which is exactly "we could not ask".
-async function probeThenBatch<T, R>(
-  items: T[],
-  resolve: (item: T) => Promise<R | null>,
-  key: (item: T) => string,
-  out: Record<string, R | null>,
-): Promise<void> {
-  if (!items.length) return;
-  const [first, ...rest] = items;
-  // Deliberately UNCAUGHT for the probe's own failure: getPodcast*/getEpisode*
-  // already turn PI's 400/404 "not found" into null, so a throw here means PI
-  // itself is unreachable. Bail and leave every key absent.
-  try {
-    out[key(first)] = await resolve(first);
-  } catch {
-    return;
-  }
-  // BOUNDED, and the bare `Promise.allSettled(rest.map(resolve))` this replaces
-  // is the reason a 231-track favorites list resolved 4 of them. One request
-  // carries up to MAX_BATCH refs, so the unbounded version fired up to 99
-  // concurrent Podcast Index calls out of a single handler, three times over
-  // for that list. PI rate-limits a burst like that; every rejected key falls
-  // through to the client's per-item pass, which bursts again — and a "could
-  // not ask" is deliberately never cached, so the identical doomed sequence
-  // repeated on every page load. Only a cached SUCCESS survived, which is why
-  // the same 4 tracks resolved session after session.
-  const settled = await mapLimit(rest, PI_FANOUT, async (item) => {
-    try {
-      return { ok: true as const, value: await resolve(item) };
-    } catch {
-      return { ok: false as const };
-    }
-  });
-  settled.forEach((r, i) => {
-    // A rejection is "could not ask": leave the key absent rather than
-    // recording an absence we did not observe.
-    if (r.ok) out[key(rest[i])] = r.value;
-  });
-}
 
 export async function batchPodcasts(guids: string[]): Promise<Record<string, Podcast | null>> {
   const wanted = guids.slice(0, MAX_BATCH);
