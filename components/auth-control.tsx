@@ -157,12 +157,13 @@ export function AuthControl() {
                         new-account branch really does provision one
                         (`provisionSparkFromKey`) — and without it this option
                         reads as strictly less capable than "Connect wallet"
-                        below, which is the one that says Lightning. A person
-                        who wants to boost picked the wallet row and ended up
-                        with no identity. Only the NEW-account branch derives a
-                        wallet; a returning user restores the one they have, so
-                        "New here?" carries the condition for both halves. */}
-                    <span className="text-[11px] text-muted">New here? Creates an account and a Lightning wallet</span>
+                        below, the only row that mentions a wallet at all. A
+                        person who came to boost picked that one and ended up
+                        with a wallet and no identity. Only the NEW-account
+                        branch derives a wallet; a returning user restores the
+                        one they have, so "New here?" carries the condition for
+                        both halves of the sentence, not just the account. */}
+                    <span className="text-[11px] text-muted">New here? Creates an account and wallet for you</span>
                   </span>
                 </button>
               )}
