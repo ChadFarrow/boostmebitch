@@ -4,6 +4,10 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { clearShowSelection, useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
+import {
+  buildFavoritesExport, exportIsComplete, favoritesExportFilename,
+} from '@/lib/favorites-export';
+import { getErrorMessage } from '@/lib/util';
 import { loadEpisodeFromFeed, resolvePodcastByGuid } from '@/lib/podcast-meta';
 import { Chip } from '@/components/chip';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
@@ -312,7 +316,14 @@ export function FavoritesPage() {
             not been read yet, and an empty claim here is a lie for anyone
             returning. */}
         {mounted && total > 0 && (
-          <span className="text-[11px] uppercase tracking-widest text-muted">{total} saved</span>
+          <span className="flex items-center gap-3">
+            <span className="text-[11px] uppercase tracking-widest text-muted">{total} saved</span>
+            {/* Beside the count on purpose: the count is what the file is a
+                copy OF, and the two numbers have to agree. It sits ABOVE the
+                filter row for the same reason — the download is the whole
+                library, never the tab you happen to be on. */}
+            <DownloadFavorites feeds={feedRows} items={itemRows} />
+          </span>
         )}
       </div>
 
@@ -451,6 +462,89 @@ export function FavoritesPage() {
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Write the whole library to a JSON file on the user's disk.
+ *
+ * Module-private: there is exactly one consumer, and the pure half — the
+ * document and its filename — is `lib/favorites-export.ts`, which is where the
+ * reasoning about what the file may claim lives. This half owns only the Blob
+ * and the `<a download>`.
+ *
+ * Three decisions worth stating, because each has an obvious wrong version:
+ *
+ *  - **It exports the STORE maps, never the filtered view.** The page hands it
+ *    `feedRows`/`itemRows`, not `feeds`/`items`. A file called "my favorites"
+ *    that quietly held whichever tab was open is the same class of lie as a
+ *    heading count that shrinks to match the visible slice — and the person
+ *    who opens the file has nothing on screen to tell them a filter was on.
+ *  - **A snapshot that may be incomplete says so ON THE CONTROL, not only in
+ *    the file.** `title` is invisible to a touch user, and this is the one
+ *    moment the caveat is actionable: waiting a second, or pressing the sync
+ *    notice's retry, is what makes the file whole. `<FavoritesSyncNotice>`
+ *    covers a degraded read and nothing covers a read still in flight, which
+ *    is the state a user reaches by pressing ♥ in the header and going
+ *    straight for the download.
+ *  - **It reads `identity` and `favoritesSync` itself** rather than taking them
+ *    as props. Both are what decide `complete`, and a surface that forgot to
+ *    pass one would write a file confidently claiming to be the whole library.
+ *    The store is the one place that knows.
+ */
+function DownloadFavorites({
+  feeds,
+  items,
+}: { feeds: FavoritePodcast[]; items: FavoriteEpisode[] }) {
+  const npub = useApp((s) => s.identity?.npub ?? null);
+  const sync = useApp((s) => s.favoritesSync);
+  const [error, setError] = useState<string | null>(null);
+  const partial = !exportIsComplete(npub, sync);
+
+  function download() {
+    setError(null);
+    try {
+      const doc = buildFavoritesExport({ feeds, items, npub, sync });
+      // Indented: this lands in a text editor as often as in another app.
+      const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = favoritesExportFilename();
+      // In the document before the click: Firefox ignores a click on a
+      // detached anchor, so the download silently never starts.
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Next macrotask, not immediately: revoking inside the same task can
+      // cancel a download that has not yet been handed to the browser. It
+      // touches no React state, so an unmount in between is harmless and this
+      // needs no clearTimeout.
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (e) {
+      // Storage-blocked and private-mode browsers can refuse `createObjectURL`,
+      // and a button that does nothing reads as broken. Say what happened.
+      setError(getErrorMessage(e, 'could not write the file'));
+    }
+  }
+
+  return (
+    <span className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        onClick={download}
+        className="btn-ghost text-xs"
+        title={
+          partial
+            ? 'Download what this device holds. The full list has not been read from the relays.'
+            : 'Download your favorites as a JSON file.'
+        }
+      >
+        ⇩ download
+        {partial && <span className="text-muted normal-case tracking-normal">(this device)</span>}
+      </button>
+      {error && <span className="text-[11px] text-muted">download failed — {error}</span>}
+    </span>
   );
 }
 
