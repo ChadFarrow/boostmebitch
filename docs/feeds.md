@@ -462,5 +462,9 @@ Only a cached **success** survives, in `storage.episodeMeta`. So the handful tha
 
 `mapLimit` now lives in `lib/util.ts` and both halves share it — `PI_FANOUT` on the server, `HYDRATE_CONCURRENCY` in the browser, both 6. **The point of the batch door is one REQUEST, not one burst**, and it was only ever the second by accident: the client had a ceiling from the day it was written and the server never got one.
 
-Pinned by a probe over the shipping helper: the ceiling holds at 6 across 231 items, input order is preserved rather than settle order, and — the vector that matters — the version it replaces really does peak at 231.
+Pinned by `check:fanout`, which RUNS the shipping function rather than reading it. That is why `probeThenBatch` moved to `lib/util.ts`: it was in `lib/pi-batch.ts`, which imports `lib/pi.ts` and therefore `process.env`, so it cannot load under plain Node and a check could only ever have grepped its source. `PI_FANOUT` is a constant rather than a parameter for the same reason — a caller that can pass a ceiling can pass `Infinity`, and then the pin is on a number nobody uses.
+
+Six vectors, four of them must-still-work: the ceiling holds at 6 across 231 items where `naive()` peaks at 230; the probe runs alone before the rest; a probe that throws bails without asking for anything else; a rejection leaves its key **absent** rather than null; every non-rejecting item still lands; an empty list asks nothing. Reverting the fix fails exactly the two that are not exemptions.
+
+**And one text assertion, because behaviour cannot see a caller that stops calling.** `check:fanout` asserts `lib/pi-batch.ts` still routes through `probeThenBatch`, and that any *other* `Promise.all*(xs.map(…))` in that file fans out over a list already sliced to a `MAX_` constant. The first version of that scan flagged the value-block pass as a failure — it fans out over 16 album feeds, capped by `MAX_TRACK_VALUE_FEEDS` and documented as deliberate. So the rule is not "no `Promise.all` over a map"; it is **every fan-out here is bounded, in concurrency or in count**, and both ways are legitimate.
 
