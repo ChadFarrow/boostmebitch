@@ -66,6 +66,7 @@ import {
   recordFavoritesBaseline,
   unattendedDecryptOk,
 } from './favorites-sync';
+import { mapLimit } from '@/lib/util';
 import { resolvePublishRelays } from './relays';
 import type { DecryptPurpose } from './signer';
 import type { NostrIdentity } from './auth';
@@ -133,23 +134,6 @@ function favoriteFromEpisode(ep: Episode, feedGuid: string): FavoriteEpisode | n
 const HYDRATE_CONCURRENCY = 6;
 
 /** Map with a bounded number of in-flight promises, preserving input order. */
-async function mapLimit<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const worker = async () => {
-    for (;;) {
-      const i = next++;
-      if (i >= items.length) return;
-      out[i] = await fn(items[i]!);
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
-}
 
 async function resolveBatch<T, R>(
   pending: T[],

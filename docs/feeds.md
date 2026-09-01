@@ -444,3 +444,23 @@ zero by construction. Reading the map uses `key in obj`, never `?? null`: the
 latter turns every unanswered guid into a cached miss, which is exactly the
 poisoning `COULD_NOT_ASK` exists to prevent.
 
+## The batch door fans out, and it has to be BOUNDED
+
+`probeThenBatch` (`lib/pi-batch.ts`) ended with a bare `Promise.allSettled(rest.map(resolve))`. One request carries up to `MAX_BATCH` refs, so that fired up to **99 concurrent Podcast Index calls out of a single handler** — three times over for a 231-track favorites list, since the client chunks at 100.
+
+**Measured on a real account: 4 of 228 tracks resolved, and the SAME 4 every session.** That last part is the tell, and it is what makes this self-perpetuating rather than merely slow:
+
+1. The burst trips PI's own rate limit, so most calls throw.
+2. A rejection correctly leaves the key **absent** — "could not ask" is not an absence — so the client falls through to its per-item pass.
+3. That pass bursts again, 231 requests this time.
+4. A `COULD_NOT_ASK` (429/408) returns an **uncached** null, deliberately, so nothing about the failure is remembered.
+5. The next page load repeats the identical doomed sequence.
+
+Only a cached **success** survives, in `storage.episodeMeta`. So the handful that slipped through on some earlier load stayed resolved and everything else re-failed forever. The count never moved because it *cannot* move.
+
+**Every individual guard in that chain is right.** 400/404 becomes a null rather than a 500 (which is why one unindexed track no longer kills the rest). PI's 429 is mapped to a 429 by `piCouldNotAskStatus` rather than a 500, so it does not trip the client breaker. Not caching a "could not ask" is what lets the next load try again. The defect is that nothing bounded the request rate, so the next load could never succeed either.
+
+`mapLimit` now lives in `lib/util.ts` and both halves share it — `PI_FANOUT` on the server, `HYDRATE_CONCURRENCY` in the browser, both 6. **The point of the batch door is one REQUEST, not one burst**, and it was only ever the second by accident: the client had a ceiling from the day it was written and the server never got one.
+
+Pinned by a probe over the shipping helper: the ceiling holds at 6 across 231 items, input order is preserved rather than settle order, and — the vector that matters — the version it replaces really does peak at 231.
+
