@@ -600,8 +600,17 @@ function InspectPrivateHalf() {
           {named.map((e) => (
             <li key={e.id} className="flex flex-col">
               <span className={e.title ? 'text-bone' : undefined}>
-                {e.title ?? 'Podcast Index does not know this one'}
+                {e.title ?? 'Podcast Index does not know this track'}
               </span>
+              {e.kind === 'item' && (
+                <span>
+                  {e.parentTitle
+                    ? `from ${e.parentTitle}`
+                    : e.parentFeedGuid
+                      ? `from feed ${e.parentFeedGuid}`
+                      : 'no parent feed recorded — unopenable in any app'}
+                </span>
+              )}
               {/* The identifier always, even when a title resolved: it is what
                   the entry IS, and it is the only thing that can be matched
                   against a raw event or handed to another app. */}
@@ -1002,6 +1011,23 @@ interface MergePlan {
 interface NamedEntry extends PrivateOnlyEntry {
   /** Null when Podcast Index has no answer, which is not a failure. */
   title: string | null;
+  /**
+   * The album or show this item sits under, resolved from `parentFeedGuid`.
+   *
+   * Worth its own lookup because it answers a different question and answers
+   * it more often. "Which track is this" fails whenever Podcast Index has not
+   * indexed the item — the normal case for a music track — while "which album
+   * is it from" only needs the FEED, which PI is far more likely to hold. On
+   * the account this was built for, 224 of 228 item favorites resolve to no
+   * title at all, so without this a private-only entry is a bare guid and the
+   * user has no way to recognise their own favorite.
+   *
+   * It cannot tell you a track was favorited from a PLAYLIST: a `musicL`
+   * container is never recorded as an item's parent (`containerIsParent`),
+   * because the playlist is not the track's publisher. The album is the truth
+   * the wire keeps.
+   */
+  parentTitle: string | null;
 }
 
 /**
@@ -1030,9 +1056,15 @@ async function nameEntries(entries: PrivateOnlyEntry[]): Promise<NamedEntry[]> {
   const slice = entries.slice(0, NAME_LIMIT);
   const feeds = slice.filter((e) => e.kind === 'feed');
   const items = slice.filter((e) => e.kind === 'item' && e.parentFeedGuid);
+  // The parents go through the SAME batch door as the feed favorites — one
+  // request for both sets, deduped by the warm itself.
+  const feedGuids = [
+    ...feeds.map((e) => e.guid),
+    ...items.map((e) => e.parentFeedGuid!),
+  ];
   try {
     await Promise.all([
-      feeds.length ? warmPodcastCache(feeds.map((e) => e.guid)) : Promise.resolve(),
+      feedGuids.length ? warmPodcastCache(feedGuids) : Promise.resolve(),
       items.length
         ? warmEpisodeCache(items.map((e) => ({ feedGuid: e.parentFeedGuid!, itemGuid: e.guid })))
         : Promise.resolve(),
@@ -1044,13 +1076,20 @@ async function nameEntries(entries: PrivateOnlyEntry[]): Promise<NamedEntry[]> {
     try {
       if (e.kind === 'feed') {
         const p = await resolvePodcastByGuid(e.guid);
-        return { ...e, title: p?.title ?? null };
+        return { ...e, title: p?.title ?? null, parentTitle: null };
       }
-      if (!e.parentFeedGuid) return { ...e, title: null };
-      const ep = await resolveEpisodeByGuid(e.parentFeedGuid, e.guid);
-      return { ...e, title: ep?.title ?? null };
+      if (!e.parentFeedGuid) return { ...e, title: null, parentTitle: null };
+      // Both lookups, and the parent is not a fallback for the item — it is a
+      // second fact. An item PI has never indexed still has a parent it may
+      // know perfectly well, which is what turns a bare guid into something
+      // the user can recognise.
+      const [ep, parent] = await Promise.all([
+        resolveEpisodeByGuid(e.parentFeedGuid, e.guid),
+        resolvePodcastByGuid(e.parentFeedGuid),
+      ]);
+      return { ...e, title: ep?.title ?? null, parentTitle: parent?.title ?? null };
     } catch {
-      return { ...e, title: null };
+      return { ...e, title: null, parentTitle: null };
     }
   }));
 }
