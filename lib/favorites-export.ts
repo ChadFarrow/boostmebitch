@@ -24,7 +24,7 @@
  * earlier: rather than writing a caveat INTO the file, a read that cannot be
  * trusted produces NO file. See `backupRefusal`.
  */
-import type { Event } from 'nostr-tools';
+import { verifyEvent, type Event } from 'nostr-tools';
 import { BRAND } from '@/lib/brand';
 import type { FavoritesPrivacy } from '@/lib/nostr/favorites-list';
 
@@ -128,3 +128,71 @@ export function backupSummary(event: Event): string {
     ? `${base}, plus a private half that stays encrypted in the file`
     : base;
 }
+
+// ---------------------------------------------------------------------------
+// Reading a backup file back in
+// ---------------------------------------------------------------------------
+
+export type BackupParse =
+  | { ok: true; event: Event }
+  | { ok: false; error: string };
+
+/**
+ * Turn a chosen file into an event we are willing to republish, or a reason.
+ *
+ * **Every check here is a refusal to publish something under the user's key
+ * that they did not sign.** A restore writes the whole kind:10333 event, so a
+ * file that is wrong in any of these ways would replace a real list with
+ * someone else's, or with an edited one:
+ *
+ *  - **`verifyEvent`** is the load-bearing one. It proves the bytes are a
+ *    genuine signed event and that nothing in `tags` or `content` was altered
+ *    after it was written. A backup edited in a text editor — even to "fix"
+ *    something — fails here, which is correct: the whole value of the file is
+ *    that it is the event, and an edited one is a new list wearing an old
+ *    signature.
+ *  - **The pubkey must be the signed-in account's.** Restoring another
+ *    person's list under your key is not a recoverable mistake: it replaces
+ *    yours wholesale and publishes theirs as yours to every relay.
+ *  - **The kind must be 10333.** The other backups this app can write
+ *    (wallets, settings) are addressable events at the same pubkey, and
+ *    publishing one of those as a favorites list destroys both.
+ *
+ * It deliberately does NOT check `created_at` against what is on the relays.
+ * Restoring an older list over a newer one is the entire point of the feature;
+ * whether that is wanted is the confirmation's question, not the parser's.
+ */
+export function parseFavoritesBackup(text: string, expectPubkey: string): BackupParse {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return { ok: false, error: 'that file is not JSON' };
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'that file does not hold a Nostr event' };
+  }
+  const e = raw as Partial<Event>;
+  if (typeof e.id !== 'string' || typeof e.sig !== 'string' || typeof e.pubkey !== 'string'
+    || typeof e.created_at !== 'number' || typeof e.kind !== 'number'
+    || typeof e.content !== 'string' || !Array.isArray(e.tags)) {
+    return { ok: false, error: 'that file is missing fields a Nostr event must have' };
+  }
+  if (e.kind !== FAVORITES_BACKUP_KIND) {
+    return { ok: false, error: `that is a kind:${e.kind} event, not a favorites list` };
+  }
+  if (e.pubkey !== expectPubkey) {
+    return { ok: false, error: 'that backup belongs to a different Nostr account' };
+  }
+  if (!e.tags.every((t) => Array.isArray(t) && t.every((v) => typeof v === 'string'))) {
+    return { ok: false, error: 'that file\'s tags are malformed' };
+  }
+  const event = raw as Event;
+  if (!verifyEvent(event)) {
+    return { ok: false, error: 'that backup\'s signature does not verify — it was edited, or it is not a real event' };
+  }
+  return { ok: true, event };
+}
+
+/** The kind a favorites backup must be. Named so the parser cannot drift. */
+export const FAVORITES_BACKUP_KIND = 10333;

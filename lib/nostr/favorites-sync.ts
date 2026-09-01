@@ -160,10 +160,19 @@ export { unattendedDecryptOk } from './signer';
 export function localFavoriteEntries(): FavoriteEntry[] {
   const state = useApp.getState();
   const entries: FavoriteEntry[] = [];
+  // `carried` entries are skipped, and this is the ONE place that decides it.
+  // They live in the half this device does not write into and our baseline does
+  // not claim them, so they are the user's to see and not ours to assert. An
+  // entry that got past here would be republished into the ACTIVE half on the
+  // next cycle — in public mode that is a private entry turned into a plaintext
+  // `i` tag, which relays index and which cannot be taken back. See `carried`
+  // in lib/types.ts.
   for (const fav of Object.values(state.favorites)) {
+    if (fav.carried) continue;
     entries.push({ id: showId(fav.podcastGuid), medium: fav.medium });
   }
   for (const ep of Object.values(state.favoriteEpisodes)) {
+    if (ep.carried) continue;
     entries.push({ id: itemId(ep.itemGuid), feedRef: ep.feedGuid, medium: ep.medium });
   }
   return entries;

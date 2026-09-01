@@ -17,8 +17,19 @@
 import { getEpisodeByGuid, getPodcastByFeedUrl, getPodcastByGuid } from './pi';
 import { resolveItemValueFromRss } from './musicl-resolver';
 import { askIndex } from './nostr-index-server';
-import { hasValueRecipients } from './util';
+import { hasValueRecipients, mapLimit } from './util';
 import type { Episode, Podcast } from './types';
+
+/**
+ * How many Podcast Index calls one batch handler may have in flight.
+ *
+ * Matches the browser's own hydration ceiling rather than exceeding it: the
+ * point of the batch door is one REQUEST, not one burst. Raising it trades a
+ * little latency for the failure this constant exists to prevent, and PI's
+ * limiter answers a burst with 429s that this app deliberately does not cache
+ * — so the cost is not a slow page, it is a page that never fills in.
+ */
+const PI_FANOUT = 6;
 
 /** Hard cap on identifiers per request. An attacker-chosen list length must
  *  never turn one request into an unbounded PI fan-out. */
@@ -44,11 +55,26 @@ async function probeThenBatch<T, R>(
   } catch {
     return;
   }
-  const settled = await Promise.allSettled(rest.map(resolve));
+  // BOUNDED, and the bare `Promise.allSettled(rest.map(resolve))` this replaces
+  // is the reason a 231-track favorites list resolved 4 of them. One request
+  // carries up to MAX_BATCH refs, so the unbounded version fired up to 99
+  // concurrent Podcast Index calls out of a single handler, three times over
+  // for that list. PI rate-limits a burst like that; every rejected key falls
+  // through to the client's per-item pass, which bursts again — and a "could
+  // not ask" is deliberately never cached, so the identical doomed sequence
+  // repeated on every page load. Only a cached SUCCESS survived, which is why
+  // the same 4 tracks resolved session after session.
+  const settled = await mapLimit(rest, PI_FANOUT, async (item) => {
+    try {
+      return { ok: true as const, value: await resolve(item) };
+    } catch {
+      return { ok: false as const };
+    }
+  });
   settled.forEach((r, i) => {
     // A rejection is "could not ask": leave the key absent rather than
     // recording an absence we did not observe.
-    if (r.status === 'fulfilled') out[key(rest[i])] = r.value;
+    if (r.ok) out[key(rest[i])] = r.value;
   });
 }
 

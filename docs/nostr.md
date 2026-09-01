@@ -1758,3 +1758,27 @@ itself keeps coming from relays, always.
 **No degraded-read decision is ever downstream of the index.**
 `lib/nostr/read-trust.ts` stays the only authority, and the index never feeds it.
 
+### `carried` — rendering a half you do not publish
+
+`claimedByBaseline` used to answer two questions with one filter, and only one of the answers was right. It decides what may leave the inactive half for a **publish** — adopting more than the baseline claims turns another writer's private entry into a plaintext `i` tag, which relays index and which cannot be taken back. It was also deciding what reached the **screen**, and there it was hiding the user's own favorites from them.
+
+Measured on a real account: **287 entries in the encrypted half, rendered as none**, with `favoritesSync` reporting `'ok'`. The device claimed nothing in that half, so the filter dropped all of it — and nothing anywhere said so. The format's own private-half note names this exact failure: filtering the half you do not write down to your own claims *"hides the user's own favorites from them, on the device they just made the choice on"*.
+
+**So the store now renders both halves and publishes one.** Entries the filter excludes are marked `carried` (`lib/types.ts`) instead of dropped, and `localFavoriteEntries()` — the single funnel from store to wire — skips them. The publish is byte-for-byte unchanged by this; only the screen changed.
+
+**A carried row gets no heart, and the absence is the answer rather than an omission.** This device does not publish the entry, so a toggle would edit the store, leave the wire untouched, and be undone by the next hydrate: a control that reports success and does nothing. `<CarriedNote>` says *saved in another app* on the row instead — on the row and not in a legend, because carried rows interleave with ordinary ones and there is no other way to tell why this one differs.
+
+**`carried` is set or CLEARED on every cycle, never left from last time.** An entry stops being carried the moment this device claims it, and a stale `true` would silently drop it from the next publish. An entry present in the ACTIVE half is never carried, whatever the inactive half says — a feed can be in both, and `joinPartitions` keeps only the first copy.
+
+### The whole-list move (`WHOLE_LIST_PRIVACY_MOVE`, currently OFF)
+
+Spec vector 13: going private takes the whole list, ours and theirs. Without it a user gets *"97% private"* — a choice honoured for most of their list with nothing naming the part it did not reach. `syncFavorites` implements it, folding the public half into the private one with `foldHalves`.
+
+**`foldHalves`, never a concatenation.** An entry can be a group in both halves at once, and concatenating emits one feed as TWO groups — double-counted by every reader, its items given two parents. That defect shipped in the format's reference implementation and in Project StableKraft, in opposite directions; it is spec vector 15, fixed in both. Folding rather than dropping the duplicate, because the incoming group may carry items the receiving one does not: this is a move, and those items are the user's too.
+
+**Moved entries are deliberately NOT claimed in the baseline.** Nothing local backs them, so a claim would read as our own removal on the next cycle and delete them.
+
+**The flag is OFF, and the prerequisite is on this app.** The spec's sequencing is explicit: an app must be able to read AND render the other half before anything moves entries into it on that app's behalf, or the move is indistinguishable from a deletion on that app's screen. StableKraft turned its own move on in August citing this app's rendering — a citation that was true of the code and false of the behaviour until `carried` existed. Ship the rendering, confirm on a real account that a moved entry appears, then turn this on.
+
+**The asymmetry does not depend on the flag and must survive its removal.** public → private may move another app's entries; private → public may not.
+

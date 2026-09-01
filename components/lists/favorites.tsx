@@ -74,10 +74,13 @@ export function UnresolvedFavoriteRow({
   id,
   kind,
   heart,
+  carried,
 }: {
   id: string;
   kind: 'show' | 'episode';
   heart: React.ReactNode;
+  /** On the list but not this device's to publish — see `carried` in types. */
+  carried?: boolean;
 }) {
   return (
     <li className="flex gap-3 py-3 px-1 items-center">
@@ -89,6 +92,7 @@ export function UnresolvedFavoriteRow({
           Couldn&apos;t load this {kind}
         </div>
         <div className="text-[11px] font-mono text-muted/70 truncate">{id}</div>
+        {carried && <CarriedNote />}
       </div>
       <div className="flex-shrink-0 self-center">{heart}</div>
     </li>
@@ -132,9 +136,10 @@ export function FavoriteItemRow({
         {ep.podcastTitle && ep.podcastTitle !== title && (
           <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
         )}
+        {ep.carried && <CarriedNote />}
       </div>
       <div className="flex-shrink-0 self-center">
-        <FavEpisodeRowHeart favorite={ep} />
+        {ep.carried ? null : <FavEpisodeRowHeart favorite={ep} />}
       </div>
     </li>
   );
@@ -195,6 +200,50 @@ function PagedList<T>({
   );
 }
 
+/**
+ * "Saved in another app" — the one-line explanation a carried row needs.
+ *
+ * It is on the row rather than in a legend because the rows are interleaved
+ * with ordinary ones and a reader has no other way to tell why this one has no
+ * heart. Saying nothing was the previous behaviour taken to its end: the entry
+ * was not rendered at all.
+ */
+function CarriedNote() {
+  return (
+    <div className="text-[10px] font-mono uppercase tracking-wider text-muted/70">
+      saved in another app
+    </div>
+  );
+}
+
+/**
+ * A resolved favorite this device carries but does not publish.
+ *
+ * Deliberately not a `<PodcastRow>`: that row is a control — it opens the show
+ * — and every other resolved row on this page is one. This one is a statement.
+ * Making it clickable would be fine, and making it look identical to a row
+ * whose heart works would not.
+ */
+function CarriedRow({
+  title, subtitle, image, seed,
+}: { title: string; subtitle?: string; image?: string; seed: string }) {
+  return (
+    <li className="flex gap-3 py-3 px-1 items-center opacity-80">
+      <PodcastCover
+        image={image}
+        title={title}
+        seed={seed}
+        className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="font-display text-base leading-tight truncate">{title}</div>
+        {subtitle && <div className="text-xs text-muted truncate">{subtitle}</div>}
+        <CarriedNote />
+      </div>
+    </li>
+  );
+}
+
 /** Favorited feeds — albums and shows. */
 export function FavoriteFeedRows({
   id,
@@ -230,7 +279,14 @@ export function FavoriteFeedRows({
               key={p.podcastGuid}
               id={p.podcastGuid}
               kind="show"
-              heart={<FavFeedRowHeart favorite={p} />}
+              // A carried entry gets NO heart, and the absence is the honest
+              // answer rather than an omission. This device does not publish
+              // it (see `carried` in lib/types.ts), so a toggle here would
+              // change the store, leave the wire untouched, and come back on
+              // the next hydrate — a control that reports success and does
+              // nothing. The label says where it lives instead.
+              heart={p.carried ? null : <FavFeedRowHeart favorite={p} />}
+              carried={p.carried}
             />
           );
         }
@@ -245,6 +301,11 @@ export function FavoriteFeedRows({
           artwork: p.artwork,
           url: p.url,
         };
+        if (p.carried) {
+          return (
+            <CarriedRow key={p.podcastGuid} title={title} subtitle={p.author} image={p.image ?? p.artwork} seed={p.podcastGuid} />
+          );
+        }
         return (
           <PodcastRow
             key={p.podcastGuid}

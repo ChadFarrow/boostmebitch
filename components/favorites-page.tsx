@@ -1,15 +1,29 @@
 'use client';
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
+import type { Event as NostrEvent } from 'nostr-tools';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { clearShowSelection, useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import {
-  backupRefusal, backupSummary, favoritesBackupFilename, serializeFavoritesBackup,
+  backupRefusal, backupSummary, favoritesBackupFilename, parseFavoritesBackup,
+  serializeFavoritesBackup,
 } from '@/lib/favorites-export';
-import { fetchFavoritesList, resolvePublishRelays } from '@/lib/nostr';
+import {
+  auditHalves, auditSummary, favoriteIds, type PrivateOnlyEntry,
+} from '@/lib/favorites-audit';
+import {
+  fetchFavoritesList, hydrateFavorites, publishFavoritesTags, resolvePublishRelays,
+  syncFavoritesNow,
+} from '@/lib/nostr';
+import {
+  EMPTY_PARSED, baselineOfList, parseFavoritesList, type ParsedList,
+} from '@/lib/nostr/favorites-list';
 import { getErrorMessage } from '@/lib/util';
-import { loadEpisodeFromFeed, resolvePodcastByGuid } from '@/lib/podcast-meta';
+import {
+  loadEpisodeFromFeed, resolveEpisodeByGuid, resolvePodcastByGuid,
+  warmEpisodeCache, warmPodcastCache,
+} from '@/lib/podcast-meta';
 import { Chip } from '@/components/chip';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
@@ -342,7 +356,7 @@ export function FavoritesPage() {
           `total`: this reads the relays, so a device holding nothing local can
           still hold the account's list, and the empty branch below is exactly
           where somebody checking what is stored would look. */}
-      <DownloadFavorites />
+      <RelayTools />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
@@ -467,6 +481,625 @@ export function FavoritesPage() {
       )}
     </div>
   );
+}
+
+/**
+ * The two controls that ask the RELAYS something, on one row.
+ *
+ * They are siblings rather than one widget because they answer different
+ * questions and cost different things: one writes a file from a plain read,
+ * the other spends a signer prompt to open the encrypted half. Sharing a row
+ * is what says they are about the same subject — the list as stored, not the
+ * list as painted.
+ */
+function RelayTools() {
+  const identity = useApp((s) => s.identity);
+  // Signed out there is no event, no key that signed one, and no signer.
+  if (!identity) return null;
+  return (
+    <div className="flex flex-wrap items-start gap-2">
+      <DownloadFavorites />
+      <InspectPrivateHalf />
+      <MergeEncryptedHalf />
+      <RestoreBackup />
+    </div>
+  );
+}
+
+/**
+ * Open the encrypted half and count what is in it. Publishes NOTHING.
+ *
+ * **Why a control rather than something the page just knows.** A list can hold
+ * entries in the plaintext tags and in the encrypted `content` at once, and
+ * from every screen in this app that state is invisible: the public half
+ * renders, the private half is carried byte for byte, and nothing counts
+ * either. The question it answers is the one that decides whether switching to
+ * Private tidies the list or doubles it — see `lib/favorites-audit.ts`.
+ *
+ * **The decrypt is `'user-initiated'`, and that word is the whole reason this
+ * is a button.** Everything stored encrypted-to-self is otherwise read on page
+ * load, before the user touches anything, which is why `decryptPrivate`
+ * defaults to false and why `purpose` is a required argument. An external
+ * signer renders the plaintext on its approval sheet, so a decrypt nobody
+ * asked for puts a list of somebody's private favorites on screen uninvited.
+ * The purpose is passed straight through from this click and never hardcoded
+ * further down — hardcoding it one level up is how `fetchEncryptedMnemonic`
+ * silently overrode every caller.
+ *
+ * **A refusal to decrypt is a real answer, not an error.** Not every signer
+ * implements NIP-44, and the half may be another app's, written in a cipher
+ * this one cannot open. That state is what makes a switch to Private impossible
+ * (`planFavoritesPublish` refuses on `private-unreadable`), so it is reported
+ * as the finding it is rather than as a failure.
+ */
+function InspectPrivateHalf() {
+  const identity = useApp((s) => s.identity);
+  const [busy, setBusy] = useState(false);
+  const [lines, setLines] = useState<string[] | null>(null);
+  const [named, setNamed] = useState<NamedEntry[] | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  async function inspect() {
+    if (!identity) return;
+    setBusy(true);
+    setLines(null);
+    setNamed(null);
+    setProblem(null);
+    try {
+      const read = await fetchFavoritesList(identity.pubkey, resolvePublishRelays(identity), {
+        decryptPrivate: true,
+        purpose: 'user-initiated',
+      });
+      // Same rule the backup runs on: a read that could not be trusted says
+      // nothing about what is stored, and a confident "no private half" over a
+      // failed query is the worst answer available here — it is the one that
+      // would send someone into a mode switch.
+      if (!read.trustworthy) {
+        setProblem('The relays could not be read just now — try again in a moment.');
+        return;
+      }
+      if (!read.exists) {
+        setProblem('No favorites list is stored on the relays for this account.');
+        return;
+      }
+      if (read.privateUnreadable) {
+        // TWO answers in one sentence, because `privateUnreadable` is one state
+        // for four causes and only one of them is permanent. A signer that goes
+        // away does not reject — it HANGS, and `withDecryptTimeout` lands the
+        // hang in this same branch — so the common case is a retry, and copy
+        // that reads as a verdict sends the user to look for a problem with
+        // their list instead of opening their signer.
+        setProblem(
+          'Your signer did not open the encrypted half. If it opened a moment ago it most '
+          + 'likely timed out — bring your signer to the front, unlock it, and press this '
+          + 'again. If it never opens, the half was written in a cipher this signer cannot '
+          + 'read: the app carries it untouched and never shows it, and switching to Private '
+          + 'stays refused, because writing a new encrypted half would destroy this one.',
+        );
+        return;
+      }
+      const audit = auditHalves(read.list, read.privateList ?? EMPTY_PARSED);
+      setLines(auditSummary(audit, storage.favPrivacy.get(identity.npub) ?? undefined));
+      setNamed(await nameEntries(audit.privateOnlyEntries));
+    } catch (e) {
+      setProblem(getErrorMessage(e, 'The read failed.'));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        onClick={inspect}
+        disabled={busy}
+        className="btn-ghost text-xs disabled:opacity-50"
+        title="Open the encrypted half of your list and count what is in it. Nothing is published."
+      >
+        {busy ? 'opening…' : '⌕ check private half'}
+      </button>
+      {problem && <span className="text-[11px] text-bone max-w-prose">{problem}</span>}
+      {lines?.map((l) => (
+        <span key={l} className="text-[11px] text-muted max-w-prose">{l}</span>
+      ))}
+      {named && named.length > 0 && (
+        <ul className="text-[11px] text-muted max-w-prose flex flex-col gap-0.5 mt-1">
+          {named.map((e) => (
+            <li key={e.id} className="flex flex-col">
+              <span className={e.title ? 'text-bone' : undefined}>
+                {e.title ?? 'Podcast Index does not know this track'}
+              </span>
+              {e.kind === 'item' && (
+                <span>
+                  {e.parentTitle
+                    ? `from ${e.parentTitle}`
+                    : e.parentFeedGuid
+                      ? `from feed ${e.parentFeedGuid}`
+                      : 'no parent feed recorded — unopenable in any app'}
+                </span>
+              )}
+              {/* The identifier always, even when a title resolved: it is what
+                  the entry IS, and it is the only thing that can be matched
+                  against a raw event or handed to another app. */}
+              <span className="font-mono break-all opacity-70">{e.id}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Bring the encrypted half into the public list, so the account holds ONE list.
+ *
+ * **This repairs a stuck state; it is not a second way to choose a mode.** The
+ * mode switch already moves entries — on Public, `syncFavorites` merges the
+ * private half against an EMPTY local list, so everything the baseline claims
+ * is dropped and `content` goes to `''`. What blocks that here is the
+ * BASELINE: the removal is gated on `baselineHalf(baseline, 'private')`, and a
+ * device that never published the private half claims nothing in it, so the
+ * merge drops nothing and the ciphertext rides forward on every publish
+ * forever. Found on a real account at 284 entries in both halves at once.
+ *
+ * The guard is right to be there — a baseline is a promise that these entries
+ * are ours to delete, and this app will not delete a private half it cannot
+ * prove it owns. What was missing was the evidence, and
+ * `<InspectPrivateHalf>` is what produces it: the half decrypts with this
+ * user's key and mirrors this user's own list.
+ *
+ * **Three steps, and the order is the whole safety argument.**
+ *
+ *  1. ADOPT the private-only entries into the local store first. They are
+ *     about to stop existing in the half that holds them, and the public merge
+ *     publishes what the STORE holds — so an entry not adopted before the sync
+ *     is deleted rather than moved. Their `medium` hint comes along, because
+ *     for an entry Podcast Index cannot resolve it is the only description
+ *     that will ever exist.
+ *  2. CLAIM the private half in the baseline, from the read we just verified.
+ *     This is the promise the merge is waiting for.
+ *  3. SYNC normally. Nothing bespoke publishes here: the ordinary cycle sees a
+ *     store holding everything and a private baseline claiming the half, and
+ *     converges to one public list by itself.
+ *
+ * **What it deliberately cannot reach.** `baselineOfList` claims GROUPS only,
+ * so a loose node in the private half — an identifier kind outside our table,
+ * or an item that appeared before any feed group — is never claimed and
+ * therefore never dropped. If another writer's entry is in there in a shape
+ * this app does not model, it survives this repair. That is the correct
+ * direction to fail in.
+ *
+ * **A refusal is a `null`, not a throw.** `syncFavoritesNow` returns null
+ * without recording anything on a degraded read, a wholesale-delete guard, an
+ * unreadable private half, or a publish that reached no relay. `await` looks
+ * like success and a `try/catch` catches nothing, so the return value is
+ * tested — telling someone their list was merged when it was not is the one
+ * error they cannot check without another round trip.
+ */
+function MergeEncryptedHalf() {
+  const identity = useApp((s) => s.identity);
+  const addFavorite = useApp((s) => s.addFavorite);
+  const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
+  const [busy, setBusy] = useState(false);
+  const [plan, setPlan] = useState<MergePlan | null>(null);
+  const [msg, setMsg] = useState<{ tone: 'ok' | 'no'; text: string } | null>(null);
+
+  if (!identity) return null;
+
+  /** Read and decide, but change nothing. The confirmation comes after. */
+  async function propose() {
+    if (!identity) return;
+    setBusy(true);
+    setPlan(null);
+    setMsg(null);
+    try {
+      const read = await fetchFavoritesList(identity.pubkey, resolvePublishRelays(identity), {
+        decryptPrivate: true,
+        purpose: 'user-initiated',
+      });
+      if (!read.trustworthy) {
+        setMsg({ tone: 'no', text: 'The relays could not be read just now — try again in a moment.' });
+        return;
+      }
+      if (!read.exists || !read.privateList) {
+        setMsg({
+          tone: 'no',
+          text: read.privateUnreadable
+            ? 'Your signer did not open the encrypted half, so it cannot be merged — only carried. If it opened a moment ago it most likely timed out; bring your signer to the front and try again.'
+            : 'Nothing to do: this account has no encrypted half.',
+        });
+        return;
+      }
+      const audit = auditHalves(read.list, read.privateList);
+      if (audit.privateCount === 0) {
+        setMsg({ tone: 'no', text: 'Nothing to do: the encrypted half holds no entries.' });
+        return;
+      }
+      setPlan({ audit, privateList: read.privateList });
+    } catch (e) {
+      setMsg({ tone: 'no', text: getErrorMessage(e, 'The read failed.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function apply(p: MergePlan) {
+    if (!identity) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      // 1. Adopt, BEFORE the baseline claim — see the note above.
+      const now = Date.now();
+      for (const e of p.audit.privateOnlyEntries) {
+        if (e.kind === 'feed') {
+          addFavorite({ id: 0, podcastGuid: e.guid, medium: e.medium, addedAt: now });
+        } else if (e.parentFeedGuid) {
+          addFavoriteEpisode({
+            itemGuid: e.guid, feedGuid: e.parentFeedGuid, medium: e.medium, addedAt: now,
+          });
+        }
+      }
+      // 2. Claim the half we just read. The public claims are left exactly as
+      //    they were: this promise is about the private half only, and
+      //    rewriting the public one would disown entries this device published.
+      const priv = baselineOfList(p.privateList);
+      const existing = storage.favBaseline.get(identity.npub);
+      storage.favBaseline.set(identity.npub, {
+        ...existing, privateFeeds: priv.feeds, privateItems: priv.items,
+      });
+      // 3. One ordinary cycle.
+      const note = await syncFavoritesNow(identity, 'user-initiated');
+      if (!note) {
+        setMsg({
+          tone: 'no',
+          text: 'The merge was not published — the app refused the cycle rather than write over '
+            + 'something it could not verify. Nothing on the relays changed. Try again in a moment.',
+        });
+        return;
+      }
+      setPlan(null);
+      setMsg({
+        tone: 'ok',
+        text: 'Merged. Your list is now in the public tags only. '
+          + 'Take a new backup, and use CHECK PRIVATE HALF to confirm the encrypted half is empty.',
+      });
+    } catch (e) {
+      setMsg({ tone: 'no', text: getErrorMessage(e, 'The merge failed.') });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="flex flex-col items-start gap-1">
+      <button
+        type="button"
+        onClick={propose}
+        disabled={busy}
+        className="btn-ghost text-xs disabled:opacity-50"
+        title="Move the encrypted half into your public list, so this account holds one list."
+      >
+        {busy && !plan ? 'reading…' : '⇄ merge encrypted half in'}
+      </button>
+      {plan && (
+        <span className="card p-3 flex flex-col gap-2 items-start max-w-prose">
+          <span className="text-[11px] text-bone">
+            This will publish {plan.audit.publicCount + plan.audit.privateOnly} favorites as public
+            tags and empty the encrypted half.
+          </span>
+          <span className="text-[11px] text-muted">
+            {plan.audit.privateOnly > 0
+              ? `${plan.audit.privateOnly} of them ${plan.audit.privateOnly === 1 ? 'exists' : 'exist'} only in the encrypted half today and will be adopted first, so nothing is lost. `
+              : 'Every entry in the encrypted half is already public, so nothing new is published. '}
+            The {plan.audit.inBoth} already in both halves {plan.audit.inBoth === 1 ? 'stays' : 'stay'} where
+            {plan.audit.inBoth === 1 ? ' it is' : ' they are'}, in the clear.
+          </span>
+          {/* Named rather than implied: this is the irreversible half of the
+              operation, and "take a backup" is only useful advice before it. */}
+          <span className="text-[11px] text-muted">
+            Take a ⇩ BACKUP first if you have not. Emptying the encrypted half cannot be undone
+            from inside this app.
+          </span>
+          <span className="flex gap-2">
+            <button type="button" className="btn text-xs" disabled={busy} onClick={() => apply(plan)}>
+              {busy ? 'merging…' : 'merge'}
+            </button>
+            <button type="button" className="btn-ghost text-xs" disabled={busy} onClick={() => setPlan(null)}>
+              cancel
+            </button>
+          </span>
+        </span>
+      )}
+      {msg && (
+        <span className={`text-[11px] max-w-prose ${msg.tone === 'ok' ? 'text-muted' : 'text-bone'}`}>
+          {msg.text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Put a `⇩ BACKUP` file back on the relays. The most destructive control here.
+ *
+ * **It republishes the CONTENT of the backup, not the backup event.** A
+ * replaceable event is superseded by `created_at`, so re-sending the original
+ * signed bytes would be ignored by every relay already holding something newer
+ * — which is exactly the case a restore is for. So this signs a NEW event
+ * carrying the backup's `tags` and `content` verbatim. The signature in the
+ * file is therefore not what lands; it is what proves the file is genuine
+ * before we agree to publish it.
+ *
+ * **Every check in `parseFavoritesBackup` is a refusal to publish something
+ * the user did not sign** — a verified signature, this account's pubkey, and
+ * kind 10333. An edited file fails, which is correct: the value of a backup is
+ * that it IS the event, and an edited one is a new list wearing an old
+ * signature.
+ *
+ * **It refuses on a read it cannot trust, and that is not the usual reason.**
+ * Elsewhere the danger of a bad read is writing over data we could not see.
+ * Here the write happens regardless — the user asked for it — so the read is
+ * what makes the CONFIRMATION honest. Without it the panel cannot say what is
+ * being replaced, and "restore" with no statement of the cost is the one thing
+ * this control must never be.
+ *
+ * **Afterwards the device is reset to a fresh-device state on purpose.** The
+ * store and the baseline are cleared before `hydrateFavorites` runs, and the
+ * ordering is the whole correctness argument: leave the OLD favorites in the
+ * store and the next cycle reads them as local additions and republishes them,
+ * silently undoing the restore; leave the OLD baseline and it claims ids the
+ * restored list does not have, so the next cycle publishes their removal. An
+ * empty store beside an empty baseline is the one combination that means
+ * "adopt what the relay holds", which is precisely what we want and is the
+ * path a new browser already takes. `favCleared` is cleared too, or the
+ * wholesale-delete guard reads the empty store as a deliberate clear-all.
+ */
+function RestoreBackup() {
+  const identity = useApp((s) => s.identity);
+  const setFavorites = useApp((s) => s.setFavorites);
+  const setFavoriteEpisodes = useApp((s) => s.setFavoriteEpisodes);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [plan, setPlan] = useState<RestorePlan | null>(null);
+  const [msg, setMsg] = useState<{ tone: 'ok' | 'no'; text: string } | null>(null);
+
+  if (!identity) return null;
+
+  async function chosen(file: File | undefined) {
+    if (!identity || !file) return;
+    setBusy(true);
+    setPlan(null);
+    setMsg(null);
+    try {
+      const parsed = parseFavoritesBackup(await file.text(), identity.pubkey);
+      if (!parsed.ok) {
+        setMsg({ tone: 'no', text: `Not restored — ${parsed.error}.` });
+        return;
+      }
+      // The confirmation has to name what is being REPLACED, so the current
+      // state is read before anything is offered. A degraded read means the
+      // panel would have to guess, and a restore panel that guesses is worse
+      // than no restore.
+      const read = await fetchFavoritesList(identity.pubkey, resolvePublishRelays(identity));
+      if (!read.trustworthy) {
+        setMsg({
+          tone: 'no',
+          text: 'The relays could not be read, so this cannot say what the restore would replace. '
+            + 'Nothing was changed — try again in a moment.',
+        });
+        return;
+      }
+      setPlan({
+        event: parsed.event,
+        backupCount: favoriteIds(parseFavoritesList(parsed.event.tags)).length,
+        backupHasPrivate: parsed.event.content.length > 0,
+        currentCount: read.exists ? favoriteIds(read.list).length : 0,
+        currentExists: read.exists,
+        currentAt: read.updatedAt,
+      });
+    } catch (e) {
+      setMsg({ tone: 'no', text: getErrorMessage(e, 'That file could not be read.') });
+    } finally {
+      setBusy(false);
+      // Always: without it, choosing the same file twice fires no change event.
+      if (fileRef.current) fileRef.current.value = '';
+    }
+  }
+
+  async function apply(p: RestorePlan) {
+    if (!identity) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      // `publishFavoritesTags` asserts the publish reached a relay, so a
+      // resolved promise here is not the empty claim `publishSignedEvent`
+      // would have made.
+      await publishFavoritesTags(p.event.tags, p.event.content, resolvePublishRelays(identity));
+      // Fresh-device state, in this order. See the note above.
+      storage.favBaseline.set(identity.npub, { feeds: [], items: [] });
+      storage.favCleared.set(identity.npub, false);
+      setFavorites({});
+      setFavoriteEpisodes({});
+      await hydrateFavorites(identity, 'user-initiated');
+      setPlan(null);
+      setMsg({
+        tone: 'ok',
+        text: `Restored ${p.backupCount} favorites from the backup. `
+          + 'The list on screen is what the relays now hold.',
+      });
+    } catch (e) {
+      setMsg({
+        tone: 'no',
+        text: `${getErrorMessage(e, 'The restore failed.')} `
+          + 'If it reached no relay, nothing changed; reload and check before trying again.',
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="flex flex-col items-start gap-1">
+      <input
+        ref={fileRef}
+        type="file"
+        accept="application/json,.json"
+        className="hidden"
+        onChange={(e) => chosen(e.target.files?.[0])}
+      />
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        disabled={busy}
+        className="btn-ghost text-xs disabled:opacity-50"
+        title="Publish a backup file back to the relays, replacing the list stored there."
+      >
+        {busy && !plan ? 'reading file…' : '⇧ restore from backup'}
+      </button>
+      {plan && (
+        <span className="card p-3 flex flex-col gap-2 items-start max-w-prose">
+          <span className="text-[11px] text-bone">
+            Replace the list on the relays with this backup?
+          </span>
+          <span className="text-[11px] text-muted">
+            The backup holds {plan.backupCount} favorites, saved{' '}
+            {new Date(plan.event.created_at * 1000).toLocaleString()}
+            {plan.backupHasPrivate ? ', with an encrypted half' : ''}.{' '}
+            {plan.currentExists
+              ? `The relays currently hold ${plan.currentCount}, last written ${new Date(plan.currentAt * 1000).toLocaleString()}.`
+              : 'The relays currently hold no list for this account.'}
+          </span>
+          {/* The number that decides it, stated as a loss rather than a diff:
+              "replaces 287 with 284" is arithmetic a person has to do under
+              pressure, and getting it wrong costs entries. */}
+          {plan.currentExists && plan.currentCount > plan.backupCount && (
+            <span className="text-[11px] text-bone">
+              That is {plan.currentCount - plan.backupCount} fewer than you have now. Anything
+              added since this backup was taken will be gone.
+            </span>
+          )}
+          <span className="text-[11px] text-muted">
+            This replaces the whole event, including for every other app that reads your
+            favorites. It cannot be undone except by restoring another backup.
+          </span>
+          <span className="flex gap-2">
+            <button type="button" className="btn text-xs" disabled={busy} onClick={() => apply(plan)}>
+              {busy ? 'restoring…' : 'restore'}
+            </button>
+            <button type="button" className="btn-ghost text-xs" disabled={busy} onClick={() => setPlan(null)}>
+              cancel
+            </button>
+          </span>
+        </span>
+      )}
+      {msg && (
+        <span className={`text-[11px] max-w-prose ${msg.tone === 'ok' ? 'text-muted' : 'text-bone'}`}>
+          {msg.text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+interface RestorePlan {
+  event: NostrEvent;
+  backupCount: number;
+  backupHasPrivate: boolean;
+  currentCount: number;
+  currentExists: boolean;
+  currentAt: number;
+}
+
+interface MergePlan {
+  audit: ReturnType<typeof auditHalves>;
+  privateList: ParsedList;
+}
+
+interface NamedEntry extends PrivateOnlyEntry {
+  /** Null when Podcast Index has no answer, which is not a failure. */
+  title: string | null;
+  /**
+   * The album or show this item sits under, resolved from `parentFeedGuid`.
+   *
+   * Worth its own lookup because it answers a different question and answers
+   * it more often. "Which track is this" fails whenever Podcast Index has not
+   * indexed the item — the normal case for a music track — while "which album
+   * is it from" only needs the FEED, which PI is far more likely to hold. On
+   * the account this was built for, 224 of 228 item favorites resolve to no
+   * title at all, so without this a private-only entry is a bare guid and the
+   * user has no way to recognise their own favorite.
+   *
+   * It cannot tell you a track was favorited from a PLAYLIST: a `musicL`
+   * container is never recorded as an item's parent (`containerIsParent`),
+   * because the playlist is not the track's publisher. The album is the truth
+   * the wire keeps.
+   */
+  parentTitle: string | null;
+}
+
+/**
+ * Put a title on each private-only entry, where Podcast Index has one.
+ *
+ * **Capped, and the cap is not cosmetic.** This fans out one resolve per
+ * entry, and the number of entries is whatever another writer put in the
+ * encrypted half — an unbounded list against our own per-IP limiter, which a
+ * real favorites hydration already runs close to. `NAME_LIMIT` bounds it; the
+ * summary above already states the true count, so nothing is hidden by
+ * stopping.
+ *
+ * **Batch door first, then resolve**, per the rule `<Podroll>` learned: the
+ * warm fills the same memory the per-entry resolvers read, so the second pass
+ * usually issues no requests at all — while still keeping what a batch cannot
+ * do, which is answer for a guid the warm could not ask about.
+ *
+ * **A failure returns the entries unnamed rather than nothing.** The
+ * identifier is the answer; the title is a convenience, and an entry Podcast
+ * Index has never indexed is exactly the kind most likely to be sitting
+ * forgotten in a private half.
+ */
+const NAME_LIMIT = 25;
+
+async function nameEntries(entries: PrivateOnlyEntry[]): Promise<NamedEntry[]> {
+  const slice = entries.slice(0, NAME_LIMIT);
+  const feeds = slice.filter((e) => e.kind === 'feed');
+  const items = slice.filter((e) => e.kind === 'item' && e.parentFeedGuid);
+  // The parents go through the SAME batch door as the feed favorites — one
+  // request for both sets, deduped by the warm itself.
+  const feedGuids = [
+    ...feeds.map((e) => e.guid),
+    ...items.map((e) => e.parentFeedGuid!),
+  ];
+  try {
+    await Promise.all([
+      feedGuids.length ? warmPodcastCache(feedGuids) : Promise.resolve(),
+      items.length
+        ? warmEpisodeCache(items.map((e) => ({ feedGuid: e.parentFeedGuid!, itemGuid: e.guid })))
+        : Promise.resolve(),
+    ]);
+  } catch {
+    // A warm is an accelerator; the per-entry pass below stands on its own.
+  }
+  return Promise.all(slice.map(async (e): Promise<NamedEntry> => {
+    try {
+      if (e.kind === 'feed') {
+        const p = await resolvePodcastByGuid(e.guid);
+        return { ...e, title: p?.title ?? null, parentTitle: null };
+      }
+      if (!e.parentFeedGuid) return { ...e, title: null, parentTitle: null };
+      // Both lookups, and the parent is not a fallback for the item — it is a
+      // second fact. An item PI has never indexed still has a parent it may
+      // know perfectly well, which is what turns a bare guid into something
+      // the user can recognise.
+      const [ep, parent] = await Promise.all([
+        resolveEpisodeByGuid(e.parentFeedGuid, e.guid),
+        resolvePodcastByGuid(e.parentFeedGuid),
+      ]);
+      return { ...e, title: ep?.title ?? null, parentTitle: parent?.title ?? null };
+    } catch {
+      return { ...e, title: null, parentTitle: null };
+    }
+  }));
 }
 
 /**

@@ -1977,3 +1977,37 @@ export function spendableSats(
     budgetLimited: budget.remainingSats < balanceSats,
   };
 }
+
+/**
+ * Run `fn` over `items` with at most `limit` in flight, results in input order.
+ *
+ * **Here, and not in the two places that had it, because the second copy was
+ * missing.** `favorites-hydrator.ts` bounded its client-side fan-out at six
+ * while `lib/pi-batch.ts` used a bare `Promise.allSettled(rest.map(resolve))`
+ * — up to 99 concurrent Podcast Index calls out of ONE request, three times
+ * over for a 231-track list. PI rate-limits a burst like that, every rejected
+ * key falls through to the per-item pass, and a "could not ask" is
+ * deliberately never cached, so the identical doomed burst repeats on every
+ * page load. Measured on a real account: 4 of 228 tracks resolved, and the
+ * same 4 every session, because only a cached SUCCESS survives.
+ *
+ * Pure and import-free like everything else in this file, so both the browser
+ * half and the server half can share it.
+ */
+export async function mapLimit<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}

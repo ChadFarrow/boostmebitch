@@ -14,6 +14,8 @@ import {
   baselineHalf,
   decodePrivateFavorites,
   encodePrivateFavorites,
+  WHOLE_LIST_PRIVACY_MOVE,
+  foldHalves,
   mergeFavoritesList,
   parseFavoritesList,
   planFavoritesPublish,
@@ -438,14 +440,36 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
       baseline: baselineHalf(baseline, 'private'),
     });
 
+  // GOING PRIVATE TAKES THE WHOLE LIST — spec vector 13.
+  //
+  // Everything left in the public half after the merge above is another
+  // writer's: ours was just removed from it, because the baseline claims it and
+  // `publicLocal` is empty. The spec requires it to move too, and the asymmetry
+  // is what makes that safe — public → private only ever REDUCES exposure and
+  // is reversible by anything that can decrypt, while private → public is a
+  // disclosure and stays limited to what our baseline claims.
+  //
+  // Without this the user gets "97% private": a choice the format honoured for
+  // most of their list, with nothing on screen naming the part it did not.
+  //
+  // `foldHalves`, never a concatenation — see its own note, and vector 15.
+  //
+  // The moved entries are deliberately NOT claimed in the baseline. Nothing
+  // local backs them, so a claim would read as our own removal on the next
+  // cycle and delete them.
+  const movingWholeList = WHOLE_LIST_PRIVACY_MOVE && mode === 'private'
+    && !opts.withdraw && privateMerged !== null;
+  const activeMerged = movingWholeList ? foldHalves(privateMerged!, merged) : privateMerged;
+  const publicMerged = movingWholeList ? EMPTY_PARSED : merged;
+
   const plan = planFavoritesPublish({
-    merged,
+    merged: publicMerged,
     readTags: read.tags,
     exists: read.exists,
     trustworthy: read.trustworthy,
     local: publicLocal,
     mode,
-    privateMerged,
+    privateMerged: activeMerged,
     readPrivateTags: read.privateTags,
     readContent: read.content,
     privateUnreadable: read.privateUnreadable,
