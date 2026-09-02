@@ -14,6 +14,7 @@ import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './boost-modal/message-input';
+import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
@@ -44,6 +45,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   const bumpBoosts = useApp((s) => s.bumpBoosts);
   const [sats, setSats] = useState(100);
   const [msg, setMsg] = useState('');
+  // Identity beside the prose, not inside it — see <BoostModal> for why the
+  // npub must never enter `msg`.
+  const [mentions, setMentions] = useState<MentionNpub[]>([]);
   const [name, setName] = useState('');
   const [rail, setRail] = useState<Rail | null>(null);
 
@@ -369,9 +373,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       const note = identity && shareAs === 'self'
         ? await publishBoostNote({
             podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
+            mentions,
           })
         : await publishBoostNoteViaSite({
             podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
+            mentions,
           });
       if (cancelled.current) return;
       setPubState({ kind: 'done', note });
@@ -494,7 +500,18 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
           {loadState === 'ready' && splits.length > 0 && (
             <>
-              <MessageInput value={msg} onChange={setMsg} />
+              {/* The mention run is appended by withMentions AFTER
+                  contentOverride, which is the one place this path and the
+                  single-boost path converge — a mention added inside
+                  formatContent would be silently missing from every summary. */}
+              <MessageInput
+                value={msg}
+                onChange={setMsg}
+                mentions={mentions}
+                onMentionsChange={setMentions}
+                feedNpubs={podcast.nostrNpubs ?? []}
+                willNotify={!!identity && shareAs === 'self'}
+              />
               <SenderName value={name} onChange={setName} anonymous={anonymous} />
               <ShareNostrPicker
                 signedIn={!!identity}
