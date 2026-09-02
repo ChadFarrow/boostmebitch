@@ -1,24 +1,20 @@
 'use client';
-import { Fragment, memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { nip19, type Event } from 'nostr-tools';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import type { Event } from 'nostr-tools';
 import { subscribeLiveChat, publishLiveChat, LIVE_STREAM_RELAYS } from '@/lib/nostr';
-import { fetchProfilesFor, shortNpub } from '@/lib/nostr';
+import { fetchProfilesFor } from '@/lib/nostr';
 import { parseZapReceipt, zapSats } from '@/lib/nostr/zap-receipt';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
-import { fmtClock, splitTrailingPunct } from '@/lib/format';
+import { fmtClock, mentionedPubkeys, renderNostrText } from '@/lib/format';
 import { Avatar } from './avatar';
 
 const MAX_MESSAGES = 200;
 
 type Profiles = Record<string, ProfileMetadata | null>;
 
-// nostr: mentions worth resolving to a name (NIP-27 npub/nprofile).
-const MENTION_RE = /nostr:n(?:pub|profile)1[023456789acdefghjklmnpqrstuvwxyz]+/gi;
-// Any nostr: URI or http(s) link — for inline rendering.
-const TOKEN_RE = /nostr:n(?:pub|profile|event|ote|addr)1[023456789acdefghjklmnpqrstuvwxyz]+|https?:\/\/[^\s]+/gi;
 
 function authorName(p: ProfileMetadata | null | undefined, pubkey: string) {
   return p?.display_name?.trim() || p?.name?.trim() || `${pubkey.slice(0, 8)}…`;
@@ -34,64 +30,12 @@ function itemAuthor(e: Event): string {
   return e.kind === 9735 ? parseZapReceipt(e)?.zapper ?? e.pubkey : e.pubkey;
 }
 
-// Pubkeys mentioned in a message body (so we can resolve their names too).
-function mentionedPubkeys(content: string): string[] {
-  const out: string[] = [];
-  for (const tok of content.match(MENTION_RE) ?? []) {
-    try {
-      const d = nip19.decode(tok.slice(6));
-      if (d.type === 'npub') out.push(d.data);
-      else if (d.type === 'nprofile') out.push(d.data.pubkey);
-    } catch { /* ignore malformed */ }
-  }
-  return out;
-}
-
-// Render chat content: npub/nprofile mentions → @name (resolved from `profiles`,
-// falling back to a short npub), http links → anchors, other nostr: refs dropped.
-function renderContent(content: string, profiles: Profiles): ReactNode[] {
-  const parts: ReactNode[] = [];
-  let cursor = 0;
-  let i = 0;
-  TOKEN_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = TOKEN_RE.exec(content)) !== null) {
-    if (m.index > cursor) parts.push(content.slice(cursor, m.index));
-    const tok = m[0];
-    if (tok.startsWith('nostr:')) {
-      const bech = tok.slice(6);
-      let pubkey: string | null = null;
-      try {
-        const d = nip19.decode(bech);
-        if (d.type === 'npub') pubkey = d.data;
-        else if (d.type === 'nprofile') pubkey = d.data.pubkey;
-      } catch { /* leave as text below */ }
-      if (pubkey) {
-        const p = profiles[pubkey];
-        const name = p?.display_name?.trim() || p?.name?.trim() || shortNpub(bech);
-        parts.push(<span key={`m-${i}`} className="text-bolt">@{name}</span>);
-      }
-      // non-profile nostr refs (nevent/note/naddr) are dropped
-    } else {
-      const { token, trailing } = splitTrailingPunct(tok);
-      parts.push(
-        <a key={`l-${i}`} href={token} target="_blank" rel="noopener noreferrer" className="text-nostr break-all hover:underline underline-offset-2">{token}</a>,
-      );
-      if (trailing) parts.push(<Fragment key={`t-${i}`}>{trailing}</Fragment>);
-    }
-    cursor = m.index + tok.length;
-    i++;
-  }
-  if (cursor < content.length) parts.push(content.slice(cursor));
-  return parts;
-}
-
 // One chat row: avatar + name + timestamp + content. `badge` (a zap amount
 // stamp) also tints the row, so the same row renders both messages and boosts.
 //
 // memo()'d: <LiveChat> re-renders on every keystroke in its composer, and
 // without this every visible row reconciled with it — each one re-running
-// renderContent(), which is a global regex scan plus an nip19.decode() per
+// renderNostrText(), which is a global regex scan plus an nip19.decode() per
 // mention. `content` and `badge` are elements built fresh by the parent each
 // render, so this only skips rows whose props are otherwise unchanged when the
 // parent memoizes those too; the win that matters is the common case where the
@@ -300,7 +244,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
                   }
                   content={
                     z.comment ? (
-                      <span className="text-bone/90 break-words whitespace-pre-wrap">{renderContent(z.comment, profiles)}</span>
+                      <span className="text-bone/90 break-words whitespace-pre-wrap">{renderNostrText(z.comment, profiles)}</span>
                     ) : null
                   }
                 />
@@ -313,7 +257,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
                 profile={profiles[m.pubkey]}
                 timestamp={m.created_at}
                 content={
-                  <span className="text-bone/90 break-words whitespace-pre-wrap">{renderContent(m.content, profiles)}</span>
+                  <span className="text-bone/90 break-words whitespace-pre-wrap">{renderNostrText(m.content, profiles)}</span>
                 }
               />
             );

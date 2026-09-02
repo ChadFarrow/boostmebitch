@@ -250,18 +250,21 @@ export async function clearLocalSigner() {
   await clearKey();
 }
 
-export function shortNpub(npub: string, len = 8) {
-  if (npub.length <= len * 2 + 1) return npub;
-  return `${npub.slice(0, len)}…${npub.slice(-len)}`;
-}
+
 
 // `ProfileMetadata`, `coerceProfileMetadata` and `parseProfileContent` moved to
 // ./profile-metadata, an import-free leaf, so `lib/storage.ts` can reach them
 // without importing this file — that one edge was what made
 // storage → auth → signer → amber → storage a real cycle. Re-exported here so
 // every existing import site (and the `lib/nostr` barrel) is unchanged.
+//
+// `shortNpub` moved down for the same reason and by the same rule: it is a pure
+// string elision that `lib/format.tsx` needs to render a mention, and 18
+// modules import `lib/format.tsx` — reaching it through here would pull the
+// signer stack into all of them.
 export {
   coerceProfileMetadata,
   parseProfileContent,
+  shortNpub,
   type ProfileMetadata,
 } from './profile-metadata';

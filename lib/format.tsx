@@ -1,5 +1,6 @@
 'use client';
 import { Fragment, type ReactNode } from 'react';
+import { nip19 } from 'nostr-tools';
 import {
   boostSoundPlan,
   hasAudioSessionSupport,
@@ -8,6 +9,7 @@ import {
 } from './boost-sound';
 import { isImageUrl } from './util';
 import { BRAND } from './brand';
+import { shortNpub, type ProfileMetadata } from './nostr/profile-metadata';
 
 // ─── Time formatting ──────────────────────────────────────────────────────────
 
@@ -385,4 +387,104 @@ export function playBoostSound(opts: { appIsPlaying: boolean }): void {
   } catch {
     restore();
   }
+}
+
+// ─── Nostr mentions ───────────────────────────────────────────────────────────
+//
+// Lifted out of <LiveChat>, which had the only implementation. It is here
+// because <NoteCard> now needs the same thing, and a second copy of "which
+// bech32 forms name a PERSON, and what do you render the others as" is exactly
+// the drift the one-place-per-thing rule is about — the two surfaces would have
+// disagreed about the same note.
+
+/** The bech32 forms that name a PERSON. An nevent/note/naddr names a thing. */
+const MENTION_RE = /nostr:n(?:pub|profile)1[023456789acdefghjklmnpqrstuvwxyz]+/gi;
+/** Any nostr: URI or http(s) link — the inline-render scan. */
+const NOSTR_TOKEN_RE =
+  /nostr:n(?:pub|profile|event|ote|addr)1[023456789acdefghjklmnpqrstuvwxyz]+|https?:\/\/[^\s]+/gi;
+
+/** Profiles keyed by hex pubkey, as every mention-rendering surface holds them. */
+export type MentionProfiles = Record<string, ProfileMetadata | null | undefined>;
+
+/**
+ * Hex pubkeys named by `nostr:npub…` / `nostr:nprofile…` in a body, so a caller
+ * can resolve their names before rendering.
+ *
+ * Hand the whole list to `fetchProfilesFor` — never one `fetchProfile` per
+ * pubkey. That distinction is not a micro-optimisation: relays cap concurrent
+ * subscriptions per connection and drop the overflow silently, so the ones that
+ * lose the race do not resolve late, they do not resolve at all.
+ */
+export function mentionedPubkeys(content: string): string[] {
+  const out: string[] = [];
+  for (const tok of content.match(MENTION_RE) ?? []) {
+    try {
+      const d = nip19.decode(tok.slice(6));
+      if (d.type === 'npub') out.push(d.data);
+      else if (d.type === 'nprofile') out.push(d.data.pubkey);
+    } catch { /* ignore malformed */ }
+  }
+  return out;
+}
+
+/**
+ * Render body text with `nostr:` person-mentions as `@name`, http(s) links as
+ * anchors, and every other nostr ref dropped.
+ *
+ * An unresolved profile falls back to a shortened npub rather than to nothing:
+ * a mention is a claim that somebody was named, and rendering it as empty space
+ * makes the note read as if it never happened. Non-person refs (nevent, note,
+ * naddr) ARE dropped — they name a thing, this function has no way to describe
+ * it, and a raw bech32 blob is worse than silence.
+ *
+ * `linkClassName` matches `linkify`'s: 'text-nostr' by default, 'text-bolt' on
+ * boost cards.
+ */
+export function renderNostrText(
+  content: string,
+  profiles: MentionProfiles,
+  linkClassName = 'text-nostr',
+): ReactNode[] {
+  const parts: ReactNode[] = [];
+  let cursor = 0;
+  let i = 0;
+  NOSTR_TOKEN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = NOSTR_TOKEN_RE.exec(content)) !== null) {
+    if (m.index > cursor) parts.push(content.slice(cursor, m.index));
+    const tok = m[0];
+    if (tok.startsWith('nostr:')) {
+      const bech = tok.slice(6);
+      let pubkey: string | null = null;
+      try {
+        const d = nip19.decode(bech);
+        if (d.type === 'npub') pubkey = d.data;
+        else if (d.type === 'nprofile') pubkey = d.data.pubkey;
+      } catch { /* not a ref we render */ }
+      if (pubkey) {
+        const p = profiles[pubkey];
+        const name = p?.display_name?.trim() || p?.name?.trim() || shortNpub(bech);
+        parts.push(<span key={`m-${i}`} className="text-bolt">@{name}</span>);
+      }
+      // non-person nostr refs (nevent/note/naddr) are dropped
+    } else {
+      const { token, trailing } = splitTrailingPunct(tok);
+      parts.push(
+        <a
+          key={`l-${i}`}
+          href={token}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={`${linkClassName} break-all hover:underline underline-offset-2`}
+        >
+          {token}
+        </a>,
+      );
+      if (trailing) parts.push(<Fragment key={`t-${i}`}>{trailing}</Fragment>);
+    }
+    cursor = m.index + tok.length;
+    i++;
+  }
+  if (cursor < content.length) parts.push(content.slice(cursor));
+  return parts;
 }

@@ -6,7 +6,7 @@ import { parseProfileContent, type ProfileMetadata } from './auth';
 import { collectEventsByAuthors } from './event-queries';
 import { warmRelays } from './relay-health';
 import { parseZapReceipt, zapReceiptAmountMsat, type ZapReceipt } from './zap-receipt';
-import { stripNostrUris, extractImages } from '../format';
+import { stripNostrUris, extractImages, mentionedPubkeys } from '../format';
 
 export interface DiscoveredNote {
   id: string;
@@ -21,6 +21,15 @@ export interface DiscoveredNote {
   podcastGuid: string | null; // first podcast:guid: ref on the note (the show)
   episodeGuids: string[];  // any podcast:item:guid: refs on the note
   author: ProfileMetadata | null;
+  /**
+   * Profiles for the pubkeys this note @mentions in its BODY, keyed by hex.
+   *
+   * Resolved in the same batch as the authors rather than by the card, because
+   * <NoteCard> renders many at once and a fetch per card is the fan-out that
+   * relays answer by silently dropping the overflow. Empty is normal: a mention
+   * of somebody no relay in the set knows renders as a short npub.
+   */
+  mentioned?: Record<string, ProfileMetadata>;
   rawEvent: Event;         // signed source event — needed to thread replies and to embed in NIP-18 reposts
   replies: DiscoveredNote[]; // direct replies (NIP-10), oldest-first; recursive
 }
@@ -130,12 +139,33 @@ export function noteFromEvent(
   return buildNote(event, relays, profile, new Map(), []);
 }
 
+/**
+ * The subset of an already-resolved profile map that this note's body mentions.
+ *
+ * Undefined rather than {} when there is nothing, so `richer` can tell "this
+ * pass resolved no mentions" from "this pass did not look" — the index path and
+ * the relay path carry different profile sets, and a note is merged from both.
+ */
+function mentionedFrom(
+  content: string,
+  profiles?: Map<string, ProfileMetadata>,
+): Record<string, ProfileMetadata> | undefined {
+  if (!profiles?.size) return undefined;
+  let out: Record<string, ProfileMetadata> | undefined;
+  for (const pk of mentionedPubkeys(content)) {
+    const p = profiles.get(pk);
+    if (p) (out ??= {})[pk] = p;
+  }
+  return out;
+}
+
 function buildNote(
   e: Event,
   relays: string[],
   profile: ProfileMetadata | null,
   quoted: Map<string, Event>,
   replies: DiscoveredNote[] = [],
+  profiles?: Map<string, ProfileMetadata>,
 ): DiscoveredNote {
   const amountTag = e.tags.find((t) => t[0] === 'amount')?.[1];
   let amountMsat: number | null = amountTag ? Number(amountTag) : null;
@@ -195,6 +225,7 @@ function buildNote(
     podcastGuid,
     episodeGuids,
     author: profile,
+    mentioned: mentionedFrom(e.content, profiles),
     rawEvent: e,
     replies,
   };
@@ -727,7 +758,15 @@ async function assembleNotes(
   // the per-pubkey cache, which is the first thing `fetchProfiles` reads — so
   // this batch queries only the authors the tree just introduced.
   const rootMap = await rootProfiles;
-  const authors = Array.from(new Set(allTreeEvents.map((e) => e.pubkey)));
+  // Pubkeys the bodies @mention join the authors in ONE batch. They are added
+  // here rather than fetched by the card for the reason in `mentioned`'s
+  // docblock: a fetchProfile per card is the fan-out relays answer by dropping
+  // the overflow in silence. fetchProfiles reads the per-pubkey cache first, so
+  // a mention of somebody already on screen costs nothing.
+  const authors = Array.from(new Set([
+    ...allTreeEvents.map((e) => e.pubkey),
+    ...allTreeEvents.flatMap((e) => mentionedPubkeys(e.content)),
+  ]));
   const [replyMap, quoted] = await Promise.all([
     fetchProfiles(pool, relays, authors),
     fetchQuotedEvents(pool, relays, allTreeEvents),
@@ -759,7 +798,7 @@ function buildTree(
     const replies = [...children]
       .sort((a, b) => a.created_at - b.created_at)
       .map(build);
-    return buildNote(e, relays, profiles.get(e.pubkey) ?? null, quoted, replies);
+    return buildNote(e, relays, profiles.get(e.pubkey) ?? null, quoted, replies, profiles);
   }
   return topLevelEvents.map(build);
 }

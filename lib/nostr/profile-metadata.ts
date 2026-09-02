@@ -68,3 +68,18 @@ export function parseProfileContent(content: string): ProfileMetadata | null {
     return null;
   }
 }
+
+/**
+ * Elide an npub for display: `npub1abc…xyz789`.
+ *
+ * Here rather than in `lib/nostr/auth.ts`, where it used to live, for the same
+ * structural reason `coerceProfileMetadata` moved: `lib/format.tsx` renders
+ * `nostr:npub…` mentions and needs this, and 18 modules import `lib/format.tsx`
+ * — so reaching it through `auth.ts` would drag the whole signer stack (amber,
+ * bunker, local key store) into every one of them. Push it DOWN rather than
+ * sideways. `auth.ts` re-exports it, so no existing call site changed.
+ */
+export function shortNpub(npub: string, len = 8) {
+  if (npub.length <= len * 2 + 1) return npub;
+  return `${npub.slice(0, len)}…${npub.slice(-len)}`;
+}
