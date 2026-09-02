@@ -147,6 +147,28 @@ export function HomePage() {
    */
   const [entryResolved, setEntryResolved] = useState(false);
 
+  /**
+   * The query string as it was when the page LOADED.
+   *
+   * A `useRef` initializer runs during render, ahead of every effect, which is
+   * the point: the mirror effects rewrite the URL on mount from state that has
+   * not hydrated yet, so by the time a restore effect runs, the params it exists
+   * to read are already gone. Unlike reading `location` in the render body this
+   * never reaches the rendered output, so it cannot cause a hydration mismatch —
+   * the reason `entryResolved` is a state flag and this is not.
+   *
+   * **It sits above the restore effects rather than below them, and the restore
+   * below now reads it rather than `window.location.search`.** That was already
+   * the documented rule and only the `?publisher=` restore obeyed it; reading
+   * live happened to work here because this effect is declared ahead of the
+   * mirror. `?t=` removed that luck: the mirror DELETES `t` (a stale one would
+   * otherwise sit in the address bar attached to a different episode), so a live
+   * read races a rewrite that is now guaranteed to erase the parameter.
+   */
+  const initialSearch = useRef<string>(
+    typeof window === 'undefined' ? '' : window.location.search,
+  );
+
   // Mount-time hydration: restore the detail / episode / discussion view from
   // the URL. Podcast resolves by ?podcast=<guid> (resolvePodcastByGuid, with its
   // own caches + PI breaker) or falls back to ?feed=<id> for shows that have no
@@ -154,12 +176,25 @@ export function HomePage() {
   // Nostr thread. Bad/unresolvable params fall back to browse silently.
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(initialSearch.current);
     const guid = params.get('podcast');
     const feedId = params.get('feed');
     const playlistParam = params.get('playlist');
     const episodeGuid = params.get('episode');
     const wantDiscussion = params.get('discussion') === '1';
+    // ?t=<seconds> — a link to one moment, built by `showShareUrl` from a row of
+    // <EpisodeContents>. Anything else drops it, and the link degrades to the
+    // plain episode link it otherwise is.
+    //
+    // The shape is tested BEFORE `Number`, not after, because `Number` accepts
+    // far more than any link this app emits — `showShareUrl` writes
+    // `String(Math.floor(n))`. It reads `0x64` as 100, `1e3` as 1000 and `''`
+    // as 0, so a `Number.isFinite` guard alone starts playback at a position
+    // nobody wrote, and a bare `?t=` autoplays from the beginning where an
+    // absent one correctly does nothing. The optional fraction stays because a
+    // hand-written `t=90.5` is a reasonable thing for a person to type.
+    const tRaw = params.get('t')?.trim() ?? '';
+    const startSec = /^\d+(\.\d+)?$/.test(tRaw) ? Number(tRaw) : null;
     if (!guid && !feedId && !playlistParam) { setEntryResolved(true); return; }
     if (useApp.getState().selectedPodcast) { setEntryResolved(true); return; }
     (async () => {
@@ -216,6 +251,21 @@ export function HomePage() {
       } else if (!useApp.getState().selectedEpisode) {
         openEpisode(ep);
       }
+      // A moment link starts the episode there. `play` writes `positionSec`
+      // before <Player>'s source effect runs, which applies it on
+      // `loadedmetadata` — so this is the same path a chapter tap already takes
+      // for a not-current episode, not a new one. A browser that blocks the
+      // autoplay leaves the episode loaded and parked at `startSec` with
+      // <Player> having already flipped `isPlaying` false, so the transport
+      // never claims to be playing over silence.
+      //
+      // The `current` check is the guard every other restore in this effect
+      // makes: it settles the StrictMode double-mount, and it stops a replay
+      // from yanking playback the visitor has already started.
+      if (startSec !== null && !useApp.getState().current) {
+        const pod = useApp.getState().selectedPodcast ?? loaded.podcast;
+        if (pod) useApp.getState().play(ep, pod, startSec);
+      }
     })();
   }, [setSelected, openEpisode, openDiscussion]);
 
@@ -264,22 +314,15 @@ export function HomePage() {
     else url.searchParams.delete('episode');
     if (discussionEpisode && !isPreview) url.searchParams.set('discussion', '1');
     else url.searchParams.delete('discussion');
+    // `t` is a one-shot ARRIVAL parameter, never mirrored: the selection this
+    // effect writes from carries no playback position, so there is nothing to
+    // re-derive it from and nothing that could keep it honest. Left alone it
+    // survives every later selection — opening another episode would leave the
+    // previous episode's timestamp in the address bar attached to this one, and
+    // a refresh would then start the wrong episode at the wrong second.
+    url.searchParams.delete('t');
     window.history.replaceState({}, '', url.toString());
   }, [selected?.podcastGuid, selected?.id, selected, selectedEpisode?.guid, selectedEpisode, discussionEpisode]);
-
-  /**
-   * The query string as it was when the page LOADED.
-   *
-   * A `useRef` initializer runs during render, ahead of every effect, which is
-   * the point: the mirror effects rewrite the URL on mount from state that has
-   * not hydrated yet, so by the time a restore effect runs, the params it exists
-   * to read are already gone. Unlike reading `location` in the render body this
-   * never reaches the rendered output, so it cannot cause a hydration mismatch —
-   * the reason `entryResolved` is a state flag and this is not.
-   */
-  const initialSearch = useRef<string>(
-    typeof window === 'undefined' ? '' : window.location.search,
-  );
 
   // Publisher view → ?publisher=<feedUrl>. Separate effect because the publisher
   // aside only renders in browse mode (no podcast/episode selected).

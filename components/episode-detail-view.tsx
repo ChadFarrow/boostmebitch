@@ -193,6 +193,15 @@ export function EpisodeDetailView() {
     else play(episode!, podcast!, t);
   };
 
+  // A link to one moment of this episode, for the rows of <EpisodeContents>.
+  // `undefined` — not a builder returning null — when the episode has no guid:
+  // `showShareUrl(guid, undefined, t)` returns a SHOW link, so a builder that
+  // fell through would give every row a button copying the same link to the
+  // whole show, which is the failure <ShareTargets> already documents.
+  const rowShareUrl = episode.guid
+    ? (t: number) => showShareUrl(podcast.podcastGuid, episode.guid, t)
+    : undefined;
+
   return (
     <div>
       <button onClick={closeEpisode} className="btn-ghost text-xs mb-3">
@@ -396,6 +405,7 @@ export function EpisodeDetailView() {
                   chapters={chapters}
                   currentSec={isThisPlaying ? positionSec : undefined}
                   onSeek={seekEpisodeTo}
+                  shareUrlFor={rowShareUrl}
                   fallbackImg={episode.image || podcast?.image || podcast?.artwork}
                 />
               ) : (

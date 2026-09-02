@@ -62,6 +62,7 @@ function EpisodeInfoPanel({
   hasTranscriptUrl,
   onSeek,
   currentSec,
+  shareUrlFor,
   chapterFallbackImg,
 }: {
   description: string;
@@ -78,6 +79,12 @@ function EpisodeInfoPanel({
   hasTranscriptUrl: boolean;
   onSeek: (s: number) => void;
   currentSec: number;
+  /** Builds a link to one moment of this episode, for the rows of
+   *  <EpisodeContents>. Threaded from the render site rather than rebuilt here:
+   *  this panel has never taken `episode`/`podcast`, and the guard against
+   *  `showShareUrl(guid, undefined, t)` falling through to a SHOW link belongs
+   *  where those are in scope. */
+  shareUrlFor?: (startSec: number) => string | null;
   // The episode's own art, for chapters that ship no `img` of their own.
   chapterFallbackImg?: string;
 }) {
@@ -165,6 +172,7 @@ function EpisodeInfoPanel({
             chapters={chapters}
             currentSec={currentSec}
             onSeek={onSeek}
+            shareUrlFor={shareUrlFor}
             fallbackImg={chapterFallbackImg}
           />
         ) : (
@@ -855,6 +863,16 @@ export function FullscreenPlayer({
               hasTranscriptUrl={hasTranscriptUrl}
               onSeek={seekTo}
               currentSec={positionSec}
+              // `undefined`, not a builder returning null, when the episode has
+              // no guid: `showShareUrl(guid, undefined, t)` returns a SHOW link,
+              // so a builder that fell through would give every row a button
+              // copying the same whole-show link. Same guard <ShareTargets>
+              // makes a few hundred lines up, for the same reason.
+              shareUrlFor={
+                episode.guid
+                  ? (t: number) => showShareUrl(podcast.podcastGuid, episode.guid, t)
+                  : undefined
+              }
               // `||` not `??`, plus artwork — see the same prop in
               // <ChaptersList> (episode-detail-view.tsx) for why.
               chapterFallbackImg={episode.image || podcast.image || podcast.artwork}

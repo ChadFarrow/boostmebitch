@@ -5,6 +5,7 @@ import { mergeEpisodeContents, splitAtPosition, type EpisodeContentRow } from '@
 import type { ChapterEntry, ValueTimeSplit } from '@/lib/types';
 import { RowThumb } from './chapter-ui';
 import { FavTrackHeart } from './fav-heart';
+import { CopyLinkButton } from './copy-link-button';
 
 /**
  * Everything an episode published about its own timeline, as ONE list: the
@@ -36,12 +37,22 @@ import { FavTrackHeart } from './fav-heart';
  * **Exactly one row highlights, and a track row wins.** The two lists this
  * replaces each had their own rule and merging them naively lights two rows at
  * once. See `activeIdx` below.
+ *
+ * **Every row can be shared, chapter and track alike, and that is not a widened
+ * scope — it is the merge rule showing through.** `mergeEpisodeContents` drops a
+ * chapter that starts within 2 s of a window (14 of 31 on Homegrown Hits 146),
+ * so a share button offered only on `kind === 'chapter'` rows would be missing
+ * from exactly the moments a listener is most likely to want to send, with
+ * nothing on screen explaining the gap. A timestamp is a property of the ROW,
+ * not of which of the two sources produced it — unlike the heart, which needs
+ * the window's identifiers and therefore genuinely cannot ride on a chapter.
  */
 export function EpisodeContents({
   splits,
   chapters,
   currentSec,
   onSeek,
+  shareUrlFor,
   fallbackImg,
   className = '',
 }: {
@@ -51,6 +62,18 @@ export function EpisodeContents({
    *  one playing. See `activeIdx` — undefined, never 0. */
   currentSec?: number;
   onSeek: (t: number) => void;
+  /**
+   * Builds a share URL for a row's timestamp, or `null` when there is nothing
+   * stable to link to. Omit it entirely and no row renders a share button.
+   *
+   * **URL building stays at the CALL SITE** — the rule `<CopyLinkButton>` is
+   * built around, and here it is also what keeps this component free of
+   * `episode`/`podcast` props it has never needed. The call site owes one
+   * guard in return: `showShareUrl(guid, undefined, t)` returns a SHOW link, so
+   * a surface whose episode has no guid must pass nothing rather than a builder
+   * that quietly hands every row the same show link.
+   */
+  shareUrlFor?: (startSec: number) => string | null;
   /** The episode's own art, for a row that ships none — same one-left-edge
    *  argument as the chapter lists this replaces. */
   fallbackImg?: string;
@@ -139,6 +162,19 @@ export function EpisodeContents({
               >
                 ↗
               </a>
+            )}
+            {/* A link to this exact moment. Same sibling-of-the-seek-button
+                rule as the anchor above, and the same padding so the two read
+                as one size. Icon-only (`word=""`) because the row is the
+                tightest horizontal space in the app; `title` doubles as the
+                accessible name, so nothing is lost by dropping the word. */}
+            {shareUrlFor && (
+              <CopyLinkButton
+                url={shareUrlFor(row.startTime)}
+                title={`Copy link to this ${row.kind === 'chapter' ? 'chapter' : 'track'} at ${fmt(row.startTime)}`}
+                word=""
+                className="flex-shrink-0 px-2 py-1.5 text-muted hover:text-bolt transition text-[10px] uppercase tracking-wider"
+              />
             )}
             {/* Only a track row can offer this, and <FavTrackHeart> still
                 declines when the window carries no usable identifiers. */}
