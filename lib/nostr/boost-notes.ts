@@ -4,6 +4,7 @@ import { httpUrl } from '../util';
 import { BRAND } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
+import { noteMentionTags, type MentionNpub } from './mention-tags';
 
 interface PublishArgs {
   podcast: Podcast;
@@ -13,6 +14,15 @@ interface PublishArgs {
   relays?: string[];
   /** Override the note body. Otherwise we auto-format. */
   contentOverride?: string;
+  /**
+   * People the SENDER named with an @mention, on top of the ones the feed
+   * declares for itself.
+   *
+   * Whether these become `p` tags is not a caller's decision and deliberately
+   * has no field here — it follows from which publish function is used. See
+   * noteMentionTags.
+   */
+  mentions?: MentionNpub[];
 }
 
 /**
@@ -210,8 +220,12 @@ function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
  *
  * Append-only, so the '⚡ Boost ⚡' prefix the site-sign route validates on is
  * untouched. Mirrors publishQuoteRepost's tag-plus-trailing-`nostr:`-URI shape.
+ *
+ * This takes `inBody`, which is NOT the same list as the `p` tags. A mention a
+ * site-signed note may not tag is still written here — see noteMentionTags for
+ * why the two lists differ.
  */
-function withMentions(content: string, npubs: FeedNpub[]): string {
+function withMentions(content: string, npubs: MentionNpub[]): string {
   if (!npubs.length) return content;
   return `${content}\n\n${npubs.map((n) => `nostr:${n.npub}`).join(' ')}`;
 }
@@ -240,7 +254,14 @@ function formatContent(args: PublishArgs): string {
 
 // The unsigned kind:1 boost-note template — shared by the user-signed path
 // (signAndPublish, via window.nostr) and the site-signed path (server route).
-function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
+//
+// `selfSigned` is a POSITIONAL argument rather than a field on PublishArgs, and
+// that is the point: it is not a caller's choice, it follows from which of the
+// two publish functions below was used. A field would let a call site assert
+// "this is self-signed" about a note the site is about to sign, which is the
+// one thing noteMentionTags exists to prevent. Only those two functions pass
+// it, and each passes a literal.
+function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTemplate {
   const { podcast, episode, boostagram, results } = args;
   const totalMsat =
     boostagram.value_msat_total ??
@@ -267,8 +288,16 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
   // exists to stop the SENDER leaking (it drops sender_id and replaces
   // sender_name), and a `p` tag names the RECIPIENT. An anonymous boost should
   // still reach the artist.
-  const npubs = noteNpubs(podcast, episode);
-  for (const n of npubs) tags.push(['p', n.pubkey]);
+  //
+  // Sender-chosen @mentions join them here, but only on the self-signed path —
+  // noteMentionTags owns that rule and returns the two lists separately,
+  // because a mention the site may not TAG is still written into the body.
+  const { tagged, inBody } = noteMentionTags(
+    noteNpubs(podcast, episode),
+    args.mentions,
+    selfSigned,
+  );
+  for (const n of tagged) tags.push(['p', n.pubkey]);
   // NIP-92: describe the image the body already names, so a client that renders
   // from tags shows the same picture as one that scans the text. `dim` lets it
   // reserve the space before the bytes arrive, which is why the banner has one
@@ -294,7 +323,7 @@ function buildBoostNoteTemplate(args: PublishArgs): EventTemplate {
     kind: 1,
     created_at: Math.floor(Date.now() / 1000),
     tags,
-    content: withMentions(withArt(args.contentOverride ?? formatContent(args), banner), npubs),
+    content: withMentions(withArt(args.contentOverride ?? formatContent(args), banner), inBody),
   };
 }
 
@@ -302,7 +331,9 @@ export async function publishBoostNote(
   args: PublishArgs,
 ): Promise<PublishedNote> {
   const relays = args.relays ?? DEFAULT_RELAYS;
-  return signAndPublish(buildBoostNoteTemplate(args), relays);
+  // Signed by the user's own key, so a mention they typed is attributable to
+  // them and may carry a `p` tag.
+  return signAndPublish(buildBoostNoteTemplate(args, true), relays);
 }
 
 /**
@@ -316,7 +347,10 @@ export async function publishBoostNote(
 export async function publishBoostNoteViaSite(
   args: PublishArgs,
 ): Promise<PublishedNote> {
-  const template = buildBoostNoteTemplate(args);
+  // `false`: this template goes to an UNAUTHENTICATED endpoint that signs under
+  // the site's NIP-05-verified identity, so the sender's @mentions lose their
+  // `p` tags here. The feed's own npubs keep theirs.
+  const template = buildBoostNoteTemplate(args, false);
   const res = await fetch('/api/nostr/site-sign', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
