@@ -68,7 +68,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9 flat config in `eslint.config.mjs` — `next/core-web-vitals` + `next/typescript`, `no-explicit-any` off for PI's untyped JSON), and `next build`. Path alias `@/*` → repo root.
 
-**Twenty-nine `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
+**Thirty `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
@@ -79,6 +79,7 @@ npm run dev / build / start / lint
 | `check:keysend` | `lib/v4v/keysend-lookup.ts` — which of two payment rails each lnaddress leg leaves on | under-match discards the boostagram while the sats land and the modal shows ✓; over-match lets a lookalike domain divert recipients. Needs a **warm-cache** vector or it guards nothing |
 | `check:lnurl` | `buildLnurlComment` — descriptor + message inside `commentAllowed` | the comment is an LNURL leg's ONLY metadata channel; a tight budget cuts the URL into a dead link |
 | `check:npub` | `parseFeedNpubs` — feed npubs → `p`-tags | a note `p`-tags a stranger under the site's identity, permanently |
+| `check:mentions` | `noteMentionTags` — which of the TWO `p`-tag sources may notify | the sender's own @mentions keep their tags on the site-signed path, and one unauthenticated POST notifies strangers from a NIP-05-verified identity |
 | `check:stream` | `lib/v4v/stream-ledger.ts` — accrual, settlement and the money constants | streaming drains a wallet at 60× the rate, pays nothing, or pays the same song on every reload |
 | `check:favsync` | `lib/nostr/favorites-list.ts` — the kind:10333 wire format, the merge, both baseline halves and the private half | favorites another app wrote are deleted with no undo — including the **private** half, erased by republishing `content: ''` |
 | `check:lease` | `createLeasePool` — the refcount sharing ONE NIP-47 socket | the socket closes **under a payment in flight** |
