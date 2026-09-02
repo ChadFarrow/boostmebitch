@@ -1186,17 +1186,30 @@ export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): str
 }
 
 /**
- * Canonical deep link to a show, or to one episode of it: the site ROOT with
- * `?podcast=<guid>`, plus `&episode=<itemGuid>` when one is given. Null when
- * there's no podcast guid (nothing stable to link to) or during SSR.
+ * Canonical deep link to a show, to one episode of it, or to one MOMENT in
+ * that episode: the site ROOT with `?podcast=<guid>`, plus `&episode=<itemGuid>`
+ * when one is given, plus `&t=<seconds>` when a start position is given. Null
+ * when there's no podcast guid (nothing stable to link to) or during SSR.
  *
- * Both params are restored by the same `<HomePage>` mount effect, which
- * resolves the show and then opens that episode, so an episode link is a real
- * deep link rather than a show link with a suffix. `episodeGuid` is optional
- * because the show header shares a show and the player shares what is playing
- * — one function so the two can't drift into different links for the same
- * episode, which is exactly what happened to the show link before it lived
- * here.
+ * All three params are restored by the same `<HomePage>` mount effect, which
+ * resolves the show, opens that episode and then starts it at `t`, so an
+ * episode link is a real deep link rather than a show link with a suffix.
+ * `episodeGuid` is optional because the show header shares a show and the
+ * player shares what is playing — one function so the two can't drift into
+ * different links for the same episode, which is exactly what happened to the
+ * show link before it lived here.
+ *
+ * **`startSec` is written only alongside an `episodeGuid`, and only above
+ * zero.** A timestamp indexes INTO an episode, so `?podcast=&t=` would be a
+ * show link carrying a number about nothing — and a caller that passes a
+ * position for an episode whose guid it does not have has already lost the
+ * link it meant to build, which is the failure `<ShareTargets>` documents at
+ * `components/fullscreen-player.tsx`. Zero is excluded because a row at 0:00
+ * is the episode's own start: `t=0` would differ from the plain episode link
+ * in noise alone. It is FLOORED because a chapters JSON `startTime` is
+ * fractional (`5045.605`) while the row that offers the link reads as a whole
+ * second; `lib/v4v/streaming.ts` floors the boostagram `ts` for the same
+ * reason.
  *
  * **The root, not the current pathname**, and that distinction is the whole
  * function. `?podcast=` is restored by exactly one thing — `<HomePage>`'s
@@ -1220,11 +1233,15 @@ export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): str
 export function showShareUrl(
   podcastGuid: string | undefined,
   episodeGuid?: string,
+  startSec?: number,
 ): string | null {
   if (!podcastGuid || typeof window === 'undefined') return null;
   const url = new URL('/', window.location.origin);
   url.searchParams.set('podcast', podcastGuid);
   if (episodeGuid) url.searchParams.set('episode', episodeGuid);
+  if (episodeGuid && startSec !== undefined && Number.isFinite(startSec) && startSec > 0) {
+    url.searchParams.set('t', String(Math.floor(startSec)));
+  }
   return url.toString();
 }
 
