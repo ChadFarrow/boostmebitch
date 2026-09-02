@@ -20,6 +20,7 @@
     "check:keysend": "node --experimental-strip-types scripts/check-keysend-lookup.mjs",
     "check:lnurl": "node --experimental-strip-types scripts/check-lnurl-comment.mjs",
     "check:npub": "node --experimental-strip-types scripts/check-nostr-txt.mjs",
+    "check:mentions": "node --experimental-strip-types scripts/check-mention-tags.mjs",
     "check:favsync": "node --experimental-strip-types scripts/check-favsync.mjs",
     "check:conformance": "node scripts/conformance.mjs",
     "check:readtrust": "node --experimental-strip-types scripts/check-readtrust.mjs",
