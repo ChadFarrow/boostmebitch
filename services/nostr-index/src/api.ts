@@ -6,8 +6,9 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Db } from './db.ts';
 import {
-  bundle, clampLimit, globalNotes, liveStreams, notesByAuthor, notesByIdentifier,
-  notesMentioning, profilesFor, repostsBy, zapsReceived,
+  bundle, clampLimit, clampSearchLimit, globalNotes, liveStreams, normalizeSearchQuery,
+  notesByAuthor, notesByIdentifier, notesMentioning, profilesFor, repostsBy, searchProfiles,
+  zapsReceived,
 } from './queries.ts';
 import { indexedThrough } from './store.ts';
 import { fetchEpisodeByGuid, fetchPodcastByFeedUrl, fetchPodcastByGuid, piConfigured } from './pi.ts';
@@ -227,6 +228,33 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
     const q = req.query as Record<string, string>;
     const pubkeys = (q.pubkeys ?? '').split(',').map((s) => s.trim()).filter(isHex64).slice(0, 500);
     return { profiles: await profilesFor(db, pubkeys) };
+  });
+
+  // Profiles by NAME PREFIX, for the @-mention picker. Signed kind:0 events,
+  // same as /profiles.
+  //
+  // THIS ROUTE MUST NEVER ANSWER 4xx, and that is not a style preference.
+  // askIndex (lib/nostr-index-server.ts) returns null for any !res.ok, the
+  // proxy cannot tell that from "could not ask" and answers 503, and ask() in
+  // index-client.ts latches indexOffForTab = true for the WHOLE TAB on a 503.
+  // So a 400 here — on a one-character query, say — would switch the index off
+  // for the global feed, every podcast feed, live streams and zaps until the
+  // page is reloaded. The other routes get away with 400s because the proxy's
+  // regexes reject a bad pubkey or guid before forwarding; a free-text `q` has
+  // no such structural guard. Clamp and answer an empty envelope instead.
+  //
+  // `query` echoes the normalised string back. It does two jobs: it is the
+  // positive "I answered" marker that lets the client tell an empty result from
+  // no result at all, and it lets a caller discard an out-of-order response
+  // without an AbortController.
+  app.get('/profiles/search', async (req) => {
+    const q = req.query as Record<string, string>;
+    const norm = normalizeSearchQuery(q.q);
+    if (!norm) return { profiles: [], query: '' };
+    return {
+      profiles: await searchProfiles(db, norm, clampSearchLimit(q.limit)),
+      query: norm.exact,
+    };
   });
 
   // --- Podcast Index batch -------------------------------------------------

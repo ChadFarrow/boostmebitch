@@ -286,3 +286,116 @@ export async function bundle(db: Db, notes: StoredEvent[], indexedThrough: numbe
   // localStorage cache and then to relays for anyone missing here.
   return { notes, replies, quoted, profiles, indexedThrough };
 }
+
+// --- Profile name search (the @-mention picker) ------------------------------
+
+/** Default and ceiling for one search. Small on purpose: every row is
+ *  signature-verified on the client at ~3ms, so 20 is ~60ms of arithmetic per
+ *  keystroke. Same latency reasoning as INDEX_FEED_LIMIT in index-client.ts. */
+export const DEFAULT_SEARCH_RESULTS = 10;
+export const MAX_SEARCH_RESULTS = 20;
+/** Below this we do not ask at all — a one-character prefix matches a large
+ *  fraction of the table. */
+export const MIN_SEARCH_QUERY = 2;
+export const MAX_SEARCH_QUERY = 64;
+/** How many rows each branch of the candidate union may contribute. */
+export const SEARCH_CANDIDATE_CAP = 100;
+
+export interface SearchQuery {
+  /** The typed prefix, normalised. Compared for nip05 equality. */
+  exact: string;
+  /** The same string as a LIKE pattern, metacharacters escaped. */
+  pattern: string;
+}
+
+/**
+ * Normalise a typed prefix, or null when there is no usable query.
+ *
+ * PURE — this is the half verify/check-search.mjs replays against naive().
+ *
+ * Two things here are easy to get wrong and both are silent:
+ *
+ *  - `%` and `_` are LIKE metacharacters. Unescaped, a typed "50%" matches
+ *    every profile in the table and "a_b" matches "axb". The backslash must be
+ *    escaped FIRST or the escaping is self-defeating.
+ *  - It deliberately does NOT lowercase. The generated columns were built with
+ *    Postgres `lower()`, and JS `toLowerCase()` disagrees with it on some
+ *    scripts (Turkish dotted/dotless i among them), so a JS-lowered needle
+ *    would miss a SQL-lowered haystack. Lowering happens in the query, with the
+ *    same function that built the column.
+ */
+export function normalizeSearchQuery(raw: unknown): SearchQuery | null {
+  if (typeof raw !== 'string') return null;
+  // The picker passes what the user typed, and they typed the '@' too.
+  let q = raw.normalize('NFKC').trim().replace(/^@/, '').trim();
+  if (!q) return null;
+  // Control characters cannot appear in a name anyone can type.
+  if (/[\x00-\x1f\x7f]/.test(q)) return null;
+  q = q.slice(0, MAX_SEARCH_QUERY);
+  if (q.length < MIN_SEARCH_QUERY) return null;
+  // Backslash first: escaping it after % and _ would re-escape the escapes.
+  const pattern = `${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+  return { exact: q, pattern };
+}
+
+/** Clamp a caller's `limit` into the range this service will serve. */
+export function clampSearchLimit(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_SEARCH_RESULTS;
+  return Math.min(Math.floor(n), MAX_SEARCH_RESULTS);
+}
+
+/**
+ * Profiles whose name or display_name starts with the typed prefix, as SIGNED
+ * kind:0 events — same contract as profilesFor, for the same reason.
+ *
+ * The candidate CTE caps each branch separately and orders inside each one, so
+ * the cap is meaningful: capping without an ORDER BY drops the best match at
+ * random, and not capping is unbounded on a two-letter prefix.
+ *
+ * Ranking is exact name match, then name prefix, then display_name prefix, then
+ * nip05 — and nip05 is EQUALITY only, never a prefix. A nip05 here is a
+ * self-asserted string nothing has verified, so letting it compete for short
+ * prefixes is an impersonation ramp in a picker whose job is choosing who to
+ * name. Ties break on shortest name (typing "ali" should surface "Ali" before
+ * "Alistair Longname") and then on pubkey, so the order is deterministic — an
+ * unstable order returns a different list to two visitors and makes a
+ * CDN-cached response disagree with a live one.
+ */
+export async function searchProfiles(
+  db: Db,
+  q: SearchQuery,
+  limit: number,
+): Promise<StoredEvent[]> {
+  const { rows } = await db.query<StoredEvent>(
+    `with q as (select lower($1::text) as exact, lower($2::text) as pat),
+     cand as (
+       (select p.pubkey from profiles p, q
+          where p.name_lower like q.pat escape '\\'
+          order by length(p.name_lower), p.pubkey limit $4)
+       union
+       (select p.pubkey from profiles p, q
+          where p.display_name_lower like q.pat escape '\\'
+          order by length(p.display_name_lower), p.pubkey limit $4)
+       union
+       (select p.pubkey from profiles p, q where p.nip05_lower = q.exact limit $4)
+     )
+     select r.id, r.pubkey, r.kind, r.created_at, r.content, r.tags, r.sig
+       from (
+         select p.event_id as id, p.pubkey, 0 as kind, p.created_at,
+                coalesce(p.content_raw, p.content::text) as content, p.tags, p.sig,
+                case
+                  when p.name_lower = q.exact or p.display_name_lower = q.exact then 0
+                  when p.name_lower like q.pat escape '\\' then 1
+                  when p.display_name_lower like q.pat escape '\\' then 2
+                  else 3
+                end as tier,
+                coalesce(length(p.name_lower), length(p.display_name_lower), 99) as namelen
+           from cand c join profiles p on p.pubkey = c.pubkey, q
+       ) r
+      order by r.tier, r.namelen, r.pubkey
+      limit $3`,
+    [q.exact, q.pattern, limit, SEARCH_CANDIDATE_CAP],
+  );
+  return rows;
+}
