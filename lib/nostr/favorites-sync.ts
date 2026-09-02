@@ -117,7 +117,15 @@ export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesP
     // baseline drops all of it: measured at 218 feeds and 230 items rendering
     // as an empty library, with no error anywhere. See `correctedModeFromWire`
     // for why the correction only ever runs public → private.
-    const corrected = correctedModeFromWire(existing, hasPublicNow, hasPrivateNow);
+    // THE STATED MODE FIRST, and in BOTH directions. `correctedModeFromWire`
+    // only ever corrects public → private, because emptiness cannot tell the
+    // user's intent from another app's entries and the safe direction was the
+    // only one available. `visibility` IS that intent, written by an app that
+    // could read both halves, so following it is not a guess.
+    const stated = read.list.visibility;
+    const corrected = stated && stated !== existing
+      ? stated
+      : correctedModeFromWire(existing, hasPublicNow, hasPrivateNow);
     if (corrected) {
       setFavoritesMode(npub, corrected);
       return corrected;
@@ -132,7 +140,9 @@ export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesP
   // Ungated, for the reason on `favoritesMode`: seeding follows the data, never
   // the build flag.
   const hasPrivate = read.privateUnreadable || read.privateTags.some((t) => t[0] === 'i');
-  const seeded = seedModeFromWire(hasPublic, hasPrivate);
+  // Again the tag first: emptiness answers for a list that HOLDS entries and
+  // cannot answer for one that holds none, which is where every user starts.
+  const seeded = read.list.visibility ?? seedModeFromWire(hasPublic, hasPrivate);
   if (seeded) setFavoritesMode(npub, seeded);
   return seeded;
 }
@@ -264,6 +274,7 @@ export function recordFavoritesBaseline(identity: NostrIdentity, baseline: Favor
 function cycleOptionsFor(
   identity: NostrIdentity,
   purpose?: DecryptPurpose,
+  userChose = false,
 ): SyncOptions {
   const mode = favoritesMode(identity.npub);
   return {
@@ -272,6 +283,12 @@ function cycleOptionsFor(
     // before that — so treating it as 'public' here only affects the paths that
     // have already established one.
     mode: mode ?? 'public',
+    // Only a real answer may state or change the list's `visibility`. Every
+    // background cycle and every heart toggle leaves this false, which is what
+    // stops one app's standing setting overruling the app the user last
+    // answered in — and stops a legacy list being stamped with a mode nobody
+    // picked. See `effectiveListMode`.
+    userChose,
     localCleared: storage.favCleared.get(identity.npub),
     // IN PRIVATE MODE THE DECRYPT IS NOT OPTIONAL, AND THE DEFAULT MUST NOT BE
     // "don't spend a prompt".
@@ -384,8 +401,14 @@ export function requestFavoritesSync(identity: NostrIdentity | null | undefined)
  * signer prompt, which is the route in for an Amber user whose cold start
  * deliberately never asks.
  */
-export function syncFavoritesNow(identity: NostrIdentity, purpose?: DecryptPurpose) {
-  return serializeFavoritesCycle(() => syncFavorites(cycleOptionsFor(identity, purpose)));
+export function syncFavoritesNow(
+  identity: NostrIdentity,
+  purpose?: DecryptPurpose,
+  userChose = false,
+) {
+  return serializeFavoritesCycle(() =>
+    syncFavorites(cycleOptionsFor(identity, purpose, userChose)),
+  );
 }
 
 /**

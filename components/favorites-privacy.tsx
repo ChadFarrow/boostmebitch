@@ -330,7 +330,12 @@ export function FavoritesPrivacyModal({
         // Re-read and republish under the new mode. This is the move: the half
         // being left drops what this device's baseline claims, and the half
         // being joined gains it, in one publish.
-        await syncFavoritesNow(identity, 'user-initiated');
+        //
+        // `userChose` — this press IS the answer, and it is the ONLY thing that
+        // may write the list's `visibility` tag or change one already there. A
+        // heart toggle and a page load both leave it false. See
+        // `effectiveListMode`.
+        await syncFavoritesNow(identity, 'user-initiated', true);
         await hydrateFavorites(identity);
       }
       onClose();

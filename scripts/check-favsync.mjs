@@ -80,6 +80,10 @@ import {
   planFavoritesPublish,
   showId,
   tagsFromList,
+  effectiveListMode,
+  statedVisibility,
+  withVisibility,
+  VISIBILITY_TAG,
 } from '../lib/nostr/favorites-list.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -1098,6 +1102,158 @@ section('The private half — an ambiguous wire is a QUESTION, never a guess');
   const naivePrivateFirst = (pub, priv) => (priv ? 'private' : pub ? 'public' : null);
   check('(naive) private-first moves a public account into content',
     naivePrivateFirst(true, true), 'private');
+}
+
+// ---------------------------------------------------------------------------
+section('`visibility` — the mode as a fact, not a guess from emptiness');
+// ---------------------------------------------------------------------------
+{
+  // Emptiness answers for every list that HOLDS entries and cannot answer for
+  // one that holds none — a new account, or one whose last favorite was just
+  // removed. There is no safe default there: guessing 'public' publishes the
+  // next favorite as a relay-indexed `i` tag for someone who chose Private in
+  // another app. So the event says. Spec: PC20-Nostr, "The list is public or
+  // private, and the event says which".
+  //
+  // Recorded as CALLS so the replay below is total — a vector cannot be added
+  // here without being proved against `naive()`.
+  const VIS_VECTORS = [
+    { args: [{ stored: 'private', stated: 'public' }],
+      expect: { mode: 'public', stating: 'public' },
+      why: 'a stated mode outranks this device\'s standing preference' },
+    { args: [{ stored: 'public', stated: 'private' }],
+      expect: { mode: 'private', stating: 'private' },
+      why: '...in both directions, so neither app can overrule the other silently' },
+    { args: [{ stored: 'private', stated: 'public', userChose: true }],
+      expect: { mode: 'private', stating: 'private' },
+      alsoNaive: true,
+      why: 'a real choice DOES change it — that is what the control is for' },
+    { args: [{ stored: 'public', stated: null }],
+      expect: { mode: 'public', stating: null },
+      alsoNaive: true,
+      why: 'a legacy list is not stamped with a mode nobody picked' },
+    { args: [{ stored: 'public', stated: null, userChose: true }],
+      expect: { mode: 'public', stating: 'public' },
+      alsoNaive: true,
+      why: 'and a choice is what writes the tag for the first time' },
+    { args: [{ stored: null, stated: 'private' }],
+      expect: { mode: 'private', stating: 'private' },
+      why: 'a device nobody has answered on follows the list' },
+    { args: [{ stored: null, stated: null }],
+      expect: { mode: null, stating: null },
+      alsoNaive: true,
+      why: 'and asks when the list cannot say either' },
+    { args: [{ stored: 'public', stated: 'private', userChose: true, canReadPrivate: false }],
+      expect: { mode: 'private', stating: 'private' },
+      why: 'a writer that cannot read the other half may not restate the mode' },
+    { args: [{
+        stored: 'public', stated: 'private', userChose: true,
+        canReadPrivate: false, privateIsEmpty: true,
+      }],
+      expect: { mode: 'public', stating: 'public' },
+      alsoNaive: true,
+      why: '...unless there is no other half to be blind to' },
+    { args: [{ stored: 'off', stated: 'public' }],
+      expect: { mode: 'off', stating: 'public' },
+      why: "'off' is local and states nothing of its own, but carries what it read" },
+  ];
+
+  for (const v of VIS_VECTORS) {
+    const got = effectiveListMode(...v.args);
+    check(`effectiveListMode — ${v.why}`, { mode: got.mode, stating: got.stating }, v.expect);
+  }
+
+  // TOTAL naive replay. `naive` is the version somebody would actually write:
+  // the stored setting wins and the tag is stamped from it. It is wrong about
+  // the two things that cost real data — one app overruling another, and a
+  // legacy list being stamped with a mode nobody chose.
+  //
+  // The `alsoNaive` rows are the must-still-work half, and they are exempt one
+  // at a time rather than by default: they assert the stored setting DOES win
+  // where it should, which is exactly what naive gets right. Over-blocking a
+  // deliberate mode change is a regression too.
+  const naive = (i) => ({ mode: i.stored ?? null, stating: i.stored === 'off' ? null : i.stored ?? null });
+  let proved = 0, exempt = 0;
+  for (const v of VIS_VECTORS) {
+    if (v.alsoNaive) { exempt += 1; continue; }
+    const n = naive(...v.args);
+    if (JSON.stringify(n) === JSON.stringify(v.expect)) {
+      failures += 1;
+      console.error(`  FAIL  (naive) agrees on "${v.why}" — this vector proves nothing`);
+    } else proved += 1;
+  }
+  console.log(`        ${proved} vector(s) proved against naive(), ${exempt} exempt as must-still-work`);
+
+  // THE TAG GOES ON THE EVENT AND NOWHERE ELSE. `tagsFromList` builds BOTH
+  // halves, and the private half is a tag array inside `content` — a mode
+  // stated there is a claim about the list made where no reader may act on it.
+  const evTags = withVisibility([['alt', LIST_ALT], ['i', showId(F_MUSIC)]], 'private');
+  check('the tag sits right after `alt`', evTags[1], [VISIBILITY_TAG, 'private']);
+  check('and nothing else moved', evTags.filter((t) => t[0] === 'i').length, 1);
+  check('null states nothing', withVisibility([['alt', LIST_ALT]], null), [['alt', LIST_ALT]]);
+  check('restating replaces rather than duplicating',
+    withVisibility(evTags, 'public').filter((t) => t[0] === VISIBILITY_TAG).length, 1);
+
+  // A round trip through the parser, because the tag has to survive one and
+  // must NOT come back as a foreign tag — that would replay the copy we read
+  // AND emit our own, so the event would state the mode twice with the stale
+  // one second.
+  const round = parseFavoritesList(evTags);
+  check('parse reads it', round.visibility, 'private');
+  check('and does not carry it as a foreign tag',
+    round.foreignTags.some((t) => t[0] === VISIBILITY_TAG), false);
+  check('so a rebuild states it exactly once',
+    withVisibility(tagsFromList(round), round.visibility)
+      .filter((t) => t[0] === VISIBILITY_TAG).length, 1);
+  check('statedVisibility reads a raw array', statedVisibility(evTags), 'private');
+  check('and answers null for a list that never said', statedVisibility([['alt', LIST_ALT]]), null);
+
+  // An EMPTY list still has a mode, and this is the only thing that can say so.
+  const emptyPriv = parseFavoritesList([['alt', LIST_ALT], [VISIBILITY_TAG, 'private']]);
+  check('an empty list carries a mode', emptyPriv.visibility, 'private');
+  check('...which emptiness cannot supply', seedModeFromWire(false, false), null);
+
+  // OMITTING `stating` CARRIES WHAT THE READ SAID, and this is not a
+  // convenience default. `tagsFromList` rebuilds the array from the model and
+  // `visibility` is a managed tag, so a planner call that says nothing would
+  // emit an event WITHOUT it — silently retracting a mode another app stated.
+  // `<FavoritesHydrator>` plans its own cycle and is exactly such a caller;
+  // omitting this turned every hydrate on a stated list into a
+  // `wholesale-delete` refusal, with the degraded notice up, because the
+  // rebuilt tags no longer matched the read. Found by `npm run e2e:favorites`,
+  // not by any vector above.
+  // Built through the emitter so the fixture is byte-stable — `tagsFromList`
+  // regenerates `k` and the medium runs, and a hand-written array differs from
+  // its own rebuild for reasons that have nothing to do with this rule.
+  const statedRead = withVisibility(
+    tagsFromList(parseFavoritesList([['alt', LIST_ALT], ['i', showId(F_MUSIC)]])),
+    'private',
+  );
+  const carriedPlan = planFavoritesPublish({
+    merged: parseFavoritesList(statedRead),
+    readTags: statedRead,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+  });
+  check('an omitted `stating` carries the mode the read stated',
+    statedVisibility(carriedPlan.tags), 'private');
+  check('...so a hydrate of a stated list still reads as unchanged',
+    carriedPlan.reason, 'unchanged');
+
+  // An explicit null is the deliberate "state nothing", and only a caller that
+  // has decided that may pass it.
+  const silentPlan = planFavoritesPublish({
+    merged: parseFavoritesList(statedRead),
+    readTags: statedRead,
+    exists: true,
+    trustworthy: true,
+    local: EMPTY_LOCAL,
+    mode: 'private',
+    stating: null,
+  });
+  check('an explicit null retracts it', statedVisibility(silentPlan.tags), null);
 }
 
 // ---------------------------------------------------------------------------

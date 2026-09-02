@@ -275,6 +275,69 @@ which is where this feature kept breaking.
 
 ### Where a favorite goes — public, private, or nowhere
 
+**The EVENT says which half it lives in, and that outranks anything this device
+holds.** `["visibility","public"|"private"]`, per PC20-Nostr's *"The list is
+public or private, and the event says which"*. Multi-letter on purpose: relays
+index single-letter tags, so a `["v", …]` would let a `#v=private` filter
+enumerate the pubkeys that keep a private list.
+
+**Why a tag, when the ciphertext already says it.** Almost. "Whichever half
+holds entries is the mode" answers for every list that has entries, and it is
+what both writers did. It cannot answer for a list that has NONE — a new
+account, or one whose last favorite was just removed — and that is where every
+user starts. There is no safe default there: guessing `'public'` publishes their
+next favorite as a relay-indexed `i` tag on the account of someone who chose
+Private in another app an hour ago. The tag also gives a both-halves list a
+direction to fold in, which emptiness deliberately refuses to supply.
+
+**`effectiveListMode` (import-free leaf, pinned by `check:favsync`) is the ONE
+decision, and it answers two questions at once on purpose** — which half this
+cycle writes, and whether it may say so on the wire. Splitting them is how a
+writer publishes into one half while the tag names the other.
+
+- **A stated mode outranks `favPrivacy`.** That key rides in the kind:30078
+  settings backup, whose d-tag is unbranded, so a stale one is restored on every
+  sign-in on every device and both deploys. Two apps therefore hold opposite
+  answers about one shared event; letting whichever published last win is how a
+  287-entry list flips halves on a page load with nothing on screen. Measured.
+- **Only `userChose` may write the tag or change one.** Set it where a human
+  actually answers — `<FavoritesPrivacyControl>`'s `apply` — and nowhere else. A
+  heart toggle says "save this", not "move the whole list between halves of a
+  shared event". Stamping this app's standing default on a legacy list states a
+  mode nobody picked, and on a list that already has a private half that stamp
+  is what would license disclosing it.
+- **Changing it also requires having READ the other half.** A signer with no
+  NIP-44 cannot move what it cannot see, so declaring the list public while
+  those entries stay encrypted publishes a false claim about someone's privacy —
+  and the next writer converges on the strength of it. An EMPTY private half is
+  exempt: there is nothing to be blind to, and treating it as opaque would
+  freeze every new account on such a signer at whatever the first writer guessed.
+- **With the tag, `private → public` may move another app's entries; without
+  it, it may not.** The asymmetry existed because no app could tell the user's
+  intent for the whole list from the event. The tag is that intent. `syncFavorites`
+  folds the halves in that direction only when the event already says public, or
+  the user is choosing public now in an app that can read the other half.
+- **`'off'` is local and is not on the wire.** There is no third value. Writing
+  one would tell every other writer to stop on the strength of one device's
+  setting.
+
+**OMITTING `stating` FROM A `planFavoritesPublish` CALL RETRACTS THE TAG, and
+that is not a convenience default.** `tagsFromList` rebuilds the whole array
+from the model and `visibility` is a managed tag (so a read does NOT carry it in
+`foreignTags` — carrying it would replay the copy read AND emit our own, with
+the stale one second). A caller that says nothing therefore emits an event
+*without* the tag, silently withdrawing a mode another app stated. It defaults
+to `statedVisibility(readTags)`; an explicit `null` is the deliberate "state
+nothing". `<FavoritesHydrator>` plans a cycle of its own and is exactly such a
+caller: omitting it turned **every hydrate on a stated list into a
+`wholesale-delete` refusal**, degraded notice up, because the rebuilt tags no
+longer matched the read. Found by `npm run e2e:favorites`, not by any vector.
+
+**The tag goes on the EVENT and never inside `privateTags`.** That array becomes
+`content`, and a mode stated inside a half is a claim about the list made where
+no reader may act on it — this module's own parser drops one it finds there.
+`withVisibility` is applied once, to the array that really is the event's.
+
 `storage.favPrivacy:<npub>` holds `'public' | 'private' | 'off'`, and **absent is
 a real fourth state** meaning *never chosen*. Flattening it to `'public'` would
 publish a list before the user was ever offered the choice, which is the one
@@ -282,9 +345,9 @@ ordering this feature exists to get right.
 
 - **Existing accounts are seeded, never interrogated — but only when the wire can
   actually say.** `seedFavoritesMode` reads the answer off the wire during
-  hydration, and the rule is `seedModeFromWire` in the import-free leaf so
-  `check:favsync` can hold it: only-public ⇒ `'public'`, only-private ⇒
-  `'private'`, **both or neither ⇒ null, and the user is asked**. A prompt aimed
+  hydration: the `visibility` tag first, and only then `seedModeFromWire` in the
+  import-free leaf so `check:favsync` can hold it — only-public ⇒ `'public'`,
+  only-private ⇒ `'private'`, **both or neither ⇒ null, and the user is asked**. A prompt aimed
   at someone with 200 favorites is a question about a decision made long ago, and
   answering it wrong is a publish.
 

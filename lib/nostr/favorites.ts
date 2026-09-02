@@ -15,6 +15,7 @@ import {
   decodePrivateFavorites,
   encodePrivateFavorites,
   WHOLE_LIST_PRIVACY_MOVE,
+  effectiveListMode,
   foldHalves,
   mergeFavoritesList,
   parseFavoritesList,
@@ -136,7 +137,7 @@ export interface FavoritesReadOptions {
 
 const EMPTY_READ: FavoritesRead = {
   event: null,
-  list: { nodes: [], foreignTags: [], foreignKinds: [] },
+  list: { nodes: [], visibility: null, foreignTags: [], foreignKinds: [] },
   tags: [],
   updatedAt: 0,
   exists: false,
@@ -325,6 +326,17 @@ export interface SyncOptions {
    */
   mode?: FavoritesPrivacy;
   /**
+   * Is the user CHOOSING this mode right now, rather than it being the setting
+   * this device happens to hold?
+   *
+   * Only a choice may write the `visibility` tag for the first time or change
+   * one already there. Set it where the user actually answers — the privacy
+   * dialog and the privacy control — and NOWHERE else. A heart toggle says
+   * "save this", not "move the whole list between halves of a shared event",
+   * and a page load says nothing at all. See `effectiveListMode`.
+   */
+  userChose?: boolean;
+  /**
    * Whether the user asked for this, for the private half's decrypt. Passed
    * through to `fetchFavoritesList`; omitted, the private half is not decrypted
    * at all and is carried opaquely.
@@ -405,16 +417,36 @@ export async function withdrawFavorites(
  * publishing over a list we couldn't read is not.
  */
 export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | null> {
-  const mode: FavoritesPrivacy = opts.mode ?? 'public';
+  const stored: FavoritesPrivacy = opts.mode ?? 'public';
   // See `mode` in SyncOptions. A queued cycle can land after the user has turned
   // syncing off, and publishing then is the one thing the setting promises will
   // not happen. Returning null is the same "nothing recorded" answer every other
   // refusal gives, so nothing downstream writes a baseline off it.
-  if (mode === 'off' && !opts.withdraw) return null;
+  if (stored === 'off' && !opts.withdraw) return null;
   const read = await fetchFavoritesList(opts.pubkey, opts.relays, {
     decryptPrivate: !!opts.purpose,
     purpose: opts.purpose,
   });
+
+  // THE LIST'S OWN ANSWER OUTRANKS THIS DEVICE'S SETTING.
+  //
+  // `visibility` is a fact about the list; `favPrivacy` is a preference held
+  // per app and per device, and it rides in the kind:30078 settings backup, so
+  // a stale one is restored on every sign-in on every device and both deploys.
+  // Two apps therefore hold opposite answers about one shared event, and
+  // letting whichever published last win is how a list flips halves with
+  // nothing on screen. `effectiveListMode` is the whole decision, including
+  // whether this cycle may say anything on the wire at all.
+  const { mode: effective, stating } = effectiveListMode({
+    stored,
+    stated: read.list.visibility,
+    userChose: opts.userChose,
+    // An unreadable half is one we cannot move, so we may not claim to have.
+    canReadPrivate: !read.privateUnreadable,
+    privateIsEmpty: !read.privateUnreadable && read.privateTags.every((t) => t[0] !== 'i'),
+  });
+  const mode: FavoritesPrivacy = effective ?? stored;
+  if (mode === 'off' && !opts.withdraw) return null;
 
   // ONE local list, split by the mode. Withdrawal empties both, which is what
   // makes it a removal of exactly this device's baseline rather than of the
@@ -459,8 +491,33 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
   // cycle and delete them.
   const movingWholeList = WHOLE_LIST_PRIVACY_MOVE && mode === 'private'
     && !opts.withdraw && privateMerged !== null;
-  const activeMerged = movingWholeList ? foldHalves(privateMerged!, merged) : privateMerged;
-  const publicMerged = movingWholeList ? EMPTY_PARSED : merged;
+
+  // THE SAME FOLD IN THE OTHER DIRECTION, AND ONLY A STATED MODE LICENSES IT.
+  //
+  // private → public is a disclosure: it publishes `i` tags relays index and
+  // cannot be taken back, so it has always been limited to what our baseline
+  // claims. `visibility` is the one thing that lifts that, because it is the
+  // user's intent for the WHOLE list and only a writer that could read both
+  // halves may have written it. Two ways to have it: the event already says
+  // public, or the user is choosing public right now in an app that can read
+  // the other half.
+  //
+  // Without it nothing changes — a list with no tag keeps the conservative
+  // rule, which is what `stating === null` means.
+  const licensedPublic = mode === 'public' && !opts.withdraw && privateMerged !== null
+    && (read.list.visibility === 'public' || (stating === 'public' && !!opts.userChose));
+  const movingWholePublic = licensedPublic && privateMerged!.nodes.length > 0;
+
+  const activeMerged = movingWholeList
+    ? foldHalves(privateMerged!, merged)
+    : movingWholePublic
+      ? EMPTY_PARSED
+      : privateMerged;
+  const publicMerged = movingWholeList
+    ? EMPTY_PARSED
+    : movingWholePublic
+      ? foldHalves(merged, privateMerged!)
+      : merged;
 
   const plan = planFavoritesPublish({
     merged: publicMerged,
@@ -483,6 +540,7 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     // active one.
     withdraw: opts.withdraw,
     previousBaseline: baseline,
+    stating,
   });
 
   if (plan.reason === 'degraded') {
