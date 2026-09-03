@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ModalShell } from '../modal-shell';
 import dynamic from 'next/dynamic';
 // Lazy-loaded: <SignInModal> is imported by the header-mounted <NostrAuth> on
@@ -24,6 +24,21 @@ import { AmberCompletion } from './login-methods';
 import { GoogleAuthPanel } from './google-auth-panel';
 
 type Tab = 'extension' | 'remote';
+
+// Hand a signer-app URI to Android. An anchor click rather than a bare
+// `location.href` assignment, for the reason lib/nostr/amber.ts gives: some
+// Android browsers hand a custom scheme to the intent picker reliably from a
+// click and silently drop it as a "navigation hint" from an assignment.
+function openInSignerApp(uri: string) {
+  const a = document.createElement('a');
+  a.href = uri;
+  a.rel = 'noopener';
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 
 // Single sign-in surface: one "Sign in with Nostr" button opens this modal,
 // which exposes both a Browser Extension tab and a Remote Signer tab (paste
@@ -64,9 +79,25 @@ export function SignInModal({
   // Browser-extension flow.
   const [extBusy, setExtBusy] = useState(false);
   const [extErr, setExtErr] = useState<string | null>(null);
-  // Amber flow.
+  // Amber flow, NIP-55 (`nostrsigner:` / `intent:` URL, result by callback).
   const [amberBusy, setAmberBusy] = useState(false);
   const [amberErr, setAmberErr] = useState<string | null>(null);
+  // Amber flow, NIP-46: a `nostrconnect://` link opened IN Amber, the session
+  // then runs over a relay like any bunker. This is the primary Android path
+  // and it is how StableKraft's "Amber (Android)" button has always worked.
+  // Nothing comes back by URL: no callback tab, no clipboard, no page reload,
+  // and Amber routes a `nostrconnect:` intent BEFORE the browser-id check that
+  // broke bare `nostrsigner:` URLs in 2026-08 (docs/signers.md). The installed
+  // Amber (the `free` flavor on Zapstore and F-Droid) registers the scheme as
+  // BROWSABLE; the `offline` flavor does not, which is what the NIP-55 button
+  // below is still for.
+  const [amberNcBusy, setAmberNcBusy] = useState(false);
+  const [amberNcErr, setAmberNcErr] = useState<string | null>(null);
+  // The URI this modal already handed to Amber. The memo inside
+  // loginWithNostrConnect returns the same URI on a retry, and Amber already
+  // holds that pairing, so the link is opened ONCE per URI — a retry after
+  // the user comes back must re-subscribe, not re-launch Amber.
+  const amberNcOpened = useRef<string | null>(null);
   // Paste bunker:// flow.
   const [pasteValue, setPasteValue] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -110,6 +141,25 @@ export function SignInModal({
       return false;
     }
     return submitManualAmberResult(trimmed);
+  }
+
+  async function onAmberConnect() {
+    setAmberNcBusy(true);
+    setAmberNcErr(null);
+    try {
+      const { uri, ready } = loginWithNostrConnect((url) => setGenAuthUrl(url));
+      if (amberNcOpened.current !== uri) {
+        amberNcOpened.current = uri;
+        openInSignerApp(uri);
+      }
+      const id = await ready;
+      onSuccess(id, 'bunker');
+      onClose();
+    } catch (e) {
+      setAmberNcErr(getErrorMessage(e, 'Amber connection failed'));
+    } finally {
+      setAmberNcBusy(false);
+    }
   }
 
   async function onAmber() {
@@ -189,6 +239,22 @@ export function SignInModal({
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, genErr, genBusy]);
+
+  // Same shape for the Amber nostrconnect flow: Android suspends the page's
+  // WebSocket while the user is in Amber approving, so the relay ack can land
+  // on a dead subscription. Coming back re-subscribes with the memoized URI;
+  // `amberNcOpened` keeps it from sending the user to Amber a second time.
+  useEffect(() => {
+    if (tab !== 'remote') return;
+    if (!amberNcBusy && !amberNcErr) return;
+    if (typeof document === 'undefined') return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') onAmberConnect();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, amberNcErr, amberNcBusy]);
 
   useEffect(() => {
     if (tab !== 'remote') return;
@@ -310,11 +376,34 @@ export function SignInModal({
                   {android && (
                     <div className="border border-bone/15 p-3 flex flex-col gap-2">
                       <button
-                        onClick={onAmber}
-                        disabled={amberBusy}
+                        onClick={onAmberConnect}
+                        disabled={amberNcBusy || amberBusy}
                         className="btn-bolt w-full disabled:opacity-40"
                       >
-                        {amberBusy ? 'Connecting…' : 'Sign in with Amber'}
+                        {amberNcBusy ? 'Waiting for Amber…' : 'Sign in with Amber'}
+                      </button>
+                      {amberNcBusy && (
+                        <span className="text-[11px] text-muted">
+                          Approve the connection in Amber, then come back here — this
+                          page finishes on its own. Nothing to paste.
+                        </span>
+                      )}
+                      {amberNcErr && (
+                        <span className="text-[11px] text-nostr/80">
+                          {amberNcErr.includes('timed out') || amberNcErr.includes('subscription closed')
+                            ? 'Connection dropped — approve in Amber, then tap Sign in with Amber again.'
+                            : amberNcErr}
+                        </span>
+                      )}
+                      {/* NIP-55 stays as the fallback: the `offline` Amber build
+                          has no nostrconnect handler, and a relay outage should
+                          not lock an Android user out. */}
+                      <button
+                        onClick={onAmber}
+                        disabled={amberBusy || amberNcBusy}
+                        className="btn-ghost text-[10px] py-1 px-2 self-start disabled:opacity-40"
+                      >
+                        {amberBusy ? 'Connecting…' : 'Amber without a relay (nostrsigner link)'}
                       </button>
                       {amberBusy && <AmberCompletion onSubmit={submitManualPaste} />}
                       {amberErr && <span className="text-[11px] text-nostr/80">{amberErr}</span>}
