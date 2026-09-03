@@ -383,6 +383,13 @@ export async function searchProfiles(
      select r.id, r.pubkey, r.kind, r.created_at, r.content, r.tags, r.sig
        from (
          select p.event_id as id, p.pubkey, 0 as kind, p.created_at,
+                -- Same rule as profilesFor: the client verifies every row, so
+                -- it must be the bytes the signature covers. Defence in depth
+                -- rather than a live path — migration 002 emptied this table so
+                -- no row without a raw copy survives — but a row that fell back
+                -- here would MATCH the search and then be dropped by verifyAll,
+                -- and the picker renders that as "Nobody here by that name"
+                -- about a real person.
                 coalesce(p.content_raw, p.content::text) as content, p.tags, p.sig,
                 case
                   when p.name_lower = q.exact or p.display_name_lower = q.exact then 0

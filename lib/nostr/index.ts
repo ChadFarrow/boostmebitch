@@ -80,6 +80,7 @@ export { fetchViewerReposts, useViewerReposts } from './viewer-state';
 export {
   publishBoostNote,
   publishBoostNoteViaSite,
+  noteNpubs,
 } from './boost-notes';
 
 export {

@@ -5,7 +5,7 @@ import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr, noteNpubs } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
@@ -61,6 +61,16 @@ interface Props {
 }
 
 export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props) {
+  // The exact set the published note will `p`-tag, from the one function that
+  // decides it. MEMOIZED, and that is load-bearing rather than tidiness: this
+  // is a prop on <MessageInput>, whose warm effect keys on it, and this
+  // component re-renders on every keystroke in the boostagram box. An inline
+  // `?? []` is a fresh array identity each render — `parseFeedNpubs` returns
+  // `undefined` rather than `[]` when a feed declares no npubs, which is the
+  // common case — so the effect re-ran per keystroke and fired a follow-wide
+  // kind:0 fan-out that `fetchProfilesFor` does not coalesce.
+  const feedNpubs = useMemo(() => noteNpubs(podcast, episode), [podcast, episode]);
+
   const identity = useApp((s) => s.identity);
   const bumpBoosts = useApp((s) => s.bumpBoosts);
   const [sats, setSats] = useState(0);
@@ -577,7 +587,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             onChange={setMsg}
             mentions={mentions}
             onMentionsChange={setMentions}
-            feedNpubs={episode?.nostrNpubs ?? podcast.nostrNpubs ?? []}
+            feedNpubs={feedNpubs}
             // Same condition maybePublishNote signs by: anything else and the
             // site signs, so a sender-chosen `p` tag would be dropped.
             willNotify={!!identity && shareAs === 'self'}

@@ -83,12 +83,31 @@ export function MessageInput({
 
   const full = mentions.length >= MAX_MENTION_NPUBS;
 
-  // Warm the follow list's names once the picker can be used. One batched call
-  // for the whole list — never a fetchProfile per candidate.
+  /**
+   * Warm the follow list's names ONCE, the first time the picker actually
+   * opens. One batched call for the whole list — never a fetchProfile per
+   * candidate.
+   *
+   * Two gates, and neither is optional.
+   *
+   * `trigger`, not `pickable`: `pickable` is `!!onMentionsChange`, a constant
+   * for this component's lifetime, so gating on it warmed on MODAL MOUNT — a
+   * follow-list-wide kind:0 query fired at everyone who opened the boost modal,
+   * including the large majority who never type `@`. `mention-search.ts` says
+   * it in its own docblock: call it when the picker opens.
+   *
+   * `warmed`, a ref rather than state: `fetchProfilesFor` has no in-flight
+   * coalescing and opens a fresh pool subscription per call, and relays answer
+   * an oversized fan-out by dropping the overflow in SILENCE. So a repeat is
+   * not merely wasteful, it degrades the answer. A ref because latching it must
+   * not itself cause a render.
+   */
+  const warmed = useRef(false);
   useEffect(() => {
-    if (!pickable) return;
+    if (!trigger || warmed.current) return;
+    warmed.current = true;
     void warmMentionCandidates(feedNpubs);
-  }, [pickable, feedNpubs]);
+  }, [trigger, feedNpubs]);
 
   // Local tier: synchronous, every keystroke, no network.
   useEffect(() => {

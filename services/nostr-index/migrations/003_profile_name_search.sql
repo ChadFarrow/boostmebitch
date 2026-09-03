@@ -1,39 +1,9 @@
--- Two things: repair the bytes a profile is served as, and index its name.
+-- Index a profile's name, for the @-mention picker.
 --
--- ---------------------------------------------------------------------------
--- 1. content_raw — the bytes the SIGNATURE covers
--- ---------------------------------------------------------------------------
---
--- `content` is jsonb, and jsonb is not a byte store. It sorts object keys by
--- (length, bytewise), drops duplicates, decodes escapes, and `::text` emits
--- `{"a": 1, "b": 2}` — with a space after every colon and comma. A kind:0 off
--- the wire has none of that. Measured on Postgres 16:
---
---   in   {"name":"alice","about":"hi","picture":"https://x/y.png","nip05":"a@b.c"}
---   out  {"name": "alice", "about": "hi", "nip05": "a@b.c", "picture": "https://x/y.png"}
---
--- getEventHash covers `content`, so those bytes hash to a different id and
--- `verifyEvent` returns false. `verifyAll` in lib/nostr/index-client.ts checks
--- every event this service serves — that is the point of it, it is what stops a
--- compromised index putting words under someone else's npub — so it has been
--- discarding essentially EVERY profile we serve, in feed bundles, live streams
--- and zap receipts alike. Nothing looked broken because each surface falls back
--- to relays and paints the name a second later.
---
--- `events.content` is plain text, so kind:1 was never affected. profiles is the
--- only table that puts content through jsonb.
---
--- Old rows cannot be backfilled — the raw string was never stored. They keep
--- returning the unverifiable text and the client keeps dropping them, which is
--- the safe direction, until the tracked kind:0 subscription rewrites them.
--- profiles is a declared rebuildable cache; this is what that is for.
---
--- `content` stays jsonb because the search columns below are derived from it.
-alter table profiles add column if not exists content_raw text;
-
--- ---------------------------------------------------------------------------
--- 2. Name search, for the @-mention picker
--- ---------------------------------------------------------------------------
+-- The `content_raw` repair that used to share this file shipped separately as
+-- migration 002 (#306), so this is the search half alone. `content` is still
+-- jsonb, which is what these columns are derived from — deriving them from the
+-- raw text would mean parsing JSON in SQL on every write.
 --
 -- The query is a 2-3 character LEFT-ANCHORED prefix, typed per keystroke. That
 -- is a btree range scan and nothing else.

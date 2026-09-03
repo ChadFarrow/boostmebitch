@@ -5,7 +5,7 @@ import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
@@ -41,6 +41,16 @@ interface TrackProgress {
 }
 
 export function BoostAllModal({ podcast, episode, onClose }: Props) {
+  // The exact set the published note will `p`-tag, from the one function that
+  // decides it. MEMOIZED, and that is load-bearing rather than tidiness: this
+  // is a prop on <MessageInput>, whose warm effect keys on it, and this
+  // component re-renders on every keystroke in the boostagram box. An inline
+  // `?? []` is a fresh array identity each render — `parseFeedNpubs` returns
+  // `undefined` rather than `[]` when a feed declares no npubs, which is the
+  // common case — so the effect re-ran per keystroke and fired a follow-wide
+  // kind:0 fan-out that `fetchProfilesFor` does not coalesce.
+  const feedNpubs = useMemo(() => noteNpubs(podcast, episode), [podcast, episode]);
+
   const identity = useApp((s) => s.identity);
   const bumpBoosts = useApp((s) => s.bumpBoosts);
   const [sats, setSats] = useState(100);
@@ -509,7 +519,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                 onChange={setMsg}
                 mentions={mentions}
                 onMentionsChange={setMentions}
-                feedNpubs={podcast.nostrNpubs ?? []}
+                feedNpubs={feedNpubs}
                 willNotify={!!identity && shareAs === 'self'}
               />
               <SenderName value={name} onChange={setName} anonymous={anonymous} />

@@ -198,7 +198,19 @@ const MAX_NOTE_NPUBS = 4;
  * lib/feed-xml.ts already validated and hex-decoded these, and capped each
  * list; the cap is re-applied here because this merges two of them.
  */
-function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
+/**
+ * The npubs a boost note `p`-tags for the FEED, in the order it tags them.
+ *
+ * Exported because the @-mention picker must offer exactly this set, and it is
+ * the one place that knows the answer. Both levels are CONCATENATED, not
+ * `??`-chained: an episode declaring its own npub does not displace the show's,
+ * and both get tagged. Both modals reproduced that expression by hand as
+ * `episode?.nostrNpubs ?? podcast.nostrNpubs`, so on any feed where the episode
+ * declared one, the show's npub was tagged on a published note while never
+ * appearing in the picker and never being warmed. The picker and the tagger
+ * disagreeing is invisible from either side.
+ */
+export function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
   const out: FeedNpub[] = [];
   const seen = new Set<string>();
   for (const n of [...(episode?.nostrNpubs ?? []), ...(podcast.nostrNpubs ?? [])]) {
