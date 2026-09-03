@@ -37,6 +37,46 @@ Two consequences to keep in mind, because neither is free:
 
 ### An out-of-browser signer is two signers, not one
 
+
+### The lists opt out of it; the mnemonic never does
+
+`listDecryptOnLoadOk(npub)` widens `unattendedDecryptOk()` for **the private half
+of favorites and mutes, and nothing else**. It is `unattendedDecryptOk() ||
+storage.listUnlock.get(npub)`.
+
+**The argument is that the measurement behind the gate was about a different
+secret.** What was measured on the Pixel 6 is the wallet mnemonic: twelve BIP-39
+words full-screen at launch, because Amber renders the decrypted plaintext on its
+approval sheet. That call site — `components/nostr-auth` — still calls
+`unattendedDecryptOk()` directly and must keep doing so. The two lists were swept
+into the same predicate because it was one predicate for three call sites, not
+because anyone weighed them. Their plaintext is a list of podcast ids and muted
+pubkeys.
+
+**And for the common configuration the gate was buying nothing.** A user who
+picked "Approve basic actions" when connecting Amber has the decrypt
+auto-approved: no sheet, no plaintext on screen. They were paying two notices
+that read as errors, on every cold start, plus a tap, for a protection that in
+their setup protects nothing. Reported exactly that way: *"if I just click the
+button with the error and it goes away, what's the point?"* — and the answer was
+that there wasn't one, because **tapping unlock remembered nothing**. It passed
+`'user-initiated'` for that one call and the next load started over, so it was
+not a one-time consent but a permanent tax.
+
+`storage.listUnlock` is written **only** from a control the user pressed — the
+`unlock` on `<FavoritesSyncNotice>` and the `load` on `<MutesSyncNotice>` — and
+never inferred. Both write it BEFORE the pass that spends it, because a success
+flips the sync status and unmounts the notice mid-await.
+
+**The risk this accepts, so it is not rediscovered as a bug:** a signer set to
+approve *each* request manually now prompts on cold start instead of showing a
+notice. That is a worse trade for that user. `<ListUnlockSection>` in the account
+menu is the way back, and it renders **only when the flag is set** — granting it
+removes both notices, so the surface it was granted from is gone, and nothing
+else would mention the setting. The failure is visible and one tap from
+reversible, which is the direction to fail in; it is the same asymmetry
+`storage.sparkOptOut` argues from the other side.
+
 `unattendedDecryptOk()` (`lib/nostr/signer.ts`) is the one predicate for "may we
 decrypt on a cycle nobody asked for". It used to exclude Amber alone, on the
 reasoning that a NIP-46 bunker "answers inside the browser".

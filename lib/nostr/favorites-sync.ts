@@ -151,7 +151,7 @@ export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesP
 // `canSignUnattended`, which is the question it is a sibling of and where
 // somebody looking for it would look. Re-exported so every consumer of this
 // module is unaffected — see there for what it decides and why a bunker counts.
-export { unattendedDecryptOk } from './signer';
+export { unattendedDecryptOk, listDecryptOnLoadOk } from './signer';
 
 /**
  * This device's favorites as flat wire entries — both maps in one list, because

@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useApp } from '@/lib/store';
+import { storage } from '@/lib/storage';
 import { hydrateFavorites, syncFavoritesNow } from '@/lib/nostr';
 import { resetPiBreaker } from '@/lib/podcast-meta';
 
@@ -96,6 +97,17 @@ export function FavoritesSyncNotice() {
       // explicit user retry `resetPiBreaker` was written for — it had no
       // caller until now.
       resetPiBreaker();
+      // Record the consent BEFORE the pass that spends it, and only on the
+      // unlock path. `privateUnreadable` is true for both withheld and
+      // genuinely-unreadable, which is right: in either case the user has just
+      // said "open these", and the flag only ever removes a question they have
+      // now answered. A plain relay 'retry' writes nothing — it is not about
+      // decryption at all.
+      //
+      // Before, not after, because a success unmounts this component: the
+      // hydrator flips `favoritesSync` and the notice goes away mid-await, so
+      // anything written afterwards races an unmount for no benefit.
+      if (privateUnreadable) storage.listUnlock.set(identity!.npub, true);
       // Single-flight inside the hydrator, so a double-tap joins the first run
       // rather than starting a second read-merge-publish cycle. A success
       // flips `favoritesSync` and unmounts this component from under us.

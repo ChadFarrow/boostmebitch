@@ -71,6 +71,45 @@ function BunkerHealthBanner() {
   );
 }
 
+/**
+ * The way back out of "open my private lists on load".
+ *
+ * It renders ONLY when the flag is set, and that is the point rather than an
+ * optimisation. Granting it removes the two notices from the page, so the
+ * control the user granted it from is gone; without this there is no surface
+ * left that mentions the setting at all. Showing it unconditionally would be
+ * worse in the other direction — a preference nobody has expressed, sitting in
+ * the menu explaining a state that does not apply to them.
+ *
+ * Turning it off does not re-lock anything that is already on screen. The next
+ * load simply stops asking the signer, and the notices come back, which is
+ * exactly the state the user is asking to return to.
+ */
+function ListUnlockSection({ npub }: { npub: string }) {
+  // Read once on mount rather than during render: this is localStorage, so a
+  // render-time read differs between the server pass and the first client one
+  // and React calls that a hydration mismatch.
+  const [on, setOn] = useState(false);
+  useEffect(() => { setOn(storage.listUnlock.get(npub)); }, [npub]);
+
+  if (!on) return null;
+
+  return (
+    <div className="border-t border-bone/15 mt-4 pt-3">
+      <p className="text-[10px] text-muted leading-snug">
+        Your private favorites and mutes open automatically on this device.
+      </p>
+      <button
+        type="button"
+        onClick={() => { storage.listUnlock.set(npub, false); setOn(false); }}
+        className="text-[11px] underline underline-offset-2 text-muted hover:text-nostr mt-1"
+      >
+        ask me again instead
+      </button>
+    </div>
+  );
+}
+
 export function AccountMenu({
   identity,
   onSignOut,
@@ -166,6 +205,9 @@ export function AccountMenu({
           <MutedAccountsSection />
 
           <ExportKeySection />
+
+          <ListUnlockSection npub={identity.npub} />
+
 
           {/* The theme control lives here now rather than in the page header,
               where a rarely-touched preference sat among primary actions as
