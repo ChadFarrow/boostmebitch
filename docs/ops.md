@@ -360,6 +360,21 @@ way, the fix is in the Vercel dashboard, not here:
    must print `[lnurl] <addr> → comment (desc "rss::payment::boost …")` rather
    than `NO DESCRIPTOR`.
 
+Only `BOOSTBOX_API_KEY` actually needs copying. `BOOSTBOX_URL` is unset even in
+the working local environment, and its default is already the right instance.
+
+**A synthetic `curl` at that route CANNOT tell you whether the key is right, and
+it looks like it can.** tardbox validates the request body BEFORE the API key, so
+a stub payload returns `400` whether the key is real, absent, or invented —
+measured 2026-09-03 with a deliberately bogus key and with the public `v4v4me`
+fallback, both identical to the real one. Only a schema-valid body reaches the
+auth check, and a bad key then answers `401 {"error":"unauthorized"}`. The
+required fields are `action`, `split`, `value_msat`, `value_msat_total` and
+`timestamp` — but a probe that passes them also STORES a metadata row nothing
+will ever reference, which is why step 3 is a real boost rather than a `curl`.
+The general form of the trap: a control that returns the same answer as the test
+case means the test discriminates nothing. Run the control first.
+
 **Why it stayed invisible.** The client-side warning exists
 (`[boostbox] <addr> — metadata NOT stored … proxy returned 401`), but it is a
 console line on the sender's device, and the sender's own `<BoostCard>` still
