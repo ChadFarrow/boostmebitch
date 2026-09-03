@@ -2,6 +2,11 @@
 // INDEX_ROLE. One process by default because that is the cheapest thing that
 // works; split into two Railway services by setting the role per service.
 
+// FIRST, and before anything opens a relay: selects nostr-tools' setImmediate
+// yield path over its MessageChannel one, which leaks a native handle per
+// message received. See the module for the measurement. (#301)
+import './node-yield.ts';
+
 import { config } from './config.ts';
 import { closePool, getPool } from './db.ts';
 import { migrate } from './migrate.ts';
