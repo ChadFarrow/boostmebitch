@@ -1,12 +1,27 @@
-// Pins the encoding that lets an NWC connection string reach Amber intact —
-// lib/nostr/amber-safe-text.ts and `payloadSurvivesAmber` in
-// lib/nostr/amber-callback-url.ts.
+// Pins the two encodings that let a payload reach Amber intact —
+// lib/nostr/amber-safe-text.ts (`encodeAmberSafe` for an app-private plaintext,
+// `escapeJsonForAmber` for JSON another app reads) and `payloadSurvivesAmber`
+// in lib/nostr/amber-callback-url.ts.
 //
 // Usage:
 //   npm run check:ambersafe
 //
-// Run it after ANY edit to either module, or to `publishEncryptedNwc` /
-// `fetchEncryptedNwc` in lib/nostr/wallet-backup.ts.
+// Run it after ANY edit to either module, to `AmberSigner.signEvent` in
+// lib/nostr/amber.ts, or to `publishEncryptedNwc` / `fetchEncryptedNwc` in
+// lib/nostr/wallet-backup.ts.
+//
+// ## The second bug, 2026-09-03: EVERY boost note failed the same way
+//
+// `formatContent` (lib/nostr/boost-notes.ts) writes two URLs into every note —
+// the in-app link `…/?podcast=<guid>` and the banner `…/api/og/boost.png?art=…`
+// — so every `sign_event` for a boost note carried a `?` and Amber answered
+// "Invalid request" on the phone's screen. `encodeAmberSafe` cannot fix that:
+// a `bmb1.` prefix inside a kind:1 is a note no client can read. The escape
+// that works is JSON's own — `?` written as `\u003f` — because Amber splits the
+// URI on `?` and THEN parses the JSON (IntentUtils.kt: `decoded.split("?")`,
+// then `AmberEvent.fromJson`). To the parser `\u003f` is `?`; to the splitter
+// it is nothing. The `escape*` vectors below pin both halves: no `?` reaches
+// the wire, and the parsed value is unchanged.
 //
 // ## Why this earns a check script
 //
@@ -59,6 +74,7 @@ import {
   AMBER_SAFE_PREFIX,
   encodeAmberSafe,
   decodeAmberSafe,
+  escapeJsonForAmber,
 } from '../lib/nostr/amber-safe-text.ts';
 import { payloadSurvivesAmber } from '../lib/nostr/amber-callback-url.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
@@ -106,6 +122,33 @@ const ALL_PUNCTUATION = ' !"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~';
 
 const json = (uri) => JSON.stringify({ uri });
 
+// The kind:1 template `publishBoostNote` builds, in the shape `formatContent`
+// and `boostBannerUrl` write it: both URLs carry a `?`, and the `i` tag names an
+// item guid that is itself a permalink with a query string — the three places a
+// `?` reaches an event without anyone typing one. The message ends in one too.
+const BOOST_NOTE_TEMPLATE = JSON.stringify({
+  kind: 1,
+  created_at: 1756900000,
+  tags: [
+    ['i', 'podcast:guid:917393e3-1b1e-5cef-ace4-edaa54e1f810'],
+    ['k', 'podcast:guid'],
+    ['i', 'podcast:item:guid:https://example.com/episodes/146?src=rss'],
+    ['k', 'podcast:item:guid'],
+    ['amount', '1000000'],
+    ['client', 'BoostMeBitch'],
+  ],
+  content: '⚡ Boost ⚡\n\nis this the one?\n\nChadF boosted 1000 sats → Homegrown Hits\n'
+    + '📻 Episode 146\n\nhttps://pod.link/1234\n'
+    + 'https://www.boostmebitch.com/?podcast=917393e3-1b1e-5cef-ace4-edaa54e1f810&episode=https%3A%2F%2Fexample.com%2Fepisodes%2F146%3Fsrc%3Drss\n\n'
+    + 'https://www.boostmebitch.com/api/og/boost.png?art=https%3A%2F%2Fexample.com%2Fart.jpg&title=Homegrown+Hits&ep=Episode+146&sats=1000',
+});
+// A `?` right after a backslash: JSON.stringify writes the backslash as `\\`,
+// so the escape must land AFTER the pair, not inside it.
+const BACKSLASH_THEN_QUESTION = JSON.stringify({ content: 'C:\\?\\ok' });
+// The six literal characters `\u003f` typed by a user. JSON.stringify writes
+// them as `\\u003f`; the escape must not mistake that for its own output.
+const LITERAL_ESCAPE_TEXT = JSON.stringify({ content: 'type \\u003f to ask' });
+
 // ---------------------------------------------------------------------------
 // One vector table, replayed in full below. Nothing is asserted outside it
 // except the import-free scan.
@@ -116,8 +159,24 @@ const json = (uri) => JSON.stringify({ uri });
 //   roundTrip   — decode(encode(x)) === x
 //   decode      — decodeAmberSafe(<literal>), for legacy and junk inputs
 //   raw         — payloadSurvivesAmber(<literal>), no encoding involved
+//   escapeSurvives — payloadSurvivesAmber(escapeJsonForAmber(json))
+//   escapeLossless — JSON.parse(escapeJsonForAmber(json)) deep-equals JSON.parse(json)
+//   escapeBytes    — escapeJsonForAmber(json), the literal output
 // ---------------------------------------------------------------------------
 const VECTORS = [
+  // -- the boost note, and every other `?` that reaches an event ------------
+  { label: 'a boost note template survives Amber once escaped', kind: 'escapeSurvives', args: [BOOST_NOTE_TEMPLATE], expect: true },
+  { label: 'and parses back to the identical event', kind: 'escapeLossless', args: [BOOST_NOTE_TEMPLATE], expect: true, alsoNaive: true },
+  { label: '"does this work? yes" — the measured failure — survives once escaped', kind: 'escapeSurvives', args: ['{"content":"does this work? yes"}'], expect: true },
+  { label: 'the escape is the JSON one, byte for byte', kind: 'escapeBytes', args: ['{"content":"does this work? yes"}'], expect: '{"content":"does this work\\u003f yes"}' },
+  { label: 'a ? after an escaped backslash survives', kind: 'escapeSurvives', args: [BACKSLASH_THEN_QUESTION], expect: true },
+  { label: 'and is still the same string after the backslash', kind: 'escapeLossless', args: [BACKSLASH_THEN_QUESTION], expect: true, alsoNaive: true },
+  { label: 'a typed literal \\u003f is left as the user typed it', kind: 'escapeLossless', args: [LITERAL_ESCAPE_TEXT], expect: true, alsoNaive: true },
+  // Must-still-work: an event with no `?` is not touched at all, so the bytes
+  // Amber has signed for every other note are exactly what it signed before.
+  { label: 'an event with no ? is byte-identical', kind: 'escapeBytes', args: ['{"kind":1,"tags":[],"content":"does this work. yes"}'], expect: '{"kind":1,"tags":[],"content":"does this work. yes"}', alsoNaive: true },
+  { label: 'a ? inside a tag value is escaped too', kind: 'escapeSurvives', args: [JSON.stringify([['i', 'podcast:item:guid:https://e.com/p?id=1']])], expect: true },
+
   // -- the bug, stated three ways -------------------------------------------
   { label: 'an Alby connection string survives Amber once encoded', kind: 'survives', args: [json(NWC_ALBY)], expect: true },
   { label: 'a two-relay connection string with a lud16 survives', kind: 'survives', args: [json(NWC_MULTI)], expect: true },
@@ -185,12 +244,23 @@ const VECTORS = [
 // ---------------------------------------------------------------------------
 const naiveEncode = (text) => text;
 const naiveDecode = (text) => text;
+// The second bug's shipped state: `JSON.stringify(template)` handed to Amber as-is.
+const naiveEscape = (text) => text;
+
+const deepEqualJson = (a, b) => JSON.stringify(JSON.parse(a)) === JSON.stringify(JSON.parse(b));
 
 function call(impl, v) {
   const real = impl === 'real';
   const enc = real ? encodeAmberSafe : naiveEncode;
   const dec = real ? decodeAmberSafe : naiveDecode;
+  const esc = real ? escapeJsonForAmber : naiveEscape;
   switch (v.kind) {
+    case 'escapeSurvives':
+      return payloadSurvivesAmber(esc(...v.args));
+    case 'escapeLossless':
+      return deepEqualJson(esc(...v.args), v.args[0]);
+    case 'escapeBytes':
+      return esc(...v.args);
     case 'survives':
       return payloadSurvivesAmber(enc(...v.args));
     case 'fixedPoint': {

@@ -5,7 +5,9 @@
 // Two ways a result can come back, and the app uses both:
 //
 //   CLIPBOARD (the original, still the default). Same-tab navigation to
-//   `nostrsigner:<payload>?type=…&returnType=…` with NO callbackUrl. Per
+//   Amber with NO callbackUrl — as an `intent:` URL carrying the NIP-55
+//   parameters as extras, see buildSignerIntentUrl for why not `nostrsigner:`
+//   directly. Per
 //   NIP-55: "If you don't send a callback url, Signer Application will copy
 //   the result to the clipboard." Returning to the page is then the USER's
 //   job, which is what the capture-phase pointer/touch/key listeners below are
@@ -54,7 +56,7 @@ import { nip19, verifyEvent, type Event, type EventTemplate } from 'nostr-tools'
 import {
   AMBER_CALLBACK_PATH,
   buildAmberCallbackUrl,
-  buildSignerUrl,
+  buildSignerIntentUrl,
   looksLikeAmberResult,
   newAmberRequestId,
   amberRecordIsFresh,
@@ -62,6 +64,7 @@ import {
   type AmberRequestType,
   type AmberUrlOptions,
 } from './amber-callback-url';
+import { escapeJsonForAmber } from './amber-safe-text';
 // A VALUE import of lib/storage.ts from inside lib/nostr/ used to be a cycle
 // (storage -> auth -> signer -> amber -> storage). It is not any more: the one
 // edge that made it real, `coerceProfileMetadata`, moved down into the
@@ -213,7 +216,10 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
   const rid = newAmberRequestId();
   const useCallback = RESUMABLE_TYPES.has(opts.type) && typeof location !== 'undefined';
   const callbackUrl = useCallback ? buildAmberCallbackUrl(location.origin, rid) : undefined;
-  const signerUrl = buildSignerUrl(opts, callbackUrl);
+  // An `intent:` URL, never a bare `nostrsigner:` one: Chromium no longer
+  // marks the intent as a browser's, and without that mark Amber reads the
+  // request from extras a bare URL cannot carry. See amber-callback-url.ts.
+  const signerUrl = buildSignerIntentUrl(opts, callbackUrl);
 
   if (useCallback) {
     // Park what the callback page needs to recognise the answer. No payload and
@@ -387,10 +393,10 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       );
     }, AMBER_TIMEOUT_MS);
 
-    // Dispatch nostrsigner: via same-tab navigation. Android intercepts the
-    // URL scheme and routes to Amber; the browser tab stays alive on the
+    // Dispatch via same-tab navigation. The browser turns the `intent:` URL
+    // into an ACTION_VIEW at Amber's package; the tab stays alive on the
     // original page because the navigation was hijacked. If Amber isn't
-    // installed the browser will navigate to an error page — the timeout
+    // installed the browser sends the user to its store listing — the timeout
     // (and the user's reload) recover.
     //
     // We use an anchor click rather than `location.href = …` because some
@@ -469,7 +475,14 @@ export class AmberSigner implements AmberSignerInterface {
   }
 
   async signEvent(template: EventTemplate): Promise<Event> {
-    const eventJson = JSON.stringify(template);
+    // Amber URL-decodes the whole `nostrsigner:` URI and splits it on `?`
+    // BEFORE it parses the JSON, so a literal `?` anywhere in the template —
+    // a typed message, a permalink item guid, and the two URLs `formatContent`
+    // writes into EVERY boost note — truncated the request and Amber answered
+    // "Invalid request". `\u003f` is the same string to Amber's JSON parser
+    // and is not a `?` to its splitter; the event it signs is byte-identical
+    // to the one it would have signed. See ./amber-safe-text.
+    const eventJson = escapeJsonForAmber(JSON.stringify(template));
     const signed = await invokeAmber({
       type: 'sign_event',
       payload: eventJson,

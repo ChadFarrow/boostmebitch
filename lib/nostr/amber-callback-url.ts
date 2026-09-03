@@ -61,23 +61,83 @@
 // neither terminate the fragment nor forge a second separator. Verified on the
 // wire: a signed event arrived as `%7B%22id%22%3A…`.
 //
-// ## What this does NOT fix
+// ## The same bug, one field over: a `?` in the PAYLOAD
 //
-// A literal `?` ANYWHERE in the event JSON breaks `sign_event` outright, today,
-// on the clipboard path this file does not touch — same split-on-`?` cause.
-// Measured: `"does this work. yes"` signs; `"does this work? yes"` returns
-// "Invalid request. Amber received a malformed nostrsigner request." `&` is
-// fine (`"Mutton & Mead — track 3"` round-tripped intact, em-dash included).
-// It needs an upstream Amber fix; NIP-55's URL scheme gives us no way to keep
-// the payload out of the URI. It surfaces as "Amber didn't come back", which is
-// indistinguishable from the bug this file DOES fix — so do not read a report
-// of that symptom as evidence about this code.
+// A literal `?` ANYWHERE in the event JSON breaks `sign_event` outright — same
+// split-on-`?` cause, and Amber splits BEFORE it parses the JSON. Measured:
+// `"does this work. yes"` signs; `"does this work? yes"` returns "Invalid
+// request. Amber received a malformed nostrsigner request." `&` is fine
+// (`"Mutton & Mead — track 3"` round-tripped intact, em-dash included). NIP-55's
+// URL scheme gives us no way to keep the payload out of the URI, and Amber's
+// `compressionType=gzip` applies to the RESPONSE only (IntentUtils.kt), so it
+// is no escape hatch either.
 //
-// It IS fixable for a payload this app chooses rather than the user, which is
-// what ./amber-safe-text is for: the NWC connection string carries a `?relay=`
-// in every one there has ever been, so the backup failed for every Android user
-// rather than for the occasional question mark. `payloadSurvivesAmber` below is
-// the predicate both cases read.
+// Both fixes live in ./amber-safe-text, and which one applies is decided by who
+// READS the plaintext:
+//   - `escapeJsonForAmber` writes `?` as its JSON escape `\u003f` — the same
+//     string to any JSON parser, no `?` to Amber's splitter. This is what
+//     `AmberSigner.signEvent` hands Amber, and it is the fix for the boost note,
+//     whose body carries `…/?podcast=` and `…/boost.png?art=` in EVERY note.
+//   - `encodeAmberSafe` wraps a plaintext only this app reads (the NWC
+//     connection string, whose `?relay=` is structural) in `bmb1.<base64url>`.
+// `payloadSurvivesAmber` below is the predicate both read; `invokeAmber` still
+// uses it to NAME this cause in its timeout message for any payload neither
+// fix reached.
+//
+// ## Why the request is an `intent:` URL and not a bare `nostrsigner:` one
+//
+// Found 2026-09-03: sign-in — `get_public_key`, no JSON, no `?` anywhere —
+// came back "Invalid request" too. That one is not the parser above; it is
+// the branch BEFORE it. Amber's `getIntentData` (IntentUtils.kt) routes on
+// whether the intent carries `Browser.EXTRA_APPLICATION_ID`:
+//
+//     intent.extras?.getString(Browser.EXTRA_APPLICATION_ID) == null
+//         → getIntentDataFromIntent      reads type/callbackUrl/… from EXTRAS
+//         → getIntentDataWithoutExtras   parses the nostrsigner: URL
+//
+// Chromium set that extra on every intent it fired for a page, which is why
+// the URL form ever worked from a browser. It stopped: `ExternalNavigation-
+// Handler.prepareExternalIntent` now skips it behind
+// `DontClobberTabsWithChromeAppId` (landed 2026-07-20, ENABLED_BY_DEFAULT,
+// in stable by late August; Brave inherits it). So a bare `nostrsigner:` URL
+// from an up-to-date Chromium reaches the extras branch with no `type`
+// extra, and Amber answers "Unknown signer type: null" — the same screen as
+// the `?` bug, for a different reason, with nothing this app can read.
+//
+// The extras are reachable from a page: Android's `Intent.parseUri` turns
+//
+//     intent:<data>#Intent;scheme=nostrsigner;package=<pkg>;S.type=…;end
+//
+// into `ACTION_VIEW nostrsigner:<data>` with one String extra per `S.` field
+// (Intent.java: `data = scheme + ':' + data.substring(7)`, `putExtra(
+// Uri.decode(key), Uri.decode(value))`). Chromium parses an `intent:` URL
+// with exactly that call and passes the extras through (it strips only
+// `browser_fallback_url`). `buildSignerIntentUrl` writes that form.
+//
+// Two shapes, on purpose, because BOTH Chromium generations must work:
+//
+//  - `get_public_key` keeps the whole legacy `nostrsigner:?…&callbackUrl=…`
+//    as its data. Old Chromium still sets the extra, takes the URL branch,
+//    and parses it as it always has; new Chromium takes the extras branch,
+//    which never looks at a `get_public_key`'s data. The bytes `check:amber`
+//    pinned for that request are therefore unchanged. It also sidesteps a
+//    third branch: a data of exactly `nostrsigner:` is swallowed whenever
+//    Amber holds a pending bunker request.
+//  - Every request WITH a payload sends `nostrsigner:<payload>` alone, no
+//    query. The extras branch decodes the data whole — JSON, ciphertext — so
+//    a trailing `?type=…` would be parsed as part of the event. Old Chromium
+//    still lands in the extras branch: the URL branch finds no `?`, so
+//    `parameters` is empty, and Amber falls through to
+//    `getIntentDataFromIntent` itself. That fall-through is what makes the
+//    `?` escape above load-bearing twice over — a `?` in the data would
+//    become a parameter and a rejected request on the old branch.
+//
+// Values inside the fragment are sliced at `;` and `=` BEFORE `Uri.decode`,
+// and the data part ends at the LAST `#`, so every value is
+// `encodeURIComponent`'d and the callback URL's own `#` and `;` ride as
+// `%23` and `%3B`. `assertCallbackUrlSafe` still applies: the extras branch
+// hands `callbackUrl` to `Uri.encode(result)` appended verbatim, same as
+// the URL branch.
 // ---------------------------------------------------------------------------
 
 /** The six NIP-55 methods this app asks for. */
@@ -104,6 +164,10 @@ export interface AmberUrlOptions {
 /** The in-scope route Amber navigates back to. `scope: "/"` in
  *  android/twa-manifest.json already covers it, so the TWA needs no change. */
 export const AMBER_CALLBACK_PATH = '/amber-callback';
+
+/** Amber's application id — the `package=` of the `intent:` URL, so the
+ *  browser resolves the request to Amber without an app picker. */
+export const AMBER_PACKAGE = 'com.greenart7c3.nostrsigner';
 
 /** Separates the request id from the result inside the fragment. Safe because
  *  Amber's `Uri.encode` escapes `;` in whatever it appends. */
@@ -196,13 +260,13 @@ export function assertCallbackUrlSafe(url: string): void {
  * This is a PREDICATE, not an assertion, and that is deliberate. Two callers
  * want different things from the same fact:
  *
- *  - The NWC backup can avoid the character entirely (see
- *    `./amber-safe-text`), because this app chooses that plaintext.
- *  - A boost message, a live-chat line or an episode title cannot — the user
- *    typed it, and the only honest answer is a legible error rather than the
- *    60-second silence that reads as "Amber didn't come back". So `invokeAmber`
- *    names this cause in its timeout message and changes nothing else. Throwing
- *    here would fail a boost note the user has already paid for.
+ *  - A payload this app shapes avoids the character (see `./amber-safe-text`):
+ *    JSON — every event, every JSON plaintext — through `escapeJsonForAmber`,
+ *    an app-private plaintext through `encodeAmberSafe`.
+ *  - Anything neither reached gets a legible error rather than the 60-second
+ *    silence that reads as "Amber didn't come back": `invokeAmber` names this
+ *    cause in its timeout message and changes nothing else. Throwing here
+ *    would fail a boost note the user has already paid for.
  *
  * Measured on Amber 6.3.0 and again on 6.5.2: `"does this work. yes"` signs,
  * `"does this work? yes"` does not.
@@ -245,6 +309,31 @@ export function buildSignerUrl(opts: AmberUrlOptions, callbackUrl?: string): str
     assertCallbackUrlSafe(callbackUrl);
     url += `&callbackUrl=${encodeURIComponent(callbackUrl)}`;
   }
+  return url;
+}
+
+/**
+ * The `intent:` URL that reaches Amber's extras branch — the request this
+ * app actually dispatches. See the header for why it is not `buildSignerUrl`.
+ *
+ * Android rebuilds it as `nostrsigner:<data>` plus one String extra per `S.`
+ * field. `type` and `returnType` are always sent; `pubkey` when the request
+ * has a peer; `callbackUrl` when the caller can survive the reload it costs.
+ * The data part is the legacy URL for `get_public_key` and the bare encoded
+ * payload for everything else — the header says why each is what it is.
+ */
+export function buildSignerIntentUrl(opts: AmberUrlOptions, callbackUrl?: string): string {
+  const legacy = buildSignerUrl(opts, callbackUrl);
+  const data = opts.type === 'get_public_key'
+    ? legacy
+    : `nostrsigner:${encodeURIComponent(opts.payload ?? '')}`;
+  let url = `intent:${data.slice('nostrsigner:'.length)}`;
+  url += `#Intent;scheme=nostrsigner;package=${AMBER_PACKAGE}`;
+  url += `;S.type=${opts.type}`;
+  url += `;S.returnType=${opts.returnType ?? 'signature'}`;
+  if (opts.pubkey) url += `;S.pubkey=${opts.pubkey}`;
+  if (callbackUrl) url += `;S.callbackUrl=${encodeURIComponent(callbackUrl)}`;
+  url += ';end';
   return url;
 }
 

@@ -1,4 +1,5 @@
 import type { EventTemplate } from 'nostr-tools';
+import { escapeJsonForAmber } from './amber-safe-text';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, type PublishedNote } from './publish';
 import {
@@ -278,7 +279,11 @@ export async function publishMuteList(
       ...state.privateOtherTags,
       ...state.privatePubkeys.map((pk) => ['p', pk]),
     ];
-    const plaintext = JSON.stringify(innerTags);
+    // Escaped, not encoded: another client reads this half, so it must stay
+    // plain JSON, and `\u003f` is `?` to every JSON reader while being no `?`
+    // to Amber's URI splitter. A muted word with a question mark otherwise
+    // fails the whole publish on Android — see lib/nostr/amber-safe-text.ts.
+    const plaintext = escapeJsonForAmber(JSON.stringify(innerTags));
 
     // A list we read as plaintext is not a form to preserve: kind:10000's
     // `content` is specified as encrypted, so plaintext there is a malformed
