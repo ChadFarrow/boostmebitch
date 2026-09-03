@@ -98,6 +98,14 @@ export function SignInModal({
   // holds that pairing, so the link is opened ONCE per URI — a retry after
   // the user comes back must re-subscribe, not re-launch Amber.
   const amberNcOpened = useRef<string | null>(null);
+  // `startNostrConnect` memoizes the URI and the client key, but builds a FRESH
+  // `ready` (a new relay subscription) on every call — so the visibility-driven
+  // retry below runs alongside the click-driven attempt rather than replacing
+  // it. Without this, two acks would call finalizeBunkerLogin twice (two live
+  // transports, onSuccess/onClose on an unmounted modal), and the older
+  // attempt's 120 s timeout would write "Connection dropped" over a session
+  // that is still coming up. Only the newest attempt may report anything.
+  const amberNcAttempt = useRef(0);
   // Paste bunker:// flow.
   const [pasteValue, setPasteValue] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -144,6 +152,8 @@ export function SignInModal({
   }
 
   async function onAmberConnect() {
+    const attempt = ++amberNcAttempt.current;
+    const isCurrent = () => amberNcAttempt.current === attempt;
     setAmberNcBusy(true);
     setAmberNcErr(null);
     try {
@@ -153,12 +163,16 @@ export function SignInModal({
         openInSignerApp(uri);
       }
       const id = await ready;
+      // A superseded attempt that wins its race anyway must not sign in a second
+      // time; the newest attempt owns the session.
+      if (!isCurrent()) return;
       onSuccess(id, 'bunker');
       onClose();
     } catch (e) {
+      if (!isCurrent()) return;
       setAmberNcErr(getErrorMessage(e, 'Amber connection failed'));
     } finally {
-      setAmberNcBusy(false);
+      if (isCurrent()) setAmberNcBusy(false);
     }
   }
 
@@ -247,6 +261,13 @@ export function SignInModal({
   useEffect(() => {
     if (tab !== 'remote') return;
     if (!amberNcBusy && !amberNcErr) return;
+    // `amberNcErr` keeps this listener attached after a failed relay attempt,
+    // which is wanted — but the documented next move is the NIP-55 fallback in
+    // the same box. Coming back from THAT trip is a visibilitychange too, and
+    // restarting nostrconnect on it disables the fallback button under the
+    // user's own in-flight request and relabels the primary one. A NIP-55
+    // request in flight owns the return.
+    if (amberBusy) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
       if (document.visibilityState === 'visible') onAmberConnect();
@@ -254,7 +275,7 @@ export function SignInModal({
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, amberNcErr, amberNcBusy]);
+  }, [tab, amberNcErr, amberNcBusy, amberBusy]);
 
   useEffect(() => {
     if (tab !== 'remote') return;

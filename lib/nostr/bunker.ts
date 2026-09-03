@@ -367,19 +367,20 @@ export function startNostrConnect(
       clientPubkey,
       relays: NOSTRCONNECT_RELAYS,
       secret,
-      // wireName, NOT displayName, and the reason is an encoding one.
-      // `createNostrConnectURI` builds its query with `new URLSearchParams()`
-      // (nostr-tools nip46.js), which is application/x-www-form-urlencoded —
-      // where a space is `+`, not `%20`. Amber percent-decodes and renders the
-      // `+` literally, so "Boost Me Bitch" reached the approval sheet as
-      // "Boost+Me+Bitch". MEASURED on a Pixel 6 with Amber 6.5.2.
+      // `wireName`, NOT `displayName`, and the reason is the encoder rather
+      // than taste: createNostrConnectURI builds the query with
+      // URLSearchParams, which writes a space as `+`. Amber percent-decodes and
+      // leaves `+` alone, so "Boost Me Bitch" reached its approval screen as
+      // "Boost+Me+Bitch" — measured on a Pixel 6, Amber 6.5.2. That screen is
+      // where a user decides whether to trust this app, so the name has to be
+      // right. `wireName` is the brand's no-spaces form and already serves the
+      // same purpose in the boostagram `app_name` and the note `client` tag.
       //
-      // That string is what a user reads to decide whether to trust a signer
-      // with their key, so it looking mangled is not cosmetic. `wireName` has
-      // no spaces by construction and is already this repo's identity for
-      // wire-facing surfaces — the boostagram `app_name` and the `client` tag —
-      // so it sidesteps the encoding instead of escaping around it, and it
-      // keeps the two deploys apart in Amber's connection list.
+      // It also keeps the two deploys apart in Amber's CONNECTION LIST, which
+      // is not a bonus but the second half of the same measurement: Amber keys
+      // a connection by this name, so while both deploys sent the identical
+      // string it offered to REPLACE the existing connection — the live site's
+      // signer link — when the other one signed in.
       name: BRAND.wireName,
     });
     nostrconnectMemo = { uri, clientSk, secret };

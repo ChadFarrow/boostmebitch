@@ -103,6 +103,7 @@ const KEYS = {
   // and their memory mirror would outlive the tab lifetime that makes these
   // safe.
   nwcUriSessPrefix: 'bmb:nwc_uri_sess', // + ':<npub>' — NWC URI parked across a same-account sign-out → sign-in in one tab. A SPENDING CREDENTIAL; tab-scoped on purpose.
+  amberTab: 'bmb:amber_tab',          // the rid of the Amber request THIS TAB dispatched. Its presence on /amber-callback means the callback replaced the very window that asked, instead of opening a new tab beside it.
   piDead: 'bmb:pi:dead',              // '1' while the Podcast Index breaker is tripped. Survives a reload (an outage doesn't end because someone refreshed), not the tab.
   // Streaming rate and streaming on/off are SEPARATE keys, at both scopes, so
   // switching streaming off doesn't destroy the number the user typed. Also the
@@ -1794,6 +1795,41 @@ export const storage = {
     clear: () => { safeRemove(KEYS.amberPending); },
   },
 
+  /**
+   * The rid of the Amber request THIS TAB dispatched, if any.
+   *
+   * sessionStorage on purpose, and it answers the one question `amberPending`
+   * cannot: that record is localStorage, so every window of the origin reads
+   * it. sessionStorage survives a same-origin navigation inside one tab and is
+   * absent in a newly opened one. So on /amber-callback, a rid that matches the
+   * pending record means the callback REPLACED the window that asked; anything
+   * else means it landed somewhere that window cannot see.
+   *
+   * That is the distinction `standalone` alone gets wrong. A Trusted Web
+   * Activity matches `(display-mode: standalone)` AND takes the https callback
+   * into its own window — measured on a Pixel 6, where the callback resolved to
+   * CustomTabActivity with `document.referrer` = `android-app://<pkg>/` and
+   * `matchMedia('(display-mode: standalone)').matches` was true. A display-mode
+   * test alone therefore tells that window to park an answer and wait for a
+   * second window that does not exist.
+   *
+   * A request id and nothing else. No secret may go here.
+   */
+  amberTab: {
+    get: (): string | null => {
+      if (!isBrowser()) return null;
+      try { return sessionStorage.getItem(KEYS.amberTab); } catch { return null; }
+    },
+    set: (rid: string) => {
+      if (!isBrowser()) return;
+      try { sessionStorage.setItem(KEYS.amberTab, rid); } catch { /* blocked */ }
+    },
+    clear: () => {
+      if (!isBrowser()) return;
+      try { sessionStorage.removeItem(KEYS.amberTab); } catch { /* blocked */ }
+    },
+  },
+
   amberResult: {
     get: (): AmberParkedResult | null => {
       const raw = safeGet(KEYS.amberResult);
@@ -1821,8 +1857,13 @@ export const storage = {
      */
     set: (result: AmberParkedResult): boolean => {
       if (!AMBER_PERSISTABLE_TYPES.has(result.type)) return false;
-      safeSet(KEYS.amberResult, JSON.stringify(result));
-      return true;
+      // Hand back whether the value actually REACHED DISK, rather than a bare
+      // `true`. On a full or blocked store `safeSet` falls back to the memory
+      // mirror, which no other window can read and which fires no `storage`
+      // event — so the window that asked waits out its timeout while this page
+      // claims the sign-in landed. The caller's refusal screen is the honest
+      // answer, and it still shows the raw value for a manual paste.
+      return safeSet(KEYS.amberResult, JSON.stringify(result));
     },
     /** Read and delete in one step. A parked result is single-use: leaving it
      *  behind would let a stale answer resolve a later request. */

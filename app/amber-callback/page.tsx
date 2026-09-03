@@ -32,10 +32,15 @@
 //    That is why the pending record and the parked result are localStorage —
 //    sessionStorage is per-tab and was never there. See lib/storage.ts.
 //
-//    "Not for this tab" is still reachable and still gets a screen: with the
-//    Android app installed and verified, the callback can resolve to the TWA
-//    rather than to a browser at all, which is a different storage partition
-//    entirely. The right thing there is to say so and let the user paste.
+//    THE TWA IS THE OPPOSITE CASE, and it is not a different storage
+//    partition — Chrome hands a verified TWA the same profile as the site,
+//    which is the whole premise of the assetlinks rule in CLAUDE.md. Measured
+//    2026-09-03 on a Pixel 6 with com.boostmebitch installed and
+//    www.boostmebitch.com `verified`: an https ACTION_VIEW on /amber-callback
+//    resolved to CustomTabActivity, i.e. INTO the app, replacing the window
+//    that asked. So there the callback reaches the same localStorage AND the
+//    same tab. Point 4's parking rule must not fire there; `amberTab` is what
+//    separates the two.
 //
 // 4. FROM A HOME-SCREEN APP THE CALLBACK LANDS IN A BROWSER TAB, ALWAYS — and
 //    that tab must NOT become the app. Measured 2026-09-03 on boostmebuddy.com
@@ -196,9 +201,28 @@ export default function AmberCallbackPage() {
 
     // Back where the user was, not to `/`. `replace`, so this page does not sit
     // in history between them and the back button.
-    const back = pending.origin && pending.origin.startsWith('/') ? pending.origin : '/';
+    // `startsWith('/')` is not "same origin": `//evil.com` and `/\evil.com` are
+    // both protocol-relative, and `location.pathname` really is `//evil.com`
+    // for a visit to `https://<us>//evil.com`, so a sign-in begun from such a
+    // URL would send the user off-site. A second leading slash or backslash is
+    // the whole test, and it runs before the value is navigated to OR offered
+    // as a button.
+    const origin = pending.origin ?? '';
+    const sameSite =
+      origin.startsWith('/') && origin[1] !== '/' && origin[1] !== '\\';
+    const back = sameSite ? origin : '/';
 
-    if (pending.standalone) {
+    // `standalone` says the window that asked was an installed app. It does NOT
+    // say this page landed somewhere else, and a Trusted Web Activity is the
+    // case where both are true at once: it matches `(display-mode: standalone)`
+    // and Android hands it the https callback, which REPLACES the very window
+    // that asked. Parking there leaves nobody to consume the answer, and tells
+    // a user already inside the app to switch to it. `amberTab` is the missing
+    // half — sessionStorage, so it is here only if this document is the one
+    // that dispatched the request.
+    const replacedTheAsker = storage.amberTab.get() === pending.rid;
+    if (replacedTheAsker) storage.amberTab.clear();
+    if (pending.standalone && !replacedTheAsker) {
       // The window that asked is a home-screen app and is still open; it has
       // just been told by the `storage` event. This tab's only job was the
       // write above. Closing is best-effort — a browser may refuse to close a
