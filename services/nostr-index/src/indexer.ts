@@ -554,15 +554,54 @@ export class Indexer {
       console.log(
         `[indexer] idle: nothing ingested this minute, ` +
         `${connected.length}/${this.relays.length} relays connected` +
-        (subless.length ? `, ${subless.length} WITHOUT SUBSCRIPTIONS` : ''),
+        (subless.length ? `, ${subless.length} WITHOUT SUBSCRIPTIONS` : '') +
+        ` ${this.memoryLine()}`,
       );
       return;
     }
     console.log(
       `[indexer] stored=${s.stored} profiles=${s.profiles} deleted=${s.deleted} ` +
-      `rejected=${s.rejected} ${JSON.stringify(s.rejectReasons)}`,
+      `rejected=${s.rejected} ${JSON.stringify(s.rejectReasons)} ${this.memoryLine()}`,
     );
     this.stats = emptyStats();
+  }
+
+  /**
+   * The four numbers needed to explain an OOM, on the line that already prints
+   * every minute.
+   *
+   * This service ran out of heap at ~2046 MB after 3h22m and stopped itself,
+   * and nothing in any log said the memory was climbing — the outage was found
+   * three days later by someone reading `/api/nostr/index` 503s. A growth curve
+   * costs one line a minute and is the difference between a leak that is
+   * measurable and one that has to be reproduced from scratch, which was tried
+   * and failed: a local run under the same code sat FLAT for 18 minutes because
+   * it ingests ~6 events a minute where production ingests thousands.
+   *
+   * Each number answers a specific question that reading the code did not:
+   *
+   *  - `heap` and `rss` — is it growing at all, and how fast. Both, because a
+   *    gap between them is external memory (sockets, buffers), which is not
+   *    what `--max-old-space-size` bounds and not what the OOM reported.
+   *  - `subs` — `subCount()` across every group. The first hypothesis was that
+   *    rebuilds leaked subscriptions; an isolated probe opened and closed 1,290
+   *    and rejected it, but that was against ONE mock relay, and the real thing
+   *    runs five, one of which refuses REQs. If this climbs while heap climbs,
+   *    that hypothesis is back.
+   *  - `seen` — the dedupe set, capped at SEEN_CAP and then CLEARED WHOLE. That
+   *    is the one number that explains production's `profiles=5206` minutes: at
+   *    the clear, every re-delivered profile stops being a duplicate and gets
+   *    reprocessed. A sawtooth here that lines up with heap steps identifies it;
+   *    a flat `seen` under a climbing heap rules it out.
+   *
+   * `rss` uses `process.memoryUsage.rss()`, which does not allocate the object
+   * the full call does — this runs on a timer for the life of the process.
+   */
+  private memoryLine(): string {
+    const mb = (n: number) => Math.round(n / 1024 / 1024);
+    const m = process.memoryUsage();
+    return `heap=${mb(m.heapUsed)}/${mb(m.heapTotal)}MB rss=${mb(process.memoryUsage.rss())}MB `
+      + `ext=${mb(m.external)}MB subs=${this.subCount()} seen=${this.seen.size}`;
   }
 }
 
