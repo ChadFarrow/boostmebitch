@@ -222,6 +222,20 @@ from the internet.
 > this service and was caught only by reading the runtime log and noticing the
 > package name.
 >
+> **A failed upload still creates a deployment, and it looks like a slow build.**
+> `railway up` can die with a TLS error — `received fatal alert: BadRecordMac`,
+> twice in one session on 2026-09-03 — after it has already registered the
+> deployment. The record sits at **INITIALIZING** forever. The tells, all from
+> `railway status --json` and the GraphQL API rather than the dashboard:
+> `deploymentStopped: true`, `canRedeploy: false`, and **zero rows of build
+> log**, which is what says the archive never arrived rather than that the build
+> is slow. There is nothing to salvage; run `railway up` again. The second
+> attempt has succeeded both times.
+>
+> Do not reach for `railway redeploy` here. It redeploys the last archive that
+> ARRIVED, so on a failed upload it silently ships the previous code while
+> reporting success — the same shape as the root-directory trap above.
+
 > Set `rootDirectory` on the service instance before the first deploy, and
 > confirm the deploy log names `boostmebitch-nostr-index`, never
 > `boostmebitch`. **A green deployment is not evidence the right thing is
