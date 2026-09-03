@@ -287,3 +287,82 @@ export async function indexedZapsReceivedBy(pubkey: string): Promise<ReceivedZap
     zapperProfile: profiles.get(r.zapper) ?? null,
   }));
 }
+
+// --- profile name search (the @-mention picker) -----------------------------
+
+/** How many candidates one keystroke asks for. A latency budget as much as a
+ *  taste: every row below is signature-verified at ~3ms. */
+export const INDEX_MENTION_LIMIT = 10;
+/** Below this we do not ask at all — see indexSearchProfiles. */
+const MIN_MENTION_QUERY = 2;
+
+export interface IndexProfileSearch {
+  /** Signature-verified kind:0 events, in the index's rank order. */
+  matches: Event[];
+  /**
+   * The normalised query the index answered. Compare it to what you asked
+   * before rendering: a slow response for an earlier prefix must not overwrite
+   * a newer one, and this is cheaper than threading an AbortSignal through.
+   */
+  query: string;
+}
+
+/**
+ * Profiles whose name or display_name starts with `prefix`.
+ *
+ * THE ONE FETCHER IN THIS FILE WHOSE EMPTY RESULT IS A REAL ANSWER, and the
+ * object wrapper is what carries the difference. Everywhere else here an empty
+ * array is folded into `null`, because an empty answer about notes cannot be
+ * told from the index not having caught up, and there is always a relay pass
+ * behind it that may know better. A name search has neither property: nobody
+ * matching "zzq" is the complete and correct answer, and there is no relay
+ * fallback, because relays have no prefix-search primitive to fall back to.
+ *
+ * So the two states are carried by the HTTP status and never by body
+ * emptiness. `null` still means "no answer". `{ matches: [] }` means the index
+ * answered and its corpus holds nobody by that name.
+ *
+ * The wrapper is not decoration. With a bare `Event[] | null`, `[]` and `null`
+ * are both falsy, and the first call site to write `if (!result)` collapses the
+ * two silently — which is exactly what the rule everywhere else in this file
+ * exists to prevent. An object cannot be collapsed by accident.
+ *
+ * `matches: []` is a claim about THIS INDEX'S corpus, which is people who have
+ * posted a boost or podcast note — a small, honest subset of nostr. A caller
+ * must render it as "nobody here by that name", never as "no such user", and
+ * must not close the paste-an-npub path on the strength of it.
+ */
+export async function indexSearchProfiles(
+  prefix: string,
+  limit = INDEX_MENTION_LIMIT,
+): Promise<IndexProfileSearch | null> {
+  const q = prefix.trim().replace(/^@/, '').trim();
+  // A short query must never reach the service. The route answers 200 for one
+  // precisely so this cannot happen, but the reason is worth stating on both
+  // sides: any non-2xx becomes a proxy 503, and `ask` latches the index off for
+  // the WHOLE TAB — feeds, live streams and zaps included.
+  if (q.length < MIN_MENTION_QUERY) return null;
+
+  const raw = await ask<unknown>('/profiles/search', { q, limit: String(limit) });
+  if (!raw || typeof raw !== 'object') return null;
+  const body = raw as { profiles?: unknown; query?: unknown };
+  // BOTH fields are the "I answered" marker. A 200 whose body is missing either
+  // is a shape we do not recognise, and an unrecognised shape is not an answer.
+  if (!Array.isArray(body.profiles) || typeof body.query !== 'string') return null;
+
+  const matches = await verifyAll(body.profiles as Event[]);
+  // Seed the shared per-pubkey cache, here rather than at the call site — same
+  // rule as indexedLiveStreams. It pays for itself immediately: the profile the
+  // user is about to pick is the one the note-render path needs next.
+  //
+  // There is deliberately NO setMiss on this path, under any condition. A miss
+  // is earned by a query that demonstrably answered about a SPECIFIC author; a
+  // prefix search names no pubkey, so absence from its results is a statement
+  // about the query and about nobody in particular. Not even for a pubkey that
+  // is in the corpus but ranked below the cap.
+  for (const p of matches) {
+    const meta = parseProfileContent(p.content);
+    if (meta) storage.profile.set(p.pubkey, meta);
+  }
+  return { matches, query: body.query };
+}

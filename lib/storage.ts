@@ -1162,6 +1162,31 @@ export const storage = {
       setTimed(`${KEYS.profilePrefix}:${pubkey}`, v),
     setMiss: (pubkey: string) =>
       setTimed<ProfileMetadata | null>(`${KEYS.profilePrefix}:${pubkey}`, null),
+
+    /**
+     * Every profile this device has cached, as [pubkey, metadata] pairs.
+     *
+     * For the @-mention picker, which needs to answer "who do I know called
+     * ali…" on a keystroke with no network at all. Reading each entry through
+     * `get` above rather than parsing here keeps the TTL, the negative-cache
+     * rule and the re-coercion in ONE place — a second parser would be the one
+     * that ships a non-string `name` to a `.trim()` call.
+     *
+     * Misses (`null`) and expired entries are skipped: they carry no name, so
+     * they are nothing to offer. Bounded by however many profiles this device
+     * has seen, which is the same set `get` already serves one at a time.
+     */
+    all: (): [string, ProfileMetadata][] => {
+      if (!isBrowser()) return [];
+      const out: [string, ProfileMetadata][] = [];
+      for (const key of rawKeys()) {
+        if (!key.startsWith(`${KEYS.profilePrefix}:`)) continue;
+        const pubkey = key.slice(KEYS.profilePrefix.length + 1);
+        const meta = storage.profile.get(pubkey);
+        if (meta) out.push([pubkey, meta]);
+      }
+      return out;
+    },
   },
 
   /**

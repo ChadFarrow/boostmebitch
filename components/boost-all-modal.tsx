@@ -5,7 +5,7 @@ import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
@@ -14,6 +14,7 @@ import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './boost-modal/message-input';
+import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
@@ -40,10 +41,23 @@ interface TrackProgress {
 }
 
 export function BoostAllModal({ podcast, episode, onClose }: Props) {
+  // The exact set the published note will `p`-tag, from the one function that
+  // decides it. MEMOIZED, and that is load-bearing rather than tidiness: this
+  // is a prop on <MessageInput>, whose warm effect keys on it, and this
+  // component re-renders on every keystroke in the boostagram box. An inline
+  // `?? []` is a fresh array identity each render — `parseFeedNpubs` returns
+  // `undefined` rather than `[]` when a feed declares no npubs, which is the
+  // common case — so the effect re-ran per keystroke and fired a follow-wide
+  // kind:0 fan-out that `fetchProfilesFor` does not coalesce.
+  const feedNpubs = useMemo(() => noteNpubs(podcast, episode), [podcast, episode]);
+
   const identity = useApp((s) => s.identity);
   const bumpBoosts = useApp((s) => s.bumpBoosts);
   const [sats, setSats] = useState(100);
   const [msg, setMsg] = useState('');
+  // Identity beside the prose, not inside it — see <BoostModal> for why the
+  // npub must never enter `msg`.
+  const [mentions, setMentions] = useState<MentionNpub[]>([]);
   const [name, setName] = useState('');
   const [rail, setRail] = useState<Rail | null>(null);
 
@@ -369,9 +383,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       const note = identity && shareAs === 'self'
         ? await publishBoostNote({
             podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
+            mentions,
           })
         : await publishBoostNoteViaSite({
             podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
+            mentions,
           });
       if (cancelled.current) return;
       setPubState({ kind: 'done', note });
@@ -494,7 +510,18 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
           {loadState === 'ready' && splits.length > 0 && (
             <>
-              <MessageInput value={msg} onChange={setMsg} />
+              {/* The mention run is appended by withMentions AFTER
+                  contentOverride, which is the one place this path and the
+                  single-boost path converge — a mention added inside
+                  formatContent would be silently missing from every summary. */}
+              <MessageInput
+                value={msg}
+                onChange={setMsg}
+                mentions={mentions}
+                onMentionsChange={setMentions}
+                feedNpubs={feedNpubs}
+                willNotify={!!identity && shareAs === 'self'}
+              />
               <SenderName value={name} onChange={setName} anonymous={anonymous} />
               <ShareNostrPicker
                 signedIn={!!identity}

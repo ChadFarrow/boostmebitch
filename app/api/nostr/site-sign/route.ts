@@ -65,6 +65,14 @@ const MAX_IMETA_TAGS = 1;
 // A real boost `p`-tags the artists a feed names — one to a few, and a
 // compilation is still nowhere near this. The cap is what stops one unauthed
 // POST becoming a mention-spam blast at 40 strangers from a verified identity.
+//
+// A sender's own @mentions are a SECOND source of `p` tags, and they never
+// reach this route: noteMentionTags (lib/nostr/mention-tags.ts) strips them
+// from any template bound for site-signing, precisely because this endpoint is
+// unauthenticated. So what arrives here is still only what a feed declared,
+// and this cap still means what it says. Nothing here should learn about
+// mentions — its job is to be a dumb bound, and a bound that trusts the client
+// to have already filtered is not one.
 const MAX_P_TAGS = 8;
 
 // Bound the signing oracle: this endpoint must only ever sign boost-shaped

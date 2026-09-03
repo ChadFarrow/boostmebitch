@@ -14,7 +14,7 @@ import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import type { Episode, Podcast } from '@/lib/types';
 import { episodeLinkInNote, landingLinksInNote, getErrorMessage } from '@/lib/util';
 import { BRANDS } from '@/lib/brand';
-import { linkify, extractImages, removeUrl, stripNostrUris, timeAgo } from '@/lib/format';
+import { extractImages, removeUrl, renderNostrText, timeAgo } from '@/lib/format';
 import { Avatar } from './avatar';
 import { PodcastCover } from './podcast-cover';
 import { FollowButton } from './follow-button';
@@ -101,9 +101,18 @@ function NoteCardImpl({
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)
       : null;
-  const { body: rawBody, images: contentImages } = extractImages(
-    stripNostrUris(note.content),
-  );
+  // No `stripNostrUris` here any more, and its absence is the point.
+  //
+  // It used to run over every body, which meant a boost note's trailing
+  // `nostr:npub…` run — the mentions buildBoostNoteTemplate writes — was
+  // deleted before anything saw it. Every other client rendered "@alice" and
+  // this one rendered nothing, so a sender who @mentioned somebody saw no trace
+  // of it in our own feed and had every reason to think the feature was broken.
+  //
+  // Person refs now become @name via renderNostrText below. It still drops
+  // nevent/note/naddr, which is what the strip was really for: those name a
+  // thing we cannot describe, and a raw bech32 blob is worse than silence.
+  const { body: rawBody, images: contentImages } = extractImages(note.content);
   /**
    * Does this note link the episode it is tagged with, and did both halves
    * resolve? Then <NoteEpisodeCard> unfurls it below, and the URL comes OUT of
@@ -414,7 +423,7 @@ function NoteCardImpl({
 
         {contentBody && (
           <p className="text-sm text-bone whitespace-pre-wrap break-words mt-1.5">
-            {linkify(contentBody)}
+            {renderNostrText(contentBody, note.mentioned ?? {}, 'text-nostr')}
           </p>
         )}
 

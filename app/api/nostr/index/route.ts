@@ -16,7 +16,20 @@ import { askIndex, indexConfigured } from '@/lib/nostr-index-server';
 // on the internal service, and a future write endpoint there would be exposed
 // the day it shipped.
 
-type Allowed = { pattern: RegExp; sMaxAge: number };
+type Allowed = {
+  pattern: RegExp;
+  sMaxAge: number;
+  /**
+   * Which query params this path may forward. Defaults to DEFAULT_PARAMS.
+   *
+   * PER-PATH rather than one flat set, because the set is a widening: every
+   * name in it becomes forwardable on every route, and it lands in the CDN
+   * cache key. A free-text `q` in a global set would make
+   * `/feed/global?q=<random>` a cache-buster that reaches the service on every
+   * distinct value — on the one route where the edge cache actually pays.
+   */
+  params?: Set<string>;
+};
 
 const ALLOWED: Allowed[] = [
   // Identical for every visitor, so this is where the CDN pays.
@@ -35,6 +48,17 @@ const ALLOWED: Allowed[] = [
   { pattern: /^\/feed\/mentioning\/[0-9a-f]{64}$/, sMaxAge: 15 },
   { pattern: /^\/zaps\/received\/[0-9a-f]{64}$/, sMaxAge: 15 },
   { pattern: /^\/profiles$/, sMaxAge: 300 },
+  // Name-prefix search for the @-mention picker. Same window as /profiles: the
+  // answer is identical for every visitor, and a two-or-three character prefix
+  // has a high edge hit rate, which is the point — the alternative is a
+  // database query per keystroke per visitor. The corpus turns over slowly, so
+  // a 300s stale "no match" costs a newly-indexed name a few minutes of
+  // invisibility in an autocomplete.
+  //
+  // `q` is scoped to THIS route. It is free text on its way into a SQL LIKE
+  // pattern and a cache key, so the generic 8192-character bound below is far
+  // too loose for it; the service normalises and truncates again on its side.
+  { pattern: /^\/profiles\/search$/, sMaxAge: 300, params: new Set(['q', 'limit']) },
   // Reposts answer "has THIS viewer already reposted these notes", so the
   // answer is per-viewer and must not be shared by the CDN.
   { pattern: /^\/reposts$/, sMaxAge: 0 },
@@ -42,7 +66,14 @@ const ALLOWED: Allowed[] = [
 
 // Only these may be forwarded, and each is bounded. `ids` and `pubkeys` are
 // comma-separated hex lists that the service caps again on its own side.
-const ALLOWED_PARAMS = new Set(['limit', 'until', 'ids', 'pubkeys', 'pubkey']);
+//
+// A route may narrow or replace this with its own `params` — see the Allowed
+// type. Add a new name HERE only when every allowed path should carry it.
+const DEFAULT_PARAMS = new Set(['limit', 'until', 'ids', 'pubkeys', 'pubkey']);
+
+/** Bound on one forwarded value. A route wanting something tighter says so. */
+const MAX_PARAM_LEN = 8192;
+const MAX_Q_LEN = 64;
 
 export async function GET(req: Request) {
   const limited = rateLimit(req, 'nostr-index', 300);
@@ -62,7 +93,9 @@ export async function GET(req: Request) {
   return withErrorHandling(async () => {
     const forwarded = new URLSearchParams();
     for (const [k, v] of searchParams) {
-      if (k !== 'path' && ALLOWED_PARAMS.has(k) && v.length <= 8192) forwarded.set(k, v);
+      const allowedHere = match.params ?? DEFAULT_PARAMS;
+      const cap = k === 'q' ? MAX_Q_LEN : MAX_PARAM_LEN;
+      if (k !== 'path' && allowedHere.has(k) && v.length <= cap) forwarded.set(k, v);
     }
     const qs = forwarded.toString();
     const data = await askIndex<unknown>(`${path}${qs ? `?${qs}` : ''}`);

@@ -196,5 +196,10 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
     replies: incoming.replies.length ? incoming.replies : existing.replies,
     amountMsat: incoming.amountMsat ?? existing.amountMsat,
     isBoost: incoming.isBoost || existing.isBoost,
+    // Same field-by-field rule as `author`. The index pass and the relay pass
+    // carry different profile sets, so one can resolve a mention the other
+    // could not; replacing on id would let the later, thinner copy take a
+    // resolved @name back off the screen.
+    mentioned: incoming.mentioned ?? existing.mentioned,
   };
 }

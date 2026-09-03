@@ -5,7 +5,7 @@ import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr, noteNpubs } from '@/lib/nostr';
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
@@ -17,6 +17,7 @@ import { BoostModalBalance } from '../wallet-balance';
 import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from './message-input';
+import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { SenderName } from './sender-name';
 import { useReplyAddress } from './use-reply-address';
 import { SplitsPreview, LightningStatus } from './splits-preview';
@@ -60,10 +61,25 @@ interface Props {
 }
 
 export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props) {
+  // The exact set the published note will `p`-tag, from the one function that
+  // decides it. MEMOIZED, and that is load-bearing rather than tidiness: this
+  // is a prop on <MessageInput>, whose warm effect keys on it, and this
+  // component re-renders on every keystroke in the boostagram box. An inline
+  // `?? []` is a fresh array identity each render — `parseFeedNpubs` returns
+  // `undefined` rather than `[]` when a feed declares no npubs, which is the
+  // common case — so the effect re-ran per keystroke and fired a follow-wide
+  // kind:0 fan-out that `fetchProfilesFor` does not coalesce.
+  const feedNpubs = useMemo(() => noteNpubs(podcast, episode), [podcast, episode]);
+
   const identity = useApp((s) => s.identity);
   const bumpBoosts = useApp((s) => s.bumpBoosts);
   const [sats, setSats] = useState(0);
   const [msg, setMsg] = useState('');
+  // People the sender @mentioned. Kept beside `msg` rather than inside it: the
+  // text carries a readable "@alice" and this carries the identity, because the
+  // same string becomes the boostagram TLV message and the LNURL comment, where
+  // a 63-character npub would be truncated mid-bech32 with nothing reporting it.
+  const [mentions, setMentions] = useState<MentionNpub[]>([]);
   const [name, setName] = useState('');
   const [rail, setRail] = useState<Rail | null>(null);
 
@@ -248,8 +264,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     setPubState({ kind: 'publishing' });
     try {
       const note = identity && shareAs === 'self'
-        ? await publishBoostNote({ podcast, episode, boostagram, results, relays })
-        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results });
+        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions })
+        // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
+        // what each may do with them — the body always, the `p` tags only when
+        // the user's own key signs — and that decision belongs there, not in a
+        // caller that would have to remember it at every site.
+        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions });
       setPubState({ kind: 'done', note });
       storage.boosts.update(identity?.npub, boostagram.uuid!, { noteId: note.id });
       bumpBoosts();
@@ -562,7 +582,16 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               answerable before the user reads that number. */}
           <RailPicker rail={rail} onChange={setRail} />
           <AmountInput sats={sats} onChange={setSats} />
-          <MessageInput value={msg} onChange={setMsg} />
+          <MessageInput
+            value={msg}
+            onChange={setMsg}
+            mentions={mentions}
+            onMentionsChange={setMentions}
+            feedNpubs={feedNpubs}
+            // Same condition maybePublishNote signs by: anything else and the
+            // site signs, so a sender-chosen `p` tag would be dropped.
+            willNotify={!!identity && shareAs === 'self'}
+          />
           <SenderName value={name} onChange={setName} anonymous={anonymous} />
           <ShareNostrPicker
             signedIn={!!identity}
