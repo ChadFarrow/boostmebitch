@@ -230,7 +230,7 @@ on both projects. Runtime logs, same week:
 | Project | `POST /api/lightning/boostbox` |
 |---|---|
 | `boostmebitch` | 200, every call |
-| `boostmebuddy` | `401 {"error":"unauthorized"}` from the upstream, every call — five of five over thirty days |
+| `boostmebuddy` | `401 {"error":"unauthorized"}` from the upstream, every call, five of five in the retained log window (one day on this Vercel plan) |
 
 That route is the whole metadata channel for an **LNURL** leg (a keysend leg
 carries the boostagram inline in TLV `7629169` and never touches it; see
