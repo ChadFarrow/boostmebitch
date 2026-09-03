@@ -36,7 +36,20 @@
 //    Android app installed and verified, the callback can resolve to the TWA
 //    rather than to a browser at all, which is a different storage partition
 //    entirely. The right thing there is to say so and let the user paste.
+//
+// 4. FROM A HOME-SCREEN APP THE CALLBACK LANDS IN A BROWSER TAB, ALWAYS — and
+//    that tab must NOT become the app. Measured 2026-09-03 on boostmebuddy.com
+//    installed from Brave: sign-in completed, and the user was left in a new
+//    browser tab running a second copy of the site while the home-screen
+//    window sat on "Approve in Amber…". Android hands an https ACTION_VIEW to
+//    the default browser; nothing here can route it to the standalone window.
+//    So when the pending record says the request left a standalone window,
+//    this page parks the answer, tries to close itself, and says "switch back"
+//    — the window that asked hears the `storage` event and signs in on its
+//    own. Navigating this tab would be the bug the user reported, made worse:
+//    two signed-in copies, and the one they installed still waiting.
 
+import { BRAND } from '@/lib/brand';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import {
@@ -49,7 +62,9 @@ import { storage } from '@/lib/storage';
 
 type Outcome =
   | { kind: 'working' }
-  | { kind: 'ok' }
+  | { kind: 'ok'; back: string }
+  /** Parked for a home-screen window that is still open; this tab stays put. */
+  | { kind: 'parked'; back: string }
   | { kind: 'refused'; why: string; detail: string; raw?: string };
 
 // THE FRAGMENT IS A ONE-SHOT INPUT AND THIS EFFECT DESTROYS IT. So it is read
@@ -178,11 +193,23 @@ export default function AmberCallbackPage() {
       return;
     }
     storage.amberPending.clear();
-    setOutcome({ kind: 'ok' });
 
     // Back where the user was, not to `/`. `replace`, so this page does not sit
     // in history between them and the back button.
     const back = pending.origin && pending.origin.startsWith('/') ? pending.origin : '/';
+
+    if (pending.standalone) {
+      // The window that asked is a home-screen app and is still open; it has
+      // just been told by the `storage` event. This tab's only job was the
+      // write above. Closing is best-effort — a browser may refuse to close a
+      // tab a script did not open — so the screen below says what to do
+      // either way, and offers this tab as a fallback rather than assuming it.
+      setOutcome({ kind: 'parked', back });
+      try { window.close(); } catch { /* refused: the message covers it */ }
+      return;
+    }
+
+    setOutcome({ kind: 'ok', back });
     window.location.replace(back);
   }, []);
 
@@ -192,7 +219,28 @@ export default function AmberCallbackPage() {
         <div className="card p-5">
           <div className="stamp text-muted border-muted/40 mb-2">AMBER</div>
 
-          {outcome.kind !== 'refused' ? (
+          {outcome.kind === 'parked' ? (
+            <>
+              <h1 className="font-display text-2xl">Signed in</h1>
+              <p className="text-sm text-muted mt-2">
+                Switch back to the {BRAND.displayName} app — it already has your
+                sign-in. You can close this tab.
+              </p>
+              <div className="mt-4">
+                {/* A full load on purpose, same as the non-standalone path:
+                    <NostrAuth>'s mount effect is what picks a parked result up.
+                    If the app window took it first, this tab simply starts
+                    signed out, which is the honest state. */}
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  onClick={() => window.location.replace(outcome.back)}
+                >
+                  continue in this tab instead
+                </button>
+              </div>
+            </>
+          ) : outcome.kind !== 'refused' ? (
             <>
               <h1 className="font-display text-2xl">
                 {outcome.kind === 'ok' ? 'Signed in' : 'Finishing…'}

@@ -130,6 +130,14 @@ export interface AmberPending {
   ts: number;
   /** Where the user was, so the callback can send them back rather than to `/`. */
   origin?: string;
+  /**
+   * True when the request left a home-screen (standalone display-mode) window.
+   * Android delivers Amber's https callback to the default BROWSER, never to
+   * that window, so the callback page must not navigate the tab it lands in
+   * into a second copy of the app — the window that asked is still open, and
+   * `amberResult.subscribe` is how it learns the answer arrived.
+   */
+  standalone?: boolean;
 }
 
 /**
@@ -1776,7 +1784,8 @@ export const storage = {
         // `origin` is optional: it records the route to return to, and a record
         // written before it existed is still a usable one.
         const origin = typeof v.origin === 'string' ? v.origin : undefined;
-        return { rid, type: type as AmberPending['type'], ts, origin };
+        const standalone = v.standalone === true ? true : undefined;
+        return { rid, type: type as AmberPending['type'], ts, origin, standalone };
       } catch {
         return null;
       }
@@ -1823,6 +1832,25 @@ export const storage = {
       return got;
     },
     clear: () => { safeRemove(KEYS.amberResult); },
+    /**
+     * Run `fn` when ANOTHER window of this origin parks a result.
+     *
+     * The `storage` event fires in every other same-origin window when a key
+     * is written, and never in the writer — which is exactly the shape of the
+     * callback: it lands in a browser tab while the window that asked is a
+     * home-screen app that never reloads. Without this that window waits out
+     * its 60 s and reports "Amber did not respond" over a sign-in that
+     * completed. Only a WRITE is reported; the `clear` that `take` performs is
+     * ignored, so the consumer of one result cannot wake the others.
+     */
+    subscribe: (fn: () => void): (() => void) => {
+      if (typeof window === 'undefined') return () => {};
+      const onStorage = (e: StorageEvent) => {
+        if (e.key === KEYS.amberResult && e.newValue) fn();
+      };
+      window.addEventListener('storage', onStorage);
+      return () => window.removeEventListener('storage', onStorage);
+    },
   },
 
   piBreaker: {

@@ -14,9 +14,14 @@
 //   for — they are the load-bearing half of that design, not a fallback.
 //
 //   CALLBACK (new, `get_public_key` only). Amber navigates to a `callbackUrl`
-//   with the result appended. That RELOADS the page, so the promise the caller
-//   is awaiting dies with it; the request is parked in sessionStorage and the
-//   result is picked up when the caller asks again.
+//   with the result appended. Usually that lands in a DIFFERENT tab, and from
+//   a home-screen app it ALWAYS does — Android hands an https callback to the
+//   default browser, never to the standalone window. So the answer reaches this
+//   window two ways, neither of them "the page reloaded": the `storage` event
+//   the callback tab's write fires here, and a re-check of the parked result
+//   on every return signal (visibility, focus, first tap). The reload case —
+//   the callback tab navigating into the app — is still handled, by
+//   <NostrAuth> picking the parked result up on mount.
 //
 // WHY BOTH, AND WHY THE CALLBACK IS NOT USED EVERYWHERE:
 //
@@ -232,6 +237,10 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       type: opts.type,
       ts: Date.now(),
       origin: `${location.pathname}${location.search}`,
+      // Tells the callback page it lands in a tab that is NOT this window, so
+      // it must park the answer and stay put rather than navigate that tab
+      // into a second, signed-in copy of the app beside this one.
+      standalone: isStandaloneDisplay(),
     });
   } else {
     // Clipboard path. Drop an EXPIRED record so a callback arriving long after
@@ -293,6 +302,7 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
 
     const cleanup = () => {
       if (timer) clearTimeout(timer);
+      unsubscribeParked();
       document.removeEventListener('visibilitychange', onVisibility);
       window.removeEventListener('pageshow', onPageshow);
       window.removeEventListener('focus', onFocus);
@@ -323,6 +333,24 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
     // clipboard at sign-in time — `looksLikeAmberResult` filters anything
     // that isn't a plausible response, so unrelated clipboard content
     // (URLs, plain text) is ignored.
+    // The callback path's answer, when it was written by ANOTHER window. A
+    // parked result is single-use and type-checked by `takeParkedResult`, so
+    // a stale or foreign record cannot resolve this request; the subscription
+    // below reports writes only, and every return signal re-checks as well,
+    // because a background window may have been frozen while the event fired.
+    const tryParked = (origin: string): boolean => {
+      if (settled || !useCallback) return false;
+      const raw = takeParkedResult(opts.type);
+      if (!raw) return false;
+      // eslint-disable-next-line no-console
+      console.info('[amber] ✓', opts.type, '(parked by the callback tab, via', origin + ')');
+      finish(raw);
+      return true;
+    };
+    const unsubscribeParked = useCallback
+      ? storage.amberResult.subscribe(() => { tryParked('storage'); })
+      : () => {};
+
     const tryReadClipboard = async (origin: string) => {
       if (settled) return;
       // Any lifecycle / gesture event that triggered this read counts as
@@ -330,6 +358,7 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       // its hint copy. Once we've moved past 'awaiting' we stay there
       // until cleanup; subsequent events don't need to re-fire setStage.
       if (currentStage === 'awaiting') setStage('returned');
+      if (tryParked(origin)) return;
       let text: string;
       try {
         text = await navigator.clipboard.readText();
@@ -519,6 +548,22 @@ export class AmberSigner implements AmberSignerInterface {
     decrypt: (peerPubkey: string, ciphertext: string) =>
       invokeAmber({ type: 'nip44_decrypt', payload: ciphertext, pubkey: peerPubkey }),
   };
+}
+
+/**
+ * True inside a home-screen (standalone) window — an installed PWA, or the
+ * TWA. What it decides: whether Amber's callback can possibly land back here.
+ * It cannot — Android resolves an https ACTION_VIEW to the default browser —
+ * so the callback page is told to park the answer and leave this window to
+ * pick it up. Android Chromium and iOS both answer the media query; the
+ * `navigator.standalone` read is for older iOS Safari, which does not.
+ */
+export function isStandaloneDisplay(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (window.matchMedia?.('(display-mode: standalone)').matches) return true;
+  } catch { /* an unsupported query is "not standalone" */ }
+  return (navigator as Navigator & { standalone?: boolean }).standalone === true;
 }
 
 /** Loose Android UA sniff. Used to gate the Amber sign-in fallback so desktop
