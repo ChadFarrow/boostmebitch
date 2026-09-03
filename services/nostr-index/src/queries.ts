@@ -250,12 +250,21 @@ export async function quotedEvents(db: Db, sourceIds: string[]): Promise<StoredE
  *
  *  Returning the event rather than a struct is what lets the client verify the
  *  signature itself, and what stops this index becoming a second, lossier
- *  definition of a profile — the app's own `fetchRawProfile` rule. */
+ *  definition of a profile — the app's own `fetchRawProfile` rule.
+ *
+ *  `content_raw` FIRST, and that is the whole reason the column exists.
+ *  `content` is jsonb, so `content::text` comes back with sorted keys and added
+ *  whitespace and therefore hashes to a different event id. Serving that made
+ *  the client's `verifyAll` drop EVERY profile this service returned — silently,
+ *  on every surface, with each one falling back to relays and looking merely
+ *  slow. The coalesce is defence in depth rather than a live path: migration
+ *  002 empties this table precisely so no row without a raw copy survives, and
+ *  `store.ts` is the only writer and always supplies one. */
 export async function profilesFor(db: Db, pubkeys: string[]): Promise<StoredEvent[]> {
   if (!pubkeys.length) return [];
   const { rows } = await db.query<StoredEvent>(
     `select p.event_id as id, p.pubkey, 0 as kind, p.created_at,
-            p.content::text as content, p.tags, p.sig
+            coalesce(p.content_raw, p.content::text) as content, p.tags, p.sig
        from profiles p where p.pubkey = any($1::text[])`,
     [pubkeys],
   );
