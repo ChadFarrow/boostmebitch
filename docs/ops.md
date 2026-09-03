@@ -72,29 +72,31 @@ projects can read costs more than the naming problem it solves:
 | Full `drive` scope so a second app can read the file | **Restricted** scope: annual CASA assessment, and the app could read the user's entire Drive |
 
 **So it is resolved at the consent screen instead: the shared project's app name
-becomes `Boost Me` — decided 2026-08-31, NOT YET APPLIED in the console.** Delete
-this sentence's warning once the field actually reads `Boost Me`; until then the
-step below is outstanding, and a reader cannot tell from the console alone which
-way round it is. Both brands begin with those two words, so
-the screen reads correctly on either site and puts NEITHER brand's exclusive word
-in front of the other's users, which is the actual leak rather than the mismatch.
+is `Boost Me` — decided 2026-08-31, APPLIED in the console 2026-09-03.** Both
+brands begin with those two words, so the screen reads correctly on either site
+and puts NEITHER brand's exclusive word in front of the other's users, which is
+the actual leak rather than the mismatch.
 The wallet stays shared because the project stays shared. It costs a console
 field instead of a weaker backup.
 
-**Change the app name and NOTHING ELSE.** The name, logo, home page URL and
-privacy policy URL are verified as one set, so every field touched widens the
-re-review (see the branding entry above). The home page stays
+**Change the app name and NOTHING ELSE.** Kept to on 2026-09-03 — the name was
+the only field touched. The name, logo, home page URL and privacy policy URL are
+verified as one set, so every field touched widens the re-review (see the
+branding entry above). The home page stays
 `https://www.boostmebitch.com` and the privacy policy stays that domain's
 `/privacy` — both already verified, and moving either buys nothing. A reviewer
 opening that home page finds `Boost Me` as the leading words of the wordmark and
 as `short_name` in `public/manifest.json`, so the shortened name corroborates
 rather than conflicts.
 
-Two consequences to expect, neither a fault: the rename re-opens brand
-verification, and until it clears both sites may show the unverified-app notice
-with a 100-user cap — a working sign-in, not a broken one. And a visitor on
-`boostmebuddy.com` sees a privacy link to the other domain. Both pages carry the
-same text; `app/privacy/page.tsx` renders from `BRAND`.
+Two consequences, neither a fault, and BOTH ARE NOW LIVE rather than expected:
+the rename re-opened brand verification on 2026-09-03, so until it clears both
+sites may show the unverified-app notice with a 100-user cap — a working sign-in,
+not a broken one. **Do not read that notice as this change having failed**, and do
+not try to "fix" it by editing another branding field, which only widens the
+re-review. And a visitor on `boostmebuddy.com` sees a privacy link to the other
+domain. Both pages carry the same text; `app/privacy/page.tsx` renders from
+`BRAND`.
 
 `BMB` was considered and rejected. It is genuinely ambiguous between the two
 brands, which is the hard part, but it appears nowhere a visitor or a reviewer
