@@ -11,12 +11,13 @@
     "start": "node --experimental-strip-types src/index.ts",
     "migrate": "node --experimental-strip-types src/migrate.ts",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run verify:ingest && npm run verify:api && npm run verify:search && npm run verify:indexer",
+    "verify": "npm run verify:ingest && npm run verify:api && npm run verify:search && npm run verify:indexer && npm run verify:yield",
     "verify:ingest": "node --experimental-strip-types verify/check-ingest.mjs",
     "verify:api": "node --experimental-strip-types verify/check-api.mjs",
     "verify:search": "node --experimental-strip-types verify/check-search.mjs",
     "verify:indexer": "node --experimental-strip-types verify/check-indexer.mjs",
-    "measure:size": "node --experimental-strip-types verify/measure-size.mjs"
+    "measure:size": "node --experimental-strip-types verify/measure-size.mjs",
+    "verify:yield": "node --experimental-strip-types verify/check-yield.mjs"
   },
   "dependencies": {
     "fastify": "^5.2.0",
