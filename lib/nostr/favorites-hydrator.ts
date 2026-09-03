@@ -202,6 +202,9 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   // means we never got an answer we could trust, and the caller in nostr-auth
   // swallows it (`.catch(() => {})`) — without this the status would sit on
   // 'loading' forever and the notice would never appear.
+  // Hoisted so the degraded branch below can tell "we asked and it did not
+  // open" from "we chose not to ask" — the planner cannot, see there.
+  const decryptPrivate = purpose === 'user-initiated' || unattendedDecryptOk();
   let read: Awaited<ReturnType<typeof fetchFavoritesList>>;
   try {
     // DO NOT SPEND A SIGNER PROMPT HERE. This runs on every page load and on
@@ -232,7 +235,7 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
       // A user-initiated pass may always decrypt: the prompt is the thing the
       // user just pressed. An unattended one asks only when it can do so
       // without a sheet.
-      decryptPrivate: purpose === 'user-initiated' || unattendedDecryptOk(),
+      decryptPrivate,
       purpose,
     });
   } catch (e) {
@@ -350,7 +353,12 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   // planner has already refused the publish for the same reason; this is the
   // rendering half of the same decision.
   if (plan.reason === 'private-unreadable') {
-    setFavoritesSync('degraded', 'private-unreadable');
+    // Two states behind one planner answer. With `decryptPrivate` false the
+    // half was never asked for — Amber would put the plaintext on its approval
+    // sheet uninvited, a bunker on the user's phone would prompt — so nothing
+    // is broken and the notice must not say a signer "couldn't". It shipped
+    // saying exactly that, and an Amber user read it as an error on every load.
+    setFavoritesSync('degraded', decryptPrivate ? 'private-unreadable' : 'private-withheld');
     // eslint-disable-next-line no-console
     console.warn(
       '[favorites] this list has an encrypted half we could not read — keeping local '
