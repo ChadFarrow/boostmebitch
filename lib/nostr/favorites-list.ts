@@ -1127,6 +1127,11 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
 
   const nodes: ListNode[] = [];
   const taken = new Set<string>();
+  // Where each feed's group sits in `nodes`, and how many of its items came
+  // off the wire, so a second group for the same feed can fold into it AFTER
+  // the wire items already there and BEFORE anything local appended. See the
+  // duplicate branch below.
+  const groupAt = new Map<string, { at: number; wireItems: number }>();
   // Incremented ONLY where a node is emitted because local state holds it —
   // never where one is carried for another writer. See `ParsedList.localFed`.
   let localFed = 0;
@@ -1151,10 +1156,31 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
     }
 
     const group = node.group;
-    if (taken.has(group.feedGuid)) continue; // a duplicate group on the wire
+    const kept = group.itemGuids.filter((guid) => !weRemovedItem(guid));
+
+    // THE SAME FEED TWICE ON THE WIRE. Well-formed — a reader attaches each
+    // item to the group most recently opened above it, and both name this
+    // feed — and this loop meets the second one already taken. It used to
+    // `continue` here, which dropped the items beneath it: real favorites,
+    // named nowhere else on the event, gone on the next publish with nothing
+    // on screen. Fold them into the first group instead, in wire order, the
+    // same way `foldHalves` folds a duplicate across halves. Spec vector 19.
+    const first = groupAt.get(group.feedGuid);
+    if (first !== undefined) {
+      const into = nodes[first.at];
+      if (into.t === 'group') {
+        for (const guid of kept) {
+          if (into.group.itemGuids.includes(guid)) continue;
+          // Wire order: after the first group's own wire items, ahead of ours.
+          into.group.itemGuids.splice(first.wireItems, 0, guid);
+          first.wireItems += 1;
+        }
+        if (!into.group.medium && group.medium) into.group.medium = group.medium;
+      }
+      continue;
+    }
     taken.add(group.feedGuid);
 
-    const kept = group.itemGuids.filter((guid) => !weRemovedItem(guid));
     const mine = localByGuid.get(group.feedGuid);
 
     if (!mine) {
@@ -1164,11 +1190,13 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
       // a feed whose track is still favorited is inexpressible — expressing it
       // anyway deletes another app's tracks.)
       if (publishedFeeds.has(showId(group.feedGuid)) && kept.length === 0) continue;
+      groupAt.set(group.feedGuid, { at: nodes.length, wireItems: kept.length });
       nodes.push({ t: 'group', group: { ...group, itemGuids: kept } });
       continue;
     }
 
     localFed++;
+    groupAt.set(group.feedGuid, { at: nodes.length, wireItems: kept.length });
     nodes.push({
       t: 'group',
       group: {

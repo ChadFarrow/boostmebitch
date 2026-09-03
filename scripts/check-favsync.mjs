@@ -164,6 +164,52 @@ section('Spec vector 1 — a foreign entry survives your republish');
 }
 
 // ---------------------------------------------------------------------------
+section('Spec vector 19 — the same feed twice on the wire loses no item');
+// ---------------------------------------------------------------------------
+{
+  // Well-formed: a reader attaches each item to the group most recently opened
+  // above it, and both groups name F_MUSIC. `mergeFavoritesList` used to
+  // `continue` on the second one — dropping I_B, a real favorite named
+  // nowhere else on the event, on the next publish, with nothing on screen.
+  // Found by the spec's conformance suite (`npm run check:conformance`).
+  const wire = [
+    ['alt', 'PC 2.0 Favorites'],
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`],
+    ['i', `podcast:item:guid:${I_A}`],
+    ['i', `podcast:guid:${F_MUSIC}`],
+    ['i', `podcast:item:guid:${I_B}`],
+    ['k', 'podcast:guid'],
+    ['k', 'podcast:item:guid'],
+  ];
+  const folded = emit(parseFavoritesList(wire));
+  check('both items survive a carry, under one group, in wire order',
+    folded.filter((t) => t[0] === 'i').map((t) => t[1]),
+    [`podcast:guid:${F_MUSIC}`, `podcast:item:guid:${I_A}`, `podcast:item:guid:${I_B}`]);
+
+  // The same when this device holds the feed and adds an item of its own: the
+  // duplicate's item is folded in ahead of ours, because it was READ.
+  const local = groupLocalFavorites([
+    { id: showId(F_MUSIC), medium: 'music' },
+    { id: itemId(I_A), feedRef: showId(F_MUSIC), medium: 'music' },
+    { id: itemId(I_C), feedRef: showId(F_MUSIC), medium: 'music' },
+  ]);
+  const added = emit(parseFavoritesList(wire), local, { feeds: [showId(F_MUSIC)], items: [itemId(I_A)] });
+  check('...and when we hold the feed, the duplicate\'s item is kept and ours appends',
+    added.filter((t) => t[0] === 'i').map((t) => t[1]),
+    [`podcast:guid:${F_MUSIC}`, `podcast:item:guid:${I_A}`, `podcast:item:guid:${I_B}`, `podcast:item:guid:${I_C}`]);
+
+  // A removal of ours under the duplicate still propagates — folding is not
+  // carrying blindly.
+  const removed = emit(parseFavoritesList(wire), groupLocalFavorites([
+    { id: showId(F_MUSIC), medium: 'music' },
+    { id: itemId(I_A), feedRef: showId(F_MUSIC), medium: 'music' },
+  ]), { feeds: [showId(F_MUSIC)], items: [itemId(I_A), itemId(I_B)] });
+  check('...and an item we published under the duplicate and no longer hold is dropped',
+    removed.some((t) => t[1] === `podcast:item:guid:${I_B}`), false);
+}
+
+// ---------------------------------------------------------------------------
 section('Spec vector 2 — an empty list is distinguishable from a read that never happened');
 // ---------------------------------------------------------------------------
 {
