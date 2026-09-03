@@ -109,6 +109,36 @@ export function MessageInput({
     void warmMentionCandidates(feedNpubs);
   }, [trigger, feedNpubs]);
 
+  /**
+   * Keep the arrow-key selection visible.
+   *
+   * The list is `max-h-56 overflow-y-auto`, so past the fifth row the highlight
+   * moved onto a row nobody could see: arrowing down looked like it had stopped
+   * working, and Enter then picked someone off screen.
+   *
+   * Scrolls the LIST's own `scrollTop` rather than calling
+   * `el.scrollIntoView()`. That helper walks up and scrolls every scrollable
+   * ancestor, and this list lives inside a modal body that scrolls — so it
+   * would shift the whole form under the sender while they were choosing.
+   * Touching one element's scrollTop cannot move anything else.
+   *
+   * `getElementById` rather than a `querySelector` on the ref: `useId()`
+   * produces ids containing `:`, which is not a valid bare CSS selector.
+   */
+  const listRef = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list || !rows.length) return;
+    const el = document.getElementById(`${listId}-${active}`);
+    if (!el || !list.contains(el)) return;
+    const top = el.offsetTop;
+    const bottom = top + el.offsetHeight;
+    // Minimal move, and it handles the ArrowUp-from-the-top wrap too: the last
+    // row is below the viewport, so the second branch scrolls straight to it.
+    if (top < list.scrollTop) list.scrollTop = top;
+    else if (bottom > list.scrollTop + list.clientHeight) list.scrollTop = bottom - list.clientHeight;
+  }, [active, rows, listId]);
+
   // Local tier: synchronous, every keystroke, no network.
   useEffect(() => {
     if (!pickable || dismissed || secretHit || full || q.length < MIN_MENTION_QUERY) {
@@ -237,6 +267,7 @@ export function MessageInput({
 
         {open && (
           <ul
+            ref={listRef}
             id={listId}
             role="listbox"
             aria-label="Mention someone"
