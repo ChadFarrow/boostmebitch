@@ -19,10 +19,112 @@ Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning
 **Console facts worth not re-deriving:**
 
 - **Both scopes are non-sensitive** (`openid` + `drive.appdata`), so brand verification was the only review — no demo video, no scope justification, no annual CASA assessment. The restricted Drive scopes are `drive`, `drive.readonly`, `drive.metadata`, `drive.activity`, `drive.scripts`; the only sensitive one is `drive.apps.readonly`. **Adding a sensitive or restricted scope later moves the app onto the heavy path** — check a scope's classification on the Data Access page *before* building against it, and register every scope you request there (the GIS token client requests them at runtime, so the console can't discover them; `openid` is absent from the picker because it's OIDC, which is normal).
-- **The apex 307-redirects to `www`**, so `https://www.boostmebitch.com` is the origin GIS sees and the `www` form is in the console's App-domain fields. Authorized JavaScript origins: `https://www.boostmebitch.com`, `https://boostmebitch.com`, `http://localhost`, `http://localhost:3000`. No redirect URIs — the token client is origin-scoped.
+- **The apex 307-redirects to `www`**, so `https://www.boostmebitch.com` is the origin GIS sees and the `www` form is in the console's App-domain fields. Authorized JavaScript origins: `https://www.boostmebitch.com`, `https://boostmebitch.com`, `http://localhost`, `http://localhost:3000`, **and the `boostmebuddy.com` forms** — one client serves both brands, settled and not drift. No redirect URIs; the token client is origin-scoped. Read *ONE Google Cloud project serves both brands* below before you change anything here: the origins, the consent screen and every user's Drive backup are one question, not three.
+- **A refused origin and a cancelled popup are the SAME GIS code, so separate them by SHAPE before you touch the console.** Google refuses an origin the OAuth client does not list, and it does so *after* the account chooser: a popup opens, the user taps their account, an error page appears, the window closes. GIS reports `popup_closed` — the identical code it sends when the user simply closes the window, and when the popup dies on a network fault. Nothing on screen tells them apart. **The discriminator is repeatability: a refused origin fails 100% of the time, on every device, for everyone.** Measured on 2026-08-31: a "cancelled" on `boostmebuddy.com` on desktop, with the same account working on mobile minutes later and on the same desktop after that. **`boostmebuddy.com` was already an authorized origin when that failure happened**, which is what makes the reading conclusive rather than merely likely — it was the transport, and the first read of it in this repo said console and was wrong. Read the `[google]` console line (`lib/nostr/google-auth.ts`), which names the fault type, the origin and the client id the build actually used.
+- **The consent screen is per PROJECT, so one client cannot show two brand names.** Google verifies the app name, logo, home page and privacy policy as a set, per project — there is no per-origin variant. That is the standing cost of the shared client, and it was accepted deliberately; the reasoning, and what a split would destroy, are in *ONE Google Cloud project serves both brands* below.
 - **`*.vercel.app` can't be an authorized domain** (you can't Search-Console-verify a domain Vercel owns), so **Google sign-in does not work on preview deployments.** Test on localhost or production.
 - **DNS is at Namecheap, not Vercel** — nameservers `dns1/dns2.registrar-servers.com`, apex A record and `www` CNAME pointing at Vercel. `boostmebitch.com` is verified as a Search Console **domain property** via a TXT record at host `@`, alongside Namecheap's pre-existing email-forwarding SPF record. **Never delete that record or fold it into the SPF one** — it un-verifies the domain and invalidates the brand approval.
 - **Editing branding re-opens the review.** App name, logo (`public/icons/icon-120.png` — 120×120 is what Google wants; deliberately not in `manifest.json`, since no browser asks for that size), home page URL and privacy policy URL are verified as a set.
+
+### ONE Google Cloud project serves both brands — settled, 2026-08-31
+
+`boostmebuddy.com` is an authorized JavaScript origin on the **boostmebitch**
+OAuth client, and it stays that way. **This is a decision, not drift.** The two
+deploys are the same application under two names, for the same people, so the
+thing worth protecting is that one Google account holds ONE key backup.
+
+That is the whole argument, and it is the same one already written on the
+kind:30078 d-tags. Drive `appDataFolder` is **per-app** private space, and "app"
+means the Cloud project, not the domain (`lib/nostr/drive-backup.ts`). One
+project therefore means one appdata: a person who onboards through Google on
+buddy recovers the same key on bitch, exactly as `boostmebitch:wallet:spark`,
+`…:wallet:nwc` and `boostmebitch:settings` already give them one wallet and one
+settings record across both. A second project would make the Drive blob the ONLY
+per-brand backup in the app, which is the odd one out, not the tidy one.
+
+**Two costs come with it. Both are accepted, and neither is a bug to fix.**
+
+- The buddy consent screen says **`BoostMeBitch`**, with that logo and that
+  privacy policy, because Google verifies those four as a set per project. A
+  consent screen contradicting the address bar is the pattern users are taught
+  to abort on, and an abort reaches us as `popup_closed` — indistinguishable
+  from every other fault on that path, so this cost is real and permanently
+  invisible from our side. The `Boost Me` rename below removes the leak half of
+  it; the mismatch with the address bar stays. **Do not "fix" it by branding a d-tag or by minting a
+  second project** — the rename below is the fix that keeps the wallet shared.
+- Verification, quota and suspension attach to the PROJECT, so one complaint or
+  one failed re-review takes Google sign-in off BOTH sites together. Adding a
+  domain to a verified project can itself re-open the review — see the branding
+  entry above.
+
+**The wanted arrangement — a per-brand consent screen AND one wallet from either
+site — is not available, so do not go looking for it.** `appDataFolder` is per
+project, and nothing opens one project's folder to another. The encryption is not
+what blocks it: `sub` identifies the Google ACCOUNT, not the client, so
+`deriveBackupKey(sub, pin)` returns the same key under either project and only
+the blob's LOCATION is out of reach. Every way of putting the blob somewhere both
+projects can read costs more than the naming problem it solves:
+
+| Route | What it costs |
+|---|---|
+| Derive the nsec from `sub` + PIN, no blob | **Breaks the identity outright.** The npub is public, so 10⁶ candidates are checked against it directly. See the prohibition in [`signers.md`](signers.md) — this is the one that will be proposed, because it is the only construction needing no shared storage |
+| Blob on a relay at a `sub`-derived address, or on our own server | Deletes the app-private-storage layer that `backup-crypto.ts` names as one of the two mitigations carrying this construction, leaving a 6-digit PIN in front of a blob anyone can fetch. A server also means a user datastore this app deliberately does not have, and a privacy-policy edit re-opens verification |
+| Full `drive` scope so a second app can read the file | **Restricted** scope: annual CASA assessment, and the app could read the user's entire Drive |
+
+**So it is resolved at the consent screen instead: the shared project's app name
+becomes `Boost Me` — decided 2026-08-31, NOT YET APPLIED in the console.** Delete
+this sentence's warning once the field actually reads `Boost Me`; until then the
+step below is outstanding, and a reader cannot tell from the console alone which
+way round it is. Both brands begin with those two words, so
+the screen reads correctly on either site and puts NEITHER brand's exclusive word
+in front of the other's users, which is the actual leak rather than the mismatch.
+The wallet stays shared because the project stays shared. It costs a console
+field instead of a weaker backup.
+
+**Change the app name and NOTHING ELSE.** The name, logo, home page URL and
+privacy policy URL are verified as one set, so every field touched widens the
+re-review (see the branding entry above). The home page stays
+`https://www.boostmebitch.com` and the privacy policy stays that domain's
+`/privacy` — both already verified, and moving either buys nothing. A reviewer
+opening that home page finds `Boost Me` as the leading words of the wordmark and
+as `short_name` in `public/manifest.json`, so the shortened name corroborates
+rather than conflicts.
+
+Two consequences to expect, neither a fault: the rename re-opens brand
+verification, and until it clears both sites may show the unverified-app notice
+with a 100-user cap — a working sign-in, not a broken one. And a visitor on
+`boostmebuddy.com` sees a privacy link to the other domain. Both pages carry the
+same text; `app/privacy/page.tsx` renders from `BRAND`.
+
+`BMB` was considered and rejected. It is genuinely ambiguous between the two
+brands, which is the hard part, but it appears nowhere a visitor or a reviewer
+can see it — only in code comments and the `bmb:` storage prefix. An app name
+that matches nothing on the page reads closer to a phishing redirect than a wrong
+name does, which is the problem the rename exists to solve. It becomes a good
+choice only if it is first put on both sites.
+
+**If this is ever revisited, the split ORPHANS every existing backup by default.** A
+new project gets a new, EMPTY appdata, so every blob written under the shared
+client goes invisible from whichever deploy moves. Nothing is deleted, which is
+what makes it dangerous: `<GoogleAuthPanel>` reads `files.length === 0` — its one
+legitimate route to `setupPin` — and walks a returning user into minting a SECOND
+identity beside their orphaned first. The files-listed-but-none-downloaded hard
+stop cannot catch it, because the list genuinely is empty. So the cost equals the
+number of people who onboarded through Google on the moving deploy, it only ever
+grows, and the count is due BEFORE the client id changes, not after.
+
+A migration is buildable and nobody has built it: `sub` identifies the Google
+ACCOUNT rather than the client, so the derived key is unchanged across projects
+and the blob would copy verbatim — but a copier needs a token for each client in
+one page session, which is two consent popups, and it only helps the people who
+come back and run it. Verify that `sub` claim against both projects before
+relying on it; nothing here has tested it. Treat the cutover as orphaning until
+such a tool exists and has been run. The rest is
+ordinary: new project, Drive API, consent screen (name, 120×120 logo, that
+brand's home page and `/privacy`), scopes `openid` + `drive.appdata`, the domain
+verified as a Search Console property via a Namecheap TXT record kept separate
+from the SPF one, an OAuth client carrying that brand's two origins plus
+localhost, then `NEXT_PUBLIC_GOOGLE_CLIENT_ID` on that Vercel project.
 
 ## The Nostr read index (Railway)
 

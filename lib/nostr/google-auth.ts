@@ -121,12 +121,40 @@ async function fetchSub(accessToken: string): Promise<string> {
   return json.sub;
 }
 
+/**
+ * One console line per GIS failure, in the `[keysend]` / `[lnurl]` house style:
+ * "my sign-in didn't work" is not evidence about this code until you know which
+ * of GIS's faults happened, and GIS's own copy never reaches the page.
+ *
+ * It names the ORIGIN and the CLIENT ID because one repo builds two deploys, so
+ * "which client did this build actually use, on which domain" is the first
+ * question and nothing on screen answers it. Neither value is a secret: the
+ * client id is inlined into the bundle by design, and the origin is the address
+ * bar.
+ *
+ * READ THE SHAPE BEFORE THE LINE. A refused origin fails EVERY time, on every
+ * device, for everyone. So an intermittent failure is not the console — it is
+ * the transport, and the same `popup_closed` covers both.
+ */
+function logGisError(e: unknown): void {
+  const ev = (e as GsiErrorEvent | null) ?? {};
+  const origin = typeof window === 'undefined' ? '(no window)' : window.location.origin;
+  console.warn(
+    `[google] sign-in failed: type=${ev.type ?? 'unknown'} message=${ev.message ?? '(none)'} ` +
+      `origin=${origin} client_id=${googleClientId() ?? '(unset)'}. ` +
+      'If the window showed "Error 400: origin_mismatch" or "Access blocked", check this origin ' +
+      "against that client's Authorized JavaScript origins. A closed window and a network fault " +
+      'reach this same line with nothing shown, so reproduce it before you change the console.',
+  );
+}
+
 // GIS reports "the browser blocked the popup" and "the user closed the popup"
 // through the same callback. Collapsing both to "cancelled" tells a user whose
 // popup blocker fired that they did something they didn't do, and hides the one
 // thing they can actually fix.
 function gisErrorMessage(e: unknown, clickStarted: boolean): string {
   const type = (e as GsiErrorEvent | null)?.type;
+  logGisError(e);
   if (type === 'popup_failed_to_open') {
     // Two different faults share this GIS type, and the difference decides who
     // can fix it. A request made without a gesture behind it is OURS and the
@@ -137,7 +165,24 @@ function gisErrorMessage(e: unknown, clickStarted: boolean): string {
       ? 'Your browser blocked the Google sign-in window even though you tapped. Tap Retry — it usually opens on the second try.'
       : 'The Google sign-in window could not open. Tap Retry.';
   }
-  if (type === 'popup_closed') return 'Google sign-in was cancelled';
+  if (type === 'popup_closed') {
+    // THREE different faults reach this one GIS type, and only the first is the
+    // user's doing: they closed the window; Google refused the origin (an
+    // account chooser, then an error page, then a closed window); or the popup
+    // died on a network fault mid-flow. "Cancelled" named the first and read as
+    // an accusation for the other two — someone whose sign-in broke on its own
+    // was told they had backed out of it.
+    //
+    // So the copy must not pick one either. It says what to DO (retry, which
+    // fixes a cancel and a transient alike) and what an error page MEANS (not
+    // yours to fix) without claiming which happened. `logGisError` above carries
+    // the origin and client id, and the repeat/one-off shape is what separates a
+    // console problem from a transport one.
+    return (
+      "Google sign-in didn't finish. Tap Retry — if the Google window shows an error rather " +
+      "than asking you to continue, that part isn't something you can fix."
+    );
+  }
   return getErrorMessage(e, 'Google sign-in failed');
 }
 
