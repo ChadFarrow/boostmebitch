@@ -316,7 +316,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {/* Mounted in the LAYOUT, beside <Player>, and not in <AppHeader>.
             `onFavoritesModeNeeded` is a single module-level slot that only
             exists while the component registering it is mounted, and
-            <AppHeader> renders on `/` and /favorites ONLY — while <Player>'s
+            <AppHeader> renders on `/`, /favorites and /playlists ONLY — while <Player>'s
             <FullscreenPlayer> renders hearts on EVERY route. So a ♡ pressed on
             /npub/<npub>, /live/<npub> or /stream/<naddr> by a user with no
             recorded mode reached `promptForMode?.()` as `null`: the heart

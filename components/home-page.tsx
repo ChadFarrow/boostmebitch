@@ -648,16 +648,23 @@ export function HomePage() {
               collection is `/playlists`, a page you can bookmark and leave with
               the back button, rather than an aside this page swapped itself
               into behind a `?publisher=` param `replaceState` wrote.
-              `<PlaylistsLink>` in the header is the same destination from
-              sm: up, where there is room for a chip; this is the mobile way in
-              and the discovery affordance on a blank home page either way.
-              Hidden as soon as the user searches or drills in, so it never
-              competes with what they asked for. `entryResolved` costs nothing
-              now that no fetch hangs off the press, but it still keeps the
-              button from flashing during a `?podcast=` restore that is about to
-              replace this whole hero. */}
+              `<PlaylistsLink>` in the header is the same destination, and the
+              two visibility rules are written to COMPOSE: that chip is
+              `hidden lg:inline-flex` and this button is `lg:hidden`, so exactly
+              one of them is on screen at any width. They did not compose once —
+              this button carried no breakpoint at all, so from 1024px up a
+              blank home page showed both, two identical links to one page.
+              They are still different controls, which is why the fix is a
+              breakpoint rather than a deletion: this one is discovery and
+              hides as soon as the user searches or drills in, while the chip is
+              navigation and persists across `/favorites`, a search and a
+              drilled-in show. Deleting either leaves a width or a route with no
+              way into `/playlists`.
+              `entryResolved` costs nothing now that no fetch hangs off the
+              press, but it still keeps the button from flashing during a
+              `?podcast=` restore that is about to replace this whole hero. */}
           {entryResolved && !inDetailView && !publisherSource && !query && !feeds.length && !loading && (
-            <div className="mt-4">
+            <div className="mt-4 lg:hidden">
               <Link
                 href="/playlists"
                 className="btn-ghost btn-compact"

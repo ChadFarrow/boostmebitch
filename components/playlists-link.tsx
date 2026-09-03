@@ -38,6 +38,15 @@ import Link from 'next/link';
  * persists across `/favorites`, a search, and a drilled-in show. Both are a
  * plain `<Link href="/playlists">` with no logic, so there is nothing to drift.
  *
+ * **The two rules have to COMPOSE, and for a while they did not.** This chip
+ * carries the `lg:` floor and the hero button now carries `lg:hidden` as its
+ * ceiling, so exactly one of them is on screen at any width. The hero button
+ * shipped with no breakpoint at all, which put both on a blank home page from
+ * 1024px up — two identical links to one page, a few hundred pixels apart.
+ * A breakpoint on the OTHER component is the fix, so the pair is only correct
+ * when read together: changing this floor without moving that ceiling
+ * reintroduces the overlap, or opens a band with no way into `/playlists`.
+ *
  * Height must stay within a `.btn-ghost`'s 38px: `--app-header-h` is hard-coded
  * to 71px against this cluster (see `<AppHeader>`). Adding nothing below `lg:`
  * is also what keeps that variable, and `<EpisodeList>`'s sticky offset on the

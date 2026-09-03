@@ -1,29 +1,30 @@
 /**
- * What the two halves of the kind:10333 list actually hold, compared.
+ * Which identifiers a kind:10333 list actually claims as favorites.
  *
- * Pure and read-only: it counts identifiers and answers no question about what
- * to do next. The decrypt, the signer prompt and the rendering live in
- * `components/favorites-page.tsx`.
+ * Pure and read-only: it reads a `ParsedList` and answers no question about
+ * what to do next. Everything that decrypts, prompts a signer or renders lives
+ * in `components/favorites-page.tsx`.
  *
- * **Why this exists.** A list can hold entries in the plaintext `i` tags and in
- * the encrypted `content` AT THE SAME TIME — nothing in the format forbids it,
- * and three ordinary routes lead there: another app wrote the private half, or
- * a mode switch ran on a device whose baseline claimed nothing and therefore
- * copied instead of moving, or the account changed mode twice. From the app's
- * own screens that state is invisible: the public half renders, the private
- * half is carried byte for byte, and nothing counts either.
+ * **A group WITH items is not a favorite, and that is the whole reason this
+ * file exists.** A group is opened for every parent of a favorited track, so
+ * only an ITEMLESS one is an album or show the user chose — the same rule
+ * `hydrateFavorites` applies when it paints. `list.nodes.length`, or a raw
+ * count of `i` tags, is therefore NOT the number of favorites: on the account
+ * this was built for, counting every `podcast:guid:` tag reported **217 albums
+ * to a user who has 56**.
  *
- * It matters because the decision it informs is expensive. Switching to
- * Private moves entries the device's baseline claims and copies the rest, so
- * "is my list already in both halves" decides whether a switch tidies the list
- * or doubles it. Guessing costs a publish to a shared replaceable event.
+ * That gap is why both backup controls come through here rather than counting
+ * tags themselves. `⇩ BACKUP` states how many entries the file holds and
+ * `⇧ RESTORE FROM BACKUP` states how many are about to replace how many — and
+ * a number a user can compare against the `N SAVED` on the same page is the
+ * only thing that makes either statement checkable.
  *
- * **A group WITH items is not a favorite.** A group is opened for every parent
- * of a favorited track, so only an ITEMLESS one is an album or show the user
- * chose — the same rule `hydrateFavorites` applies when it paints. Counting
- * every `podcast:guid:` tag as a favorite would have reported 217 albums to a
- * user who has 56, and would then have overstated the overlap between the
- * halves by the same 161.
+ * **This file used to compare the two halves as well.** `auditHalves`,
+ * `auditSummary`, `placementGroups` and `HalfAudit` served `⌕ CHECK PRIVATE
+ * HALF` and `⇄ MERGE ENCRYPTED HALF IN`, both removed on 2026-09-03; see
+ * "Removed" in [`docs/ui.md`](../docs/ui.md). The state they detected — a list
+ * holding entries in the plaintext tags and the encrypted `content` at once —
+ * is not prevented by anything, so that section is kept rather than deleted.
  */
 import type { ParsedList } from '@/lib/nostr/favorites-list';
 
@@ -51,36 +52,6 @@ export interface PrivateOnlyEntry {
    * half without it becomes a bare guid in a bucket labelled "medium unknown".
    */
   medium?: string;
-}
-
-export interface HalfAudit {
-  /** Favorites in the plaintext tags. */
-  publicCount: number;
-  /** Favorites in the decrypted `content`. */
-  privateCount: number;
-  /** Identifiers present in BOTH halves — the stored-twice number. */
-  inBoth: number;
-  publicOnly: number;
-  privateOnly: number;
-  /**
-   * Public `podcast:guid:` groups that exist only to hold items.
-   *
-   * Reported because they are the difference between the tag count a person
-   * sees in a raw event and the number of favorites the app shows them, and
-   * that gap is otherwise inexplicable — 161 against 56 on the account this
-   * was built for.
-   */
-  publicPlacementGroups: number;
-  /**
-   * The private-only entries themselves, in wire order.
-   *
-   * A count alone cannot be acted on. "3 entries exist only in the encrypted
-   * half" leaves a user with no way to tell a favorite they deleted from one
-   * another app wrote, and that difference is what decides whether the half is
-   * safe to retire. Only these are listed: the overlap is by definition
-   * already visible on the page.
-   */
-  privateOnlyEntries: PrivateOnlyEntry[];
 }
 
 /**
@@ -120,89 +91,7 @@ export function favoriteEntries(list: ParsedList): PrivateOnlyEntry[] {
   return out;
 }
 
-/** Just the identifiers, for the set arithmetic. */
+/** Just the identifiers. `favoriteIds(list).length` is the favorite COUNT. */
 export function favoriteIds(list: ParsedList): string[] {
   return favoriteEntries(list).map((e) => e.id);
-}
-
-/** Groups that carry items, and so name a parent rather than a favorite. */
-export function placementGroups(list: ParsedList): number {
-  return list.nodes.filter((n) => n.t === 'group' && n.group.itemGuids.length > 0).length;
-}
-
-/**
- * Compare the halves.
- *
- * Sets, not arrays: a half may legitimately name an id twice (two writers'
- * groups for one feed survive a merge), and counting that as two favorites
- * would inflate every number here.
- */
-export function auditHalves(publicList: ParsedList, privateList: ParsedList): HalfAudit {
-  const pub = new Set(favoriteIds(publicList));
-  const privEntries = favoriteEntries(privateList);
-  const priv = new Set(privEntries.map((e) => e.id));
-  let inBoth = 0;
-  for (const id of priv) if (pub.has(id)) inBoth += 1;
-  // Deduped by id as well: a half may name one entry twice when two writers'
-  // groups for a feed both survive a merge, and listing it twice would make
-  // the rows disagree with the count above them.
-  const seen = new Set<string>();
-  const privateOnlyEntries = privEntries.filter((e) => {
-    if (pub.has(e.id) || seen.has(e.id)) return false;
-    seen.add(e.id);
-    return true;
-  });
-  return {
-    publicCount: pub.size,
-    privateCount: priv.size,
-    inBoth,
-    publicOnly: pub.size - inBoth,
-    privateOnly: priv.size - inBoth,
-    publicPlacementGroups: placementGroups(publicList),
-    privateOnlyEntries,
-  };
-}
-
-/**
- * The finding, in sentences.
- *
- * Separate from the arithmetic so the numbers can be checked without reading
- * prose, and so every branch is visible in one place. Each says what is true
- * and what it means for a switch to Private — which is the decision this
- * whole control exists to inform.
- */
-export function auditSummary(audit: HalfAudit, mode?: string): string[] {
-  const lines: string[] = [];
-  // Noun AND verb, because a count of one is the ordinary case here and
-  // "1 entry sit in both halves" is the kind of wrong that makes a reader
-  // distrust the number beside it.
-  const s = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
-  const verb = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);
-
-  if (audit.privateCount === 0) {
-    lines.push(`No private entries. All ${s(audit.publicCount, 'favorite')} on the relays are in the plaintext tags, readable by anyone.`);
-    return lines;
-  }
-
-  lines.push(`Public tags: ${s(audit.publicCount, 'favorite')}. Encrypted half: ${s(audit.privateCount, 'favorite')}.`);
-
-  if (audit.inBoth > 0) {
-    lines.push(`${s(audit.inBoth, 'entry', 'entries')} ${verb(audit.inBoth, 'sits', 'sit')} in BOTH halves — already public, and encrypted a second time.`);
-  }
-  if (audit.privateOnly > 0) {
-    // The mode is READ, never assumed. This sentence hardcoded "set to Public"
-    // and was printed to a user whose whole list had just moved into the
-    // encrypted half — telling them their setting was the thing it was not.
-    // Absent means never chosen, which is its own answer and not 'public'.
-    const where = mode === 'private'
-      ? 'They are hidden until this device claims them.'
-      : mode
-        ? `Nothing in this app shows ${verb(audit.privateOnly, 'it', 'them')} while your favorites are set to ${mode === 'off' ? 'Not on Nostr' : 'Public'}.`
-        : `Nothing in this app shows ${verb(audit.privateOnly, 'it', 'them')} until this account's favorites setting is chosen.`;
-    lines.push(`${s(audit.privateOnly, 'entry', 'entries')} ${verb(audit.privateOnly, 'exists', 'exist')} only in the encrypted half. ${where}`);
-  }
-  if (audit.inBoth > 0 && audit.privateOnly === 0) {
-    lines.push('So the encrypted half is a duplicate of entries you already publish in the clear. Switching to Private would hide them going forward; it cannot retract what the relays already served.');
-  }
-  return lines;
 }
