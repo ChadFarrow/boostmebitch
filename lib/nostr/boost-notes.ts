@@ -236,10 +236,24 @@ export function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
  * This takes `inBody`, which is NOT the same list as the `p` tags. A mention a
  * site-signed note may not tag is still written here — see noteMentionTags for
  * why the two lists differ.
+ *
+ * ONE PER LINE, not space-joined. A client replaces each `nostr:npub…` with the
+ * profile's display name, and display names contain spaces — so three of them
+ * on one line rendered as
+ *
+ *   @Chad and Reeds Podcast (candr) @ChadF and 33 others @Reed
+ *
+ * which no reader can split back into three people. Measured on a real note,
+ * 2026-09-03. A space is what a compose box writes, which is why it was chosen,
+ * but a compose box is joining handles that have no spaces in them.
+ *
+ * A newline rather than a visible separator: anything printable placed between
+ * a name and the next URI is a character a client may absorb into the link
+ * text, and this content is a signed kind:1 that can never be edited.
  */
 function withMentions(content: string, npubs: MentionNpub[]): string {
   if (!npubs.length) return content;
-  return `${content}\n\n${npubs.map((n) => `nostr:${n.npub}`).join(' ')}`;
+  return `${content}\n\n${npubs.map((n) => `nostr:${n.npub}`).join('\n')}`;
 }
 
 function formatContent(args: PublishArgs): string {
