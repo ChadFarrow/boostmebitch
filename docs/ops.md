@@ -215,6 +215,65 @@ This is the most important step and the easiest to skip. It is the difference
 between an accelerator and a dependency, and the only moment you find out which
 one you built is the moment you need it to be the first.
 
+## The second Vercel project — its environment is its own, and BoostBox proved it
+
+One repo builds two Vercel projects: `boostmebitch` (`prj_70009zf…`) and
+`boostmebuddy` (`prj_ds2CBCB…`), both linked to `ChadFarrow/boostmebitch` on
+`main`. A push deploys **both** with the same code. **Nothing else is shared:
+each project holds its own environment variables**, and a variable set on one
+project is simply absent on the other, with no error at build time and none at
+request time either — the code falls back, exactly as it is written to.
+
+**The reported instance: "boostmebuddy isn't sending TLV info."** Same commit
+on both projects. Runtime logs, same week:
+
+| Project | `POST /api/lightning/boostbox` |
+|---|---|
+| `boostmebitch` | 200, every call |
+| `boostmebuddy` | `401 {"error":"unauthorized"}` from the upstream, every call, five of five in the retained log window (one day on this Vercel plan) |
+
+That route is the whole metadata channel for an **LNURL** leg (a keysend leg
+carries the boostagram inline in TLV `7629169` and never touches it; see
+[`money-boosts.md`](money-boosts.md)). A 401 there is non-fatal by design —
+`storeBoostMetadata` returns `null`, the leg pays, the modal shows ✓ — so every
+LNURL leg from the buddy deploy paid fine and carried **no `rss::payment`
+descriptor**: no `sender_id`, no `remote_feed_guid`, no episode. On the
+receiving side that is indistinguishable from an app that sends no metadata at
+all, which is how it was reported.
+
+The cause is not in the diff. The route reads `BOOSTBOX_URL` and
+`BOOSTBOX_API_KEY` and falls back to `https://tardbox.com` and `v4v4me`, and
+`tardbox.com` is the fork that **runs its own key** (`.env.example` says so).
+The `boostmebitch` project carries the real key; the `boostmebuddy` project was
+created later and either never had it set or holds a different value. Either
+way, the fix is in the Vercel dashboard, not here:
+
+1. Copy `BOOSTBOX_URL` and `BOOSTBOX_API_KEY` from the `boostmebitch` project's
+   Production environment onto the `boostmebuddy` project, both environments.
+2. Redeploy `boostmebuddy` — a variable change does not redeploy on its own.
+3. Boost one LNURL recipient from boostmebuddy.com and read the runtime log:
+   the line must be `POST /api/lightning/boostbox 200`, and the browser console
+   must print `[lnurl] <addr> → comment (desc "rss::payment::boost …")` rather
+   than `NO DESCRIPTOR`.
+
+**Why it stayed invisible.** The client-side warning exists
+(`[boostbox] <addr> — metadata NOT stored … proxy returned 401`), but it is a
+console line on the sender's device, and the sender's own `<BoostCard>` still
+renders a BoostBox link from a URL that was never stored. The server log is the
+only place the word `unauthorized` appears. **When the two deploys behave
+differently on identical code, read the buddy project's runtime log for
+`[boostbox] upstream` before opening a file** — the code cannot see its own
+environment, and neither can a diff.
+
+**The same trap applies to every server-only variable in `.env.example`**, and
+the list is not short: `PODCAST_INDEX_KEY`/`SECRET`, `SITE_NOSTR_SK` (a
+*different* key per deploy, see `lib/brand.ts`), `NOSTR_INDEX_URL`/`KEY`,
+`PLAYLIST_DB_URL`/`CA`, and `NEXT_PUBLIC_BRAND=buddy` itself. A variable added
+for a feature is set on the project the person is looking at; the other project
+gets it when someone notices the feature is missing there. Treat "set the
+variable" as a two-project step, and `.env.example`'s warning about the
+**copied** `ANDROID_*` pair as the one exception where copying is the bug.
+
 ## Dependency advisories — which ones are actually reachable
 
 `npm audit` is noisy here because Next bundles its own copies of things, so the

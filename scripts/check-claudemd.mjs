@@ -59,7 +59,34 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // that was obvious; both are restored. So: the repo grew by a check script and
 // the budget grew by a row, which is the ratio the note above says to watch.
 // It is NOT licence for the next rule — that one displaces something.
-const BUDGET = 15300
+//
+// Raised a third time, 15,300 -> 15,400, and the reason is as much about the
+// LAST raise as this change. 15,300 left the file at 15,299 — one word of
+// headroom, which is not headroom. The note above says the file should sit "a
+// little under this on purpose: enough for a handful of genuinely new rules";
+// at one word it sits AT the ceiling, so the budget had stopped asking "is this
+// rule worth displacing something?" and started asking "did you touch this file
+// at all?". Two open PRs hit it within a day, neither adding a rule: this one
+// adds three words to a table cell, and #292 hit it adding a check script.
+// A limit that fires on every edit regardless of size is not a limit anyone can
+// act on — it just gets raised in a hurry by whoever is unlucky, which is the
+// opposite of the deliberate pause this script exists to create.
+//
+// What grew in the repo: `docs/ops.md` gained a whole subject it did not cover,
+// the second Vercel project and the fact that it shares NONE of the first one's
+// environment — measured against five BoostBox 401s on boostmebuddy, where every
+// LNURL leg paid with no `rss::payment` descriptor. The table is an INDEX, so a
+// doc that now answers "which Vercel project holds which variable" has to say so
+// in its row or nobody reaches it from here. Nothing else in the row could pay:
+// the file has no filler left to cut (checked), and each remaining clause names
+// a measured fact.
+//
+// The +100 is deliberately more than the 3 words needed. Buying exactly enough
+// is what produced the one-word ceiling, and the next contributor should not
+// have to hold a budget argument to fix a typo. It is still NOT licence for the
+// next rule — that one displaces something. If #292 lands after this, drop its
+// own raise to 15,340 rather than lowering this number.
+const BUDGET = 15400
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')
