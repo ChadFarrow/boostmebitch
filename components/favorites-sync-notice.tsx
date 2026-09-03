@@ -60,11 +60,20 @@ export function FavoritesSyncNotice() {
   // anything had even been attempted.
   if (!identity || !degraded) return null;
 
-  const privateUnreadable = reason === 'private-unreadable';
+  // Two reasons, one control. 'private-withheld' is the hydrator saying it did
+  // not ASK — the signer lives outside the browser and would have shown the
+  // plaintext, or prompted, on a page load nobody was watching. It is a choice,
+  // so it gets no ⚠ and no "couldn't": an Amber user sees this on every cold
+  // start, and it read as a fault. 'private-unreadable' is the decrypt that ran
+  // and failed, which IS worth the warning glyph. Both offer the same unlock.
+  const privateWithheld = reason === 'private-withheld';
+  const privateUnreadable = reason === 'private-unreadable' || privateWithheld;
   const tooLarge = reason === 'private-too-large';
   const ambiguous = reason === 'mode-ambiguous';
 
-  const message = privateUnreadable
+  const message = privateWithheld
+    ? "Your private favorites weren't opened on load — showing what's saved on this device."
+    : privateUnreadable
     ? "⚠ Your signer couldn't open the private half of your list — showing what's on this device."
     : tooLarge
       ? '⚠ Your private favorites are too large to store safely. Nothing was changed; make some public to fit.'

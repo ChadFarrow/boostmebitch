@@ -367,7 +367,20 @@ export function startNostrConnect(
       clientPubkey,
       relays: NOSTRCONNECT_RELAYS,
       secret,
-      name: BRAND.displayName,
+      // wireName, NOT displayName, and the reason is an encoding one.
+      // `createNostrConnectURI` builds its query with `new URLSearchParams()`
+      // (nostr-tools nip46.js), which is application/x-www-form-urlencoded —
+      // where a space is `+`, not `%20`. Amber percent-decodes and renders the
+      // `+` literally, so "Boost Me Bitch" reached the approval sheet as
+      // "Boost+Me+Bitch". MEASURED on a Pixel 6 with Amber 6.5.2.
+      //
+      // That string is what a user reads to decide whether to trust a signer
+      // with their key, so it looking mangled is not cosmetic. `wireName` has
+      // no spaces by construction and is already this repo's identity for
+      // wire-facing surfaces — the boostagram `app_name` and the `client` tag —
+      // so it sidesteps the encoding instead of escaping around it, and it
+      // keeps the two deploys apart in Amber's connection list.
+      name: BRAND.wireName,
     });
     nostrconnectMemo = { uri, clientSk, secret };
   }

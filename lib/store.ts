@@ -2,6 +2,9 @@
 import { create } from 'zustand';
 import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, ValueBlock } from './types';
 import type { NostrIdentity, PublishReason } from './nostr';
+
+/** Why `favoritesSync` is 'degraded' — see the field for the extra value. */
+export type FavoritesSyncReason = PublishReason | 'private-withheld';
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
@@ -225,9 +228,16 @@ interface AppState {
    * both render as a shorter list, and the user cannot tell "hidden here by
    * choice" from "this app has not been able to open it" without being told
    * which. Null while the status is anything but 'degraded'.
+   *
+   * 'private-withheld' is the hydrator's, not the planner's: the planner
+   * answers 'private-unreadable' for any half it did not get to read, and only
+   * the hydrator knows whether that is because the decrypt FAILED or because
+   * it was never asked — an Amber or bunker user is not prompted on load
+   * (`unattendedDecryptOk`). Same split `mutesSyncReason` makes below; the
+   * notice words them differently because one is a fault and one is a choice.
    */
-  favoritesSyncReason: PublishReason | null;
-  setFavoritesSync: (s: FavoritesSyncStatus, reason?: PublishReason) => void;
+  favoritesSyncReason: FavoritesSyncReason | null;
+  setFavoritesSync: (s: FavoritesSyncStatus, reason?: FavoritesSyncReason) => void;
   /** Back to 'idle', for the identity teardowns in nostr-auth. Kept as its own
    *  call so the three places that clear it can't drift. */
   resetFavoritesSync: () => void;

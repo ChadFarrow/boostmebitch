@@ -924,6 +924,20 @@ retry and may mean the signer does not implement the cipher the list uses. Both
 run `hydrateMutes(identity, 'user-initiated')` — the one path that spends a
 prompt on an out-of-browser signer.
 
+**The favorites notice makes the same split since 2026-09-03, and it did not
+before.** `planFavoritesPublish` answers `'private-unreadable'` for any half it
+did not get to read, whichever the cause, so `<FavoritesSyncNotice>` said *"⚠
+Your signer couldn't open the private half"* on every Amber cold start — over a
+read the hydrator had deliberately skipped. Reported as an error from a phone
+screenshot beside the (correctly worded) mutes notice. The hydrator is the one
+place that knows whether `decryptPrivate` was true, so it maps the planner's
+answer to `'private-withheld'` when the decrypt was never attempted
+(`FavoritesSyncReason` in `lib/store.ts`), and the notice words that one as a
+choice with no ⚠. The control is the same `unlock` for both. What it does NOT
+yet do is remember an opened half across loads the way `privateHalfAlreadyOpened`
+does for mutes: an Amber user who unlocks sees the notice again on the next cold
+start, because `favorites-list.ts` carries no known-plaintext memory.
+
 ### A half we have opened once is not asked about again
 
 **The notice above was PERMANENT, and a permanent notice is the failure it was
