@@ -218,6 +218,43 @@ export function unattendedDecryptOk(): boolean {
   return kind !== 'amber' && kind !== 'bunker';
 }
 
+/**
+ * May we decrypt the private half of the FAVORITES and MUTES lists on load?
+ *
+ * `unattendedDecryptOk()` is the general answer and stays the answer for
+ * everything else. This is the one widening, and the argument for it is that the
+ * measurement behind that gate was about a different secret.
+ *
+ * What was measured: an out-of-browser signer renders the decrypted plaintext on
+ * its approval sheet, and a cold start reading three encrypted-to-self
+ * coordinates put twelve BIP-39 words full-screen on a Pixel 6 before the user
+ * touched anything. That is the WALLET MNEMONIC, and it keeps the unconditional
+ * gate — `components/nostr-auth` still calls `unattendedDecryptOk()` directly and
+ * must keep doing so.
+ *
+ * The two lists were swept into the same predicate because it was one predicate
+ * for three call sites, not because they were weighed. Their plaintext is a list
+ * of podcast ids and muted pubkeys. The cost of withholding them is paid on every
+ * cold start by every Amber user, as two notices that read as errors over a state
+ * that is a deliberate choice — and one tap opens both, so for a signer set to
+ * auto-approve the gate buys nothing at all while charging for it every time.
+ *
+ * So: once the user has explicitly opened them on this device, remember it.
+ * `storage.listUnlock` is written from a control they pressed and from nowhere
+ * else. It is consent; it is never inferred, and it is never assumed for a
+ * device that has not seen it.
+ *
+ * THE RISK THIS ACCEPTS, stated so it is not rediscovered as a bug: a signer set
+ * to approve each request manually will now prompt on cold start instead of
+ * showing a notice. That is a worse trade for that user, which is why the
+ * account menu grows a way to turn it back off, shown exactly when the flag is
+ * set. The failure is visible and one tap from reversible, which is the
+ * direction to fail in — the same asymmetry `storage.sparkOptOut` argues.
+ */
+export function listDecryptOnLoadOk(npub: string | null | undefined): boolean {
+  return unattendedDecryptOk() || storage.listUnlock.get(npub);
+}
+
 // Deliberately NO getActiveLocal() accessor, unlike getActiveAmber /
 // getActiveBunker. Those hand out adapters that talk to a signer living
 // elsewhere; a LocalSigner holds the raw key in-process. `private sk` is erased

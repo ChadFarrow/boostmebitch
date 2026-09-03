@@ -64,7 +64,7 @@ import {
   serializeFavoritesCycle,
   trustedBaseline,
   recordFavoritesBaseline,
-  unattendedDecryptOk,
+  listDecryptOnLoadOk,
 } from './favorites-sync';
 import { mapLimit } from '@/lib/util';
 import { resolvePublishRelays } from './relays';
@@ -204,7 +204,7 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   // 'loading' forever and the notice would never appear.
   // Hoisted so the degraded branch below can tell "we asked and it did not
   // open" from "we chose not to ask" — the planner cannot, see there.
-  const decryptPrivate = purpose === 'user-initiated' || unattendedDecryptOk();
+  const decryptPrivate = purpose === 'user-initiated' || listDecryptOnLoadOk(identity.npub);
   let read: Awaited<ReturnType<typeof fetchFavoritesList>>;
   try {
     // DO NOT SPEND A SIGNER PROMPT HERE. This runs on every page load and on

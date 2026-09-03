@@ -17,7 +17,7 @@ import {
   type MuteListState,
 } from './mutes';
 import { resolvePublishRelays } from './relays';
-import { unattendedDecryptOk, type DecryptPurpose } from './signer';
+import { listDecryptOnLoadOk, type DecryptPurpose } from './signer';
 import type { NostrIdentity } from './auth';
 
 /**
@@ -68,7 +68,7 @@ export async function hydrateMutes(
   // verbatim on republish, the branch below keeps applying whatever private
   // list this device already cached, and <MutesSyncNotice> now says so on
   // screen with a control that spends the prompt on purpose.
-  const decryptPrivate = purpose === 'user-initiated' || unattendedDecryptOk();
+  const decryptPrivate = purpose === 'user-initiated' || listDecryptOnLoadOk(identity.npub);
   // READ FROM THE RELAYS WE WRITE TO. This used to pass `undefined`, which
   // `fetchMutedPubkeys` reads as DEFAULT_RELAYS, while the republish below has
   // always targeted `resolvePublishRelays` — the user's NIP-65 write set unioned

@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useApp } from '@/lib/store';
+import { storage } from '@/lib/storage';
 import { hydrateMutes } from '@/lib/nostr';
 
 // "We are not applying your private mutes" made visible.
@@ -64,6 +65,11 @@ export function MutesSyncNotice() {
       // unprompted. A success flips `mutesSync` and unmounts this from under
       // us; `hydrateMutes` owns both the store and the cache, so there is
       // nothing to repaint here afterwards.
+      // This button has exactly one meaning — "open my private mute list" — so
+      // the consent is unconditional here, unlike the favorites notice whose
+      // control doubles as a plain relay retry. Written before the await for
+      // the same reason: a success unmounts this component.
+      storage.listUnlock.set(identity!.npub, true);
       await hydrateMutes(identity!, 'user-initiated');
     } catch {
       // hydrateMutes already reported the state; the notice simply stays up.

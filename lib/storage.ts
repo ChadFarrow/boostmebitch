@@ -82,6 +82,7 @@ const KEYS = {
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
   followsPrefix: 'bmb:follows',       // per-npub last-known-good kind:3 follow set (hex[]) — a nuke-guard signal, see lib/nostr/follows.ts
   writeRelaysPrefix: 'bmb:wrelays',   // + ':<npub>' — that account's NIP-65 (kind:10002) WRITE relays, cached so the next load can read the shared lists from the same relays it publishes them to. NOT evictable: losing it re-opens the read-narrower-than-write window, see lib/nostr/relays.ts.
+  listUnlockPrefix: 'bmb:list_unlock', // + ':<npub>' — '1' once THIS account has explicitly opened its private favorites/mutes on this device, which lets the two hydrators decrypt those two coordinates on load instead of asking again every cold start. LISTS ONLY: the wallet mnemonic is never covered, and reads `unattendedDecryptOk()` alone. Absent means "not asked for", which is the safe default and what a new device gets. Deliberately absent from EVICTABLE_PREFIXES — evicting it silently reinstates the notice the user dismissed, which reads as the setting not sticking.
   sparkOptOutPrefix: 'bmb:spark:opted_out', // + ':<npub>' — set when THAT account explicitly disconnects Spark or replaces a CONNECTED Spark with another rail; suppresses auto-restore on its next login. Never set when Spark wasn't connected (connecting NWC/WebLN on a Spark-less device must not block a later restore). Cleared by every Spark connect path.
   // NOTE: the bare `bmb:spark:opted_out` (no npub suffix) is a DEAD key from
   // the pre-per-npub code. It is deliberately never read or written — see the
@@ -613,6 +614,37 @@ export const storage = {
    * dropped, so an existing user's deliberate opt-out isn't silently undone by
    * this refactor.
    */
+  /**
+   * Has this account explicitly opened its private list halves on this device?
+   *
+   * Set only from a control the user pressed. It is consent, not a cache, so it
+   * is recorded per npub and never inferred from anything the app did on its
+   * own.
+   *
+   * What it may widen is deliberately narrow. `unattendedDecryptOk()` refuses an
+   * out-of-browser signer a decrypt on page load because Amber renders the
+   * PLAINTEXT on its approval sheet — measured putting twelve BIP-39 words
+   * full-screen at launch. That measurement was about the WALLET MNEMONIC. The
+   * same predicate also gates the favorites and mutes halves, whose plaintext is
+   * a list of podcast ids and muted pubkeys, and there the per-load cost is paid
+   * by every Amber user on every cold start for a decrypt they then approve by
+   * hand anyway.
+   *
+   * So this flag covers those two lists and NOTHING else. The mnemonic keeps the
+   * unconditional gate; see `listDecryptOnLoadOk` in lib/nostr/signer.ts, which
+   * is the only reader.
+   */
+  listUnlock: {
+    get: (npub: string | null | undefined): boolean =>
+      safeGet(identityKey(KEYS.listUnlockPrefix, npub)) === '1',
+    set: (npub: string | null | undefined, on: boolean): void => {
+      const key = identityKey(KEYS.listUnlockPrefix, npub);
+      if (!key) return;
+      if (on) safeSet(key, '1');
+      else safeRemove(key);
+    },
+  },
+
   sparkOptOut: {
     get: (npub: string | null | undefined): boolean => {
       // Tri-state on purpose: '1' = opted out, '0' = explicitly opted IN,
