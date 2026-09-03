@@ -24,20 +24,33 @@ function list(name: string, fallback: string[]): string[] {
   return out.length ? out : fallback;
 }
 
+// These four, and the omission is the point. A relay that connects and then
+// answers nothing does not cost nothing: every query here resolves on AGGREGATE
+// eose, so it pins each stage to the ceiling instead. `wss://relay.nostr.band`
+// was exactly that and was measured out on 2026-08-25 — asked for this corpus's
+// own filters it returned 0 events and never EOSE'd. It sat in this default for
+// another week regardless, because INDEX_RELAYS overrode it in Railway and the
+// running service was fine; a fresh environment with that variable unset would
+// have inherited the relay the measurement removed. Keep this list equal to the
+// app's `DEFAULT_RELAYS` (lib/nostr/relays.ts), which carries the numbers.
 export const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
   'wss://relay.primal.net',
   'wss://nos.lol',
-  'wss://relay.nostr.band',
   'wss://relay.fountain.fm',
 ];
 
-// Profile outboxes, unioned in for kind:0. Same three the app already uses;
-// duplicated rather than imported so this service stays decoupled from lib/.
+// Profile outboxes, unioned in for kind:0. Duplicated rather than imported so
+// this service stays decoupled from lib/ — which is deliberate, and is also why
+// it drifted: this said "same three the app already uses" while the app had been
+// down to one since 2026-08-25. `nostr.bitcoiner.social` and `eden.nostr.land`
+// cost ~5.9s a stage there and between them held ONE profile of about ninety
+// that the trimmed set did not — and that one is reachable anyway, through the
+// NIP-65 outbox fallback the wasted window was starving. Decoupled means the
+// lists may differ for a reason, never that a claim about the other one can go
+// unchecked.
 export const PROFILE_RELAYS = [
   'wss://purplepag.es',
-  'wss://nostr.bitcoiner.social',
-  'wss://eden.nostr.land',
 ];
 
 export const config = {
