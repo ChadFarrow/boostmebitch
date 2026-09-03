@@ -609,17 +609,50 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-/** FNV-1a over the tracked pubkeys, without materialising the concatenation.
- *  Only used to answer "did this set change?" — never as an identifier. */
-function fingerprintOf(pubkeys: string[]): string {
-  let h = 0x811c9dc5;
+/**
+ * FNV-1a over the tracked pubkeys, without materialising the concatenation.
+ * Only used to answer "did this set change?" — never as an identifier.
+ *
+ * ORDER-INSENSITIVE, and that is the whole point rather than a nicety.
+ *
+ * It used to fold the list sequentially, so the digest depended on the ORDER as
+ * well as the membership. `trackedPubkeys` reads `order by seen_at desc`, and
+ * `seen_at` bumps every time an already-tracked pubkey posts — so the order
+ * churns constantly while the membership barely moves. Every 60-second tick
+ * therefore saw a "changed" set and tore down all 30 tracked subscriptions
+ * across every relay to rebuild the identical ones.
+ *
+ * Measured in production on 2026-09-03: 33 rebuilds in 39 minutes — one per
+ * interval, exactly as if the comparison were not there — each pushing about
+ * 4.6 MB of REQ payload (5,000 pubkeys x 3 filters x 5 relays). RSS climbed
+ * 780 MB/hour with `subs` flat at 37 and 428 MB unaccounted for outside the V8
+ * heap: the payload sitting in socket and TLS buffers, on relays that were not
+ * draining it — primal refused 238 REQs in the same window. That is the leak in
+ * #301, which OOMed the service at 2 GB and stopped it for three days.
+ *
+ * So each pubkey is hashed on its own and the results are combined with
+ * operations that do not care about order. XOR alone would let a pair of equal
+ * hashes cancel, so a wrapping sum is carried too — a swap that preserves the
+ * XOR has to preserve the sum as well. The count stays in the string because it
+ * is free and catches the case both accumulators miss.
+ *
+ * Membership changes are still caught, which is what the comparison is FOR: a
+ * pubkey entering as another leaves keeps the count identical, and that was the
+ * reason this is a digest rather than a length check.
+ */
+export function fingerprintOf(pubkeys: string[]): string {
+  let xor = 0;
+  let sum = 0;
   for (const pk of pubkeys) {
+    let h = 0x811c9dc5;
     for (let i = 0; i < pk.length; i++) {
       h ^= pk.charCodeAt(i);
       h = Math.imul(h, 0x01000193) >>> 0;
     }
+    xor = (xor ^ h) >>> 0;
+    sum = (sum + h) >>> 0;
   }
-  return `${pubkeys.length}:${h.toString(16)}`;
+  return `${pubkeys.length}:${xor.toString(16)}:${sum.toString(16)}`;
 }
 
 function logErr(what: string) {

@@ -9,7 +9,7 @@
 import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools';
 import { getPool, closePool } from '../src/db.ts';
 import { migrate } from '../src/migrate.ts';
-import { Indexer } from '../src/indexer.ts';
+import { Indexer, fingerprintOf } from '../src/indexer.ts';
 import { startMockRelay } from './mock-relay.mjs';
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -214,6 +214,51 @@ ok(h.subscriptions > 0, 'health reports live subscriptions');
 indexer.stop();
 await relay.close();
 await closePool();
+
+// ---------------------------------------------------------------------------
+// fingerprintOf — the tracked-set comparison that decides whether to rebuild
+// ---------------------------------------------------------------------------
+//
+// This is the #301 leak. `trackedPubkeys` reads `order by seen_at desc`, so the
+// ORDER churns every time an already-tracked pubkey posts while the membership
+// barely moves. A digest that folded the list sequentially therefore differed on
+// every 60-second tick, and the indexer tore down all 30 tracked subscriptions
+// across every relay to rebuild the identical ones — 33 times in 39 minutes,
+// about 4.6 MB of REQ payload each, into relays that were not draining it.
+//
+// Both halves are asserted, because either one alone is a bug: order-blind and
+// it never rebuilds when it should; order-sensitive and it rebuilds when it
+// should not.
+{
+  const set = Array.from({ length: 500 }, (_, i) => i.toString(16).padStart(64, '0'));
+
+  ok(fingerprintOf(set) === fingerprintOf([...set]),
+     'the same list gives the same fingerprint');
+
+  // Exactly what `order by seen_at desc` does when one tracked pubkey posts
+  // again: it moves to the front. Same members, same count, no rebuild wanted.
+  const moved = [set[321], ...set.filter((_, i) => i !== 321)];
+  ok(fingerprintOf(set) === fingerprintOf(moved),
+     'moving one pubkey to the front does NOT change the fingerprint');
+
+  ok(fingerprintOf(set) === fingerprintOf([...set].reverse()),
+     'a fully reversed list does NOT change the fingerprint');
+
+  // The case the digest exists for, and the reason it is not a length check:
+  // one in, one out, count unchanged, membership different.
+  const swapped = [...set.slice(1), 'f'.repeat(64)];
+  ok(fingerprintOf(set) !== fingerprintOf(swapped),
+     'one pubkey in and one out DOES change it, though the count is identical');
+
+  ok(fingerprintOf(set) !== fingerprintOf(set.slice(0, -1)),
+     'a shorter list changes it');
+
+  // XOR alone lets a pair of equal hashes cancel; the sum is carried so a swap
+  // that preserves the XOR still has to preserve the sum.
+  const a = 'a'.repeat(64), b = 'b'.repeat(64);
+  ok(fingerprintOf([a, a, b]) !== fingerprintOf([b, b, b]),
+     'duplicate hashes do not cancel out of the digest');
+}
 
 console.log(`\n${checks} checks`);
 if (failures) { console.error(`${failures} FAILED`); process.exit(1); }
