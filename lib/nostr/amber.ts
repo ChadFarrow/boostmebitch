@@ -206,6 +206,7 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
     // eslint-disable-next-line no-console
     console.info('[amber] ✓', opts.type, '(resumed from callback)');
     storage.amberPending.clear();
+    storage.amberTab.clear();
     return parked;
   }
 
@@ -242,6 +243,13 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       // into a second, signed-in copy of the app beside this one.
       standalone: isStandaloneDisplay(),
     });
+    // The pending record above is localStorage, so every window of this origin
+    // reads it and none of them can tell which one wrote it. This marker is
+    // sessionStorage, so it is present only in THIS tab — and it survives the
+    // callback navigation when that navigation replaces this very window, which
+    // is what a Trusted Web Activity does. /amber-callback uses the pair to
+    // tell "the answer landed somewhere else" from "the answer landed here".
+    storage.amberTab.set(rid);
   } else {
     // Clipboard path. Drop an EXPIRED record so a callback arriving long after
     // the fact cannot park a result nothing will consume — but leave a fresh
@@ -294,6 +302,7 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       // so a callback arriving late for the same request cannot park a result
       // that nothing will ever consume.
       storage.amberPending.clear();
+      storage.amberTab.clear();
       if (!raw) return reject(new Error('Amber returned no result'));
       // eslint-disable-next-line no-console
       console.info('[amber] ✓', opts.type, 'len=', raw.length);
@@ -347,7 +356,16 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       finish(raw);
       return true;
     };
-    const unsubscribeParked = useCallback
+    // ONLY a standalone window subscribes, and that is not a tidy-up: in an
+    // ordinary browser tab the callback tab navigates itself back into the app
+    // and <NostrAuth>'s mount read consumes the answer there. A subscription
+    // here would race that navigation for a single-use record, and the winner
+    // depends on whether Android had frozen this tab — measured going both
+    // ways on one device. Nothing user-visible rides on which side wins today,
+    // because sign-in state is localStorage and every tab of the origin reads
+    // it; but the race is free to remove and would stop being harmless the day
+    // a second type joins AMBER_PERSISTABLE_TYPES.
+    const unsubscribeParked = useCallback && isStandaloneDisplay()
       ? storage.amberResult.subscribe(() => { tryParked('storage'); })
       : () => {};
 
