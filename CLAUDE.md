@@ -42,7 +42,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/storage.md`](docs/storage.md) | Adding or changing any `bmb:*` key |
 | [`docs/nostr.md`](docs/nostr.md) (read index section) + [`docs/feeds.md`](docs/feeds.md) (batch section) | `services/nostr-index/`, `lib/nostr/index-client.ts`, `lib/nostr-index-server.ts`, `lib/pi-batch.ts`, `app/api/nostr/index/`, the two `batch/` routes, and the `warm*Cache` half of `lib/podcast-meta.ts` |
 | [`docs/security.md`](docs/security.md) | `lib/safe-fetch.ts`, `safe-url-attr.ts`, `sanitizeShowNotes`, `app/api/transcript`, `app/api/nostr/site-sign`, `next.config.mjs`, and **any input that accepts a Nostr identifier** (`lib/nostr/npub-input.ts` — `looksLikeSecretKey`) |
-| [`docs/ops.md`](docs/ops.md) | Google Cloud console, DNS, OAuth consent screen |
+| [`docs/ops.md`](docs/ops.md) | Google Cloud console, DNS, OAuth consent screen, Vercel env vars |
 | [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, `android/twa-manifest.json`, `zapstore.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest.json` |
 
 ## Names
