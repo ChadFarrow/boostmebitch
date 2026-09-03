@@ -20,6 +20,17 @@
 //      callback URL is truncated at the first of either. That commit's message
 //      says the bug is fixed. It was not, and nothing caught it for months.
 //
+// And a third, 2026-09-03, that was not this repo's doing and broke sign-in
+// outright: Chromium stopped stamping `Browser.EXTRA_APPLICATION_ID` on the
+// intents it fires for a page, and Amber routes on that stamp — without it a
+// bare `nostrsigner:` URL is read from EXTRAS it does not have, and every
+// request from an up-to-date Chrome or Brave is "Unknown signer type: null",
+// shown as the same "Invalid request" screen as the `?` bug. The request is
+// now an `intent:` URL that carries the parameters as `S.` extras, and the
+// `intent` vectors below replay Android's `Intent.parseUri` over it — the
+// data reconstruction and the extras decode, transcribed from Intent.java —
+// so that what Amber's extras branch will read is asserted, not assumed.
+//
 // Both failures are silent: the signer approves, the user comes back, and
 // nothing happens. There is no error to read. So the rule "the callback URL may
 // contain no `?` and no `&`, and must end with the separator" is an assertion in
@@ -61,9 +72,11 @@
 
 import {
   AMBER_CALLBACK_PATH,
+  AMBER_PACKAGE,
   AMBER_RESULT_SEPARATOR,
   assertCallbackUrlSafe,
   buildAmberCallbackUrl,
+  buildSignerIntentUrl,
   buildSignerUrl,
   looksLikeAmberResult,
   newAmberRequestId,
@@ -313,6 +326,85 @@ const VECTORS = [
     expect: true,
   },
 
+  // -- buildSignerIntentUrl -------------------------------------------------
+  {
+    // The bytes sign-in dispatches. The data part IS the legacy URL, so old
+    // Chromium's URL branch parses what it always parsed, and the extras carry
+    // the same facts for the branch new Chromium lands in.
+    label: 'get_public_key keeps the legacy URL as its data and repeats the facts as extras',
+    fn: 'buildIntent',
+    args: [{ type: 'get_public_key' }, 'https://www.boostmebitch.com/amber-callback#r=0123456789abcdef0123456789abcdef;event='],
+    expect:
+      'intent:?compressionType=none&returnType=signature&type=get_public_key'
+      + '&callbackUrl=https%3A%2F%2Fwww.boostmebitch.com%2Famber-callback%23r%3D0123456789abcdef0123456789abcdef%3Bevent%3D'
+      + `#Intent;scheme=nostrsigner;package=${AMBER_PACKAGE};S.type=get_public_key;S.returnType=signature`
+      + ';S.callbackUrl=https%3A%2F%2Fwww.boostmebitch.com%2Famber-callback%23r%3D0123456789abcdef0123456789abcdef%3Bevent%3D;end',
+  },
+  {
+    // A payload-carrying request sends the payload ALONE as data: the extras
+    // branch decodes the data whole, so a `?type=` tail would be part of the
+    // event it parses.
+    label: 'sign_event sends the bare payload as data, parameters only as extras',
+    fn: 'buildIntent',
+    args: [{ type: 'sign_event', payload: '{"kind":1}', returnType: 'event' }],
+    expect: `intent:%7B%22kind%22%3A1%7D#Intent;scheme=nostrsigner;package=${AMBER_PACKAGE};S.type=sign_event;S.returnType=event;end`,
+  },
+  {
+    label: 'a peer pubkey rides as an extra',
+    fn: 'buildIntent',
+    args: [{ type: 'nip04_decrypt', payload: 'ct', pubkey: 'ff00' }],
+    expect: `intent:ct#Intent;scheme=nostrsigner;package=${AMBER_PACKAGE};S.type=nip04_decrypt;S.returnType=signature;S.pubkey=ff00;end`,
+  },
+  {
+    // MUST STILL WORK: the bare-URL builder refused it too, and this one refuses
+    // it by calling that one. Inherited, not re-proved.
+    label: 'buildSignerIntentUrl refuses an unusable callbackUrl too',
+    fn: 'buildIntentThrows',
+    args: [{ type: 'get_public_key' }, 'https://x.test/amber-callback?event='],
+    expect: true,
+    mustStillWork: true,
+  },
+  // What Android hands Amber, replayed through Intent.parseUri's algorithm.
+  {
+    label: 'Android rebuilds the data as nostrsigner:<legacy URL> for get_public_key',
+    fn: 'intentData',
+    args: [{ type: 'get_public_key' }, 'https://x.test/amber-callback#r=0123456789abcdef0123456789abcdef;event='],
+    expect: 'nostrsigner:?compressionType=none&returnType=signature&type=get_public_key&callbackUrl=https%3A%2F%2Fx.test%2Famber-callback%23r%3D0123456789abcdef0123456789abcdef%3Bevent%3D',
+  },
+  {
+    label: 'and as nostrsigner:<payload> for sign_event, with no query at all',
+    fn: 'intentData',
+    args: [{ type: 'sign_event', payload: '{"content":"does this work\\u003f yes"}', returnType: 'event' }],
+    expect: 'nostrsigner:%7B%22content%22%3A%22does%20this%20work%5Cu003f%20yes%22%7D',
+  },
+  {
+    // The old-Chromium fall-through: the URL branch finds no `?` in the decoded
+    // data, so `parameters` is empty and Amber reads the extras after all. A
+    // `?` here would become a parameter and a rejected request.
+    label: 'the decoded data of an escaped sign_event carries no ? for the URL branch to split on',
+    fn: 'intentDataDecodedHasQuestion',
+    args: [{ type: 'sign_event', payload: '{"content":"does this work\\u003f yes"}', returnType: 'event' }],
+    expect: false,
+  },
+  {
+    label: 'the extras Amber reads are type, returnType and the callbackUrl, decoded intact',
+    fn: 'intentExtras',
+    args: [{ type: 'get_public_key' }, 'https://x.test/amber-callback#r=0123456789abcdef0123456789abcdef;event='],
+    expect: { type: 'get_public_key', returnType: 'signature', callbackUrl: 'https://x.test/amber-callback#r=0123456789abcdef0123456789abcdef;event=' },
+  },
+  {
+    label: 'a decrypt carries its peer pubkey as an extra, and no callbackUrl',
+    fn: 'intentExtras',
+    args: [{ type: 'nip44_decrypt', payload: 'AgOo+/==', pubkey: 'ff00' }],
+    expect: { type: 'nip44_decrypt', returnType: 'signature', pubkey: 'ff00' },
+  },
+  {
+    label: 'the package is Amber, so no app picker and no other handler',
+    fn: 'intentPackage',
+    args: [{ type: 'get_public_key' }],
+    expect: AMBER_PACKAGE,
+  },
+
   // -- looksLikeAmberResult -------------------------------------------------
   { label: 'a hex pubkey is a plausible get_public_key', fn: 'looks', args: [AMBER_WIRE_PUBKEY.slice(-64), 'get_public_key'], expect: true, mustStillWork: true },
   { label: 'an npub is a plausible get_public_key', fn: 'looks', args: ['npub1abc', 'get_public_key'], expect: true, mustStillWork: true },
@@ -373,6 +465,43 @@ function naiveBuildSignerUrl(opts, callbackUrl) {
   return url;
 }
 const naiveLooks = (text) => text.length > 0;
+// The intent form's wrong implementation is the previous RIGHT one: the bare
+// `nostrsigner:` URL that every browser request used until Chromium stopped
+// marking its intents. It parses as no intent at all — parseIntentUri returns
+// null for it — which is exactly what Amber's extras branch got.
+const naiveBuildIntent = (opts, callbackUrl) => buildSignerUrl(opts, callbackUrl);
+
+/**
+ * Android's `Intent.parseUri(uri, URI_INTENT_SCHEME)`, the parts that decide
+ * what Amber sees — transcribed from frameworks/base Intent.java, not from our
+ * builder: the data part is everything before the LAST `#`; each `;key=value`
+ * is sliced at `=` and `;` and only THEN `Uri.decode`d; `scheme=` rewrites
+ * `intent:<rest>` as `<scheme>:<rest>`; `package=` sets the package; `S.` is
+ * a String extra. Returns null for anything that is not an intent: URL.
+ */
+function parseIntentUri(uri) {
+  if (!uri.startsWith('intent:')) return null;
+  const hash = uri.lastIndexOf('#');
+  if (hash < 0 || !uri.startsWith('#Intent;', hash)) return null;
+  let data = uri.slice(0, hash);
+  let scheme = null;
+  let pkg = null;
+  const extras = {};
+  let i = hash + '#Intent;'.length;
+  while (i < uri.length && !uri.startsWith('end', i)) {
+    const eq = uri.indexOf('=', i);
+    const semi = uri.indexOf(';', i);
+    if (semi < 0) return null;
+    const value = eq >= 0 && eq < semi ? decodeURIComponent(uri.slice(eq + 1, semi)) : '';
+    if (uri.startsWith('scheme=', i)) scheme = value;
+    else if (uri.startsWith('package=', i)) pkg = value;
+    else if (uri.startsWith('S.', i)) extras[decodeURIComponent(uri.slice(i + 2, eq))] = value;
+    i = semi + 1;
+  }
+  data = data.slice('intent:'.length);
+  if (scheme !== null) data = `${scheme}:${data}`;
+  return { data, pkg, extras };
+}
 
 // `parser` selects which parse implementation to exercise; the other cases
 // ignore it and branch on `real`.
@@ -397,6 +526,21 @@ function call(impl, v, parser) {
       return (real ? buildSignerUrl : naiveBuildSignerUrl)(...v.args);
     case 'buildSignerThrows':
       return threw(() => (real ? buildSignerUrl : naiveBuildSignerUrl)(...v.args));
+    case 'buildIntent':
+      return (real ? buildSignerIntentUrl : naiveBuildIntent)(...v.args);
+    case 'buildIntentThrows':
+      return threw(() => (real ? buildSignerIntentUrl : naiveBuildIntent)(...v.args));
+    case 'intentData':
+      return parseIntentUri((real ? buildSignerIntentUrl : naiveBuildIntent)(...v.args))?.data ?? null;
+    case 'intentDataDecodedHasQuestion': {
+      const parsed = parseIntentUri((real ? buildSignerIntentUrl : naiveBuildIntent)(...v.args));
+      // Amber's URL branch: URL-decode the whole thing, then look for `?`.
+      return parsed ? decodeURIComponent(parsed.data.slice('nostrsigner:'.length)).includes('?') : null;
+    }
+    case 'intentExtras':
+      return parseIntentUri((real ? buildSignerIntentUrl : naiveBuildIntent)(...v.args))?.extras ?? null;
+    case 'intentPackage':
+      return parseIntentUri((real ? buildSignerIntentUrl : naiveBuildIntent)(...v.args))?.pkg ?? null;
     case 'looks':
       return (real ? looksLikeAmberResult : naiveLooks)(...v.args);
     default:
