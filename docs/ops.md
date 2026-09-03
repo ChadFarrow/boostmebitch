@@ -72,7 +72,10 @@ projects can read costs more than the naming problem it solves:
 | Full `drive` scope so a second app can read the file | **Restricted** scope: annual CASA assessment, and the app could read the user's entire Drive |
 
 **So it is resolved at the consent screen instead: the shared project's app name
-is `Boost Me` — decided 2026-08-31.** Both brands begin with those two words, so
+becomes `Boost Me` — decided 2026-08-31, NOT YET APPLIED in the console.** Delete
+this sentence's warning once the field actually reads `Boost Me`; until then the
+step below is outstanding, and a reader cannot tell from the console alone which
+way round it is. Both brands begin with those two words, so
 the screen reads correctly on either site and puts NEITHER brand's exclusive word
 in front of the other's users, which is the actual leak rather than the mismatch.
 The wallet stays shared because the project stays shared. It costs a console
