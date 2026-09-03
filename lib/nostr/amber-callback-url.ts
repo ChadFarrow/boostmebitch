@@ -61,23 +61,28 @@
 // neither terminate the fragment nor forge a second separator. Verified on the
 // wire: a signed event arrived as `%7B%22id%22%3A…`.
 //
-// ## What this does NOT fix
+// ## The same bug, one field over: a `?` in the PAYLOAD
 //
-// A literal `?` ANYWHERE in the event JSON breaks `sign_event` outright, today,
-// on the clipboard path this file does not touch — same split-on-`?` cause.
-// Measured: `"does this work. yes"` signs; `"does this work? yes"` returns
-// "Invalid request. Amber received a malformed nostrsigner request." `&` is
-// fine (`"Mutton & Mead — track 3"` round-tripped intact, em-dash included).
-// It needs an upstream Amber fix; NIP-55's URL scheme gives us no way to keep
-// the payload out of the URI. It surfaces as "Amber didn't come back", which is
-// indistinguishable from the bug this file DOES fix — so do not read a report
-// of that symptom as evidence about this code.
+// A literal `?` ANYWHERE in the event JSON breaks `sign_event` outright — same
+// split-on-`?` cause, and Amber splits BEFORE it parses the JSON. Measured:
+// `"does this work. yes"` signs; `"does this work? yes"` returns "Invalid
+// request. Amber received a malformed nostrsigner request." `&` is fine
+// (`"Mutton & Mead — track 3"` round-tripped intact, em-dash included). NIP-55's
+// URL scheme gives us no way to keep the payload out of the URI, and Amber's
+// `compressionType=gzip` applies to the RESPONSE only (IntentUtils.kt), so it
+// is no escape hatch either.
 //
-// It IS fixable for a payload this app chooses rather than the user, which is
-// what ./amber-safe-text is for: the NWC connection string carries a `?relay=`
-// in every one there has ever been, so the backup failed for every Android user
-// rather than for the occasional question mark. `payloadSurvivesAmber` below is
-// the predicate both cases read.
+// Both fixes live in ./amber-safe-text, and which one applies is decided by who
+// READS the plaintext:
+//   - `escapeJsonForAmber` writes `?` as its JSON escape `\u003f` — the same
+//     string to any JSON parser, no `?` to Amber's splitter. This is what
+//     `AmberSigner.signEvent` hands Amber, and it is the fix for the boost note,
+//     whose body carries `…/?podcast=` and `…/boost.png?art=` in EVERY note.
+//   - `encodeAmberSafe` wraps a plaintext only this app reads (the NWC
+//     connection string, whose `?relay=` is structural) in `bmb1.<base64url>`.
+// `payloadSurvivesAmber` below is the predicate both read; `invokeAmber` still
+// uses it to NAME this cause in its timeout message for any payload neither
+// fix reached.
 // ---------------------------------------------------------------------------
 
 /** The six NIP-55 methods this app asks for. */
@@ -196,13 +201,13 @@ export function assertCallbackUrlSafe(url: string): void {
  * This is a PREDICATE, not an assertion, and that is deliberate. Two callers
  * want different things from the same fact:
  *
- *  - The NWC backup can avoid the character entirely (see
- *    `./amber-safe-text`), because this app chooses that plaintext.
- *  - A boost message, a live-chat line or an episode title cannot — the user
- *    typed it, and the only honest answer is a legible error rather than the
- *    60-second silence that reads as "Amber didn't come back". So `invokeAmber`
- *    names this cause in its timeout message and changes nothing else. Throwing
- *    here would fail a boost note the user has already paid for.
+ *  - A payload this app shapes avoids the character (see `./amber-safe-text`):
+ *    JSON — every event, every JSON plaintext — through `escapeJsonForAmber`,
+ *    an app-private plaintext through `encodeAmberSafe`.
+ *  - Anything neither reached gets a legible error rather than the 60-second
+ *    silence that reads as "Amber didn't come back": `invokeAmber` names this
+ *    cause in its timeout message and changes nothing else. Throwing here
+ *    would fail a boost note the user has already paid for.
  *
  * Measured on Amber 6.3.0 and again on 6.5.2: `"does this work. yes"` signs,
  * `"does this work? yes"` does not.

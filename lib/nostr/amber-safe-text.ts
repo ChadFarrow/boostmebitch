@@ -14,13 +14,22 @@
 // "Invalid request. Amber received a malformed nostrsigner request."
 // docs/signers.md carries the full measurement.
 //
-// For a boost message or an episode title that is an upstream Amber bug we can
-// only report. For an NWC connection string it is not, because **a `?` is not
-// occasional there, it is structural**: NIP-47 writes
-// `nostr+walletconnect://<pubkey>?relay=…&secret=…`, so EVERY NWC backup
-// carries one and EVERY NWC backup attempt on Amber fails. That is the bug this
-// module fixes, and it is fixable here because we own both ends of the
-// plaintext: nothing but this app ever reads it.
+// Two payload classes hit it STRUCTURALLY, not occasionally, and this module
+// holds a fix for each:
+//
+//  - An NWC connection string. NIP-47 writes
+//    `nostr+walletconnect://<pubkey>?relay=…&secret=…`, so EVERY NWC backup
+//    carries one and EVERY NWC backup attempt on Amber failed. `encodeAmberSafe`
+//    fixes it, and may, because we own both ends of that plaintext: nothing but
+//    this app ever reads it.
+//  - A boost note. `formatContent` (lib/nostr/boost-notes.ts) writes the
+//    in-app link `…/?podcast=<guid>` and the banner `…/api/og/boost.png?art=…`
+//    into EVERY note, so every boost note signed through Amber came back
+//    "Invalid request" — measured 2026-09-03 on a Pixel, on the screen the user
+//    photographed. `escapeJsonForAmber` fixes it, and it has to be a DIFFERENT
+//    fix: a signed event and a shared private list are read by other apps, so
+//    the bytes must stay plain JSON. Item guids that are permalink URLs, a
+//    profile `website`, a typed message ending in `?` — all the same class.
 //
 // ## The encoding
 //
@@ -105,4 +114,31 @@ export function decodeAmberSafe(encoded: string): string | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Write every `?` in a JSON text as its JSON escape `\u003f`.
+ *
+ * Lossless by construction: `JSON.parse` of the result is the same value as
+ * `JSON.parse` of the input, in every implementation, because `\u003f` IS `?`
+ * to a JSON reader. That is what lets a signed event, a mute list's private
+ * half or a favorites private half go through Amber and still be read by
+ * every other app — `encodeAmberSafe` is the wrong tool for those, since a
+ * `bmb1.` prefix inside a kind:1 is a note nobody can read.
+ *
+ * Safe as a GLOBAL replace over stringified JSON: `?` is not a structural
+ * character (`{}[]:,"`), so it only ever appears inside a string literal. A `?`
+ * after a backslash is after an ESCAPED backslash — `JSON.stringify` writes
+ * `\\` — so the escape lands after it correctly. `JSON.stringify` never emits
+ * `\u003f` itself, so the input carries none the replace could double up.
+ *
+ * Use it on the text handed to Amber for `sign_event`, and on any JSON
+ * plaintext handed to `nip04_encrypt` / `nip44_encrypt`. It is NOT for a
+ * plaintext that is not JSON — `\u003f` there is six literal characters, and
+ * `encodeAmberSafe` is the answer. The same escape is written by hand in
+ * `encodePrivateFavorites` (lib/nostr/favorites-list.ts), which cannot import
+ * this leaf and stay import-free itself; keep the two in step.
+ */
+export function escapeJsonForAmber(json: string): string {
+  return json.replace(/\?/g, '\\u003f');
 }

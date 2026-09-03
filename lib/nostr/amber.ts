@@ -62,6 +62,7 @@ import {
   type AmberRequestType,
   type AmberUrlOptions,
 } from './amber-callback-url';
+import { escapeJsonForAmber } from './amber-safe-text';
 // A VALUE import of lib/storage.ts from inside lib/nostr/ used to be a cycle
 // (storage -> auth -> signer -> amber -> storage). It is not any more: the one
 // edge that made it real, `coerceProfileMetadata`, moved down into the
@@ -469,7 +470,14 @@ export class AmberSigner implements AmberSignerInterface {
   }
 
   async signEvent(template: EventTemplate): Promise<Event> {
-    const eventJson = JSON.stringify(template);
+    // Amber URL-decodes the whole `nostrsigner:` URI and splits it on `?`
+    // BEFORE it parses the JSON, so a literal `?` anywhere in the template —
+    // a typed message, a permalink item guid, and the two URLs `formatContent`
+    // writes into EVERY boost note — truncated the request and Amber answered
+    // "Invalid request". `\u003f` is the same string to Amber's JSON parser
+    // and is not a `?` to its splitter; the event it signs is byte-identical
+    // to the one it would have signed. See ./amber-safe-text.
+    const eventJson = escapeJsonForAmber(JSON.stringify(template));
     const signed = await invokeAmber({
       type: 'sign_event',
       payload: eventJson,

@@ -13,6 +13,7 @@
 // settings join the same event without a schema change.
 
 import { FEED_QUERY_MAX_WAIT_MS } from './pool';
+import { escapeJsonForAmber } from './amber-safe-text';
 import { signAndPublish } from './publish';
 import { fetchLatestEvent } from './event-queries';
 import { backupReadRelays, resolvePublishRelays } from './relays';
@@ -127,9 +128,12 @@ export async function publishSettings(
   patch: SyncedSettings,
 ): Promise<void> {
   const settings = { ...localSettings(identity.npub), ...patch };
+  // `senderName` is typed by the user, so a `?` in it would truncate the
+  // request inside Amber's URI parser; `\u003f` is the same JSON to the reader
+  // below and no `?` on the wire — see lib/nostr/amber-safe-text.ts.
   const ciphertext = await requireNip44().encrypt(
     identity.pubkey,
-    JSON.stringify(settings),
+    escapeJsonForAmber(JSON.stringify(settings)),
   );
   await signAndPublish(
     {
