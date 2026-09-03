@@ -11,7 +11,7 @@
 // absent from EVERY endpoint, and "absent from the one I remembered to check"
 // is how it comes back on the others.
 
-import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools';
+import { finalizeEvent, generateSecretKey, getPublicKey, verifyEvent } from 'nostr-tools';
 import { getPool, closePool } from '../src/db.ts';
 import { migrate } from '../src/migrate.ts';
 import { ingestEvent, emptyStats } from '../src/store.ts';
@@ -181,6 +181,21 @@ async function post(url, payload) {
   ok(typeof authorRow.sig === 'string' && authorRow.sig.length === 128, 'a profile carries its signature');
   const parsed = JSON.parse(authorRow.content);
   ok(parsed.banner && parsed.website, 'raw profile content survives: banner and website are not dropped');
+  // THE assertion, and its absence is why this shipped broken. Everything above
+  // passes on content that has been through jsonb, because JSON.parse does not
+  // care about key order or whitespace — and jsonb changes both. verifyEvent
+  // does care: content is hashed into the event id.
+  //
+  // The client runs exactly this check (verifyAll, lib/nostr/index-client.ts)
+  // and DROPS what fails, so before content_raw existed this service's profiles
+  // were being discarded on arrival — silently, on every surface, with the app
+  // falling back to relays and looking merely slow.
+  //
+  // The JSON round trip is not decoration: nostr-tools memoizes verification on
+  // a Symbol, and reading the row straight out of the response object can
+  // inherit a `true` for content it never checked. Same trap unmemoized() in
+  // ingest.ts exists for.
+  ok(verifyEvent(JSON.parse(JSON.stringify(authorRow))), 'an index-served profile still VERIFIES');
 }
 
 // --- per-show and per-episode ----------------------------------------------

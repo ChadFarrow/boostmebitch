@@ -1,0 +1,46 @@
+-- Serve a profile as the bytes its signature actually covers.
+--
+-- `content` is jsonb, and jsonb is not a byte store. It sorts object keys by
+-- (length, bytewise), drops duplicates, decodes escapes, and `::text` emits
+-- `{"a": 1, "b": 2}` — with a space after every colon and comma. A kind:0 off
+-- the wire has none of that. Measured on Postgres 16:
+--
+--   in   {"name":"alice","about":"hi","picture":"https://x/y.png","nip05":"a@b.c"}
+--   out  {"name": "alice", "about": "hi", "nip05": "a@b.c", "picture": "https://x/y.png"}
+--
+-- `getEventHash` covers `content`, so those bytes hash to a different event id
+-- and `verifyEvent` returns false. `verifyAll` in lib/nostr/index-client.ts
+-- checks every event this service serves — that is the point of it, it is what
+-- stops a compromised index putting words under someone else's npub — so it has
+-- been discarding essentially EVERY profile we serve, in feed bundles, live
+-- streams and zap receipts alike.
+--
+-- Nothing looked broken, which is why it survived: each surface falls back to
+-- relays and paints the name a second later, so a feature that was failing
+-- completely presented as ordinary latency.
+--
+-- `events.content` is plain text, so kind:1 was never affected. `profiles` is
+-- the only table that puts content through jsonb.
+--
+-- `content` stays jsonb rather than being replaced. It is what the name-search
+-- columns are derived from, and deriving those from raw text would mean parsing
+-- JSON in SQL on every write.
+alter table profiles add column if not exists content_raw text;
+
+-- The raw string was never stored, so existing rows CANNOT be backfilled — the
+-- bytes are gone. Left alone they keep returning the unverifiable projection and
+-- the client keeps dropping them, which is safe but indefinite: a row is only
+-- repaired when the tracked kind:0 subscription happens to rewrite it, and
+-- nothing bounds how long that takes for a pubkey outside the tracked set.
+--
+-- So empty the table instead and let it refill. `profiles` is a declared
+-- rebuildable cache and this is exactly what that is for: every row here is a
+-- copy of an event the relays still hold, no row is authoritative, and
+-- `profilesFor` returning nothing is a normal answer the client already handles
+-- by asking relays. The cost is one cold period; the alternative is an unknown
+-- number of rows that are served, dropped on arrival, and never noticed.
+--
+-- Safe as a one-off: this runner records every file in `schema_migrations` and
+-- skips what has already run, so this executes once and never on a restart. No
+-- foreign key references `profiles`.
+truncate table profiles;

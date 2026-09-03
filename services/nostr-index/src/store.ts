@@ -55,12 +55,20 @@ export async function ingestEvent(db: Db, event: Event, stats: IngestStats): Pro
       // Replaceable: keep the newest only. `created_at` decides, never arrival
       // order — relays serve history out of order all the time.
       await client.query(
-        `insert into profiles (pubkey, event_id, created_at, content, tags, sig, updated_at)
-           values ($1, $2, $3, $4::jsonb, $5::jsonb, $6, now())
+        // `content_raw` is event.content VERBATIM and `content` is the jsonb
+        // projection of it. Both, on purpose, and they are not redundant:
+        // jsonb normalises (sorted keys, whitespace, decoded escapes), so
+        // content::text is NOT the bytes getEventHash covered, and an event
+        // served from it fails verifyEvent on the client — which is what was
+        // happening to every profile this service served. The jsonb copy stays
+        // because the generated name columns are derived from it.
+        `insert into profiles (pubkey, event_id, created_at, content, content_raw, tags, sig, updated_at)
+           values ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, now())
          on conflict (pubkey) do update
            set event_id = excluded.event_id,
                created_at = excluded.created_at,
                content = excluded.content,
+               content_raw = excluded.content_raw,
                tags = excluded.tags,
                sig = excluded.sig,
                updated_at = now()
@@ -70,6 +78,7 @@ export async function ingestEvent(db: Db, event: Event, stats: IngestStats): Pro
           event.id,
           event.created_at,
           jsonOrEmpty(event.content),
+          event.content,
           JSON.stringify(event.tags),
           event.sig,
         ],
