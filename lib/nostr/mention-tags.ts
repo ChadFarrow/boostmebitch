@@ -6,10 +6,20 @@
 // script would stay green while this drifted. See scripts/import-free.mjs —
 // a type-only relative import counts as an import here.
 
-/** A person a note can name. `pubkey` is 64 lowercase hex; `npub` is bech32. */
+/**
+ * A person a note can name. `pubkey` is 64 lowercase hex; `npub` is bech32.
+ *
+ * `name` is the display name the picker wrote into the message as `@name`, and
+ * it is what lets `inlineMentions` put the identifier back where the sender
+ * actually typed it. Optional because a mention can arrive without one (a
+ * pasted npub has no profile yet), and because every note published before this
+ * field existed has none — those fall through to the trailing run, which is the
+ * behaviour they already had.
+ */
 export interface MentionNpub {
   npub: string;
   pubkey: string;
+  name?: string;
 }
 
 /** Cap on feed-declared npubs in one note. Mirrors MAX_FEED_NPUBS per level. */
@@ -105,4 +115,62 @@ export function noteMentionTags(
     tagged: selfSigned ? [...feedNpubs, ...chosenNpubs] : feedNpubs,
     inBody: [...feedNpubs, ...chosenNpubs],
   };
+}
+
+/**
+ * Put each mention's `nostr:npub…` where the sender typed the name, and report
+ * the ones that could not be placed.
+ *
+ * WHY THIS EXISTS. The picker writes `@name` into the message and keeps the
+ * identity in state, because `msg` becomes the boostagram TLV message *and* the
+ * LNURL comment, and a 63-character npub inlined there is truncated against the
+ * recipient's `commentAllowed` and arrives as a mangled identifier. That rule
+ * is right and is unchanged: this runs at PUBLISH time, on the NOTE body only.
+ * The boostagram keeps the short readable `@name`.
+ *
+ * What it fixes is that the identifier previously only ever appeared in a run
+ * at the END of the note. The name the sender typed stayed plain text, so the
+ * mention rendered as an unlinked string in the message and a separate list of
+ * links underneath — which reads as the feature not working. It was reported
+ * that way by the person who built it.
+ *
+ * LONGEST NAME FIRST. Display names are not prefix-free: with both "Reed" and
+ * "Reed Smith" mentioned, replacing "Reed" first leaves "@ Smith" dangling off
+ * a URI. Sorting by length descending means the longer name always claims its
+ * text first, and the replacement contains no `@`, so a shorter name cannot
+ * then match inside it.
+ *
+ * EVERY occurrence, not the first. A sender who names someone twice means it
+ * both times, and leaving the second as plain text would look like the same bug
+ * this fixes. Duplicate `nostr:` references to one pubkey are ordinary.
+ *
+ * A mention whose name is absent from the text — the sender edited it away
+ * after picking — comes back in `remaining` so the caller can still append it.
+ * `docs/nostr.md` requires the mention to reach the body on every path: a name
+ * silently vanishing from a note somebody just published reads as breakage, and
+ * a body entry costs nobody a notification.
+ */
+export function inlineMentions(
+  content: string,
+  mentions: MentionNpub[],
+): { content: string; remaining: MentionNpub[] } {
+  const remaining: MentionNpub[] = [];
+  // Longest name first. Ties broken by npub so the result is deterministic —
+  // two senders picking the same pair must produce byte-identical notes.
+  const ordered = [...mentions].sort((a, b) => {
+    const byLen = (b.name?.length ?? 0) - (a.name?.length ?? 0);
+    return byLen !== 0 ? byLen : a.npub.localeCompare(b.npub);
+  });
+  let out = content;
+  for (const m of ordered) {
+    const name = m.name?.trim();
+    if (!name) { remaining.push(m); continue; }
+    const needle = `@${name}`;
+    if (!out.includes(needle)) { remaining.push(m); continue; }
+    out = out.split(needle).join(`nostr:${m.npub}`);
+  }
+  // Preserve the caller's original order for whatever is left, so the trailing
+  // run does not reorder itself depending on how long the names happened to be.
+  const left = new Set(remaining.map((m) => m.pubkey));
+  return { content: out, remaining: mentions.filter((m) => left.has(m.pubkey)) };
 }

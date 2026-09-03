@@ -43,6 +43,7 @@ import {
   noteMentionTags,
   MAX_FEED_NOTE_NPUBS,
   MAX_MENTION_NPUBS,
+  inlineMentions,
 } from '../lib/nostr/mention-tags.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -285,6 +286,107 @@ console.log('\nEvery vector is replayed against the obvious wrong version');
     console.error('          or it does not exercise anything the real module adds.');
   }
   console.log(`  ${vectors.length} vector(s) replayed, ${exempt} exempt as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\ninlineMentions puts the identifier where the sender typed the name');
+// ---------------------------------------------------------------------------
+{
+  // Its own vector list and its own replay. `naive()` here is the obvious
+  // wrong version: replace the first occurrence of each name, in the order
+  // given, and assume every mention was placed. Both of those are the bugs
+  // that matter — a shorter name eating a longer one's text, and a mention
+  // dropped from the trailing run when it was never actually inlined.
+  const iVectors = [];
+  const icheck = (label, content, mentions, expected, { alsoNaive = false } = {}) => {
+    const got = inlineMentions(content, mentions);
+    const want = JSON.stringify(expected);
+    const have = JSON.stringify({ content: got.content, remaining: got.remaining });
+    if (have !== want) {
+      failures += 1;
+      console.error(`  FAIL  ${label}`);
+      console.error(`          want ${want}`);
+      console.error(`          got  ${have}`);
+    } else {
+      console.log(`  ok    ${label}`);
+    }
+    iVectors.push({ label, args: [content, mentions], alsoNaive });
+  };
+
+  const REED = { npub: 'npub1reed', pubkey: 'aa'.repeat(32), name: 'Reed' };
+  const REEDS = { npub: 'npub1reeds', pubkey: 'bb'.repeat(32), name: 'Reed Smith' };
+  const SPACED = { npub: 'npub1spaced', pubkey: 'cc'.repeat(32), name: 'ChadF and 33 others' };
+  const NONAME = { npub: 'npub1noname', pubkey: 'dd'.repeat(32) };
+
+  // Must-still-work: the plain single-mention case. naive() gets this right,
+  // and it has to keep working — it is the shape almost every note takes.
+  icheck('a single name becomes the URI in place',
+    'hi @Reed thanks', [REED],
+    { content: 'hi nostr:npub1reed thanks', remaining: [] }, { alsoNaive: true });
+
+  // The reason for longest-first. Naive order would turn "@Reed Smith" into
+  // "nostr:npub1reed Smith" and then never place Reed Smith at all.
+  icheck('a longer name claims its text before a shorter prefix of it',
+    'thanks @Reed Smith and @Reed', [REED, REEDS],
+    { content: 'thanks nostr:npub1reeds and nostr:npub1reed', remaining: [] });
+
+  // Must-still-work: a plain string replace matches a multi-word name whole
+  // too, so naive() agrees here. Kept because this is the exact body that was
+  // reported as broken, and it must not regress.
+  icheck('a name containing spaces is matched whole',
+    'test 2 @ChadF and 33 others @Reed', [SPACED, REED],
+    { content: 'test 2 nostr:npub1spaced nostr:npub1reed', remaining: [] }, { alsoNaive: true });
+
+  icheck('every occurrence is replaced, not just the first',
+    '@Reed hi @Reed', [REED],
+    { content: 'nostr:npub1reed hi nostr:npub1reed', remaining: [] });
+
+  // The sender picked, then deleted the name. It must still reach the body.
+  icheck('a name edited out of the text comes back as remaining',
+    'no names here', [REED],
+    { content: 'no names here', remaining: [REED] });
+
+  icheck('a mention with no name is never inlined',
+    'hello @Reed', [NONAME, REED],
+    { content: 'hello nostr:npub1reed', remaining: [NONAME] });
+
+  icheck('remaining keeps the CALLER order, not the length order',
+    'nothing', [REED, REEDS],
+    { content: 'nothing', remaining: [REED, REEDS] });
+
+  icheck('no mentions leaves the body byte-identical',
+    '\u26a1 Boost \u26a1\n\nhi', [],
+    { content: '\u26a1 Boost \u26a1\n\nhi', remaining: [] }, { alsoNaive: true });
+
+  // The prefix the site-sign route validates on must survive.
+  // Must-still-work: any implementation leaves the prefix alone. Asserted
+  // anyway because the site-sign route rejects a template without it.
+  icheck('the "Boost" prefix is untouched',
+    '\u26a1 Boost \u26a1\n\nta @Reed', [REED],
+    { content: '\u26a1 Boost \u26a1\n\nta nostr:npub1reed', remaining: [] }, { alsoNaive: true });
+
+  const iNaive = (content, mentions) => {
+    let out = content;
+    for (const m of mentions ?? []) {
+      if (m.name) out = out.replace(`@${m.name}`, `nostr:${m.npub}`);
+    }
+    return { content: out, remaining: [] };
+  };
+  const icall = (impl, v) => {
+    try {
+      const r = impl === 'real' ? inlineMentions(...v.args) : iNaive(...v.args);
+      return JSON.stringify({ content: r.content, remaining: r.remaining });
+    } catch (e) { return `threw ${(e && e.message) || e}`; }
+  };
+  let iExempt = 0;
+  for (const v of iVectors) {
+    const differs = icall('real', v) !== icall('naive', v);
+    if (v.alsoNaive) { iExempt += 1; console.log(`  ok    "${v.label}" is must-still-work — naive() may get it right`); continue; }
+    if (differs) { console.log(`  ok    naive() gets "${v.label}" wrong`); continue; }
+    failures += 1;
+    console.error(`  FAIL  "${v.label}" passes against naive() too — the vector proves nothing.`);
+  }
+  console.log(`  ${iVectors.length} vector(s) replayed, ${iExempt} exempt as must-still-work`);
 }
 
 // ---------------------------------------------------------------------------

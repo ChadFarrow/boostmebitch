@@ -160,7 +160,10 @@ export function MessageInput({
     const next = `${before}${inserted}${after}`;
     onChange(next);
     if (!mentions.some((m) => m.pubkey === c.pubkey)) {
-      onMentionsChange([...mentions, { npub: c.npub, pubkey: c.pubkey }]);
+      // `name` is carried so `inlineMentions` can put the identifier back
+      // exactly where this wrote `@name`. It never reaches the boostagram —
+      // only `msg` does, and that keeps the short readable name.
+      onMentionsChange([...mentions, { npub: c.npub, pubkey: c.pubkey, name: c.name }]);
     }
     setRows([]);
     setIndexState('idle');

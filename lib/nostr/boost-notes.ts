@@ -4,7 +4,7 @@ import { httpUrl } from '../util';
 import { BRAND } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
-import { noteMentionTags, type MentionNpub } from './mention-tags';
+import { noteMentionTags, type MentionNpub, inlineMentions } from './mention-tags';
 
 interface PublishArgs {
   podcast: Podcast;
@@ -349,7 +349,14 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     kind: 1,
     created_at: Math.floor(Date.now() / 1000),
     tags,
-    content: withMentions(withArt(args.contentOverride ?? formatContent(args), banner), inBody),
+    // Inline first, then append only what could not be placed. The two halves
+    // are one decision: a mention put where the sender typed it must NOT also
+    // appear in the trailing run, or the note names the same person twice.
+    content: (() => {
+      const body = withArt(args.contentOverride ?? formatContent(args), banner);
+      const { content: inlined, remaining } = inlineMentions(body, inBody);
+      return withMentions(inlined, remaining);
+    })(),
   };
 }
 
