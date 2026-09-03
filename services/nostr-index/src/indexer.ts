@@ -588,6 +588,24 @@ export class Indexer {
    *    and rejected it, but that was against ONE mock relay, and the real thing
    *    runs five, one of which refuses REQs. If this climbs while heap climbs,
    *    that hypothesis is back.
+   *  - `libsubs` — what the LIBRARY holds open, which `subs` cannot see. `subs`
+   *    counts the closers WE hold; each relay keeps its own `openSubs` map, and
+   *    nothing outside the process could read it. That blind spot is the reason
+   *    this number exists, not any particular suspicion about it.
+   *  - `pings` — the `forced-ping:` subset of the same map. On Node's global
+   *    WebSocket there is no `ws.ping`, so `pingpong` takes `waitForDummyReq`,
+   *    which opens a REQ and closes it FROM ITS `oneose`; a ping that times out
+   *    resolves `Promise.any` from the timer instead, and with `enableReconnect`
+   *    on `handleHardClose` deliberately KEEPS `openSubs` so it can re-fire
+   *    them. That reads like an unbounded leak against a relay refusing REQs,
+   *    which production does — 312 refusals from one relay in 2h36m.
+   *    IT IS NOT ONE, and this is written down so nobody re-derives it: driving
+   *    the shipping Relay against a relay that answers every REQ except the
+   *    ping, `forced-ping` rises to 1 and returns to 0. The timeout closes the
+   *    socket, and the reconnect re-arms the ping interval that the close
+   *    cleared, so pings happen about once per reconnect rather than every 29s.
+   *    The count stays because it is one `startsWith` and it keeps the ruling
+   *    out true over a library bump, which is the only way it could change.
    *  - `seen` — the dedupe set, capped at SEEN_CAP and then CLEARED WHOLE. That
    *    is the one number that explains production's `profiles=5206` minutes: at
    *    the clear, every re-delivered profile stops being a duplicate and gets
@@ -597,11 +615,38 @@ export class Indexer {
    * `rss` uses `process.memoryUsage.rss()`, which does not allocate the object
    * the full call does — this runs on a timer for the life of the process.
    */
+  /**
+   * What nostr-tools itself is holding open, across every configured relay.
+   *
+   * `total` is every entry in each relay's `openSubs`; `pings` is the subset
+   * whose id starts with `forced-ping:`, the prefix `AbstractRelay.subscribe`
+   * builds from the `label` that `waitForDummyReq` passes. Reading a library
+   * internal is not something to do lightly, but the alternative here is to
+   * infer the number from behaviour, and inferring is what has already cost
+   * this issue two wrong answers.
+   *
+   * A relay that is not in the pool contributes nothing rather than throwing:
+   * this runs on a timer and must never be the reason a report is missed.
+   */
+  private librarySubs(): { total: number; pings: number } {
+    let total = 0;
+    let pings = 0;
+    for (const url of this.relays) {
+      const open = this.pool.relayFor(url)?.openSubs;
+      if (!open) continue;
+      total += open.size;
+      for (const id of open.keys()) if (id.startsWith('forced-ping:')) pings += 1;
+    }
+    return { total, pings };
+  }
+
   private memoryLine(): string {
     const mb = (n: number) => Math.round(n / 1024 / 1024);
     const m = process.memoryUsage();
+    const lib = this.librarySubs();
     return `heap=${mb(m.heapUsed)}/${mb(m.heapTotal)}MB rss=${mb(process.memoryUsage.rss())}MB `
-      + `ext=${mb(m.external)}MB subs=${this.subCount()} seen=${this.seen.size}`;
+      + `ext=${mb(m.external)}MB subs=${this.subCount()} libsubs=${lib.total} `
+      + `pings=${lib.pings} seen=${this.seen.size}`;
   }
 }
 
