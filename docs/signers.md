@@ -350,3 +350,19 @@ One `window.focus` listener in `components/nostr-auth/index.tsx`, active only wh
 - **`subscribeBunkerHealth(fn)`** — boolean (stale or not); adapter calls run through `trackBunkerCall` with a 30 s timeout. `<BunkerHealthBanner>` in `<AccountMenu>` offers "Signer disconnected — Reconnect". Targets the iOS-PWA-suspended-WebSocket case.
 
 
+
+## A bunker transport must be CLOSED, not merely dropped
+
+`BunkerSigner.fromBunker` subscribes the moment it is called — it builds a `SimplePool` and opens a kind:24133 subscription to the bunker relays inside the constructor path, before `connect()` is awaited. Three things followed from that, and all three were live:
+
+- **A failed handshake abandoned a running transport.** Both `attempt` helpers (in `connectBunker` and in the restore path) created the signer and then `await`ed `connect()` and `getPublicKey()` with no teardown on the throw. The "subscription closed" retry made it two per call.
+- **`activateBunkerSigner` overwrote `bunkerInstance` without closing it**, and `restoreBunkerSigner` goes through it. The control that reaches that path is **RECONNECT in the account menu** — the button an iOS user presses over and over, because iOS suspends the relay socket. Each press added a subscription and up to four sockets. Relays cap connections per client, so a long enough session ends with the reconnect refused by the relay it needs, which presents as the button simply not working.
+- **`activateAmberSigner` and `activateLocalSigner` null the field too.** Those were latent only because the sign-out paths happen to close first.
+
+`closeBunkerTransport()` in `lib/nostr/signer.ts` is the single funnel, and every path that stops pointing at an adapter calls it.
+
+**`inner.close()` alone is not enough, and this is the part that is easy to get wrong.** It sets `isOpen = false` and closes the subscription — which does genuinely stop the signer, since `sendRequest` throws on `!isOpen` and re-subscription only happens from there — but it never touches the sockets, because the pool is a separate object. nostr-tools has no auto-close when a relay's last subscription ends (`abstract-relay.js` tracks `openSubs` and does nothing on empty). And `BunkerSigner.pool` is `private` in the type declarations, so the pool it builds for itself is unreachable.
+
+So **this module passes its own pool in** (`params.pool` is public) and `BunkerAdapter` carries it. `closeBunkerTransport` then does both halves in order: `inner.close()` to end the subscription, `pool.destroy()` to return the sockets. Destroying outright is safe *only* because that pool belongs to one connection — **never hand it the shared pool from `lib/nostr/pool.ts`**, which would take every other query's connections with it.
+
+The `nostrconnect://` path owns its pool for the same reason and needs it more: it waits up to `NOSTRCONNECT_TIMEOUT_MS` for a signer that may never scan the QR at all, so the abandoned-transport case is the expected one there rather than the exception.

@@ -1901,3 +1901,11 @@ Spec vector 13: going private takes the whole list, ours and theirs. Without it 
 
 **The asymmetry does not depend on the flag and must survive its removal.** public → private may move another app's entries; private → public may not.
 
+
+## An nevent relay hint must go through `withExtraRelays`, not into the shared pool
+
+`fetchSocialInteractThread` (`lib/nostr/discover.ts`) unioned up to four feed-supplied hint relays into the relay list it handed `withPool`. `withPool` returns the **long-lived shared pool** and deliberately never closes anything — that is its whole purpose, and `lib/nostr/pool.ts` says in place that one-off extras MUST be torn down or they accumulate sockets for the life of the tab.
+
+These hints come out of the `nevent` in a feed's `<podcast:socialInteract>` tag, so **the feed author chooses the hosts**. `<EpisodeSocialThread>` calls this once per episode, so twenty episodes carrying the tag meant up to 80 permanent sockets to addresses somebody else picked, cleared only by a reload.
+
+The two sibling call sites that take nevent hints already did this correctly; this one was the exception. The whole read stays inside the `withExtraRelays` scope — `assembleNotes` runs the reply, profile and quote passes, and closing the extras before those would leave them querying a relay set the anchor was not found on.

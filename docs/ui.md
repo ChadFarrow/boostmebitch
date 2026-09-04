@@ -876,3 +876,25 @@ results off screen while legs are still settling.
   Applies to all six overlays (`boost-modal`, `boost-all-modal`, `wallet-modal`,
   `sign-in-modal`, `profile-editor`, note-card `ZapDialog`).
 
+
+## A row whose only handler is `onClick` on an `<li>` cannot be used from a keyboard
+
+Five list rows shipped as `<li onClick>` or `<article onClick>` with no `role`, no `tabIndex` and no key handler. A pointer worked; nothing else did. `jsx-a11y`'s `click-events-have-key-events` and `no-noninteractive-element-interactions` name it exactly, and neither rule is on in this repo's ESLint config — `next/core-web-vitals` does not enable them — which is why five of these accumulated.
+
+**What made it invisible in review is that four of the five had a working control inside them**, so the row looked reachable:
+
+| Surface | Reachable from a keyboard | NOT reachable |
+|---|---|---|
+| `lists/podcast-results.tsx` (search results) | the ♡ | **picking a show** — the one thing the panel exists for |
+| `lists/favorites.tsx` (saved episodes) | the ♡ | **opening a saved episode** |
+| `lists/episode-list.tsx` (episode row) | the artwork play button | **`openEpisode`** — the detail view, show notes, chapters, transcript, discussion |
+| `podroll.tsx` (recommended rail) | the ♡ | **opening a recommended show** |
+| `nostr-live-streams.tsx` (stream card) | PLAY and BOOST | **`onOpen`** — the fullscreen player |
+
+The episode row is the sharpest: a keyboard user could play an episode and never open it, and "play works" is what a quick check confirms.
+
+**The fix is a real `<button>` with the other control as its SIBLING, never a `role="button"` on the row.** Each of these rows already contains a button (the heart, or the artwork transport), and a `<button>` may not contain another — which is why the whole row cannot simply become one. `<EpisodeContents>`' seek row is the reference shape and predates all of this: a flex `<li>`, a `<button>` carrying the main content and the padding, the extra control outside it. Keep the hover tint on the `<li>` so the full width still reacts, and move the padding inside the button so the focus ring and the hit area describe the same box.
+
+**Two of the remaining `onClick`-on-a-div sites are deliberate and must not be "fixed".** `<NoteEpisodeCard>`'s tap area is an *addition* to a real button carrying the same handler — it says so in place — and `<ModalShell>`'s backdrop is a pointer affordance over a dismissal that Escape already owns. `player.tsx`'s two are bare `stopPropagation` guards, not controls. The lint rules cannot tell those apart from the five above, which is the reason they are not simply switched on.
+
+**Where the row's handler now has two mounts, it is named once** (`openRow` in `<EpisodeList>`) and the inner button `stopPropagation`s — the shape every other inner control on that row already uses. An inner control that re-implements the row's branch instead is how one press acquires two behaviours.
