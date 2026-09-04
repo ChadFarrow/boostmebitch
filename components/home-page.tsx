@@ -197,6 +197,20 @@ export function HomePage() {
     const startSec = /^\d+(\.\d+)?$/.test(tRaw) ? Number(tRaw) : null;
     if (!guid && !feedId && !playlistParam) { setEntryResolved(true); return; }
     if (useApp.getState().selectedPodcast) { setEntryResolved(true); return; }
+    // **Every write below has to be able to give up.**
+    //
+    // This effect runs two network round trips and then writes to the MODULE
+    // store, which outlives <HomePage> — so without a cancellation flag a
+    // visitor who opens `/?podcast=…&episode=…&t=90` and taps FAVORITES before
+    // the resolve lands gets the deep link applied anyway, on a page that is no
+    // longer showing it. The `t=` branch is the one that shows: its
+    // `!current` guard is still true on a cold load, so the app STARTS PLAYING
+    // by itself while the reader is somewhere else. `selectedPodcast` is set
+    // too, so a later plain link to `/` reopens that show instead of home.
+    //
+    // Checked after each await rather than once at the top, because it is the
+    // awaits that let the navigation happen.
+    let cancelled = false;
     (async () => {
       let podcast: Podcast | null = null;
       // A playlist restores by FEED URL, because a musicL feed Podcast Index has
@@ -231,6 +245,7 @@ export function HomePage() {
       // successful restore `inDetailView` is what hides the home surfaces from
       // here on; on a failure — a guid PI doesn't hold, PI down, offline — the
       // visitor is looking at the browse page and must get the whole one.
+      if (cancelled) return;
       setEntryResolved(true);
       if (!podcast || useApp.getState().selectedPodcast) return;
       setSelected(podcast);
@@ -239,7 +254,7 @@ export function HomePage() {
       // tapped — see loadEpisodeFromFeed for why the episode comes out of the
       // feed rather than out of /api/episode-by-guid.
       const loaded = await loadEpisodeFromFeed(podcast.id, episodeGuid);
-      if (!loaded) return;
+      if (cancelled || !loaded) return;
       // Enrich the selection with the RSS-derived funding/medium/podroll (the
       // by-guid resolve above doesn't carry them), so a cold deep-link to an
       // episode also shows the SUPPORT link. No-op if it's a different show.
@@ -267,6 +282,7 @@ export function HomePage() {
         if (pod) useApp.getState().play(ep, pod, startSec);
       }
     })();
+    return () => { cancelled = true; };
   }, [setSelected, openEpisode, openDiscussion]);
 
   // Back-compat: old shared links used ?stream=<naddr> on the home route.

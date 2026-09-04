@@ -1,6 +1,41 @@
 import { NextResponse } from 'next/server';
 import { getErrorMessage } from './util';
 import { piCouldNotAskStatus } from './pi-error';
+import { readCappedText } from './safe-fetch';
+
+/**
+ * Read a request body as text, or `null` when it is larger than `maxBytes`.
+ *
+ * **This app caps every body it reads OUTBOUND and capped nothing inbound.**
+ * `await req.json()` and `await req.text()` buffer the whole thing first and
+ * measure after — the behaviour `readCappedText` exists to prevent, pointed the
+ * other way. `/api/lightning/boostbox` made the mistake most visibly: it read
+ * the body in full and *then* refused it over 10 KB, twelve lines above its own
+ * correct note that measuring a string you have already allocated is not a cap.
+ *
+ * The App Router applies no limit of its own — `bodyParser.sizeLimit` is a
+ * Pages-API setting and does nothing here. On Vercel the platform refuses a
+ * body over 4.5 MB, so the practical ceiling there is 4.5 MB per request; under
+ * a self-hosted `next start`, which this repo supports, there was none at all.
+ * `/api/nostr/site-sign` is the sharpest case: unauthenticated, 30 per minute
+ * per IP.
+ *
+ * **Returns `null` rather than throwing**, so a route answers with its own
+ * literal 400 — the deliberate-message path `withErrorHandling` deliberately
+ * never sees. A stream that errors mid-read is also `null`: either way the
+ * honest answer to the caller is that the body was not usable, and neither
+ * needs to reach the unhandled path.
+ */
+export async function readCappedRequestText(
+  req: Request,
+  maxBytes: number,
+): Promise<string | null> {
+  try {
+    return await readCappedText(req, maxBytes);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Wrap a route handler body so unhandled throws return a consistent 500 JSON.

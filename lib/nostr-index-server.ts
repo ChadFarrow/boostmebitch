@@ -9,7 +9,16 @@
 // so an index that is down, slow or unconfigured costs nothing but the
 // speed-up. Nothing in this file may throw its way out to a route.
 
+import { readCappedJson } from './safe-fetch';
+
 const TIMEOUT_MS = 6_000;
+
+/**
+ * Ceiling for one index answer. `AbortSignal.timeout` bounds how LONG a read
+ * runs, never how many bytes it returns — the distinction lib/safe-fetch.ts
+ * exists for.
+ */
+const MAX_INDEX_BYTES = 8 * 1024 * 1024;
 
 export function indexConfigured(): boolean {
   return Boolean(process.env.NOSTR_INDEX_URL?.trim() && process.env.NOSTR_INDEX_KEY?.trim());
@@ -47,7 +56,20 @@ export async function askIndex<T>(
       cache: 'no-store',
     });
     if (!res.ok) return null;
-    return (await res.json()) as T;
+    // Capped, like every other proxied body in this app.
+    //
+    // The comment above says the index "already caps every response", and that
+    // is true of the service as deployed — but nothing in THIS process enforces
+    // it, and `/api/nostr/index` re-serializes whatever comes back to the
+    // caller. `NOSTR_INDEX_URL` is an environment variable, so the shape of the
+    // thing on the other end is a deployment fact rather than a code one; a
+    // misconfigured or replaced host would buffer without limit into the app's
+    // lambda. This was the one drain site in the codebase reading a proxied
+    // body with a bare `res.json()`.
+    //
+    // The cap is well above any real answer: the largest is a `/feed/global`
+    // bundle, which the service bounds by MAX_LIMIT rows.
+    return (await readCappedJson(res, MAX_INDEX_BYTES)) as T;
   } catch {
     return null;
   }

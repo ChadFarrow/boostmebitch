@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { finalizeEvent, type EventTemplate } from 'nostr-tools/pure';
-import { withErrorHandling } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestText } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { siteSecretKey } from '@/lib/nostr/site-key';
 
@@ -127,6 +127,9 @@ function validateBoostTemplate(body: unknown): EventTemplate {
   return { kind: 1, created_at: createdAt, tags: strTags, content: t.content };
 }
 
+/** Ceiling on the inbound body — see `readCappedRequestText`. */
+const MAX_REQUEST_BYTES = 32 * 1024;
+
 export async function POST(req: Request) {
   const limited = rateLimit(req, 'site-sign', 30);
   if (limited) return limited;
@@ -140,9 +143,19 @@ export async function POST(req: Request) {
   }
 
   return withErrorHandling(async () => {
+    // Read with a cap, then parse. `req.json()` buffers first and measures
+    // never — and this route is UNAUTHENTICATED at 30 requests a minute per
+    // IP, which makes it the one with the least standing between a caller and
+    // the instance's heap. The bound is far above any real template: the
+    // validator below already refuses content over 2000 characters and total
+    // tag bytes over 4096.
+    const rawBody = await readCappedRequestText(req, MAX_REQUEST_BYTES);
+    if (rawBody === null) {
+      return NextResponse.json({ error: 'payload too large' }, { status: 400 });
+    }
     let body: unknown;
     try {
-      body = await req.json();
+      body = JSON.parse(rawBody);
     } catch {
       return NextResponse.json({ error: 'invalid JSON' }, { status: 400 });
     }
