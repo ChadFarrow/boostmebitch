@@ -235,6 +235,7 @@ export async function resolvePlaylistTracks(
       // this database's own `episodeTitle`. The two normally agree, and when
       // they do not the playlist document is the one the reader is looking at.
       playlistGroup: ref.episode,
+      playlistPlays: ref.plays,
     });
     if (!ep) continue;
     // Lifted off the episode rather than never mapped, so `dbRowToEpisode`

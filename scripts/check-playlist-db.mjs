@@ -172,12 +172,13 @@ const ROW = {
 };
 const ID = -fnvHash(`${ROW.feedGuid}:${ROW.itemGuid}`);
 
-vec('a full row becomes an Episode', 'row', [ROW, { id: ID, feedId: 7, playlistGroup: 'Cycles' }], {
-  id: ID, guid: ROW.itemGuid, title: 'Red-Nose Rendezvous', enclosureUrl: ROW.audioUrl,
-  feedId: 7, podcastGuid: ROW.feedGuid, duration: 264,
-  datePublished: Math.round(Date.parse(ROW.publishedAt) / 1000),
-  value: KEYSEND_SINGLE, playlistGroup: 'Cycles',
-}, { alsoNaive: true });
+vec('a full row becomes an Episode', 'row',
+  [ROW, { id: ID, feedId: 7, playlistGroup: 'Cycles', playlistPlays: 24 }], {
+    id: ID, guid: ROW.itemGuid, title: 'Red-Nose Rendezvous', enclosureUrl: ROW.audioUrl,
+    feedId: 7, podcastGuid: ROW.feedGuid, duration: 264,
+    datePublished: Math.round(Date.parse(ROW.publishedAt) / 1000),
+    value: KEYSEND_SINGLE, playlistGroup: 'Cycles', playlistPlays: 24,
+  }, { alsoNaive: true });
 vec('no audio url is not a playable row', 'row',
   [{ ...ROW, audioUrl: '' }, { id: ID, feedId: 7 }], null);
 vec('whitespace-only audio url is not a playable row', 'row',
@@ -292,7 +293,8 @@ const naive = {
     id: opts.id, guid: row.itemGuid, title: row.title, enclosureUrl: row.audioUrl,
     feedId: opts.feedId, podcastGuid: row.feedGuid, duration: row.duration,
     datePublished: Math.round(Date.parse(row.publishedAt) / 1000),
-    value: row.value, playlistGroup: opts.playlistGroup, chaptersUrl: row.chaptersUrl,
+    value: row.value, playlistGroup: opts.playlistGroup, playlistPlays: opts.playlistPlays,
+    chaptersUrl: row.chaptersUrl,
   }),
 };
 const real = { value: dbValueBlock, row: dbRowToEpisode };

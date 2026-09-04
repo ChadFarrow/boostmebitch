@@ -206,6 +206,88 @@ vec(
     { feedGuid: G2, itemGuid: I2, episode: 'Episode 12' },
   ],
 );
+// ── PLAY COUNTS ─────────────────────────────────────────────────────────────
+// `<podcast:txt purpose="playcount">24 plays</podcast:txt>` is what the
+// Greatest Hits playlist writes above each run of tracks — "organized by play
+// count", 24 down to 2. It is carried as a NUMBER: the row prints it, so the
+// marker's free text never reaches the screen, and a marker without a leading
+// integer stamps nothing. naive() reads every <podcast:txt> as an episode
+// caption, so it captions these runs with "24 plays" as a heading instead.
+vec(
+  'a playcount marker stamps the items that FOLLOW it with a number',
+  wrap(
+    `    <podcast:txt purpose="playcount">24 plays</podcast:txt>\n`
+    + `    ${ri(G1, I1)}\n`
+    + `    ${ri(G2, I2)}\n`
+    + `    <podcast:txt purpose="playcount">21 plays</podcast:txt>\n`
+    + `    ${ri(G3, I3)}`,
+  ),
+  [
+    { feedGuid: G1, itemGuid: I1, plays: 24 },
+    { feedGuid: G2, itemGuid: I2, plays: 24 },
+    { feedGuid: G3, itemGuid: I3, plays: 21 },
+  ],
+);
+vec(
+  'a bare number is a count; a marker with no leading integer stamps nothing',
+  wrap(
+    `    <podcast:txt purpose="playcount">17</podcast:txt>\n`
+    + `    ${ri(G1, I1)}\n`
+    + `    <podcast:txt purpose="playcount">plays: 16</podcast:txt>\n`
+    + `    ${ri(G2, I2)}`,
+  ),
+  [{ feedGuid: G1, itemGuid: I1, plays: 17 }, { feedGuid: G2, itemGuid: I2 }],
+);
+vec(
+  'zero plays and an empty marker both CLEAR the count rather than carry it',
+  // A track on a most-played list with zero plays is a data error, and the
+  // previous run's number must not be carried onto a run whose marker is blank.
+  wrap(
+    `    <podcast:txt purpose="playcount">3 plays</podcast:txt>\n`
+    + `    ${ri(G1, I1)}\n`
+    + `    <podcast:txt purpose="playcount">0 plays</podcast:txt>\n`
+    + `    ${ri(G2, I2)}\n`
+    + `    <podcast:txt purpose="playcount">2 plays</podcast:txt>\n`
+    + `    ${ri(G3, I3)}\n`
+    + `    <podcast:txt purpose="playcount"></podcast:txt>\n`
+    + `    ${ri(G4, I4)}`,
+  ),
+  [
+    { feedGuid: G1, itemGuid: I1, plays: 3 },
+    { feedGuid: G2, itemGuid: I2 },
+    { feedGuid: G3, itemGuid: I3, plays: 2 },
+    { feedGuid: G4, itemGuid: I4 },
+  ],
+);
+vec(
+  'episode captions and play counts are INDEPENDENT states',
+  // Neither marker kind clears the other: a playlist that publishes both keeps
+  // its heading across a count change and its count across an episode change.
+  wrap(
+    `    <podcast:txt purpose="episode">Episode 9</podcast:txt>\n`
+    + `    <podcast:txt purpose="playcount">5 plays</podcast:txt>\n`
+    + `    ${ri(G1, I1)}\n`
+    + `    <podcast:txt purpose="episode">Episode 8</podcast:txt>\n`
+    + `    ${ri(G2, I2)}\n`
+    + `    <podcast:txt purpose="playcount">4 plays</podcast:txt>\n`
+    + `    ${ri(G3, I3)}`,
+  ),
+  [
+    { feedGuid: G1, itemGuid: I1, episode: 'Episode 9', plays: 5 },
+    { feedGuid: G2, itemGuid: I2, episode: 'Episode 8', plays: 5 },
+    { feedGuid: G3, itemGuid: I3, episode: 'Episode 8', plays: 4 },
+  ],
+);
+vec(
+  'a duplicate keeps the count of its FIRST appearance',
+  wrap(
+    `    <podcast:txt purpose="playcount">12 plays</podcast:txt>\n`
+    + `    ${ri(G1, I1)}\n`
+    + `    <podcast:txt purpose="playcount">2 plays</podcast:txt>\n`
+    + `    ${ri(G1, I1)}`,
+  ),
+  [{ feedGuid: G1, itemGuid: I1, plays: 12 }],
+);
 
 // ── DEDUPE ──────────────────────────────────────────────────────────────────
 // Not cosmetic. `playNext`/`playPrev` locate the current track with

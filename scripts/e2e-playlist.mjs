@@ -37,7 +37,7 @@
 // It asserts on the REQUEST GRAPH, which is what was wrong; the bodies exist
 // only to get the client to the next step.
 import { spawn } from 'node:child_process';
-import { readFileSync, rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 
 const APP = 'http://localhost:3000';
@@ -78,17 +78,29 @@ const REPAIRED = {
 const TRACKS = [
   {
     id: 100, guid: 'track-0', podcastGuid: 'album-0', title: 'Track 0',
-    enclosureUrl: '/api/e2e-audio.mp3?t=0', feedId: 7683902,
+    enclosureUrl: '/api/e2e-audio.mp3?t=0', feedId: 7683902, playlistPlays: 24,
+    datePublished: 1697414400, duration: 249,
   },
   {
     id: 101, guid: 'track-1', podcastGuid: 'album-1', title: '',
-    enclosureUrl: '', feedId: 7683902, unresolved: 'not-found',
+    enclosureUrl: '', feedId: 7683902, unresolved: 'not-found', playlistPlays: 24,
   },
   {
     id: 102, guid: 'track-2', podcastGuid: 'album-2', title: 'Track 2',
-    enclosureUrl: '/api/e2e-audio.mp3?t=2', feedId: 7683902,
+    enclosureUrl: '/api/e2e-audio.mp3?t=2', feedId: 7683902, playlistPlays: 21,
+    datePublished: 1699920000, duration: 185,
   },
 ];
+// The play count the Greatest Hits feed writes above each run
+// (`<podcast:txt purpose="playcount">24 plays</podcast:txt>`), carried per row
+// as `playlistPlays`. It is on the UNRESOLVED row too — the count is the
+// curator's claim about the track, and an album Podcast Index has not crawled
+// does not change how often the track was played. The list heads each run
+// with the SERVER's whole-list track total, which is what `playGroups` is: the
+// 24-plays total is deliberately larger than the two rows on this page, so a
+// client that counted loaded rows instead would print 2 and fail.
+const PLAY_GROUPS = [{ plays: 24, tracks: 9 }, { plays: 21, tracks: 1 }];
+const HEADINGS_EXPECTED = ['24 plays · 9 tracks', '21 plays · 1 track'];
 const PLAYABLE_TRACKS = TRACKS.filter((t) => !t.unresolved);
 
 /**
@@ -182,7 +194,7 @@ function answer(pathname, search) {
   if (pathname === '/api/playlist') {
     return {
       podcast: REPAIRED, episodes: TRACKS, total: TRACKS.length, offset: 0,
-      nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow: null,
+      nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow: null, playGroups: PLAY_GROUPS,
     };
   }
   return {};
@@ -283,11 +295,39 @@ else fail(`/api/playlist was requested ${playlist} time(s)`);
 if (seen[0]?.path === '/api/by-guid') ok('and it is the FIRST request on the page');
 else fail(`the first API request was ${seen[0]?.path ?? '(none)'}`);
 
-if (rows === TRACKS.length) ok(`all ${rows} tracks rendered`);
-else fail(`expected ${TRACKS.length} track rows, got ${rows}`);
+// The two play-count headings are <li>s in the same list, so the row count
+// includes them.
+const EXPECTED_LIS = TRACKS.length + PLAY_GROUPS.length;
+if (rows === EXPECTED_LIS) ok(`all ${TRACKS.length} tracks rendered, under ${PLAY_GROUPS.length} headings`);
+else fail(`expected ${EXPECTED_LIS} list items (${TRACKS.length} tracks + ${PLAY_GROUPS.length} headings), got ${rows}`);
 
 if (header.includes('Greatest Hits')) ok('the show header carries the feed\'s own title, not PI\'s blank one');
 else fail(`header reads "${header}"`);
+
+// The play-count headings: one where the count changes, carrying the
+// whole-list track total. They are <li>s in the same list as the tracks, so
+// the items are read again here and the headings picked out by shape.
+const liTexts = await js('Array.from(document.querySelectorAll("ul.divide-y > li")).map((li) => li.textContent.trim())');
+const headings = (liTexts ?? []).filter((t) => /^\d+ plays? · \d+ tracks?$/.test(t));
+if (JSON.stringify(headings) === JSON.stringify(HEADINGS_EXPECTED)) {
+  ok(`the runs are headed with the server's totals (${headings.join(' | ')})`);
+} else {
+  fail(`play-count headings read ${JSON.stringify(headings)}, want ${JSON.stringify(HEADINGS_EXPECTED)}`);
+}
+
+// A picture of the list as rendered, for the eyes the assertions above do not
+// have. Written beside the profile; the path is printed so it can be found.
+{
+  await send('Emulation.setDeviceMetricsOverride', {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  await new Promise((r) => setTimeout(r, 500));
+  const shot = await send('Page.captureScreenshot', { format: 'png' });
+  const out = process.env.E2E_SHOT || `${tmpdir()}/bmb-e2e-playlist.png`;
+  writeFileSync(out, Buffer.from(shot.result?.data ?? '', 'base64'));
+  await send('Emulation.clearDeviceMetricsOverride');
+  console.log(`  (screenshot: ${out})`);
+}
 
 // ---- autoplay -------------------------------------------------------------
 //

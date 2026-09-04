@@ -5,7 +5,7 @@ import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi'
 import { resolvePlaylistTracks } from '@/lib/playlist-db';
 import { batchEpisodes, episodeKey, fillTrackValues, MAX_BATCH } from '@/lib/pi-batch';
 import { fnvHash, hasValueRecipients, mergeRssOverPi } from '@/lib/util';
-import type { Episode, Podcast } from '@/lib/types';
+import type { Episode, PlayGroup, Podcast } from '@/lib/types';
 import type { PlaylistItemRef } from '@/lib/feed-xml';
 
 /**
@@ -144,11 +144,13 @@ export async function GET(req: Request) {
       ? getFeedTitle(channel.sourceFeedUrl).catch(() => null)
       : Promise.resolve(null);
     const page = refs.slice(offset, offset + limit);
+    const playGroups = playGroupsOf(refs);
     if (!page.length) {
       return NextResponse.json(
         {
           podcast, episodes: [], total: refs.length, offset,
           nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow: await sourceShowPromise,
+          playGroups,
         },
         { headers: PLAYLIST_CACHE },
       );
@@ -208,7 +210,7 @@ export async function GET(req: Request) {
 
       }
       const ep = resolved[key];
-      if (ep) episodes.push(ref.episode ? { ...ep, playlistGroup: ref.episode } : ep);
+      if (ep) episodes.push(withMarkers(ep, ref));
       else {
         notFound++;
         episodes.push(placeholder(ref, podcast.id, 'not-found'));
@@ -268,6 +270,7 @@ export async function GET(req: Request) {
         podcast, episodes: valued, total: refs.length, offset, nextOffset, notFound, couldNotAsk,
         // Started before the page work; by here it has almost always settled.
         sourceShow: await sourceShowPromise,
+        playGroups,
       },
       {
         headers:
@@ -333,5 +336,46 @@ function placeholder(
     // Carried even here, so an unresolved row keeps its place under the right
     // heading instead of silently moving the episode boundary.
     playlistGroup: ref.episode,
+    playlistPlays: ref.plays,
   };
+}
+
+/**
+ * How many tracks sit under each `<podcast:txt purpose="playcount">` marker,
+ * over the WHOLE list, in wire order — `[{ plays: 24, tracks: 1 }, …]`.
+ *
+ * Computed here rather than on the client because a page is 100 rows and the
+ * client counts only what it has loaded: the Greatest Hits list's bottom group
+ * is ~800 tracks, so a count taken over the loaded rows would read "2 plays ·
+ * 100 tracks" and then grow on every "load more". Deduped refs, so a track
+ * listed twice counts once, matching `total`.
+ *
+ * Undefined when the list carries no play-count marker at all, so the ordinary
+ * playlists do not grow an empty array on every page.
+ */
+function playGroupsOf(refs: PlaylistItemRef[]): PlayGroup[] | undefined {
+  const out: PlayGroup[] = [];
+  for (const ref of refs) {
+    if (!ref.plays) continue;
+    const last = out[out.length - 1];
+    if (last && last.plays === ref.plays) last.tracks += 1;
+    else out.push({ plays: ref.plays, tracks: 1 });
+  }
+  return out.length ? out : undefined;
+}
+
+/**
+ * A resolved row plus what the playlist document said ABOVE it — the episode
+ * caption and the play count. Both come from the curator's markers, never from
+ * Podcast Index or the database, which know nothing about this list. One
+ * function for the two so a third marker kind is added in one place; the
+ * database path (`lib/playlist-db.ts`) hands the same two fields to
+ * `dbRowToEpisode` and must stay in step with it.
+ */
+function withMarkers(ep: Episode, ref: PlaylistItemRef): Episode {
+  if (!ref.episode && !ref.plays) return ep;
+  const out = { ...ep };
+  if (ref.episode) out.playlistGroup = ref.episode;
+  if (ref.plays) out.playlistPlays = ref.plays;
+  return out;
 }

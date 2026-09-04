@@ -20,7 +20,7 @@
 // collide with a guid in either cache.
 
 import { storage } from './storage';
-import type { Episode, Podcast } from './types';
+import type { Episode, PlayGroup, Podcast } from './types';
 
 /**
  * Entry cap for the two in-memory tiers below.
@@ -469,6 +469,13 @@ export interface PlaylistResponse {
    * ("Saddle Up") with nothing saying what they are.
    */
   sourceShow?: string | null;
+  /**
+   * The list's `<podcast:txt purpose="playcount">` runs with their track
+   * totals over the WHOLE list, in wire order. Absent on a playlist that
+   * publishes no such marker. Like `sourceShow`, a property of the playlist:
+   * every page reports the same array.
+   */
+  playGroups?: PlayGroup[];
   /** Rows on this page we never got an answer about. Non-zero means the page is
    *  not a settled answer: it was served `no-store` and a retry is real. */
   couldNotAsk?: number;

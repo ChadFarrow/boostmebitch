@@ -167,15 +167,16 @@ export interface DbTrackRow {
  * through `/api/chapters` and validates for itself — 381 rows have one, and
  * dropping it would quietly cost those tracks their chapters.
  *
- * `id`, `feedId` and `playlistGroup` are all supplied by the caller. `feedId`
- * is the container's synthetic id, which this module cannot know; `id` is the
- * shared row identity described below; and `playlistGroup` comes from the
- * playlist's own `<podcast:txt>` markers rather than from the database, so the
- * heading a track appears under is always the one the curator wrote.
+ * `id`, `feedId`, `playlistGroup` and `playlistPlays` are all supplied by the
+ * caller. `feedId` is the container's synthetic id, which this module cannot
+ * know; `id` is the shared row identity described below; and the two markers
+ * come from the playlist's own `<podcast:txt>` tags rather than from the
+ * database, so the heading a track appears under and the play count it shows
+ * are always the ones the curator wrote.
  */
 export function dbRowToEpisode(
   row: DbTrackRow,
-  opts: { id: number; feedId: number; playlistGroup?: string },
+  opts: { id: number; feedId: number; playlistGroup?: string; playlistPlays?: number },
 ): Episode | null {
   const guid = typeof row.itemGuid === 'string' ? row.itemGuid : '';
   const enclosureUrl = typeof row.audioUrl === 'string' ? row.audioUrl.trim() : '';
@@ -213,6 +214,7 @@ export function dbRowToEpisode(
   const value = dbValueBlock(row.value);
   if (value) ep.value = value;
   if (opts.playlistGroup) ep.playlistGroup = opts.playlistGroup;
+  if (opts.playlistPlays) ep.playlistPlays = opts.playlistPlays;
   return ep;
 }
 
