@@ -153,11 +153,13 @@ Recorded so the next session does not re-derive it. Every row is a measured fact
 | Google's parser accepts the statement | `digitalassetlinks.googleapis.com/v1/statements:list` returns one statement for `com.boostmebitch` |
 | The installed TWA works on a device | Pixel 6, 2026-08-21 and 2026-09-03 — Amber sign-in through the callback, "Restore from Nostr" over the clipboard (see [`signers.md`](signers.md)) |
 | The screenshots are current | Re-shot 2026-09-04 against production, 824×1830, matching `public/manifest.json`'s declared `sizes`. The previous set was `ba85d4d`, **2026-08-20** — not 2026-08-29 (#269), which is a playlists PR that never touched them — with 183 commits behind it |
+| **zsp reaches the events, at the pinned version** | Run `33904270967` (2026-09-04, the PR branch): `zsp publish --check` printed `{"package_id":"com.boostmebitch"}`, and `--quiet --offline` built **3 unsigned events** for `npub177fz…` at `v0.4.17` — the 32267, 30063 and 3063 — with nothing uploaded. So the config parses, every image path resolves, the CHANGELOG has a `0.1.0` section, the icon downloads and the declared pubkey passes zsp's mismatch check |
+| The guard skips a build-only run | Same run: `Refuse a publish run with no Zapstore identity` is `skipped`, `publish=false`. It must never block a `workflow_dispatch` on a branch, and it does not |
 
 | Not done | Evidence |
 |---|---|
 | No tag, no GitHub release, no Zapstore listing | `git tag` is empty; the releases list is empty; a kind 32267 query for `com.boostmebitch` on `relay.zapstore.dev` returns nothing |
-| The publish step has never executed | Runs 2 and 3 skipped it (`publish=false`); it carried `-y` until 2026-09-04 and would have failed |
+| The publish step has never executed | Runs 2, 3 and `33904270967` all skipped it (`publish=false`); it carried `-y` until 2026-09-04 and would have failed. Everything up to it is now exercised, so the only unrun code on a tag is `zsp publish --quiet` itself and the `gh release` step above it |
 | **`ZAPSTORE_SIGN_WITH` is NOT SET** | `gh secret list` returns three secrets — the two keystore passwords and `ANDROID_KEYSTORE_BASE64`. Secret *values* are unreadable; their *names* are not, and this one is absent. A tag now fails in seconds rather than after the GitHub release exists |
 | Shot 02's episode thumbnails are blank | Not the capture — the app. Those covers are 9 MB animated GIFs (`episode-149.gif` is 9,055,375 bytes), `/api/art` **502s** on them at every width in `ART_WIDTHS`, and `<PodcastCover>`'s ladder falls through to the raw URL, which never finishes painting. Belongs to [`ui.md`](ui.md), not to this release |
 | Rows 2–7 below have no verdict | No device session has covered NWC after backgrounding, Google sign-in, out-of-scope links, background audio, offline, or cold start |
