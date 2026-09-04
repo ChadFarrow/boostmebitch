@@ -59,6 +59,8 @@ import {
   creditFixed,
   STREAM_TRACK_CREDIT_DEBOUNCE_MS,
   STREAM_TRACK_MIN_PLAY_MS,
+  STREAM_ENDED_OBSERVATIONS,
+  endedVerdict,
   trackBucket,
   createLedger,
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -1136,6 +1138,86 @@ console.log('\nreadouts');
     msUntilSettle(withBilled(l, 300_000)), 300_000);
   check('fresh ledger is not stale', isStaleLedger(l, T0 + 3600_000), false);
   check('a day-old ledger is stale', isStaleLedger(l, T0 + 86_400_001), true);
+}
+
+// ---------------------------------------------------------------------------
+// endedVerdict — when a live broadcast is believed to be OVER.
+//
+// It gates a SETTLE, and both directions cost something real. Concluding too
+// early stops paying an artist somebody is still listening to; never
+// concluding leaves the remainder unsettled until the listener happens to
+// pause. It lived inline inside an async fetch handler, where no check script
+// could reach it, which is why it is a pure function now.
+//
+// Recorded as CALLS so the naive replay below is total.
+// ---------------------------------------------------------------------------
+
+console.log('\nendedVerdict — believing a broadcast is over');
+
+const ENDED_VECTORS = [
+  // The ordinary life of a healthy broadcast.
+  { args: [0, 'live'], expect: { seen: 0, ended: false }, alsoNaive: true, why: 'still on air' },
+  // Exempt: the naive version resets on 'live' too. Kept because the RESET is
+  // the whole reason a one-regeneration dropout heals, and a future rewrite
+  // that dropped it would be caught by expectation even though not by replay.
+  { args: [1, 'live'], expect: { seen: 0, ended: false }, alsoNaive: true, why: 'one dropout, then back — RESETS, so a feed that skips its liveItem for one regeneration heals' },
+
+  // Two strikes, not one.
+  { args: [0, 'ended'], expect: { seen: 1, ended: false }, why: 'FIRST ended answer must not conclude' },
+  { args: [1, 'ended'], expect: { seen: 2, ended: true }, alsoNaive: true, why: 'second consecutive ended concludes' },
+  { args: [2, 'ended'], expect: { seen: 3, ended: true }, alsoNaive: true, why: 'stays concluded once past the threshold' },
+
+  // 'pending' is not broadcasting either, and streaming.ts already refuses to
+  // meter a pending item — so it must count, or the two disagree.
+  { args: [0, 'pending'], expect: { seen: 1, ended: false }, why: 'pending counts toward ended' },
+  // Exempt: both versions land on seen 2 / ended here, by coincidence — the
+  // naive one concluded a poll earlier. The vector above ({args:[0,'pending']})
+  // is the one that proves the difference.
+  { args: [1, 'pending'], expect: { seen: 2, ended: true }, alsoNaive: true, why: 'pending can conclude it' },
+
+  // ABSENCE IS NOT EVIDENCE. A response that omits the field says nothing:
+  // it must not advance the count and must not reset one already earned.
+  { args: [0, null], expect: { seen: 0, ended: false }, alsoNaive: true, why: 'null is silence, not an ending' },
+  { args: [1, null], expect: { seen: 1, ended: false }, why: 'null must NOT advance a count' },
+  { args: [1, undefined], expect: { seen: 1, ended: false }, why: 'undefined behaves as null' },
+  { args: [2, null], expect: { seen: 2, ended: true }, why: 'null must NOT erase a verdict already reached' },
+];
+
+for (const v of ENDED_VECTORS) {
+  const got = endedVerdict(...v.args);
+  const want = v.expect;
+  check(
+    `endedVerdict(${v.args[0]}, ${JSON.stringify(v.args[1])}) — ${v.why}`,
+    `${got.seen}/${got.ended}`,
+    `${want.seen}/${want.ended}`,
+  );
+}
+
+check('STREAM_ENDED_OBSERVATIONS is 2', STREAM_ENDED_OBSERVATIONS, 2);
+
+// The obvious wrong version: treat any non-'live' answer as an immediate end,
+// and let a missing field reset. It passes every healthy-broadcast vector and
+// ends a live show on one dropped regeneration.
+function naiveEnded(seen, status) {
+  if (status === 'live' || status == null) return { seen: 0, ended: false };
+  return { seen: seen + 1, ended: true };
+}
+
+console.log('\n  naive replay (each vector must fail against the obvious version)');
+{
+  let proved = 0;
+  let exempt = 0;
+  for (const v of ENDED_VECTORS) {
+    const real = endedVerdict(...v.args);
+    const naive = naiveEnded(...v.args);
+    const same = real.seen === naive.seen && real.ended === naive.ended;
+    if (v.alsoNaive) { exempt++; continue; }
+    if (same) {
+      console.error(`  FAIL vector proves nothing — naive agrees: endedVerdict(${v.args[0]}, ${JSON.stringify(v.args[1])})`);
+      failures++;
+    } else proved++;
+  }
+  console.log(`        ${proved} vector(s) proved, ${exempt} exempted as must-still-work`);
 }
 
 if (failures > 0) {
