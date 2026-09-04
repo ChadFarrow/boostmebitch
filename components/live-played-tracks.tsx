@@ -98,11 +98,20 @@ export function LivePlayedTracks({
         {rows.map((p) => {
           const on = p.key === nowKey;
           return (
+            // No negative horizontal margin on this row, however much the
+            // on-air highlight wants to bleed past the text. Both hosts put
+            // this list inside a scroll body that is `overflow-y-auto`, and CSS
+            // computes the OTHER axis of such a box to `auto` as well — so a
+            // row 16px wider than its container paints a horizontal scrollbar
+            // across the whole panel, on a list that has nothing to scroll
+            // sideways to. The chapter rows in <FullscreenPlayer> get away with
+            // `-mx-2` because their own <ul> carries the matching `pr-2`; this
+            // list does not own its scroll container and cannot pad it.
             <li
               key={p.key}
-              className={`flex items-center gap-1 rounded -mx-2 ${on ? 'bg-bolt/10' : ''}`}
+              className={`flex items-center gap-1 rounded ${on ? 'bg-bolt/10' : ''}`}
             >
-              <div className="flex-1 min-w-0 flex gap-3 items-center py-1.5 px-2">
+              <div className="flex-1 min-w-0 flex gap-3 items-center py-1.5">
                 <RowThumb
                   src={artOk ? p.split.image : undefined}
                   fallback={fallbackImg}
