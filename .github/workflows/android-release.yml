@@ -1,5 +1,21 @@
 # Builds the Trusted Web Activity, proves it will actually verify against the
-# live origin, and publishes it to Zapstore.
+# live origin, and cuts the GitHub release.
+#
+# WHETHER IT ALSO PUBLISHES TO ZAPSTORE IS DECLARED, NOT INFERRED. The
+# repository variable ZAPSTORE_PUBLISH_MODE picks it, and it defaults to
+# `local` when unset:
+#
+#   local  (default)  CI stops after the GitHub release and prints the exact
+#                     zsp commands in the run summary. A human runs them with
+#                     SIGN_WITH=browser and signs in a NIP-07 browser, so the
+#                     publishing key never enters GitHub. This is how the
+#                     sibling app releases, and it puts the publish beside
+#                     `zsp identity --link-key`, which needs the keystore and
+#                     is a local step either way.
+#   ci                CI publishes, and ZAPSTORE_SIGN_WITH must hold an
+#                     nsec1…/bunker:// for the pubkey zapstore.yaml declares.
+#                     A tag with the mode set and the secret missing FAILS
+#                     early rather than releasing to GitHub and stopping.
 #
 # The web app deploys through Vercel and is not built here — this workflow only
 # wraps it. Reasoning and the first-release runbook are in docs/android.md.
@@ -155,24 +171,50 @@ jobs:
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
           echo "Building $NAME (versionCode $CODE), publish=$PUBLISH"
 
-      # Fail a publish run with no signing identity HERE, in seconds, before the
-      # keystore is materialized and long before `gh release create` runs.
+      # WHO publishes to Zapstore is a DECLARED decision, never an inference
+      # from whether a secret happens to exist.
       #
-      # The publish step at the bottom checks the same thing, and that check is
-      # not enough on its own: it runs AFTER the GitHub release is created, so a
-      # missing secret still produces the half-published shape this workflow
-      # exists to prevent — a release on GitHub, nothing on Zapstore. The late
-      # check stays as a backstop; this one is what makes the failure cheap.
+      # This repo's answer is `local`: a human runs zsp with SIGN_WITH=browser
+      # and signs in a NIP-07 browser, which is how the sibling app releases and
+      # what keeps the publishing key out of GitHub entirely. CI still builds,
+      # signs, verifies the origin and cuts the GitHub release.
+      #
+      # An earlier draft of this workflow FAILED a tag whenever
+      # ZAPSTORE_SIGN_WITH was absent, reasoning that a silent skip is the
+      # pattern CLAUDE.md names under "a guard that silently withholds must say
+      # so". That reasoning is right and the test was wrong: absent-secret is
+      # the NORMAL state under `local`, so the guard fired on every tag this
+      # repo ever intends to push. Keying it on the declared mode keeps the
+      # loud failure exactly where it belongs — mode `ci` with no key — and
+      # makes `local` an announcement rather than a silence.
+      - name: Resolve the Zapstore publish mode
+        id: zapmode
+        env:
+          MODE: ${{ vars.ZAPSTORE_PUBLISH_MODE }}
+        run: |
+          set -euo pipefail
+          M="${MODE:-local}"
+          case "$M" in
+            local|ci) ;;
+            *) echo "::error::ZAPSTORE_PUBLISH_MODE is '$M'. It must be 'local' or 'ci' — see docs/android.md."; exit 1 ;;
+          esac
+          echo "mode=$M" >> "$GITHUB_OUTPUT"
+          echo "Zapstore publish mode: $M"
+
+      # Only under mode `ci`. Fails in seconds, before the keystore is
+      # materialized and long before `gh release create` runs, because the check
+      # in the publish step itself runs AFTER the GitHub release exists — where
+      # a missing key leaves a release on GitHub and nothing on Zapstore.
       #
       # The value is never echoed. `-z` on the secret is the whole test.
       - name: Refuse a publish run with no Zapstore identity
-        if: steps.version.outputs.publish == 'true'
+        if: steps.version.outputs.publish == 'true' && steps.zapmode.outputs.mode == 'ci'
         env:
           SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
         run: |
           set -euo pipefail
           if [ -z "${SIGN_WITH:-}" ]; then
-            echo "::error::ZAPSTORE_SIGN_WITH is not set, so this tag cannot publish to Zapstore. Add the repository secret (the key for the pubkey zapstore.yaml declares) and re-run this workflow — see docs/android.md."
+            echo "::error::ZAPSTORE_PUBLISH_MODE is 'ci' but ZAPSTORE_SIGN_WITH is not set, so this tag cannot publish. Add the repository secret (the key for the pubkey zapstore.yaml declares), or set the variable back to 'local' and publish by hand — see docs/android.md."
             exit 1
           fi
           echo "ZAPSTORE_SIGN_WITH is set."
@@ -376,20 +418,39 @@ jobs:
           gh release create "${GITHUB_REF#refs/tags/}" --generate-notes --verify-tag 2>/dev/null || true
           gh release upload "${GITHUB_REF#refs/tags/}" android/app-release-signed.apk --clobber
 
+      # Mode `local`: say what is left to do, on the run that produced the APK,
+      # rather than leaving a green tag that silently reached no store. The
+      # commands are written out in full because the person running them is
+      # doing it once or twice a year and should not have to reconstruct them.
+      - name: Hand the Zapstore publish to a human
+        if: steps.version.outputs.publish == 'true' && steps.zapmode.outputs.mode == 'local'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## Zapstore: not published by CI"
+            echo
+            echo "\`ZAPSTORE_PUBLISH_MODE\` is \`local\`, so this run built, signed, verified and released **$TAG** and stopped there."
+            echo "The signing key stays off GitHub on purpose. Finish it on the machine that holds the keystore:"
+            echo
+            echo '```bash'
+            echo "gh release download $TAG -p 'app-release-signed.apk' -O android/app-release-signed.apk --clobber"
+            echo "SIGN_WITH=browser zsp publish zapstore.yaml          # signs in a NIP-07 browser"
+            echo "SIGN_WITH=browser zsp identity --link-key ~/keystores/boostmebitch-release.jks --key-alias boostmebitch"
+            echo '```'
+            echo
+            echo "Then confirm from the relay rather than the log — see \`docs/android.md\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice::Zapstore publish is a LOCAL step for this repository. The commands are in this run's summary."
+
       - name: Publish to Zapstore
-        if: steps.version.outputs.publish == 'true'
+        if: steps.version.outputs.publish == 'true' && steps.zapmode.outputs.mode == 'ci'
         env:
           SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # FAIL rather than skip when the key is absent. This step only runs
-          # once `publish` has been decided true — a tag push, or the toggle on
-          # a tag ref — so "no key" here is never a repository that merely
-          # wants to build and verify; those runs never reach this step. It
-          # used to `exit 0` with a notice, which is the pattern CLAUDE.md
-          # names under "a guard that silently withholds must say so": the run
-          # goes green, the GitHub release exists, and Zapstore has nothing.
           # A backstop. "Refuse a publish run with no Zapstore identity", near
           # the top, already failed this run — before the keystore existed and
           # before the GitHub release did. Reaching here means that step was
