@@ -8,7 +8,7 @@
 // so on a phone `● LIVE` wrapped to two lines and blew up the row height.
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
-import type { Episode, Podcast, ValueBlock } from '@/lib/types';
+import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration, fmtLiveTime, scrollBehavior } from '@/lib/format';
@@ -85,6 +85,11 @@ interface PlaylistMeta {
    * disagree with the rows it captions.
    */
   sourceShow?: string | null;
+  /**
+   * The play-count runs of the whole list — see `PlaylistResponse.playGroups`.
+   * Read from page 0 and not accumulated, for the same reason as `sourceShow`.
+   */
+  playGroups?: PlayGroup[];
 }
 
 function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
@@ -268,6 +273,7 @@ export function EpisodeList({
         notFound: p.notFound ?? 0,
         couldNotAsk: p.couldNotAsk ?? 0,
         sourceShow: p.sourceShow ?? null,
+        playGroups: p.playGroups,
       });
     };
 
@@ -732,6 +738,15 @@ export function EpisodeList({
           // a page with no extra state.
           const groupHead = e.playlistGroup && e.playlistGroup !== prev?.playlistGroup
             ? e.playlistGroup : null;
+          // A play-count-ordered playlist's `<podcast:txt purpose="playcount">`
+          // run, the same way: a heading where the count changes. The track
+          // total comes from the SERVER's whole-list count, never from the
+          // rows loaded so far — the bottom run of the Greatest Hits list is
+          // ~800 tracks and a page is 100.
+          const playsHead = e.playlistPlays && e.playlistPlays !== prev?.playlistPlays
+            ? e.playlistPlays : null;
+          const playsTracks = playsHead
+            ? playlist?.playGroups?.find((g) => g.plays === playsHead)?.tracks : undefined;
           // What a press on the row itself does. Named because it now has TWO
           // mounts: the <li>'s tap area, and the real <button> around the title
           // block below. It was inline on the <li> alone, and that made the
@@ -777,6 +792,14 @@ export function EpisodeList({
                   need it less than others — ITDV writes "Episode 72 - Miles for
                   miles", which says what it is already — but the qualifier is
                   not worth branching on per feed. */}
+              {playsHead && (
+                <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-4 pb-1 border-b-0 break-words">
+                  <span className="text-bone/70">{playsHead} {playsHead === 1 ? 'play' : 'plays'}</span>
+                  {playsTracks != null && (
+                    <> · {playsTracks} {playsTracks === 1 ? 'track' : 'tracks'}</>
+                  )}
+                </li>
+              )}
               {groupHead && (
                 <li className="text-[10px] uppercase tracking-[0.18em] text-muted pt-4 pb-1 border-b-0 break-words">
                   {playlist?.sourceShow && (
@@ -909,16 +932,6 @@ export function EpisodeList({
                   )}
                   {e.duration && <span className="whitespace-nowrap">· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt whitespace-nowrap">· ⚡ V4V</span>}
-                  {/* The curator's `<podcast:txt purpose="playcount">` marker.
-                      Per ROW rather than as a heading like `playlistGroup`: the
-                      Greatest Hits list runs to 1,800 tracks and its bottom
-                      group ("2 plays") is 800 rows long, so a heading is off
-                      screen for almost every row it describes. */}
-                  {e.playlistPlays && (
-                    <span className="whitespace-nowrap">
-                      · {e.playlistPlays} {e.playlistPlays === 1 ? 'play' : 'plays'}
-                    </span>
-                  )}
                 </div>
                 {/* These were bare inline <span>s carrying `mt-0.5`, which does
                     nothing on a non-replaced inline element, and they abutted
