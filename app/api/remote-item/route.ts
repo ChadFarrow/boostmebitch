@@ -7,16 +7,19 @@ import { rateLimit } from '@/lib/rate-limit';
  * Can this remote item's parent feed be resolved?
  *
  * GET /api/remote-item?feedGuid=<uuid>&itemGuid=<guid>
- *   → { parentFeedGuid?: string | null, feedTitle?: string }
+ *   → { parentFeedGuid?: string | null, feedTitle?: string, artist?: string }
  *
- * The three states of `parentFeedGuid` are the whole payload — see
+ * The three states of `parentFeedGuid` are the load-bearing part — see
  * `ValueTimeSplit.parentFeedGuid`. An ABSENT key is the `undefined` state
  * ("nothing learned, the wire guid stands"), which is also what a PI miss
- * answers, so a caller must not read absence as a refusal.
+ * answers, so a caller must not read absence as a refusal. `feedTitle` and
+ * `artist` are labels beside it, and each is absent whenever its lookup missed.
  *
- * The live socket path is the only caller: every RSS signal already goes
- * through `resolveOneSplit` inside /api/live-value. See
- * `resolveRemoteItemParent` for why no value block comes back from here.
+ * `<LivePlayedTracks>`' log is the caller, on both live signals rather than
+ * only the socket one: an RSS split arrives with its verdict already settled by
+ * `resolveOneSplit` inside /api/live-value, but with no artist either way,
+ * because Podcast Index carries `author` on the feed record and not on the
+ * episode. See `resolveRemoteItemParent` for why no value block comes back.
  */
 export async function GET(req: Request) {
   // One call per distinct block a live show puts on air — a few per hour per

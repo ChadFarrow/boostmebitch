@@ -19,7 +19,7 @@
 // The one thing it does decide is whether a row may offer that heart YET — a
 // socket block reaches this module with no parent-feed verdict on it, and the
 // verdict is the difference between a favorite and an entry no app can open.
-// See `PlayedTrack.parentResolved` and `resolveParent`.
+// See `PlayedTrack.parentResolved` and `enrichRow`.
 //
 // **It lives here rather than in `lib/v4v/` on purpose.** That directory is the
 // wallet/signer swap-out boundary, and a log of what was on the radio is not a
@@ -78,7 +78,7 @@ export interface PlayedTrack {
    * `undefined` — which reads as "nothing learned, the wire guid stands" and is
    * indistinguishable from a host who pointed `feedGuid` at a publisher feed.
    * Favoriting that writes an entry no app can open, to a shared list with no
-   * undo, so the heart waits for `resolveParent` to answer.
+   * undo, so the heart waits for `enrichRow` to answer.
    *
    * **False means "not yet", never "no".** A lookup that fails — PI down, the
    * device offline — still flips this to `true` and leaves `parentFeedGuid`
@@ -305,24 +305,36 @@ export function recordLivePlay(t: LiveTargetShape | null): void {
   const next = [...log, row];
   log = next.length > MAX_TRACKS ? next.slice(next.length - MAX_TRACKS) : next;
   observable.notify();
-  if (!row.parentResolved) void resolveParent(logGuid, key, split);
+  // Two reasons to ask, and a row can have either or both. A socket block needs
+  // its parent-feed verdict before it may offer a heart; EVERY block needs a
+  // second lookup for the artist, because Podcast Index carries `author` on the
+  // feed record and not on the episode one. One call answers both.
+  if (!row.parentResolved || !split.artist) void enrichRow(logGuid, key, split);
 }
 
 /**
- * Establish `parentFeedGuid` for a socket block, then let the row's heart appear.
+ * Ask `/api/remote-item` what the row's parent feed is, and who made the track.
  *
  * Fire-and-forget on purpose: the target has already been set and the payment
  * is already routed off the block's own recipients. Nothing here can change
- * where sats go — it decides one thing, whether this row may write a favorite.
+ * where sats go — it decides one thing, whether this row may write a favorite,
+ * and adds one label beside it.
+ *
+ * **The two halves are not the same kind of answer, and the patch keeps them
+ * apart.** The verdict is written ONCE, on a row that does not have one yet: an
+ * RSS split reached `/api/live-value` and was resolved there, so overwriting it
+ * from here would let a second, later lookup — a PI miss, a rate limit — take a
+ * settled verdict back to `undefined` and hand the row a heart against an
+ * unverified guid. The artist is only ever filled in where there is none.
  *
  * The row is patched only while the log still belongs to the same broadcast and
  * still holds that key, so an answer arriving after the DJ moved on, or after
  * the listener switched shows, lands nowhere.
  */
-async function resolveParent(guid: string | null, key: string, split: ValueTimeSplit) {
+async function enrichRow(guid: string | null, key: string, split: ValueTimeSplit) {
   const feedGuid = split.remoteItem?.feedGuid;
   const itemGuid = split.remoteItem?.itemGuid;
-  let parent: { parentFeedGuid?: string | null; feedTitle?: string } = {};
+  let parent: { parentFeedGuid?: string | null; feedTitle?: string; artist?: string } = {};
   if (feedGuid && itemGuid) {
     try {
       const res = await fetch(
@@ -337,16 +349,23 @@ async function resolveParent(guid: string | null, key: string, split: ValueTimeS
   }
   if (guid !== logGuid) return;
   const i = log.findIndex((p) => p.key === key);
-  if (i < 0 || log[i].parentResolved) return;
+  if (i < 0) return;
+  const row = log[i];
+  const artist = row.split.artist ?? parent.artist;
+  // A row that already had its verdict and learned no name is left alone, so a
+  // failed lookup costs no re-render.
+  if (row.parentResolved && artist === row.split.artist) return;
   const next = [...log];
   next[i] = {
-    ...log[i],
+    ...row,
     split: {
-      ...log[i].split,
-      parentFeedGuid: parent.parentFeedGuid,
+      ...row.split,
+      // See above: written only where the row is still waiting for one.
+      ...(row.parentResolved ? {} : { parentFeedGuid: parent.parentFeedGuid }),
       // The album's title, for the favorite record. Never over an existing one:
       // the host's own block is the more current name for what is on air.
-      feedTitle: log[i].split.feedTitle ?? parent.feedTitle,
+      feedTitle: row.split.feedTitle ?? parent.feedTitle,
+      artist,
     },
     parentResolved: true,
   };
