@@ -152,6 +152,8 @@ Recorded so the next session does not re-derive it. Every row is a measured fact
 | The keystore secrets and the Vercel statement are set | Same run: the verify step compared the built certificate against the live statement and passed |
 | Google's parser accepts the statement | `digitalassetlinks.googleapis.com/v1/statements:list` returns one statement for `com.boostmebitch` |
 | The installed TWA works on a device | Pixel 6, 2026-08-21 and 2026-09-03 — Amber sign-in through the callback, "Restore from Nostr" over the clipboard (see [`signers.md`](signers.md)) |
+| **The device is GrapheneOS with NO Chrome, and the TWA verifies anyway** | Pixel 6, Android 17, build `2026081301`, 2026-09-04. Installed browsers are Vanadium, Brave, Firefox and Tor; `com.android.chrome` is absent and no default browser is set. The TWA binds to **`com.brave.browser/…CustomTabActivity`** and renders with **no URL bar**, so Digital Asset Links verification works on a non-Chrome Chromium. Every device verdict in this file was measured on that phone — read them as "GrapheneOS + Brave", not "stock Chrome" |
+| **A background favorites publish reaches the relays, and loses nothing** | 2026-09-04, against a list with 449 `i` tags. Add: 0 tags removed, 1 added, all 455 preserved in order. Remove: restored byte-identical to the baseline. Full method in "Risks a TWA has to survive", row 1 |
 | The screenshots are current | Re-shot 2026-09-04 against production, 824×1830, matching `public/manifest.json`'s declared `sizes`. The previous set was `ba85d4d`, **2026-08-20** — not 2026-08-29 (#269), which is a playlists PR that never touched them — with 183 commits behind it |
 | **zsp reaches the events, at the pinned version** | Run `33904270967` (2026-09-04, the PR branch): `zsp publish --check` printed `{"package_id":"com.boostmebitch"}`, and `--quiet --offline` built **3 unsigned events** for `npub177fz…` at `v0.4.17` — the 32267, 30063 and 3063 — with nothing uploaded. So the config parses, every image path resolves, the CHANGELOG has a `0.1.0` section, the icon downloads and the declared pubkey passes zsp's mismatch check |
 | The guard skips a build-only run | Same run: `Refuse a publish run with no Zapstore identity` is `skipped`, `publish=false`. It must never block a `workflow_dispatch` on a branch, and it does not |
@@ -163,7 +165,8 @@ Recorded so the next session does not re-derive it. Every row is a measured fact
 | **`ZAPSTORE_SIGN_WITH` is NOT SET** | `gh secret list` returns three secrets — the two keystore passwords and `ANDROID_KEYSTORE_BASE64`. Secret *values* are unreadable; their *names* are not, and this one is absent. A tag now fails in seconds rather than after the GitHub release exists |
 | Shot 02's episode thumbnails are blank | Not the capture — the app. Those covers are 9 MB animated GIFs (`episode-149.gif` is 9,055,375 bytes), `/api/art` **502s** on them at every width in `ART_WIDTHS`, and `<PodcastCover>`'s ladder falls through to the raw URL, which never finishes painting. Belongs to [`ui.md`](ui.md), not to this release |
 | Rows 2–7 below have no verdict | No device session has covered NWC after backgrounding, Google sign-in, out-of-scope links, background audio, offline, or cold start |
-| A background publish in the TWA is unmeasured | Favorites and mutes `sign_event` unprompted; NIP-46 over `nostrconnect://` is the primary Amber path since 2026-09-03, which reduces the risk without measuring it |
+| The MUTES half is still unmeasured | Favorites are now measured (above). The kind:10000 private half is not: it is deliberately left unread on load under Amber, so its publish path has never been driven on a device |
+| Every device verdict rests on ONE phone, and it is not a typical one | GrapheneOS, no Chrome, no Google Play services. Stock Android with Chrome as the TWA provider is untested, and it is what most Zapstore users will install onto |
 
 ### Releasing locally instead
 
@@ -206,7 +209,23 @@ Every row below is a real code path that behaves differently inside a TWA than i
 
 *Exercised in the installed TWA, 2026-08-21:* Amber sign-in completes through the callback, and **"Restore from Nostr" — a `nip44_decrypt` on the clipboard path — completes too, and the wallet restored.** So `navigator.clipboard.readText()` does work in a Trusted Web Activity, which this row previously listed as unproven. `scope: "/"` already covers `/amber-callback`, so no manifest change was needed.
 
-*What that does NOT prove.* The clipboard path works because the user pressed a button and came back to tap — which is the gesture `invokeAmber` listens for. A request nobody initiated has nobody to come back, so **background publishes are the remaining risk**: favorites and mutes debounce-publish a `sign_event` unprompted. *Verify:* toggle a favorite in the TWA and see whether the kind:10333 actually reaches a relay, or whether it silently never signs.
+*What that does NOT prove.* The clipboard path works because the user pressed a button and came back to tap — which is the gesture `invokeAmber` listens for. A request nobody initiated has nobody to come back, so **background publishes were the remaining risk**: favorites and mutes debounce-publish a `sign_event` unprompted.
+
+**MEASURED 2026-09-04, and the answer is that a favorites publish is NOT unprompted — it RAISES AMBER.** Driven over CDP against the installed TWA, on a list with real history (57 shows, 230 episodes, 449 `i` tags). Favoriting one show logged `[amber] → sign_event (clipboard)`, brought `com.greenart7c3.nostrsigner/.SignerActivity` to the foreground with *"Wants you to sign a PC 2.0 Favorites"*, and published only after Accept. Un-favoriting did the same, **debounced** — Amber came up about five seconds after the toggle, not on the tap.
+
+So the failure this row feared does not happen, and the reason is worth keeping: nothing here is unattended. `sign_event` is a full app switch every time. That is safe for the data and expensive for the user — a session of favoriting is a session of app switches, and it is the argument for the NIP-46 path rather than a defect in this one.
+
+**What the publish did to the shared event, which is the part that matters.** Read from the relays before and after, not from the app:
+
+| | Event | Tags | Removed | Added |
+|---|---|---|---|---|
+| Before | `af53b60f570c…` | 455 | — | — |
+| After favoriting | `4e7202801617…` | 456 | **0** | 1 — `["i","podcast:guid:78864041-…"]` |
+| After un-favoriting | `b8cbff62d182…` | 455 | 1 (the same one) | 0 |
+
+All 455 baseline tags survived the add **in order, as a subsequence**, and the restored event is **byte-identical** to the baseline — same tags, same order, same empty `content`. The merge carries what it did not write, and `visibility`, `alt`, `medium` and `k` all came through untouched.
+
+*Two things observed on the way, neither a defect.* The mute list logged `[mutes] private mute list left unread — not spending a signer prompt here — the local cache still filters`, and said so on screen in a banner: the visible-guard rule working, and the reason `unattendedDecryptOk()` excludes Amber. And **`relay.damus.io` refused every WebSocket from this device**, with `relay.fountain.fm` answering `CLOSED` — the publish still landed on `relay.primal.net` and `nos.lol`. Two of four default relays unreachable is the normal case this design already assumes, not an outage worth chasing.
 
 **2. NWC and localStorage.** A verified TWA shares Chrome's storage partition for the origin, which is good (sign in once, in either place) and sharp: Android Settings → Chrome → "Clear storage" wipes the wallet credential and any local nsec with no server copy. Backgrounding also suspends the socket, and CLAUDE.md records that Alby's relay rate-limits connections **opened** — 28 dials in 83 s produced a `429` with `Retry-After: 600` — so a reconnect storm on every foreground is a real hazard. *Verify:* connect, boost, background five minutes, foreground, boost again; watch for a dial storm and for `NwcIndeterminateError` rendering as `?` rather than `✗`. Confirm storage survives a reboot, and that the Nostr/Drive backup path works, since it is the only recovery from a cleared profile.
 
