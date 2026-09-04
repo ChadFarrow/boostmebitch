@@ -17,8 +17,18 @@ tsconfig.tsbuildinfo
 /public/liblightningjs.wasm
 
 # Bubblewrap regenerates the ENTIRE Android project from android/twa-manifest.json
-# on every `update` and overwrites manual edits, so that one file is the only
-# source here. Everything else — the Gradle skeleton, the built APK, and above
+# on every `update` and overwrites manual edits, so the TWA manifests are the only
+# source here. Everything else — the Gradle skeleton, the built APKs, and above
 # all the signing keystore CI materializes from a secret — stays out of git.
+#
+# There is one manifest per brand. CI copies the brand's file over
+# android/twa-manifest.json before it builds, so that path is both the bitch
+# app's committed source and the scratch file every later step reads.
+#
+# The second pattern is a glob rather than another exact line so a third brand
+# is not silently untracked, and it is deliberately anchored to
+# `twa-manifest-*.json`: it cannot match `android.keystore`, an `.apk`, or
+# anything else in a directory that holds a signing key.
 /android/*
 !/android/twa-manifest.json
+!/android/twa-manifest-*.json

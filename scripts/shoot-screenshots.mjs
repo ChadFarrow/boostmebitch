@@ -5,6 +5,8 @@
 //   node scripts/shoot-screenshots.mjs http://localhost:3000 # against a dev server
 //   node scripts/shoot-screenshots.mjs --manual              # drive it by hand
 //   node scripts/shoot-screenshots.mjs --only 01,03
+//   node scripts/shoot-screenshots.mjs https://www.boostmebuddy.com \
+//     --out public/screenshots/buddy                         # the other brand
 //
 // A generator, not a check:*. It is deliberately NOT in CI: it needs a live
 // site with real Podcast Index results behind it, and which episode looks good
@@ -51,7 +53,16 @@ const manual = flag('--manual');
 const only = value('--only', '').split(',').map((s) => s.trim()).filter(Boolean);
 const query = value('--query', 'Homegrown Hits');
 
-const OUT = 'public/screenshots';
+// ONE DIRECTORY PER BRAND, and the file names inside are identical on purpose.
+// `zapstore.yaml` and `zapstore-buddy.yaml` each name three paths, and a shot
+// carrying the wrong wordmark is the other brand's word on a store listing —
+// the failure lib/brand.ts exists to prevent, arriving through an asset rather
+// than through a string. Separate directories make that a path mistake anyone
+// can see, instead of a picture nobody looks at twice.
+//
+//   node scripts/shoot-screenshots.mjs
+//   node scripts/shoot-screenshots.mjs https://www.boostmebuddy.com --out public/screenshots/buddy
+const OUT = value('--out', 'public/screenshots');
 // A modern phone's logical size, portrait — matching the manifest's
 // `orientation` and the narrow form factor both Zapstore and Chrome's install
 // dialog want. deviceScaleFactor 2 makes the PNGs 824x1830.
