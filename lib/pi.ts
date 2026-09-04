@@ -115,6 +115,17 @@ async function pi<T>(path: string, maxBytes?: number): Promise<T> {
 
 // PI's value object → our ValueBlock
 function normalizeValue(v: any): ValueBlock | null {
+  // Already in OUR shape — pass it through rather than answering null.
+  //
+  // PI's shape is `{ model, destinations }` and ours is `{ type, method,
+  // suggested, recipients }`, so a record that has been through here once has
+  // neither `model` nor `destinations` and the test below would DELETE its
+  // value block. That matters because the read index caches Podcast Index's
+  // raw answer and hands it back to `lib/pi-batch.ts`, which now normalizes
+  // it here; if that cache is ever changed to store normalized records
+  // instead, this branch is what stops the same call silently unvaluing every
+  // feed it touches. Cheap, and the alternative failure is invisible.
+  if (Array.isArray(v?.recipients)) return v as ValueBlock;
   if (!v?.model || !v?.destinations?.length) return null;
   const recipients: ValueRecipient[] = v.destinations.map((d: any) => ({
     name: d.name,
@@ -172,10 +183,37 @@ function buildPodcast(f: any): Podcast {
 // rendered one blank result row, and the RSS-preview fallback in
 // `app/api/search/route.ts` (which only runs on a null) never got its turn.
 // Normalize array/object and require an `id` — every real PI feed carries one.
-function podcastFromPiFeed(f: any): Podcast | null {
+export function podcastFromPiFeed(f: any): Podcast | null {
   const feed = Array.isArray(f) ? f[0] : f;
   if (!feed || feed.id == null) return null;
   return buildPodcast(feed);
+}
+
+/**
+ * A raw Podcast Index EPISODE record → our `Episode`, or null if unusable.
+ *
+ * The counterpart to {@link podcastFromPiFeed}, exported for the same reason:
+ * `services/nostr-index` caches **Podcast Index's raw answer**, and whatever
+ * reads that cache has to normalize it exactly as the direct PI path does.
+ *
+ * **The two paths had drifted, and it was not visible from either side.** The
+ * index stores `d.episode` verbatim and `/pi/episodes` returns it; `lib/
+ * pi-batch.ts` then declared the result `Episode` with a bare generic
+ * parameter, which type-checks and is wrong in every field this builder
+ * derives. `value` is the one that costs money: PI sends
+ * `{ model, destinations }`, `hasValueRecipients` reads `.recipients`, so
+ * every album the index answered for tested as having NO splits.
+ * `valueTimeSplits` (PI calls the field `timesplits`), `transcriptUrl`,
+ * `socialInteract`, `season` and the `image`/`artwork` fallbacks were all
+ * simply absent. None of it reproduces locally, because it needs the index to
+ * be configured AND warm.
+ */
+export function episodeFromPiRecord(e: any): Episode | null {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return null;
+  // Same `id` test `podcastFromPiFeed` makes: every real PI record carries one,
+  // and its absence is how a `{}` or a placeholder is told from an answer.
+  if (e.id == null) return null;
+  return buildEpisode(e);
 }
 
 export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]> {
