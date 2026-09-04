@@ -152,13 +152,14 @@ Recorded so the next session does not re-derive it. Every row is a measured fact
 | The keystore secrets and the Vercel statement are set | Same run: the verify step compared the built certificate against the live statement and passed |
 | Google's parser accepts the statement | `digitalassetlinks.googleapis.com/v1/statements:list` returns one statement for `com.boostmebitch` |
 | The installed TWA works on a device | Pixel 6, 2026-08-21 and 2026-09-03 — Amber sign-in through the callback, "Restore from Nostr" over the clipboard (see [`signers.md`](signers.md)) |
+| The screenshots are current | Re-shot 2026-09-04 against production, 824×1830, matching `public/manifest.json`'s declared `sizes`. The previous set was `ba85d4d`, **2026-08-20** — not 2026-08-29 (#269), which is a playlists PR that never touched them — with 183 commits behind it |
 
 | Not done | Evidence |
 |---|---|
 | No tag, no GitHub release, no Zapstore listing | `git tag` is empty; the releases list is empty; a kind 32267 query for `com.boostmebitch` on `relay.zapstore.dev` returns nothing |
 | The publish step has never executed | Runs 2 and 3 skipped it (`publish=false`); it carried `-y` until 2026-09-04 and would have failed |
 | **`ZAPSTORE_SIGN_WITH` is NOT SET** | `gh secret list` returns three secrets — the two keystore passwords and `ANDROID_KEYSTORE_BASE64`. Secret *values* are unreadable; their *names* are not, and this one is absent. A tag now fails in seconds rather than after the GitHub release exists |
-| Screenshots were stale | Last shot `ba85d4d`, **2026-08-20** — not 2026-08-29 (#269), which is a playlists PR that never touched them. 183 commits landed since |
+| Shot 02's episode thumbnails are blank | Not the capture — the app. Those covers are 9 MB animated GIFs (`episode-149.gif` is 9,055,375 bytes), `/api/art` **502s** on them at every width in `ART_WIDTHS`, and `<PodcastCover>`'s ladder falls through to the raw URL, which never finishes painting. Belongs to [`ui.md`](ui.md), not to this release |
 | Rows 2–7 below have no verdict | No device session has covered NWC after backgrounding, Google sign-in, out-of-scope links, background audio, offline, or cold start |
 | A background publish in the TWA is unmeasured | Favorites and mutes `sign_event` unprompted; NIP-46 over `nostrconnect://` is the primary Amber path since 2026-09-03, which reduces the risk without measuring it |
 
