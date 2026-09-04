@@ -58,6 +58,14 @@ const OUT = 'public/screenshots';
 const VIEWPORT = { width: 412, height: 915 };
 const SCALE = 2;
 
+// Shot 03 only. The amount is typed into the boost modal so the split rows have
+// something to allocate; nothing is ever sent. 1000 divides across a four-way
+// block into numbers a reader can check by eye, which 100 (the minimum) does
+// not. The scroll brings RECIPIENTS into frame — override either when the shot
+// needs a different show, whose block has a different number of payees.
+const BOOST_SATS = value('--sats', '1000');
+const BOOST_SCROLL_PX = Number(value('--boost-scroll', '360'));
+
 const titleRe = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
 
 // NEVER `page.locator('img').first()` ANYWHERE IN THIS FILE. app/layout.tsx
@@ -89,8 +97,18 @@ const boostButton = (page) => page.getByLabel(/Boost this (episode|track)/i).fir
 //     "omegrown Hits" and the row this script looks for never appears.
 //
 // Both then surface as "the results never came back", which reads as a slow
-// site rather than an early script. Polling the value is the only form that is
-// self-verifying: it asserts the app actually accepted the query.
+// site rather than an early script. Polling the value is the closest
+// self-verifying form available at this level: it asserts the box kept what was
+// typed.
+//
+// IT IS NOT SUFFICIENT ON ITS OWN, and the caller is where that is closed. An
+// input that has rendered but not yet hydrated keeps a typed value in the plain
+// DOM, so `inputValue()` reads it back and this loop returns on attempt 0 —
+// then hydration lands, React re-renders from state `''`, and the query is gone
+// having never reached /api/search. Measured against production: the run that
+// returned on attempt 0 found no rows in 30 s, and the run that took until
+// attempt 1 found them in under 12 s. `ensureResults` therefore retries the
+// whole fill against the ROWS rather than trusting one return from here.
 async function fillWhenHydrated(input, text) {
   for (let attempt = 0; attempt < 30; attempt += 1) {
     await input.fill(text);
@@ -107,11 +125,28 @@ async function ensureResults(page) {
   await page.goto(base, { waitUntil: 'domcontentloaded' });
   const search = page.getByPlaceholder(/search podcasts/i);
   await search.waitFor({ timeout: 30_000 });
-  await fillWhenHydrated(search, query);
   // Results resolve through /api/search and then per-podcast metadata. Waiting
   // for the row is what says the search came back; `networkidle` would never
   // fire, because this app keeps relay sockets open.
-  await row.waitFor({ timeout: 30_000 });
+  //
+  // RETRY THE WHOLE FILL, don't just wait longer. A fill that returned before
+  // hydration is not slow, it is lost — the query never reached /api/search, so
+  // no amount of waiting produces a row (see fillWhenHydrated). Clearing the box
+  // between attempts matters: re-filling identical text sets no React state and
+  // fires no search. Four attempts at 15 s costs less than the single 30 s wait
+  // this replaced, and unlike it, an attempt that lost the query recovers.
+  for (let attempt = 1; ; attempt += 1) {
+    await fillWhenHydrated(search, query);
+    try {
+      await row.waitFor({ timeout: 15_000 });
+      break;
+    } catch (e) {
+      if (attempt >= 4) throw e;
+      console.warn(`        the query did not reach /api/search — retyping (attempt ${attempt + 1})`);
+      await search.fill('');
+      await page.waitForTimeout(500);
+    }
+  }
   // Artwork is best-effort on purpose: <PodcastCover> falls back to a
   // colored-initial <div> when every candidate URL fails, so a row can
   // legitimately never hold an <img> and waiting hard for one would strand a
@@ -162,8 +197,25 @@ const shots = [
     async run(page) {
       await ensureEpisodes(page);
       await boostButton(page).click();
-      await page.getByRole('dialog').waitFor({ timeout: 20_000 });
-      await page.waitForTimeout(1500);
+      const dialog = page.getByRole('dialog');
+      await dialog.waitFor({ timeout: 20_000 });
+      // TYPE AN AMOUNT. The empty modal is a worse shot than it looks: the send
+      // button reads "SEND 0 SAT" on a dimmed background and <SplitsPreview>
+      // has nothing to allocate, so the one feature this shot exists to show —
+      // who a boost pays, and how much each of them gets — renders as a list of
+      // zeroes. A number makes splitSats do its largest-remainder pass and the
+      // rows fill in. It is typed, never sent: no wallet is connected here, and
+      // sending is a click this script never makes.
+      const amount = dialog.getByPlaceholder(/enter amount/i);
+      await amount.fill(BOOST_SATS);
+      await page.waitForTimeout(1200);
+      // Then bring the recipients into frame. The modal is taller than a phone
+      // viewport, so the default scroll position cuts RECIPIENTS off mid-row.
+      await amount.evaluate((el, top) => {
+        const scroller = el.closest('[class*="overflow-y"]') ?? el.ownerDocument.scrollingElement;
+        if (scroller) scroller.scrollTop = top;
+      }, BOOST_SCROLL_PX);
+      await page.waitForTimeout(1200);
     },
   },
 ];
