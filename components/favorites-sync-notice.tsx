@@ -50,16 +50,66 @@ import { resetPiBreaker } from '@/lib/podcast-meta';
 // because a successful read of one address had to be prevented from clearing a
 // notice the other's failure had raised.
 
+/** `wss://relay.damus.io` → `relay.damus.io`. The scheme is noise in a list. */
+function host(url: string): string {
+  return url.replace(/^wss?:\/\//, '').replace(/\/$/, '');
+}
+
+/**
+ * The PARTIAL-ACCEPTANCE notice, which is not a failure and must not look like one.
+ *
+ * A publish that reached some relays is an ordinary Nostr outcome — an operator
+ * may refuse on their own write policy, and nothing this app does will change
+ * that. So this is informational, in `muted`, with no ⚠ and no retry: a retry
+ * republishes to the same relays that just declined and would be a control that
+ * cannot work.
+ *
+ * **It renders only when the set is incomplete.** "Saved to 7 of 7" on every
+ * heart-tap is noise, and noise is what makes a warning stop being read.
+ *
+ * Why it earns a line at all: kind:10333 is replaceable, so there is no history
+ * to fall back on, and `assertPublished` enforces a floor of ONE relay. A list
+ * that reached one relay and a list that reached all of them report the same
+ * 'ok' everywhere else in the app. Measured on a real account on 2026-09-03:
+ * three of seven relays held the current event, one held a copy twenty hours
+ * older, two answered and held nothing, and one never answered.
+ */
+function ReachNotice({ accepted, failed }: { accepted: string[]; failed: string[] }) {
+  const total = accepted.length + failed.length;
+  // Nothing to say about a complete publish, and nothing to say about a set of
+  // one — a single-relay publish set is a deliberate choice (a `bmb:relays`
+  // override), not a shortfall.
+  if (!failed.length || total < 2) return null;
+  return (
+    <div
+      role="status"
+      className="text-[11px] text-muted border border-line px-2 py-1.5 mb-2"
+    >
+      <span>
+        Saved to {accepted.length} of {total} relays. {failed.map(host).join(', ')} did
+        not take it. Your list is stored, and a relay may refuse on its own
+        policy. Take a ⇩ BACKUP if you want a copy that does not depend on one.
+      </span>
+    </div>
+  );
+}
+
 export function FavoritesSyncNotice() {
   const identity = useApp((s) => s.identity);
   const degraded = useApp((s) => s.favoritesSync === 'degraded');
   const reason = useApp((s) => s.favoritesSyncReason);
+  const reach = useApp((s) => s.favoritesReach);
   const [retrying, setRetrying] = useState(false);
 
   // 'idle' is NOT a failure — it is the pre-hydration and signed-out state, and
   // treating it as one would show a relay warning to every visitor before
   // anything had even been attempted.
-  if (!identity || !degraded) return null;
+  if (!identity) return null;
+  // The reach line stands alone when there is no fault to report. It is NOT
+  // shown beside the degraded notice: that one says "we did not write", and a
+  // count of where an earlier publish landed underneath it reads as a
+  // contradiction of the sentence above it.
+  if (!degraded) return reach ? <ReachNotice {...reach} /> : null;
 
   // Two reasons, one control. 'private-withheld' is the hydrator saying it did
   // not ASK — the signer lives outside the browser and would have shown the

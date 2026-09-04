@@ -25,16 +25,27 @@
  * trusted produces NO file. See `backupRefusal`.
  */
 import { verifyEvent, type Event } from 'nostr-tools';
-import { BRAND } from '@/lib/brand';
-import type { FavoritesPrivacy } from '@/lib/nostr/favorites-list';
 
 export interface BackupReadState {
   /** The relay read may be believed. See `readIsTrustworthy`. */
   trustworthy: boolean;
   /** An event was found. */
   exists: boolean;
-  /** Where this account's favorites go. `null` means never chosen. */
-  mode: FavoritesPrivacy | null;
+  /**
+   * Where this account's favorites go. `null` means never chosen.
+   *
+   * Spelled out rather than imported as `FavoritesPrivacy`. An aliased
+   * import is what stops this file loading under
+   * `node --experimental-strip-types`, and `scripts/import-free.mjs` rejects
+   * a TYPE-only one too, on the reasoning CLAUDE.md gives: type-stripping
+   * erases it, so it passes every check while leaving the module one `type`
+   * deletion away from an unloadable import. Drift is not silent —
+   * `<DownloadFavorites>` hands this `storage.favPrivacy.get(...)`, which is
+   * typed `FavoritesPrivacy | null`, so a fourth mode fails `npm run
+   * typecheck` at that call site. `check:favbackup` also reads the union out
+   * of `favorites-list.ts` by text and asserts the two still agree.
+   */
+  mode: 'public' | 'private' | 'off' | null;
 }
 
 /**
@@ -97,11 +108,19 @@ export function serializeFavoritesBackup(event: Event): string {
  *  - The first 8 of the event id disambiguate two lists written on one day,
  *    and let a file be matched against a relay without opening it.
  *
- * The site name is the first label of `BRAND.domain`, so the two deploys write
- * distinguishable files and neither hard-codes the other's word.
+ * The site name is the first label of the deploy's own domain, so the two
+ * deploys write distinguishable files and neither hard-codes the other's word.
+ *
+ * **`domain` is a parameter rather than a read of `BRAND`, and the reason is
+ * the check script.** A `check:*` runs the SHIPPING module under
+ * `node --experimental-strip-types`, which resolves no `@/` alias — so one
+ * value import through the alias makes this whole file unloadable and
+ * `check:favbackup` dies at startup with `ERR_MODULE_NOT_FOUND`, exactly as
+ * CLAUDE.md records for `lib/util.ts`. The caller passes `BRAND.domain`; the
+ * rule that turns a domain into a filename stays here, where it is pinned.
  */
-export function favoritesBackupFilename(event: Event): string {
-  const site = BRAND.domain.split('.')[0];
+export function favoritesBackupFilename(event: Event, domain: string): string {
+  const site = domain.split('.')[0];
   const d = new Date(event.created_at * 1000);
   const pad = (n: number) => String(n).padStart(2, '0');
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -118,9 +137,23 @@ export function favoritesBackupFilename(event: Event): string {
  * that way in the file. The second matters because a private list looks EMPTY
  * in a raw event: its entries are ciphertext in `content` and the tag list is
  * short or bare.
+ *
+ * **`entryCount` is passed in because counting `i` tags HERE was wrong.** This
+ * read `event.tags.filter((t) => t[0] === 'i').length`, and in this wire format
+ * an `i` tag is either a favorite or a **placement group** — a parent feed
+ * opened only because a track under it was favorited. So the sentence
+ * overstated the file, by 161 on the account `lib/favorites-audit.ts` was
+ * built against: 217 tags over 56 albums. A count the user cannot reconcile
+ * with the `N SAVED` on the same page is worse than no count, because the one
+ * thing a backup has to be is believable.
+ *
+ * `favoriteIds(parseFavoritesList(event.tags)).length` is the number, and
+ * `⇧ RESTORE FROM BACKUP` already computed it that way. Taking it as an
+ * argument is also what keeps this file loadable under plain Node — see
+ * `favoritesBackupFilename`.
  */
-export function backupSummary(event: Event): string {
-  const entries = event.tags.filter((t) => t[0] === 'i').length;
+export function backupSummary(event: Event, entryCount: number): string {
+  const entries = entryCount;
   const noun = entries === 1 ? 'entry' : 'entries';
   const encrypted = event.content.length > 0;
   const base = `saved ${entries} public ${noun}`;

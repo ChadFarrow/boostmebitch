@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { clearShowSelection, useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
+import { BRAND } from '@/lib/brand';
 import {
   backupRefusal, backupSummary, favoritesBackupFilename, parseFavoritesBackup,
   serializeFavoritesBackup,
@@ -484,13 +485,26 @@ export function FavoritesPage() {
 }
 
 /**
- * The two controls that ask the RELAYS something, on one row.
+ * The four controls that ask the RELAYS something, on one row.
  *
  * They are siblings rather than one widget because they answer different
- * questions and cost different things: one writes a file from a plain read,
- * the other spends a signer prompt to open the encrypted half. Sharing a row
- * is what says they are about the same subject — the list as stored, not the
- * list as painted.
+ * questions and cost different things: `⇩ BACKUP` writes a file from a plain
+ * read, `⌕ CHECK PRIVATE HALF` spends a signer prompt to open the encrypted
+ * half, `⇄ MERGE ENCRYPTED HALF IN` repairs a list stuck in both halves, and
+ * `⇧ RESTORE FROM BACKUP` puts a file back. Sharing a row is what says they
+ * are about the same subject — the list as stored, not the list as painted.
+ *
+ * **The middle two were deleted on 2026-09-03 as clutter and restored the same
+ * night, and the reason is the strongest argument they have.** Within hours the
+ * reference account reached the both-halves state again — 451 public `i` tags
+ * beside 38,320 characters of ciphertext — on a fresh device whose baseline
+ * claimed nothing, which is the copy-instead-of-move route this file's own
+ * comments describe. With them gone there was no way to see that had happened
+ * and no way to undo it: the ordinary Public sync only empties `content` for
+ * entries the baseline CLAIMS, and nothing else writes that claim. A restore
+ * cannot substitute, because `parseFavoritesBackup` verifies the signature and
+ * so refuses a hand-made file. **Do not delete them again without a replacement
+ * for both halves of that job — seeing the state, and clearing it.**
  */
 function RelayTools() {
   const identity = useApp((s) => s.identity);
@@ -1154,7 +1168,7 @@ function DownloadFavorites() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = favoritesBackupFilename(read.event);
+      a.download = favoritesBackupFilename(read.event, BRAND.domain);
       // In the document before the click: Firefox ignores a click on a
       // detached anchor, so the download silently never starts.
       document.body.appendChild(a);
@@ -1164,7 +1178,10 @@ function DownloadFavorites() {
       // cancel a download that has not yet been handed to the browser. It
       // touches no React state, so an unmount in between is harmless.
       setTimeout(() => URL.revokeObjectURL(url), 0);
-      setMsg({ tone: 'ok', text: backupSummary(read.event) });
+      // The COUNT, not the tag total: an `i` tag is a favorite or a
+      // placement group, and `⇧ RESTORE FROM BACKUP` reads it the same way.
+      const count = favoriteIds(parseFavoritesList(read.event.tags)).length;
+      setMsg({ tone: 'ok', text: backupSummary(read.event, count) });
     } catch (e) {
       setMsg({ tone: 'no', text: getErrorMessage(e, 'the relay read failed') });
     } finally {

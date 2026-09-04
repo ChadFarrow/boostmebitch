@@ -304,6 +304,21 @@ export interface SyncOptions {
    * free of React and browser globals.
    */
   onDegraded?: (reason: PublishReason) => void;
+  /**
+   * Which relays took the publish, and which refused. Called ONLY after an
+   * event actually landed.
+   *
+   * `assertPublished` enforces a floor of one relay and says nothing about the
+   * rest, so partial acceptance — a relay refusing on its own write policy —
+   * is invisible from every other signal this module emits. On kind:10333 that
+   * matters more than on any other event here: it is replaceable, so there is
+   * no history, and a list that reached one relay is one operator away from
+   * being whatever older copy the next relay happens to hold.
+   *
+   * Injected rather than read from the store, for the reason `onDegraded`
+   * gives: this module stays free of React and browser globals.
+   */
+  onReach?: (reach: { accepted: string[]; failed: string[] }) => void;
 
   // -- the private half -----------------------------------------------------
 
@@ -633,6 +648,16 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     // `local` will keep asserting these ids, and it may only be made about an
     // event that actually landed.
     opts.onSynced(plan.baseline);
+    // WHERE it landed, which `assertPublished` deliberately does not ask. It
+    // enforces a floor of one relay and returns the same note for one as for
+    // all of them, so without this a list sitting on a single relay reports
+    // exactly what a fully replicated one reports. Reported only on a publish
+    // that happened: every `return null` above leaves it untouched, because a
+    // cycle that withheld has nothing to say about relay reach.
+    opts.onReach?.({
+      accepted: published.acceptedRelays,
+      failed: published.failedRelays,
+    });
     return published;
   } catch (e) {
     // Only the reached-nobody case is a relay problem. A signing rejection is
