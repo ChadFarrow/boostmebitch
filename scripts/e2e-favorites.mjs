@@ -213,6 +213,25 @@ async function chooseMode(label) {
 }
 const check = (l, a, b) => { const ok = JSON.stringify(a) === JSON.stringify(b); console.log(`  ${ok ? 'ok   ' : 'FAIL '} ${l}`); if (!ok) { fails++; console.log('        expected', JSON.stringify(b), '\n        actual  ', JSON.stringify(a)); } };
 
+// Is the private-half control on screen, and what does its panel say?
+//
+// It is gated on `favoritesPrivateHalf`, which the HYDRATOR writes off
+// `content` being non-empty — no decrypt, no signer prompt. That wiring spans
+// three modules (store, hydrator, component) and no `check:*` can see it: a
+// pure-function pin sees one function, and the failure here is a control that
+// is simply absent from a page that renders correctly in every other respect.
+const privateTool = () => js(`(() => {
+  const b = [...document.querySelectorAll('button')]
+    .find((x) => x.textContent.trim().includes('check private favorites'));
+  return JSON.stringify({ present: !!b, panel: b ? (b.parentElement?.innerText ?? '') : '' });
+})()`).then(JSON.parse);
+const pressPrivateTool = () => js(`(() => {
+  const b = [...document.querySelectorAll('button')]
+    .find((x) => x.textContent.trim().includes('check private favorites'));
+  if (b) b.click();
+  return !!b;
+})()`);
+
 await send('Page.navigate', { url: APP }); await wait(2500);
 await js(`(() => { localStorage.clear();
   localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`, `ws://127.0.0.1:${PORT + 1}`]))});
@@ -238,6 +257,12 @@ check('a kind:10333 reached the relay', !!last, true);
 check('the entries are PUBLIC tags', last?.tags.filter((t) => t[0] === 'i').length, 2);
 check('and `content` is empty', last?.content, '');
 
+// An account with no encrypted half must not be shown the control that
+// repairs one. This is the whole clutter fix, and it is asserted against the
+// state the app is genuinely in rather than a seeded flag.
+check('with no private half, the private-half control is hidden',
+  (await privateTool()).present, false);
+
 console.log('\n--- 2. SWITCH TO PRIVATE: the entries move ---');
 const before = published.length;
 check('the control shows Public as chosen before the switch',
@@ -262,6 +287,22 @@ check('the album is in it', tags.some((t) => t[1] === 'podcast:guid:fce40d63-ef3
 check('the "?"-bearing track guid survived intact',
   tags.some((t) => t[1] === 'podcast:item:guid:https://example.com/ep?id=42&utm=x'), true);
 check('and the plaintext we signed carried no raw "?"', plain.includes('?'), false);
+
+// The mirror image, and the one that matters: the moment a private half
+// exists, the control comes back by itself. A gate that only ever hides is
+// indistinguishable from a deleted feature.
+console.log('\n--- 2c. THE PRIVATE-HALF CONTROL APPEARS, AND REFUSES TO MERGE IN PRIVATE MODE ---');
+check('with a private half, the control is on screen', (await privateTool()).present, true);
+await pressPrivateTool();
+await wait(9000);
+const toolPanel = (await privateTool()).panel;
+check('it reports the halves', /Private: \d+ favorite/.test(toolPanel), true);
+// In Private mode the merge would put everything back INTO the encrypted half,
+// so the button whose label promises the opposite must not be offered.
+check('and offers no move button in Private mode',
+  toolPanel.toLowerCase().includes('move them into my public list'), false);
+check('it says why instead', toolPanel.includes('set to Private'), true);
+
 
 
 // ---- the partial-acceptance notice ---------------------------------------
@@ -381,6 +422,7 @@ check('and no degraded notice is up', ad.notice, false);
 // The adoption is RENDER-ONLY. Publishing an empty local list over a full relay
 // list is the wipe this guard exists for, and it stays refused.
 check('and it published NOTHING while adopting', published.length, beforeAdopt);
+
 
 console.log('\n--- publish timeline ---');
 published.forEach((e, i) => {
