@@ -909,6 +909,16 @@ export function EpisodeList({
                   )}
                   {e.duration && <span className="whitespace-nowrap">· {fmtDuration(e.duration)}</span>}
                   {e.value && <span className="text-bolt whitespace-nowrap">· ⚡ V4V</span>}
+                  {/* The curator's `<podcast:txt purpose="playcount">` marker.
+                      Per ROW rather than as a heading like `playlistGroup`: the
+                      Greatest Hits list runs to 1,800 tracks and its bottom
+                      group ("2 plays") is 800 rows long, so a heading is off
+                      screen for almost every row it describes. */}
+                  {e.playlistPlays && (
+                    <span className="whitespace-nowrap">
+                      · {e.playlistPlays} {e.playlistPlays === 1 ? 'play' : 'plays'}
+                    </span>
+                  )}
                 </div>
                 {/* These were bare inline <span>s carrying `mt-0.5`, which does
                     nothing on a non-replaced inline element, and they abutted

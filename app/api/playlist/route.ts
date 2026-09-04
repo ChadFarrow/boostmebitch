@@ -208,7 +208,7 @@ export async function GET(req: Request) {
 
       }
       const ep = resolved[key];
-      if (ep) episodes.push(ref.episode ? { ...ep, playlistGroup: ref.episode } : ep);
+      if (ep) episodes.push(withMarkers(ep, ref));
       else {
         notFound++;
         episodes.push(placeholder(ref, podcast.id, 'not-found'));
@@ -333,5 +333,22 @@ function placeholder(
     // Carried even here, so an unresolved row keeps its place under the right
     // heading instead of silently moving the episode boundary.
     playlistGroup: ref.episode,
+    playlistPlays: ref.plays,
   };
+}
+
+/**
+ * A resolved row plus what the playlist document said ABOVE it — the episode
+ * caption and the play count. Both come from the curator's markers, never from
+ * Podcast Index or the database, which know nothing about this list. One
+ * function for the two so a third marker kind is added in one place; the
+ * database path (`lib/playlist-db.ts`) hands the same two fields to
+ * `dbRowToEpisode` and must stay in step with it.
+ */
+function withMarkers(ep: Episode, ref: PlaylistItemRef): Episode {
+  if (!ref.episode && !ref.plays) return ep;
+  const out = { ...ep };
+  if (ref.episode) out.playlistGroup = ref.episode;
+  if (ref.plays) out.playlistPlays = ref.plays;
+  return out;
 }

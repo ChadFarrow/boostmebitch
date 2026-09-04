@@ -226,7 +226,8 @@ export interface Episode {
    * playlist, when the feed published one. A HEADING, not an identifier: it is
    * free text the playlist author wrote, it is not unique, and nothing may key
    * off it. Absent on every non-playlist row, and on playlists that publish no
-   * markers (the Greatest Hits and LocalBitcoiners lists publish none).
+   * markers (the LocalBitcoiners list publishes none; Greatest Hits publishes
+   * play counts instead — see `playlistPlays`).
    *
    * It rides on the row rather than in a separate groups array so that a page
    * appended by "load more" carries its own captions — the heading logic is then
@@ -234,6 +235,15 @@ export interface Episode {
    * extra state to keep in sync.
    */
   playlistGroup?: string;
+  /**
+   * The `<podcast:txt purpose="playcount">` marker this row sat under in a
+   * playlist — how many times the curator's shows played the track. The
+   * Greatest Hits list is ordered by it, and every row prints it. A number
+   * parsed off the marker, never its text (`PlaylistItemRef.plays`); absent on
+   * every non-playlist row and on playlists that publish no such marker. Rides
+   * on the row for the same "load more" reason `playlistGroup` does.
+   */
+  playlistPlays?: number;
   /** Podcast 2.0 <podcast:liveItem> status. Set on items returned by PI's
    *  /episodes/live endpoint. We filter out 'ended' upstream, so only
    *  'live' and 'pending' should ever reach the client. */

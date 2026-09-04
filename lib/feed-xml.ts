@@ -214,6 +214,16 @@ export interface PlaylistItemRef {
    * identifier, and never a key.
    */
   episode?: string;
+  /**
+   * The `<podcast:txt purpose="playcount">` marker this track sat under, as a
+   * number of plays. The Greatest Hits playlist is "organized by play count":
+   * it writes `24 plays` above the run of tracks played 24 times, then
+   * `21 plays`, and so on down to `2 plays`. A NUMBER, not the marker's text:
+   * the row prints it, so free text is never carried, and a marker with no
+   * leading integer stamps nothing. Independent of `episode` — one marker kind
+   * never clears the other.
+   */
+  plays?: number;
 }
 
 /**
@@ -222,6 +232,22 @@ export interface PlaylistItemRef {
  * pathological feed pushing a novel into the list.
  */
 const MAX_PLAYLIST_EPISODE_LEN = 200;
+
+/**
+ * The number a `<podcast:txt purpose="playcount">` marker carries, or undefined.
+ *
+ * The live marker is `24 plays`; a bare `24` is accepted too. Only a LEADING
+ * run of digits counts, so `plays: 24` is not read as 24 and `0 plays` is not
+ * a count — a track on a most-played list with zero plays is a data error, and
+ * printing it would state the error as a fact. Nine digits is far above any
+ * real count and keeps the number a safe integer.
+ */
+function parsePlayCount(text: string): number | undefined {
+  const m = /^(\d{1,9})(?!\d)/.exec(text);
+  if (!m) return undefined;
+  const n = Number(m[1]);
+  return n > 0 ? n : undefined;
+}
 
 /**
  * A `<podcast:podroll>` block, whose remoteItems are NOT playlist tracks.
@@ -302,7 +328,10 @@ const MAX_ITEM_GUID_LEN = 2048;
  * alone would return somebody's Twitter handle as a feed URL.
  *
  * Returns the first one, or undefined. Never throws — a playlist without a
- * marker is ordinary (three in the collection publish none at all).
+ * marker is ordinary. (The Greatest Hits list's marker names the GitHub repo
+ * rather than a feed, so `getFeedTitle` answers null for it and no heading
+ * renders — it publishes `purpose="playcount"` markers instead, see
+ * `parsePlaylistRemoteItems`.)
  */
 export function parsePlaylistSourceFeed(channelXml: string): string | undefined {
   const re = /<podcast:txt\b([^>]*)>([\s\S]*?)<\/podcast:txt>/gi;
@@ -333,6 +362,7 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
   // marker's only claim on a track is that it appears above it.
   const re = /<podcast:txt\b([^>]*)>([\s\S]*?)<\/podcast:txt>|<podcast:remoteItem\b([^>]*?)\/?>/gi;
   let episode: string | undefined;
+  let plays: number | undefined;
   let m: RegExpExecArray | null;
   while ((m = re.exec(scoped))) {
     if (m[1] !== undefined) {
@@ -340,9 +370,20 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
       // `purpose="source-feed"`, and others carry platform verification tokens
       // and npubs (see NOSTR_TXT_PURPOSES). An unqualified one is not a caption,
       // so the purpose is READ, through `readAttr` like every other attribute.
-      if (readAttr(m[1], 'purpose')?.toLowerCase() !== 'episode') continue;
+      const purpose = readAttr(m[1], 'purpose')?.toLowerCase();
+      if (purpose !== 'episode' && purpose !== 'playcount') continue;
       const raw = m[2].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
-      const label = decodeXmlText(raw).trim().slice(0, MAX_PLAYLIST_EPISODE_LEN);
+      const text = decodeXmlText(raw).trim();
+      if (purpose === 'playcount') {
+        // Two INDEPENDENT states: a play-count marker never clears an episode
+        // caption and an episode marker never clears a count. A marker that
+        // carries no number clears the count, for the same reason an empty
+        // caption clears the group — carrying the previous run's number onto
+        // this one would state a count the curator did not write.
+        plays = parsePlayCount(text);
+        continue;
+      }
+      const label = text.slice(0, MAX_PLAYLIST_EPISODE_LEN);
       // An EMPTY caption clears the group rather than captioning the rest of the
       // playlist with a blank heading.
       episode = label || undefined;
@@ -358,7 +399,10 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
     // the reader will look for it.
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push(episode ? { feedGuid, itemGuid, episode } : { feedGuid, itemGuid });
+    const ref: PlaylistItemRef = { feedGuid, itemGuid };
+    if (episode) ref.episode = episode;
+    if (plays) ref.plays = plays;
+    out.push(ref);
     if (out.length >= MAX_PLAYLIST_REFS) break;
   }
   return out;
