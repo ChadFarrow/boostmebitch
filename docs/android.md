@@ -88,6 +88,18 @@ Bubblewrap regenerates the entire Gradle project from this file on every `update
 
 **`--skipPwaValidation` has a repo-specific reason, not a lazy one.** Bubblewrap's Quality Criteria check evaluates offline support, and `public/sw.js` deliberately precaches nothing (see [`ui.md`](ui.md) and the file's own comment). Validation would fail on a property this app has consciously chosen.
 
+**`zsp` runs on EVERY run, keyless, against the APK that was just built — and that step exists because the publish step shipped with a flag zsp does not have.** `zsp publish -y zapstore.yaml` was the published form, in this file and in the workflow, and zsp v0.4.9 rejects it: `flag provided but not defined: -y`. Nothing before a real tag push would ever have executed it, so the first tag would have built, verified, created the GitHub release, and failed on the last step — with the release half-published. The CI form is `--quiet` (no prompts, no spinners, auto-confirm); `-y` was never a zsp flag. The dry-run step is runbook step 5 moved into CI: `zsp publish --check zapstore.yaml` validates the config and proves `release_source` is a parseable APK, then `SIGN_WITH=<the npub zapstore.yaml declares> zsp publish --quiet --offline zapstore.yaml` builds the three events unsigned to stdout — every image path, the CHANGELOG section for this version, the icon download and zsp's own pubkey-mismatch check, none of which `--check` reaches. An `npub` in `SIGN_WITH` cannot sign, and `--offline` uploads and publishes nothing, so the step needs no secret and sends nothing.
+
+**WHO publishes to Zapstore is DECLARED by the repository variable `ZAPSTORE_PUBLISH_MODE`, and it defaults to `local`.** `local` means CI stops after the GitHub release and prints the zsp commands in the run summary; a human runs them with `SIGN_WITH=browser`, so the publishing key never enters GitHub. `ci` means the workflow publishes and `ZAPSTORE_SIGN_WITH` must hold the key — and a tag in that mode with the secret missing **fails early**, before the keystore is materialized and before `gh release create` runs.
+
+**The reason it is a declared mode and not a test of whether the secret exists** is worth keeping, because the obvious version shipped in this file first. That version failed any tag with no `ZAPSTORE_SIGN_WITH`, arguing from CLAUDE.md's *a guard that silently withholds must say so* — a green run that created the GitHub release and left Zapstore empty. The rule was right and the test was wrong: under `local`, an absent secret is the **normal** state, so the guard fired on every tag this repository ever intends to push. Keying it on the mode keeps the loud failure where it belongs and turns `local` into an announcement rather than a silence.
+
+**`zsp` is pinned at `v0.4.17`, and the bump off `v0.4.9` was forced by one thing: `v0.4.9` cannot read a Java keystore.** `internal/identity/x509.go` returns `ErrJKSFormat` the moment it sees the JKS magic bytes, so `zsp identity --link-key <the release .jks>` — step 7 below, the only way to prove the signing certificate belongs to the publishing npub — could not run at all at the version this workflow pinned. `v0.4.17` loads a JKS directly and adds `--key-alias` for it.
+
+Three things were read out of `v0.4.17`'s source before the bump, because the dry-run step depends on all of them: `--quiet`, `--offline` and `--check` are still defined in `internal/cli/options.go`; `outputOffline` still writes one JSON event per line to stdout; and `internal/config/config.go` is purely additive since `v0.4.9`, so `zapstore.yaml` still parses. Two behaviours changed and neither reaches us — `metadata_sources` now prefers Fastlane metadata on a GitHub repository, which `zapstore.yaml` overrides by naming `github` explicitly, and images are now compressed on upload (icon ≤512px, screenshots ≤1440px wide). Ours are 512×512 and 824×1830, so nothing downscales and `--no-compress` is not needed.
+
+**A further bump is a decision, not housekeeping:** run the workflow by `workflow_dispatch` with the new pin and read the dry-run step's output before a tag depends on it.
+
 **The step that earns the workflow is `Verify the origin will accept this certificate`.** It reads the SHA-256 out of the APK that was just built and fails the release unless the **live** statement list names that package and that fingerprint. It compares against the deployed route rather than a repo variable because a variable is a second copy that drifts — this one check catches "the Vercel env var was never set", "the key was rotated but the env wasn't" and "Vercel hasn't redeployed yet" identically. All three are otherwise invisible until someone installs the APK on a phone and sees a URL bar. The APK is uploaded as an artifact *before* that check runs, so a failure costs a re-run and not the build, and the message prints the exact string to paste into `ANDROID_CERT_SHA256`. On the very first release it will fail by design, because the fingerprint cannot exist until the keystore does.
 
 ## First release — what a human has to do
@@ -100,8 +112,9 @@ None of this can live in the repository.
      -alias boostmebitch -keyalg RSA -keysize 4096 -validity 10000
    ```
    **CAUTION: losing this file means never updating the app again** — not on Zapstore, not anywhere. Zapstore identifies an app by package name *and* signing certificate, so a replacement key is a different app.
-2. **Add the repository secrets:** `ANDROID_KEYSTORE_BASE64` (`base64 -w0 boostmebitch-release.jks`), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, and `ZAPSTORE_SIGN_WITH` (an `nsec1…` or a `bunker://…` URL). The key alias is not a secret and lives in `twa-manifest.json`.
-   **CAUTION: `ZAPSTORE_SIGN_WITH` becomes the app's publisher identity on Zapstore permanently.** It is not a fresh decision — `zapstore.yaml` declares `pubkey: npub177fz…`, the same publisher StableKraft uses, so both apps sit under one identity. Use the key for that npub; a bunker URL is the safer form. Because the pubkey is declared in the file, a mismatched signing key is caught rather than quietly publishing under a second identity.
+2. **Add the repository secrets:** `ANDROID_KEYSTORE_BASE64` (`base64 -w0 boostmebitch-release.jks`), `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_PASSWORD`. The key alias is not a secret and lives in `twa-manifest.json`.
+   **`ZAPSTORE_SIGN_WITH` is deliberately NOT in that list.** This repository publishes to Zapstore in mode `local` (see below), so the publishing key never enters GitHub at all.
+   **CAUTION: whichever key first publishes becomes the app's publisher identity on Zapstore permanently.** It is not a fresh decision — `zapstore.yaml` declares `pubkey: npub177fz…`, the same publisher StableKraft uses, so both apps sit under one identity. Because the pubkey is declared in the file, a mismatched signing key is caught rather than quietly publishing under a second identity.
 3. **Print the fingerprint** and set the Vercel production environment:
    ```bash
    keytool -list -v -keystore boostmebitch-release.jks -alias boostmebitch | grep SHA256
@@ -114,13 +127,57 @@ None of this can live in the repository.
    ```
    The last one is Google's own parser and reports a `debugString` on failure.
 4. **Re-capture the screenshots if the UI has moved** (`node scripts/shoot-screenshots.mjs`) and commit them. `images:` in `zapstore.yaml` already names the three paths, so a renamed or missing file fails the publish rather than dropping an image — re-shoot and re-commit together. Use `--manual` when a shot needs a specific show; the boost modal in particular shows whatever wallet state the test browser is in.
-5. **Dry-run zsp** before the first real publish, and read the output as a Zapstore user would:
+5. **Dry-run zsp** before the first real publish, and read the output as a Zapstore user would. CI now runs the first two on every workflow run (see "The release path"), so a `workflow_dispatch` on `main` is the same check without a local Go toolchain:
    ```bash
    zsp publish --check zapstore.yaml
-   SIGN_WITH=npub1… zsp publish -y zapstore.yaml    # unsigned events, nothing sent
-   zsp apk --extract android/app-release-signed.apk # the permission list zsp will publish
+   SIGN_WITH=npub1… zsp publish --quiet --offline zapstore.yaml   # unsigned events to stdout, nothing sent
+   zsp apk --extract android/app-release-signed.apk               # the permission list zsp will publish
    ```
-6. **Tag it:** `git tag v0.1.0 && git push origin v0.1.0`.
+   `--quiet` is the CI mode. **`-y` is not a zsp flag at any version** and zsp rejects it; this runbook and the workflow both carried it until 2026-09-04.
+6. **Tag it:** `git tag v0.1.0 && git push origin v0.1.0`. Push the tag from `main` only, and `concurrency` never cancels the run. Under the default mode `local` that run builds, signs, verifies the origin, dry-runs zsp and creates the **GitHub** release — then stops, and prints the commands below in its summary. Nothing reaches Zapstore until a human runs them.
+6.5. **Publish to Zapstore, from the machine that holds the keystore.** `SIGN_WITH=browser` starts a local NIP-07 signer and opens a browser to sign each event, which is how the sibling app releases and why no key is in GitHub:
+   ```bash
+   curl -fL -o ~/bin/zsp https://github.com/zapstore/zsp/releases/download/v0.4.17/zsp-0.4.17-linux-amd64
+   chmod +x ~/bin/zsp                                    # no Go toolchain needed
+   gh release download v0.1.0 -p 'app-release-signed.apk' -O android/app-release-signed.apk --clobber
+   SIGN_WITH=browser zsp publish zapstore.yaml
+   ```
+   Do **not** pass `--quiet` here: it auto-confirms, which is the opposite of what a browser signer is for. `release_source` names that local path, so the download has to land exactly there.
+7. **Link the signing certificate to the publisher identity, once, by hand.** zsp checks the relays for a kind 30509 identity proof before publishing and, in `--quiet` mode, treats a missing one as a warning rather than a prompt — so the first CI publish goes out unlinked, and Zapstore cannot show that the key that signed the APK belongs to the npub that published it. The proof needs the keystore, which CI deliberately deletes, so this is a local step:
+   ```bash
+   SIGN_WITH=browser zsp identity --link-key ~/keystores/boostmebitch-release.jks \
+     --key-alias boostmebitch                                 # default expiry 1y
+   zsp identity --verify android/app-release-signed.apk
+   ```
+   Under mode `local` this is no longer an easily-forgotten follow-up: it runs in the same session as step 6.5, on the same machine, with the keystore already in reach.
+   **CAUTION: this step needs `v0.4.17` or later, and the workflow pinned `v0.4.9` until 2026-09-04.** At `v0.4.9` a `.jks` is rejected on its magic bytes before anything reads it, so the command above could not run at all — converting the keystore to PKCS12 was the only route. `--key-alias` names the private-key entry (ours is `boostmebitch`, from `twa-manifest.json`); zsp needs it only when a keystore holds more than one, and passing it costs nothing. The proof expires after one year by default, so it recurs.
+8. **Confirm it landed** from the relay rather than from the run log — a green publish step proves zsp exited 0, not that `relay.zapstore.dev` holds the events. Query kind `32267` with `#d = ["com.boostmebitch"]` and kind `30063` referencing it (`nak req -k 32267 -d com.boostmebitch wss://relay.zapstore.dev`), or open the listing at zapstore.dev.
+
+## Where the first release stands — 2026-09-04
+
+Recorded so the next session does not re-derive it. Every row is a measured fact, not a reading of the code.
+
+| Done | Evidence |
+|---|---|
+| The workflow builds and signs the APK | Run 3 (`32547100056`, 2026-08-22, `main`): every step green through `Verify the origin will accept this certificate` |
+| The keystore secrets and the Vercel statement are set | Same run: the verify step compared the built certificate against the live statement and passed |
+| Google's parser accepts the statement | `digitalassetlinks.googleapis.com/v1/statements:list` returns one statement for `com.boostmebitch` |
+| The installed TWA works on a device | Pixel 6, 2026-08-21 and 2026-09-03 — Amber sign-in through the callback, "Restore from Nostr" over the clipboard (see [`signers.md`](signers.md)) |
+| **The device is GrapheneOS with NO Chrome, and the TWA verifies anyway** | Pixel 6, Android 17, build `2026081301`, 2026-09-04. Installed browsers are Vanadium, Brave, Firefox and Tor; `com.android.chrome` is absent and no default browser is set. The TWA binds to **`com.brave.browser/…CustomTabActivity`** and renders with **no URL bar**, so Digital Asset Links verification works on a non-Chrome Chromium. Every device verdict in this file was measured on that phone — read them as "GrapheneOS + Brave", not "stock Chrome" |
+| **A background favorites publish reaches the relays, and loses nothing** | 2026-09-04, against a list with 449 `i` tags. Add: 0 tags removed, 1 added, all 455 preserved in order. Remove: restored byte-identical to the baseline. Full method in "Risks a TWA has to survive", row 1 |
+| The screenshots are current | Re-shot 2026-09-04 against production, 824×1830, matching `public/manifest.json`'s declared `sizes`. The previous set was `ba85d4d`, **2026-08-20** — not 2026-08-29 (#269), which is a playlists PR that never touched them — with 183 commits behind it |
+| **zsp reaches the events, at the pinned version** | Run `33904270967` (2026-09-04, the PR branch): `zsp publish --check` printed `{"package_id":"com.boostmebitch"}`, and `--quiet --offline` built **3 unsigned events** for `npub177fz…` at `v0.4.17` — the 32267, 30063 and 3063 — with nothing uploaded. So the config parses, every image path resolves, the CHANGELOG has a `0.1.0` section, the icon downloads and the declared pubkey passes zsp's mismatch check |
+| The guard skips a build-only run | Same run: `Refuse a publish run with no Zapstore identity` is `skipped`, `publish=false`. It must never block a `workflow_dispatch` on a branch, and it does not |
+
+| Not done | Evidence |
+|---|---|
+| No tag, no GitHub release, no Zapstore listing | `git tag` is empty; the releases list is empty; a kind 32267 query for `com.boostmebitch` on `relay.zapstore.dev` returns nothing |
+| The publish step has never executed | Runs 2, 3 and `33904270967` all skipped it (`publish=false`); it carried `-y` until 2026-09-04 and would have failed. Everything up to it is now exercised, so the only unrun code on a tag is `zsp publish --quiet` itself and the `gh release` step above it |
+| The Zapstore publish itself has never been run | Mode is `local`, so it is a human step and always was going to be. `SIGN_WITH=browser` is proven for the sibling app and unproven here |
+| Shot 02's episode thumbnails are blank | Not the capture — the app. Those covers are 9 MB animated GIFs (`episode-149.gif` is 9,055,375 bytes), `/api/art` **502s** on them at every width in `ART_WIDTHS`, and `<PodcastCover>`'s ladder falls through to the raw URL, which never finishes painting. Belongs to [`ui.md`](ui.md), not to this release |
+| Rows 2–7 below have no verdict | No device session has covered NWC after backgrounding, Google sign-in, out-of-scope links, background audio, offline, or cold start |
+| The MUTES half is still unmeasured | Favorites are now measured (above). The kind:10000 private half is not: it is deliberately left unread on load under Amber, so its publish path has never been driven on a device |
+| Every device verdict rests on ONE phone, and it is not a typical one | GrapheneOS, no Chrome, no Google Play services. Stock Android with Chrome as the TWA provider is untested, and it is what most Zapstore users will install onto |
 
 ### Releasing locally instead
 
@@ -163,7 +220,23 @@ Every row below is a real code path that behaves differently inside a TWA than i
 
 *Exercised in the installed TWA, 2026-08-21:* Amber sign-in completes through the callback, and **"Restore from Nostr" — a `nip44_decrypt` on the clipboard path — completes too, and the wallet restored.** So `navigator.clipboard.readText()` does work in a Trusted Web Activity, which this row previously listed as unproven. `scope: "/"` already covers `/amber-callback`, so no manifest change was needed.
 
-*What that does NOT prove.* The clipboard path works because the user pressed a button and came back to tap — which is the gesture `invokeAmber` listens for. A request nobody initiated has nobody to come back, so **background publishes are the remaining risk**: favorites and mutes debounce-publish a `sign_event` unprompted. *Verify:* toggle a favorite in the TWA and see whether the kind:10333 actually reaches a relay, or whether it silently never signs.
+*What that does NOT prove.* The clipboard path works because the user pressed a button and came back to tap — which is the gesture `invokeAmber` listens for. A request nobody initiated has nobody to come back, so **background publishes were the remaining risk**: favorites and mutes debounce-publish a `sign_event` unprompted.
+
+**MEASURED 2026-09-04, and the answer is that a favorites publish is NOT unprompted — it RAISES AMBER.** Driven over CDP against the installed TWA, on a list with real history (57 shows, 230 episodes, 449 `i` tags). Favoriting one show logged `[amber] → sign_event (clipboard)`, brought `com.greenart7c3.nostrsigner/.SignerActivity` to the foreground with *"Wants you to sign a PC 2.0 Favorites"*, and published only after Accept. Un-favoriting did the same, **debounced** — Amber came up about five seconds after the toggle, not on the tap.
+
+So the failure this row feared does not happen, and the reason is worth keeping: nothing here is unattended. `sign_event` is a full app switch every time. That is safe for the data and expensive for the user — a session of favoriting is a session of app switches, and it is the argument for the NIP-46 path rather than a defect in this one.
+
+**What the publish did to the shared event, which is the part that matters.** Read from the relays before and after, not from the app:
+
+| | Event | Tags | Removed | Added |
+|---|---|---|---|---|
+| Before | `af53b60f570c…` | 455 | — | — |
+| After favoriting | `4e7202801617…` | 456 | **0** | 1 — `["i","podcast:guid:78864041-…"]` |
+| After un-favoriting | `b8cbff62d182…` | 455 | 1 (the same one) | 0 |
+
+All 455 baseline tags survived the add **in order, as a subsequence**, and the restored event is **byte-identical** to the baseline — same tags, same order, same empty `content`. The merge carries what it did not write, and `visibility`, `alt`, `medium` and `k` all came through untouched.
+
+*Two things observed on the way, neither a defect.* The mute list logged `[mutes] private mute list left unread — not spending a signer prompt here — the local cache still filters`, and said so on screen in a banner: the visible-guard rule working, and the reason `unattendedDecryptOk()` excludes Amber. And **`relay.damus.io` refused every WebSocket from this device**, with `relay.fountain.fm` answering `CLOSED` — the publish still landed on `relay.primal.net` and `nos.lol`. Two of four default relays unreachable is the normal case this design already assumes, not an outage worth chasing.
 
 **2. NWC and localStorage.** A verified TWA shares Chrome's storage partition for the origin, which is good (sign in once, in either place) and sharp: Android Settings → Chrome → "Clear storage" wipes the wallet credential and any local nsec with no server copy. Backgrounding also suspends the socket, and CLAUDE.md records that Alby's relay rate-limits connections **opened** — 28 dials in 83 s produced a `429` with `Retry-After: 600` — so a reconnect storm on every foreground is a real hazard. *Verify:* connect, boost, background five minutes, foreground, boost again; watch for a dial storm and for `NwcIndeterminateError` rendering as `?` rather than `✗`. Confirm storage survives a reboot, and that the Nostr/Drive backup path works, since it is the only recovery from a cleared profile.
 
