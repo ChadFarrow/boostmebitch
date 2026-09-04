@@ -170,6 +170,14 @@ export function auditHalves(publicList: ParsedList, privateList: ParsedList): Ha
  * prose, and so every branch is visible in one place. Each says what is true
  * and what it means for a switch to Private — which is the decision this
  * whole control exists to inform.
+ *
+ * **One word for one thing: the halves are PUBLIC and PRIVATE here, never
+ * "plaintext tags" and "encrypted half".** Those are the wire's names and they
+ * are correct, but the segmented control directly above this panel says PUBLIC
+ * / PRIVATE / NOT ON NOSTR, and a finding that answers in a second vocabulary
+ * leaves the reader working out whether "encrypted half" is the same thing as
+ * the Private setting they can see. It is. The mechanism is named once, in the
+ * control's own title text, and nowhere else.
  */
 export function auditSummary(audit: HalfAudit, mode?: string): string[] {
   const lines: string[] = [];
@@ -180,14 +188,14 @@ export function auditSummary(audit: HalfAudit, mode?: string): string[] {
   const verb = (n: number, singular: string, plural: string) => (n === 1 ? singular : plural);
 
   if (audit.privateCount === 0) {
-    lines.push(`No private entries. All ${s(audit.publicCount, 'favorite')} on the relays are in the plaintext tags, readable by anyone.`);
+    lines.push(`No private favorites. All ${s(audit.publicCount, 'favorite')} on the relays are public, readable by anyone.`);
     return lines;
   }
 
-  lines.push(`Public tags: ${s(audit.publicCount, 'favorite')}. Encrypted half: ${s(audit.privateCount, 'favorite')}.`);
+  lines.push(`Public: ${s(audit.publicCount, 'favorite')}. Private: ${s(audit.privateCount, 'favorite')}.`);
 
   if (audit.inBoth > 0) {
-    lines.push(`${s(audit.inBoth, 'entry', 'entries')} ${verb(audit.inBoth, 'sits', 'sit')} in BOTH halves — already public, and encrypted a second time.`);
+    lines.push(`${s(audit.inBoth, 'entry', 'entries')} ${verb(audit.inBoth, 'sits', 'sit')} in BOTH halves — already public, and stored privately a second time.`);
   }
   if (audit.privateOnly > 0) {
     // The mode is READ, never assumed. This sentence hardcoded "set to Public"
@@ -199,10 +207,10 @@ export function auditSummary(audit: HalfAudit, mode?: string): string[] {
       : mode
         ? `Nothing in this app shows ${verb(audit.privateOnly, 'it', 'them')} while your favorites are set to ${mode === 'off' ? 'Not on Nostr' : 'Public'}.`
         : `Nothing in this app shows ${verb(audit.privateOnly, 'it', 'them')} until this account's favorites setting is chosen.`;
-    lines.push(`${s(audit.privateOnly, 'entry', 'entries')} ${verb(audit.privateOnly, 'exists', 'exist')} only in the encrypted half. ${where}`);
+    lines.push(`${s(audit.privateOnly, 'entry', 'entries')} ${verb(audit.privateOnly, 'exists', 'exist')} only in the private half. ${where}`);
   }
   if (audit.inBoth > 0 && audit.privateOnly === 0) {
-    lines.push('So the encrypted half is a duplicate of entries you already publish in the clear. Switching to Private would hide them going forward; it cannot retract what the relays already served.');
+    lines.push('So the private half is a duplicate of entries you already publish in the clear. Switching to Private would hide them from now on; it cannot retract what the relays already served.');
   }
   return lines;
 }

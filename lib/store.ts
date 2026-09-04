@@ -16,6 +16,9 @@ export type SignInIntent = 'default' | 'google';
 /** See `favoritesSync` below. */
 export type FavoritesSyncStatus = 'idle' | 'loading' | 'ok' | 'degraded' | 'off';
 
+/** See `favoritesPrivateHalf` below. */
+export type FavoritesPrivateHalf = 'unknown' | 'none' | 'present';
+
 interface AppState {
   identity: NostrIdentity | null;
   setIdentity: (i: NostrIdentity | null) => void;
@@ -262,8 +265,32 @@ interface AppState {
   setFavoritesReach: (reach: { accepted: string[]; failed: string[] }) => void;
   setFavoritesSync: (s: FavoritesSyncStatus, reason?: FavoritesSyncReason) => void;
   /** Back to 'idle', for the identity teardowns in nostr-auth. Kept as its own
-   *  call so the three places that clear it can't drift. */
+   *  call so the three places that clear it can't drift. Clears
+   *  `favoritesPrivateHalf` too: it is an observation about ONE account. */
   resetFavoritesSync: () => void;
+
+  /**
+   * Does the stored kind:10333 carry an encrypted half at all.
+   *
+   * Read off `FavoritesRead.content` being non-empty, which is a plain field of
+   * the event the hydrator already fetches — **no decrypt, no signer prompt**.
+   * That is the whole point: "is there a private half" is answerable for free,
+   * while "what is in it" costs an approval sheet, and the repair tool on
+   * /favorites is worth showing only for the first answer.
+   *
+   * 'unknown' is a real third state and must never be flattened into 'none'.
+   * It covers signed out, a read still in flight, and a read that came back
+   * untrustworthy — and the last of those is why: hiding the one control that
+   * repairs a private half, on the strength of a read that never answered,
+   * hides it from exactly the person who needs it. <RelayTools> shows the tool
+   * on 'present' and while `favoritesSync` is 'degraded', and hides it
+   * otherwise.
+   *
+   * `privateUnreadable` counts as 'present': a half this signer cannot open is
+   * still a half, and it is the state most in need of the tool.
+   */
+  favoritesPrivateHalf: FavoritesPrivateHalf;
+  setFavoritesPrivateHalf: (h: FavoritesPrivateHalf) => void;
 
   /**
    * The "where should these go?" dialog is open.
@@ -604,6 +631,8 @@ export const useApp = create<AppState>((set, get) => ({
 
   favoritesSync: 'idle',
   favoritesSyncReason: null,
+  favoritesPrivateHalf: 'unknown',
+  setFavoritesPrivateHalf: (h) => set({ favoritesPrivateHalf: h }),
   favoritesReach: null,
   setFavoritesReach: (reach) => set({ favoritesReach: reach }),
   // The reason is cleared on every non-degraded status rather than left behind:
@@ -615,7 +644,7 @@ export const useApp = create<AppState>((set, get) => ({
   // The reach is cleared here too. It names relays that took ANOTHER account's
   // list, so carrying it across an identity teardown would report the previous
   // user's publish under the new one's name.
-  resetFavoritesSync: () => set({ favoritesSync: 'idle', favoritesSyncReason: null, favoritesReach: null }),
+  resetFavoritesSync: () => set({ favoritesSync: 'idle', favoritesSyncReason: null, favoritesReach: null, favoritesPrivateHalf: 'unknown' }),
 
   favPrivacyPrompt: false,
   setFavPrivacyPrompt: (open) => set({ favPrivacyPrompt: open }),

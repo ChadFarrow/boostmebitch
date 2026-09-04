@@ -173,7 +173,9 @@ export function hydrateFavorites(identity: NostrIdentity, purpose: DecryptPurpos
 }
 
 async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'unattended'): Promise<void> {
-  const { setFavorites, setFavoriteEpisodes, setFavoritesSync } = useApp.getState();
+  const {
+    setFavorites, setFavoriteEpisodes, setFavoritesSync, setFavoritesPrivateHalf,
+  } = useApp.getState();
   const cached = storage.favorites.get(identity.npub);
   const cachedEpisodes = storage.favoriteEpisodes.get(identity.npub);
   const relays = resolvePublishRelays(identity);
@@ -252,6 +254,16 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     console.warn('[favorites] relay read was degraded — keeping local favorites as-is');
     return;
   }
+
+  // Does this account carry an encrypted half at all — the free half of the
+  // question, answered here because this is the one trustworthy read of the
+  // cycle and `content` arrives with it whether or not anything decrypted it.
+  // It costs no signer prompt, which is what lets /favorites hide the repair
+  // tool from the accounts that will never need it.
+  //
+  // Set only past the `trustworthy` return above. A degraded read leaves it
+  // 'unknown', and the tool stays reachable on that state — see the field.
+  setFavoritesPrivateHalf(read.content !== '' || read.privateUnreadable ? 'present' : 'none');
 
   // An account that already HAS a list is never asked which half it wants — the
   // wire already says. Seeding here, off the one trustworthy read of the cycle,

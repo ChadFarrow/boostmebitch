@@ -485,26 +485,32 @@ export function FavoritesPage() {
 }
 
 /**
- * The four controls that ask the RELAYS something, on one row.
+ * The three controls that ask the RELAYS something, on one row.
  *
  * They are siblings rather than one widget because they answer different
  * questions and cost different things: `⇩ BACKUP` writes a file from a plain
- * read, `⌕ CHECK PRIVATE HALF` spends a signer prompt to open the encrypted
- * half, `⇄ MERGE ENCRYPTED HALF IN` repairs a list stuck in both halves, and
+ * read, `⌕ CHECK PRIVATE FAVORITES` spends a signer prompt to open the
+ * encrypted half and, where there is something to repair, repairs it, and
  * `⇧ RESTORE FROM BACKUP` puts a file back. Sharing a row is what says they
  * are about the same subject — the list as stored, not the list as painted.
  *
- * **The middle two were deleted on 2026-09-03 as clutter and restored the same
- * night, and the reason is the strongest argument they have.** Within hours the
- * reference account reached the both-halves state again — 451 public `i` tags
- * beside 38,320 characters of ciphertext — on a fresh device whose baseline
- * claimed nothing, which is the copy-instead-of-move route this file's own
- * comments describe. With them gone there was no way to see that had happened
- * and no way to undo it: the ordinary Public sync only empties `content` for
- * entries the baseline CLAIMS, and nothing else writes that claim. A restore
- * cannot substitute, because `parseFavoritesBackup` verifies the signature and
- * so refuses a hand-made file. **Do not delete them again without a replacement
- * for both halves of that job — seeing the state, and clearing it.**
+ * **The private-half controls were deleted on 2026-09-03 as clutter and
+ * restored the same night, and the reason is the strongest argument they
+ * have.** Within hours the reference account reached the both-halves state
+ * again — 451 public `i` tags beside 38,320 characters of ciphertext — on a
+ * fresh device whose baseline claimed nothing, which is the copy-instead-of-
+ * move route this file's own comments describe. With them gone there was no
+ * way to see that had happened and no way to undo it: the ordinary Public sync
+ * only empties `content` for entries the baseline CLAIMS, and nothing else
+ * writes that claim. A restore cannot substitute, because
+ * `parseFavoritesBackup` verifies the signature and so refuses a hand-made
+ * file. **Do not delete them again without a replacement for both halves of
+ * that job — seeing the state, and clearing it.**
+ *
+ * <PrivateFavoritesTool> is that replacement and it keeps both halves. What
+ * changed is WHEN it is on screen: it hides itself for an account the app has
+ * positively observed to have no encrypted half, which is the answer to the
+ * clutter complaint that does not cost anybody the repair.
  */
 function RelayTools() {
   const identity = useApp((s) => s.identity);
@@ -513,22 +519,36 @@ function RelayTools() {
   return (
     <div className="flex flex-wrap items-start gap-2">
       <DownloadFavorites />
-      <InspectPrivateHalf />
-      <MergeEncryptedHalf />
+      <PrivateFavoritesTool />
       <RestoreBackup />
     </div>
   );
 }
 
+/** One state for four causes — see `FavoritesRead.privateUnreadable`. */
+const SIGNER_REFUSED =
+  'Your signer did not open the encrypted half. If it opened a moment ago it most likely '
+  + 'timed out — bring your signer to the front, unlock it, and press this again. If it never '
+  + 'opens, the half was written in a cipher this signer cannot read: the app carries it '
+  + 'untouched and never shows it, and switching to Private stays refused, because writing a '
+  + 'new encrypted half would destroy this one.';
+
+/** What `check()` found, painted before the titles arrive. */
+interface Finding {
+  audit: ReturnType<typeof auditHalves>;
+  /** The decrypted half, kept so the repair needs no second read. */
+  privateList: ParsedList;
+  lines: string[];
+}
+
 /**
- * Open the encrypted half and count what is in it. Publishes NOTHING.
+ * See the encrypted half, and clear it — ONE control, ONE read, ONE prompt.
  *
- * **Why a control rather than something the page just knows.** A list can hold
- * entries in the plaintext tags and in the encrypted `content` at once, and
- * from every screen in this app that state is invisible: the public half
- * renders, the private half is carried byte for byte, and nothing counts
- * either. The question it answers is the one that decides whether switching to
- * Private tidies the list or doubles it — see `lib/favorites-audit.ts`.
+ * **Why it is a control rather than something the page just knows.** A list
+ * can hold entries in the plaintext tags and in the encrypted `content` at
+ * once, and from every other screen in this app that state is invisible: the
+ * public half renders, the private half is carried byte for byte, and nothing
+ * counts either. See `lib/favorites-audit.ts`.
  *
  * **The decrypt is `'user-initiated'`, and that word is the whole reason this
  * is a button.** Everything stored encrypted-to-self is otherwise read on page
@@ -542,23 +562,102 @@ function RelayTools() {
  *
  * **A refusal to decrypt is a real answer, not an error.** Not every signer
  * implements NIP-44, and the half may be another app's, written in a cipher
- * this one cannot open. That state is what makes a switch to Private impossible
- * (`planFavoritesPublish` refuses on `private-unreadable`), so it is reported
- * as the finding it is rather than as a failure.
+ * this one cannot open. That state is what makes a switch to Private
+ * impossible (`planFavoritesPublish` refuses on `private-unreadable`), so it is
+ * reported as the finding it is rather than as a failure.
+ *
+ * **It used to be two buttons and that is what made it unusable.** Looking
+ * cost one signer prompt, acting cost a second one over the same bytes, and
+ * the success message sent the user back for a third to confirm. Three
+ * approval sheets, two panels of numbers that did not use the same words, and
+ * no statement anywhere of what to do about it. The read is now done once and
+ * the action is offered from the finding it produced. Building the plan from
+ * that earlier read is no less safe: `syncFavoritesNow` re-reads before it
+ * publishes, and an entry another app adds in between is simply not claimed by
+ * the baseline, so it is carried rather than deleted — the correct direction
+ * to fail in.
+ *
+ * **It is hidden unless it is needed.** `favoritesPrivateHalf` is read off
+ * `content` being non-empty during ordinary hydration, at no cost — see the
+ * store field. 'none' hides this; 'present' shows it; 'unknown' shows it only
+ * while `favoritesSync` is 'degraded', because a read that never answered is
+ * not evidence of an empty half and must not hide the one control that repairs
+ * one. `engaged` then pins it open for the rest of the session, or a merge
+ * that empties the half would unmount the message saying so.
+ *
+ * **The repair is refused in Private mode, where it would do the opposite of
+ * its label.** `syncFavorites` in mode 'private' puts everything the store
+ * holds INTO the encrypted half, so "move them into my public list" would have
+ * emptied the public tags instead. The mode switch is the right instrument
+ * there, and this says so rather than offering the button.
+ *
+ * **The merge itself is three steps and the order is the whole safety
+ * argument.**
+ *
+ *  1. ADOPT the private-only entries into the local store first. They are
+ *     about to stop existing in the half that holds them, and the public merge
+ *     publishes what the STORE holds — so an entry not adopted before the sync
+ *     is deleted rather than moved. Their `medium` hint comes along, because
+ *     for an entry Podcast Index cannot resolve it is the only description
+ *     that will ever exist.
+ *  2. CLAIM the private half in the baseline, from the read we just verified.
+ *     This is the promise the merge is waiting for: the removal is gated on
+ *     `baselineHalf(baseline, 'private')`, and a device that never published
+ *     the private half claims nothing in it, so without this the ciphertext
+ *     rides forward on every publish forever. Found on a real account at 284
+ *     entries in both halves at once. The guard is right to be there — a
+ *     baseline is a promise that these entries are ours to delete — and what
+ *     was missing was the evidence, which the decrypt above produces.
+ *  3. SYNC normally. Nothing bespoke publishes here: the ordinary cycle sees a
+ *     store holding everything and a private baseline claiming the half, and
+ *     converges to one public list by itself.
+ *
+ * **What it deliberately cannot reach.** `baselineOfList` claims GROUPS only,
+ * so a loose node in the private half — an identifier kind outside our table,
+ * or an item that appeared before any feed group — is never claimed and
+ * therefore never dropped. If another writer's entry is in there in a shape
+ * this app does not model, it survives this repair. That is the correct
+ * direction to fail in.
+ *
+ * **A refusal is a `null`, not a throw.** `syncFavoritesNow` returns null
+ * without recording anything on a degraded read, a wholesale-delete guard, an
+ * unreadable private half, or a publish that reached no relay. `await` looks
+ * like success and a `try/catch` catches nothing, so the return value is
+ * tested — telling someone their list was merged when it was not is the one
+ * error they cannot check without another round trip. The success sentence is
+ * DERIVED from `note.event.content` for the same reason: "the encrypted half
+ * is empty" is a claim about bytes we just published, and the published event
+ * is right there to be read rather than assumed.
  */
-function InspectPrivateHalf() {
+function PrivateFavoritesTool() {
   const identity = useApp((s) => s.identity);
+  const addFavorite = useApp((s) => s.addFavorite);
+  const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
+  const setFavoritesPrivateHalf = useApp((s) => s.setFavoritesPrivateHalf);
+  const privateHalf = useApp((s) => s.favoritesPrivateHalf);
+  const sync = useApp((s) => s.favoritesSync);
+  const [engaged, setEngaged] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [lines, setLines] = useState<string[] | null>(null);
+  const [finding, setFinding] = useState<Finding | null>(null);
   const [named, setNamed] = useState<NamedEntry[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [done, setDone] = useState<string | null>(null);
 
-  async function inspect() {
+  const needed = privateHalf === 'present' || sync === 'degraded';
+  if (!identity || (!needed && !engaged)) return null;
+
+  const mode = storage.favPrivacy.get(identity.npub) ?? undefined;
+
+  async function check() {
     if (!identity) return;
+    setEngaged(true);
     setBusy(true);
-    setLines(null);
+    setFinding(null);
     setNamed(null);
     setProblem(null);
+    setConfirming(false);
+    setDone(null);
     try {
       const read = await fetchFavoritesList(identity.pubkey, resolvePublishRelays(identity), {
         decryptPrivate: true,
@@ -583,17 +682,18 @@ function InspectPrivateHalf() {
         // hang in this same branch — so the common case is a retry, and copy
         // that reads as a verdict sends the user to look for a problem with
         // their list instead of opening their signer.
-        setProblem(
-          'Your signer did not open the encrypted half. If it opened a moment ago it most '
-          + 'likely timed out — bring your signer to the front, unlock it, and press this '
-          + 'again. If it never opens, the half was written in a cipher this signer cannot '
-          + 'read: the app carries it untouched and never shows it, and switching to Private '
-          + 'stays refused, because writing a new encrypted half would destroy this one.',
-        );
+        setProblem(SIGNER_REFUSED);
         return;
       }
-      const audit = auditHalves(read.list, read.privateList ?? EMPTY_PARSED);
-      setLines(auditSummary(audit, storage.favPrivacy.get(identity.npub) ?? undefined));
+      const privateList = read.privateList ?? EMPTY_PARSED;
+      const audit = auditHalves(read.list, privateList);
+      // The counts paint first and the titles fill in after: `nameEntries`
+      // fans out to Podcast Index, and a panel that waits for it reads as a
+      // button that did nothing for several seconds.
+      setFinding({ audit, privateList, lines: auditSummary(audit, mode) });
+      // A free observation from a trustworthy read: keep the row's visibility
+      // honest without waiting for the next page load.
+      setFavoritesPrivateHalf(read.content !== '' ? 'present' : 'none');
       setNamed(await nameEntries(audit.privateOnlyEntries));
     } catch (e) {
       setProblem(getErrorMessage(e, 'The read failed.'));
@@ -602,150 +702,14 @@ function InspectPrivateHalf() {
     }
   }
 
-  return (
-    <span className="flex flex-col items-start gap-1">
-      <button
-        type="button"
-        onClick={inspect}
-        disabled={busy}
-        className="btn-ghost text-xs disabled:opacity-50"
-        title="Open the encrypted half of your list and count what is in it. Nothing is published."
-      >
-        {busy ? 'opening…' : '⌕ check private half'}
-      </button>
-      {problem && <span className="text-[11px] text-bone max-w-prose">{problem}</span>}
-      {lines?.map((l) => (
-        <span key={l} className="text-[11px] text-muted max-w-prose">{l}</span>
-      ))}
-      {named && named.length > 0 && (
-        <ul className="text-[11px] text-muted max-w-prose flex flex-col gap-0.5 mt-1">
-          {named.map((e) => (
-            <li key={e.id} className="flex flex-col">
-              <span className={e.title ? 'text-bone' : undefined}>
-                {e.title ?? 'Podcast Index does not know this track'}
-              </span>
-              {e.kind === 'item' && (
-                <span>
-                  {e.parentTitle
-                    ? `from ${e.parentTitle}`
-                    : e.parentFeedGuid
-                      ? `from feed ${e.parentFeedGuid}`
-                      : 'no parent feed recorded — unopenable in any app'}
-                </span>
-              )}
-              {/* The identifier always, even when a title resolved: it is what
-                  the entry IS, and it is the only thing that can be matched
-                  against a raw event or handed to another app. */}
-              <span className="font-mono break-all opacity-70">{e.id}</span>
-            </li>
-          ))}
-        </ul>
-      )}
-    </span>
-  );
-}
-
-/**
- * Bring the encrypted half into the public list, so the account holds ONE list.
- *
- * **This repairs a stuck state; it is not a second way to choose a mode.** The
- * mode switch already moves entries — on Public, `syncFavorites` merges the
- * private half against an EMPTY local list, so everything the baseline claims
- * is dropped and `content` goes to `''`. What blocks that here is the
- * BASELINE: the removal is gated on `baselineHalf(baseline, 'private')`, and a
- * device that never published the private half claims nothing in it, so the
- * merge drops nothing and the ciphertext rides forward on every publish
- * forever. Found on a real account at 284 entries in both halves at once.
- *
- * The guard is right to be there — a baseline is a promise that these entries
- * are ours to delete, and this app will not delete a private half it cannot
- * prove it owns. What was missing was the evidence, and
- * `<InspectPrivateHalf>` is what produces it: the half decrypts with this
- * user's key and mirrors this user's own list.
- *
- * **Three steps, and the order is the whole safety argument.**
- *
- *  1. ADOPT the private-only entries into the local store first. They are
- *     about to stop existing in the half that holds them, and the public merge
- *     publishes what the STORE holds — so an entry not adopted before the sync
- *     is deleted rather than moved. Their `medium` hint comes along, because
- *     for an entry Podcast Index cannot resolve it is the only description
- *     that will ever exist.
- *  2. CLAIM the private half in the baseline, from the read we just verified.
- *     This is the promise the merge is waiting for.
- *  3. SYNC normally. Nothing bespoke publishes here: the ordinary cycle sees a
- *     store holding everything and a private baseline claiming the half, and
- *     converges to one public list by itself.
- *
- * **What it deliberately cannot reach.** `baselineOfList` claims GROUPS only,
- * so a loose node in the private half — an identifier kind outside our table,
- * or an item that appeared before any feed group — is never claimed and
- * therefore never dropped. If another writer's entry is in there in a shape
- * this app does not model, it survives this repair. That is the correct
- * direction to fail in.
- *
- * **A refusal is a `null`, not a throw.** `syncFavoritesNow` returns null
- * without recording anything on a degraded read, a wholesale-delete guard, an
- * unreadable private half, or a publish that reached no relay. `await` looks
- * like success and a `try/catch` catches nothing, so the return value is
- * tested — telling someone their list was merged when it was not is the one
- * error they cannot check without another round trip.
- */
-function MergeEncryptedHalf() {
-  const identity = useApp((s) => s.identity);
-  const addFavorite = useApp((s) => s.addFavorite);
-  const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
-  const [busy, setBusy] = useState(false);
-  const [plan, setPlan] = useState<MergePlan | null>(null);
-  const [msg, setMsg] = useState<{ tone: 'ok' | 'no'; text: string } | null>(null);
-
-  if (!identity) return null;
-
-  /** Read and decide, but change nothing. The confirmation comes after. */
-  async function propose() {
+  async function merge(f: Finding) {
     if (!identity) return;
     setBusy(true);
-    setPlan(null);
-    setMsg(null);
-    try {
-      const read = await fetchFavoritesList(identity.pubkey, resolvePublishRelays(identity), {
-        decryptPrivate: true,
-        purpose: 'user-initiated',
-      });
-      if (!read.trustworthy) {
-        setMsg({ tone: 'no', text: 'The relays could not be read just now — try again in a moment.' });
-        return;
-      }
-      if (!read.exists || !read.privateList) {
-        setMsg({
-          tone: 'no',
-          text: read.privateUnreadable
-            ? 'Your signer did not open the encrypted half, so it cannot be merged — only carried. If it opened a moment ago it most likely timed out; bring your signer to the front and try again.'
-            : 'Nothing to do: this account has no encrypted half.',
-        });
-        return;
-      }
-      const audit = auditHalves(read.list, read.privateList);
-      if (audit.privateCount === 0) {
-        setMsg({ tone: 'no', text: 'Nothing to do: the encrypted half holds no entries.' });
-        return;
-      }
-      setPlan({ audit, privateList: read.privateList });
-    } catch (e) {
-      setMsg({ tone: 'no', text: getErrorMessage(e, 'The read failed.') });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function apply(p: MergePlan) {
-    if (!identity) return;
-    setBusy(true);
-    setMsg(null);
+    setProblem(null);
     try {
       // 1. Adopt, BEFORE the baseline claim — see the note above.
       const now = Date.now();
-      for (const e of p.audit.privateOnlyEntries) {
+      for (const e of f.audit.privateOnlyEntries) {
         if (e.kind === 'feed') {
           addFavorite({ id: 0, podcastGuid: e.guid, medium: e.medium, addedAt: now });
         } else if (e.parentFeedGuid) {
@@ -757,7 +721,7 @@ function MergeEncryptedHalf() {
       // 2. Claim the half we just read. The public claims are left exactly as
       //    they were: this promise is about the private half only, and
       //    rewriting the public one would disown entries this device published.
-      const priv = baselineOfList(p.privateList);
+      const priv = baselineOfList(f.privateList);
       const existing = storage.favBaseline.get(identity.npub);
       storage.favBaseline.set(identity.npub, {
         ...existing, privateFeeds: priv.feeds, privateItems: priv.items,
@@ -765,69 +729,149 @@ function MergeEncryptedHalf() {
       // 3. One ordinary cycle.
       const note = await syncFavoritesNow(identity, 'user-initiated');
       if (!note) {
-        setMsg({
-          tone: 'no',
-          text: 'The merge was not published — the app refused the cycle rather than write over '
-            + 'something it could not verify. Nothing on the relays changed. Try again in a moment.',
-        });
+        setProblem(
+          'The merge was not published — the app refused the cycle rather than write over '
+          + 'something it could not verify. Nothing on the relays changed. Try again in a moment.',
+        );
         return;
       }
-      setPlan(null);
-      setMsg({
-        tone: 'ok',
-        text: 'Merged. Your list is now in the public tags only. '
-          + 'Take a new backup, and use CHECK PRIVATE HALF to confirm the encrypted half is empty.',
-      });
+      // What we actually published, never what we meant to publish.
+      const emptied = note.event.content === '';
+      setFavoritesPrivateHalf(emptied ? 'none' : 'present');
+      setFinding(null);
+      setNamed(null);
+      setConfirming(false);
+      setDone(emptied
+        ? 'Done. Your favorites are in the public tags only, and the encrypted half is now '
+          + 'empty. Take a fresh ⇩ BACKUP.'
+        : 'Published, but the encrypted half is not empty — part of it belongs to another app '
+          + 'and this device cannot claim it. Your own entries are in the public list now. '
+          + 'Take a fresh ⇩ BACKUP.');
     } catch (e) {
-      setMsg({ tone: 'no', text: getErrorMessage(e, 'The merge failed.') });
+      setProblem(getErrorMessage(e, 'The merge failed.'));
     } finally {
       setBusy(false);
     }
   }
 
+  // Nothing in the encrypted half means nothing to repair, so the panel states
+  // the finding and offers no action. `mode === 'private'` means the entries
+  // are exactly where the user asked them to be.
+  const repairable = !!finding && finding.audit.privateCount > 0 && mode !== 'private';
+
   return (
     <span className="flex flex-col items-start gap-1">
       <button
         type="button"
-        onClick={propose}
+        onClick={check}
         disabled={busy}
         className="btn-ghost text-xs disabled:opacity-50"
-        title="Move the encrypted half into your public list, so this account holds one list."
+        title="Open the encrypted half of your list and count what is in it. Nothing is published until you confirm."
       >
-        {busy && !plan ? 'reading…' : '⇄ merge encrypted half in'}
+        {busy && !finding ? 'opening…' : '⌕ check private favorites'}
       </button>
-      {plan && (
+
+      {problem && <span className="text-[11px] text-bone max-w-prose">{problem}</span>}
+      {done && <span className="text-[11px] text-muted max-w-prose">{done}</span>}
+
+      {finding && (
         <span className="card p-3 flex flex-col gap-2 items-start max-w-prose">
-          <span className="text-[11px] text-bone">
-            This will publish {plan.audit.publicCount + plan.audit.privateOnly} favorites as public
-            tags and empty the encrypted half.
-          </span>
-          <span className="text-[11px] text-muted">
-            {plan.audit.privateOnly > 0
-              ? `${plan.audit.privateOnly} of them ${plan.audit.privateOnly === 1 ? 'exists' : 'exist'} only in the encrypted half today and will be adopted first, so nothing is lost. `
-              : 'Every entry in the encrypted half is already public, so nothing new is published. '}
-            The {plan.audit.inBoth} already in both halves {plan.audit.inBoth === 1 ? 'stays' : 'stay'} where
-            {plan.audit.inBoth === 1 ? ' it is' : ' they are'}, in the clear.
-          </span>
-          {/* Named rather than implied: this is the irreversible half of the
-              operation, and "take a backup" is only useful advice before it. */}
-          <span className="text-[11px] text-muted">
-            Take a ⇩ BACKUP first if you have not. Emptying the encrypted half cannot be undone
-            from inside this app.
-          </span>
-          <span className="flex gap-2">
-            <button type="button" className="btn text-xs" disabled={busy} onClick={() => apply(plan)}>
-              {busy ? 'merging…' : 'merge'}
+          {finding.lines.map((l) => (
+            <span key={l} className="text-[11px] text-muted">{l}</span>
+          ))}
+
+          {named && named.length > 0 && (
+            <ul className="text-[11px] text-muted flex flex-col gap-0.5">
+              {named.map((e) => (
+                <li key={e.id} className="flex flex-col">
+                  <span className={e.title ? 'text-bone' : undefined}>
+                    {e.title ?? 'Podcast Index does not know this track'}
+                  </span>
+                  {e.kind === 'item' && (
+                    <span>
+                      {e.parentTitle
+                        ? `from ${e.parentTitle}`
+                        : e.parentFeedGuid
+                          ? `from feed ${e.parentFeedGuid}`
+                          : 'no parent feed recorded — unopenable in any app'}
+                    </span>
+                  )}
+                  {/* The identifier always, even when a title resolved: it is
+                      what the entry IS, and it is the only thing that can be
+                      matched against a raw event or handed to another app. */}
+                  <span className="font-mono break-all opacity-70">{e.id}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {finding.audit.privateCount > 0 && mode === 'private' && (
+            <span className="text-[11px] text-muted">
+              Your favorites are set to Private, so this is where they belong. To bring them
+              into the public list, press PUBLIC above — that moves them in one update.
+            </span>
+          )}
+
+          {repairable && !confirming && (
+            <button
+              type="button"
+              className="btn text-xs"
+              disabled={busy}
+              onClick={() => setConfirming(true)}
+            >
+              move them into my public list
             </button>
-            <button type="button" className="btn-ghost text-xs" disabled={busy} onClick={() => setPlan(null)}>
-              cancel
-            </button>
-          </span>
-        </span>
-      )}
-      {msg && (
-        <span className={`text-[11px] max-w-prose ${msg.tone === 'ok' ? 'text-muted' : 'text-bone'}`}>
-          {msg.text}
+          )}
+
+          {repairable && confirming && (
+            <span className="flex flex-col gap-2 items-start">
+              <span className="text-[11px] text-bone">
+                This will publish {finding.audit.publicCount + finding.audit.privateOnly}{' '}
+                favorites as public tags and empty the encrypted half.
+              </span>
+              <span className="text-[11px] text-muted">
+                {finding.audit.privateOnly > 0
+                  ? `${finding.audit.privateOnly} of them ${finding.audit.privateOnly === 1 ? 'exists' : 'exist'} only in the encrypted half today and will be adopted first, so nothing is lost. `
+                  : 'Every entry in the encrypted half is already public, so nothing new is published. '}
+                The {finding.audit.inBoth} already in both halves
+                {finding.audit.inBoth === 1 ? ' stays where it is' : ' stay where they are'}, in
+                the clear.
+              </span>
+              {/* Named rather than implied: this is the irreversible half of the
+                  operation, and "take a backup" is only useful advice before it. */}
+              <span className="text-[11px] text-muted">
+                Take a ⇩ BACKUP first if you have not. Emptying the encrypted half cannot be
+                undone from inside this app.
+              </span>
+              <span className="flex gap-2">
+                <button
+                  type="button"
+                  className="btn text-xs"
+                  disabled={busy}
+                  onClick={() => merge(finding)}
+                >
+                  {busy ? 'moving…' : 'move'}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost text-xs"
+                  disabled={busy}
+                  onClick={() => setConfirming(false)}
+                >
+                  cancel
+                </button>
+              </span>
+            </span>
+          )}
+
+          <button
+            type="button"
+            className="btn-ghost text-xs"
+            disabled={busy}
+            onClick={() => { setFinding(null); setNamed(null); setConfirming(false); }}
+          >
+            close
+          </button>
         </span>
       )}
     </span>
@@ -1023,11 +1067,6 @@ interface RestorePlan {
   currentCount: number;
   currentExists: boolean;
   currentAt: number;
-}
-
-interface MergePlan {
-  audit: ReturnType<typeof auditHalves>;
-  privateList: ParsedList;
 }
 
 interface NamedEntry extends PrivateOnlyEntry {
