@@ -323,3 +323,13 @@ trigger is chosen to keep it cheap and to keep it away from the dev loop:
 `maybePublishReceipt` is: it is reached from `releaseContext`, which runs inside
 `tick()` on the engine's own interval, so a throw takes the whole engine down
 mid-listen rather than failing one settle.
+
+## A hung live-value poll freezes the payment target for the whole broadcast
+
+`poll()` in `lib/v4v/live-value.ts` guards re-entry with a module-level `inFlight` flag and releases it in a `finally`. The fetch carried **no `signal`**, and a browser applies no deadline of its own — so a connection that stalls (a phone moving between cells, a captive portal, a socket the OS has not reaped) leaves that promise pending forever, the `finally` never runs, and every later tick returns at the guard.
+
+**The watcher is then silently dead for the rest of the session, and it is dead in the expensive direction.** This is the live show's payment target: boosts and streaming sats keep going to whichever artist was playing when the fetch hung, for the rest of the broadcast, with nothing on screen saying so. The Split Kit socket never reattaches and `<LivePlayedTracks>` stops. `stopLiveValueWatcher` cleared the timer, the store subscription and the listeners but **not the flag**, so a `<Player>` remount did not recover it either — and that flag is module state, so it outlives the component.
+
+Two halves, and the first is the real fix. `LIVE_VALUE_TIMEOUT_MS` (12 s) turns a hang into the `catch` branch this code already handles properly — it keeps paying the last known artist and gives up only after `MAX_FAILURES`, which is the honest behaviour for a network blip. It sits under `POLL_MS` so a hung poll always resolves before the next tick rather than making ticks queue behind it, and over the route's own 8 s upstream deadline so a slow-but-alive Podcast Index still produces an answer. `stopLiveValueWatcher` also releases the latch now, as the recovery for anything a timeout cannot cover; a poll still in the air re-checks `watching !== w` before touching anything, so that cannot let a stale answer through.
+
+**Any new module-level in-flight latch inherits this.** The pattern is only safe when the thing it guards has a deadline — a latch plus an unbounded await is a one-way door.

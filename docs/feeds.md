@@ -468,3 +468,29 @@ Six vectors, four of them must-still-work: the ceiling holds at 6 across 231 ite
 
 **And one text assertion, because behaviour cannot see a caller that stops calling.** `check:fanout` asserts `lib/pi-batch.ts` still routes through `probeThenBatch`, and that any *other* `Promise.all*(xs.map(…))` in that file fans out over a list already sliced to a `MAX_` constant. The first version of that scan flagged the value-block pass as a failure — it fans out over 16 album feeds, capped by `MAX_TRACK_VALUE_FEEDS` and documented as deliberate. So the rule is not "no `Promise.all` over a map"; it is **every fan-out here is bounded, in concurrency or in count**, and both ways are legitimate.
 
+
+**"Bounded in count" is only enough when the count is SMALL and the walk does not NEST — and that qualifier is the part that shipped missing.** `MAX_TRACK_VALUE_FEEDS` is a fair example of a count bound doing real work: 16 concurrent RSS reads, at the leaf of the call graph, nothing underneath it. But `resolveValueTimeSplits` (200) and `resolveRemoteItemFromRss` (100) were both "bounded in count" by the same argument, and they call each other — so the product was 20,000 concurrent fetches out of one request. A count cap on a walk that can invoke a second capped walk is not a bound on anything; it is two numbers that multiply. When in doubt, bound the concurrency, because that number composes and the count does not. Full reasoning in [`security.md`](security.md).
+
+## The read index caches PODCAST INDEX'S RAW RECORD, and the app must normalize it
+
+`services/nostr-index` stores what Podcast Index returned — `d.feed` and `d.episode`, verbatim — and `/pi/podcasts` and `/pi/episodes` hand it back unchanged. That is a deliberate design (its own header: *"The client keeps rendering whatever it already renders"*), and it puts the whole obligation on the reader.
+
+**`lib/pi-batch.ts` did not hold up that half of the contract.** It declared both answers with a bare generic — `askIndex<Record<string, Podcast | null>>` — which type-checks and is wrong in every field `buildPodcast` / `buildEpisode` derive.
+
+**The field that costs money is `value`.** Podcast Index sends `{ model, destinations }`; our `ValueBlock` is `{ type, method, suggested, recipients }`; `hasValueRecipients` reads `.recipients`. So for every album the index answered, that test was **false**. `fillTrackValues`' stage 1 — the free stage, which exists precisely because most music feeds declare `<podcast:value>` once on the channel and let each track inherit it — never fired. Every row fell through to stage 2, the RSS read, capped at `MAX_TRACK_VALUE_FEEDS = 16`. **Playlist tracks past that cap kept a dead BOOST button**, which is the exact failure stage 1 was written to prevent.
+
+The same drift dropped `valueTimeSplits` (Podcast Index names the field `timesplits`, so an indexed episode carried no per-track splits at all), `transcriptUrl` / `transcriptType`, `socialInteract`, `season`, and the `image` / `artwork` fallbacks that exist because PI sends `""` rather than omitting the field.
+
+**Nothing could see it.** It needs `NOSTR_INDEX_URL` configured AND the index warm, so it never reproduces on a local run — and the direct Podcast Index path, the one a developer exercises, normalizes correctly. The service's own `verify/check-api.mjs` seeds `{"id":7,"title":"A Show"}`, which matches both shapes for the two fields it reads, so that check did not pin it either.
+
+Both batch doors now run index answers through `podcastFromPiFeed` / `episodeFromPiRecord`, exported from `lib/pi.ts` for this purpose — the same builders the direct path uses, so there is one normalization and not two.
+
+- **A record that fails to normalize is left ABSENT, never recorded as `null`.** `null` means "Podcast Index says there is none", and a cache entry we could not read is not that. Absent sends it to `probeThenBatch`, which asks PI properly. This is the three-state contract at the top of this section, applied one layer up.
+- **`normalizeValue` passes an already-normalized block through** rather than answering `null`. Our shape has neither `model` nor `destinations`, so without that branch, pointing this call at a cache that stores our shape would silently unvalue every feed it touches.
+- **No `check:*` pins this**, and that is a known gap rather than an oversight: `lib/pi.ts` does not load under `node --experimental-strip-types` (its extensionless relative imports are Next-only), so a check script could hold a *copy* of the builders and nothing else — and a copy passing green while the shipping code drifts is the failure mode this repo's check scripts exist to avoid. Closing it means moving the builders into a loadable leaf, which is a real refactor and has not been done.
+
+## The in-memory metadata tiers are bounded now
+
+`podcastMem` and `episodeMem` (`lib/podcast-meta.ts`) had no bound at all. The only deletion either ever saw is `resetPiBreaker`, which drops the **nulls** and deliberately keeps every resolved entry — so a session grew one `Podcast` or `Episode` object per distinct show and track it touched, permanently. `warmEpisodeCache` alone writes up to 100 per batch. This is a PWA whose tab stays open for days; on iOS the tab is then reaped for its heap, which the listener experiences as the app restarting itself mid-episode.
+
+They are capped with a plain oldest-first eviction (`capMem`, `MAX_MEM_ENTRIES = 2000`) rather than `createBoundedCache`, for two reasons that are not style: both tiers depend on **`.has()` separating a cached `null` from an absent key** — the distinction the whole `COULD_NOT_ASK` design rests on, and `get(key, now)` returning `undefined` for both cannot express it — and `resetPiBreaker` needs to **iterate**, which that cache does not expose. Eviction costs at most a re-fetch of something already scrolled past.

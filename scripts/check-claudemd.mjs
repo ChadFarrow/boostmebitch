@@ -108,7 +108,31 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // (deploy path, package name, yield fix, relay lists) to deserve its own
 // `docs/` file, and moving them out is worth more than another +100. Raising a
 // fifth time without doing that is the ratchet this script exists to prevent.
-const BUDGET = 15500
+//
+// LOWERED, 15,500 -> 14,700, and the structural move above is what paid for it.
+// `docs/nostr-index.md` now exists and the service's detail lives there. The
+// rest came from holding the file to the format it states for itself — "a rule
+// plus one clause naming the consequence" and "The table indexes; it does not
+// argue" — which the `check:*` table's third column and about forty bullets had
+// stopped doing. 15,488 -> 14,573 words, and that is NET of four new rules the
+// same pass added (the `href` allowlist, request-body caps, the read index's raw
+// PI records, and count-vs-concurrency), so roughly 1,250 words of narrative
+// came out.
+//
+// **Nothing was cut on judgement.** Every condensed passage was checked first by
+// a script asserting that each distinctive token in it — every `code span`,
+// every measured number — still appears in the docs/ file or the check script
+// that now owns the reasoning. Passages that failed that test were left alone,
+// or their orphan facts were moved first: `docs/ui.md`'s "Why each shared widget
+// exists" section exists because three facts in the conventions table lived
+// nowhere else. Two factual ERRORS surfaced on the way and were fixed rather
+// than condensed ("four of five" NWC call sites is four of six; `/api/by-guid`
+// is not the route left alone, `/api/episode-by-guid` is).
+//
+// The ~130 words of slack are deliberate and are NOT a budget for the next rule.
+// A rule that earns its place here still displaces something — that is the whole
+// mechanism, and this pass is evidence it works rather than licence to skip it.
+const BUDGET = 14700
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')
