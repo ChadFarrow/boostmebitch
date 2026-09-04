@@ -761,3 +761,53 @@ export function msUntilSettle(ledger: StreamLedger): number {
 export function isStaleLedger(ledger: StreamLedger, nowMs: number): boolean {
   return nowMs - ledger.lastTickMs > STREAM_PENDING_MAX_AGE_MS;
 }
+
+/**
+ * How many consecutive polls must report a live broadcast OVER before the
+ * engine believes it and settles.
+ *
+ * Two, not one, for the reason `applyLiveStatuses` gives for its own
+ * second-miss rule: `/api/live-value` reads RSS only, while `/api/feed` merges
+ * Podcast Index, so a feed that drops its `<podcast:liveItem>` for one
+ * regeneration is a normal thing to observe mid-broadcast. Two polls is ~40 s.
+ *
+ * Erring long is nearly free — nothing accrues meanwhile, because a dead stream
+ * stops advancing `positionSec` and `accrue` charges `min(wall Δ, position Δ)`.
+ * Erring SHORT stops paying an artist somebody is still listening to.
+ */
+export const STREAM_ENDED_OBSERVATIONS = 2;
+
+/**
+ * Decide whether a live broadcast is over, from one poll answer plus the count
+ * so far. Pure so `check:stream` can pin it: the inline version of this was six
+ * lines of counter arithmetic inside an async `fetch` handler, which no check
+ * script can reach and which gates an unattended payment.
+ *
+ * `status` is `/api/live-value`'s `liveStatus` field — `'ended'` when the guid
+ * is no longer among the feed's live items, otherwise the item's own status.
+ *
+ * THREE RULES, and each is a way to get this wrong:
+ *
+ * - **`null`/`undefined` is NOT evidence.** An answer that omits the field
+ *   tells us nothing, so it must neither count toward ending nor reset a count
+ *   already accrued. Treating absence as `'ended'` would end a broadcast on a
+ *   route that simply got older; treating it as `'live'` would reset a genuine
+ *   two-strike sequence forever on a feed that intermittently omits it.
+ * - **`'live'` RESETS to zero**, which is what lets a rebroadcast revive and a
+ *   one-regeneration dropout heal — the same allowance `applyLiveStatuses`
+ *   makes when a guid reappears.
+ * - **`'pending'` counts toward ended.** A live item that has gone back to
+ *   scheduled is not broadcasting, and `streaming.ts` already refuses to meter
+ *   a `'pending'` item for exactly that reason. Counting it keeps the two
+ *   agreeing rather than leaving a context open on an item the engine would
+ *   never have opened one for.
+ */
+export function endedVerdict(
+  seen: number,
+  status: 'pending' | 'live' | 'ended' | null | undefined,
+): { seen: number; ended: boolean } {
+  if (status == null) return { seen, ended: seen >= STREAM_ENDED_OBSERVATIONS };
+  if (status === 'live') return { seen: 0, ended: false };
+  const next = seen + 1;
+  return { seen: next, ended: next >= STREAM_ENDED_OBSERVATIONS };
+}

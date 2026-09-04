@@ -55,7 +55,7 @@ import { sendBoost, pickRail, paidAny } from './boost';
 import { subscribeNwc } from './nwc';
 import { subscribeSpark } from './spark';
 import { subscribeWebln } from './webln';
-import { liveTargetSnapshot, subscribeLiveTarget, type LiveTarget } from './live-value';
+import { liveEndedGuid, liveTargetSnapshot, subscribeLiveTarget, type LiveTarget } from './live-value';
 import {
   accrue,
   accruedSats,
@@ -1378,10 +1378,27 @@ function tick() {
     // synthesized per-viewer.
     // A 'pending' live item is scheduled, not broadcasting — there is nothing
     // playing, so metering it would bill wall-clock against silence.
+    //
+    // AN ENDED BROADCAST IS INELIGIBLE FOR THE SAME REASON, and expressing it
+    // here rather than as its own branch is the whole change: an item that
+    // stops being eligible already falls out of `next`, and the line below
+    // turns that into `releaseContext(true)` — a force settle under the item's
+    // OWN metadata, with the kind:3369 receipt and the kind:33369 summary that
+    // go with it. No new control flow, and no second settle path to keep in
+    // step with the first.
+    //
+    // Without it the context stays open on a finished show. Nothing accrues —
+    // a dead stream stops advancing `positionSec` and `accrue` charges
+    // `min(wall Δ, position Δ)` — but the remainder sits unsettled until the
+    // listener happens to pause or navigate, so the artist is paid late for
+    // no reason. `liveEndedGuid()` is only set after two consecutive polls
+    // agreed, so a feed that drops its live item for one regeneration cannot
+    // close a show somebody is still listening to.
     const eligible =
       rate > 0
       && !isLiveStreamId(cur.episode.guid)
       && cur.episode.liveStatus !== 'pending'
+      && liveEndedGuid() !== cur.episode.guid
       && hasValueRecipients(value);
     if (eligible) {
       next = {

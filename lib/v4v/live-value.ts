@@ -29,7 +29,7 @@ import { useApp } from '../store';
 import { createObservable } from '../pubsub';
 import { hasValueRecipients, fnvHash } from '../util';
 import { recordLivePlay, livePlayedSnapshot } from '../live-played';
-import { trackBucket } from './stream-ledger';
+import { endedVerdict, STREAM_ENDED_OBSERVATIONS, trackBucket } from './stream-ledger';
 import { connectLiveValue, type LiveBlock } from './live-block';
 
 const POLL_MS = 20_000;
@@ -124,6 +124,20 @@ let unsubStore: (() => void) | null = null;
 let lastPollMs = 0;
 let inFlight = false;
 let target: LiveTarget | null = null;
+/**
+ * The guid of a live item this watcher has concluded is OVER, or null.
+ *
+ * A separate value rather than a field on `LiveTarget`, because a target is
+ * "who to pay right now" and this is "there is no longer anything to pay for" —
+ * and `detach()` sets the target to null, which already means something else
+ * entirely: no track is playing, so pay the show's own block. The engine has to
+ * be able to tell those apart, and today it cannot.
+ *
+ * Carries the guid, not a boolean, so a consumer can check it against the item
+ * it is actually metering. The watcher moves on to whatever plays next; a bare
+ * flag would leak across items.
+ */
+let endedGuid: string | null = null;
 
 /** Per-item state, reset whenever the live item being watched changes. */
 let watching: {
@@ -136,6 +150,15 @@ let watching: {
   /** Set once that block has been seen to CHANGE. See the comment below. */
   valueIsLive: boolean;
   failures: number;
+  /**
+   * Consecutive polls that ANSWERED and said the broadcast is over.
+   *
+   * Deliberately not folded into `failures` — see STREAM_ENDED_OBSERVATIONS in stream-ledger.ts. Reset
+   * to 0 by any poll reporting `'live'`, which is what makes a feed that drops
+   * its live item for one regeneration harmless, and what lets a rebroadcast
+   * revive the way `applyLiveStatuses` already allows.
+   */
+  endedSeen: number;
   /**
    * The feed guid of the SHOW being listened to, captured at attach.
    *
@@ -156,6 +179,19 @@ let watching: {
 
 export function liveTargetSnapshot(): LiveTarget | null {
   return target;
+}
+
+/**
+ * The guid of a live item whose broadcast this watcher has concluded is over,
+ * or null. Cleared as soon as anything else is watched.
+ *
+ * The engine uses it as a settle edge: an ended broadcast should pay out what
+ * it owes under its own metadata rather than idle until the listener happens to
+ * pause. It is only ever set after STREAM_ENDED_OBSERVATIONS consecutive polls
+ * agreed, so a single dropped `<podcast:liveItem>` cannot trip it.
+ */
+export function liveEndedGuid(): string | null {
+  return endedGuid;
 }
 
 /** Stable fingerprint of a value block: changes exactly when the payees do. */
@@ -249,6 +285,9 @@ function detach() {
   if (watching) {
     watching.closeSocket?.();
     applyToStore(watching.guid, watching.baseValue);
+    // Scoped to the item being dropped. Clearing unconditionally would erase a
+    // verdict about a DIFFERENT guid, and the engine reads this by guid.
+    if (endedGuid === watching.guid) endedGuid = null;
   }
   watching = null;
   setTarget(null);
@@ -346,6 +385,7 @@ async function poll(force = false) {
       baselineSig: null,
       valueIsLive: false,
       failures: 0,
+      endedSeen: 0,
       socketOwns: false,
     };
   }
@@ -382,10 +422,35 @@ async function poll(force = false) {
       split: ValueTimeSplit | null;
       signal: LiveTarget['signal'];
       value: ValueBlock | null;
+      // Already on the wire — the route answers `'ended'` when the guid is no
+      // longer among the feed's live items, and echoes the item's own status
+      // otherwise. This file ignored it until the streaming engine needed a
+      // settle edge for the end of a broadcast.
+      liveStatus?: 'pending' | 'live' | 'ended' | null;
     };
     // The user may have moved on during the round trip.
     if (watching !== w || useApp.getState().current?.episode.guid !== guid) return;
     w.failures = 0;
+
+    // THE BROADCAST ENDING IS A SETTLE EDGE, and this is the only place that
+    // observes it while someone is listening. `applyLiveStatuses` also detects
+    // it, but it runs from <EpisodeList>, which unmounts the moment an episode
+    // opens — so during playback nothing else is watching.
+    //
+    // Counted, never acted on first sight — the verdict is endedVerdict() in
+    // stream-ledger.ts, pure so check:stream can pin it. A poll
+    // that says `'live'` resets the count, which is what lets a feed drop its
+    // live item for one regeneration, and lets a rebroadcast revive.
+    //
+    // `detach()` is deliberately NOT called here. It restores the show's own
+    // block and nulls the target, which the engine reads as "no track, pay the
+    // show" — the opposite of what has happened. The engine settles and closes
+    // its context off `liveEndedGuid()`, and the watcher stops being watchable
+    // on its own once the store's `liveStatus` moves off `'live'`.
+    const verdict = endedVerdict(w.endedSeen, data.liveStatus);
+    w.endedSeen = verdict.seen;
+    if (verdict.ended) endedGuid = guid;
+    else if (endedGuid === guid) endedGuid = null;
     // A live socket outranks anything re-reading the feed can tell us. Keep
     // polling (it is how we notice the broadcast ending) but don't write.
     if (w.socketOwns) return;
@@ -507,6 +572,15 @@ function installDiagnostic() {
         ? { opened: !!watching.closeSocket, delivering: watching.socketOwns }
         : null,
       pollFailures: watching?.failures ?? 0,
+      // The broadcast-ended verdict, and how close it is to being reached.
+      // Worth a line for the same reason `pollFailures` gets one: once
+      // `broadcastEnded` is true the streaming engine drops the item from
+      // `eligible` and closes its context, so the meter stops — and from the
+      // outside that is indistinguishable from streaming never having engaged,
+      // from a zero rate, and from a stalled position clock.
+      endedObservations: watching?.endedSeen ?? 0,
+      endedNeededToConclude: STREAM_ENDED_OBSERVATIONS,
+      broadcastEnded: !!cur?.episode.guid && endedGuid === cur.episode.guid,
       // How many blocks this broadcast has logged for <LivePlayedTracks>. A
       // moving target with this stuck at 0 is the tell that every block is
       // being skipped as unnameable — the list is empty for a reason, not
