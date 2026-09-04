@@ -105,6 +105,30 @@ createRelay({
   onEvent: (e) => { if (e.kind === 10333) published.push(e); },
 });
 
+
+// ---- a relay that REFUSES, so the publish is genuinely partial -------------
+//
+// A single always-accepting relay is not the shape this feature meets. Real
+// publish sets are PARTIAL: measured on a live account on 2026-09-03, three of
+// seven relays held the current kind:10333, one held a copy twenty hours older,
+// two answered and held nothing, and one never answered. `assertPublished`
+// enforces a floor of ONE relay, so with a single fixture relay every scenario
+// below runs against the only case where the floor and the ceiling coincide.
+//
+// This one accepts the connection and answers every EVENT with `OK false`,
+// which is how an operator's write policy actually reads on the wire. Two
+// things then get proved that one relay cannot: the whole cycle still succeeds
+// when a relay refuses, and `<FavoritesSyncNotice>` says so (scenario 2b).
+import { WebSocketServer } from 'ws';
+const BAD_PORT = PORT + 1;
+new WebSocketServer({ host: '127.0.0.1', port: BAD_PORT }).on('connection', (sock) => {
+  sock.on('message', (raw) => {
+    let m; try { m = JSON.parse(raw.toString()); } catch { return; }
+    if (m[0] === 'EVENT') sock.send(JSON.stringify(['OK', m[1].id, false, 'blocked: test policy']));
+    if (m[0] === 'REQ') sock.send(JSON.stringify(['EOSE', m[1]]));
+  });
+});
+
 // ---- CDP -----------------------------------------------------------------
 const list = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
 const page = list.find((t) => t.type === 'page');
@@ -191,7 +215,7 @@ const check = (l, a, b) => { const ok = JSON.stringify(a) === JSON.stringify(b);
 
 await send('Page.navigate', { url: APP }); await wait(2500);
 await js(`(() => { localStorage.clear();
-  localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
+  localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`, `ws://127.0.0.1:${PORT + 1}`]))});
   localStorage.setItem('bmb:fav_private_optin', '1');
   localStorage.setItem('bmb:npub', ${JSON.stringify(npub)});
   localStorage.setItem('bmb:signer', 'nip07');
@@ -238,6 +262,19 @@ check('the album is in it', tags.some((t) => t[1] === 'podcast:guid:fce40d63-ef3
 check('the "?"-bearing track guid survived intact',
   tags.some((t) => t[1] === 'podcast:item:guid:https://example.com/ep?id=42&utm=x'), true);
 check('and the plaintext we signed carried no raw "?"', plain.includes('?'), false);
+
+
+// ---- the partial-acceptance notice ---------------------------------------
+console.log('\n--- 2b. PARTIAL ACCEPTANCE: one relay refuses, and it must be said ---');
+const reach = JSON.parse(await js(`JSON.stringify({
+  text: (document.body.innerText.match(/Saved to \\d+ of \\d+ relays[^]*?depend on one\\./) || [''])[0],
+  degraded: /couldn.t (confirm|open)/i.test(document.body.innerText),
+})`));
+console.log('    ', JSON.stringify(reach));
+check('the reach notice is on screen', /Saved to 1 of 2 relays/.test(reach.text), true);
+check('...and it names the relay that refused', /127\.0\.0\.1:/.test(reach.text), true);
+check('...and it does NOT raise a degraded warning', reach.degraded, false);
+
 
 console.log('\n--- 3. IDEMPOTENCE: reload twice, created_at must not move ---');
 const at = last.created_at, count = published.length;

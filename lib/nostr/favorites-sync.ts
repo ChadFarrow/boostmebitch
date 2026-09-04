@@ -236,6 +236,11 @@ export function syncOptionsFor(identity: NostrIdentity): SyncOptions {
     // a partial failure is not expressible and a single flag cannot lie.
     onSynced: (baseline) => recordFavoritesBaseline(identity, baseline),
     onDegraded: (reason) => useApp.getState().setFavoritesSync('degraded', reason),
+    // Distinct from both of the above, and not a third failure channel: the
+    // publish SUCCEEDED. This says how widely, which `assertPublished`'s
+    // one-relay floor cannot. `<FavoritesSyncNotice>` shows it only when the
+    // set is incomplete, so a clean publish stays silent.
+    onReach: (reach) => useApp.getState().setFavoritesReach(reach),
   };
 }
 
