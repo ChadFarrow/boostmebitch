@@ -1,6 +1,6 @@
 # Zapstore listing — https://zapstore.dev
 #
-# `zsp publish -y zapstore.yaml` reads this, parses the APK named by
+# `zsp publish --quiet zapstore.yaml` reads this, parses the APK named by
 # release_source, uploads the media to Blossom and signs the NIP-82 app
 # (32267), release (30063) and file-metadata (3063) events. The publishing
 # identity comes from SIGN_WITH in the environment, never from this file.

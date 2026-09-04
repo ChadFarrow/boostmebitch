@@ -6,9 +6,10 @@
 #
 # Nothing publishes without a tag, and the `publish` toggle cannot override
 # that — it only decides whether a run ALREADY on a tag ref publishes.
-# `workflow_dispatch` on a branch builds, checks and uploads the APK as an
-# artifact, so the whole path can be exercised before any tag exists and before
-# the Zapstore signing key does.
+# `workflow_dispatch` on a branch builds, checks, dry-runs the Zapstore listing
+# against the built APK and uploads the APK as an artifact, so the whole path —
+# zsp included — can be exercised before any tag exists and before the Zapstore
+# signing key does.
 name: Android release
 
 on:
@@ -271,6 +272,63 @@ jobs:
             exit 1
           fi
 
+      # Installed on EVERY run, not only when publishing, because the dry run
+      # below is the only thing standing between a tag push and a publish step
+      # nobody has ever executed. The pin is the same one the publish step uses.
+      - name: Install zsp
+        run: |
+          set -euo pipefail
+          go install github.com/zapstore/zsp@${ZSP_VERSION}
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      # Two dry runs against the APK that was just built, both keyless and both
+      # sending nothing. Together they are docs/android.md's runbook step 5,
+      # moved into CI so it cannot be forgotten:
+      #
+      #   --check   loads zapstore.yaml, validates it, and proves release_source
+      #             resolves to a parseable APK.
+      #   --offline with SIGN_WITH set to the npub zapstore.yaml declares builds
+      #             the kind 32267/30063/3063 events UNSIGNED and writes them to
+      #             stdout instead of uploading or publishing. That exercises
+      #             what --check does not: every image path resolves, the
+      #             CHANGELOG has a section for this version, the icon URL
+      #             downloads, and the declared pubkey passes zsp's own
+      #             mismatch check.
+      #
+      # This step exists because the publish step shipped with `zsp publish -y`,
+      # which zsp v0.4.9 rejects ("flag provided but not defined: -y") — and
+      # nothing before a real tag push would ever have run it. A tag would have
+      # built, verified, created the GitHub release, and failed on the last
+      # step. The CI form is --quiet; -y was never a zsp flag.
+      - name: Dry-run the Zapstore listing against the built APK
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          zsp publish --check zapstore.yaml
+          NPUB=$(awk '$1 == "pubkey:" { print $2 }' zapstore.yaml)
+          if [ -z "$NPUB" ]; then
+            echo "::error::zapstore.yaml declares no pubkey, so the dry run has no identity to build events for."
+            exit 1
+          fi
+          # Events go to stdout, the upload manifest (and any error) to stderr.
+          # Both are kept and the stderr half is printed on failure, because a
+          # `set -e` exit on the redirect alone would hide zsp's own message.
+          EVENTS="$RUNNER_TEMP/zapstore-events.jsonl"
+          STDERR="$RUNNER_TEMP/zapstore-offline-stderr.txt"
+          if ! SIGN_WITH="$NPUB" zsp publish --quiet --offline zapstore.yaml > "$EVENTS" 2> "$STDERR"; then
+            echo "::error::zsp publish --offline failed. Its stderr:"
+            cat "$STDERR"
+            exit 1
+          fi
+          COUNT=$(grep -c '"kind"' "$EVENTS" || true)
+          echo "zsp built $COUNT unsigned event(s) for $NPUB; nothing was uploaded or published."
+          if [ "$COUNT" -lt 1 ]; then
+            echo "::error::zsp produced no events in --offline mode. Its stderr:"
+            cat "$STDERR"
+            exit 1
+          fi
+
       - name: Attach the APK to the GitHub release
         if: steps.version.outputs.publish == 'true'
         env:
@@ -287,15 +345,22 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Skipped rather than failed when the key is absent: a repository
-          # without it should still build and verify. The publish is the only
-          # step that needs an identity.
+          # FAIL rather than skip when the key is absent. This step only runs
+          # once `publish` has been decided true — a tag push, or the toggle on
+          # a tag ref — so "no key" here is never a repository that merely
+          # wants to build and verify; those runs never reach this step. It
+          # used to `exit 0` with a notice, which is the pattern CLAUDE.md
+          # names under "a guard that silently withholds must say so": the run
+          # goes green, the GitHub release exists, and Zapstore has nothing.
           if [ -z "${SIGN_WITH:-}" ]; then
-            echo "::notice::ZAPSTORE_SIGN_WITH is not set — built and verified, nothing published."
-            exit 0
+            echo "::error::ZAPSTORE_SIGN_WITH is not set, so this tag cannot publish. Add the repository secret (the key for the pubkey zapstore.yaml declares) and re-run this workflow — see docs/android.md."
+            exit 1
           fi
-          go install github.com/zapstore/zsp@${ZSP_VERSION}
-          "$(go env GOPATH)/bin/zsp" publish -y zapstore.yaml
+          # --quiet is zsp's CI mode: no prompts, no spinners, auto-confirm.
+          # (`-y` was never a zsp flag; v0.4.9 rejects it outright.) In quiet
+          # mode a missing certificate-to-identity proof is a warning, not a
+          # prompt — link it once by hand afterwards, per docs/android.md.
+          zsp publish --quiet zapstore.yaml
 
       - name: Remove the keystore
         if: always()
