@@ -240,29 +240,6 @@ interface AppState {
    * notice words them differently because one is a fault and one is a choice.
    */
   favoritesSyncReason: FavoritesSyncReason | null;
-  /**
-   * WHICH relays took the last favorites publish, and which refused.
-   *
-   * A different question from `favoritesSync`, and it needs its own field
-   * because the status flag deliberately cannot express it: `assertPublished`
-   * throws only when ZERO relays accept, so every publish from one relay to all
-   * of them reports the identical 'ok'. Partial acceptance is an ordinary Nostr
-   * outcome — a relay may refuse on its own write policy, and four of the seven
-   * this account publishes to were measured doing exactly that on 2026-09-03 —
-   * but on kind:10333 it is the one that matters, because that event has no
-   * history and no undo. A list living on one relay is one operator away from
-   * being the 20-hour-old copy on the next relay.
-   *
-   * The boost modal has shown `Published to N/M relays` since it shipped
-   * (`<PublishStatus>`); this is the same fact for the event that cannot be
-   * republished from anywhere else.
-   *
-   * Null until a publish lands. A cycle that REFUSED to publish leaves it
-   * alone rather than writing zeros — that is `favoritesSync`'s question, and
-   * a "0 of 7" over a cycle that deliberately wrote nothing would be a lie.
-   */
-  favoritesReach: { accepted: string[]; failed: string[] } | null;
-  setFavoritesReach: (reach: { accepted: string[]; failed: string[] }) => void;
   setFavoritesSync: (s: FavoritesSyncStatus, reason?: FavoritesSyncReason) => void;
   /** Back to 'idle', for the identity teardowns in nostr-auth. Kept as its own
    *  call so the three places that clear it can't drift. Clears
@@ -633,18 +610,13 @@ export const useApp = create<AppState>((set, get) => ({
   favoritesSyncReason: null,
   favoritesPrivateHalf: 'unknown',
   setFavoritesPrivateHalf: (h) => set({ favoritesPrivateHalf: h }),
-  favoritesReach: null,
-  setFavoritesReach: (reach) => set({ favoritesReach: reach }),
   // The reason is cleared on every non-degraded status rather than left behind:
   // a stale "your signer couldn't decrypt this" sitting under a healthy 'ok' is
   // a notice about a problem that is over, which is the same lie as a silent
   // withholding pointed the other way.
   setFavoritesSync: (s, reason) =>
     set({ favoritesSync: s, favoritesSyncReason: s === 'degraded' ? (reason ?? null) : null }),
-  // The reach is cleared here too. It names relays that took ANOTHER account's
-  // list, so carrying it across an identity teardown would report the previous
-  // user's publish under the new one's name.
-  resetFavoritesSync: () => set({ favoritesSync: 'idle', favoritesSyncReason: null, favoritesReach: null, favoritesPrivateHalf: 'unknown' }),
+  resetFavoritesSync: () => set({ favoritesSync: 'idle', favoritesSyncReason: null, favoritesPrivateHalf: 'unknown' }),
 
   favPrivacyPrompt: false,
   setFavPrivacyPrompt: (open) => set({ favPrivacyPrompt: open }),
