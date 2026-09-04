@@ -43,11 +43,11 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/nostr-index.md`](docs/nostr-index.md) + [`docs/nostr.md`](docs/nostr.md) (read index section) + [`docs/feeds.md`](docs/feeds.md) (batch section) | `services/nostr-index/`, `lib/nostr/index-client.ts`, `lib/nostr-index-server.ts`, `lib/pi-batch.ts`, `app/api/nostr/index/`, the two `batch/` routes, and the `warm*Cache` half of `lib/podcast-meta.ts` |
 | [`docs/security.md`](docs/security.md) | `lib/safe-fetch.ts`, `safe-url-attr.ts`, `sanitizeShowNotes`, `app/api/transcript`, `app/api/nostr/site-sign`, `next.config.mjs`, and **any input that accepts a Nostr identifier** (`lib/nostr/npub-input.ts` — `looksLikeSecretKey`) |
 | [`docs/ops.md`](docs/ops.md) | Google Cloud console, DNS, OAuth consent screen, Vercel env vars |
-| [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, `android/twa-manifest.json`, `zapstore.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest.json` |
+| [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, **both** `android/twa-manifest*.json` and `zapstore*.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest*.json` |
 
 ## Names
 
-**Every one of these is now PER-BRAND and lives in `lib/brand.ts`. Never hard-code one again — import `BRAND`.** One repo builds two deploys: `boostmebitch.com` (`NEXT_PUBLIC_BRAND` unset) and the family-friendly `boostmebuddy.com` (`NEXT_PUBLIC_BRAND=buddy`). A hard-coded name is not a style slip — it is the other brand's word appearing on the family-friendly site, or in a boostagram an artist's aggregator prints, or in the `client` tag of a public kind:1 that can never be edited. Pinned by `npm run check:brand`, which asserts no field of the buddy table carries the other brand's word.
+**Every one of these is now PER-BRAND and lives in `lib/brand.ts`. Never hard-code one again — import `BRAND`.** One repo builds two deploys — `boostmebitch.com` (`NEXT_PUBLIC_BRAND` unset) and the family-friendly `boostmebuddy.com` (`NEXT_PUBLIC_BRAND=buddy`) — and **two Android apps, of which only `com.boostmebuddy` is listed on Zapstore**; a TWA wraps an ORIGIN, so a package id can never be rebranded after its first publish. A hard-coded name is not a style slip — it is the other brand's word appearing on the family-friendly site, or in a boostagram an artist's aggregator prints, or in the `client` tag of a public kind:1 that can never be edited. Pinned by `npm run check:brand`, which asserts no field of the buddy table carries the other brand's word.
 
 - **`boostmebitch` / `boostmebuddy`** — repo and npm package name (the repo keeps the original), and `BRAND.userAgent`, the `APP_NAME` default for the Podcast Index `User-Agent`.
 - **"Boost Me Bitch" / "Boost Me Buddy"** — `BRAND.displayName`: the page header and `<title>`.
@@ -102,7 +102,7 @@ npm run dev / build / start / lint
 | `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load, forever |
 | `check:playlistdb` | `dbValueBlock`, `dbRowToEpisode` — another app's DB row as a track we pay | a cast type-checks and pays the wrong payee |
 | `check:favbackup` | `lib/favorites-export.ts` — what a backup file must prove before we republish it | a tampered file republishes a list nobody signed |
-| `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName` | the other brand's word on the family-friendly deploy, permanently |
+| `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a background cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch, looked correct in review, and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 
