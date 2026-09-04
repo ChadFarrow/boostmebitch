@@ -40,8 +40,18 @@ const ALLOWED: Allowed[] = [
   // client falls back to relays — so a cached 503 would extend that refusal
   // past its usefulness, which is why this is the shortest window here.
   { pattern: /^\/feed\/live$/, sMaxAge: 15 },
-  { pattern: /^\/feed\/podcast\/[^/]{1,256}$/, sMaxAge: 60 },
-  { pattern: /^\/feed\/episode\/[^/]{1,256}$/, sMaxAge: 60 },
+  // `[^/?#]`, NOT `[^/]`. These two are the only patterns here with a free-text
+  // segment, and excluding just the slash let a `?` through — after which the
+  // path is concatenated straight into the upstream URL below, so the caller's
+  // own query string arrives AHEAD of `forwarded` and defeats all three guards
+  // in this file at once: the `params` allowlist, MAX_Q_LEN and MAX_PARAM_LEN.
+  // `path=/feed/podcast/<guid>?q=<anything>` was a free-text parameter of any
+  // length on its way to a SQL LIKE, and `?j=1`, `?j=2`, … were unlimited
+  // distinct CDN keys for one document, which is the amplification the `q`
+  // note below says the per-path scoping exists to prevent. `#` is excluded on
+  // the same argument, from the other end: it would silently truncate.
+  { pattern: /^\/feed\/podcast\/[^/?#]{1,256}$/, sMaxAge: 60 },
+  { pattern: /^\/feed\/episode\/[^/?#]{1,256}$/, sMaxAge: 60 },
   // Per-visitor pages: still shared (a boost explorer is public), but a shorter
   // window so a fresh boost shows up promptly.
   { pattern: /^\/feed\/by-author\/[0-9a-f]{64}$/, sMaxAge: 15 },

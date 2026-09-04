@@ -6,7 +6,7 @@ import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRem
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, PLAYLIST_MEDIUMS } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 
@@ -1156,7 +1156,19 @@ function parseFunding(channelXml: string): FundingLink[] | undefined {
   const re = /<podcast:funding\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:funding>)/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(channelXml))) {
-    const url = readAttr(m[1], 'url');
+    // Through `httpUrl`, for the same reason `parseLiveValue` does it: this is
+    // an attacker-chosen attribute that ends up as a live `href` on the SUPPORT
+    // button, and **React does not block a `javascript:` href — it only warns
+    // in dev**. This origin's localStorage holds the NWC spending credential
+    // and the nsec, so one press of a feed's own support link would run the
+    // feed author's script against the user's wallet. The allowlist fails
+    // closed: an unparseable or non-http(s) url drops the entry entirely,
+    // which renders no button rather than a dead one.
+    //
+    // At the PARSE boundary rather than at the two render sites, so a third
+    // surface that shows a funding link inherits the guard instead of
+    // re-deciding it.
+    const url = httpUrl(readAttr(m[1], 'url'));
     if (!url) continue;
     const message = m[2] != null ? decodeXmlText(m[2]) : '';
     out.push({ url, message: message || undefined });
@@ -1170,8 +1182,12 @@ function fundingFromPi(f: any): FundingLink[] | undefined {
   const raw = Array.isArray(f.funding) ? f.funding : f.funding ? [f.funding] : [];
   const out: FundingLink[] = [];
   for (const x of raw) {
-    if (typeof x?.url === 'string' && x.url) {
-      out.push({ url: x.url, message: typeof x.message === 'string' && x.message ? x.message : undefined });
+    // Same allowlist as `parseFunding` above, and needed just as much: Podcast
+    // Index mirrors the feed's attribute verbatim, so PI is a carrier of the
+    // feed author's string rather than a filter on it.
+    const url = httpUrl(typeof x?.url === 'string' ? x.url : undefined);
+    if (url) {
+      out.push({ url, message: typeof x.message === 'string' && x.message ? x.message : undefined });
     }
   }
   return out.length ? out : undefined;
@@ -1783,14 +1799,28 @@ export async function resolveValueTimeSplits(
   // Over the cap, entries pass through unresolved — the same value the
   // per-entry `catch` already yields, and a case the UI handles: an unresolved
   // remote item falls back to the show's block and says so on screen.
-  let budget = MAX_RESOLVED_SPLITS;
-  const resolved = await Promise.all(
-    splits.map(async (s, i): Promise<ValueTimeSplit> => {
+  // ...and cap the CONCURRENCY separately, which the budget above does not do.
+  // `budget` decides how many entries are resolved; it says nothing about how
+  // many run at once, and `Promise.all` starts all of them. Each one can reach
+  // the publisher walk in lib/musicl-resolver.ts, which had the identical hole,
+  // so the two multiplied: 200 x 100 outbound fetches from one request, each
+  // admitting 8 MB. The item cap and the fan-out cap are two different caps.
+  //
+  // Walk INDICES rather than splits because `mapLimit` passes only the item —
+  // `probeIdx` and the budget are both positional, and widening that signature
+  // is not an option: `check:fanout` pins it by running the shipping function.
+  const budgeted = new Set<number>();
+  for (let i = 0; i < splits.length && budgeted.size < MAX_RESOLVED_SPLITS; i++) {
+    if (i !== probeIdx) budgeted.add(i);
+  }
+  const resolved = await mapLimit(
+    splits.map((_, i) => i),
+    PI_FANOUT,
+    async (i): Promise<ValueTimeSplit> => {
       if (i === probeIdx) return probeResolved;
-      if (budget <= 0) return s;
-      budget--;
-      try { return await resolveOneSplit(s); } catch { return s; }
-    }),
+      if (!budgeted.has(i)) return splits[i];
+      try { return await resolveOneSplit(splits[i]); } catch { return splits[i]; }
+    },
   );
   if (splits.length > MAX_RESOLVED_SPLITS) {
     console.warn(

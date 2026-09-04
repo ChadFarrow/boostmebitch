@@ -337,43 +337,66 @@ function StreamCard({
     profile?.display_name ?? profile?.name ?? stream.npub.slice(0, 12) + '…';
   const image = stream.image ?? profile?.picture;
 
+  // Artwork + status + title. Written once and mounted into either a <button>
+  // or a plain <div> below, because whether this is a control depends on
+  // `playable` and duplicating the markup is how the two copies drift.
+  const header = (
+    <>
+      <PodcastCover
+        image={image}
+        title={stream.title}
+        seed={stream.id}
+        className="w-10 h-10 rounded object-cover flex-shrink-0"
+      />
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1 mb-0.5 flex-wrap">
+          {stream.status === 'live' ? (
+            <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt text-[10px] px-1 py-0">
+              ● LIVE
+            </span>
+          ) : (
+            <span className="stamp text-bolt border-bolt/60 text-[10px] px-1 py-0">
+              UPCOMING
+            </span>
+          )}
+          {stream.currentViewers != null && stream.currentViewers > 0 && (
+            <span className="text-[10px] text-muted font-mono">
+              {stream.currentViewers} 👁
+            </span>
+          )}
+        </div>
+        <p className="text-sm font-display leading-tight line-clamp-2" title={stream.title}>
+          {stream.title}
+        </p>
+      </div>
+    </>
+  );
+
   return (
     <article
       className={`flex-shrink-0 w-64 card p-3 flex flex-col gap-2 ${
-        playable ? 'cursor-pointer hover:border-bone/30 transition-colors' : ''
+        playable ? 'hover:border-bone/30 transition-colors' : ''
       }`}
-      onClick={playable ? onOpen : undefined}
     >
-      {/* Header row: artwork + status badge */}
-      <div className="flex items-start gap-2">
-        <PodcastCover
-          image={image}
-          title={stream.title}
-          seed={stream.id}
-          className="w-10 h-10 rounded object-cover flex-shrink-0"
-        />
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-1 mb-0.5 flex-wrap">
-            {stream.status === 'live' ? (
-              <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt text-[10px] px-1 py-0">
-                ● LIVE
-              </span>
-            ) : (
-              <span className="stamp text-bolt border-bolt/60 text-[10px] px-1 py-0">
-                UPCOMING
-              </span>
-            )}
-            {stream.currentViewers != null && stream.currentViewers > 0 && (
-              <span className="text-[10px] text-muted font-mono">
-                {stream.currentViewers} 👁
-              </span>
-            )}
-          </div>
-          <p className="text-sm font-display leading-tight line-clamp-2" title={stream.title}>
-            {stream.title}
-          </p>
-        </div>
-      </div>
+      {/* Header row: artwork + status badge.
+          `onOpen` used to live on the <article> itself, which made opening the
+          fullscreen player pointer-only — the PLAY and BOOST buttons below were
+          the only things a keyboard could reach, so the card's own action was
+          the one part of it that could not be used without a mouse. It is a
+          real <button> here, and only when there is something to open; an
+          upcoming or URL-less card is not a control and must not take focus. */}
+      {playable ? (
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-label={`Open ${stream.title}`}
+          className="flex items-start gap-2 text-left cursor-pointer hover:opacity-90 transition-opacity"
+        >
+          {header}
+        </button>
+      ) : (
+        <div className="flex items-start gap-2">{header}</div>
+      )}
 
       {/* Host name */}
       <p className="text-xs text-muted truncate">by {displayName}</p>

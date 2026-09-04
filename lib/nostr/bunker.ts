@@ -32,6 +32,7 @@ import {
 import {
   generateSecretKey,
   getPublicKey,
+  SimplePool,
   type Event,
   type EventTemplate,
 } from 'nostr-tools';
@@ -196,6 +197,20 @@ async function trackBunkerCall<T>(p: Promise<T>, label: string): Promise<T> {
 export interface BunkerAdapter {
   /** Underlying nostr-tools BunkerSigner. Exposed for close() in disconnect. */
   inner: BunkerSigner;
+  /**
+   * The relay pool this connection runs on, which THIS module owns.
+   *
+   * `BunkerSigner` builds its own `SimplePool` when none is passed, and that
+   * one is `private` — unreachable, and never closed by `inner.close()`, which
+   * only ends the kind:24133 subscription. So the sockets outlived every
+   * sign-out and every reconnect. Passing a pool in makes the lifetime ours:
+   * `closeBunkerTransport` in lib/nostr/signer.ts destroys it alongside the
+   * signer, and the connect paths below destroy it when a handshake fails.
+   *
+   * Never share this with the app's long-lived pool from lib/nostr/pool.ts —
+   * it is destroyed outright, which would take the shared connections with it.
+   */
+  pool: SimplePool;
   /** Stable across calls — fetched once via inner.getPublicKey(). */
   pubkey: string;
   /** The window.nostr-shaped surface we polyfill. */
@@ -292,14 +307,31 @@ export async function connectBunkerFromUri(
   // and retry once with a shorter window. relay.primal.net buffers recent
   // ACKs, so the fresh subscription usually picks it up within a few
   // seconds. On any other error (timeout, parse failure) throw immediately.
-  async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string }> {
-    const s = BunkerSigner.fromBunker(sk, bp, { onauth: onAuthUrl });
-    await withTimeout(s.connect(), timeoutMs, 'connect');
-    const pk = await withTimeout(s.getPublicKey(), BUNKER_CALL_TIMEOUT_MS, 'get_public_key');
-    return { inner: s, pubkey: pk };
+  // **A FAILED handshake must take its transport down with it.** `fromBunker`
+  // subscribes to the bunker relays the moment it is called, so an attempt that
+  // then times out leaves a live subscription and up to four open sockets with
+  // nothing holding a reference to them. The retry below made it two per call,
+  // and the control that reaches this path is RECONNECT in the account menu —
+  // pressed repeatedly on iOS, which suspends the socket. They accumulated for
+  // the life of the tab until the relay refused the connection the reconnect
+  // needed, which presents as the reconnect simply not working.
+  async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string; pool: SimplePool }> {
+    const pool = new SimplePool();
+    const s = BunkerSigner.fromBunker(sk, bp, { onauth: onAuthUrl, pool });
+    try {
+      await withTimeout(s.connect(), timeoutMs, 'connect');
+      const pk = await withTimeout(s.getPublicKey(), BUNKER_CALL_TIMEOUT_MS, 'get_public_key');
+      return { inner: s, pubkey: pk, pool };
+    } catch (e) {
+      // Both halves, in that order, and neither may throw over the real error:
+      // `close()` ends the subscription, `destroy()` closes the sockets.
+      try { await s.close(); } catch { /* ignore */ }
+      try { pool.destroy(); } catch { /* ignore */ }
+      throw e;
+    }
   }
 
-  let conn: { inner: BunkerSigner; pubkey: string };
+  let conn: { inner: BunkerSigner; pubkey: string; pool: SimplePool };
   try {
     conn = await attempt(BUNKER_CONNECT_TIMEOUT_MS);
   } catch (e) {
@@ -311,6 +343,7 @@ export async function connectBunkerFromUri(
   pendingClientSks.delete(cleaned);
   return {
     inner: conn.inner,
+    pool: conn.pool,
     pubkey: conn.pubkey,
     nostrApi: adaptToWindowNostr(conn.inner),
     uri: cleaned,
@@ -387,20 +420,39 @@ export function startNostrConnect(
   }
   const memoUri = uri;
   const ready = (async () => {
-    const signer = await BunkerSigner.fromURI(
-      clientSk,
-      memoUri,
-      { onauth: onAuthUrl },
-      NOSTRCONNECT_TIMEOUT_MS,
-    );
-    const pubkey = await withTimeout(
-      signer.getPublicKey(),
-      BUNKER_CALL_TIMEOUT_MS,
-      'get_public_key',
-    );
+    // Our pool, for the reason on `BunkerAdapter.pool`: this flow waits up to
+    // NOSTRCONNECT_TIMEOUT_MS for a signer that may never scan the QR at all,
+    // so the abandoned-transport case is the EXPECTED one here rather than the
+    // exception.
+    const pool = new SimplePool();
+    let signer: BunkerSigner;
+    try {
+      signer = await BunkerSigner.fromURI(
+        clientSk,
+        memoUri,
+        { onauth: onAuthUrl, pool },
+        NOSTRCONNECT_TIMEOUT_MS,
+      );
+    } catch (e) {
+      try { pool.destroy(); } catch { /* ignore */ }
+      throw e;
+    }
+    let pubkey: string;
+    try {
+      pubkey = await withTimeout(
+        signer.getPublicKey(),
+        BUNKER_CALL_TIMEOUT_MS,
+        'get_public_key',
+      );
+    } catch (e) {
+      try { await signer.close(); } catch { /* ignore */ }
+      try { pool.destroy(); } catch { /* ignore */ }
+      throw e;
+    }
     nostrconnectMemo = null;
     return {
       inner: signer,
+      pool,
       pubkey,
       nostrApi: adaptToWindowNostr(signer),
       uri,
@@ -439,13 +491,22 @@ export async function restoreBunkerFromStorage(): Promise<BunkerAdapter | null> 
   }
   const clientSk = hexToBytes(cached.clientSk);
   const bp = pointer;
-  async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string }> {
-    const s = BunkerSigner.fromBunker(clientSk, bp);
-    await withTimeout(s.connect(), timeoutMs, 'reconnect');
-    const pk = await withTimeout(s.getPublicKey(), BUNKER_CALL_TIMEOUT_MS, 'get_public_key');
-    return { inner: s, pubkey: pk };
+  // Same ownership and same teardown as `connectBunker`'s attempt above — and
+  // this is the one the Reconnect button actually calls.
+  async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string; pool: SimplePool }> {
+    const pool = new SimplePool();
+    const s = BunkerSigner.fromBunker(clientSk, bp, { pool });
+    try {
+      await withTimeout(s.connect(), timeoutMs, 'reconnect');
+      const pk = await withTimeout(s.getPublicKey(), BUNKER_CALL_TIMEOUT_MS, 'get_public_key');
+      return { inner: s, pubkey: pk, pool };
+    } catch (e) {
+      try { await s.close(); } catch { /* ignore */ }
+      try { pool.destroy(); } catch { /* ignore */ }
+      throw e;
+    }
   }
-  let conn: { inner: BunkerSigner; pubkey: string };
+  let conn: { inner: BunkerSigner; pubkey: string; pool: SimplePool };
   try {
     conn = await attempt(BUNKER_CONNECT_TIMEOUT_MS);
   } catch (e) {
@@ -455,6 +516,7 @@ export async function restoreBunkerFromStorage(): Promise<BunkerAdapter | null> 
   }
   return {
     inner: conn.inner,
+    pool: conn.pool,
     pubkey: conn.pubkey,
     nostrApi: adaptToWindowNostr(conn.inner),
     uri: cached.uri,

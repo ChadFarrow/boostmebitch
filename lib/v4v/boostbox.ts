@@ -22,6 +22,7 @@
 
 import { nip19 } from 'nostr-tools';
 import type { Boostagram, ValueRecipient } from '@/lib/types';
+import { httpUrl } from '@/lib/util';
 
 /**
  * How long a leg will wait for BoostBox before paying without a `desc`.
@@ -139,7 +140,18 @@ export async function storeBoostMetadata(args: {
     if (!res.ok) return noDesc(args.recipient.address, `proxy returned ${res.status}`);
     const data = (await res.json()) as Partial<BoostBoxResponse>;
     if (!data?.desc || !data?.url) return noDesc(args.recipient.address, 'no desc in response');
-    return { desc: data.desc, url: data.url };
+    // The url is rendered as an `href` by <BoostCard> AND persisted into
+    // `StoredBoost.legs`, so an unchecked value outlives the request that
+    // produced it — it sits in the user's own boost history until that entry
+    // is evicted. This is a third-party service, so its answer gets the same
+    // scheme allowlist every other external url in this app goes through;
+    // React would render a `javascript:` href without complaint.
+    //
+    // A rejected url is not a failure: `desc` is the part that carries the
+    // metadata onto the invoice, and the link is decoration on top of it.
+    const url = httpUrl(data.url);
+    if (!url) return { desc: data.desc, url: '' };
+    return { desc: data.desc, url };
   } catch (e) {
     return noDesc(args.recipient.address, e instanceof Error ? e.message : String(e));
   }

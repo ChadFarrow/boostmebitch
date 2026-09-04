@@ -49,7 +49,11 @@ export function activateAmberSigner(pubkey?: string): AmberSigner {
     throw new Error('Amber signer requires a browser environment');
   }
   captureOriginal();
-  // Drop any other polyfill first — only one signer at a time.
+  // Drop any other polyfill first — only one signer at a time. The bunker is
+  // CLOSED rather than merely dropped: it owns a live relay subscription, so
+  // nulling the reference alone would leave it running unreachable. Today the
+  // sign-out paths close first, which is what kept this latent.
+  closeBunkerTransport();
   bunkerInstance = null;
   localInstance = null;
   amberInstance = new AmberSigner(pubkey);
@@ -78,11 +82,41 @@ export function getActiveAmber(): AmberSigner | null {
  * Install the BunkerAdapter as window.nostr. The adapter's `nostrApi`
  * already matches the expected shape, so we install it directly.
  */
+/**
+ * Close the NIP-46 transport `bunkerInstance` currently holds, if any.
+ *
+ * **Every path that stops pointing at a bunker adapter must go through this,
+ * not just sign-out.** A `BunkerSigner` owns a live kind:24133 subscription
+ * over its own relay connections, so dropping the reference without closing
+ * leaves the transport running for the life of the tab with nothing able to
+ * reach it. `activateBunkerSigner` overwrote the field directly, and the
+ * control that reaches it is RECONNECT in the account menu — the button an iOS
+ * user presses repeatedly, because iOS suspends the socket. Each press added a
+ * transport. Relays cap connections per client, so a long enough session ends
+ * up refused by the relay the reconnect needs.
+ *
+ * Best-effort and never throws: every caller is switching signer or signing
+ * out, and a transport that is already gone must not block that.
+ */
+function closeBunkerTransport() {
+  if (!bunkerInstance) return;
+  // BOTH halves. `inner.close()` ends the kind:24133 subscription and stops the
+  // signer accepting further calls; it does NOT touch the sockets, because the
+  // pool is a separate object. Destroying the pool is what actually returns the
+  // connections — and it is safe to destroy outright only because lib/nostr/
+  // bunker.ts hands us a pool it created for this one connection.
+  try { bunkerInstance.inner.close(); } catch { /* ignore */ }
+  try { bunkerInstance.pool.destroy(); } catch { /* ignore */ }
+}
+
 export function activateBunkerSigner(adapter: BunkerAdapter) {
   if (typeof window === 'undefined') {
     throw new Error('Bunker signer requires a browser environment');
   }
   captureOriginal();
+  // Close the one being replaced BEFORE overwriting the reference — a
+  // reconnect installs a second adapter over a first that is still subscribed.
+  if (bunkerInstance && bunkerInstance !== adapter) closeBunkerTransport();
   amberInstance = null;
   localInstance = null;
   bunkerInstance = adapter;
@@ -94,9 +128,7 @@ export function deactivateBunkerSigner() {
   // Best-effort close of the underlying NIP-46 transport. Ignored if it
   // throws — the user is signing out, the connection's already past its
   // useful life.
-  if (bunkerInstance) {
-    try { bunkerInstance.inner.close(); } catch { /* ignore */ }
-  }
+  closeBunkerTransport();
   bunkerInstance = null;
   if (originalCaptured) {
     window.nostr = originalWindowNostr;
@@ -122,6 +154,8 @@ export function activateLocalSigner(skHex: string): LocalSigner {
   }
   captureOriginal();
   amberInstance = null;
+  // Same as the Amber path above: close the transport, don't just drop it.
+  closeBunkerTransport();
   bunkerInstance = null;
   localInstance = new LocalSigner(skHex);
   // Publish the plain API object, NOT the instance — `private sk` is erased at
