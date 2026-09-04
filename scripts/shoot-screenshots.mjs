@@ -13,10 +13,19 @@
 // Output lands in public/screenshots/, and `images:` in zapstore.yaml names
 // those three paths. RE-SHOOT AND RE-COMMIT TOGETHER: zsp fails on a path that
 // does not resolve, so renaming a shot here without editing zapstore.yaml
-// breaks the publish rather than dropping an image. public/manifest.json
-// deliberately declares no `screenshots` member — that file is read by
-// Bubblewrap as well as by browsers, so adding one changes what the next
-// Android build wraps, and it is a separate decision from the store listing.
+// breaks the publish rather than dropping an image.
+//
+// TWO OTHER FILES NAME THESE SHOTS, and neither is the store listing.
+//
+// public/manifest.json declares a `screenshots` member (added by #254 on
+// 2026-08-28; this comment used to say it deliberately did not). It hard-codes
+// `"sizes": "824x1830"`, which is VIEWPORT x SCALE below — change either and
+// that declaration silently stops matching the files. The old comment's worry
+// was that manifest.json is read by Bubblewrap as well as by browsers, so a new
+// member changes what the next Android build wraps. That is true of a re-`init`
+// only: CI runs `bubblewrap update`, which regenerates the Android project from
+// android/twa-manifest.json and reads nothing from the web manifest. So this
+// member reaches browsers and does not reach the APK.
 //
 // WHY --manual EXISTS AND IS NOT A FALLBACK: the automated path below drives
 // real, live podcast data. A feed can go away, a search can rank differently,

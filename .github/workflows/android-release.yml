@@ -35,7 +35,23 @@ env:
   # Bubblewrap is pinned too, but in package.json's android:* scripts — CI runs
   # the same commands a local release does, so the version lives in one place
   # and a local build cannot silently differ from the published one.
-  ZSP_VERSION: v0.4.9
+  #
+  # v0.4.9 -> v0.4.17 for one reason, and it is not currency. v0.4.9 REJECTS a
+  # Java keystore outright — internal/identity/x509.go returns ErrJKSFormat on
+  # the JKS magic bytes — so `zsp identity --link-key <the release .jks>` could
+  # not run at all, and that command is the only way to prove the signing
+  # certificate belongs to the publishing npub. v0.4.17 loads a JKS directly
+  # (keystore-go/v4) and adds --key-alias for it. See docs/android.md step 7.
+  #
+  # Verified against v0.4.17's source before the bump, because the dry-run step
+  # below depends on all three: --quiet, --offline and --check are still defined
+  # in internal/cli/options.go, outputOffline still writes one JSON event per
+  # line to stdout, and internal/config/config.go is purely additive since
+  # v0.4.9, so zapstore.yaml still parses. What changed and does NOT reach us:
+  # metadata_sources now defaults to Fastlane-first (we set `github` explicitly)
+  # and images are compressed (icon <=512px, screenshots <=1440px wide; ours are
+  # 512x512 and 824x1830, so nothing downscales and --no-compress is not needed).
+  ZSP_VERSION: v0.4.17
   ORIGIN: https://www.boostmebitch.com
 
 jobs:
@@ -138,6 +154,28 @@ jobs:
           echo "code=$CODE" >> "$GITHUB_OUTPUT"
           echo "publish=$PUBLISH" >> "$GITHUB_OUTPUT"
           echo "Building $NAME (versionCode $CODE), publish=$PUBLISH"
+
+      # Fail a publish run with no signing identity HERE, in seconds, before the
+      # keystore is materialized and long before `gh release create` runs.
+      #
+      # The publish step at the bottom checks the same thing, and that check is
+      # not enough on its own: it runs AFTER the GitHub release is created, so a
+      # missing secret still produces the half-published shape this workflow
+      # exists to prevent — a release on GitHub, nothing on Zapstore. The late
+      # check stays as a backstop; this one is what makes the failure cheap.
+      #
+      # The value is never echoed. `-z` on the secret is the whole test.
+      - name: Refuse a publish run with no Zapstore identity
+        if: steps.version.outputs.publish == 'true'
+        env:
+          SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SIGN_WITH:-}" ]; then
+            echo "::error::ZAPSTORE_SIGN_WITH is not set, so this tag cannot publish to Zapstore. Add the repository secret (the key for the pubkey zapstore.yaml declares) and re-run this workflow — see docs/android.md."
+            exit 1
+          fi
+          echo "ZAPSTORE_SIGN_WITH is set."
 
       - name: Write the version into the TWA manifest
         run: |
@@ -296,9 +334,9 @@ jobs:
       #             mismatch check.
       #
       # This step exists because the publish step shipped with `zsp publish -y`,
-      # which zsp v0.4.9 rejects ("flag provided but not defined: -y") — and
-      # nothing before a real tag push would ever have run it. A tag would have
-      # built, verified, created the GitHub release, and failed on the last
+      # which zsp rejects at every version ("flag provided but not defined: -y")
+      # — and nothing before a real tag push would ever have run it. A tag would
+      # have built, verified, created the GitHub release, and failed on the last
       # step. The CI form is --quiet; -y was never a zsp flag.
       - name: Dry-run the Zapstore listing against the built APK
         env:
@@ -352,12 +390,16 @@ jobs:
           # used to `exit 0` with a notice, which is the pattern CLAUDE.md
           # names under "a guard that silently withholds must say so": the run
           # goes green, the GitHub release exists, and Zapstore has nothing.
+          # A backstop. "Refuse a publish run with no Zapstore identity", near
+          # the top, already failed this run — before the keystore existed and
+          # before the GitHub release did. Reaching here means that step was
+          # removed or its condition drifted from this one.
           if [ -z "${SIGN_WITH:-}" ]; then
             echo "::error::ZAPSTORE_SIGN_WITH is not set, so this tag cannot publish. Add the repository secret (the key for the pubkey zapstore.yaml declares) and re-run this workflow — see docs/android.md."
             exit 1
           fi
           # --quiet is zsp's CI mode: no prompts, no spinners, auto-confirm.
-          # (`-y` was never a zsp flag; v0.4.9 rejects it outright.) In quiet
+          # (`-y` was never a zsp flag; zsp rejects it outright.) In quiet
           # mode a missing certificate-to-identity proof is a warning, not a
           # prompt — link it once by hand afterwards, per docs/android.md.
           zsp publish --quiet zapstore.yaml

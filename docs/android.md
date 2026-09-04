@@ -92,7 +92,11 @@ Bubblewrap regenerates the entire Gradle project from this file on every `update
 
 **The publish step FAILS on a missing `ZAPSTORE_SIGN_WITH`; it used to `exit 0` with a notice.** It only runs once `publish` is already true — a tag push, or the toggle on a tag ref — so "no key" there is never a repository that merely wants to build; those runs never reach it. A green run that created the GitHub release and left Zapstore empty is the shape CLAUDE.md names as *a guard that silently withholds*.
 
-**`zsp` is pinned at `v0.4.9` and newer releases exist (`v0.4.17` on 2026-08-02).** A bump is a decision, not housekeeping: run the workflow by `workflow_dispatch` with the new pin and read the dry-run step's output before a tag depends on it.
+**`zsp` is pinned at `v0.4.17`, and the bump off `v0.4.9` was forced by one thing: `v0.4.9` cannot read a Java keystore.** `internal/identity/x509.go` returns `ErrJKSFormat` the moment it sees the JKS magic bytes, so `zsp identity --link-key <the release .jks>` — step 7 below, the only way to prove the signing certificate belongs to the publishing npub — could not run at all at the version this workflow pinned. `v0.4.17` loads a JKS directly and adds `--key-alias` for it.
+
+Three things were read out of `v0.4.17`'s source before the bump, because the dry-run step depends on all of them: `--quiet`, `--offline` and `--check` are still defined in `internal/cli/options.go`; `outputOffline` still writes one JSON event per line to stdout; and `internal/config/config.go` is purely additive since `v0.4.9`, so `zapstore.yaml` still parses. Two behaviours changed and neither reaches us — `metadata_sources` now prefers Fastlane metadata on a GitHub repository, which `zapstore.yaml` overrides by naming `github` explicitly, and images are now compressed on upload (icon ≤512px, screenshots ≤1440px wide). Ours are 512×512 and 824×1830, so nothing downscales and `--no-compress` is not needed.
+
+**A further bump is a decision, not housekeeping:** run the workflow by `workflow_dispatch` with the new pin and read the dry-run step's output before a tag depends on it.
 
 **The step that earns the workflow is `Verify the origin will accept this certificate`.** It reads the SHA-256 out of the APK that was just built and fails the release unless the **live** statement list names that package and that fingerprint. It compares against the deployed route rather than a repo variable because a variable is a second copy that drifts — this one check catches "the Vercel env var was never set", "the key was rotated but the env wasn't" and "Vercel hasn't redeployed yet" identically. All three are otherwise invisible until someone installs the APK on a phone and sees a URL bar. The APK is uploaded as an artifact *before* that check runs, so a failure costs a re-run and not the build, and the message prints the exact string to paste into `ANDROID_CERT_SHA256`. On the very first release it will fail by design, because the fingerprint cannot exist until the keystore does.
 
@@ -107,7 +111,7 @@ None of this can live in the repository.
    ```
    **CAUTION: losing this file means never updating the app again** — not on Zapstore, not anywhere. Zapstore identifies an app by package name *and* signing certificate, so a replacement key is a different app.
 2. **Add the repository secrets:** `ANDROID_KEYSTORE_BASE64` (`base64 -w0 boostmebitch-release.jks`), `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, and `ZAPSTORE_SIGN_WITH` (an `nsec1…` or a `bunker://…` URL). The key alias is not a secret and lives in `twa-manifest.json`.
-   **CAUTION: a tag push with `ZAPSTORE_SIGN_WITH` unset FAILS at the publish step** — after the GitHub release exists. Add the secret before the first tag, not after.
+   **CAUTION: a tag push with `ZAPSTORE_SIGN_WITH` unset FAILS the run.** It fails at `Refuse a publish run with no Zapstore identity`, seconds in, before the keystore is materialized and before the GitHub release exists — so the tag costs a re-run and nothing else. That step is what keeps the failure cheap: the check in the publish step itself runs *after* `gh release create`, where a missing key leaves a GitHub release with an empty Zapstore beside it.
    **CAUTION: `ZAPSTORE_SIGN_WITH` becomes the app's publisher identity on Zapstore permanently.** It is not a fresh decision — `zapstore.yaml` declares `pubkey: npub177fz…`, the same publisher StableKraft uses, so both apps sit under one identity. Use the key for that npub; a bunker URL is the safer form. Because the pubkey is declared in the file, a mismatched signing key is caught rather than quietly publishing under a second identity.
 3. **Print the fingerprint** and set the Vercel production environment:
    ```bash
@@ -127,14 +131,15 @@ None of this can live in the repository.
    SIGN_WITH=npub1… zsp publish --quiet --offline zapstore.yaml   # unsigned events to stdout, nothing sent
    zsp apk --extract android/app-release-signed.apk               # the permission list zsp will publish
    ```
-   `--quiet` is the CI mode. **`-y` is not a zsp flag** and v0.4.9 rejects it; this runbook and the workflow both carried it until 2026-09-04.
+   `--quiet` is the CI mode. **`-y` is not a zsp flag at any version** and zsp rejects it; this runbook and the workflow both carried it until 2026-09-04.
 6. **Tag it:** `git tag v0.1.0 && git push origin v0.1.0`. Push the tag from `main` only: the run publishes to Zapstore and creates the GitHub release in one go, and `concurrency` never cancels it.
 7. **Link the signing certificate to the publisher identity, once, by hand.** zsp checks the relays for a kind 30509 identity proof before publishing and, in `--quiet` mode, treats a missing one as a warning rather than a prompt — so the first CI publish goes out unlinked, and Zapstore cannot show that the key that signed the APK belongs to the npub that published it. The proof needs the keystore, which CI deliberately deletes, so this is a local step:
    ```bash
-   SIGN_WITH=… zsp identity --link-key ~/keystores/boostmebitch-release.jks   # default expiry 1y
+   SIGN_WITH=… zsp identity --link-key ~/keystores/boostmebitch-release.jks \
+     --key-alias boostmebitch                                 # default expiry 1y
    zsp identity --verify android/app-release-signed.apk
    ```
-   It expires (default one year), so it recurs.
+   **CAUTION: this step needs `v0.4.17` or later, and the workflow pinned `v0.4.9` until 2026-09-04.** At `v0.4.9` a `.jks` is rejected on its magic bytes before anything reads it, so the command above could not run at all — converting the keystore to PKCS12 was the only route. `--key-alias` names the private-key entry (ours is `boostmebitch`, from `twa-manifest.json`); zsp needs it only when a keystore holds more than one, and passing it costs nothing. The proof expires after one year by default, so it recurs.
 8. **Confirm it landed** from the relay rather than from the run log — a green publish step proves zsp exited 0, not that `relay.zapstore.dev` holds the events. Query kind `32267` with `#d = ["com.boostmebitch"]` and kind `30063` referencing it (`nak req -k 32267 -d com.boostmebitch wss://relay.zapstore.dev`), or open the listing at zapstore.dev.
 
 ## Where the first release stands — 2026-09-04
@@ -152,8 +157,8 @@ Recorded so the next session does not re-derive it. Every row is a measured fact
 |---|---|
 | No tag, no GitHub release, no Zapstore listing | `git tag` is empty; the releases list is empty; a kind 32267 query for `com.boostmebitch` on `relay.zapstore.dev` returns nothing |
 | The publish step has never executed | Runs 2 and 3 skipped it (`publish=false`); it carried `-y` until 2026-09-04 and would have failed |
-| `ZAPSTORE_SIGN_WITH` is unconfirmed | Secrets are not readable; the run now fails loudly if it is missing |
-| Screenshots may be stale | Last shot 2026-08-29 (#269); the home page changed on 2026-09-03 (#321) |
+| **`ZAPSTORE_SIGN_WITH` is NOT SET** | `gh secret list` returns three secrets — the two keystore passwords and `ANDROID_KEYSTORE_BASE64`. Secret *values* are unreadable; their *names* are not, and this one is absent. A tag now fails in seconds rather than after the GitHub release exists |
+| Screenshots were stale | Last shot `ba85d4d`, **2026-08-20** — not 2026-08-29 (#269), which is a playlists PR that never touched them. 183 commits landed since |
 | Rows 2–7 below have no verdict | No device session has covered NWC after backgrounding, Google sign-in, out-of-scope links, background audio, offline, or cold start |
 | A background publish in the TWA is unmeasured | Favorites and mutes `sign_event` unprompted; NIP-46 over `nostrconnect://` is the primary Amber path since 2026-09-03, which reduces the risk without measuring it |
 
