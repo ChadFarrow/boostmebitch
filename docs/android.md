@@ -4,9 +4,22 @@ Read before touching `app/.well-known/assetlinks.json/route.ts`, `lib/assetlinks
 
 Core rules live in [`../CLAUDE.md`](../CLAUDE.md); this file holds the reasoning.
 
-## What the Android app is
+## What the Android apps are
 
-A **Trusted Web Activity**: a signed Android shell that opens `https://www.boostmebitch.com` full-screen with no browser chrome. There is no second copy of the app. A Vercel deploy updates the Android app at the same moment it updates the site.
+A **Trusted Web Activity**: a signed Android shell that opens one origin full-screen with no browser chrome. There is no second copy of the app. A Vercel deploy updates the Android app at the same moment it updates the site.
+
+**There are TWO of them, and they are two apps rather than one app with two names.**
+
+| | Package | Wraps | TWA manifest | Store listing |
+|---|---|---|---|---|
+| Boost Me Bitch | `com.boostmebitch` | `www.boostmebitch.com` | `android/twa-manifest.json` | **none** — APK on the GitHub release only |
+| Boost Me Buddy | `com.boostmebuddy` | `www.boostmebuddy.com` | `android/twa-manifest-buddy.json` | Zapstore |
+
+**A TWA wraps an ORIGIN, so the name is not a label you can swap.** Package id, host and the Digital Asset Links statement move together, and `BRAND` is chosen by the origin the shell opens — so a "Buddy"-named wrapper around `boostmebitch.com` would show the other wordmark in its own header and emit `BoostMeBitch` as `app_name` and `client` on every boost it sent. **Zapstore keys a listing on package id plus signing certificate**, so this is not reversible after a first publish: `com.boostmebitch` cannot later become `com.boostmebuddy`.
+
+**Only the family-friendly brand is listed.** That is a product decision, not a limitation — the other APK is attached to the GitHub release for anyone who wants it. One tag builds both, through a matrix on the release job.
+
+**They share ONE keystore**, which is why `signingKey.alias` reads `boostmebitch` in both manifests. An alias names an entry inside a `.jks` and reaches no user; the differing package ids are what make these separate apps. A shared certificate is normal for one developer's apps, and it means the same `ANDROID_CERT_SHA256` goes into both Vercel projects.
 
 **Why not a bundled native shell.** The app cannot be statically exported. `next.config.mjs` has no `output: 'export'`, `app/page.tsx` reads `searchParams` in `generateMetadata` and so renders dynamically, and thirteen `app/api/*` routes hold the Podcast Index credentials plus every payment-critical lookup — `/api/value-splits`, `/api/keysend`, `/api/lightning/boostbox`, `/api/live-value`. Bundling the assets would still leave every one of those calls pointed at the live origin, so it would buy an offline splash screen and a second build system, and cost the guarantee that the credential never leaves the server.
 
@@ -115,6 +128,15 @@ None of this can live in the repository.
 2. **Add the repository secrets:** `ANDROID_KEYSTORE_BASE64` (`base64 -w0 boostmebitch-release.jks`), `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_PASSWORD`. The key alias is not a secret and lives in `twa-manifest.json`.
    **`ZAPSTORE_SIGN_WITH` is deliberately NOT in that list.** This repository publishes to Zapstore in mode `local` (see below), so the publishing key never enters GitHub at all.
    **CAUTION: whichever key first publishes becomes the app's publisher identity on Zapstore permanently.** It is not a fresh decision — `zapstore.yaml` declares `pubkey: npub177fz…`, the same publisher StableKraft uses, so both apps sit under one identity. Because the pubkey is declared in the file, a mismatched signing key is caught rather than quietly publishing under a second identity.
+2.5. **Set the Vercel production environment on BOTH projects — they share nothing.** Each origin vouches for its own package, and `lib/assetlinks.ts` grants exactly one package id per origin. The certificate is the same because the keystore is:
+
+   | Vercel project | `ANDROID_PACKAGE_ID` | `ANDROID_CERT_SHA256` |
+   |---|---|---|
+   | boostmebitch | `com.boostmebitch` | the fingerprint from step 3 |
+   | boostmebuddy | `com.boostmebuddy` | the same fingerprint |
+
+   **An unset value yields `[]`, never a guess** — a well-formed "no app is authorized" answer. That is the correct fail-closed behaviour and it is also exactly what a forgotten variable looks like, so the workflow's origin check is what tells the two apart. A buddy leg that fails at `Verify the origin will accept this certificate` with a live statement list of `[]` means this step was skipped for that project.
+
 3. **Print the fingerprint** and set the Vercel production environment:
    ```bash
    keytool -list -v -keystore boostmebitch-release.jks -alias boostmebitch | grep SHA256
@@ -135,14 +157,19 @@ None of this can live in the repository.
    ```
    `--quiet` is the CI mode. **`-y` is not a zsp flag at any version** and zsp rejects it; this runbook and the workflow both carried it until 2026-09-04.
 6. **Tag it:** `git tag v0.1.0 && git push origin v0.1.0`. Push the tag from `main` only, and `concurrency` never cancels the run. Under the default mode `local` that run builds, signs, verifies the origin, dry-runs zsp and creates the **GitHub** release — then stops, and prints the commands below in its summary. Nothing reaches Zapstore until a human runs them.
-6.5. **Publish to Zapstore, from the machine that holds the keystore.** `SIGN_WITH=browser` starts a local NIP-07 signer and opens a browser to sign each event, which is how the sibling app releases and why no key is in GitHub:
+6.5. **Publish BOOST ME BUDDY to Zapstore, from the machine that holds the keystore.** `SIGN_WITH=browser` starts a local NIP-07 signer and opens a browser to sign each event, which is how the sibling app releases and why no key is in GitHub:
    ```bash
    curl -fL -o ~/bin/zsp https://github.com/zapstore/zsp/releases/download/v0.4.17/zsp-0.4.17-linux-amd64
    chmod +x ~/bin/zsp                                    # no Go toolchain needed
-   gh release download v0.1.0 -p 'app-release-signed.apk' -O android/app-release-signed.apk --clobber
-   SIGN_WITH=browser zsp publish zapstore.yaml
+   gh release download v0.1.0 -p 'app-release-signed-buddy.apk' \
+     -O android/app-release-signed-buddy.apk --clobber
+   SIGN_WITH=browser zsp publish zapstore-buddy.yaml
    ```
-   Do **not** pass `--quiet` here: it auto-confirms, which is the opposite of what a browser signer is for. `release_source` names that local path, so the download has to land exactly there.
+   Do **not** pass `--quiet` here: it auto-confirms, which is the opposite of what a browser signer is for.
+
+   **CAUTION: download the BUDDY asset, and check the filename.** `zapstore-buddy.yaml` names `./android/app-release-signed-buddy.apk` as its `release_source`, and **nothing in a zsp config declares a package id** — so pointing it at the other APK publishes `com.boostmebitch` under the Boost Me Buddy name, permanently. The two configs name different paths for exactly this reason. `zsp publish --check zapstore-buddy.yaml` prints the package id it found; read it before publishing.
+
+   **`com.boostmebitch` is deliberately not published anywhere.** Its APK is on the GitHub release for people who want it, and that is the whole distribution.
 7. **Link the signing certificate to the publisher identity, once, by hand.** zsp checks the relays for a kind 30509 identity proof before publishing and, in `--quiet` mode, treats a missing one as a warning rather than a prompt — so the first CI publish goes out unlinked, and Zapstore cannot show that the key that signed the APK belongs to the npub that published it. The proof needs the keystore, which CI deliberately deletes, so this is a local step:
    ```bash
    SIGN_WITH=browser zsp identity --link-key ~/keystores/boostmebitch-release.jks \
@@ -174,6 +201,8 @@ Recorded so the next session does not re-derive it. Every row is a measured fact
 | No tag, no GitHub release, no Zapstore listing | `git tag` is empty; the releases list is empty; a kind 32267 query for `com.boostmebitch` on `relay.zapstore.dev` returns nothing |
 | The publish step has never executed | Runs 2, 3 and `33904270967` all skipped it (`publish=false`); it carried `-y` until 2026-09-04 and would have failed. Everything up to it is now exercised, so the only unrun code on a tag is `zsp publish --quiet` itself and the `gh release` step above it |
 | The Zapstore publish itself has never been run | Mode is `local`, so it is a human step and always was going to be. `SIGN_WITH=browser` is proven for the sibling app and unproven here |
+| **The buddy origin vouches for nothing** | Run `33908628722` (2026-09-04, the matrix's first): the buddy leg built and signed, then failed at `Verify the origin will accept this certificate` with a live statement list of `[]`. `ANDROID_PACKAGE_ID` and `ANDROID_CERT_SHA256` are unset on the **boostmebuddy** Vercel project. Until they are set, there is no publishable buddy APK — the guard is doing its job |
+| The buddy TWA has never run on a device | Every device verdict in this file was measured on the `com.boostmebitch` build |
 | Shot 02's episode thumbnails are blank | Not the capture — the app. Those covers are 9 MB animated GIFs (`episode-149.gif` is 9,055,375 bytes), `/api/art` **502s** on them at every width in `ART_WIDTHS`, and `<PodcastCover>`'s ladder falls through to the raw URL, which never finishes painting. Belongs to [`ui.md`](ui.md), not to this release |
 | Rows 2–7 below have no verdict | No device session has covered NWC after backgrounding, Google sign-in, out-of-scope links, background audio, offline, or cold start |
 | The MUTES half is still unmeasured | Favorites are now measured (above). The kind:10000 private half is not: it is deliberately left unread on load under Amber, so its publish path has never been driven on a device |
