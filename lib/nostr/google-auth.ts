@@ -109,9 +109,21 @@ function loadGis(): Promise<void> {
  * `sub` is not treated as a secret — it only salts a KDF. A forged one yields
  * a different salt and therefore decrypts nothing.
  */
+/**
+ * Deadline for the userinfo read. Much shorter than the token request's, which
+ * is 60 s because it waits on a HUMAN completing a consent screen; this one is
+ * a plain API call with nobody to wait for.
+ */
+const USERINFO_TIMEOUT_MS = 15_000;
+
 async function fetchSub(accessToken: string): Promise<string> {
   const res = await fetch(USERINFO_URL, {
     headers: { Authorization: `Bearer ${accessToken}` },
+    // Bounded for the same reason the token request below is, and it is the
+    // very next step in the same flow: an unsettled fetch here leaves the panel
+    // on "Working…" forever, which is the silent-failure mode this function's
+    // own docstring says it was written to avoid.
+    signal: AbortSignal.timeout(USERINFO_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error('Could not read your Google account id');
   const json = (await res.json()) as { sub?: unknown };

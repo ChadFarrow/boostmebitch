@@ -157,8 +157,21 @@ export class Indexer {
     await this.subscribeTracked();
     await this.subscribeReplies();
     this.subscribeLive();
-    void this.backfillLoop();
-    void this.piLoop();
+    // **`.catch` on both, because a bare `void` on a rejecting promise ENDS
+    // THE PROCESS.** Neither loop wraps all of its `db.query` calls — the page
+    // read and the `pi_queue` bump sit outside their try blocks — so a
+    // Postgres restart, or ten seconds of pool saturation against
+    // `connectionTimeoutMillis`, rejects with no handler anywhere. Node's
+    // default for an unhandled rejection is to throw, this file installs no
+    // `process.on('unhandledRejection')`, and `pool.on('error')` covers only
+    // IDLE clients, not a rejected query. The relay sockets go with it.
+    //
+    // The loops themselves retry across a transient database fault (see their
+    // own try/catch below); this is the backstop for the case that escapes,
+    // and it fails the way the rest of this file does — loudly, and without
+    // taking the live subscriptions down with it.
+    void this.backfillLoop().catch(logErr('backfill'));
+    void this.piLoop().catch(logErr('pi warm-fill'));
 
     const interval = this.cfg.resubscribeIntervalMs ?? RESUBSCRIBE_INTERVAL_MS;
     this.timers.push(setInterval(() => void this.subscribeTracked().catch(logErr('resubscribe')), interval));
@@ -449,7 +462,17 @@ export class Indexer {
     for (const { name, filter } of CORE_FILTERS) {
       if (this.stopped) return;
       const key = `backfill:${name}`;
-      const state = await getState(this.db, key);
+      // Guarded, like every other database call in these two loops: a reject
+      // here had nothing to catch it and took the process with it. Skipping
+      // this filter is the safe direction — the sweep is background catch-up,
+      // and the next start reads the same state row.
+      let state: Awaited<ReturnType<typeof getState>>;
+      try {
+        state = await getState(this.db, key);
+      } catch (e) {
+        console.error(`[indexer] backfill ${name} state read failed:`, e instanceof Error ? e.message : e);
+        continue;
+      }
       if (state?.backfill_done) {
         console.log(`[indexer] backfill ${name} already complete`);
         continue;
@@ -469,19 +492,48 @@ export class Indexer {
         for (const e of page) await this.take(e, `backfill:${name}`);
 
         const oldest = page.reduce((min, e) => Math.min(min, e.created_at), until);
+        // **An EMPTY page is only evidence when something actually answered.**
+        //
+        // `querySync` RESOLVES with `[]` when no relay connects — it does not
+        // throw, because a failed connection drives `handleClose` into the EOSE
+        // path, so the `catch` above never sees it. Without this test a process
+        // that started while the relays were unreachable wrote
+        // `backfill_done = true` on its very first page and logged "backfill
+        // complete". The flag is read at the top of this loop on every later
+        // start, so the whole history sweep never ran again, and the only way
+        // back was a manual `delete from indexer_state`.
+        //
+        // This is the service's copy of the app's oldest rule: never record an
+        // absence you did not reliably observe. A page that came back NON-empty
+        // is its own evidence, which is why only the empty case is gated.
+        if (!page.length && !this.connectedRelays().connected.length) {
+          console.warn(`[indexer] backfill ${name}: no relay connected — not recording "complete"`);
+          await sleep(30_000);
+          continue;
+        }
         // No page, or the page did not move the cursor: relays have no more
         // history for this filter.
-        if (!page.length || oldest >= until) {
-          await setState(this.db, key, { backfillDone: true, backfillUntil: oldest, status: 'done' });
-          console.log(`[indexer] backfill ${name} complete at ${oldest}`);
-          break;
-        }
-        until = oldest;
-        await setState(this.db, key, { backfillUntil: until, status: 'running' });
-        if (until <= floor) {
-          await setState(this.db, key, { backfillDone: true, status: 'floor' });
-          console.log(`[indexer] backfill ${name} reached the ${this.cfg.backfillDays}-day floor`);
-          break;
+        // Every `setState` below is guarded for the reason given in `start()`:
+        // an unhandled reject out of this loop ends the process. A failed
+        // cursor write only costs this filter its progress, which the next
+        // start re-reads and redoes.
+        try {
+          if (!page.length || oldest >= until) {
+            await setState(this.db, key, { backfillDone: true, backfillUntil: oldest, status: 'done' });
+            console.log(`[indexer] backfill ${name} complete at ${oldest}`);
+            break;
+          }
+          until = oldest;
+          await setState(this.db, key, { backfillUntil: until, status: 'running' });
+          if (until <= floor) {
+            await setState(this.db, key, { backfillDone: true, status: 'floor' });
+            console.log(`[indexer] backfill ${name} reached the ${this.cfg.backfillDays}-day floor`);
+            break;
+          }
+        } catch (e) {
+          console.error(`[indexer] backfill ${name} state write failed:`, e instanceof Error ? e.message : e);
+          await sleep(30_000);
+          continue;
         }
         console.log(`[indexer] backfill ${name}: ${fresh.length} new, cursor ${new Date(until * 1000).toISOString()}`);
         await sleep(BACKFILL_PAUSE_MS);
@@ -504,17 +556,33 @@ export class Indexer {
     }
     for (;;) {
       if (this.stopped) return;
-      const { rows } = await this.db.query<{ key: string; kind: string; feed_guid: string; item_guid: string | null }>(
-        `select key, kind, feed_guid, item_guid from pi_queue
-           where attempts < 5 and (last_try is null or last_try < now() - interval '1 hour')
-           order by attempts, queued_at limit 20`,
-      );
+      // The queue read is INSIDE a try of its own. It was the one `db.query`
+      // in this loop with nothing around it, so a database blip did not slow
+      // the warm-fill down, it terminated the process — see the `.catch` in
+      // `start()`. Backing off and going round again is the honest response:
+      // the rows are still there when Postgres comes back.
+      let rows: { key: string; kind: string; feed_guid: string; item_guid: string | null }[];
+      try {
+        ({ rows } = await this.db.query<{ key: string; kind: string; feed_guid: string; item_guid: string | null }>(
+          `select key, kind, feed_guid, item_guid from pi_queue
+             where attempts < 5 and (last_try is null or last_try < now() - interval '1 hour')
+             order by attempts, queued_at limit 20`,
+        ));
+      } catch (e) {
+        console.error('[indexer] pi queue read failed:', e instanceof Error ? e.message : e);
+        await sleep(30_000);
+        continue;
+      }
       if (!rows.length) { await sleep(30_000); continue; }
 
       for (const row of rows) {
         if (this.stopped) return;
-        await this.db.query('update pi_queue set attempts = attempts + 1, last_try = now() where key = $1', [row.key]);
         try {
+          // Inside the try for the same reason. The attempts bump must not be
+          // the thing that kills the loop, and skipping the row on a failure
+          // is right: without the bump recorded, re-reading it later is
+          // exactly what should happen.
+          await this.db.query('update pi_queue set attempts = attempts + 1, last_try = now() where key = $1', [row.key]);
           if (row.kind === 'podcast') {
             const ans = await fetchPodcastByGuid(row.feed_guid);
             if (!ans) continue; // could not ask — nothing recorded, retried later

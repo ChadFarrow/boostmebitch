@@ -369,30 +369,44 @@ export async function fetchSocialInteractThread(
 
   const baseRelays = opts.relays ?? DEFAULT_RELAYS;
   // sanitizeRelays the nevent hints — a malformed relay hint embedded in the
-  // URI would otherwise crash normalizeURL when we query allRelays.
-  const allRelays = Array.from(
-    new Set([...baseRelays, ...sanitizeRelays(hintRelays).slice(0, 4)]),
-  );
+  // URI would otherwise crash normalizeURL when we query the merged set.
+  const cappedHints = sanitizeRelays(hintRelays).slice(0, 4);
 
-  return withPool(allRelays, async (pool) => {
-    let rootEvents: Event[] = [];
-    try {
-      rootEvents = await pool.querySync(
-        allRelays,
-        { ids: [eventId] },
-        { maxWait: QUERY_MAX_WAIT_MS },
-      );
-    } catch (e) {
-      throw new Error('socialInteract thread fetch failed', { cause: e });
-    }
-    if (!rootEvents.length) return [];
-    // Paint the thread anchor immediately; the reply tree + profile/quote
-    // resolution below is the slow part and streams in afterward.
-    if (opts.onRoot) {
-      const r = rootEvents[0];
-      opts.onRoot(noteFromEvent(r, allRelays, storage.profile.get(r.pubkey) ?? null));
-    }
-    return assembleNotes(pool, allRelays, rootEvents);
+  return withPool(baseRelays, async (pool) => {
+    // Through `withExtraRelays`, NOT a union handed to the shared pool.
+    //
+    // These hints come out of the `nevent` in a feed's <podcast:socialInteract>
+    // tag, so the feed author chooses them. `withPool` returns the long-lived
+    // shared pool and deliberately never closes anything, so unioning them in
+    // opened a permanent socket per hint, per episode — the accumulation
+    // pool.ts's own note says extras MUST be torn down to prevent. The two
+    // sibling call sites that take nevent hints already do this; this one was
+    // the exception. Twenty episodes carrying socialInteract tags meant up to
+    // 80 sockets to feed-chosen hosts, held until the tab was reloaded.
+    //
+    // The whole read stays inside the scope — `assembleNotes` runs the reply,
+    // profile and quote passes, and closing the extras before those would
+    // leave them querying a relay set the anchor was not found on.
+    return withExtraRelays(pool, baseRelays, cappedHints, async (allRelays) => {
+      let rootEvents: Event[] = [];
+      try {
+        rootEvents = await pool.querySync(
+          allRelays,
+          { ids: [eventId] },
+          { maxWait: QUERY_MAX_WAIT_MS },
+        );
+      } catch (e) {
+        throw new Error('socialInteract thread fetch failed', { cause: e });
+      }
+      if (!rootEvents.length) return [];
+      // Paint the thread anchor immediately; the reply tree + profile/quote
+      // resolution below is the slow part and streams in afterward.
+      if (opts.onRoot) {
+        const r = rootEvents[0];
+        opts.onRoot(noteFromEvent(r, allRelays, storage.profile.get(r.pubkey) ?? null));
+      }
+      return assembleNotes(pool, allRelays, rootEvents);
+    });
   });
 }
 

@@ -36,6 +36,15 @@ const POLL_MS = 20_000;
 /** Overlapping triggers (interval + focus + visibilitychange) debounce to this. */
 const POLL_MIN_MS = 15_000;
 /**
+ * Deadline for one `/api/live-value` read. See the long note at the fetch.
+ *
+ * Under POLL_MS on purpose: a poll that has not answered by the time the next
+ * tick is due has already missed its slot, and letting it run on only delays
+ * the recovery. Over the route's own 8 s upstream timeout, so a slow-but-alive
+ * Podcast Index still produces an answer rather than being cut off here.
+ */
+const LIVE_VALUE_TIMEOUT_MS = 12_000;
+/**
  * How many consecutive failed polls before we stop believing the last target.
  *
  * A network blip is not evidence that the track ended, so a single failure must
@@ -348,6 +357,25 @@ async function poll(force = false) {
   try {
     const res = await fetch(
       `/api/live-value?feedId=${w.feedId}&guid=${encodeURIComponent(guid)}`,
+      // **The timeout is what makes `inFlight` safe to hold.** A browser
+      // applies no deadline of its own, so a connection that stalls — a phone
+      // moving between cells, a captive portal, a dead socket the OS has not
+      // reaped — leaves this promise pending forever. The `finally` below then
+      // never runs, `inFlight` stays true, and EVERY later tick returns at the
+      // guard at the top of `poll`. The watcher is silently dead for the rest
+      // of the session, and `stopLiveValueWatcher` does not clear the flag, so
+      // a <Player> remount does not recover it either.
+      //
+      // That failure is not cosmetic: this is the live show's PAYMENT TARGET.
+      // A frozen target keeps boosts and streaming sats going to whichever
+      // artist was playing when the fetch hung, for the rest of the broadcast,
+      // with nothing on screen saying so. A timeout turns it into the `catch`
+      // below, which is a branch this code already handles properly — it keeps
+      // paying the last known artist and gives up only after MAX_FAILURES.
+      //
+      // Shorter than POLL_MS, so a hung poll is always resolved before the
+      // next tick rather than making ticks queue up behind it.
+      { signal: AbortSignal.timeout(LIVE_VALUE_TIMEOUT_MS) },
     );
     if (!res.ok) throw new Error(String(res.status));
     const data = await res.json() as {
@@ -520,6 +548,16 @@ export function startLiveValueWatcher() {
 export function stopLiveValueWatcher() {
   if (timer) clearInterval(timer);
   timer = null;
+  // Release the in-flight latch as well as the timer.
+  //
+  // The timeout on the fetch is the primary guard; this is the recovery for
+  // anything it cannot cover — an abort that never rejects, a promise left
+  // pending by a suspended tab. `inFlight` is module state and outlives the
+  // component, so without this a single wedged poll would survive a restart
+  // and the watcher would never run again in that tab. A poll still in the air
+  // when this runs already re-checks `watching !== w` before touching
+  // anything, so releasing the latch cannot let a stale answer through.
+  inFlight = false;
   if (unsubStore) { unsubStore(); unsubStore = null; }
   if (typeof document !== 'undefined') {
     document.removeEventListener('visibilitychange', onVisibility);

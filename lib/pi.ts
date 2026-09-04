@@ -6,7 +6,7 @@ import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRem
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, PLAYLIST_MEDIUMS } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 
@@ -115,6 +115,17 @@ async function pi<T>(path: string, maxBytes?: number): Promise<T> {
 
 // PI's value object → our ValueBlock
 function normalizeValue(v: any): ValueBlock | null {
+  // Already in OUR shape — pass it through rather than answering null.
+  //
+  // PI's shape is `{ model, destinations }` and ours is `{ type, method,
+  // suggested, recipients }`, so a record that has been through here once has
+  // neither `model` nor `destinations` and the test below would DELETE its
+  // value block. That matters because the read index caches Podcast Index's
+  // raw answer and hands it back to `lib/pi-batch.ts`, which now normalizes
+  // it here; if that cache is ever changed to store normalized records
+  // instead, this branch is what stops the same call silently unvaluing every
+  // feed it touches. Cheap, and the alternative failure is invisible.
+  if (Array.isArray(v?.recipients)) return v as ValueBlock;
   if (!v?.model || !v?.destinations?.length) return null;
   const recipients: ValueRecipient[] = v.destinations.map((d: any) => ({
     name: d.name,
@@ -172,10 +183,37 @@ function buildPodcast(f: any): Podcast {
 // rendered one blank result row, and the RSS-preview fallback in
 // `app/api/search/route.ts` (which only runs on a null) never got its turn.
 // Normalize array/object and require an `id` — every real PI feed carries one.
-function podcastFromPiFeed(f: any): Podcast | null {
+export function podcastFromPiFeed(f: any): Podcast | null {
   const feed = Array.isArray(f) ? f[0] : f;
   if (!feed || feed.id == null) return null;
   return buildPodcast(feed);
+}
+
+/**
+ * A raw Podcast Index EPISODE record → our `Episode`, or null if unusable.
+ *
+ * The counterpart to {@link podcastFromPiFeed}, exported for the same reason:
+ * `services/nostr-index` caches **Podcast Index's raw answer**, and whatever
+ * reads that cache has to normalize it exactly as the direct PI path does.
+ *
+ * **The two paths had drifted, and it was not visible from either side.** The
+ * index stores `d.episode` verbatim and `/pi/episodes` returns it; `lib/
+ * pi-batch.ts` then declared the result `Episode` with a bare generic
+ * parameter, which type-checks and is wrong in every field this builder
+ * derives. `value` is the one that costs money: PI sends
+ * `{ model, destinations }`, `hasValueRecipients` reads `.recipients`, so
+ * every album the index answered for tested as having NO splits.
+ * `valueTimeSplits` (PI calls the field `timesplits`), `transcriptUrl`,
+ * `socialInteract`, `season` and the `image`/`artwork` fallbacks were all
+ * simply absent. None of it reproduces locally, because it needs the index to
+ * be configured AND warm.
+ */
+export function episodeFromPiRecord(e: any): Episode | null {
+  if (!e || typeof e !== 'object' || Array.isArray(e)) return null;
+  // Same `id` test `podcastFromPiFeed` makes: every real PI record carries one,
+  // and its absence is how a `{}` or a placeholder is told from an answer.
+  if (e.id == null) return null;
+  return buildEpisode(e);
 }
 
 export async function searchPodcasts(query: string, max = 20): Promise<Podcast[]> {
@@ -1156,7 +1194,19 @@ function parseFunding(channelXml: string): FundingLink[] | undefined {
   const re = /<podcast:funding\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:funding>)/gi;
   let m: RegExpExecArray | null;
   while ((m = re.exec(channelXml))) {
-    const url = readAttr(m[1], 'url');
+    // Through `httpUrl`, for the same reason `parseLiveValue` does it: this is
+    // an attacker-chosen attribute that ends up as a live `href` on the SUPPORT
+    // button, and **React does not block a `javascript:` href — it only warns
+    // in dev**. This origin's localStorage holds the NWC spending credential
+    // and the nsec, so one press of a feed's own support link would run the
+    // feed author's script against the user's wallet. The allowlist fails
+    // closed: an unparseable or non-http(s) url drops the entry entirely,
+    // which renders no button rather than a dead one.
+    //
+    // At the PARSE boundary rather than at the two render sites, so a third
+    // surface that shows a funding link inherits the guard instead of
+    // re-deciding it.
+    const url = httpUrl(readAttr(m[1], 'url'));
     if (!url) continue;
     const message = m[2] != null ? decodeXmlText(m[2]) : '';
     out.push({ url, message: message || undefined });
@@ -1170,8 +1220,12 @@ function fundingFromPi(f: any): FundingLink[] | undefined {
   const raw = Array.isArray(f.funding) ? f.funding : f.funding ? [f.funding] : [];
   const out: FundingLink[] = [];
   for (const x of raw) {
-    if (typeof x?.url === 'string' && x.url) {
-      out.push({ url: x.url, message: typeof x.message === 'string' && x.message ? x.message : undefined });
+    // Same allowlist as `parseFunding` above, and needed just as much: Podcast
+    // Index mirrors the feed's attribute verbatim, so PI is a carrier of the
+    // feed author's string rather than a filter on it.
+    const url = httpUrl(typeof x?.url === 'string' ? x.url : undefined);
+    if (url) {
+      out.push({ url, message: typeof x.message === 'string' && x.message ? x.message : undefined });
     }
   }
   return out.length ? out : undefined;
@@ -1783,14 +1837,28 @@ export async function resolveValueTimeSplits(
   // Over the cap, entries pass through unresolved — the same value the
   // per-entry `catch` already yields, and a case the UI handles: an unresolved
   // remote item falls back to the show's block and says so on screen.
-  let budget = MAX_RESOLVED_SPLITS;
-  const resolved = await Promise.all(
-    splits.map(async (s, i): Promise<ValueTimeSplit> => {
+  // ...and cap the CONCURRENCY separately, which the budget above does not do.
+  // `budget` decides how many entries are resolved; it says nothing about how
+  // many run at once, and `Promise.all` starts all of them. Each one can reach
+  // the publisher walk in lib/musicl-resolver.ts, which had the identical hole,
+  // so the two multiplied: 200 x 100 outbound fetches from one request, each
+  // admitting 8 MB. The item cap and the fan-out cap are two different caps.
+  //
+  // Walk INDICES rather than splits because `mapLimit` passes only the item —
+  // `probeIdx` and the budget are both positional, and widening that signature
+  // is not an option: `check:fanout` pins it by running the shipping function.
+  const budgeted = new Set<number>();
+  for (let i = 0; i < splits.length && budgeted.size < MAX_RESOLVED_SPLITS; i++) {
+    if (i !== probeIdx) budgeted.add(i);
+  }
+  const resolved = await mapLimit(
+    splits.map((_, i) => i),
+    PI_FANOUT,
+    async (i): Promise<ValueTimeSplit> => {
       if (i === probeIdx) return probeResolved;
-      if (budget <= 0) return s;
-      budget--;
-      try { return await resolveOneSplit(s); } catch { return s; }
-    }),
+      if (!budgeted.has(i)) return splits[i];
+      try { return await resolveOneSplit(splits[i]); } catch { return splits[i]; }
+    },
   );
   if (splits.length > MAX_RESOLVED_SPLITS) {
     console.warn(

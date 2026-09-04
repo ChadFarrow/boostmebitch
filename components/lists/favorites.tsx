@@ -117,27 +117,35 @@ export function FavoriteItemRow({
 }) {
   const title = ep.title!;
   return (
-    <li
-      className="flex gap-3 py-3 px-1 cursor-pointer group transition hover:bg-bone/5"
-      onClick={() => onOpen(ep)}
-    >
-      <PodcastCover
-        image={ep.image}
-        title={title}
-        seed={ep.itemGuid}
-        className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="font-display text-base leading-tight truncate">{title}</div>
-        {/* Only when it says something the title didn't. A single names its
-            album after its one track, so printing both renders the same words
-            twice and reads as an album sitting in the episodes list — 74 of one
-            user's 227 tracks. */}
-        {ep.podcastTitle && ep.podcastTitle !== title && (
-          <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
-        )}
-        {ep.carried && <CarriedNote />}
-      </div>
+    // A real <button> for the row, with the heart as a SIBLING outside it —
+    // same shape as <PodcastRow> and <EpisodeContents>, and required for the
+    // same reason (a button may not contain the heart's button). As an
+    // `<li onClick>` this row had no keyboard route at all, so the only thing a
+    // keyboard user could do with a saved episode was UNSAVE it.
+    <li className="flex gap-3 px-1 group transition hover:bg-bone/5">
+      <button
+        type="button"
+        onClick={() => onOpen(ep)}
+        className="flex-1 min-w-0 flex gap-3 py-3 text-left cursor-pointer"
+      >
+        <PodcastCover
+          image={ep.image}
+          title={title}
+          seed={ep.itemGuid}
+          className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="font-display text-base leading-tight truncate">{title}</div>
+          {/* Only when it says something the title didn't. A single names its
+              album after its one track, so printing both renders the same words
+              twice and reads as an album sitting in the episodes list — 74 of
+              one user's 227 tracks. */}
+          {ep.podcastTitle && ep.podcastTitle !== title && (
+            <div className="text-xs text-muted truncate">{ep.podcastTitle}</div>
+          )}
+          {ep.carried && <CarriedNote />}
+        </div>
+      </button>
       <div className="flex-shrink-0 self-center">
         {ep.carried ? null : <FavEpisodeRowHeart favorite={ep} />}
       </div>

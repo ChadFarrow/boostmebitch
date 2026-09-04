@@ -104,7 +104,22 @@ export async function GET(req: Request) {
       animated: false,
       // A decompression bomb is a small file that decodes to an enormous
       // raster. sharp refuses those above this ceiling rather than allocating.
-      limitInputPixels: 100_000_000,
+      //
+      // 24 MP, not 100 MP. The ceiling has to be read against what the decode
+      // COSTS, not against what sharp's default allows: libvips materializes
+      // the raster, so at four bytes a pixel the old number licensed a ~400 MB
+      // working set for one request — on a route that accepts 12 MB of input,
+      // allows 300 requests a minute per IP, and paints at most 1024 px. A
+      // 12 MB PNG can legally carry 100 MP, so the input cap did not bound it.
+      //
+      // 24 MP is 4900x4900, well above any real podcast cover (3000x3000 is
+      // the iTunes maximum) and still generous for the 16:9 episode art the
+      // fullscreen player draws. Over it this route answers 502, and
+      // `artCandidates`' onError ladder falls through to the raw pre-proxy URL
+      // — which is exactly the tail that makes the proxy an accelerator rather
+      // than a dependency. So an absurd image costs the proxy's speed, never
+      // the artwork itself.
+      limitInputPixels: 24_000_000,
     })
       // `inside`, NEVER `cover`: this route RESIZES, and the surface that
       // draws the picture decides whether to CROP it. A server-side square

@@ -2045,6 +2045,30 @@ export async function mapLimit<T, R>(
 export const PI_FANOUT = 6;
 
 /**
+ * How many THIRD-PARTY feed fetches one walk may have in flight.
+ *
+ * Separate from {@link PI_FANOUT} because it answers a different question.
+ * That one is a courtesy to Podcast Index, whose rate limiter is the thing
+ * being respected. This one is about OUR OWN memory: every entry it bounds is
+ * a `readCappedText` over an attacker-named URL, and the cap is 8 MB apiece —
+ * so the concurrency, not the item count, is what decides the peak.
+ *
+ * **A cap on the item count is not a cap on the fan-out, and both of the walks
+ * this bounds shipped believing it was.** `resolveValueTimeSplits` limits the
+ * splits it resolves to 200 and `resolveRemoteItemFromRss` limits the albums
+ * it searches to 100 — then started every one of them in a single
+ * `Promise.all`. The two walks NEST (a split resolves through the album
+ * search), so one request could open 200 x 100 outbound fetches. Both comments
+ * say "cap the fan-out"; both capped the list.
+ *
+ * Higher than `PI_FANOUT` because nothing upstream is being protected here and
+ * the walk is latency-visible — it decides which artist a boost pays, with the
+ * modal's send button disabled until it answers. A typical publisher lists ten
+ * or twenty albums, which is two or three rounds at this width.
+ */
+export const FEED_FANOUT = 8;
+
+/**
  * Resolve `items`, probe-first, then the rest at a bounded concurrency.
  *
  * **The shape is three separate rules and each one has a cost.**

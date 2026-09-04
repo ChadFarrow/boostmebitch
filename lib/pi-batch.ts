@@ -14,7 +14,10 @@
 // lib/podcast-meta.ts's COULD_NOT_ASK set exists to prevent. Two independent
 // copies of that rule is one copy that eventually forgets it.
 
-import { getEpisodeByGuid, getPodcastByFeedUrl, getPodcastByGuid } from './pi';
+import {
+  getEpisodeByGuid, getPodcastByFeedUrl, getPodcastByGuid,
+  episodeFromPiRecord, podcastFromPiFeed,
+} from './pi';
 import { resolveItemValueFromRss } from './musicl-resolver';
 import { askIndex } from './nostr-index-server';
 import { hasValueRecipients, probeThenBatch } from './util';
@@ -34,13 +37,34 @@ export async function batchPodcasts(guids: string[]): Promise<Record<string, Pod
   if (!wanted.length) return out;
 
   // The index answers most of these from one round trip and its own warm-fill.
-  const fromIndex = await askIndex<Record<string, Podcast | null>>('/pi/podcasts', {
+  //
+  // **`unknown`, and NORMALIZED — never `Podcast` by generic parameter.** The
+  // index caches Podcast Index's RAW record, so what comes back is PI's shape,
+  // not ours. Declaring it `Podcast` type-checks and is wrong in every field
+  // `buildPodcast` derives: `value` above all, because PI writes
+  // `{ model, destinations }` and `hasValueRecipients` reads `.recipients` —
+  // so `fillTrackValues`' stage 1 tested FALSE for every album the index
+  // answered, pushing every row into the RSS stage, which is capped at
+  // MAX_TRACK_VALUE_FEEDS. Playlist tracks past that cap kept a dead BOOST
+  // button, and only when the index was configured and warm.
+  const fromIndex = await askIndex<Record<string, unknown>>('/pi/podcasts', {
     method: 'POST',
     body: { guids: wanted },
   });
   // A key the index omitted is one IT could not answer — carry that meaning
   // through rather than treating an absent key as null.
-  if (fromIndex) for (const [k, v] of Object.entries(fromIndex)) out[k] = v ?? null;
+  //
+  // A record that fails to normalize is left ABSENT rather than recorded as
+  // null, for the same reason: null here means "PI says there is none", and a
+  // cache entry we could not read is not that. Leaving it absent sends it to
+  // `probeThenBatch` below, which asks PI properly.
+  if (fromIndex) {
+    for (const [k, v] of Object.entries(fromIndex)) {
+      if (v == null) { out[k] = null; continue; }
+      const podcast = podcastFromPiFeed(v);
+      if (podcast) out[k] = podcast;
+    }
+  }
 
   const missing = wanted.filter((g) => !(g in out));
   await probeThenBatch(
@@ -63,11 +87,22 @@ export async function batchEpisodes(refs: EpisodeRef[]): Promise<Record<string, 
   const out: Record<string, Episode | null> = {};
   if (!wanted.length) return out;
 
-  const fromIndex = await askIndex<Record<string, Episode | null>>('/pi/episodes', {
+  // Raw PI records, normalized — see the long note in `batchPodcasts`. For an
+  // episode the un-normalized fields also include `valueTimeSplits` (PI names
+  // the field `timesplits`), `transcriptUrl` and `socialInteract`, so an index
+  // answer silently carried no per-track splits, no transcript and no
+  // discussion thread.
+  const fromIndex = await askIndex<Record<string, unknown>>('/pi/episodes', {
     method: 'POST',
     body: { refs: wanted },
   });
-  if (fromIndex) for (const [k, v] of Object.entries(fromIndex)) out[k] = v ?? null;
+  if (fromIndex) {
+    for (const [k, v] of Object.entries(fromIndex)) {
+      if (v == null) { out[k] = null; continue; }
+      const episode = episodeFromPiRecord(v);
+      if (episode) out[k] = episode;
+    }
+  }
 
   const missing = wanted.filter((r) => !(episodeKey(r) in out));
   await probeThenBatch(missing, (r) => getEpisodeByGuid(r.feedGuid, r.itemGuid), episodeKey, out);

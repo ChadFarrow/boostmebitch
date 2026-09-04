@@ -732,6 +732,37 @@ export function EpisodeList({
           // a page with no extra state.
           const groupHead = e.playlistGroup && e.playlistGroup !== prev?.playlistGroup
             ? e.playlistGroup : null;
+          // What a press on the row itself does. Named because it now has TWO
+          // mounts: the <li>'s tap area, and the real <button> around the title
+          // block below. It was inline on the <li> alone, and that made the
+          // `openEpisode` branch — the whole detail view, with the show notes,
+          // chapters, transcript and discussion — reachable only with a
+          // pointer. The artwork button beside it covers PLAY, so the gap was
+          // invisible from the keyboard: the row appeared usable and simply
+          // could not be opened.
+          const openRow = () => {
+            // Tracks carry little extra metadata, so a row tap just plays
+            // the track rather than opening the episode detail view.
+            // An unresolved playlist row has an EMPTY enclosure, so it must
+            // do neither: playing it puts a dead track in the player, and
+            // its detail page would be blank.
+            if (e.unresolved) return;
+            if (asTracks) {
+              if (e.liveStatus === 'pending' || !data.podcast) return;
+              // THE SAME BRANCH THE ARTWORK BUTTON USES, and the row must
+              // not be the exception. `play()` on the current item sets
+              // `positionSec: 0`, so on a STALLED track — the buffer-starved
+              // case player.tsx's `stalledRef` branch exists for — the
+              // reload it triggers reads that zero and restarts the song
+              // from the top, while the artwork button two elements away
+              // resumes where the listener was. One press, two behaviours,
+              // on one row.
+              if (playing) togglePlay();
+              else play(e, data.podcast);
+            } else {
+              openEpisode(e);
+            }
+          };
           return (
             <Fragment key={e.id}>
               {/* The show NAMES the episode, because the episode title alone
@@ -768,29 +799,7 @@ export function EpisodeList({
               className={`group transition ${
                 playing ? 'bg-bolt/10' : 'hover:bg-bone/5'
               } cursor-pointer`}
-              onClick={() => {
-                // Tracks carry little extra metadata, so a row tap just plays
-                // the track rather than opening the episode detail view.
-                // An unresolved playlist row has an EMPTY enclosure, so it must
-                // do neither: playing it puts a dead track in the player, and
-                // its detail page would be blank.
-                if (e.unresolved) return;
-                if (asTracks) {
-                  if (e.liveStatus === 'pending' || !data.podcast) return;
-                  // THE SAME BRANCH THE ARTWORK BUTTON USES, and the row must
-                  // not be the exception. `play()` on the current item sets
-                  // `positionSec: 0`, so on a STALLED track — the buffer-starved
-                  // case player.tsx's `stalledRef` branch exists for — the
-                  // reload it triggers reads that zero and restarts the song
-                  // from the top, while the artwork button two elements away
-                  // resumes where the listener was. One press, two behaviours,
-                  // on one row.
-                  if (playing) togglePlay();
-                  else play(e, data.podcast);
-                } else {
-                  openEpisode(e);
-                }
-              }}
+              onClick={openRow}
             >
               <div className="flex gap-2 sm:gap-3 py-3 pr-1 sm:pr-3">
               {/* An unresolved playlist row has an empty enclosure, so the
@@ -856,7 +865,22 @@ export function EpisodeList({
                 )}
               </button>
               )}
-              <div className="min-w-0 flex-1">
+              {/* The title block is the row's keyboard control. It carries the
+                  SAME handler as the <li>, and stops propagation so a pointer
+                  press does not run it twice — the shape every other inner
+                  control on this row already uses. `disabled` on an unresolved
+                  row because `openRow` is a no-op there, and a focusable
+                  control that does nothing is worse than none.
+
+                  Deliberately NOT an aria-label: the button's text content is
+                  the episode title plus its date and duration, which is the
+                  accessible name we want. */}
+              <button
+                type="button"
+                onClick={(ev) => { ev.stopPropagation(); openRow(); }}
+                disabled={!!e.unresolved}
+                className="min-w-0 flex-1 text-left disabled:cursor-default"
+              >
                 <div className="flex items-center gap-2 min-w-0">
                   {e.liveStatus && <LiveBadge status={e.liveStatus} />}
                   <div className={`text-base font-display font-medium leading-tight truncate ${e.unresolved ? 'text-muted italic' : ''}`}>
@@ -899,7 +923,7 @@ export function EpisodeList({
                     ) : null}
                   </div>
                 ) : null}
-              </div>
+              </button>
               {hasValueRecipients(e.value) && (
                 // Icon-only below sm: — the word cost ~100px of a ~314px row and
                 // left the title ~24px ("Vi…", "Co…"). aria-label is REQUIRED

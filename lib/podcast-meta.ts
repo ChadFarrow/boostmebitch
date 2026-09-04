@@ -22,6 +22,45 @@
 import { storage } from './storage';
 import type { Episode, Podcast } from './types';
 
+/**
+ * Entry cap for the two in-memory tiers below.
+ *
+ * **They had no bound at all, and this is a PWA whose tab stays open for
+ * days.** The only deletion either one ever saw was `resetPiBreaker`, which
+ * removes the NULLS and deliberately keeps every resolved entry — so a session
+ * that browsed for a while grew a `Podcast` or `Episode` object per distinct
+ * show and track it touched, permanently. `warmEpisodeCache` alone writes up
+ * to 100 per batch. On iOS the tab is then reaped for its heap, which the
+ * listener experiences as the app restarting itself mid-episode.
+ *
+ * Not `createBoundedCache`: that one is keyed on `get(key, now)` returning
+ * undefined for absent, and both tiers here depend on `.has()` separating a
+ * CACHED NULL ("PI does not hold this") from an absent key ("never asked") —
+ * the distinction the whole COULD_NOT_ASK design rests on. It also exposes no
+ * iteration, which `resetPiBreaker` needs to drop the negatives on an explicit
+ * retry. A plain cap over the Map keeps both and adds the missing bound.
+ *
+ * Sized well above any real working set: a large favorites library is ~230
+ * shows and ~230 tracks, and a batch is 100. Eviction is oldest-first, and it
+ * costs at most a re-fetch of something the user has already scrolled past.
+ */
+const MAX_MEM_ENTRIES = 2000;
+
+/**
+ * Evict oldest-first until `map` is within the cap.
+ *
+ * A `Map` iterates in insertion order and `set` on an existing key does NOT
+ * move it, so "first key" is the least-recently-INSERTED — which is what we
+ * want here, since neither tier rewrites an entry it already holds.
+ */
+function capMem(map: Map<string, unknown>) {
+  while (map.size > MAX_MEM_ENTRIES) {
+    const oldest = map.keys().next();
+    if (oldest.done) return;
+    map.delete(oldest.value);
+  }
+}
+
 const podcastMem = new Map<string, Podcast | null>();
 
 // The breaker's key and storage medium live in lib/storage.ts with every other
@@ -81,6 +120,7 @@ async function resolveVia(cacheKey: string, query: string): Promise<Podcast | nu
   const cached = storage.podcastMeta.get(cacheKey);
   if (cached) {
     podcastMem.set(cacheKey, cached);
+    capMem(podcastMem);
     return cached;
   }
   // "We didn't ask" — NOT an answer, so nothing is cached. Caching here made
@@ -101,14 +141,17 @@ async function resolveVia(cacheKey: string, query: string): Promise<Podcast | nu
     // 404 IS an answer: PI has been asked and does not hold this feed. Cache it.
     if (!r.ok) {
       podcastMem.set(cacheKey, null);
+      capMem(podcastMem);
       return null;
     }
     const { podcast } = (await r.json()) as { podcast: Podcast };
     if (!podcast) {
       podcastMem.set(cacheKey, null);
+      capMem(podcastMem);
       return null;
     }
     podcastMem.set(cacheKey, podcast);
+    capMem(podcastMem);
     storage.podcastMeta.set(cacheKey, podcast);
     return podcast;
   } catch {
@@ -173,6 +216,7 @@ export async function warmPodcastCache(guids: string[]): Promise<void> {
         if (!(key in podcasts)) continue;
         const podcast = podcasts[key];
         podcastMem.set(key, podcast ?? null);
+        capMem(podcastMem);
         if (podcast) storage.podcastMeta.set(key, podcast);
       }
     } catch {
@@ -209,6 +253,7 @@ export async function warmEpisodeCache(refs: { feedGuid: string; itemGuid: strin
         if (!(key in episodes)) continue;
         const episode = episodes[key];
         episodeMem.set(key, episode ?? null);
+        capMem(episodeMem);
         if (episode) storage.episodeMeta.set(key, episode);
       }
     } catch {
@@ -263,6 +308,7 @@ export async function resolveEpisodeByGuid(
   const cached = storage.episodeMeta.get(cacheKey);
   if (cached) {
     episodeMem.set(cacheKey, cached);
+    capMem(episodeMem);
     return cached;
   }
   // Not an answer — see resolveVia. Nothing cached.
@@ -281,14 +327,17 @@ export async function resolveEpisodeByGuid(
     if (COULD_NOT_ASK.has(r.status)) return null;
     if (!r.ok) {
       episodeMem.set(cacheKey, null);
+      capMem(episodeMem);
       return null;
     }
     const { episode } = (await r.json()) as { episode: Episode };
     if (!episode) {
       episodeMem.set(cacheKey, null);
+      capMem(episodeMem);
       return null;
     }
     episodeMem.set(cacheKey, episode);
+    capMem(episodeMem);
     storage.episodeMeta.set(cacheKey, episode);
     return episode;
   } catch {

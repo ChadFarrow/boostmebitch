@@ -24,6 +24,45 @@ export interface ApiConfig {
 const HEX64 = /^[0-9a-f]{64}$/;
 const MAX_BATCH = 100;
 
+/**
+ * How many Podcast Index calls the `/pi/*` routes may have in flight.
+ *
+ * The app enforces the same ceiling on its own side (`PI_FANOUT` in
+ * lib/util.ts) and the indexer's warm-fill paces itself at one request a
+ * second; these two routes were the gap, firing up to MAX_BATCH — a hundred —
+ * at once. PI rate-limits a burst like that. The value is duplicated here
+ * rather than imported for the reason every other constant in this service is:
+ * it must never import from the app's `lib/`.
+ */
+const PI_FANOUT = 6;
+
+/**
+ * Run `fn` over `items`, at most `limit` at a time, and NEVER reject.
+ *
+ * Both halves matter. The routes below used `Promise.all`, which starts
+ * everything at once AND abandons the whole batch on the first rejection — so
+ * one failing `db.query` threw away every Podcast Index answer already
+ * collected in `out` and returned 500, having already spent the quota to fetch
+ * them. A per-item failure should cost that item and nothing else: its key
+ * stays ABSENT, which is this service's established way of saying "could not
+ * ask", so the caller retries later rather than caching an absence.
+ */
+async function eachLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const worker = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      try {
+        await fn(items[i]!);
+      } catch (e) {
+        console.error('[api] pi batch item failed:', e instanceof Error ? e.message : e);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
 function isHex64(v: unknown): v is string {
   return typeof v === 'string' && HEX64.test(v);
 }
@@ -132,7 +171,15 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
       const subless = (h.relaysWithoutSubscriptions as string[] | undefined)?.length ?? 0;
       return { ok: connected && subless === 0, ...h };
     } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : 'health probe failed' };
+      // The thrown message is LOGGED, never returned. This route is the only
+      // unauthenticated one in the service, and the rule `setErrorHandler`
+      // states further down applies most sharply here: a Postgres error
+      // carries the failing SQL, and the ones this probe produces name the
+      // private-network host and port (`connect ECONNREFUSED 10.x.x.x:5432`),
+      // the database role in an auth failure, or a relation name. All of that
+      // was being handed to any caller who found the hostname.
+      console.error('[api] health probe failed:', e instanceof Error ? e.message : e);
+      return { ok: false, error: 'health probe failed' };
     }
   });
 
@@ -220,13 +267,13 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
   app.get('/reposts', async (req, reply) => {
     const q = req.query as Record<string, string>;
     if (!isHex64(q.pubkey)) return reply.code(400).send({ error: 'bad pubkey' });
-    const ids = (q.ids ?? '').split(',').map((s) => s.trim()).filter(isHex64).slice(0, MAX_BATCH * 5);
+    const ids = (firstParam(q.ids) ?? '').split(',').map((s) => s.trim()).filter(isHex64).slice(0, MAX_BATCH * 5);
     return { events: await repostsBy(db, q.pubkey, ids) };
   });
 
   app.get('/profiles', async (req) => {
     const q = req.query as Record<string, string>;
-    const pubkeys = (q.pubkeys ?? '').split(',').map((s) => s.trim()).filter(isHex64).slice(0, 500);
+    const pubkeys = (firstParam(q.pubkeys) ?? '').split(',').map((s) => s.trim()).filter(isHex64).slice(0, 500);
     return { profiles: await profilesFor(db, pubkeys) };
   });
 
@@ -284,7 +331,7 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
 
     const missing = guids.filter((g) => !(g in out));
     if (missing.length && piConfigured()) {
-      await Promise.all(missing.map(async (g) => {
+      await eachLimit(missing, PI_FANOUT, async (g) => {
         const ans = g.startsWith('url:') ? await fetchPodcastByFeedUrl(g.slice(4)) : await fetchPodcastByGuid(g);
         // `null` means we could not ask. Leave the key ABSENT and write nothing.
         if (!ans) return;
@@ -294,7 +341,7 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
            on conflict (guid) do update set data = excluded.data, miss = excluded.miss, fetched_at = now()`,
           [g, 'found' in ans ? JSON.stringify(ans.found) : null, !('found' in ans)],
         );
-      }));
+      });
     }
     return out;
   });
@@ -319,7 +366,7 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
 
     const missing = refs.filter((r) => !(`${r.feedGuid}:${r.itemGuid}` in out));
     if (missing.length && piConfigured()) {
-      await Promise.all(missing.map(async (r) => {
+      await eachLimit(missing, PI_FANOUT, async (r) => {
         const ans = await fetchEpisodeByGuid(r.feedGuid, r.itemGuid);
         if (!ans) return; // could not ask - key stays absent
         out[`${r.feedGuid}:${r.itemGuid}`] = 'found' in ans ? ans.found : null;
@@ -328,7 +375,7 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
            on conflict (feed_guid, item_guid) do update set data = excluded.data, miss = excluded.miss, fetched_at = now()`,
           [r.feedGuid, r.itemGuid, 'found' in ans ? JSON.stringify(ans.found) : null, !('found' in ans)],
         );
-      }));
+      });
     }
     return out;
   });
@@ -344,7 +391,47 @@ export function buildApi(db: Db, cfg: ApiConfig, probe?: HealthProbe): FastifyIn
   return app;
 }
 
+/**
+ * Largest `until` this service will pass to Postgres.
+ *
+ * 2^32-1 is the year 2106 — beyond any Nostr `created_at` that will ever be
+ * real, and far below the point where JavaScript switches number formatting to
+ * exponential notation. That switch is the actual bug this bounds: node-postgres
+ * serializes a parameter with `toString()`, so `until=1e21` reached the driver
+ * as the string `"1e+21"`, which `$2::bigint` rejects. The route then answered
+ * 500, `askIndex` turned that into `null`, the proxy into 503, and
+ * `index-client.ts` set `indexOffForTab` — so one crafted URL switched the read
+ * index off for that visitor's entire tab.
+ */
+const MAX_UNTIL = 4_294_967_295;
+
+/**
+ * CLAMPS rather than refusing. Every route that takes `until` is one whose 4xx
+ * the client reads as "the index is unavailable", so rejecting an absurd value
+ * costs the visitor the accelerator; clamping answers with data, from a cursor
+ * no real event is newer than.
+ */
 function toUntil(raw: string | undefined): number | undefined {
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.min(Math.floor(n), MAX_UNTIL);
+}
+
+/**
+ * The first value for a query key, whatever shape Fastify produced.
+ *
+ * Fastify's default parser is Node's `querystring.parse`, which returns an
+ * ARRAY for a repeated key — so `?ids=aa&ids=bb` handed the handlers an array
+ * where `as Record<string, string>` promised a string, and `.split` on it threw
+ * a TypeError into a 500. The cast is what hid it from the typechecker. Not
+ * reachable through the app's proxy, which collapses duplicates via
+ * `forwarded.set`, but every holder of INDEX_API_KEY can reach it directly.
+ */
+function firstParam(v: unknown): string | undefined {
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v)) {
+    const first = v.find((x) => typeof x === 'string');
+    return typeof first === 'string' ? first : undefined;
+  }
+  return undefined;
 }

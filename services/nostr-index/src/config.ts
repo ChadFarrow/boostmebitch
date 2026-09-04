@@ -17,6 +17,26 @@ function num(name: string, fallback: number): number {
   return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/**
+ * Which halves of the service this process runs. Unset means 'all'.
+ *
+ * **Validated, not cast.** This was `as 'all' | 'api' | 'indexer'`, which makes
+ * any string type-check — and `src/index.ts` tests for the three literals
+ * exactly, so `INDEX_ROLE=API`, or a value pasted into a dashboard with a
+ * trailing character, started NEITHER half. Signal handlers do not hold Node
+ * open, so the process then exited 0 once the pool went idle: a deploy that
+ * looks like a clean start and indexes nothing, serves nothing, and reports no
+ * error. Same class as `brandIdFrom` in the app, and the same answer — refuse
+ * the unrecognized value rather than let it become a silent no-op. This file's
+ * own rule at the top: an unset value must never become a guess.
+ */
+function role(): 'all' | 'api' | 'indexer' {
+  const raw = process.env.INDEX_ROLE?.trim();
+  if (!raw) return 'all';
+  if (raw === 'all' || raw === 'api' || raw === 'indexer') return raw;
+  throw new Error(`INDEX_ROLE must be one of all, api, indexer — got ${JSON.stringify(raw)}`);
+}
+
 function list(name: string, fallback: string[]): string[] {
   const raw = process.env[name]?.trim();
   if (!raw) return fallback;
@@ -62,7 +82,7 @@ export const config = {
   port: num('PORT', 8080),
   // 'all' runs the API and the indexer in one process (cheapest). Split into
   // two Railway services later by setting this per service.
-  role: (process.env.INDEX_ROLE?.trim() || 'all') as 'all' | 'api' | 'indexer',
+  role: role(),
 
   relays: list('INDEX_RELAYS', DEFAULT_RELAYS),
   profileRelays: list('INDEX_PROFILE_RELAYS', PROFILE_RELAYS),

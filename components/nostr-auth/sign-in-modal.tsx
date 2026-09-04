@@ -277,6 +277,15 @@ export function SignInModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, amberNcErr, amberNcBusy, amberBusy]);
 
+  // Same return-from-the-signer retry as the two above, with one difference
+  // that matters: this one re-submits a value the USER can still edit.
+  //
+  // `onPasteSubmit` reads `pasteValue` from the render the effect last ran in.
+  // Without `pasteValue` in the deps, the listener attached after a FAILED
+  // attempt kept that render's value forever — the deps stop changing at that
+  // point, so typing a corrected URI did not re-run the effect. Pasting a bad
+  // URI, fixing it, going to the signer and coming back then reconnected with
+  // the OLD one and rewrote the error from it, over a box showing the new one.
   useEffect(() => {
     if (tab !== 'remote') return;
     if (!pasteBusy && !pasteErr) return;
@@ -287,7 +296,7 @@ export function SignInModal({
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, pasteErr, pasteBusy]);
+  }, [tab, pasteErr, pasteBusy, pasteValue]);
 
   function handleClose() {
     // Drop any half-finished paste/generate attempt so a future session

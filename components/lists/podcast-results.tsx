@@ -51,49 +51,66 @@ export function PodcastRow({
   piUnasked?: boolean;
 }) {
   return (
+    // The row's opening control is a real <button>, with <FavHeart> as its
+    // SIBLING — the same shape <EpisodeContents> uses for its seek row, and for
+    // the same reason: a button may not contain another button, and the heart
+    // is one. This was an `<li onClick>` with no role, no tabIndex and no key
+    // handler, which made picking a search result POINTER-ONLY. A keyboard or
+    // switch user could reach the heart (favouriting a show they cannot open)
+    // and nothing else, on the one control this whole panel exists for.
+    //
+    // The hover tint stays on the <li> so the full width still reacts, while
+    // the padding moves inside the button so the focus ring and the hit area
+    // describe the same box.
     <li
-      onClick={() => onSelect(podcast)}
-      className={`flex gap-3 py-3 px-1 cursor-pointer group transition ${
+      className={`flex gap-3 px-1 group transition ${
         selected ? 'bg-bolt/10' : 'hover:bg-bone/5'
       }`}
     >
-      <PodcastCover
-        image={podcast.image}
-        artwork={podcast.artwork}
-        title={podcast.title}
-        seed={podcast.podcastGuid ?? String(podcast.id)}
-        className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
-      />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
-          {podcast.isPreview && !piUnasked && (
-            <span className="stamp text-muted border-muted/40">NOT IN PI</span>
-          )}
-          {podcast.medium === 'publisher' && (
-            <span className="stamp text-muted border-muted/40">▸ ALBUMS</span>
-          )}
-          {/* Through the helper, not a raw `=== 'musicL'`: the RSS parsers
-              lowercase the tag and Podcast Index returns its own spelling, so a
-              literal comparison stamps one of the two paths and silently not
-              the other. */}
-          {isPlaylistMedium(podcast) && (
-            <span className="stamp text-muted border-muted/40">♫ PLAYLIST</span>
-          )}
-          {showV4VStamp && podcast.value && (
-            <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
-          )}
+      <button
+        type="button"
+        onClick={() => onSelect(podcast)}
+        aria-current={selected || undefined}
+        className="flex-1 min-w-0 flex gap-3 py-3 text-left cursor-pointer"
+      >
+        <PodcastCover
+          image={podcast.image}
+          artwork={podcast.artwork}
+          title={podcast.title}
+          seed={podcast.podcastGuid ?? String(podcast.id)}
+          className="w-14 h-14 border border-bone/20 flex-shrink-0 text-xl"
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-display text-base leading-tight truncate">{podcast.title}</span>
+            {podcast.isPreview && !piUnasked && (
+              <span className="stamp text-muted border-muted/40">NOT IN PI</span>
+            )}
+            {podcast.medium === 'publisher' && (
+              <span className="stamp text-muted border-muted/40">▸ ALBUMS</span>
+            )}
+            {/* Through the helper, not a raw `=== 'musicL'`: the RSS parsers
+                lowercase the tag and Podcast Index returns its own spelling, so
+                a literal comparison stamps one of the two paths and silently
+                not the other. */}
+            {isPlaylistMedium(podcast) && (
+              <span className="stamp text-muted border-muted/40">♫ PLAYLIST</span>
+            )}
+            {showV4VStamp && podcast.value && (
+              <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>
+            )}
+          </div>
+          <div className="text-xs text-muted truncate">
+            {podcast.author}
+            {meta ? (
+              <>
+                {podcast.author ? ' · ' : ''}
+                {meta}
+              </>
+            ) : null}
+          </div>
         </div>
-        <div className="text-xs text-muted truncate">
-          {podcast.author}
-          {meta ? (
-            <>
-              {podcast.author ? ' · ' : ''}
-              {meta}
-            </>
-          ) : null}
-        </div>
-      </div>
+      </button>
       <FavHeart podcast={podcast} />
     </li>
   );

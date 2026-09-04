@@ -3,7 +3,7 @@ import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getPublisherAlbumUrls } from '@/lib/musicl-resolver';
 import { PiHttpError, getFeedFromRss, getPodcastByFeedUrl } from '@/lib/pi';
-import { mergeRssOverPi, piRecordIsBlank } from '@/lib/util';
+import { mergeRssOverPi, piRecordIsBlank, mapLimit, PI_FANOUT, FEED_FANOUT } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
 // Publisher feeds are effectively static — new albums appear rarely — and this
@@ -77,9 +77,17 @@ export async function GET(req: Request) {
     let couldNotAskPi = false;
     let fromPi: (Podcast | null)[];
     try {
+      // Probe first, then the rest BOUNDED — the shape `probeThenBatch`
+      // documents, hand-rolled here for one reason: that helper swallows a
+      // probe throw and returns, and this route needs the throw so the 429/408
+      // branch below can set `couldNotAskPi`. What it must not do is what it
+      // used to: `Promise.all` over `slice(1)` fires up to 99 concurrent PI
+      // calls out of one handler, PI rate-limits the burst, and `.catch(null)`
+      // files each 429 as "PI does not hold this feed" — dropping real children
+      // from the page. That is the exact failure probeThenBatch exists to stop.
       const probe = await getPodcastByFeedUrl(albumUrls[0]);
-      const rest = await Promise.all(
-        albumUrls.slice(1).map((url) => getPodcastByFeedUrl(url).catch(() => null)),
+      const rest = await mapLimit(albumUrls.slice(1), PI_FANOUT, (url) =>
+        getPodcastByFeedUrl(url).catch(() => null),
       );
       fromPi = [probe, ...rest];
     } catch (e) {
@@ -110,8 +118,15 @@ export async function GET(req: Request) {
       .filter((u): u is string => u !== null);
     const rescued = new Map<string, Podcast>();
     if (needsRss.length) {
-      const parsed = await Promise.all(
-        needsRss.map((url) => getFeedFromRss(url).then((r) => r?.podcast ?? null).catch(() => null)),
+      // Bounded for a different reason than the PI half above: nothing
+      // upstream is being protected here, our own memory is. `needsRss` holds
+      // every child PI missed — for a publisher feed whose children are all
+      // unindexed, all MAX_PUBLISHER_ALBUMS of them — and each `getFeedFromRss`
+      // admits an 8 MB body, so the unbounded version put ~800 MB of feed text
+      // in flight from one request. The bounded-cache ceiling limits what is
+      // RETAINED; it does nothing about the peak while they are all in hand.
+      const parsed = await mapLimit(needsRss, FEED_FANOUT, (url) =>
+        getFeedFromRss(url).then((r) => r?.podcast ?? null).catch(() => null),
       );
       parsed.forEach((p, i) => { if (p) rescued.set(needsRss[i], p); });
     }

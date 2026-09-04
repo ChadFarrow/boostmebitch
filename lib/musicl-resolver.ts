@@ -17,6 +17,7 @@ import { safeFetch, readCappedText } from './safe-fetch';
 import { readAttr } from './feed-xml';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
+import { mapLimit, FEED_FANOUT } from './util';
 
 const FETCH_TIMEOUT_MS = 5000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -327,8 +328,17 @@ export async function resolveRemoteItemFromRss(
     );
   }
 
-  const candidates = await Promise.all(
-    albumUrls.map(async (albumUrl): Promise<ResolvedRemoteItem | null> => {
+  // Bounded, not `Promise.all`. Slicing `all` above caps how many albums are
+  // SEARCHED; it does not cap how many are fetched at once, and this walk is
+  // the inner half of a nested pair — `resolveValueTimeSplits` calls it once
+  // per split, so an unbounded inner loop multiplied by an unbounded outer one
+  // is 200 x 100 concurrent `readCappedText` reads out of a single request.
+  // Ordering is unchanged: `mapLimit` writes results by index, so the
+  // first-match-by-index pick below still returns the same album it always did.
+  const candidates = await mapLimit(
+    albumUrls,
+    FEED_FANOUT,
+    async (albumUrl): Promise<ResolvedRemoteItem | null> => {
       const albumXml = await fetchFeedXml(albumUrl);
       if (!albumXml) return null;
       const found = findItemByGuid(albumXml, itemGuid);
@@ -351,7 +361,7 @@ export async function resolveRemoteItemFromRss(
         };
       }
       return null;
-    }),
+    },
   );
 
   return candidates.find((c): c is ResolvedRemoteItem => c !== null) ?? null;

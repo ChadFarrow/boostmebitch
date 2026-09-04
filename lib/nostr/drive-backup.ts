@@ -30,10 +30,26 @@ export interface DriveFile {
   name: string;
 }
 
+/**
+ * Deadline for one Drive call.
+ *
+ * `lib/nostr/google-auth.ts` bounds the TOKEN step and writes down why: a
+ * request that never settles leaves the panel on "Working…" with no error and
+ * no retry. Every step after the token was left unbounded, which reintroduces
+ * exactly that failure one call later — and the caller retries `driveFetch` up
+ * to ten times, so a stalled connection wedges the whole backup flow rather
+ * than one request. Generous, because an appdata upload is a real transfer on
+ * a phone connection.
+ */
+const DRIVE_REQUEST_TIMEOUT_MS = 30_000;
+
 async function driveFetch(url: string, token: string, init?: RequestInit): Promise<Response> {
   const res = await fetch(url, {
     ...init,
     headers: { ...init?.headers, Authorization: `Bearer ${token}` },
+    // A caller's own signal wins — nothing passes one today, but silently
+    // overriding one would be the harder bug to find later.
+    signal: init?.signal ?? AbortSignal.timeout(DRIVE_REQUEST_TIMEOUT_MS),
   });
   if (res.status === 401) throw new DriveAuthExpiredError();
   if (!res.ok) {

@@ -164,6 +164,17 @@ const MAX_REDIRECTS = 5;
 export const MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 /**
+ * The half of `Response` the capping loop below actually touches.
+ *
+ * A `Request` carries the same three members, so widening the parameter from
+ * `Response` to this lets the INBOUND direction reuse one capping loop rather
+ * than growing a second copy of it — see `readCappedRequestText` in
+ * lib/api-handler.ts. Nothing else changes: every existing caller passes a
+ * `Response`, which still satisfies this structurally.
+ */
+type CappableBody = Pick<Response, 'headers' | 'body' | 'arrayBuffer'>;
+
+/**
  * Read a response body as text, refusing anything past `maxBytes`.
  *
  * `AbortSignal.timeout(...)` — which every caller here passes — caps how LONG a
@@ -179,7 +190,7 @@ export const MAX_BODY_BYTES = 8 * 1024 * 1024;
  * reading is what actually enforces the limit.
  */
 export async function readCappedText(
-  res: Response,
+  res: CappableBody,
   maxBytes: number = MAX_BODY_BYTES,
 ): Promise<string> {
   return new TextDecoder().decode(await readCappedBytes(res, maxBytes));
@@ -251,7 +262,7 @@ export async function readBytesUpTo(
  * exists to prevent. One capping loop, two shapes on top of it.
  */
 export async function readCappedBytes(
-  res: Response,
+  res: CappableBody,
   maxBytes: number = MAX_BODY_BYTES,
 ): Promise<Uint8Array> {
   const declared = Number(res.headers.get('content-length'));
@@ -289,7 +300,7 @@ export async function readCappedBytes(
 
 /** {@link readCappedText}, then `JSON.parse`. */
 export async function readCappedJson(
-  res: Response,
+  res: CappableBody,
   maxBytes: number = MAX_BODY_BYTES,
 ): Promise<unknown> {
   return JSON.parse(await readCappedText(res, maxBytes));

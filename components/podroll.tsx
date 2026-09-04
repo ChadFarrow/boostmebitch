@@ -111,13 +111,22 @@ export function Podroll({ items }: { items: PodrollItem[] }) {
         {podcasts.map((p) => (
           <article
             key={p.id}
-            onClick={() => {
-              selectPodcast(p);
-              window.scrollTo({ top: 0 });
-            }}
-            className="flex-shrink-0 w-64 card p-3 flex flex-col gap-2 cursor-pointer hover:border-bone/30 transition-colors"
+            className="flex-shrink-0 w-64 card p-3 flex flex-col gap-2 hover:border-bone/30 transition-colors"
           >
-            <div className="flex items-start gap-2">
+            {/* The artwork-and-title block is the control, as a real <button>;
+                the V4V stamp and the heart stay outside it. The card was an
+                `<article onClick>`, so opening a recommended show was
+                pointer-only — a keyboard user could favourite one of these but
+                never open it. The heart below is a button, which is why the
+                whole card cannot simply become one. */}
+            <button
+              type="button"
+              onClick={() => {
+                selectPodcast(p);
+                window.scrollTo({ top: 0 });
+              }}
+              className="flex items-start gap-2 text-left cursor-pointer"
+            >
               <PodcastCover
                 image={p.image}
                 artwork={p.artwork}
@@ -131,7 +140,7 @@ export function Podroll({ items }: { items: PodrollItem[] }) {
                 </p>
                 {p.author && <p className="text-xs text-muted truncate mt-0.5">{p.author}</p>}
               </div>
-            </div>
+            </button>
             <div className="flex items-center justify-between gap-2 mt-auto pt-1">
               {p.value ? (
                 <span className="stamp text-bolt border-bolt/60">⚡ V4V</span>

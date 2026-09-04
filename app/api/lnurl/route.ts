@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestText } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch, readCappedText } from '@/lib/safe-fetch';
 import { BRAND } from '@/lib/brand';
@@ -14,6 +14,9 @@ const MAX_LNURL_BYTES = 256 * 1024;
 // parameter, plus a LUD-21 comment. URL-encoded that is comfortably over the
 // 2000 the chapters proxy allows.
 const MAX_URL_LENGTH = 8000;
+
+/** Ceiling on the inbound body — see `readCappedRequestText`. */
+const MAX_REQUEST_BYTES = 16 * 1024;
 
 /**
  * Server-side proxy for an LNURL-pay endpoint — the `.well-known/lnurlp`
@@ -56,9 +59,16 @@ export async function POST(req: Request) {
   const limited = rateLimit(req, 'lnurl', 240);
   if (limited) return limited;
 
+  // Capped read, then parse — see `readCappedRequestText`. The only field
+  // this route uses is a URL already bounded by MAX_URL_LENGTH below, so
+  // anything approaching this ceiling is not a request we were going to serve.
+  const rawBody = await readCappedRequestText(req, MAX_REQUEST_BYTES);
+  if (rawBody === null) {
+    return NextResponse.json({ error: 'invalid body' }, { status: 400 });
+  }
   let body: unknown;
   try {
-    body = await req.json();
+    body = JSON.parse(rawBody);
   } catch {
     return NextResponse.json({ error: 'invalid body' }, { status: 400 });
   }

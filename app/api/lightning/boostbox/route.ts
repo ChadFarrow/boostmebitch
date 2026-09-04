@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestText } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { readCappedText, readCappedJson } from '@/lib/safe-fetch';
 
@@ -45,12 +45,22 @@ const BOOSTBOX_API_KEY = process.env.BOOSTBOX_API_KEY || 'v4v4me';
  */
 const BOOSTBOX_RATE_LIMIT = 120;
 
+/**
+ * Ceiling on the INBOUND body. Same 10 KB this route has always enforced — the
+ * change is that it is now enforced while reading rather than after buffering.
+ */
+const MAX_REQUEST_BYTES = 10_000;
+
 export async function POST(req: Request) {
   const limited = rateLimit(req, 'boostbox', BOOSTBOX_RATE_LIMIT);
   if (limited) return limited;
   return withErrorHandling(async () => {
-    const raw = await req.text();
-    if (raw.length > 10_000) {
+    // Capped while READING. This was `req.text()` followed by a length
+    // check, which allocates the whole body first and measures after — the
+    // thing the note below about `upstream.text()` correctly refuses to do,
+    // on the inbound side of the same handler.
+    const raw = await readCappedRequestText(req, MAX_REQUEST_BYTES);
+    if (raw === null) {
       return NextResponse.json({ error: 'payload too large' }, { status: 400 });
     }
     let payload: unknown;

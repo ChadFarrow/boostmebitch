@@ -92,9 +92,17 @@ async function ask(path: string, pick: (d: any) => unknown): Promise<PiAnswer<un
   try {
     const data = await pi<any>(path);
     const value = pick(data);
-    // PI returns 200 with an empty object for a guid it doesn't hold. That is
-    // still an answer.
+    // PI returns 200 with an EMPTY OBJECT for a guid it doesn't hold. That is
+    // still an answer — and the test has to actually catch it. `{}` is truthy
+    // and is not an array, so the two clauses below both passed it through and
+    // it was stored as a resolved feed for the whole `piTtlHours` window
+    // (default a week). The app's own reader guards this with `feed.id == null`
+    // (lib/pi.ts), which is why it never surfaced there; here it meant the
+    // cache answered "found" with nothing in it.
     if (!value || (Array.isArray(value) && !value.length)) return { miss: true };
+    if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) {
+      return { miss: true };
+    }
     return { found: value };
   } catch (e) {
     if (e instanceof PiHttpError && NOT_FOUND_STATUSES.has(e.status)) return { miss: true };

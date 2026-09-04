@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestText } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { batchEpisodes, MAX_BATCH, type EpisodeRef } from '@/lib/pi-batch';
 
@@ -14,13 +14,27 @@ import { batchEpisodes, MAX_BATCH, type EpisodeRef } from '@/lib/pi-batch';
  * BOTH guids are required for every pair: PI's /episodes/byguid needs
  * `podcastguid` to disambiguate, and an item guid alone is not a lookup key.
  */
+/**
+ * Ceiling on the inbound body — see `readCappedRequestText`. MAX_BATCH refs at
+ * roughly 2.2 KB apiece is the widest call this route will act on; anything
+ * past that is discarded by the `slice` below regardless.
+ */
+const MAX_REQUEST_BYTES = 512 * 1024;
+
 export async function POST(req: Request) {
   const limited = rateLimit(req, 'episode-by-guid-batch', 30);
   if (limited) return limited;
 
+  // Capped read, then parse — see `readCappedRequestText`. Sized against the
+  // widest legitimate call: MAX_REFS entries, each an itemGuid of up to 2048
+  // characters plus a feedGuid, with room to spare for JSON punctuation.
+  const rawBody = await readCappedRequestText(req, MAX_REQUEST_BYTES);
+  if (rawBody === null) {
+    return NextResponse.json({ error: 'payload too large' }, { status: 400 });
+  }
   let body: unknown;
   try {
-    body = await req.json();
+    body = JSON.parse(rawBody);
   } catch {
     return NextResponse.json({ error: 'invalid json' }, { status: 400 });
   }
