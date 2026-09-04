@@ -18,5 +18,10 @@
     { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
     { "src": "/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "screenshots": [
+    { "src": "/screenshots/buddy/01-browse.png", "sizes": "824x1830", "type": "image/png", "form_factor": "narrow", "label": "Browse Podcasting 2.0 shows" },
+    { "src": "/screenshots/buddy/02-episodes.png", "sizes": "824x1830", "type": "image/png", "form_factor": "narrow", "label": "An episode with its value split" },
+    { "src": "/screenshots/buddy/03-boost.png", "sizes": "824x1830", "type": "image/png", "form_factor": "narrow", "label": "Sending a boost over Lightning" }
   ]
 }

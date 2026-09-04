@@ -1,7 +1,21 @@
-# Builds the Trusted Web Activity, proves it will actually verify against the
-# live origin, and cuts the GitHub release.
+# Builds BOTH Trusted Web Activities, proves each will actually verify against
+# its own live origin, and cuts one GitHub release carrying both APKs.
 #
-# WHETHER IT ALSO PUBLISHES TO ZAPSTORE IS DECLARED, NOT INFERRED. The
+# TWO APPS, ONE TAG. `com.boostmebitch` wraps www.boostmebitch.com and
+# `com.boostmebuddy` wraps www.boostmebuddy.com. They are separate Android apps,
+# not one app with two names — package id, host and Digital Asset Links
+# statement move together, and Zapstore keys an app on package id plus signing
+# certificate, so this is not reversible after a first publish. The matrix on
+# the job is the whole of it; every step below reads one selected
+# android/twa-manifest.json and stays brand-agnostic.
+#
+# ONLY THE FAMILY-FRIENDLY BRAND IS LISTED ON ZAPSTORE (`store: true` in the
+# matrix). The other is attached to the GitHub release as an APK for anyone who
+# wants it, and never reaches a store. Both halves of that are announced in the
+# run summary, because a reader who finds one listing should not have to guess
+# whether the second failed.
+#
+# WHETHER CI PUBLISHES THE LISTED ONE IS DECLARED, NOT INFERRED. The
 # repository variable ZAPSTORE_PUBLISH_MODE picks it, and it defaults to
 # `local` when unset:
 #
@@ -13,7 +27,8 @@
 #                     `zsp identity --link-key`, which needs the keystore and
 #                     is a local step either way.
 #   ci                CI publishes, and ZAPSTORE_SIGN_WITH must hold an
-#                     nsec1…/bunker:// for the pubkey zapstore.yaml declares.
+#                     nsec1…/bunker:// for the pubkey the listed brand's
+#                     zapstore config declares.
 #                     A tag with the mode set and the secret missing FAILS
 #                     early rather than releasing to GitHub and stopping.
 #
@@ -68,13 +83,63 @@ env:
   # and images are compressed (icon <=512px, screenshots <=1440px wide; ours are
   # 512x512 and 824x1830, so nothing downscales and --no-compress is not needed).
   ZSP_VERSION: v0.4.17
-  ORIGIN: https://www.boostmebitch.com
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    # ONE TAG BUILDS BOTH APPS. They wrap different ORIGINS, so they are two
+    # Android apps and not one app with two names: the package id, the host and
+    # the Digital Asset Links statement all move together, and Zapstore
+    # identifies an app by package id plus signing certificate. Renaming one
+    # into the other is not possible after the first publish.
+    #
+    # Only ONE of them is listed on Zapstore. `store: true` picks it, and it is
+    # the family-friendly brand; the other ships as an APK on the GitHub release
+    # for people who want it. That is a product decision, recorded here because
+    # nothing else in the repo would say it.
+    #
+    # They share ONE keystore, which is why `signingKey.alias` still reads
+    # `boostmebitch` in both TWA manifests. An alias is keystore-internal and
+    # never reaches a user; the differing package ids are what make these
+    # separate apps.
+    #
+    # fail-fast is off so a failure on one brand still produces the other's APK.
+    # A half-finished release is recoverable by re-running; losing the good half
+    # because the other broke is just a longer wait.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - brand: bitch
+            origin: https://www.boostmebitch.com
+            twa: android/twa-manifest.json
+            config: zapstore.yaml
+            apk: android/app-release-signed.apk
+            store: false
+          - brand: buddy
+            origin: https://www.boostmebuddy.com
+            twa: android/twa-manifest-buddy.json
+            config: zapstore-buddy.yaml
+            apk: android/app-release-signed-buddy.apk
+            store: true
+    env:
+      ORIGIN: ${{ matrix.origin }}
     steps:
       - uses: actions/checkout@v4
+
+      # Every later step reads android/twa-manifest.json — the version step, the
+      # version writer, Bubblewrap's `update`, and the package id the origin
+      # check compares. Selecting the brand's file into that one path keeps all
+      # of them brand-agnostic, rather than threading `matrix.twa` through five
+      # places where one could be missed.
+      - name: Select the brand's TWA manifest
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.twa }}" != "android/twa-manifest.json" ]; then
+            cp "${{ matrix.twa }}" android/twa-manifest.json
+          fi
+          echo "Building ${{ matrix.brand }} from ${{ matrix.twa }}:"
+          jq -r '"  packageId \(.packageId)\n  host      \(.host)\n  name      \(.name)"' android/twa-manifest.json
 
       - uses: actions/setup-node@v4
         with:
@@ -208,13 +273,13 @@ jobs:
       #
       # The value is never echoed. `-z` on the secret is the whole test.
       - name: Refuse a publish run with no Zapstore identity
-        if: steps.version.outputs.publish == 'true' && steps.zapmode.outputs.mode == 'ci'
+        if: matrix.store && steps.version.outputs.publish == 'true' && steps.zapmode.outputs.mode == 'ci'
         env:
           SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
         run: |
           set -euo pipefail
           if [ -z "${SIGN_WITH:-}" ]; then
-            echo "::error::ZAPSTORE_PUBLISH_MODE is 'ci' but ZAPSTORE_SIGN_WITH is not set, so this tag cannot publish. Add the repository secret (the key for the pubkey zapstore.yaml declares), or set the variable back to 'local' and publish by hand — see docs/android.md."
+            echo "::error::ZAPSTORE_PUBLISH_MODE is 'ci' but ZAPSTORE_SIGN_WITH is not set, so this tag cannot publish. Add the repository secret (the key for the pubkey ${{ matrix.config }} declares), or set the variable back to 'local' and publish by hand — see docs/android.md."
             exit 1
           fi
           echo "ZAPSTORE_SIGN_WITH is set."
@@ -289,12 +354,19 @@ jobs:
           # public/sw.js deliberately precaches nothing (see docs/ui.md). The
           # validation would fail on a property this app has consciously chosen.
           npm run android:release < /dev/null
+          # Bubblewrap always writes android/app-release-signed.apk. Give the
+          # brand its own filename NOW, before anything reads it: every later
+          # step, the release asset and the brand's zapstore config all name
+          # that path, so the two legs cannot hand each other an APK.
+          if [ "${{ matrix.apk }}" != "android/app-release-signed.apk" ]; then
+            mv android/app-release-signed.apk "${{ matrix.apk }}"
+          fi
 
       - name: Read the certificate out of what was actually built
         id: cert
         run: |
           set -euo pipefail
-          FP=$(keytool -printcert -jarfile android/app-release-signed.apk \
+          FP=$(keytool -printcert -jarfile "${{ matrix.apk }}" \
                | grep -i 'SHA256:' | head -1 | sed 's/.*SHA256: *//' | tr -d '[:space:]')
           PKG=$(jq -r .packageId android/twa-manifest.json)
           echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
@@ -311,10 +383,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: app-release-signed-${{ steps.version.outputs.name }}
+          name: ${{ matrix.brand }}-app-release-signed-${{ steps.version.outputs.name }}
           # Named explicitly, never a glob over android/ — the keystore is in
           # that directory and must not be swept into an artifact.
-          path: android/app-release-signed.apk
+          path: ${{ matrix.apk }}
           if-no-files-found: error
 
       # The best guard in this workflow. A statement list that does not name
@@ -385,10 +457,10 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          zsp publish --check zapstore.yaml
-          NPUB=$(awk '$1 == "pubkey:" { print $2 }' zapstore.yaml)
+          zsp publish --check "${{ matrix.config }}"
+          NPUB=$(awk '$1 == "pubkey:" { print $2 }' "${{ matrix.config }}")
           if [ -z "$NPUB" ]; then
-            echo "::error::zapstore.yaml declares no pubkey, so the dry run has no identity to build events for."
+            echo "::error::${{ matrix.config }} declares no pubkey, so the dry run has no identity to build events for."
             exit 1
           fi
           # Events go to stdout, the upload manifest (and any error) to stderr.
@@ -396,7 +468,7 @@ jobs:
           # `set -e` exit on the redirect alone would hide zsp's own message.
           EVENTS="$RUNNER_TEMP/zapstore-events.jsonl"
           STDERR="$RUNNER_TEMP/zapstore-offline-stderr.txt"
-          if ! SIGN_WITH="$NPUB" zsp publish --quiet --offline zapstore.yaml > "$EVENTS" 2> "$STDERR"; then
+          if ! SIGN_WITH="$NPUB" zsp publish --quiet --offline "${{ matrix.config }}" > "$EVENTS" 2> "$STDERR"; then
             echo "::error::zsp publish --offline failed. Its stderr:"
             cat "$STDERR"
             exit 1
@@ -416,36 +488,61 @@ jobs:
         run: |
           set -euo pipefail
           gh release create "${GITHUB_REF#refs/tags/}" --generate-notes --verify-tag 2>/dev/null || true
-          gh release upload "${GITHUB_REF#refs/tags/}" android/app-release-signed.apk --clobber
+          gh release upload "${GITHUB_REF#refs/tags/}" "${{ matrix.apk }}" --clobber
 
       # Mode `local`: say what is left to do, on the run that produced the APK,
       # rather than leaving a green tag that silently reached no store. The
       # commands are written out in full because the person running them is
       # doing it once or twice a year and should not have to reconstruct them.
+      # Mode `local`: say what is left to do, on the run that produced the APK,
+      # rather than leaving a green tag that silently reached no store. The
+      # commands are written out in full because the person running them is
+      # doing it once or twice a year and should not have to reconstruct them.
       - name: Hand the Zapstore publish to a human
-        if: steps.version.outputs.publish == 'true' && steps.zapmode.outputs.mode == 'local'
+        if: matrix.store && steps.version.outputs.publish == 'true' && steps.zapmode.outputs.mode == 'local'
         env:
           TAG: ${{ github.ref_name }}
+          APK: ${{ matrix.apk }}
+          CONFIG: ${{ matrix.config }}
         run: |
           set -euo pipefail
+          ASSET=$(basename "$APK")
           {
-            echo "## Zapstore: not published by CI"
+            echo "## Zapstore: ${{ matrix.brand }} is not published by CI"
             echo
             echo "\`ZAPSTORE_PUBLISH_MODE\` is \`local\`, so this run built, signed, verified and released **$TAG** and stopped there."
             echo "The signing key stays off GitHub on purpose. Finish it on the machine that holds the keystore:"
             echo
             echo '```bash'
-            echo "gh release download $TAG -p 'app-release-signed.apk' -O android/app-release-signed.apk --clobber"
-            echo "SIGN_WITH=browser zsp publish zapstore.yaml          # signs in a NIP-07 browser"
+            echo "gh release download $TAG -p '$ASSET' -O $APK --clobber"
+            echo "SIGN_WITH=browser zsp publish $CONFIG          # signs in a NIP-07 browser"
             echo "SIGN_WITH=browser zsp identity --link-key ~/keystores/boostmebitch-release.jks --key-alias boostmebitch"
             echo '```'
             echo
+            echo "\`$CONFIG\` names \`$APK\` as its \`release_source\`, so the download has to land on exactly that path."
             echo "Then confirm from the relay rather than the log — see \`docs/android.md\`."
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "::notice::Zapstore publish is a LOCAL step for this repository. The commands are in this run's summary."
+          echo "::notice::Zapstore publish for ${{ matrix.brand }} is a LOCAL step. The commands are in this run's summary."
+
+      # The other brand never reaches a store, and that is a decision rather
+      # than an omission — so the run says so, on the run that built it. A
+      # reader who finds only one Zapstore listing should not have to guess
+      # whether the second one failed.
+      - name: Note that this brand is GitHub-only
+        if: ${{ !matrix.store && steps.version.outputs.publish == 'true' }}
+        env:
+          APK: ${{ matrix.apk }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## ${{ matrix.brand }}: GitHub release only, by design"
+            echo
+            echo "\`$(basename "$APK")\` is attached to this release for anyone who wants it."
+            echo "It is deliberately **not** listed on Zapstore — only the family-friendly brand is."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Publish to Zapstore
-        if: steps.version.outputs.publish == 'true' && steps.zapmode.outputs.mode == 'ci'
+        if: matrix.store && steps.version.outputs.publish == 'true' && steps.zapmode.outputs.mode == 'ci'
         env:
           SIGN_WITH: ${{ secrets.ZAPSTORE_SIGN_WITH }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -456,14 +553,14 @@ jobs:
           # before the GitHub release did. Reaching here means that step was
           # removed or its condition drifted from this one.
           if [ -z "${SIGN_WITH:-}" ]; then
-            echo "::error::ZAPSTORE_SIGN_WITH is not set, so this tag cannot publish. Add the repository secret (the key for the pubkey zapstore.yaml declares) and re-run this workflow — see docs/android.md."
+            echo "::error::ZAPSTORE_SIGN_WITH is not set, so this tag cannot publish. Add the repository secret (the key for the pubkey ${{ matrix.config }} declares) and re-run this workflow — see docs/android.md."
             exit 1
           fi
           # --quiet is zsp's CI mode: no prompts, no spinners, auto-confirm.
           # (`-y` was never a zsp flag; zsp rejects it outright.) In quiet
           # mode a missing certificate-to-identity proof is a warning, not a
           # prompt — link it once by hand afterwards, per docs/android.md.
-          zsp publish --quiet zapstore.yaml
+          zsp publish --quiet "${{ matrix.config }}"
 
       - name: Remove the keystore
         if: always()

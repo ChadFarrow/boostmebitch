@@ -25,7 +25,7 @@
 // at a time with `alsoNaive: true` for a legitimate input the wrong version also
 // handles.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -249,6 +249,102 @@ ok('the two brands name different manifests', BRANDS.buddy.manifest !== BRANDS.b
 // resolving the author gets the other brand's name, avatar and nip05 — on a
 // kind:1 that cannot be edited afterwards.
 ok('the two brands have different Nostr identities', BRANDS.buddy.siteNpub !== BRANDS.bmb.siteNpub);
+
+// ---------------------------------------------------------------------------
+// The buddy brand's FILES, not just its table row.
+//
+// `lib/brand.ts` is not the only place the family-friendly name is written
+// down, and the table being clean says nothing about the files. Three of them
+// are read by something outside this repo, which is what makes a leak here
+// expensive and quiet:
+//
+//   public/manifest-buddy.json   the PWA install dialogue, and Bubblewrap on a
+//                                re-`init` — a home-screen label is permanent
+//                                until the user reinstalls.
+//   android/twa-manifest-buddy.json  the Android app's launcher name and its
+//                                package id. Zapstore keys a listing on the
+//                                package id, so this is not editable after a
+//                                first publish.
+//   zapstore-buddy.yaml          the store listing itself.
+//
+// TWO EXCEPTIONS ARE LEGITIMATE AND BOTH ARE NARROW. `signingKey.alias` is a
+// keystore-internal name for an entry inside a .jks that both apps share; it
+// reaches no user and renaming it would orphan the key. `repository:` is the
+// real GitHub URL, and the repo keeps the original name on purpose (CLAUDE.md
+// says so) — a store listing that links to a repository that does not exist is
+// worse than one that links to an honestly-named one. Everything else is a
+// failure. They are exempted by exact path, never by a substring rule, so a
+// third leak cannot arrive by resembling one of these.
+// ---------------------------------------------------------------------------
+
+console.log('\n  the buddy brand carries nothing from the other brand ON DISK');
+
+/** JSON pointer-ish paths whose value may legitimately hold the other word. */
+const ALLOWED = {
+  'public/manifest-buddy.json': [],
+  'android/twa-manifest-buddy.json': ['signingKey.alias'],
+  'zapstore-buddy.yaml': ['repository'],
+};
+
+/** Every scalar in a parsed JSON doc, as [dottedPath, value]. */
+function scalars(node, path = '') {
+  if (node === null || typeof node !== 'object') return [[path, node]];
+  if (Array.isArray(node)) return node.flatMap((v, i) => scalars(v, `${path}[${i}]`));
+  return Object.entries(node).flatMap(([k, v]) => scalars(v, path ? `${path}.${k}` : k));
+}
+
+for (const [rel, allowed] of Object.entries(ALLOWED)) {
+  const abs = join(REPO, rel);
+  ok(`${rel} exists`, existsSync(abs), 'the buddy brand has no file at that path');
+  if (!existsSync(abs)) continue;
+  const text = readFileSync(abs, 'utf8');
+
+  if (rel.endsWith('.json')) {
+    let doc;
+    try { doc = JSON.parse(text); } catch (e) {
+      ok(`${rel} parses as JSON`, false, String(e && e.message));
+      continue;
+    }
+    for (const [p, v] of scalars(doc)) {
+      if (typeof v !== 'string') continue;
+      if (!v.toLowerCase().includes(FORBIDDEN)) continue;
+      ok(`${rel} → ${p} does not contain ${JSON.stringify(FORBIDDEN)}`,
+        allowed.includes(p), `got ${JSON.stringify(v)}`);
+    }
+  } else {
+    // The zapstore config is YAML and this script has no YAML parser, by the
+    // same import-free rule everything else here follows. Scan it by LINE and
+    // exempt by leading key, which is enough: every value that could carry a
+    // name is a top-level scalar or a list item under one.
+    let key = '';
+    for (const raw of text.split('\n')) {
+      const line = raw.replace(/\s+$/, '');
+      if (!line || line.trimStart().startsWith('#')) continue;
+      const m = /^([A-Za-z_][A-Za-z0-9_]*):/.exec(line);
+      if (m) key = m[1];
+      if (!line.toLowerCase().includes(FORBIDDEN)) continue;
+      ok(`${rel} → ${key} does not contain ${JSON.stringify(FORBIDDEN)}`,
+        allowed.includes(key), `got ${JSON.stringify(line.trim())}`);
+    }
+  }
+}
+
+// The two Android apps must not collide. One package id would make them the
+// same app to Android and to Zapstore, so the second would overwrite the first
+// — and a package id cannot be changed after a listing exists.
+{
+  const a = JSON.parse(readFileSync(join(REPO, 'android/twa-manifest.json'), 'utf8'));
+  const b = JSON.parse(readFileSync(join(REPO, 'android/twa-manifest-buddy.json'), 'utf8'));
+  ok('the two Android apps have different package ids', a.packageId !== b.packageId,
+    `both are ${JSON.stringify(a.packageId)}`);
+  ok('the two Android apps wrap different origins', a.host !== b.host,
+    `both are ${JSON.stringify(a.host)}`);
+  // Same keystore on purpose: a shared certificate is normal for one
+  // developer's apps, and the differing package ids are what separate them.
+  ok('the two Android apps share one signing key',
+    a.signingKey?.alias === b.signingKey?.alias,
+    `${JSON.stringify(a.signingKey?.alias)} vs ${JSON.stringify(b.signingKey?.alias)}`);
+}
 
 // ---------------------------------------------------------------------------
 // Derived values follow the ACTIVE brand.
