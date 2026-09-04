@@ -1592,12 +1592,73 @@ async function resolveOneSplit(split: ValueTimeSplit): Promise<ValueTimeSplit> {
   }
 }
 
-/** The parent-feed verdict for one remote item, and nothing else. */
+/** The parent-feed verdict for one remote item, plus the two strings that
+ *  name it. */
 export interface RemoteItemParent {
   /** See {@link ValueTimeSplit.parentFeedGuid} — the same three states. */
   parentFeedGuid?: string | null;
   /** The ALBUM's title, when the direct lookup supplied one. */
   feedTitle?: string;
+  /** The ARTIST — see {@link ValueTimeSplit.artist}. Display-only, and absent
+   *  whenever the feed lookup missed or failed. */
+  artist?: string;
+}
+
+/**
+ * Who made this track, out of the feed record for the album it lives in.
+ *
+ * **Podcast Index puts `author` on the FEED and not on the episode**, so a
+ * resolved split knows the track's title and the album's title and still cannot
+ * say whose song it is — and on the single-track album feeds most independent
+ * releases ship as, those two strings are the SAME string. That is what makes
+ * this a second call rather than a field we forgot to map.
+ *
+ * **It never throws and never delays a verdict it cannot improve.** The artist
+ * is a label; the parent-feed answer beside it decides whether a favorite may
+ * be written at all. So every failure here — a PI miss, an outage, our own rate
+ * limit — is an absent name, never an absent verdict, and `getPodcast`'s
+ * unguarded 400 is caught rather than propagated.
+ *
+ * Three ways in, in order of how sure they are about which feed to ask:
+ *   - `feedId` — Podcast Index resolved the item itself and named its feed.
+ *   - `parentFeedGuid` — a publisher walk recovered the real album guid.
+ *   - the wire `feedGuid` — a direct RSS hit, where the host's guid IS the
+ *     album. A publisher walk sets `parentFeedGuid`, so this branch is not the
+ *     case where the wire guid names a publisher.
+ *
+ * `parentFeedGuid === null` is "known unresolvable": there is no album feed to
+ * ask, and the publisher's own author is not a promise about this track.
+ *
+ * **The gate is that the ITEM resolved, not that the FEED did**, and the two
+ * come apart in the case that matters. `resolveOneSplit` returns the split
+ * untouched when it could not place the track, and a `feedGuid` PI knows beside
+ * an `itemGuid` it does not is an ordinary state — an uncrawled release, a
+ * host's typo, a guid naming a podcast rather than an album. Asking anyway
+ * answers, because the FEED is real: a probe against a made-up all-zeros guid
+ * came back `The Four Square Podcast`, a genuine feed that publishes it. That
+ * name under a song nobody confirmed is there is a worse row than no name.
+ * `split.value` is what both resolve branches set and the give-up return does
+ * not.
+ */
+async function remoteItemArtist(
+  split: ValueTimeSplit,
+  wireFeedGuid: string,
+): Promise<string | undefined> {
+  if (!split.value) return undefined;
+  if (split.parentFeedGuid === null) return undefined;
+  try {
+    const feed = split.feedId
+      ? await getPodcast(split.feedId)
+      : await getPodcastByGuid(split.parentFeedGuid ?? wireFeedGuid);
+    const author = feed?.author?.trim();
+    if (!author) return undefined;
+    // The row already renders the title. A feed whose author repeats it adds a
+    // second identical line rather than an answer.
+    if (author.toLowerCase() === split.title?.trim().toLowerCase()) return undefined;
+    return author;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1616,7 +1677,8 @@ export interface RemoteItemParent {
  * **It deliberately returns the verdict, not the split.** Handing a resolved
  * `value` block back to a client that already holds the authoritative one is an
  * invitation to pay the wrong thing; there is nothing in this shape a payment
- * could be built from.
+ * could be built from. `feedTitle` and `artist` ride along on the same terms —
+ * strings a surface prints, which no caller may pay or key off.
  */
 export async function resolveRemoteItemParent(
   feedGuid: string,
@@ -1627,7 +1689,12 @@ export async function resolveRemoteItemParent(
     duration: 0,
     remoteItem: { feedGuid, itemGuid },
   });
-  return { parentFeedGuid: split.parentFeedGuid, feedTitle: split.feedTitle };
+  // Sequential, because which feed to ask is what the resolve just worked out.
+  return {
+    parentFeedGuid: split.parentFeedGuid,
+    feedTitle: split.feedTitle,
+    artist: await remoteItemArtist(split, feedGuid),
+  };
 }
 
 /** Which "now playing" convention a live item turned out to be using. */

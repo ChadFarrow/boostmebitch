@@ -42,6 +42,14 @@ import { fmtClock } from '@/lib/format';
  * resolves it and flips `PlayedTrack.parentResolved`; until then there is no
  * control to press. A failed lookup flips it too — see there.
  *
+ * **Each row names its artist under the title.** A live block carries the track
+ * and nothing else, and Podcast Index keeps `author` on the FEED record rather
+ * than the episode one — so on the single-track album feeds most independent
+ * releases ship as, the title and the album title are one string and the list
+ * read as four song names with nobody attached to them. The log asks
+ * `/api/remote-item` for it on the same call that settles the parent-feed
+ * verdict. It is a label: a row with no answer renders the line it always did.
+ *
  * Renders nothing at all unless this item is the one being logged, so it is
  * safe to place unconditionally beside an ordinary episode's panels.
  */
@@ -124,7 +132,14 @@ export function LivePlayedTracks({
                         rather than rendering an empty line. */}
                     {splitTargetLabel(p.split, 'Untitled track')}
                   </span>
-                  <span className="block text-[10px] text-muted">
+                  {/* The ARTIST, then the state. A row's title is the track,
+                      and on the single-track album feeds most independent
+                      releases ship as, the album's title is that same string —
+                      so without this line the list names four songs and nobody
+                      who made them. It is absent whenever the lookup missed,
+                      and then the line is exactly what it was before. */}
+                  <span className="block truncate text-[10px] text-muted">
+                    {p.split.artist && `${p.split.artist} · `}
                     {on ? '● on air now' : fmtClock(Math.floor(p.atMs / 1000))}
                   </span>
                 </span>

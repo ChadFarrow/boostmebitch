@@ -40,6 +40,23 @@ export interface ValueTimeSplit {
    *  and without it a freshly-favorited track sits on the favorites list with no
    *  album name until Podcast Index re-resolves it on some later load. */
   feedTitle?: string;
+  /**
+   * The ARTIST — the parent feed's `author`, and display-only.
+   *
+   * Podcast Index carries it on the FEED record and not on the episode one, so
+   * it costs a second lookup and is filled in only where a surface names the
+   * song to a person: `<LivePlayedTracks>` today. A block's own `title` is the
+   * track, `feedTitle` is the album, and neither of them answers "who is this?"
+   * — a single-track album feed titles itself after the song, so on the live
+   * played list every row read as a bare track name with nothing saying whose
+   * it was.
+   *
+   * **Nothing may key off it or pay it.** It is a string a feed wrote about
+   * itself; the payees are `value.recipients` and the identity of the track is
+   * `remoteItem`. Absent whenever the lookup missed, failed, or was never made,
+   * which is ordinary — a surface renders what it has and says nothing more.
+   */
+  artist?: string;
   episodeGuid?: string;
   /**
    * The feed guid that actually CONTAINS this track, when resolution learned
