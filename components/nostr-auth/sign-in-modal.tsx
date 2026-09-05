@@ -82,11 +82,6 @@ export function SignInModal({
   // Lazy initializer, like `android` above: this is read once, on the client,
   // and the deferral is what keeps `navigator` off the server render.
   const [ios] = useState(() => isLikelyIOS());
-  // "Neither phone box renders here." Not a claim that a mouse is present — an
-  // unknown mobile lands here too, and a QR it can scan with a SECOND device is
-  // the right offer for it as well. What it gates is the one thing that would
-  // be wrong on a phone: pairing by scanning a code that phone is displaying.
-  const desktop = !ios && !android;
   // Google onboarding is a SEPARATE path, not a Nostr sign-in method: it mints
   // a key for someone who has none. So it is reachable ONLY by opening this
   // modal with signInIntent === 'google' (the header dropdown lists it as a
@@ -777,39 +772,6 @@ export function SignInModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ios, tab]);
 
-  // THE SAME COURTESY OFF THE PHONE, and it is what makes Option 1 below the
-  // Clave surface for a desktop browser rather than a generic one.
-  //
-  // A desktop user pairs Clave by scanning, and the code they scan is the SAME
-  // pairing this modal has always built — one memoized `nostrconnect://` URI
-  // per session, carrying the same client key, the same two relays and the same
-  // `perms`. So "Clave support for the web" was never a missing mechanism. What
-  // was missing is that the code sat behind a button labelled "Generate QR
-  // Code", inside a box that named Clave only in a list of four signers, and
-  // the user had to press and wait before there was anything to scan.
-  //
-  // Preparing here rather than drawing a SECOND panel is deliberate. A named
-  // Clave box that rendered its own QR would render the identical code twice on
-  // one screen — same bytes, same pairing — which is worse than the problem.
-  // Option 1 already owns the QR, the copyable URI, the auth-url prompt and the
-  // retry, so it becomes the named box instead of competing with one.
-  //
-  // The cost is honest and small: two WebSockets open when the tab is shown
-  // rather than when the button is pressed. `handleClose` abandons the listener,
-  // and the visibility retry replaces it rather than stacking.
-  const genPrepared = useRef(false);
-  useEffect(() => {
-    // Not iOS: a QR is useless on the phone that is displaying it, and that
-    // phone has the deep-link box above. Not Android either — Amber's box is
-    // the primary path there and it prepares on its own tap, so eagerly opening
-    // a second listener would buy nothing.
-    if (ios || android) return;
-    if (tab !== 'remote') return;
-    if (genPrepared.current) return;
-    genPrepared.current = true;
-    void onGenerate();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ios, android, tab]);
 
   // The "may not be installed" timer is the one thing here that outlives the
   // render if nobody clears it: it fires setState on an unmounted modal after
@@ -1089,21 +1051,32 @@ export function SignInModal({
                   )}
 
                   {/* Option 1: generate a nostrconnect:// URI / QR.
-                      ON DESKTOP THIS IS THE CLAVE BOX. Someone looking for the
-                      signer they own should not have to read a list of four to
-                      work out that "Generate QR Code" is the way in — but the
-                      code is genuinely signer-neutral, so the heading leads with
-                      Clave and the sentence still names the others rather than
-                      pretending it is Clave-only. The phone paths above name
-                      their own signer for the same reason. */}
+
+                      IT STAYS GENERIC AND IT STAYS BEHIND THE BUTTON. Both were
+                      tried the other way for one commit, to make this the named
+                      "Clave on the web" surface, and both were wrong on the
+                      screen rather than in the reasoning:
+
+                      - Heading it "Scan with Clave" names one signer on the one
+                        platform where the code is genuinely signer-neutral. A
+                        phone can be asked which app it has; a desktop browser
+                        cannot, and Primal, nsec.app and Amber pair from this
+                        same code.
+                      - Preparing the pairing on open put a QR and a ~400-char
+                        URI at the top of the modal before the user had chosen
+                        anything, which pushed Option 2 off the bottom of the
+                        viewport entirely — measured at 954x906. It also opened
+                        two relay sockets and wrote `bmb:nc_pending` for someone
+                        who may only have come to paste a bunker URI.
+
+                      The iOS box above is the opposite case and is right as it
+                      is: one signer, named, prepared ahead of the tap, because
+                      an anchor's href has to exist before it is tapped. */}
                   <div className="border border-bone/15 p-3 flex flex-col gap-2">
-                    <h4 className="font-display text-sm">
-                      {desktop ? 'Option 1: Scan with Clave' : 'Option 1: Scan QR Code'}
-                    </h4>
+                    <h4 className="font-display text-sm">Option 1: Scan QR Code</h4>
                     <p className="text-[11px] text-muted">
-                      {desktop
-                        ? 'Open Clave on your iPhone and scan this code — nothing to type. The same code pairs any NIP-46 signer: Primal, nsec.app, Amber.'
-                        : 'Generate a connection QR code to scan (or paste) with your signer app — works with Primal, Clave, nsec.app, Amber.'}
+                      Generate a connection QR code to scan (or paste) with your
+                      signer app — works with Primal, Clave, nsec.app, Amber.
                     </p>
                     {!genUri && (
                       <button
