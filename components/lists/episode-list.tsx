@@ -6,7 +6,7 @@
 // `shrink-0 whitespace-nowrap` on both branches: .stamp is inline-flex with
 // neither, and this sits in a flex row beside a truncating title with no slack,
 // so on a phone `● LIVE` wrapped to two lines and blew up the row height.
-import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, cloneElement, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import type { Episode, PlayGroup, Podcast, ValueBlock } from '@/lib/types';
 import type { PlaylistResponse } from '@/lib/podcast-meta';
@@ -111,7 +111,7 @@ function ShareButton({ podcast }: { podcast: Podcast }) {
     <CopyLinkButton
       url={showShareUrl(podcast.podcastGuid)}
       title="Copy link to this show"
-      className="btn-ghost btn-compact"
+      className="tile"
     />
   );
 }
@@ -127,7 +127,7 @@ function SupportButton({ podcast }: { podcast: Podcast }) {
       href={funding.url}
       target="_blank"
       rel="noopener noreferrer"
-      className="btn-ghost btn-compact"
+      className="tile"
       title={funding.message || 'Support this show'}
     >
       <CoinIcon /> SUPPORT
@@ -654,25 +654,52 @@ export function EpisodeList({
         </div>
         {/* A `basis-full` SIBLING of the text column, not a child of it. DOM
             nesting can't be responsive, and nested under the author line this
-            cluster is capped at ~230px on a 390px screen — which stacks five
-            ~105px controls one-per-line into a ragged column. As a basis-full
-            sibling it claims the header's whole width at every breakpoint (the
-            header is `flex-wrap` for exactly this). Order is documented in
-            docs/ui.md; all five controls stay, none hide behind a menu. */}
-        <div className="basis-full flex flex-wrap items-center gap-2">
-          <FavHeart podcast={data.podcast} size="md" />
-          <ShareButton podcast={data.podcast} />
-          <SupportButton podcast={data.podcast} />
-          {streamButton}
+            cluster is capped at ~230px on a 390px screen — which stacks the
+            controls one-per-line into a ragged column. As a basis-full sibling
+            it claims the header's whole width at every breakpoint (the header
+            is `flex-wrap` for exactly this).
+
+            ONE PRIMARY, THEN A ROW OF PEERS — the same shape as the episode
+            page and the fullscreen player. This was five controls at three
+            sizes (.btn-bolt, .btn-ghost btn-compact, and whatever
+            `useStreamPanel` hands back) wrapping unpredictably at 390px, with
+            BOOST — the one that moves money — sitting last and looking like
+            the others.
+
+            ALL FIVE STAY AND NONE HIDES BEHIND A MENU. docs/ui.md says so and
+            the reason has not changed: this is the show's whole action set and
+            there is no rare member of it to demote. The tiles are what makes
+            that affordable — four equal cells scan as one row where four
+            unequal chips scanned as a pile. */}
+        <div className="basis-full flex flex-col gap-2">
           {showHasValue && (
             <button
               onClick={() => setShowBoostOpen(true)}
-              className="btn-bolt btn-compact"
+              className="btn-bolt h-11 w-full"
               title="Boost the show"
             >
               <BoltIcon /> BOOST
             </button>
           )}
+          {/* auto-fit at 56px: SUPPORT and STREAM are each conditional, so the
+              row is two to four tiles wide and every tile takes an equal share
+              of whatever that is. */}
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
+            <FavHeart podcast={data.podcast} size="tile" />
+            <ShareButton podcast={data.podcast} />
+            <SupportButton podcast={data.podcast} />
+            {/* `cloneElement` to restyle rather than a prop on
+                `useStreamPanel`: the hook lives in streaming-settings.tsx, a
+                money-path file, and this is a class name. The button's
+                handler, aria-expanded and title are untouched. Same move the
+                episode page makes, for the same reason. */}
+            {streamButton && cloneElement(
+              streamButton,
+              { className: 'tile' },
+              <span aria-hidden className="text-lg leading-none">≋</span>,
+              'STREAM',
+            )}
+          </div>
         </div>
       </header>
       {streamPanel && (

@@ -38,7 +38,7 @@ export function LinkedText({ text }: { text: string }) {
             target="_blank"
             rel="noopener noreferrer"
             // A URL has no spaces to wrap at, so without break-words a long one
-            // pushes the pane sideways or is clipped by its overflow-x-hidden.
+            // pushes the pane sideways or is clipped by its overflow-x-clip.
             // Matches `.show-notes a` in globals.css, the HTML-notes equivalent.
             className="text-bolt underline underline-offset-2 break-words hover:opacity-80"
           >

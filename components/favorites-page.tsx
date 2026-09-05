@@ -4,7 +4,7 @@ import type { Event as NostrEvent } from 'nostr-tools';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { clearShowSelection, useApp } from '@/lib/store';
-import { storage } from '@/lib/storage';
+import { storage, type FavView } from '@/lib/storage';
 import { BRAND } from '@/lib/brand';
 import {
   backupRefusal, backupSummary, favoritesBackupFilename, parseFavoritesBackup,
@@ -25,10 +25,10 @@ import {
   loadEpisodeFromFeed, resolveEpisodeByGuid, resolvePodcastByGuid,
   warmEpisodeCache, warmPodcastCache,
 } from '@/lib/podcast-meta';
-import { Chip } from '@/components/chip';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
+import { SelectMenu, type SelectOption } from '@/components/select-menu';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
 import {
   groupByMedium, feedNoun, itemNoun, splitLabels, crossSplitLabel,
@@ -140,18 +140,28 @@ export function FavoritesPage() {
   // back. Fall through to All rather than showing an empty page.
   const tab = tabs.some((t) => t.key === view.tab) ? view.tab : 'all';
 
-  // DERIVED, not stored, and that is what keeps the two rows honest. On the
-  // mixed tab a split chip names a medium as well as a half, so pressing one
-  // moves the tab too — which leaves 'all' as the only split state that tab can
-  // display. Reading `view.split` there instead would render five chips with
-  // none of them active over a list silently filtered to half of it, reachable
-  // by picking MUSIC + ALBUMS and then pressing ALL.
+  // DERIVED, not stored, and it must land on a state the segmented row can
+  // SHOW. `bmb:fav_view` is a device setting, not a cache, so it holds whatever
+  // an older build of this page wrote and holds it across sessions — and a
+  // `split` the row has no segment for renders the whole strip with nothing
+  // active over a list that is still filtered. Nothing writes `split` back on
+  // its own, so that state never heals; the user sees a short library and no
+  // control claiming responsibility for it.
   //
-  // Kept even though every tab press now writes `split: 'all'` itself: the
-  // stored tab can also stop existing under the user (the last album of a
-  // medium unfavorited), and that path falls through to ALL without any click
-  // to reset the half.
-  const split = tab === 'all' ? 'all' : view.split;
+  // Two ways in, and the derivation closes both. `{tab: 'music', split: 'all'}`
+  // is what every medium press wrote before the two rows became one, so it is
+  // sitting in storage on real devices today. And a half can vanish under the
+  // user — unfavorite the last music track and `music|items` stops being a
+  // segment while `view.split` still says 'items'.
+  //
+  // The rule is the same one `splitChips` builds by: a half is only meaningful
+  // where the medium has BOTH, because with one half the medium segment and the
+  // half segment would select the identical rows. Anything else falls to 'all',
+  // which every medium always has.
+  const activeTab = tabs.find((t) => t.key === tab);
+  const tabHasBothHalves = !!activeTab && activeTab.feedCount > 0 && activeTab.itemCount > 0;
+  const split =
+    tab === 'all' || !tabHasBothHalves || view.split === 'all' ? 'all' : view.split;
 
   const query = q.trim().toLowerCase();
   const feeds = useMemo(
@@ -274,66 +284,95 @@ export function FavoritesPage() {
   const half = splitLabels(tab);
 
   /**
-   * The second row: EVERYTHING, then one chip per half.
+   * The library filter's options.
    *
-   * Under a medium tab that is two chips and each sets the half alone. Under
-   * ALL a single word for a half would have to be a compound — "albums &
-   * shows" — which is two concepts in one box on a library that is nearly all
-   * one medium, so the row offers one chip per (medium, half) PAIR instead and
-   * each chip sets both. Pressing SHOWS moves the tab above to PODCAST, which
-   * is the point: the two rows describe one filter and must never disagree
-   * about it.
+   * A single word for a half across the whole library would have to be a
+   * compound — "albums & shows" — which is two concepts in one box on a library
+   * that is nearly all one medium. So a half is always named INSIDE a medium
+   * and every option sets both axes at once. That is why there is no separate
+   * medium control: one press, one unambiguous state.
    *
    * Built from `tabs`, so only media the user actually has appear — there is no
-   * hand-written list of media here for the same reason the tab strip has none.
-   * Feed chips first, then item chips: grouping by half reads as two ranks
-   * (things you play through, things you play) where interleaving by medium
-   * reads as an arbitrary order.
+   * hand-written list of media here for the same reason the medium strip had
+   * none, and `~unknown` keeps its own entry.
    *
-   * A pair with no rows gets no chip. `~unknown` typically holds items and no
-   * feeds, and a chip that filters to an empty section is worse than an absent
-   * one.
+   * CLUSTERED BY MEDIUM, each cluster opening with the medium itself and its
+   * halves indented under it. The medium entry is not decoration: it is the
+   * "all of this medium, both halves" state, which the two-row version had as a
+   * first-class control and which `bmb:fav_view` still holds on devices that
+   * used it (see the `split` derivation). Without it that stored state has
+   * nothing to select, and the control names a filter that is not in its own
+   * list.
+   *
+   * A HALF ONLY WHERE THE MEDIUM HAS BOTH. `~unknown` routinely holds items and
+   * no feeds; there, the medium entry and an `items` entry would select the
+   * identical rows, so the pair would be two controls doing one thing — and the
+   * derivation folds that half back to 'all' to match.
+   *
+   * IT IS A MENU, NOT A ROW, and it got there the same way the search box's
+   * selector did — see `<SelectMenu>`. As a row this was up to sixteen
+   * segments once every medium carried three, and at 390px it ran off the edge
+   * mid-word: `ALL 287 · MUSIC 261 · ALBUMS · SINGLES · PO…`. It scrolled, but
+   * a strip whose last option is sliced in half reads as broken rather than
+   * scrollable, and the options past the cut are the ones nobody goes looking
+   * for. The `id` is `<tab>|<split>` so the two axes travel as one value.
    */
-  const splitChips = useMemo(() => {
-    if (tab !== 'all') {
-      return [
-        { id: 'feeds', label: half.feeds, tab, split: 'feeds' as const },
-        { id: 'items', label: half.items, tab, split: 'items' as const },
-      ];
-    }
-    return [
-      ...tabs
-        .filter((t) => t.feedCount > 0)
-        .map((t) => ({
-          id: `${t.key}|feeds`,
-          label: crossSplitLabel(t.key, t.label, 'feeds'),
-          tab: t.key,
-          split: 'feeds' as const,
-        })),
-      ...tabs
-        .filter((t) => t.itemCount > 0)
-        .map((t) => ({
-          id: `${t.key}|items`,
-          label: crossSplitLabel(t.key, t.label, 'items'),
-          tab: t.key,
-          split: 'items' as const,
-        })),
-    ];
-  }, [tabs, tab, half.feeds, half.items]);
+  const filterOptions = useMemo<SelectOption<string>[]>(
+    () => [
+      { id: 'all|all', label: 'all', count: total },
+      ...tabs.flatMap((t) => {
+        const bothHalves = t.feedCount > 0 && t.itemCount > 0;
+        return [
+          { id: `${t.key}|all`, label: t.label, count: t.count },
+          ...(bothHalves
+            ? (['feeds', 'items'] as const).map((k) => ({
+                id: `${t.key}|${k}`,
+                label: crossSplitLabel(t.key, t.label, k),
+                // The trigger says which medium's half. "albums" alone does
+                // not, and the trigger is the only thing on screen naming the
+                // filter once the menu is shut.
+                triggerLabel: `${t.label} · ${crossSplitLabel(t.key, t.label, k)}`,
+                indent: true,
+              }))
+            : []),
+        ];
+      }),
+    ],
+    [tabs, total],
+  );
 
   const showFeeds = split !== 'items';
   const showItems = split !== 'feeds';
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
-        <h1 className="headline text-4xl sm:text-5xl">favorites<span className="text-bolt">.</span></h1>
-        {/* Pre-mount this says nothing rather than "0 saved" — the store has
-            not been read yet, and an empty claim here is a lie for anyone
-            returning. */}
-        {mounted && total > 0 && (
-          <span className="text-[11px] uppercase tracking-widest text-muted">{total} saved</span>
-        )}
+        <h1 className="headline text-3xl sm:text-5xl">favorites<span className="text-bolt">.</span></h1>
+        <div className="flex items-center gap-3">
+          {/* Pre-mount this says nothing rather than "0 saved" — the store has
+              not been read yet, and an empty claim here is a lie for anyone
+              returning. */}
+          {mounted && total > 0 && (
+            <span className="text-[11px] uppercase tracking-widest text-muted">{total} saved</span>
+          )}
+          {/* THE SECOND WAY INTO /playlists, and the app is down to two.
+              <PlaylistsLink> in the header is gone with the rest of the
+              header's navigation, and playlists are not a tab in <TabBar> —
+              they are content, not a destination. That left exactly one route
+              in: the hero's BROWSE PLAYLISTS button on /, which is gated on an
+              empty home page and hides the moment the visitor searches or
+              opens a show. From here, from a search, or from a drilled-in show
+              there was no way to the collection at all.
+              The two that remain are different controls, which is why this is
+              a link and not a copy of the hero button: that one is DISCOVERY
+              and hides as soon as you use the page, this one is NAVIGATION and
+              is here whatever state the library is in. It sits above the
+              loading / empty / rows split so it is reachable in all three.
+              A bare <Link>, no logic, nothing to drift. */}
+          <Link href="/playlists" className="btn-ghost btn-compact text-xs">
+            PLAYLISTS
+          </Link>
+        </div>
       </div>
 
       {/* Above the controls, not inside a section: a filter or a fold must not
@@ -347,17 +386,24 @@ export function FavoritesPage() {
           who most wants to set this BEFORE their first favorite, and putting it
           inside the rows branch would hide it from them. Self-hiding signed
           out, where all three options describe the same behaviour. */}
-      <FavoritesPrivacyControl />
+      {/* The privacy menu and <RelayTools> share ONE row — see the control
+          itself for why they are passed in rather than stacked. They are the
+          same question: where this list lives, and how to get a copy of it out
+          or put one back.
 
-      {/* Directly under the privacy control, which is the other question about
-          the list ON THE RELAYS — and on its own full-width row rather than in
-          the header cluster beside `N saved`, because a refusal here is a
-          sentence, not a word, and beside the count it wrapped to four lines in
-          a column two thirds of the page wide. It is deliberately NOT gated on
-          `total`: this reads the relays, so a device holding nothing local can
-          still hold the account's list, and the empty branch below is exactly
-          where somebody checking what is stored would look. */}
-      <RelayTools />
+          A FULL-WIDTH row, which is the constraint that has not changed. These
+          were once in the header cluster beside `N saved`, where a refusal —
+          a sentence, not a word — wrapped to four lines in a column two thirds
+          of the page wide.
+
+          Deliberately NOT gated on `total`: this reads the relays, so a device
+          holding nothing local can still hold the account's list, and the empty
+          branch below is exactly where somebody checking what is stored would
+          look. NOT folded away either — <PrivateFavoritesTool> exists to make a
+          both-halves state VISIBLE, and a disclosure defaulting closed would
+          undo that (see its comment: deleted as clutter once, restored the same
+          night). */}
+      <FavoritesPrivacyControl trailing={<RelayTools />} />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
@@ -377,52 +423,52 @@ export function FavoritesPage() {
         <EmptyLibrary signedIn={!!identity} degraded={degraded} off={syncOff} />
       ) : (
         <>
-          <div className="flex flex-col gap-3">
+          {/* ALL THREE CONTROLS ON ONE ROW. Six rows of chrome stood between
+              the header and the first favorite; on a 287-entry library the
+              controls were most of the first screen. The menu shrinks to its
+              own width, the sort keeps its label, and the text box takes
+              whatever is left — it is the one that degrades gracefully, since
+              a narrowed placeholder still reads as a place to type.
+
+              The menu comes FIRST, matching where the search box's selector
+              sits relative to its input: the mode is a question about the
+              whole list, and the text box narrows what the mode returned. */}
+          <div className="flex items-center gap-2">
+            {/* One menu naming the current one of up to sixteen (medium, half)
+                states. See `filterOptions` above for what is in it, and
+                `<SelectMenu>` for why it is a menu rather than the strip of
+                segments it replaced. */}
+            <SelectMenu
+              options={filterOptions}
+              active={`${tab}|${split}`}
+              onChange={(id) => {
+                const [nextTab, nextSplit] = id.split('|');
+                update({ tab: nextTab, split: nextSplit as FavView['split'] });
+              }}
+              label="Show"
+              className="shrink-0"
+              // Matches the input and the sort toggle beside it. The privacy
+              // menu and the backup tools are 27px because that cluster is
+              // secondary; this row is the one people actually use.
+              triggerClassName="h-11 px-3"
+            />
             <input
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="filter by title, show or artist…"
               aria-label="Filter favorites"
-              className="input"
+              className="input h-11 min-w-0 flex-1"
             />
-            <div className="flex flex-wrap items-center gap-2">
-              {/* A tab press clears the half back to EVERYTHING. The two rows
-                  are one filter, and this is the row that names the WIDER of
-                  the two axes — pressing it reads as "show me this medium",
-                  not "show me this medium, still narrowed to whatever half I
-                  was in three clicks ago". Carrying the half over is defensible
-                  and was worse in practice: press SHOWS, then press MUSIC, and
-                  you land on albums with no tracks and nothing on screen
-                  saying a second filter is still on. */}
-              <Chip active={tab === 'all'} onClick={() => update({ tab: 'all', split: 'all' })}>
-                all <span className="opacity-60">{total}</span>
-              </Chip>
-              {tabs.map((t) => (
-                <Chip
-                  key={t.key}
-                  active={tab === t.key}
-                  onClick={() => update({ tab: t.key, split: 'all' })}
-                >
-                  {t.label} <span className="opacity-60">{t.count}</span>
-                </Chip>
-              ))}
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Chip active={split === 'all'} onClick={() => update({ split: 'all' })}>everything</Chip>
-              {splitChips.map((c) => (
-                <Chip
-                  key={c.id}
-                  active={tab === c.tab && split === c.split}
-                  onClick={() => update({ tab: c.tab, split: c.split })}
-                >
-                  {c.label}
-                </Chip>
-              ))}
-              <span className="ml-auto flex items-center gap-2">
-                <Chip active={view.sort === 'recent'} onClick={() => update({ sort: 'recent' })}>recent</Chip>
-                <Chip active={view.sort === 'az'} onClick={() => update({ sort: 'az' })}>a–z</Chip>
-              </span>
-            </div>
+            {/* One toggle, not two chips: the sort has exactly two states
+                and the label names the one you are in. */}
+            <button
+              type="button"
+              onClick={() => update({ sort: view.sort === 'recent' ? 'az' : 'recent' })}
+              className="btn-ghost h-11 shrink-0 text-xs"
+              aria-label={view.sort === 'recent' ? 'Sorted by most recent; switch to A–Z' : 'Sorted A–Z; switch to most recent'}
+            >
+              {view.sort === 'recent' ? 'Recent' : 'A–Z'}
+            </button>
           </div>
 
           {/* A filter that matches nothing is NOT an empty library, and saying
@@ -516,12 +562,18 @@ function RelayTools() {
   const identity = useApp((s) => s.identity);
   // Signed out there is no event, no key that signed one, and no signer.
   if (!identity) return null;
+  // A FRAGMENT, not a wrapper. These are handed to <FavoritesPrivacyControl>
+  // as its `trailing` and sit in the same flex row as the privacy menu, so a
+  // container of their own would make the three of them one item that wraps as
+  // a block instead of three controls that wrap individually. Each tool is
+  // still its own column span, because each renders its refusal or result
+  // sentence directly under its own button.
   return (
-    <div className="flex flex-wrap items-start gap-2">
+    <>
       <DownloadFavorites />
       <PrivateFavoritesTool />
       <RestoreBackup />
-    </div>
+    </>
   );
 }
 
@@ -765,7 +817,7 @@ function PrivateFavoritesTool() {
         type="button"
         onClick={check}
         disabled={busy}
-        className="btn-ghost text-xs disabled:opacity-50"
+        className="btn-mini disabled:opacity-50"
         title="Open the encrypted half of your list and count what is in it. Nothing is published until you confirm."
       >
         {busy && !finding ? 'opening…' : '⌕ check private favorites'}
@@ -1010,7 +1062,7 @@ function RestoreBackup() {
         type="button"
         onClick={() => fileRef.current?.click()}
         disabled={busy}
-        className="btn-ghost text-xs disabled:opacity-50"
+        className="btn-mini disabled:opacity-50"
         title="Publish a backup file back to the relays, replacing the list stored there."
       >
         {busy && !plan ? 'reading file…' : '⇧ restore from backup'}
@@ -1234,7 +1286,7 @@ function DownloadFavorites() {
         type="button"
         onClick={download}
         disabled={busy}
-        className="btn-ghost text-xs disabled:opacity-50"
+        className="btn-mini disabled:opacity-50"
         title="Save the Nostr event holding your favorites, exactly as the relays store it."
       >
         {busy ? 'reading relays…' : '⇩ backup'}

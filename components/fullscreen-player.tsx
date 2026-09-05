@@ -1,6 +1,6 @@
 'use client';
 import { CopyLinkButton } from './copy-link-button';
-import { useEffect, useRef, useState, type RefObject } from 'react';
+import { cloneElement, useEffect, useRef, useState, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
 import { useApp } from '@/lib/store';
 import { fmt } from '@/lib/format';
@@ -31,6 +31,7 @@ import {
 } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { LinkedText } from './linked-text';
+import { UnderlineTabs } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
@@ -122,12 +123,6 @@ function EpisodeInfoPanel({
     : chaptersPending ? 'contents'
     : 'transcript';
 
-  const tabCls = (on: boolean) =>
-    `shrink-0 whitespace-nowrap text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
-      on
-        ? 'bg-bolt text-ink shadow-sm'
-        : 'text-muted hover:text-bone hover:bg-bone/5'
-    }`;
   const label = (t: InfoTab) =>
     t === 'contents' ? contentsLabel
     : t === 'transcript' ? 'Transcript'
@@ -136,18 +131,15 @@ function EpisodeInfoPanel({
   return (
     <div className="border-t border-bone/10 pt-5">
       {showTabs ? (
-        // `overscroll-x-contain` — see the rail in podroll.tsx. It matters more
-        // here than anywhere: this row sits inside a `fixed` overlay, so a
-        // chained swipe drags the overlay itself off the screen.
-        <div className="inline-flex max-w-full overflow-x-auto overscroll-x-contain gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
-          {tabs.map((t) => (
-            <button key={t} type="button" onClick={() => setTab(t)} className={tabCls(active === t)}>
-              {t === 'contents' ? contentsLabel
-                : t === 'transcript' ? 'Transcript'
-                : 'About'}
-            </button>
-          ))}
-        </div>
+        // One strip shared with the episode page — see <UnderlineTabs>. The
+        // tab says "About" where the lone-section label below says "About this
+        // episode": a tab is one word among peers, a label stands alone.
+        <UnderlineTabs
+          className="mb-4"
+          tabs={tabs.map((t) => ({ id: t, label: t === 'about' ? 'About' : label(t) }))}
+          active={active}
+          onChange={setTab}
+        />
       ) : (
         <p className="text-[11px] uppercase tracking-widest text-muted mb-2">{label(active)}</p>
       )}
@@ -248,11 +240,13 @@ function ShareTargets({ podcast, episode }: { podcast: Podcast; episode: Episode
         url={showShareUrl(podcast.podcastGuid)}
         title={`Copy link to this ${showWord.toLowerCase()}`}
         word={showWord}
+        className="tile"
       />
       <CopyLinkButton
         url={episodeUrl}
         title={`Copy link to this ${itemWord.toLowerCase()}`}
         word={itemWord}
+        className="tile"
       />
     </>
   );
@@ -747,18 +741,30 @@ export function FullscreenPlayer({
               {/* The one cluster holding BOTH hearts, so both name their target
                   (SHOW/EPISODE, or ALBUM/TRACK on a music feed). They otherwise
                   render the identical word side by side and nothing on screen
-                  says which favorites what. */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <FavHeart podcast={podcast} size="md" nameTarget />
-                <FavEpisodeHeart episode={episode} podcast={podcast} size="md" nameTarget />
+                  says which favorites what. The two SHARE buttons name theirs
+                  for the same reason — see <ShareTargets>.
+                  One row of equal `.tile`s, the same shape as the episode
+                  page's action row: five peers, glyph over word. They were
+                  five .btn-ghost chips of five different widths wrapping onto
+                  two lines at 390px. */}
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
+                <FavHeart podcast={podcast} size="tile" nameTarget />
+                <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
                 <ShareTargets podcast={podcast} episode={episode} />
                 {/* The meter below says what streaming is DOING; this is the
                     only place in the player you can change it. Without it the
                     reaction to "≋ streaming 10 sats/min" is to go hunting for
                     the switch, and the player is full-screen — there is nothing
                     else on screen to hunt through. Show-scoped, same keys as
-                    the show header and episode page. */}
-                {streamButton}
+                    the show header and episode page.
+                    `cloneElement` to restyle, not a prop on `useStreamPanel`
+                    — same call as the episode page, same reason. */}
+                {streamButton && cloneElement(
+                  streamButton,
+                  { className: 'tile' },
+                  <span aria-hidden className="text-lg leading-none">≋</span>,
+                  'STREAM',
+                )}
               </div>
             </div>
 
@@ -771,19 +777,22 @@ export function FullscreenPlayer({
                 failed), so it costs a signed-out / rate-off user no space. */}
             <StreamMeter className="-mt-1" />
 
+            {/* Same hairline disclosure row as the episode page — one control
+                for one question, drawn the same way wherever it is asked. */}
             {hasValue && value && (
-              <div className="-mt-1">
+              <div className="-mt-1 border-t border-bone/10">
                 <button
                   type="button"
                   onClick={() => setValueOpen((v) => !v)}
-                  className="flex items-center gap-2 text-[11px] uppercase tracking-widest text-bolt hover:text-bolt/80"
+                  className="flex w-full items-center gap-2 h-11 text-xs text-muted hover:text-bone transition"
                   aria-expanded={valueOpen}
                 >
-                  <span>⚡ Value split · {value.recipients.length} recipients</span>
-                  <span aria-hidden>{valueOpen ? '▾' : '▸'}</span>
+                  <BoltIcon className="w-3.5 h-3.5 text-bolt" />
+                  <span>Splits to {value.recipients.length} recipient{value.recipients.length === 1 ? '' : 's'}</span>
+                  <span aria-hidden className={`ml-auto transition-transform ${valueOpen ? 'rotate-180' : ''}`}>▾</span>
                 </button>
                 {valueOpen && (
-                  <ValueSplitRows value={value} className="space-y-2 mt-3" />
+                  <ValueSplitRows value={value} className="space-y-2 pb-3" />
                 )}
               </div>
             )}

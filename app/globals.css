@@ -32,6 +32,20 @@
      was 69px against a "~36px" guess for the middle term, and a wrapping
      wordmark then hid the whole show header behind this one. */
   --app-header-h: calc(71px + env(safe-area-inset-top, 0px));
+  /* The dock: <TabBar> (components/tab-bar.tsx) at the bottom of every route,
+     with <Player>'s mini-bar sitting on top of it. `--tabbar-h` is the bar's
+     own height; `--dock-b` is that plus the bottom safe-area inset, and it is
+     what everything above the bar offsets by — the mini-bar's `bottom`, the
+     layout footer's padding, <HomePage>'s. The tab bar is the only element IN
+     THE NORMAL FLOW that pays `env(safe-area-inset-bottom)`; a second one
+     adding it was a visible gap on notched phones. The exceptions are the two
+     full-viewport overlays, <ModalShell> and <FullscreenPlayer>, which cover
+     the bar rather than sitting above it and pay the inset themselves.
+     56px: a 20px icon, a 10px label, 4px between, centred — and, more to the
+     point, a tap target a fifth of the screen wide and 56 tall clears the
+     44px floor with no per-item min-h. */
+  --tabbar-h: 56px;
+  --dock-b: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
 }
 
 :root[data-theme='light'] {
@@ -130,6 +144,42 @@ body::before {
   .btn-compact {
     @apply px-2.5 gap-1.5 sm:px-4 sm:gap-2;
   }
+  /* A SMALL action or selector, for a cluster that is not the point of the
+     page. `/favorites` is why it exists: the privacy menu and the three
+     relay tools sat above a 287-entry library as full `.btn-ghost`s, and the
+     controls describing the list were taller than the first rows of it.
+
+     27px (an 11px text line box + py-1 + border) — over WCAG 2.5.8's 24x24
+     floor, the same height `<Chip>` was measured at, and deliberately NOT the
+     44px floor the primary rows hold: these are rarely-pressed, they carry
+     confirmations behind them, and a 44px version is what made the cluster
+     the tallest thing on the screen.
+
+     `<SelectMenu>`'s trigger uses it too, which is the point: the menu and the
+     buttons beside it are one family by construction rather than by two
+     utility strings that agree today. */
+  .btn-mini {
+    @apply inline-flex items-center justify-center gap-2 px-2.5 py-1
+           text-[11px] font-mono uppercase tracking-wider
+           border border-bone/30 text-muted transition
+           hover:border-bone/60 hover:text-bone active:translate-y-px;
+  }
+  /* A secondary action in a ROW OF PEERS: glyph over a one-word label, 52px
+     tall, full width of its grid cell. The episode page's Fav / Share / Stream /
+     Support / Discuss / More row is six of these. It exists because that row
+     was eight buttons at four sizes (.btn, .btn-ghost text-xs, text-[11px], a
+     .stamp) and the eye read it as a pile rather than a row; one shape at one
+     size is what makes it scan. Shared controls take it through their
+     `className` / `size` props (<CopyLinkButton className="tile">,
+     <FavEpisodeHeart size="tile">) so the heart's magenta ON state and the
+     COPIED flash still come from the components that own them. */
+  .tile {
+    @apply flex flex-col items-center justify-center gap-1 h-[52px] w-full px-1
+           text-[10px] font-mono uppercase tracking-wider leading-none
+           border border-bone/40 text-bone transition
+           hover:border-bone hover:bg-bone/5 active:translate-y-px;
+  }
+  .tile svg { @apply w-[18px] h-[18px]; }
   /* Inline follow toggle injected after an npub in show notes (components/notes-follows.ts). */
   .npub-follow-btn {
     @apply ml-2 align-middle inline-flex items-center text-[10px] font-mono font-semibold uppercase tracking-wider
@@ -205,7 +255,7 @@ input[type='range'].seek::-moz-range-thumb {
   @apply font-bold mb-1.5 mt-3 first:mt-0;
 }
 /* break-words because a linkified bare URL has no spaces to wrap at, and the
-   notes container is overflow-x-hidden — an unbroken one is clipped, not
+   notes container is overflow-x-clip — an unbroken one is clipped, not
    scrolled. Not break-all: an anchor whose label is ordinary prose must still
    wrap between words. */
 .show-notes a { @apply underline underline-offset-2 break-words; color: rgb(var(--bolt)); }

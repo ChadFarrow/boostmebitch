@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { isGoogleAuthConfigured, preloadGis, startGoogleSignIn } from '@/lib/nostr/google-auth';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
-import { WalletModal } from './wallet-modal';
 import { WalletBalanceChip } from './wallet-balance';
 import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
 
@@ -19,10 +18,11 @@ import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
 // The Nostr account menu itself is still owned/rendered by <NostrAuth>, which
 // sits right after this in the header; both modals' open-state lives in the
 // store (walletOpen / signInOpen) so triggering either from here just flips a
-// flag. <WalletModal> is owned here.
+// flag. <WalletModal> itself is rendered by <WalletModalHost> in the root
+// layout, not here — this component only renders on the three <AppHeader>
+// routes, and the tab bar's Wallet tab opens the modal from every route.
 export function AuthControl() {
   const identity = useApp((s) => s.identity);
-  const walletOpen = useApp((s) => s.walletOpen);
   const setWalletOpen = useApp((s) => s.setWalletOpen);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const walletRestoring = useApp((s) => s.walletRestoring);
@@ -182,7 +182,7 @@ export function AuthControl() {
                   here at all because search, playback and favorites all work
                   signed out, so hosting the theme control only where an
                   identity exists would take it away from every visitor who
-                  hasn't got one — the same reason <FavoritesLink> is not gated
+                  hasn't got one — the same reason the tab bar's Favorites tab is not gated
                   on `identity`. Leaves the menu open: you want to see the
                   palette land. */}
               <div className="border-t border-bone/15 mt-1 pt-1">
@@ -230,8 +230,6 @@ export function AuthControl() {
           <ThemeToggle />
         </>
       )}
-
-      {walletOpen && <WalletModal onClose={() => setWalletOpen(false)} />}
     </div>
   );
 }

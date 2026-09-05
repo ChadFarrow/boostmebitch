@@ -111,7 +111,16 @@ export function PodcastRow({
           </div>
         </div>
       </button>
-      <FavHeart podcast={podcast} />
+      {/* `self-center`, and it is not cosmetic: a bare flex child inherits
+          `align-items: stretch`, so the heart's BORDER grew to the full height
+          of the row — a 76px magenta box against the 44px touch target the
+          `sm` chip's `min-h`/`min-w` describe. Every other row that renders
+          this heart wraps it exactly like this (see <FavoriteItemRows> and
+          <Podroll>); this one did not, and it is the row the favorites page is
+          almost entirely made of. */}
+      <div className="flex-shrink-0 self-center">
+        <FavHeart podcast={podcast} />
+      </div>
     </li>
   );
 }

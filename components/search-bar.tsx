@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { fetchProfile, shortNpub } from '@/lib/nostr';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 import { looksLikeSecretKey, parseNpubInput } from '@/lib/nostr/npub-input';
+import { SelectMenu } from '@/components/select-menu';
 import { storage } from '@/lib/storage';
 import type { Podcast } from '@/lib/types';
 import { SEARCH_TYPES, parseSearchType } from '@/lib/util';
@@ -64,79 +65,22 @@ interface Props {
 }
 
 /**
- * The content-type selector: one button naming the current mode, and a menu.
+ * The content-type selector. `<SelectMenu>` holds the mechanics and the
+ * reasoning for the shape — including why this was a row of five chips first,
+ * and what that cost at 320px.
  *
- * It replaced a row of five chips, which read fine on a desktop and became a
- * WRAPPED TWO-LINE BLOCK at 320px — a filter standing taller than the search box
- * it filters. A dropdown states the current mode in one word and costs one line
- * at every width. It is also how podcastindex.org presents the same choice,
- * which is worth something on its own: this app's users are already reading that
- * site, and a control they recognise needs no explaining.
- *
- * **`role="menuitemradio"`, not `menuitem`.** This is one choice out of a fixed
- * set, and `aria-checked` is what makes the ✓ mean something to a screen reader
- * rather than being decoration next to a name.
- *
- * Dismissal is the mousedown-outside + Escape pair `<AccountMenu>` already uses,
- * and it needs both: Escape alone strands the menu open under a thumb, and
- * click-outside alone strands it open for anyone on a keyboard.
+ * The `nsec` refusal is a different question from "which mode is this" and is
+ * unconditional in all five: see the fetch effect below and `security.md`.
  */
 function SearchTypeMenu({ type, onChange }: { type: SearchType; onChange: (t: SearchType) => void }) {
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const active = SEARCH_TYPES.find((s) => s.type === type) ?? SEARCH_TYPES[0];
-
-  useEffect(() => {
-    if (!open) return;
-    function onMouseDown(e: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
-    document.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
   return (
-    <div ref={wrapperRef} className="relative mb-2 w-fit">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`Search type: ${active.label}`}
-        className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider border border-bone/30 text-muted transition hover:border-bone/60 hover:text-bone"
-      >
-        <span className="text-bone">{active.label}</span>
-        <span className="text-[10px] opacity-40">{open ? '▴' : '▾'}</span>
-      </button>
-
-      {open && (
-        <div role="menu" className="absolute left-0 top-full z-30 mt-1 min-w-[190px] card bg-ink p-1 shadow-xl">
-          {SEARCH_TYPES.map((s) => (
-            <button
-              key={s.type}
-              type="button"
-              role="menuitemradio"
-              aria-checked={s.type === type}
-              onClick={() => { onChange(s.type); setOpen(false); }}
-              className={`flex w-full items-center gap-2 px-2 py-2 text-left text-xs font-mono uppercase tracking-wider transition ${
-                s.type === type ? 'text-bolt' : 'text-muted hover:bg-bone/5 hover:text-bone'
-              }`}
-            >
-              {/* A fixed gutter for the ✓, so every label starts at the same x
-                  whether or not its row is the checked one. A tick that shifts
-                  the text makes the list appear to jitter as you move down it. */}
-              <span className="w-3 shrink-0" aria-hidden>{s.type === type ? '✓' : ''}</span>
-              {s.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
+    <SelectMenu
+      options={SEARCH_TYPES.map((s) => ({ id: s.type, label: s.label }))}
+      active={type}
+      onChange={onChange}
+      label="Search type"
+      className="mb-2 w-fit"
+    />
   );
 }
 

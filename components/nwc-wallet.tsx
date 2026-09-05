@@ -393,7 +393,13 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
             ✓ Connection restored from your Nostr backup
           </div>
         )}
-        {host && <div className="text-[11px] text-muted">{host}</div>}
+        {/* `break-all`, because this is the wallet's 64-hex pubkey and has no
+            space to wrap at. Without it the line is ~600px of monospace on a
+            390px screen: the modal's scroll pane grows to fit and the whole
+            sheet scrolls sideways, with the title and the Disconnect button
+            parked off the left edge. `truncate` is the wrong fix — the tail of
+            the key is how you tell two connections apart. */}
+        {host && <div className="text-[11px] text-muted break-all">{host}</div>}
         <BudgetLine budget={budget} knowsBudgets={methods !== null && methods.includes('get_budget')} />
         {methods !== null && !canPayInvoice && (
           <div className="text-[11px] text-nostr/80 border border-nostr/30 bg-nostr/5 px-2 py-1.5">

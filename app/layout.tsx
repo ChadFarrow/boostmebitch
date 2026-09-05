@@ -34,6 +34,8 @@ const jetbrainsMono = JetBrains_Mono({
 });
 import { ServiceWorkerRegister } from '@/components/sw-register';
 import { Player } from '@/components/player';
+import { TabBar } from '@/components/tab-bar';
+import { WalletModalHost } from '@/components/wallet-modal-host';
 import { FavoritesPrivacyPrompt } from '@/components/favorites-privacy';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { BRAND, siteTitle } from '@/lib/brand';
@@ -283,8 +285,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           {/* Google OAuth verification requires the privacy policy to be linked
               from the homepage, with the same URL entered on the consent
               screen. Living in the layout means it's on every page including
-              the homepage. `pb-28` clears the fixed mini-player. */}
-          <footer className="px-4 pb-28 pt-10 text-center">
+              the homepage. The bottom padding clears the dock — tab bar plus
+              mini-player — and reads `--dock-b` so it follows the bar's height;
+              the 7rem on top is the mini-bar, which has no variable of its own. */}
+          <footer className="px-4 pt-10 text-center" style={{ paddingBottom: 'calc(var(--dock-b) + 7rem)' }}>
             {/* `inline-block py-1.5` is a TOUCH TARGET, not spacing — the same
                 repair <CollapsibleHeading> documents. text-[11px] is a 14px
                 line box here, under WCAG 2.5.8's 24x24 floor, and this footer
@@ -313,6 +317,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ErrorBoundary label="Player">
           <Player />
         </ErrorBoundary>
+        {/* The dock's navigation half, on every route — see the header comment
+            in components/tab-bar.tsx for why it is here and not in <AppHeader>.
+            Outside the Player boundary on purpose: losing playback should not
+            also lose the way to /favorites. */}
+        <TabBar />
+        {/* Renders <WalletModal> whenever `walletOpen` is set. In the layout so the
+            tab bar's Wallet tab works on every route, not only the three that
+            render <AppHeader> — see the file for the dead-control failure this
+            avoids. */}
+        <WalletModalHost />
         {/* Mounted in the LAYOUT, beside <Player>, and not in <AppHeader>.
             `onFavoritesModeNeeded` is a single module-level slot that only
             exists while the component registering it is mounted, and
