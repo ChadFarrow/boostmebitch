@@ -21,6 +21,8 @@ import {
   nostrConnectUri,
   hasPendingNostrConnect,
   CLAVE_APP_STORE_URL,
+  primalConnectUrl,
+  PRIMAL_PLAY_URL,
   type NostrIdentity,
 } from '@/lib/nostr';
 import { openAppLink } from '@/lib/app-link';
@@ -51,7 +53,7 @@ import { GoogleAuthPanel } from './google-auth-panel';
  * list by platform, which theirs does not: they offer *Amber (Android)* on a
  * desktop and on an iPhone, and a row that cannot work is worse than no row.
  */
-type View = 'menu' | 'qr' | 'bunker';
+type View = 'menu' | 'qr' | 'bunker' | 'primal';
 
 // How long a Clave tap sits with no return signal before the box says the app
 // may not be installed. Long enough to cover a cold launch of a signer that has
@@ -227,6 +229,22 @@ export function SignInModal({
   // "Has ANY attempt signed in yet", which is not the same question as "is this
   // the newest attempt" — see the success path below.
   const claveSettled = useRef(false);
+  // Primal (iOS + Android). The same `nostrconnect://` pairing as every other
+  // method here, handed to one named app — see lib/nostr/primal.ts for why the
+  // launch URL differs by platform and why Android needs the package named.
+  //
+  // Its refs mirror the Amber set one for one, because the rules are the same
+  // rules and each was written against a real failure: launch ONCE per URI
+  // (`primalOpened`), only the newest attempt may report an error
+  // (`primalAttempt`), and a success from ANY attempt signs in exactly once
+  // (`primalSettled`).
+  const [primalBusy, setPrimalBusy] = useState(false);
+  const [primalErr, setPrimalErr] = useState<string | null>(null);
+  const [primalUri, setPrimalUri] = useState<string | null>(null);
+  const [primalSent, setPrimalSent] = useState(false);
+  const primalOpened = useRef<string | null>(null);
+  const primalAttempt = useRef(0);
+  const primalSettled = useRef(false);
   // THE ONE LIVE LISTENER ON THIS PAGE'S PAIRING. See startPairing below.
   const liveAttempt = useRef<{ abandon: () => void } | null>(null);
   // Paste bunker:// flow.
@@ -345,6 +363,55 @@ export function SignInModal({
       setAmberNcErr(getErrorMessage(e, 'Amber connection failed'));
     } finally {
       if (isCurrent()) setAmberNcBusy(false);
+    }
+  }
+
+  /**
+   * Subscribe to the pairing, and on a real tap hand it to Primal.
+   *
+   * The same two-mode shape as `onAmberConnect`, and the `launch` flag carries
+   * the same rule: the visibility retry on the way back must RE-SUBSCRIBE and
+   * never re-dispatch, because the page's socket may have died while the user
+   * was in the app but Primal already holds the pairing. Sending them there a
+   * second time, with no user activation, for a request the app is already
+   * showing, is the defect that rule exists for.
+   */
+  async function onPrimalConnect({ launch = true }: { launch?: boolean } = {}) {
+    if (!launch && primalOpened.current && nostrConnectUri() !== primalOpened.current) {
+      setPrimalBusy(false);
+      setPrimalErr('That pairing is no longer live. Tap Open Primal to start a new one.');
+      return;
+    }
+    const attempt = ++primalAttempt.current;
+    const isCurrent = () => primalAttempt.current === attempt;
+    setPrimalBusy(true);
+    setPrimalErr(null);
+    try {
+      const { uri, ready } = startPairing((url) => setGenAuthUrl(url));
+      setPrimalUri(uri);
+      if (launch) {
+        setPrimalSent(true);
+        const link = primalConnectUrl(uri, android);
+        // No link means the URI failed the shape test in lib/nostr/primal.ts,
+        // which cannot happen for a pairing this app built — so say what is
+        // true rather than silently doing nothing.
+        if (!link) {
+          setPrimalErr('Could not build a Primal link for this pairing. Use the QR or a bunker URI instead.');
+        } else if (primalOpened.current !== uri) {
+          primalOpened.current = uri;
+          openAppLink(link);
+        }
+      }
+      const id = await ready;
+      if (primalSettled.current) return;
+      primalSettled.current = true;
+      onSuccess(id, 'bunker');
+      onClose();
+    } catch (e) {
+      if (!isCurrent() || primalSettled.current) return;
+      setPrimalErr(getErrorMessage(e, 'Primal connection failed'));
+    } finally {
+      if (isCurrent()) setPrimalBusy(false);
     }
   }
 
@@ -780,6 +847,34 @@ export function SignInModal({
   // Once per open, hence the ref: the deps carry `tab` so switching INTO the
   // Remote Signer tab prepares it, and toggling tabs afterwards must not open a
   // second subscription on the same pairing.
+  // Same return-from-the-signer retry as the others, and the same reason: the
+  // OS suspends this page's WebSocket while the user is in Primal approving, so
+  // the ack can land on a dead subscription. `launch: false` — re-subscribe,
+  // never re-dispatch.
+  useEffect(() => {
+    if (view !== 'primal') return;
+    if (!primalBusy && !primalErr) return;
+    if (typeof document === 'undefined') return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') onPrimalConnect({ launch: false });
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, primalErr, primalBusy]);
+
+  // Subscribe when the screen opens, WITHOUT launching. Reaching it is the
+  // choice to use Primal; tapping the button is the choice to leave for it, and
+  // those are not the same decision — the Clave row draws the same line.
+  const primalPrepared = useRef(false);
+  useEffect(() => {
+    if (view !== 'primal') return;
+    if (primalPrepared.current) return;
+    primalPrepared.current = true;
+    void onPrimalConnect({ launch: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
   // Reaching the QR screen IS the choice, so the code is ready when it renders.
   // This is the counterpart to the desktop revert: no pairing before a choice,
   // no redundant *Generate* press after one. Reset in `goto` so leaving and
@@ -840,11 +935,14 @@ export function SignInModal({
   function goto(next: View) {
     claveAttempt.current += 1;
     amberNcAttempt.current += 1;
+    primalAttempt.current += 1;
     liveAttempt.current?.abandon();
     liveAttempt.current = null;
     if (next === 'menu') clavePrepared.current = false;
     if (next !== 'qr') qrPrepared.current = false;
+    if (next !== 'primal') primalPrepared.current = false;
     setClaveErr(null);
+    setPrimalErr(null);
     setGenErr(null);
     setPasteErr(null);
     setClipErr(null);
@@ -1148,6 +1246,17 @@ export function SignInModal({
                     disabled={!hasExt || extBusy}
                   />
                 )}
+                {/* PHONES ONLY. A desktop user pairs Primal by scanning, which
+                    the QR row below already is — a launch link there would open
+                    nothing, because the app is on the other device. */}
+                {!desktop && (
+                  <MethodRow
+                    glyph="◉"
+                    title="Primal"
+                    subtitle="Sign in with the Primal app on this phone."
+                    onClick={() => goto('primal')}
+                  />
+                )}
                 <MethodRow
                   glyph="▣"
                   title="Scan a QR code"
@@ -1261,6 +1370,58 @@ export function SignInModal({
                         ? 'Connection dropped — approve in your signer then tap Try again.'
                         : genErr}
                     </span>
+                  )}
+                </div>
+              </>
+            )}
+
+            {view === 'primal' && (
+              <>
+                <DetailHeader title="Sign in with Primal" />
+                <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                  <button
+                    onClick={() => onPrimalConnect()}
+                    disabled={!primalUri}
+                    className="btn-bolt w-full disabled:opacity-40"
+                  >
+                    {!primalUri
+                      ? 'Preparing connection…'
+                      : primalSent ? 'Open Primal again' : 'Open Primal'}
+                  </button>
+                  {/* Same three states the Clave row reports, for the same
+                      reason: a screen that says the same thing before and after
+                      the trip leaves the user unable to tell a finished
+                      handshake from a stalled one. There is no `returned` flag
+                      here because there is no equivalent of Clave's silent
+                      Universal-Link failure to disambiguate — a custom scheme
+                      that nothing claims is the ONE case, and the copy below
+                      covers it. */}
+                  <span className="text-[11px] text-muted">
+                    {primalSent
+                      ? 'Approve the connection in Primal, then come back here — this page finishes on its own. Nothing to paste.'
+                      : 'Your keys stay in Primal. Tapping this opens the app with the connection request already in it.'}
+                  </span>
+                  {primalErr && (
+                    <div className="flex flex-col items-start gap-1">
+                      <span className="text-[11px] text-nostr/80">
+                        {connectionDropped(primalErr)
+                          ? 'No answer yet. Tap Open Primal again — that re-subscribes and re-sends the request in one go.'
+                          : primalErr}
+                      </span>
+                      {android && (
+                        <span className="text-[11px] text-muted">
+                          Don&apos;t have Primal?{' '}
+                          <a
+                            href={PRIMAL_PLAY_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-nostr underline underline-offset-2"
+                          >
+                            get it on Google Play ↗
+                          </a>
+                        </span>
+                      )}
+                    </div>
                   )}
                 </div>
               </>
