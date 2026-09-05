@@ -835,6 +835,62 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   check('...on DIFFERENT request ids', pkIds[0] !== pkIds[1], true);
   check('...with the retry interval waited out', pairMs >= 7000, true);
 
+  console.log('\n  5j. A LOCKED window.nostr does not stop a signer installing');
+  // THE EXTENSION CASE, injected the way an extension actually behaves.
+  //
+  // Several NIP-07 extensions install their provider with
+  // `Object.defineProperty(window, 'nostr', { … writable: false })`, or as a
+  // getter with no setter. Assigning to that from module code — strict mode —
+  // throws `TypeError: "nostr" is read-only`, and every signer this app
+  // installs ended in exactly that bare assignment.
+  //
+  // Reported from a desktop: the QR was scanned, **Clave paired successfully**,
+  // the ack came back and `get_public_key` answered — then the last line of
+  // `activateBunkerSigner` threw, so the words *"nostr" is read-only* appeared
+  // under the QR and the app stayed signed out. Everything that mattered had
+  // already worked.
+  //
+  // `Page.addScriptToEvaluateOnNewDocument` is what makes this faithful: the
+  // lock has to exist BEFORE any app script runs, which is the one thing a
+  // `Runtime.evaluate` after load cannot reproduce.
+  const lockScript = await send('Page.addScriptToEvaluateOnNewDocument', {
+    source: `Object.defineProperty(window, 'nostr', {
+      value: { __lockedByFakeExtension: true },
+      writable: false,
+      configurable: true,
+      enumerable: true,
+    });`,
+  });
+  await send('Page.navigate', { url: APP }); await wait(2000);
+  await js(`(() => { localStorage.clear();
+    localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
+    localStorage.setItem('bmb:npub', ${JSON.stringify(npub)});
+    localStorage.setItem('bmb:signer', 'bunker');
+    localStorage.setItem('bmb:bunker', ${JSON.stringify(JSON.stringify({ uri: `bunker://${bunkerPk}?relay=ws://127.0.0.1:${PORT}`, clientSk: hex(clientSk) }))});
+    return 1; })()`);
+  seen.length = 0;
+  await send('Page.navigate', { url: APP }); await wait(20000);
+  check('the lock really was in place',
+    await js(`(() => { const d = Object.getOwnPropertyDescriptor(window, 'nostr'); return !!d; })()`), true);
+  check('the bunker still connected through it', seen.includes('connect'), true);
+  check('...and the session is live rather than "nostr is read-only"',
+    await js(`localStorage.getItem('bmb:signer')`), 'bunker');
+  // THE DISCRIMINATING ASSERTION, and the only one of these four that is.
+  // Replayed against the pre-fix signer.ts: the first three still pass — the
+  // relay handshake completes and `bmb:signer` stays 'bunker', because
+  // `restoreBunkerSigner` swallows the throw — and only this one fails, with
+  // the locked stub still sitting on `window.nostr`. Do not drop it for the
+  // three that read more dramatically; they agree with a broken build.
+  //
+  // It exercises the RESTORE path rather than the sign-in path the bug was
+  // reported from (a QR pairing, where the throw is not swallowed and reaches
+  // the screen). Both end in `activateBunkerSigner`, so the fix is the same
+  // line; a faithful sign-in reproduction would need a live nostrconnect
+  // pairing in this harness, which is a bigger rig than the bug needs.
+  check('...with OUR adapter installed, not the locked stub',
+    await js(`!!(window.nostr && window.nostr.nip44) && !window.nostr.__lockedByFakeExtension`), true);
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: lockScript.result.identifier });
+
   console.log('\n  5i. SIGNING OUT tells the signer to forget this client');
   // THE PAIRING LIVES ON THE SIGNER'S SIDE TOO, and closing our socket does not
   // touch it — the app goes on listing this site as connected. Clave caps a user
