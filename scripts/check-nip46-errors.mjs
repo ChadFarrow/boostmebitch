@@ -80,13 +80,25 @@ function vec(label, input, expected, opts = {}) {
 section('A bare string off the wire, in a phrasing that means "still asking"');
 // ---------------------------------------------------------------------------
 {
-  // The five Clave has been observed to use, from its own reference web client
-  // (DocNR/clave-casa, src/lib/signer.ts). Not invented here.
+  // Five from Clave's own reference web client (DocNR/clave-casa,
+  // src/lib/signer.ts). Not invented here.
   vec('permission denied', 'permission denied', true, { alsoNaive: true });
   vec('permission not granted', 'permission not granted', true, { alsoNaive: true });
   vec('not authorized', 'not authorized', true, { alsoNaive: true });
   vec('awaiting approval', 'awaiting approval', true, { alsoNaive: true });
   vec('queued for approval', 'queued for approval', true, { alsoNaive: true });
+
+  // THE SIXTH CAME OFF A PHONE, NOT OUT OF THAT FILE — which is why it is
+  // called out rather than appended. Clave answered a pairing's
+  // `get_public_key` with exactly this, and none of the five above matched, so
+  // the sign-in reported "no permission" while Clave's Recent Activity showed
+  // the same call succeeding. A vendor's list is where this starts, not where
+  // it ends: when a signer produces a phrasing that is missing, add the
+  // observed string — never loosen a pattern above into a token that would
+  // have swept it up along with everything else.
+  vec('no permission', 'no permission', true, { alsoNaive: true });
+  vec('no permission, as a sentence',
+    'get_public_key: no permission for this client', true, { alsoNaive: true });
 
   // Case and surrounding prose must not matter — a signer writes a sentence,
   // not a token.
@@ -138,7 +150,7 @@ section('The naive text-only matcher is replayed over EVERY vector');
 {
   // Total, not a hand-written second list: a vector cannot be added without
   // being proved against the control. Vectors marked alsoNaive are the ones the
-  // naive version is allowed to get right — it agrees on all eight of them,
+  // naive version is allowed to get right — it agrees on all ten of them,
   // which is exactly why this bug would survive a review.
   let disagreements = 0;
   let exempted = 0;
@@ -153,7 +165,7 @@ section('The naive text-only matcher is replayed over EVERY vector');
     disagreements += 1;
   }
   check('every vector was replayed', vectors.length > 0, true);
-  check('the naive matcher agrees on the eight it is exempted for', exempted, 8);
+  check('the naive matcher agrees on the ten it is exempted for', exempted, 10);
   check('...and is caught by at least one must-still-work vector',
     disagreements > 0, true);
   // Name the specific one, so a future edit that deletes it is visible.

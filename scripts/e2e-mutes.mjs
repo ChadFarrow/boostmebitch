@@ -651,6 +651,34 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   // that never relents costs 90 s of wall clock here, and adding a test-only
   // backdoor to the budget in a module on the money path is worse than leaving
   // that bound to review.
+  console.log('\n  5f. a PAIRING denied once still signs in — the handshake retries too');
+  // THE SECOND HALF OF 5d, AND IT SHIPPED MISSING. withApprovalWait was applied
+  // to the adapter's methods only, on the reasoning that the connect paths own
+  // their own timeouts and a retry underneath one would stall sign-in. A field
+  // report disproved it: Clave answers the handshake's `get_public_key` the same
+  // way it answers a signature, so a paired signer showed "no permission" on
+  // screen while its own Recent Activity listed that call succeeding.
+  //
+  // `no permission` is the exact string the phone produced, and none of the five
+  // phrasings copied from clave-casa matched it — so this vector is doing two
+  // jobs: the handshake retries at all, and it retries on THAT word.
+  seen.length = 0;
+  seenIds.length = 0;
+  denyFirst = { method: 'get_public_key', left: 1, error: 'no permission' };
+
+  const pairStart = Date.now();
+  await send('Page.navigate', { url: APP }); await wait(25000);
+  const pairMs = Date.now() - pairStart;
+
+  check('the session came up despite the refusal', await js(`localStorage.getItem('bmb:signer')`), 'bunker');
+  check('...and the app is not showing a signer error',
+    await js(`/signer disconnected|no permission/i.test(document.body.innerText)`), false);
+  const pkRequests = seen.filter((m) => m === 'get_public_key');
+  check('get_public_key was issued more than once', pkRequests.length >= 2, true);
+  const pkIds = seenIds.filter((_, i) => seen[i] === 'get_public_key');
+  check('...on DIFFERENT request ids', pkIds[0] !== pkIds[1], true);
+  check('...with the retry interval waited out', pairMs >= 7000, true);
+
   denyFirst = null;
   signEnabled = false;
 

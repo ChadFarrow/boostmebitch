@@ -47,14 +47,23 @@
 /**
  * The phrasings that mean "queued, waiting for the human".
  *
- * Taken from Clave's own reference web client (DocNR/clave-casa,
- * `src/lib/signer.ts`), not guessed — it lists these five because Clave's
- * answer has varied across builds. Anchored to whole phrases on purpose; see
- * the over-matching note above.
+ * Five came from Clave's own reference web client (DocNR/clave-casa,
+ * `src/lib/signer.ts`), which lists them because Clave's answer has varied
+ * across builds. Anchored to whole phrases on purpose; see the over-matching
+ * note above.
+ *
+ * **`no permission` is the sixth, and it came off a real iPhone rather than out
+ * of that file.** Clave answered a pairing's `get_public_key` with exactly that
+ * string; the modal rendered *"no permission"* in magenta while Clave's own
+ * Recent Activity listed the same call twice with a green tick. A list copied
+ * from a vendor's client is a starting point, not the set — when a signer
+ * produces a phrasing that is not here, the fix is to add the observed string,
+ * never to loosen an existing pattern into a token that would have caught it.
  */
 export const APPROVAL_PENDING_PATTERNS: readonly RegExp[] = [
   /permission denied/i,
   /permission not granted/i,
+  /no permission/i,
   /not authorized/i,
   /awaiting approval/i,
   /queued for approval/i,

@@ -345,10 +345,33 @@ response, so the caller gets a rejection and the signature is delivered to a
 handler that no longer exists — `lib/esm/nip46.js` runs `delete listeners[id]`
 on the line after `handler.reject(error)`. Read in `node_modules`, not inferred.
 
-**So this is not a sign-in bug, and that is what makes it expensive.** Pairing
-succeeds. It is every SIGNATURE afterwards that fails — the boost note, the
-favorites publish, the mute publish — each on the first approval, each looking
-like a signer that refused.
+**It IS a sign-in bug as well, and that sentence used to say otherwise.** The
+first version of this reasoned that pairing succeeds and only later signatures
+fail, and applied `withApprovalWait` to the adapter's methods alone — the
+connect paths were excluded deliberately, on the argument that they own their
+own timeouts and a retry underneath one would stall sign-in. Two screenshots
+disproved it: the phone showed Clave holding a **Full Trust** connection to this
+site with `get_public_key` ticked green twice in its Recent Activity, while the
+sign-in modal rendered *"no permission"* in magenta. Clave answers the
+handshake's `get_public_key` exactly as it answers a signature.
+
+So **all three handshake `get_public_key` calls go through `withApprovalWait`**
+— `startNostrConnect`, `connectBunkerFromUri` and `restoreBunkerFromStorage`.
+Each attempt keeps `BUNKER_CALL_TIMEOUT_MS`, so the only added behaviour is the
+re-issue, and only on an approval-pending answer; a terminal refusal still
+throws on the first response. Without it, sign-in does not stall — it fails.
+
+The signatures afterwards fail too, and that half is unchanged: the boost note,
+the favorites publish, the mute publish, each on the first approval, each
+looking like a signer that refused.
+
+**`no permission` is a sixth phrasing, observed on a device rather than read out
+of clave-casa's source**, and none of the five copied from that file matched it.
+The lesson is about the list, not the string: a vendor's client is where this
+starts, not where it ends. When a signer produces a phrasing that is missing,
+add the observed phrase — never loosen an existing pattern into a token that
+would have swept it up, because that is the over-match direction and it turns
+another signer's terminal "no" into a ninety-second wait.
 
 `withApprovalWait` (`lib/nostr/bunker.ts`) re-issues on a **new request id**,
 because there is nothing left to listen with. The gate is `isApprovalPending`

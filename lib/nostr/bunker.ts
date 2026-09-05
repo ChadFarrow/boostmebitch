@@ -567,7 +567,7 @@ export async function connectBunkerFromUri(
     const s = BunkerSigner.fromBunker(sk, bp, { onauth: onAuthUrl, pool });
     try {
       await withTimeout(s.connect(), timeoutMs, 'connect');
-      const pk = await withTimeout(s.getPublicKey(), BUNKER_CALL_TIMEOUT_MS, 'get_public_key');
+      const pk = await withApprovalWait(() => s.getPublicKey(), 'get_public_key');
       return { inner: s, pubkey: pk, pool };
     } catch (e) {
       // Both halves, in that order, and neither may throw over the real error:
@@ -798,11 +798,20 @@ export function startNostrConnect(
     }
     let pubkey: string;
     try {
-      pubkey = await withTimeout(
-        signer.getPublicKey(),
-        BUNKER_CALL_TIMEOUT_MS,
-        'get_public_key',
-      );
+      // THE HANDSHAKE'S OWN get_public_key NEEDS THE APPROVAL WAIT TOO, and
+      // leaving it out is what made a paired Clave show as signed out. This was
+      // a deliberate exclusion once, on the reasoning that the connect paths
+      // own their own timeouts and a retry underneath one would stall sign-in.
+      // A field report disproved it: without the retry sign-in does not stall,
+      // it FAILS. Clave answers this call with an error string first and the
+      // real key after the tap, exactly as it does a signature — the user's
+      // phone listed `get_public_key` twice with a green tick while this page
+      // showed the refusal.
+      //
+      // `withApprovalWait` keeps BUNKER_CALL_TIMEOUT_MS per attempt, so the
+      // only behaviour added is the re-issue, and only on an approval-pending
+      // answer. A terminal refusal still throws on the first response.
+      pubkey = await withApprovalWait(() => signer.getPublicKey(), 'get_public_key');
     } catch (e) {
       try { await signer.close(); } catch { /* ignore */ }
       try { pool.destroy(); } catch { /* ignore */ }
@@ -858,7 +867,7 @@ export async function restoreBunkerFromStorage(): Promise<BunkerAdapter | null> 
     const s = BunkerSigner.fromBunker(clientSk, bp, { pool });
     try {
       await withTimeout(s.connect(), timeoutMs, 'reconnect');
-      const pk = await withTimeout(s.getPublicKey(), BUNKER_CALL_TIMEOUT_MS, 'get_public_key');
+      const pk = await withApprovalWait(() => s.getPublicKey(), 'get_public_key');
       return { inner: s, pubkey: pk, pool };
     } catch (e) {
       try { await s.close(); } catch { /* ignore */ }
