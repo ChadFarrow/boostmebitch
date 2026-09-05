@@ -1,7 +1,7 @@
 'use client';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { clearShowSelection } from '@/lib/store';
+import { clearShowSelection, useApp } from '@/lib/store';
 
 /**
  * The bottom tab bar — the navigation half of the dock. The mini-player
@@ -37,25 +37,39 @@ import { clearShowSelection } from '@/lib/store';
  * last show the visitor had open, and the selection-to-URL mirror rewrites
  * the address bar to `?podcast=<old>`.
  *
- * ITEMS NOT YET HERE. The mockup carries five tabs; this ships three. Live
- * needs an index page — today live streams are a section of `/`, and
- * `/live/<npub>` is one stream. Wallet needs the store's wallet-modal setter
- * wired through a client component; it is a modal, not a route. Both are
- * additive: a fourth or fifth entry in `TABS` and nothing else.
+ * WALLET IS A MODAL, NOT A ROUTE. It flips `walletOpen` in the store, the same
+ * flag `<AuthControl>`'s balance chip flips, and `<WalletModalHost>` in the
+ * root layout renders the modal — on every route, which is the whole point of
+ * moving it there (see that file). Its "current" state is the modal being
+ * open, so the tab lights while the sheet is up and goes quiet when it closes.
+ *
+ * PLAYLISTS IS NOT A TAB, deliberately. Playlists are content: the search box
+ * has a Playlists lane and `/playlists` stays a linkable page, but it is not a
+ * place people live. Live is the one destination still missing — it needs an
+ * index route (today live streams are a section of `/`), and it is one more
+ * entry in `TABS` when that exists.
  */
 
-type Tab = {
-  href: '/' | '/favorites' | '/playlists';
+type LinkTab = {
+  kind: 'link';
+  href: '/' | '/favorites';
   label: string;
   icon: React.ReactNode;
   /** Whether `pathname` belongs to this tab. `/` is exact; the rest are prefixes. */
   match: (pathname: string) => boolean;
 };
+type ModalTab = {
+  kind: 'modal';
+  label: string;
+  icon: React.ReactNode;
+};
+type Tab = LinkTab | ModalTab;
 
 const stroke = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
 
 const TABS: Tab[] = [
   {
+    kind: 'link',
     href: '/',
     label: 'Search',
     match: (p) => p === '/',
@@ -67,6 +81,7 @@ const TABS: Tab[] = [
     ),
   },
   {
+    kind: 'link',
     href: '/favorites',
     label: 'Favorites',
     match: (p) => p.startsWith('/favorites'),
@@ -77,19 +92,26 @@ const TABS: Tab[] = [
     ),
   },
   {
-    href: '/playlists',
-    label: 'Playlists',
-    match: (p) => p.startsWith('/playlists'),
+    kind: 'modal',
+    label: 'Wallet',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
-        <path d="M4 6h12M4 12h12M4 18h8M18 12v7l3-2" />
+        <rect x="3" y="6" width="18" height="13" />
+        <path d="M3 10h18M16 15h2" />
       </svg>
     ),
   },
 ];
 
+const itemClass = (current: boolean) =>
+  `flex flex-col items-center justify-center gap-1 text-[10px] tracking-wide transition ${
+    current ? 'text-bolt' : 'text-muted hover:text-bone'
+  }`;
+
 export function TabBar() {
   const pathname = usePathname() ?? '/';
+  const walletOpen = useApp((s) => s.walletOpen);
+  const setWalletOpen = useApp((s) => s.setWalletOpen);
 
   return (
     <nav
@@ -101,6 +123,20 @@ export function TabBar() {
         style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}
       >
         {TABS.map((tab) => {
+          if (tab.kind === 'modal') {
+            return (
+              <button
+                key={tab.label}
+                type="button"
+                onClick={() => setWalletOpen(true)}
+                aria-pressed={walletOpen}
+                className={itemClass(walletOpen)}
+              >
+                {tab.icon}
+                <span>{tab.label}</span>
+              </button>
+            );
+          }
           const current = tab.match(pathname);
           return (
             <Link
@@ -111,9 +147,7 @@ export function TabBar() {
               // other routes read the store as a handoff, not a filter.
               onClick={tab.href === '/' ? clearShowSelection : undefined}
               aria-current={current ? 'page' : undefined}
-              className={`flex flex-col items-center justify-center gap-1 text-[10px] tracking-wide transition ${
-                current ? 'text-bolt' : 'text-muted hover:text-bone'
-              }`}
+              className={itemClass(current)}
             >
               {tab.icon}
               <span>{tab.label}</span>
