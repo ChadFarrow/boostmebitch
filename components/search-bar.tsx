@@ -37,17 +37,16 @@ interface Props {
   /**
    * The selected content type, and the way to change it.
    *
-   * CONTROLLED from the parent rather than held here, because the menu is not
-   * the only thing that sets it: when a narrowed search comes back empty, the
+   * CONTROLLED from the parent rather than held here, because the lanes are not
+   * the only thing that set it: when a narrowed search comes back empty, the
    * results panel offers a way back to ALL, and that control has to move the
    * same state this box reads. Held privately it would move only the results,
-   * leaving the menu naming a lane that is no longer running.
+   * leaving the row naming a lane that is no longer running.
    *
    * Not persisted anywhere. A search filter restored from disk is on before you
    * touched it — you come back a week later, search a show, get nothing, and the
-   * box reads as broken with the only explanation folded away inside a menu you
-   * never opened. The favorites page stores its tab because that is a library
-   * you own; this is a question you ask once.
+   * box reads as broken. The favorites page stores its tab because that is a
+   * library you own; this is a question you ask once.
    */
   type: SearchType;
   onTypeChange: (t: SearchType) => void;
@@ -64,78 +63,51 @@ interface Props {
 }
 
 /**
- * The content-type selector: one button naming the current mode, and a menu.
+ * The content-type selector: one lane per type, on a row UNDER the box.
  *
- * It replaced a row of five chips, which read fine on a desktop and became a
- * WRAPPED TWO-LINE BLOCK at 320px — a filter standing taller than the search box
- * it filters. A dropdown states the current mode in one word and costs one line
- * at every width. It is also how podcastindex.org presents the same choice,
- * which is worth something on its own: this app's users are already reading that
- * site, and a control they recognise needs no explaining.
+ * **It was a dropdown, and before that a wrapping row of five chips.** The
+ * chips became a two-line block at 320px — a filter standing taller than the
+ * search box it filters — and the dropdown fixed that by folding the choice
+ * away, which cost something real: the lanes stopped being visible, so the one
+ * thing a visitor most needs to know about this box (that it finds music and
+ * playlists, not just podcasts) sat behind a tap. It also put the current mode
+ * ABOVE the input while the results and the explainer hang BELOW it, so one
+ * control spanned both sides of the thing it acts on.
  *
- * **`role="menuitemradio"`, not `menuitem`.** This is one choice out of a fixed
- * set, and `aria-checked` is what makes the ✓ mean something to a screen reader
- * rather than being decoration next to a name.
+ * The row is the third answer and keeps both properties: every lane is on
+ * screen, and it costs ONE line at every width because it scrolls sideways
+ * instead of wrapping. `overscroll-x-contain` for the reason every rail in this
+ * app carries it — a swipe past the end must not become Safari's back-swipe.
  *
- * Dismissal is the mousedown-outside + Escape pair `<AccountMenu>` already uses,
- * and it needs both: Escape alone strands the menu open under a thumb, and
- * click-outside alone strands it open for anyone on a keyboard.
+ * **`role="radiogroup"` / `aria-checked`,** not a tablist: these are one choice
+ * out of a fixed set that re-runs the same query, not pages of a document.
  */
-function SearchTypeMenu({ type, onChange }: { type: SearchType; onChange: (t: SearchType) => void }) {
-  const [open, setOpen] = useState(false);
-  const wrapperRef = useRef<HTMLDivElement | null>(null);
-  const active = SEARCH_TYPES.find((s) => s.type === type) ?? SEARCH_TYPES[0];
-
-  useEffect(() => {
-    if (!open) return;
-    function onMouseDown(e: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
-    }
-    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false); }
-    document.addEventListener('mousedown', onMouseDown);
-    document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('mousedown', onMouseDown);
-      document.removeEventListener('keydown', onKey);
-    };
-  }, [open]);
-
+function SearchTypeLanes({ type, onChange }: { type: SearchType; onChange: (t: SearchType) => void }) {
   return (
-    <div ref={wrapperRef} className="relative mb-2 w-fit">
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        aria-label={`Search type: ${active.label}`}
-        className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider border border-bone/30 text-muted transition hover:border-bone/60 hover:text-bone"
-      >
-        <span className="text-bone">{active.label}</span>
-        <span className="text-[10px] opacity-40">{open ? '▴' : '▾'}</span>
-      </button>
-
-      {open && (
-        <div role="menu" className="absolute left-0 top-full z-30 mt-1 min-w-[190px] card bg-ink p-1 shadow-xl">
-          {SEARCH_TYPES.map((s) => (
-            <button
-              key={s.type}
-              type="button"
-              role="menuitemradio"
-              aria-checked={s.type === type}
-              onClick={() => { onChange(s.type); setOpen(false); }}
-              className={`flex w-full items-center gap-2 px-2 py-2 text-left text-xs font-mono uppercase tracking-wider transition ${
-                s.type === type ? 'text-bolt' : 'text-muted hover:bg-bone/5 hover:text-bone'
-              }`}
-            >
-              {/* A fixed gutter for the ✓, so every label starts at the same x
-                  whether or not its row is the checked one. A tick that shifts
-                  the text makes the list appear to jitter as you move down it. */}
-              <span className="w-3 shrink-0" aria-hidden>{s.type === type ? '✓' : ''}</span>
-              {s.label}
-            </button>
-          ))}
-        </div>
-      )}
+    <div
+      role="radiogroup"
+      aria-label="Search type"
+      className="mt-2 flex gap-1.5 overflow-x-auto overscroll-x-contain"
+    >
+      {SEARCH_TYPES.map((s) => {
+        const on = s.type === type;
+        return (
+          <button
+            key={s.type}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            onClick={() => onChange(s.type)}
+            className={`shrink-0 h-8 px-3 text-[11px] font-mono uppercase tracking-wider border transition ${
+              on
+                ? 'border-bolt text-bolt bg-bolt/10'
+                : 'border-bone/30 text-muted hover:border-bone/60 hover:text-bone'
+            }`}
+          >
+            {s.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -234,17 +206,17 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
   // Never let a half-resolved profile print an empty name where a name goes.
   const npubName = npubProfile?.display_name?.trim() || npubProfile?.name?.trim() || null;
 
-  // Every edit goes through here — the input, the clear button and the type
-  // menu all — so the "user is searching" signal can't be attached to one and
-  // forgotten on the others. Deliberately not an effect: the point is that it
-  // fires on the gesture, ahead of the debounce and the fetch.
+  // Every edit goes through here — the input, the clear button and the lane
+  // buttons all — so the "user is searching" signal can't be attached to one
+  // and forgotten on the others. Deliberately not an effect: the point is that
+  // it fires on the gesture, ahead of the debounce and the fetch.
   function edit(next: string) {
     setQ(next);
     onQueryChange?.(next);
   }
 
   /**
-   * The type the last fetch ran under, so the effect can tell a MENU PICK from
+   * The type the last fetch ran under, so the effect can tell a LANE PRESS from
    * a keystroke.
    *
    * The 280 ms below exists to coalesce typing, and a press is not typing: a
@@ -343,12 +315,6 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
     // below, separated by a gap — which read as a SECOND SEARCH BOX, i.e. exactly
     // the two-input design merging them into one was meant to remove.
     <div className="flex flex-col">
-      {/* ABOVE the input, not inside it. The rows UNDER the box hang off it as
-          one control — no gap, no top border — so anything added down there
-          splits the input from the suggestion that belongs to it, and anything
-          added inside competes with the × for a box that is 288px wide at
-          320px. Above costs one line and touches neither. */}
-      <SearchTypeMenu type={type} onChange={onTypeChange} />
       <div className="relative">
         {/* The warning outranks the mode. A ⚡ over an nsec would say "this is a
             person" about a secret key. The ⚡ now follows the MODE rather than a
@@ -461,6 +427,11 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
           person&apos;s boosts. Searching people by name isn&apos;t available yet.
         </p>
       )}
+      {/* LAST, below everything that hangs off the input. The suggestion row,
+          the nsec warning and the npub explainer are all `border-t-0` and are
+          part of the box — putting the lanes between the input and them would
+          split one control in two. */}
+      <SearchTypeLanes type={type} onChange={onTypeChange} />
     </div>
   );
 }
