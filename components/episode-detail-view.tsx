@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { cloneElement, useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml } from '@/lib/util';
@@ -20,6 +20,7 @@ import { BoostModal } from './boost-modal';
 import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
 import { useStreamPanel } from './streaming-settings';
+import { UnderlineTabs } from './underline-tabs';
 import type { Episode, ValueBlock } from '@/lib/types';
 
 function ValueSplitSection({ value }: { value: ValueBlock }) {
@@ -64,7 +65,7 @@ function EpisodeShareButton({ episode, podcast }: { episode: Episode; podcast: N
     <CopyLinkButton
       url={showShareUrl(podcast.podcastGuid, episode.guid)}
       title="Copy link to this episode"
-      className="btn-ghost text-xs"
+      className="tile"
     />
   );
 }
@@ -93,6 +94,24 @@ export function EpisodeDetailView() {
   const [boostFor, setBoostFor] = useState<Episode | null>(null);
   const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
+  // The MORE tile's menu — the two actions that are real but rare (boost every
+  // track at once, open the episode's own web page). Dismissed on outside-click
+  // and Escape, same as <AuthControl>'s dropdown.
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!moreOpen) return;
+    function onDown(e: MouseEvent) {
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false);
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setMoreOpen(false); }
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [moreOpen]);
   // Above the early return below, so hook order stays stable.
   const { button: streamButton, panel: streamPanel } = useStreamPanel(
     podcast,
@@ -128,7 +147,6 @@ export function EpisodeDetailView() {
   const value = payableValue(episode, podcast);
   const hasValue = hasValueRecipients(value);
   const isThisPlaying = current?.episode.id === episode.id;
-  const playerVisible = !!current;
   const description = !episode.contentEncoded && episode.description
     ? stripHtml(episode.description)
     : '';
@@ -174,10 +192,6 @@ export function EpisodeDetailView() {
     : chaptersPending ? 'contents'
     : transcriptPending ? 'transcript'
     : 'notes';
-  const infoTabCls = (on: boolean) =>
-    `shrink-0 whitespace-nowrap text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
-      on ? 'bg-bolt text-ink shadow-sm' : 'text-muted hover:text-bone hover:bg-bone/5'
-    }`;
   const infoLabel = (t: InfoTab) =>
     t === 'contents' ? contentsLabel
     : t === 'transcript' ? 'Transcript'
@@ -209,110 +223,178 @@ export function EpisodeDetailView() {
       </button>
 
       <section className="card p-4 space-y-5">
-        {/* Artwork */}
-        <div className="flex justify-center pt-2">
+        {/* Cover beside the title, not above it. Centred at 192px the cover
+            cost a phone the whole first screen before a word of the title;
+            at 112px in the left column the title, show and date sit level
+            with it and the actions land above the fold. Larger from sm: up,
+            where there is room. */}
+        <div className="grid grid-cols-[112px_1fr] sm:grid-cols-[160px_1fr] gap-4 items-start">
           <PodcastCover
             image={episode.image ?? podcast.image}
             artwork={podcast.artwork}
             title={episode.title}
             seed={episode.guid ?? String(episode.id)}
-            className="w-48 h-48 sm:w-64 sm:h-64 border border-bone/20 text-5xl"
+            className="w-28 h-28 sm:w-40 sm:h-40 border border-bone/20 text-3xl sm:text-4xl"
           />
-        </div>
-
-        {/* Title & metadata */}
-        <div>
-          <h2 className="font-display text-2xl sm:text-3xl font-semibold leading-tight">
-            {episode.title}
-          </h2>
-          <p className="text-sm text-muted mt-1">{podcast.title}</p>
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted mt-2">
-            {episode.datePublished && (
-              <span>{fmtDate(episode.datePublished)}</span>
-            )}
-            {episode.duration ? <span>· {fmtDuration(episode.duration)}</span> : null}
-            {episode.episode ? <span>· Episode {episode.episode}</span> : null}
-            {episode.season ? <span>· Season {episode.season}</span> : null}
+          <div className="min-w-0">
+            <h2 className="font-display text-xl sm:text-3xl font-semibold leading-tight">
+              {episode.title}
+            </h2>
+            <p className="text-xs sm:text-sm text-muted mt-1">{podcast.title}</p>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted mt-2">
+              {episode.datePublished && (
+                <span>{fmtDate(episode.datePublished)}</span>
+              )}
+              {episode.duration ? <span>{fmtDuration(episode.duration)}</span> : null}
+              {episode.episode ? <span>Episode {episode.episode}</span> : null}
+              {episode.season ? <span>Season {episode.season}</span> : null}
+            </div>
           </div>
         </div>
 
-        {/* Actions */}
-        <div className="flex flex-wrap gap-2">
+        {/* TWO primaries, then ONE row of peers.
+
+            This was eight buttons in a wrapping row at four different sizes
+            (.btn, .btn-ghost text-xs, .btn-ghost text-[11px], .stamp) — PLAY,
+            FAVORITE, SHARE, SUPPORT, STREAM, BOOST, DISCUSSION and "Boost 12
+            tracks" all competing as equals, and on a 390px screen BOOST wrapped
+            to a line of its own. The page has two actions that matter: play
+            it, and pay for it. Those are 44px and full width. Everything else
+            is a `.tile` — glyph over word, one size — and the two rare ones
+            (boost every track, open the episode page) live behind MORE rather
+            than as a fifth and sixth peer.
+
+            BOOST is gated on `hasValue` exactly as before; without a value
+            block PLAY takes both columns. The FAB that used to float BOOST
+            over the page while nothing was playing is gone: BOOST is a primary
+            up here now, and the mini-bar carries its own once playback starts. */}
+        <div className="grid grid-cols-2 gap-2">
           <button
             type="button"
             onClick={handlePlay}
-            className={isThisPlaying ? 'btn-bolt-soft' : 'btn'}
+            className={`h-11 w-full ${isThisPlaying ? 'btn-bolt-soft' : 'btn'} ${hasValue ? '' : 'col-span-2'}`}
             aria-label={isThisPlaying && isPlaying ? 'Pause' : isThisPlaying ? 'Resume' : 'Play'}
           >
             {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : '▶ PLAY'}
           </button>
-          <FavEpisodeHeart episode={episode} podcast={podcast} size="md" />
-          <EpisodeShareButton episode={episode} podcast={podcast} />
-          {/* SUPPORT before BOOST to match the show page's cluster order
-              (FAVORITE · SHARE · SUPPORT · BOOST). */}
-          {podcast.funding?.[0]?.url ? (
-            <a
-              href={podcast.funding[0].url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="btn-ghost"
-              title={podcast.funding[0].message || 'Support this show'}
-            >
-              <CoinIcon /> SUPPORT
-            </a>
-          ) : null}
-          {/* Streaming is a SHOW-scoped setting, so this edits the same keys as
-              the show header's ≋ STREAM — it's here because this is the page a
-              listener is on when they decide to play something, and sending it
-              back to the show header to turn streaming on for what they're
-              about to hear is a detour with no reason behind it. SUPPORT above
-              is show-scoped from an episode page for the same reason. */}
-          {streamButton}
           {hasValue && (
             <button
               type="button"
               onClick={() => setBoostFor(episode)}
-              className="btn-bolt"
+              className="btn-bolt h-11 w-full"
               aria-label="Boost this episode"
             >
               <BoltIcon /> BOOST
             </button>
           )}
+        </div>
+        {/* auto-fit at 56px: SUPPORT, STREAM and DISCUSS are each conditional,
+            so the row is three to six tiles wide and every tile takes an equal
+            share of whatever that is. */}
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
+          <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" />
+          <EpisodeShareButton episode={episode} podcast={podcast} />
+          {/* Streaming is a SHOW-scoped setting, so this edits the same keys as
+              the show header's STREAM — it's here because this is the page a
+              listener is on when they decide to play something, and sending
+              them back to the show header to turn streaming on for what
+              they're about to hear is a detour with no reason behind it.
+              SUPPORT below is show-scoped from an episode page for the same
+              reason.
+              `cloneElement` to restyle rather than a prop on `useStreamPanel`:
+              the hook lives in streaming-settings.tsx, a money-path file, and
+              this is a class name. The button's handler, aria-expanded and
+              title are untouched. */}
+          {streamButton && cloneElement(
+            streamButton,
+            { className: 'tile' },
+            <span aria-hidden className="text-lg leading-none">≋</span>,
+            'STREAM',
+          )}
+          {podcast.funding?.[0]?.url ? (
+            <a
+              href={podcast.funding[0].url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="tile"
+              title={podcast.funding[0].message || 'Support this show'}
+            >
+              <CoinIcon /> SUPPORT
+            </a>
+          ) : null}
           {episode.socialInteract?.length ? (
             <button
               type="button"
               onClick={() => openDiscussion(episode)}
-              className="btn-ghost text-nostr"
+              className="tile hover:border-nostr/70 hover:text-nostr"
               aria-label="Open episode discussion"
             >
-              💬 DISCUSSION
+              <span aria-hidden className="text-lg leading-none">💬</span> DISCUSS
             </button>
           ) : null}
-          {episode.valueTimeSplits?.length ? (
-            <button
-              type="button"
-              onClick={() => setBoostAllFor(episode)}
-              className="btn-ghost text-bolt text-[11px] uppercase tracking-wider"
-              aria-label={`Boost all ${episode.valueTimeSplits.length} tracks`}
-            >
-              ⚡ Boost {episode.valueTimeSplits.length} tracks
-            </button>
+          {(episode.valueTimeSplits?.length || episodePageUrl) ? (
+            <div ref={moreRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setMoreOpen((v) => !v)}
+                className={`tile ${moreOpen ? 'border-bone bg-bone/5' : ''}`}
+                aria-haspopup="menu"
+                aria-expanded={moreOpen}
+                aria-label="More actions"
+              >
+                <span aria-hidden className="text-lg leading-none">⋯</span> MORE
+              </button>
+              {moreOpen && (
+                <div role="menu" className="absolute right-0 top-full mt-2 w-64 card bg-ink p-1 z-40 shadow-xl">
+                  {episode.valueTimeSplits?.length ? (
+                    <button
+                      role="menuitem"
+                      type="button"
+                      onClick={() => { setMoreOpen(false); setBoostAllFor(episode); }}
+                      className="w-full text-left px-3 h-11 hover:bg-bone/5 transition flex items-center gap-2 text-sm"
+                    >
+                      <span className="text-bolt">⚡</span>
+                      <span>Boost all {episode.valueTimeSplits.length} tracks</span>
+                    </button>
+                  ) : null}
+                  {/* `link` is raw feed text, and React does NOT block a
+                      `javascript:` href — it only warns in dev. `httpUrl` is the
+                      same allowlist the show-notes sanitizer applies. */}
+                  {episodePageUrl ? (
+                    <a
+                      role="menuitem"
+                      href={episodePageUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => setMoreOpen(false)}
+                      className="w-full text-left px-3 h-11 hover:bg-bone/5 transition flex items-center gap-2 text-sm"
+                    >
+                      <span className="text-muted">↗</span>
+                      <span>Open episode page</span>
+                    </a>
+                  ) : null}
+                </div>
+              )}
+            </div>
           ) : null}
         </div>
 
-        {/* Value split */}
+        {/* Value split — a hairline disclosure row, not a stamp. The stamp was
+            the one 10px bordered thing among 38px buttons, and it read as a
+            badge rather than a control. A full-width 44px row is a control. */}
         {value && (
-          <div>
+          <div className="border-t border-bone/10">
             <button
               type="button"
               onClick={() => setValueOpen((v) => !v)}
-              className="stamp text-bolt border-bolt/60 hover:bg-bolt/10 transition cursor-pointer"
+              className="flex w-full items-center gap-2 h-11 text-xs text-muted hover:text-bone transition"
               aria-expanded={valueOpen}
             >
-              ⚡ {value.recipients?.length ?? 0} recipients
-              <span className="ml-1">{valueOpen ? '▾' : '▸'}</span>
+              <BoltIcon className="w-3.5 h-3.5 text-bolt" />
+              <span>Splits to {value.recipients?.length ?? 0} recipient{(value.recipients?.length ?? 0) === 1 ? '' : 's'}</span>
+              <span aria-hidden className={`ml-auto transition-transform ${valueOpen ? 'rotate-180' : ''}`}>▾</span>
             </button>
-            {valueOpen && <div className="mt-3"><ValueSplitSection value={value} /></div>}
+            {valueOpen && <div className="pb-2"><ValueSplitSection value={value} /></div>}
           </div>
         )}
 
@@ -335,19 +417,14 @@ export function EpisodeDetailView() {
         {anyInfo && (
           <div className="border-t border-bone/10 pt-4">
             {showInfoTabs ? (
-              // `overscroll-x-contain` — see the rail in podroll.tsx: a swipe
-              // past the end of this pill row must not chain to the document or
-              // become a back-swipe.
-              <div className="inline-flex max-w-full overflow-x-auto overscroll-x-contain gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
-                {infoTabs.map((t) => (
-                  <button key={t} type="button" onClick={() => setInfoTab(t)} className={infoTabCls(activeInfo === t)}>
-                    {t === 'contents' ? contentsLabel
-                      : t === 'transcript' ? 'Transcript'
-                      : t === 'boosts' ? 'Boosts'
-                      : 'Show notes'}
-                  </button>
-                ))}
-              </div>
+              // One strip shared with the fullscreen player — see
+              // <UnderlineTabs> for why it is an underline and not a pill.
+              <UnderlineTabs
+                className="mb-4"
+                tabs={infoTabs.map((t) => ({ id: t, label: infoLabel(t) }))}
+                active={activeInfo}
+                onChange={setInfoTab}
+              />
             ) : (
               <p className="text-[11px] uppercase tracking-widest text-muted mb-2">{infoLabel(activeInfo)}</p>
             )}
@@ -365,18 +442,6 @@ export function EpisodeDetailView() {
                     <LinkedText text={description} />
                   </div>
                 ) : null}
-                {/* Link out to the episode's own web page (some feeds' pages
-                    carry richer content than the feed; PC20's mirrors the feed). */}
-                {episodePageUrl && (
-                  <a
-                    href={episodePageUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 mt-4 text-xs font-semibold uppercase tracking-widest text-muted hover:text-bolt transition"
-                  >
-                    Episode page ↗
-                  </a>
-                )}
               </>
             )}
 
@@ -435,21 +500,6 @@ export function EpisodeDetailView() {
           </div>
         )}
       </section>
-
-      {/* Hidden while the now-playing bar is up — the mini-player carries its own
-          BOOST button, and the episode's inline SHARE · SUPPORT · BOOST cluster
-          remains — so the FAB would just overlap the bar. */}
-      {hasValue && !playerVisible && (
-        <button
-          type="button"
-          onClick={() => setBoostFor(episode)}
-          className="btn-bolt fixed right-4 z-40 shadow-xl rounded-full"
-          style={{ bottom: 'calc(1.5rem + env(safe-area-inset-bottom))' }}
-          aria-label="Boost this episode"
-        >
-          <BoltIcon /> BOOST
-        </button>
-      )}
 
       {boostFor && (
         <BoostModal
