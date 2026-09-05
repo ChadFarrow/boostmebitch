@@ -444,7 +444,7 @@ export function EpisodeDetailView() {
           type="button"
           onClick={() => setBoostFor(episode)}
           className="btn-bolt fixed right-4 z-40 shadow-xl rounded-full"
-          style={{ bottom: 'calc(1.5rem + env(safe-area-inset-bottom))' }}
+          style={{ bottom: 'calc(1.5rem + var(--dock-b))' }}
           aria-label="Boost this episode"
         >
           <BoltIcon /> BOOST
