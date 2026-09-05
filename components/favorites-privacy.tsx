@@ -19,6 +19,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { storage, subscribeFavPrivacy } from '@/lib/storage';
 import { ModalShell } from './modal-shell';
+import { SelectMenu } from './select-menu';
 import {
   favoritesMode,
   hydrateFavorites,
@@ -110,24 +111,6 @@ export function useFavoritesMode(): { mode: FavoritesPrivacy | null; mounted: bo
   return { mode, mounted };
 }
 
-// ---------------------------------------------------------------------------
-// The segmented control
-// ---------------------------------------------------------------------------
-
-// Square, like every other control on the page. This was a rounded-full pill
-// with a solid yellow active segment — the one rounded shape on a page of
-// right angles, and the yellow made a privacy setting the loudest thing on
-// screen. The active segment is bone-on-ink now (the same ON treatment as
-// `.btn`), a hairline divides the segments, and each is 44px tall on a phone.
-const seg = (on: boolean, disabled: boolean) =>
-  'px-3 text-xs font-semibold uppercase tracking-widest transition '
-  + 'h-11 sm:h-9 flex-1 flex items-center justify-center border-l border-bone/30 first:border-l-0 '
-  + (disabled
-    ? 'text-bone/30 cursor-not-allowed'
-    : on
-      ? 'bg-bone text-ink'
-      : 'text-bone/70 hover:text-bone hover:bg-bone/5');
-
 /**
  * The control on /favorites.
  *
@@ -151,47 +134,51 @@ export function FavoritesPrivacyControl() {
 
   return (
     <>
-      <div className="mb-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[11px] uppercase tracking-widest text-muted">Favorites</span>
-          <div
-            role="group"
-            aria-label="Where your favorites are stored"
-            className="flex flex-1 min-w-0 items-stretch border border-bone/30"
-          >
-            {MODES.map((m) => {
-              // Never disable the mode the account is ALREADY in. The gate stops
-              // you choosing private; it does not retire a private list that
-              // exists, and a control showing the current state as unavailable
-              // reads as a broken app rather than a withheld feature.
-              const disabled = m === 'private' && gated && current !== 'private';
-              return (
-                <button
-                  key={m}
-                  type="button"
-                  className={seg(current === m, disabled)}
-                  aria-pressed={current === m}
-                  disabled={disabled}
-                  title={disabled ? GATE_REASON : describe(m)}
-                  // A switch is never applied straight from the control. Each
-                  // one moves entries on a shared event — into the encrypted
-                  // half, into plaintext, or off the relays entirely — and two
-                  // of the three are not undoable by pressing the button again.
-                  onClick={() => { if (m !== current) setPending(m); }}
-                >
-                  {LABEL[m]}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <p className="text-[11px] text-muted mt-1.5">
+      {/* ONE ROW: the menu names the mode, the sentence names what it costs.
+          This was three segments spanning the page, and at 390px "Not on
+          Nostr" wrapped inside its own segment — so the tallest thing above a
+          287-entry library was the control saying where the library is stored.
+          A menu is one line at every width and it still states the current
+          mode without being opened, which is the property that matters here:
+          "private" and "not on Nostr" are both invisible from the outside.
+
+          THE CONSEQUENCE SENTENCE STAYS ON SCREEN. It is not a tooltip and not
+          a menu subtitle — it is the whole point of the feature, since a user
+          who cannot tell which of the two silent modes they are in has no way
+          to find out. It shares the row and wraps beneath on a narrow screen. */}
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <SelectMenu
+          options={MODES.map((m) => ({
+            id: m,
+            label: LABEL[m],
+            // Never disable the mode the account is ALREADY in. The gate stops
+            // you choosing private; it does not retire a private list that
+            // exists, and a control showing the current state as unavailable
+            // reads as a broken app rather than a withheld feature.
+            disabled: m === 'private' && gated && current !== 'private',
+            title: m === 'private' && gated && current !== 'private' ? GATE_REASON : describe(m),
+          }))}
+          active={current}
+          // Null is rendered as "not set", never as Public. Public is a real
+          // claim — it means a relay can be asked who favorited a show — and
+          // showing it selected for an account that has not chosen tells the
+          // user something about their data that is not true yet.
+          placeholder="Not set"
+          // A switch is never applied straight from the control. Each one moves
+          // entries on a shared event — into the encrypted half, into
+          // plaintext, or off the relays entirely — and two of the three are
+          // not undoable by picking the old one again.
+          onChange={(m) => { if (m !== current) setPending(m); }}
+          label="Favorites are"
+          className="shrink-0"
+        />
+        <p className="text-[11px] text-muted">
           {current
             ? describe(current)
             : 'Not set yet — you will be asked when you save your first favorite.'}
         </p>
         {gated && (
-          <p className="text-[11px] text-muted/70 mt-1">Private: {GATE_REASON}</p>
+          <p className="w-full text-[11px] text-muted/70">Private: {GATE_REASON}</p>
         )}
       </div>
 

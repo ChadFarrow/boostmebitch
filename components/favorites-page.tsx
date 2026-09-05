@@ -345,9 +345,9 @@ export function FavoritesPage() {
   const showItems = split !== 'feeds';
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
       <div className="flex items-baseline justify-between gap-3 flex-wrap">
-        <h1 className="headline text-4xl sm:text-5xl">favorites<span className="text-bolt">.</span></h1>
+        <h1 className="headline text-3xl sm:text-5xl">favorites<span className="text-bolt">.</span></h1>
         <div className="flex items-center gap-3">
           {/* Pre-mount this says nothing rather than "0 saved" — the store has
               not been read yet, and an empty claim here is a lie for anyone
@@ -420,14 +420,21 @@ export function FavoritesPage() {
         <EmptyLibrary signedIn={!!identity} degraded={degraded} off={syncOff} />
       ) : (
         <>
-          <div className="flex flex-col gap-3">
-            {/* The library filter — one menu naming the current one of up to
-                sixteen (medium, half) states. See `filterOptions` above for
-                what is in it and `<SelectMenu>` for why it is a menu rather
-                than the strip of segments it replaced. It sits ABOVE the
-                filter box, matching where the search box's selector sits
-                relative to its input: the mode is a question about the whole
-                list, the text box narrows what the mode returned. */}
+          {/* ALL THREE CONTROLS ON ONE ROW. Six rows of chrome stood between
+              the header and the first favorite; on a 287-entry library the
+              controls were most of the first screen. The menu shrinks to its
+              own width, the sort keeps its label, and the text box takes
+              whatever is left — it is the one that degrades gracefully, since
+              a narrowed placeholder still reads as a place to type.
+
+              The menu comes FIRST, matching where the search box's selector
+              sits relative to its input: the mode is a question about the
+              whole list, and the text box narrows what the mode returned. */}
+          <div className="flex items-center gap-2">
+            {/* One menu naming the current one of up to sixteen (medium, half)
+                states. See `filterOptions` above for what is in it, and
+                `<SelectMenu>` for why it is a menu rather than the strip of
+                segments it replaced. */}
             <SelectMenu
               options={filterOptions}
               active={`${tab}|${split}`}
@@ -436,27 +443,25 @@ export function FavoritesPage() {
                 update({ tab: nextTab, split: nextSplit as FavView['split'] });
               }}
               label="Show"
-              className="w-fit"
+              className="shrink-0"
             />
-            <div className="flex items-center gap-2">
-              <input
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-                placeholder="filter by title, show or artist…"
-                aria-label="Filter favorites"
-                className="input h-11 flex-1"
-              />
-              {/* One toggle, not two chips: the sort has exactly two states
-                  and the label names the one you are in. */}
-              <button
-                type="button"
-                onClick={() => update({ sort: view.sort === 'recent' ? 'az' : 'recent' })}
-                className="btn-ghost h-11 shrink-0 text-xs"
-                aria-label={view.sort === 'recent' ? 'Sorted by most recent; switch to A–Z' : 'Sorted A–Z; switch to most recent'}
-              >
-                {view.sort === 'recent' ? 'Recent' : 'A–Z'}
-              </button>
-            </div>
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="filter by title, show or artist…"
+              aria-label="Filter favorites"
+              className="input h-11 min-w-0 flex-1"
+            />
+            {/* One toggle, not two chips: the sort has exactly two states
+                and the label names the one you are in. */}
+            <button
+              type="button"
+              onClick={() => update({ sort: view.sort === 'recent' ? 'az' : 'recent' })}
+              className="btn-ghost h-11 shrink-0 text-xs"
+              aria-label={view.sort === 'recent' ? 'Sorted by most recent; switch to A–Z' : 'Sorted A–Z; switch to most recent'}
+            >
+              {view.sort === 'recent' ? 'Recent' : 'A–Z'}
+            </button>
           </div>
 
           {/* A filter that matches nothing is NOT an empty library, and saying

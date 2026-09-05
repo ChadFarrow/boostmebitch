@@ -51,6 +51,15 @@ export type SelectOption<T extends string> = {
   count?: number;
   /** A sub-choice of the option above it — one indent step, no separators. */
   indent?: boolean;
+  /**
+   * Offered but not choosable. It still RENDERS: a control that hides the
+   * option it is withholding cannot explain itself, and `title` is where the
+   * reason goes. Never disable the option that is currently active — that
+   * reads as a broken app rather than a withheld feature.
+   */
+  disabled?: boolean;
+  /** Tooltip on the row, and on the trigger while this option is active. */
+  title?: string;
 };
 
 export function SelectMenu<T extends string>({
@@ -58,13 +67,23 @@ export function SelectMenu<T extends string>({
   active,
   onChange,
   label,
+  placeholder,
   className = '',
 }: {
   options: SelectOption<T>[];
-  active: T;
+  /**
+   * `null` is a real state and is NOT the first option. The favorites privacy
+   * control is the case: an account that has never chosen is not Public, and
+   * showing Public selected tells the user something about their data that is
+   * not true yet. With `active` null nothing is checked and the trigger says
+   * `placeholder`.
+   */
+  active: T | null;
   onChange: (id: T) => void;
   /** Names the control for a screen reader: "Search type: music". */
   label: string;
+  /** Trigger text while `active` is null. Required to reach that state. */
+  placeholder?: string;
   /** Positioning for the wrapper. The trigger's own look is not overridable. */
   className?: string;
 }) {
@@ -72,7 +91,7 @@ export function SelectMenu<T extends string>({
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [at, setAt] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null);
-  const current = options.find((o) => o.id === active) ?? options[0];
+  const current = active === null ? null : options.find((o) => o.id === active);
 
   // Measured from the trigger, and again on scroll and resize: a `fixed`
   // element does not follow the page. Below when there is room, above
@@ -112,7 +131,8 @@ export function SelectMenu<T extends string>({
     };
   }, [open, place]);
 
-  if (!current) return null;
+  const triggerText = current ? current.triggerLabel ?? current.label : placeholder;
+  if (!triggerText) return null;
 
   return (
     <div className={`relative ${className}`}>
@@ -122,11 +142,12 @@ export function SelectMenu<T extends string>({
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={`${label}: ${current.triggerLabel ?? current.label}`}
+        aria-label={`${label}: ${triggerText}`}
+        title={current?.title}
         className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider border border-bone/30 text-muted transition hover:border-bone/60 hover:text-bone"
       >
-        <span className="text-bone">{current.triggerLabel ?? current.label}</span>
-        {current.count === undefined ? null : <span className="opacity-60">{current.count}</span>}
+        <span className="text-bone">{triggerText}</span>
+        {current?.count === undefined ? null : <span className="opacity-60">{current.count}</span>}
         <span className="text-[10px] opacity-40">{open ? '▴' : '▾'}</span>
       </button>
 
@@ -145,10 +166,18 @@ export function SelectMenu<T extends string>({
               type="button"
               role="menuitemradio"
               aria-checked={o.id === active}
+              disabled={o.disabled}
+              title={o.title}
               onClick={() => { onChange(o.id); setOpen(false); }}
               className={`flex w-full items-center gap-2 py-2 pr-2 text-left text-xs font-mono uppercase tracking-wider transition ${
                 o.indent ? 'pl-7' : 'pl-2'
-              } ${o.id === active ? 'text-bolt' : 'text-muted hover:bg-bone/5 hover:text-bone'}`}
+              } ${
+                o.disabled
+                  ? 'text-muted/40 cursor-not-allowed'
+                  : o.id === active
+                    ? 'text-bolt'
+                    : 'text-muted hover:bg-bone/5 hover:text-bone'
+              }`}
             >
               {/* A fixed gutter for the ✓, so every label starts at the same x
                   whether or not its row is the checked one. A tick that shifts
