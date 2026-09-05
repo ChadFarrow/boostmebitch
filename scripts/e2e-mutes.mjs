@@ -835,8 +835,41 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   check('...on DIFFERENT request ids', pkIds[0] !== pkIds[1], true);
   check('...with the retry interval waited out', pairMs >= 7000, true);
 
+  console.log('\n  5i. SIGNING OUT tells the signer to forget this client');
+  // THE PAIRING LIVES ON THE SIGNER'S SIDE TOO, and closing our socket does not
+  // touch it — the app goes on listing this site as connected. Clave caps a user
+  // at five connections, so every sign-in/sign-out cycle that does not revoke
+  // burns one of five slots that only the user can reclaim, by hand, in another
+  // app.
+  //
+  // `logout` is the NIP-46 method for it (nips#2373, Amber #460) and Clave
+  // implements it. What this pins is the half that is ours: that the request is
+  // actually PUT ON THE WIRE before the transport is torn down. Getting the
+  // order wrong — closing first, as every other teardown path correctly does —
+  // is silent, because sign-out succeeds either way and the leftover connection
+  // is only visible inside the signer app.
+  //
+  // The stub answers `unsupported: logout`, which is deliberate: a signer that
+  // does not implement it must not keep anyone signed in, so the assertion is
+  // about the request going out, never about the answer.
   denyFirst = null;
   signEnabled = false;
+  seen.length = 0;
+  check('the session is still live before we sign out',
+    await js(`localStorage.getItem('bmb:signer')`), 'bunker');
+  check('the account menu opened', await openAccountMenu(), true);
+  const signedOut = await js(`(() => {
+    const m = [...document.querySelectorAll('[role="menu"]')].find((el) => /sign out/i.test(el.innerText || ''));
+    if (!m) return false;
+    const b = [...m.querySelectorAll('button')].find((x) => /^sign out$/i.test((x.textContent || '').trim()));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  check('sign out was pressed', signedOut, true);
+  await wait(1500);
+  check('the session is gone locally', await js(`localStorage.getItem('bmb:signer')`), null);
+  check('...and a logout reached the signer', seen.includes('logout'), true);
 
   relayWs.close();
 }
