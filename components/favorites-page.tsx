@@ -139,18 +139,28 @@ export function FavoritesPage() {
   // back. Fall through to All rather than showing an empty page.
   const tab = tabs.some((t) => t.key === view.tab) ? view.tab : 'all';
 
-  // DERIVED, not stored, and that is what keeps the two rows honest. On the
-  // mixed tab a split chip names a medium as well as a half, so pressing one
-  // moves the tab too — which leaves 'all' as the only split state that tab can
-  // display. Reading `view.split` there instead would render five chips with
-  // none of them active over a list silently filtered to half of it, reachable
-  // by picking MUSIC + ALBUMS and then pressing ALL.
+  // DERIVED, not stored, and it must land on a state the segmented row can
+  // SHOW. `bmb:fav_view` is a device setting, not a cache, so it holds whatever
+  // an older build of this page wrote and holds it across sessions — and a
+  // `split` the row has no segment for renders the whole strip with nothing
+  // active over a list that is still filtered. Nothing writes `split` back on
+  // its own, so that state never heals; the user sees a short library and no
+  // control claiming responsibility for it.
   //
-  // Kept even though every tab press now writes `split: 'all'` itself: the
-  // stored tab can also stop existing under the user (the last album of a
-  // medium unfavorited), and that path falls through to ALL without any click
-  // to reset the half.
-  const split = tab === 'all' ? 'all' : view.split;
+  // Two ways in, and the derivation closes both. `{tab: 'music', split: 'all'}`
+  // is what every medium press wrote before the two rows became one, so it is
+  // sitting in storage on real devices today. And a half can vanish under the
+  // user — unfavorite the last music track and `music|items` stops being a
+  // segment while `view.split` still says 'items'.
+  //
+  // The rule is the same one `splitChips` builds by: a half is only meaningful
+  // where the medium has BOTH, because with one half the medium segment and the
+  // half segment would select the identical rows. Anything else falls to 'all',
+  // which every medium always has.
+  const activeTab = tabs.find((t) => t.key === tab);
+  const tabHasBothHalves = !!activeTab && activeTab.feedCount > 0 && activeTab.itemCount > 0;
+  const split =
+    tab === 'all' || !tabHasBothHalves || view.split === 'all' ? 'all' : view.split;
 
   const query = q.trim().toLowerCase();
   const feeds = useMemo(
@@ -273,56 +283,68 @@ export function FavoritesPage() {
   const half = splitLabels(tab);
 
   /**
-   * The second row: EVERYTHING, then one chip per half.
+   * The segments after ALL.
    *
-   * Under a medium tab that is two chips and each sets the half alone. Under
-   * ALL a single word for a half would have to be a compound — "albums &
-   * shows" — which is two concepts in one box on a library that is nearly all
-   * one medium, so the row offers one chip per (medium, half) PAIR instead and
-   * each chip sets both. Pressing SHOWS moves the tab above to PODCAST, which
-   * is the point: the two rows describe one filter and must never disagree
-   * about it.
+   * A single word for a half across the whole library would have to be a
+   * compound — "albums & shows" — which is two concepts in one box on a library
+   * that is nearly all one medium. So a half is always named INSIDE a medium
+   * and every segment sets both axes at once. That is why there is no separate
+   * medium row any more: one press, one unambiguous state.
    *
    * Built from `tabs`, so only media the user actually has appear — there is no
-   * hand-written list of media here for the same reason the tab strip has none.
-   * Feed chips first, then item chips: grouping by half reads as two ranks
-   * (things you play through, things you play) where interleaving by medium
-   * reads as an arbitrary order.
+   * hand-written list of media here for the same reason the tab strip had none,
+   * and `~unknown` keeps its own segment.
    *
-   * A pair with no rows gets no chip. `~unknown` typically holds items and no
-   * feeds, and a chip that filters to an empty section is worse than an absent
-   * one.
+   * THE SEGMENTS ARE ALWAYS THE WHOLE LIBRARY'S, whichever one is pressed.
+   * This used to be two rows — a medium tab strip, and under it a half row
+   * whose contents changed with the tab — and a control that reshapes when you
+   * press it is a control you cannot learn. One row, one shape, the same list
+   * whether you are looking at everything or at one pair.
+   *
+   * CLUSTERED BY MEDIUM, and each cluster opens with the medium itself:
+   * MUSIC · ALBUMS · TRACKS. The medium segment is not decoration. It is the
+   * "all of this medium, both halves" state, which the two-row version had as a
+   * first-class control and which `bmb:fav_view` still holds on devices that
+   * used it (see the `split` derivation). Without it that stored state has no
+   * segment to light, and the strip renders inert over a filtered list.
+   *
+   * A HALF SEGMENT ONLY WHERE THE MEDIUM HAS BOTH. `~unknown` routinely holds
+   * items and no feeds; there, the medium segment and a `items` segment would
+   * select the identical rows, so the pair would be two controls doing one
+   * thing — and the derivation folds that half back to 'all' to match.
+   *
+   * The count rides on the medium segment, which is where the deleted medium
+   * strip carried it. Pressing any segment still sets BOTH `tab` and `split`,
+   * so the section headings and nouns below are unchanged.
    */
-  /**
-   * THE SEGMENTS ARE ALWAYS THE WHOLE LIBRARY'S PAIRS, whichever one is
-   * pressed. This used to be two rows — a medium tab strip, and under it a
-   * half row whose contents changed with the tab — and a control that reshapes
-   * when you press it is a control you cannot learn. One row, one shape:
-   * ALL, then every (medium, half) pair that has rows, the same list whether
-   * you are looking at everything or at one pair. Pressing a pair still sets
-   * BOTH `tab` and `split`, so the section headings and nouns below are
-   * unchanged; `half` is still read for those headings.
-   */
-  const splitChips = useMemo(() => {
-    return [
-      ...tabs
-        .filter((t) => t.feedCount > 0)
-        .map((t) => ({
-          id: `${t.key}|feeds`,
-          label: crossSplitLabel(t.key, t.label, 'feeds'),
-          tab: t.key,
-          split: 'feeds' as const,
-        })),
-      ...tabs
-        .filter((t) => t.itemCount > 0)
-        .map((t) => ({
-          id: `${t.key}|items`,
-          label: crossSplitLabel(t.key, t.label, 'items'),
-          tab: t.key,
-          split: 'items' as const,
-        })),
-    ];
-  }, [tabs]);
+  const splitChips = useMemo(
+    () =>
+      tabs.flatMap((t) => {
+        const bothHalves = t.feedCount > 0 && t.itemCount > 0;
+        return [
+          { id: `${t.key}|all`, label: t.label, count: t.count, tab: t.key, split: 'all' as const },
+          ...(bothHalves
+            ? ([
+                {
+                  id: `${t.key}|feeds`,
+                  label: crossSplitLabel(t.key, t.label, 'feeds'),
+                  count: undefined,
+                  tab: t.key,
+                  split: 'feeds' as const,
+                },
+                {
+                  id: `${t.key}|items`,
+                  label: crossSplitLabel(t.key, t.label, 'items'),
+                  count: undefined,
+                  tab: t.key,
+                  split: 'items' as const,
+                },
+              ] as const)
+            : []),
+        ];
+      }),
+    [tabs],
+  );
 
   const showFeeds = split !== 'items';
   const showItems = split !== 'feeds';
@@ -419,6 +441,9 @@ export function FavoritesPage() {
                     }`}
                   >
                     {c.label}
+                    {c.count === undefined ? null : (
+                      <span className="opacity-60 ml-1">{c.count}</span>
+                    )}
                   </button>
                 );
               })}
