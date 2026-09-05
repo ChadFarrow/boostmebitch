@@ -20,6 +20,7 @@ import { BoostModal } from './boost-modal';
 import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
 import { useStreamPanel } from './streaming-settings';
+import { UnderlineTabs } from './underline-tabs';
 import type { Episode, ValueBlock } from '@/lib/types';
 
 function ValueSplitSection({ value }: { value: ValueBlock }) {
@@ -174,10 +175,6 @@ export function EpisodeDetailView() {
     : chaptersPending ? 'contents'
     : transcriptPending ? 'transcript'
     : 'notes';
-  const infoTabCls = (on: boolean) =>
-    `shrink-0 whitespace-nowrap text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
-      on ? 'bg-bolt text-ink shadow-sm' : 'text-muted hover:text-bone hover:bg-bone/5'
-    }`;
   const infoLabel = (t: InfoTab) =>
     t === 'contents' ? contentsLabel
     : t === 'transcript' ? 'Transcript'
@@ -335,19 +332,14 @@ export function EpisodeDetailView() {
         {anyInfo && (
           <div className="border-t border-bone/10 pt-4">
             {showInfoTabs ? (
-              // `overscroll-x-contain` — see the rail in podroll.tsx: a swipe
-              // past the end of this pill row must not chain to the document or
-              // become a back-swipe.
-              <div className="inline-flex max-w-full overflow-x-auto overscroll-x-contain gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
-                {infoTabs.map((t) => (
-                  <button key={t} type="button" onClick={() => setInfoTab(t)} className={infoTabCls(activeInfo === t)}>
-                    {t === 'contents' ? contentsLabel
-                      : t === 'transcript' ? 'Transcript'
-                      : t === 'boosts' ? 'Boosts'
-                      : 'Show notes'}
-                  </button>
-                ))}
-              </div>
+              // One strip shared with the fullscreen player — see
+              // <UnderlineTabs> for why it is an underline and not a pill.
+              <UnderlineTabs
+                className="mb-4"
+                tabs={infoTabs.map((t) => ({ id: t, label: infoLabel(t) }))}
+                active={activeInfo}
+                onChange={setInfoTab}
+              />
             ) : (
               <p className="text-[11px] uppercase tracking-widest text-muted mb-2">{infoLabel(activeInfo)}</p>
             )}
