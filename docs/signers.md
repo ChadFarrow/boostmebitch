@@ -221,6 +221,35 @@ the page able to detect it**. The scheme is unaffected, which makes it the only
 cure for the one failure the primary cannot report. Between them the two answer
 both silences: the app is missing, or this browser will not route the link.
 
+### The approval sheet names the client, and we were sending it a hex string
+
+Clave's *Approve Connection* screen headlines whatever the `nostrconnect://`
+URI's **`url`** field says, with `name` under it as an unverified self-claim.
+We sent `name` and nothing else, so ours read
+
+> **b6ce606e…fc96** — wants to connect · calls itself "BoostMeBitch" · unverified
+
+while Conduit's, from the same signer on the same phone, read
+`shop.conduit.market`. Two screenshots side by side is how this was found; it is
+not inferable from our own screen, which never shows that sheet.
+
+`createNostrConnectURI` takes `url` and `image` and we now pass both. This is
+the one field on that screen a user can check against their own address bar, so
+omitting it made the flow's only trust decision harder for nothing.
+
+**It is `window.location.origin`, NOT `BRAND.origin`.** A security prompt has to
+describe where the request actually came from; printing the canonical domain
+while the user is standing on a preview deploy would be the app asserting
+something they cannot confirm — which is exactly what the signer's "unverified"
+label is warning about. The cost is that a preview host earns its own entry in
+the signer's connection list, and that is the honest outcome rather than a bug.
+`BRAND.origin` is the non-browser fallback, and `lib/brand.ts` remains the only
+place a brand *string* may come from — a runtime origin is not one.
+
+`image` is the manifest's 192px PNG from that same origin, so the two always
+agree. A signer with no icon falls back to initials in a coloured circle, which
+is what ours had been showing.
+
 ### Coming back from the signer must never re-launch it — measured on a real iPhone
 
 Reported from an iPhone running **Brave**: tap "Sign in with Clave", approve in

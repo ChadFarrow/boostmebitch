@@ -719,6 +719,9 @@ function ensureNostrConnectMemo(): { uri: string; clientSk: Uint8Array; secret: 
   // Random secret echoes back from the bunker's "connect" reply so we know
   // the connection paired correctly (NIP-46 requires this).
   const secret = bytesToHex(generateSecretKey()).slice(0, 16);
+  // See the `url` field below for why this is the live origin rather than
+  // BRAND.origin, and why the fallback exists at all.
+  const origin = typeof window !== 'undefined' ? window.location.origin : BRAND.origin;
   const uri = createNostrConnectURI({
     clientPubkey,
     relays: NOSTRCONNECT_RELAYS,
@@ -738,6 +741,32 @@ function ensureNostrConnectMemo(): { uri: string; clientSk: Uint8Array; secret: 
     // string it offered to REPLACE the existing connection — the live site's
     // signer link — when the other one signed in.
     name: BRAND.wireName,
+    // WHO THE SIGNER SAYS IS ASKING. Without this Clave's approval sheet
+    // headlines the raw client pubkey — `b6ce606e…fc96` — with our name below
+    // it as an unverified self-claim. Conduit send it and their sheet reads
+    // `shop.conduit.market`; screenshots of the two side by side are what
+    // found this. It is the one field on that screen the user can check
+    // against their own address bar, so omitting it makes the most important
+    // decision in the flow harder for no reason.
+    //
+    // THE LIVE ORIGIN, NOT `BRAND.origin`, and that is deliberate. This is a
+    // security prompt: it must describe where the request actually came from.
+    // Printing the canonical domain while the user stands on a preview deploy
+    // would be the app asserting something they cannot confirm — which is
+    // exactly what the signer's own "unverified" label is warning about. The
+    // cost is that a preview host earns its own entry in the signer's
+    // connection list, which is the honest outcome rather than a bug.
+    //
+    // BRAND.origin is the fallback for a non-browser caller. `lib/brand.ts` is
+    // still the only place a brand STRING may come from; a runtime origin is
+    // not one.
+    url: origin,
+    // Same screen, same reason. A signer that has an icon renders it; one that
+    // does not falls back to initials in a coloured circle, which is what ours
+    // has been showing. Served from the origin above so the two always agree,
+    // and it is the manifest's 192px PNG rather than the SVG because signers
+    // render these in a native image view.
+    image: `${origin}/icons/icon-192.png`,
   });
   nostrconnectMemo = { uri, clientSk, secret };
   storage.ncPending.set({ uri, clientSk: bytesToHex(clientSk), ts: Date.now() });
