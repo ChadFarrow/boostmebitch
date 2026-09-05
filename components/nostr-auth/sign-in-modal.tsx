@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { ModalShell } from '../modal-shell';
 import dynamic from 'next/dynamic';
 // Lazy-loaded: <SignInModal> is imported by the header-mounted <NostrAuth> on
-// every page, but the QR only renders on the "Remote Signer → Generate QR" tab.
-// Dynamic import keeps qrcode.react out of the initial bundle.
+// every page, but the QR only renders on the "Scan a QR code" screen. Dynamic
+// import keeps qrcode.react out of the initial bundle.
 const QRCodeSVG = dynamic(() => import('qrcode.react').then((m) => m.QRCodeSVG), { ssr: false });
 import {
   loginWithExtension,
@@ -31,7 +31,27 @@ import { getErrorMessage } from '@/lib/util';
 import { AmberCompletion } from './login-methods';
 import { GoogleAuthPanel } from './google-auth-panel';
 
-type Tab = 'extension' | 'remote';
+/**
+ * WHICH SCREEN OF THE MODAL IS SHOWING.
+ *
+ * It replaces a two-tab strip — *Browser Extension | Remote Signer* — and the
+ * reason is not tidiness. A tab HIDES half the surface: a desktop user with an
+ * extension landed on that tab and never learned a bunker was possible, and in
+ * the other direction, opening on the wrong tab meant every
+ * return-from-the-signer effect bailed and the relay ack had nothing listening
+ * for it. The strip also labelled the choice by MECHANISM ("remote signer"),
+ * which is not how anyone thinks about it; and what it led to was numbered
+ * rather than named — "Option 1", "Option 2" — so the two things a user might
+ * actually own had no visible names at all.
+ *
+ * The shape is StableKraft's (ChadFarrow/stablekraft-app,
+ * `components/Nostr/LoginModal.tsx`), which carries one
+ * `'menu' | 'bunker' | 'primal' | 'amber' | 'nip05'` and renders a flat list of
+ * named methods, each opening a detail view with `← Back`. Ours filters that
+ * list by platform, which theirs does not: they offer *Amber (Android)* on a
+ * desktop and on an iPhone, and a row that cannot work is worse than no row.
+ */
+type View = 'menu' | 'qr' | 'bunker';
 
 // How long a Clave tap sits with no return signal before the box says the app
 // may not be installed. Long enough to cover a cold launch of a signer that has
@@ -60,11 +80,10 @@ function connectionDropped(msg: string): boolean {
 
 
 // Single sign-in surface: one "Sign in with Nostr" button opens this modal,
-// which exposes both a Browser Extension tab and a Remote Signer tab (paste
-// bunker:// URI or generate a nostrconnect:// QR). Mirrors the two-tab
-// layout other Nostr clients use so desktop users keep both options without
-// the old standalone "use a remote signer" link. Amber (Android local
-// signer) lives under Remote Signer.
+// which lists the sign-in methods that can work on THIS device — the phone's own
+// signer inline, then a QR, a bunker URI, and a browser extension when one is
+// there. Each of the latter opens its own screen. See `View` for why it is a
+// list rather than the two-tab strip it replaced.
 //
 // The login functions install whichever window.nostr polyfill they need and
 // persist the session; this component just reports the resolved identity via
@@ -96,26 +115,26 @@ export function SignInModal({
   const [googleOpen] = useState(
     () => googleConfigured && useApp.getState().signInIntent === 'google',
   );
-  // WHICH VIEW THIS OPENS ON IS A CORRECTNESS QUESTION, not a preference.
+  // "Neither phone box renders here." Not a claim that a mouse is present — an
+  // unknown mobile lands here too, and a code it can scan with a SECOND device
+  // is the right offer for it as well. What it gates is the one thing that
+  // would be wrong on a phone: pairing by scanning a code that phone is
+  // displaying, offered as the primary way in.
+  const desktop = !ios && !android;
+  // WHICH SCREEN THIS OPENS ON IS A CORRECTNESS QUESTION, not a preference, and
+  // the menu is the answer for almost everyone: it is the whole list, so it
+  // cannot hide the method you came for.
   //
-  // `hasExt` answers it for a phone on its own: an iPhone has no extension, so
-  // the Remote Signer tab is already the default and the Clave box is the first
-  // thing in it. That is why there is no longer a "Sign in with Clave" row in
-  // the header menu, and no `signInIntent` for it — the row existed to open
-  // this modal on the tab it was going to open on anyway.
-  //
-  // `hasPendingNostrConnect()` is the case `hasExt` cannot answer: a pairing
-  // this tab LOST (a navigation, a reload) is resumed by an effect below
-  // whatever tab is showing, so the tab showing has to be the one that can
-  // report it. EVERY return-from-the-signer effect bails on `tab !== 'remote'`,
-  // so on the wrong tab the ack that lands on the way back from the signer has
-  // nothing listening for it and the handshake never completes. Opening on the
-  // wrong tab is not cosmetic; it is the handshake failing where nobody can see
-  // it.
-  const [tab, setTab] = useState<Tab>(() => {
-    if (hasPendingNostrConnect()) return 'remote';
-    return hasExt ? 'extension' : 'remote';
-  });
+  // `hasPendingNostrConnect()` is the exception, and it is about listeners
+  // rather than looks. A pairing this tab LOST (a navigation, a reload) can
+  // only be resumed by a screen that opens a listener for it, and each screen
+  // now owns its own. On a phone the menu IS that screen — the platform's
+  // signer is inline on it and prepares on open — so the menu resumes it. On a
+  // desktop nothing on the menu subscribes, so a pending pairing has to land on
+  // the QR view or the ack it is waiting for reaches nobody.
+  const [view, setView] = useState<View>(() =>
+    (hasPendingNostrConnect() && desktop ? 'qr' : 'menu'),
+  );
 
   // Browser-extension flow.
   const [extBusy, setExtBusy] = useState(false);
@@ -154,14 +173,14 @@ export function SignInModal({
   // a QR code is not an option.
   //
   // Clave speaks NIP-46 and nothing else, so there is no NIP-55-style peer in
-  // this box to fall back to. Its fallback is Option 2 below, which is what
+  // this box to fall back to. Its fallback is the Bunker URI row, which is what
   // Clave's own docs recommend for same-device iOS pairing.
   const [claveBusy, setClaveBusy] = useState(false);
   const [claveErr, setClaveErr] = useState<string | null>(null);
   // Its OWN auth-url slot rather than reusing `genAuthUrl`. The Amber branch
-  // reuses it, which renders the "Approve in signer" box inside Option 1 —
-  // several hundred pixels below the button the user actually pressed. Do not
-  // copy that into a second branch.
+  // reuses it, which renders the "Approve in signer" box on the QR screen —
+  // somewhere the user is not, several hundred pixels from the button they
+  // actually pressed. Do not copy that into a second branch.
   const [claveAuthUrl, setClaveAuthUrl] = useState<string | null>(null);
   // Drives the "nothing happened?" hint. It is the ONLY signal available for a
   // missing app: see lib/app-link.ts.
@@ -190,7 +209,7 @@ export function SignInModal({
   // link. One flag, `claveSlow`, still carries the silence; this one says which
   // silence it is.
   const [claveReturned, setClaveReturned] = useState(false);
-  // The clipboard route into Option 2 — see onPasteFromClipboard.
+  // The clipboard route into the Bunker URI screen — see onPasteFromClipboard.
   const [clipErr, setClipErr] = useState<string | null>(null);
   const claveSlowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Only the newest attempt may report — same role as amberNcAttempt above.
@@ -421,12 +440,13 @@ export function SignInModal({
    * the vendor's own docs call a pasted `bunker://` the reliable same-device
    * iOS path. That was true and the placement was wrong: the Clave box ended up
    * carrying its own "open the app" and "paste from the app" pair beside a
-   * general Option 2 that does the same job for every signer, so the tab
-   * offered the same flow twice and the phone box was three controls deep.
+   * general bunker-paste screen that does the same job for every signer, so
+   * the modal offered the same flow twice and the phone box was three controls
+   * deep.
    *
    * The convenience was worth keeping, so it moved rather than went: this is
-   * Option 2's *Paste* button now, and nsec.app and Amber-in-server-mode get it
-   * too. The tedium it removes is not Clave-specific — copy, come back, tap the
+   * the Bunker URI screen's *Paste* button now, and nsec.app and
+   * Amber-in-server-mode get it too. The tedium it removes is not Clave-specific — copy, come back, tap the
    * field, long-press, Paste, tap Connect — and the clipboard read collapses it
    * to one tap plus the browser's own paste confirmation.
    *
@@ -628,18 +648,18 @@ export function SignInModal({
   // loginWithBunker mean the signer recognizes the same pairing and acks
   // immediately on the fresh subscription. Attach whenever the flow is
   // in-flight OR has already failed.
+  // IT USED TO CARRY `if (claveBusy) return` AND NO LONGER NEEDS TO, which is
+  // the first thing the view model buys. The Clave button and this box share one
+  // pairing: both call loginWithNostrConnect, whose memo returns the SAME URI
+  // but builds a FRESH `ready`, so two effects firing on one return resolved two
+  // subscriptions on one pairing — two live transports, finalizeBunkerLogin
+  // twice, onSuccess/onClose on an unmounted modal. It was reachable in two taps
+  // because both boxes were on one tab at once. They are now on different
+  // screens, so at most one pairing listener is ever attached; the guard would
+  // be guarding against a state that cannot occur.
   useEffect(() => {
-    if (tab !== 'remote') return;
+    if (view !== 'qr') return;
     if (!genBusy && !genErr) return;
-    // THE CLAVE BUTTON AND THIS BOX SHARE ONE PAIRING, which the Android box
-    // never had to worry about. Both call loginWithNostrConnect, whose memo
-    // returns the SAME URI but builds a FRESH `ready` — so if both effects fire
-    // on one return, two subscriptions resolve on one pairing and
-    // finalizeBunkerLogin runs twice: two live transports, and onSuccess/onClose
-    // on an unmounted modal. `claveAttempt` only guards within its own branch.
-    // Reachable in two taps on iOS: tap Sign in with Clave, watch nothing happen
-    // because Clave is not installed, tap Generate QR Code.
-    if (claveBusy) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
       if (document.visibilityState === 'visible') onGenerate();
@@ -647,17 +667,18 @@ export function SignInModal({
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, genErr, genBusy, claveBusy]);
+  }, [view, genErr, genBusy]);
 
-  // The Clave half of the same rule, plus the Amber one restated for its own
-  // fallback: the documented next moves after a failed Clave handshake are the
-  // QR box and the bunker paste in this same tab, and coming back from EITHER of
-  // those signer trips is a visibilitychange too. Restarting the handshake on it
-  // would disable those controls under the user's own in-flight request.
+  // The Clave half of the same rule. It used to bail on `genBusy || pasteBusy`
+  // as well, because the documented next moves after a failed Clave handshake —
+  // the QR box and the bunker paste — sat in this same tab, and returning from
+  // EITHER of those signer trips is a visibilitychange too, so restarting the
+  // handshake on it disabled those controls under the user's own in-flight
+  // request. Those are separate screens now and this effect is not attached
+  // while either is showing, so the guard has nothing left to guard.
   useEffect(() => {
-    if (tab !== 'remote') return;
+    if (!ios || view !== 'menu') return;
     if (!claveBusy && !claveErr) return;
-    if (genBusy || pasteBusy) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
       // Re-subscribe. Nothing here navigates — see prepareClave's header.
@@ -666,7 +687,7 @@ export function SignInModal({
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, claveErr, claveBusy, genBusy, pasteBusy]);
+  }, [ios, view, claveErr, claveBusy]);
 
   // SAYING SO ON SCREEN IS A SEPARATE JOB FROM RE-SUBSCRIBING, and this is a
   // second listener rather than two lines inside the one above on purpose: that
@@ -679,7 +700,7 @@ export function SignInModal({
   // Only armed once they have actually left (`claveSent`), so the very first
   // paint of the box cannot claim a return that never happened.
   useEffect(() => {
-    if (!ios || tab !== 'remote' || !claveSent) return;
+    if (!ios || view !== 'menu' || !claveSent) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
       if (document.visibilityState !== 'visible') return;
@@ -695,14 +716,14 @@ export function SignInModal({
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
-  }, [ios, tab, claveSent]);
+  }, [ios, view, claveSent]);
 
   // Same shape for the Amber nostrconnect flow: Android suspends the page's
   // WebSocket while the user is in Amber approving, so the relay ack can land
   // on a dead subscription. Coming back re-subscribes with the memoized URI;
   // `amberNcOpened` keeps it from sending the user to Amber a second time.
   useEffect(() => {
-    if (tab !== 'remote') return;
+    if (!android || view !== 'menu') return;
     if (!amberNcBusy && !amberNcErr) return;
     // `amberNcErr` keeps this listener attached after a failed relay attempt,
     // which is wanted — but the documented next move is the NIP-55 fallback in
@@ -719,7 +740,7 @@ export function SignInModal({
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, amberNcErr, amberNcBusy, amberBusy]);
+  }, [android, view, amberNcErr, amberNcBusy, amberBusy]);
 
   // Same return-from-the-signer retry as the two above, with one difference
   // that matters: this one re-submits a value the USER can still edit.
@@ -731,7 +752,7 @@ export function SignInModal({
   // URI, fixing it, going to the signer and coming back then reconnected with
   // the OLD one and rewrote the error from it, over a box showing the new one.
   useEffect(() => {
-    if (tab !== 'remote') return;
+    if (view !== 'bunker') return;
     if (!pasteBusy && !pasteErr) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
@@ -740,7 +761,7 @@ export function SignInModal({
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, pasteErr, pasteBusy, pasteValue]);
+  }, [view, pasteErr, pasteBusy, pasteValue]);
 
   // PREPARE THE PAIRING WHEN THE BOX OPENS, before the user taps anything.
   //
@@ -759,18 +780,31 @@ export function SignInModal({
   // Once per open, hence the ref: the deps carry `tab` so switching INTO the
   // Remote Signer tab prepares it, and toggling tabs afterwards must not open a
   // second subscription on the same pairing.
+  // Reaching the QR screen IS the choice, so the code is ready when it renders.
+  // This is the counterpart to the desktop revert: no pairing before a choice,
+  // no redundant *Generate* press after one. Reset in `goto` so leaving and
+  // coming back subscribes again rather than showing a code nothing listens for.
+  const qrPrepared = useRef(false);
+  useEffect(() => {
+    if (view !== 'qr') return;
+    if (qrPrepared.current) return;
+    qrPrepared.current = true;
+    void onGenerate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
   const clavePrepared = useRef(false);
   useEffect(() => {
-    // `ios` as well as the tab: the box that reports this attempt only renders
+    // `ios` as well as the view: the row that reports this attempt only renders
     // on iOS, so without it a subscription would be in flight with no screen
     // attached to it — busy state nobody can see or cancel.
     if (!ios) return;
-    if (tab !== 'remote') return;
+    if (view !== 'menu') return;
     if (clavePrepared.current) return;
     clavePrepared.current = true;
     void prepareClave();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ios, tab]);
+  }, [ios, view]);
 
 
   // The "may not be installed" timer is the one thing here that outlives the
@@ -779,6 +813,43 @@ export function SignInModal({
   useEffect(() => () => {
     if (claveSlowTimer.current) clearTimeout(claveSlowTimer.current);
   }, []);
+
+  /**
+   * Move between screens, and take the listener with you.
+   *
+   * LEAVING A SCREEN IS A TEARDOWN, not just a render change. Each screen owns a
+   * pairing listener, and an abandoned one keeps its own SimplePool for the rest
+   * of the 120 s pairing window — against the per-host socket limit
+   * `lib/nostr/clave.ts` records, on the device this whole flow exists for. So
+   * this is the same rule `handleClose` follows and `startPairing` follows,
+   * applied to the third way out of a screen. StableKraft's Back does exactly
+   * this too: `cleanupAmberConnection()` before `setView('menu')`.
+   *
+   * THE COUNTER BUMP IS THE SUBTLE HALF. Abandoning makes the in-flight `ready`
+   * REJECT, and each flow's catch would then write an error — for a screen the
+   * user has just left, which they would meet on the way back as if their own
+   * navigation had failed. Every flow already has a monotonic attempt ref whose
+   * whole job is "only the newest may report", so bumping it here makes the
+   * rejection arrive at a listener that knows it is stale. Nothing new is
+   * invented for it.
+   *
+   * `clavePrepared` resets on the way back to the menu because that screen's
+   * listener was just abandoned: the once-per-open ref would otherwise leave the
+   * iOS row with an anchor whose pairing nothing is listening to.
+   */
+  function goto(next: View) {
+    claveAttempt.current += 1;
+    amberNcAttempt.current += 1;
+    liveAttempt.current?.abandon();
+    liveAttempt.current = null;
+    if (next === 'menu') clavePrepared.current = false;
+    if (next !== 'qr') qrPrepared.current = false;
+    setClaveErr(null);
+    setGenErr(null);
+    setPasteErr(null);
+    setClipErr(null);
+    setView(next);
+  }
 
   function handleClose() {
     // Drop any half-finished paste/generate attempt so a future session
@@ -795,12 +866,60 @@ export function SignInModal({
     onClose();
   }
 
-  const tabClass = (active: boolean) =>
-    `flex-1 px-4 py-3 text-sm transition ${
-      active
-        ? 'text-nostr border-b-2 border-nostr -mb-px'
-        : 'text-muted hover:text-bone'
-    }`;
+  /**
+   * One row of the method list: what you own, named, with a reason to pick it.
+   *
+   * The glyph sits in a fixed-width centred column with `leading-5` matching the
+   * title's line box — the same fix `<AuthControl>`'s menu needed, for the same
+   * reason: the glyphs have different advance widths, so without it three titles
+   * start at three different x positions, and `items-start` without the leading
+   * lands the glyph beside the SUBTITLE instead of the title.
+   *
+   * GEOMETRIC GLYPHS, NOT EMOJI, and they inherit `text-nostr`. StableKraft use
+   * 🔌 🔑 📇 and real app logos; a colour emoji in this palette reads as a
+   * sticker beside ◆ and ⚡, which is the family `<AuthControl>`'s menu and the
+   * modal header already use. An app LOGO would be the exception worth making —
+   * it is the thing the user is looking for — but it has to be vendored rather
+   * than hot-linked, which is a separate decision.
+   */
+  function MethodRow({
+    glyph, title, subtitle, onClick, disabled,
+  }: {
+    glyph: string;
+    title: string;
+    subtitle: string;
+    onClick: () => void;
+    disabled?: boolean;
+  }) {
+    return (
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        className="w-full text-left border border-bone/15 p-3 flex items-start gap-3 transition hover:border-nostr/50 hover:bg-bone/5 disabled:opacity-40 disabled:hover:border-bone/15 disabled:hover:bg-transparent"
+      >
+        <span className="text-nostr w-5 shrink-0 text-center leading-5" aria-hidden>{glyph}</span>
+        <span className="flex flex-col min-w-0 gap-0.5">
+          <span className="text-sm leading-5">{title}</span>
+          <span className="text-[11px] text-muted">{subtitle}</span>
+        </span>
+      </button>
+    );
+  }
+
+  /** A detail screen's title and its way back. Back is a teardown — see goto. */
+  function DetailHeader({ title }: { title: string }) {
+    return (
+      <div className="flex flex-col gap-2">
+        <button
+          onClick={() => goto('menu')}
+          className="btn-ghost self-start text-[11px] py-1.5 px-3"
+        >
+          ← Back
+        </button>
+        <h4 className="font-display text-sm">{title}</h4>
+      </div>
+    );
+  }
 
   return (
     <ModalShell onClose={handleClose} label="Sign in" className="w-full max-w-md">
@@ -854,381 +973,380 @@ export function SignInModal({
         )}
 
         {!googleOpen && (
-          <>
-            <div className="flex border-b border-bone/15">
-              <button onClick={() => setTab('extension')} className={tabClass(tab === 'extension')}>
-                Browser Extension
-              </button>
-              <button onClick={() => setTab('remote')} className={tabClass(tab === 'remote')}>
-                Remote Signer
-              </button>
-            </div>
+          <div className="p-5 flex flex-col gap-3">
+            {view === 'menu' && (
+              <>
+                {/* THE PHONE'S OWN SIGNER IS INLINE AND EVERYTHING ELSE IS A ROW,
+                    which is the one deliberate divergence from StableKraft, whose
+                    rows are all drill-downs.
 
-            <div className="p-5 flex flex-col gap-4">
-              {tab === 'extension' ? (
-                <>
-                  <p className="text-xs text-muted">
-                    Connect using a NIP-07 browser extension like Alby, nos2x, or
-                    Nostr Connect.
-                  </p>
-                  {!hasExt && (
-                    <div className="border border-nostr/40 bg-nostr/10 p-2 text-[11px] text-bone">
-                      No Nostr extension detected. Install one to use this method,
-                      or use Remote Signer for mobile.
-                    </div>
-                  )}
-                  <button
+                    Clave cannot afford two taps and should not want to: a
+                    Universal Link opens the app only from a genuine tap on a real
+                    anchor with a live `href`, so that control has to BE the
+                    anchor, which means its pairing is prepared before the row
+                    renders. Amber is inline beside it for symmetry rather than
+                    necessity — an Android intent survives a scripted click — but
+                    the two are mutually exclusive by UA, so exactly one of them
+                    is ever the first thing on this list. */}
+                {android && (
+                  <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                    <button
+                      onClick={() => onAmberConnect()}
+                      disabled={amberNcBusy || amberBusy}
+                      className="btn-bolt w-full disabled:opacity-40"
+                    >
+                      {amberNcBusy ? 'Waiting for Amber…' : 'Sign in with Amber'}
+                    </button>
+                    {amberNcBusy && (
+                      <span className="text-[11px] text-muted">
+                        Approve the connection in Amber, then come back here — this
+                        page finishes on its own. Nothing to paste.
+                      </span>
+                    )}
+                    {amberNcErr && (
+                      <span className="text-[11px] text-nostr/80">
+                        {connectionDropped(amberNcErr)
+                          ? 'Connection dropped — approve in Amber, then tap Sign in with Amber again.'
+                          : amberNcErr}
+                      </span>
+                    )}
+                    {/* NIP-55 stays as the fallback: the `offline` Amber build
+                        has no nostrconnect handler, and a relay outage should
+                        not lock an Android user out. */}
+                    <button
+                      onClick={onAmber}
+                      disabled={amberBusy || amberNcBusy}
+                      className="btn-ghost text-[10px] py-1 px-2 self-start disabled:opacity-40"
+                    >
+                      {amberBusy ? 'Connecting…' : 'Amber without a relay (nostrsigner link)'}
+                    </button>
+                    {amberBusy && <AmberCompletion onSubmit={submitManualPaste} />}
+                    {amberErr && <span className="text-[11px] text-nostr/80">{amberErr}</span>}
+                  </div>
+                )}
+                {ios && (
+                  <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                    <ClaveConnectLink />
+                    {/* THE BOX HAS TO SAY WHERE IN THE FLOW IT IS, and until
+                        now it said the same thing before and after the trip.
+                        `claveBusy` was never rendered anywhere — it existed
+                        only as a guard — so coming back from Clave changed
+                        nothing on screen, and the handshake finished (or did
+                        not) in silence. Three states, because the sequence
+                        has three: not gone yet, gone, come back. */}
+                    {claveReturned && claveBusy ? (
+                      <span className="text-[11px] text-nostr animate-bolt">
+                        ◆ Finishing sign-in with Clave…
+                      </span>
+                    ) : (
+                      <span className="text-[11px] text-muted">
+                        {claveSent
+                          ? 'Approve the connection in Clave, then come back here — this page finishes on its own. Nothing to paste.'
+                          : 'Your keys stay in Clave. Tapping this opens the app with the connection request already in it.'}
+                      </span>
+                    )}
+                    {claveAuthUrl && (
+                      <div className="flex flex-col items-start gap-1 border border-nostr/40 bg-nostr/10 p-2">
+                        <span className="text-[10px] text-bone">
+                          Clave wants you to approve this connection.
+                        </span>
+                        <a
+                          href={claveAuthUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="btn-bolt text-[11px] py-1 px-3 no-underline"
+                        >
+                          ◆ Approve in Clave
+                        </a>
+                      </div>
+                    )}
+                    {/* A SILENCE MEANS TWO DIFFERENT THINGS AND THE TIMER
+                        CANNOT TELL THEM APART — `claveReturned` can.
+
+                        Before a return: the app may be missing, or Safari may
+                        have been told once, by a tap on the clave.casa
+                        breadcrumb, to stop routing that domain to the app,
+                        which no page can detect. Neither reports itself, so
+                        both answers are offered rather than guessed between.
+
+                        After one: the app plainly opened and the user came
+                        back, so telling them it may not be installed is
+                        simply false — and it was the ONLY thing that changed
+                        on screen when they returned, because the six-second
+                        timer fires around then on iOS, where a backgrounded
+                        tab's timers are throttled. The App Store link goes
+                        with it: nobody needs to install what they were just
+                        standing in. */}
+                    {claveSlow && !claveErr && (
+                      <div className="flex flex-col items-start gap-1">
+                        <span className="text-[11px] text-muted">
+                          {claveReturned
+                            ? 'Still waiting on Clave. Approve the request if it is showing, or go back and pick Bunker URI, copying the link from Clave.'
+                            : 'Still nothing? Clave may not be installed, or this browser may not be handing it the link.'}
+                        </span>
+                        <ClaveSchemeButton label="Open the Clave app directly" />
+                        {!claveReturned && (
+                          <span className="text-[11px] text-muted">
+                            Don&apos;t have Clave?{' '}
+                            <a
+                              href={CLAVE_APP_STORE_URL}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-nostr underline underline-offset-2"
+                            >
+                              get it on the App Store ↗
+                            </a>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {claveErr && (
+                      <div className="flex flex-col items-start gap-1">
+                        <span className="text-[11px] text-nostr/80">
+                          {connectionDropped(claveErr)
+                            ? 'No answer yet. Tap Open Clave again above — that re-subscribes and re-sends the request in one go. Or pick Bunker URI from the list and paste the link from Clave, which keeps this page in the foreground the whole time.'
+                            : claveErr}
+                        </span>
+                        {/* Two different failures wear the same face here, and
+                            only the user can tell them apart: an ack this page
+                            was asleep for, or a request Clave never showed
+                            them. Re-tapping the button above covers both — it
+                            re-subscribes and asks Clave again in one gesture.
+                            The scheme escape belongs here too: if Safari has
+                            been told to open clave.casa as a web page, the
+                            button above navigates this tab away and the user
+                            lands back on THIS error, so tapping it again would
+                            only repeat that. This is the way out of the loop.
+
+                            THE COPY NAMES THE BUNKER URI ROW because this box
+                            no longer carries its own paste fallback. Clave's own
+                            docs call a pasted `bunker://` the reliable
+                            same-device iOS path, so it must stay one sentence
+                            away — but a duplicate of that screen inside this box
+                            is not how you keep it reachable. */}
+                        <ClaveSchemeButton label="Nothing opened? Open the Clave app directly" />
+                      </div>
+                    )}
+
+                  </div>
+                )}
+                {/* The rest drill down, and their pairing is prepared on the way
+                    IN rather than here. Preparing on open was tried on desktop
+                    and reverted: it put a QR and a ~400-character URI on screen
+                    before the user had chosen anything, and opened two relay
+                    sockets for someone who may only have come to paste a
+                    `bunker://`. A method nobody has picked should not hold a
+                    socket. */}
+                {desktop && (
+                  <MethodRow
+                    glyph="⧉"
+                    title="Browser Extension"
+                    subtitle={hasExt
+                      ? 'Alby, nos2x, Nostr Connect — the fastest way in.'
+                      : 'No extension detected. Install Alby or nos2x, or use a signer below.'}
                     onClick={onExtension}
                     disabled={!hasExt || extBusy}
-                    className="btn-bolt w-full disabled:opacity-40"
-                  >
-                    {extBusy ? 'Connecting…' : 'Connect with Extension'}
-                  </button>
-                  {extErr && <span className="text-[11px] text-nostr/80">{extErr}</span>}
-                </>
-              ) : (
-                <>
-                  {/* Name the signer whose button is directly below this
-                      sentence. It used to read "Primal (iOS/Android), Amber
-                      (Android)" on every platform, so an iPhone user met a
-                      paragraph listing an Android app and not the one they were
-                      about to tap. */}
-                  <p className="text-xs text-muted">
-                    {ios
-                      ? 'Connect using a signer app on this phone — Clave or Primal — or any NIP-46 compatible app.'
-                      : android
-                        ? 'Connect using a signer app on this phone — Amber or Primal — or any NIP-46 compatible app.'
-                        : 'Connect using a remote signer like Primal (iOS/Android), Amber (Android), Clave (iOS), or any NIP-46 compatible app.'}
+                  />
+                )}
+                <MethodRow
+                  glyph="▣"
+                  title="Scan a QR code"
+                  subtitle={desktop
+                    ? 'Pair by scanning with Primal, Clave, nsec.app or Amber on your phone.'
+                    : 'Pair a signer on ANOTHER device by scanning.'}
+                  onClick={() => goto('qr')}
+                />
+                <MethodRow
+                  glyph="◈"
+                  title="Bunker URI"
+                  subtitle="Paste a bunker:// URI from Clave, nsec.app or Amber in server mode."
+                  onClick={() => goto('bunker')}
+                />
+                {/* A phone with an extension is rare enough that it earns a row
+                    only when one is actually there — an always-visible disabled
+                    row is noise on the platform with the least room for it. */}
+                {!desktop && hasExt && (
+                  <MethodRow
+                    glyph="⧉"
+                    title="Browser Extension"
+                    subtitle="Sign in with the NIP-07 extension in this browser."
+                    onClick={onExtension}
+                    disabled={extBusy}
+                  />
+                )}
+                {extErr && <span className="text-[11px] text-nostr/80">{extErr}</span>}
+              </>
+            )}
+
+            {view === 'qr' && (
+              <>
+                <DetailHeader title="Scan a QR code" />
+                {/* IT STAYS SIGNER-NEUTRAL, and that is the half of the earlier
+                    experiment worth keeping. Heading this "Scan with Clave" was
+                    tried for one commit and named one signer on the one platform
+                    where the code genuinely is neutral: a phone can be asked
+                    which app it has, a desktop browser cannot, and Primal,
+                    nsec.app and Amber pair from this same code.
+
+                    The OTHER half — preparing it before the user had chosen —
+                    was the part that was wrong, and it is fixed by the choice
+                    rather than by a button. Reaching this screen IS the choice,
+                    so the code is generated on the way in; asking for a
+                    *Generate* press after "Scan a QR code" is the second tap
+                    that "Option 1" used to charge for the first. */}
+                <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                  <p className="text-[11px] text-muted">
+                    Scan this with your signer app — Primal, Clave, nsec.app or
+                    Amber — or copy the link and paste it there.
                   </p>
-
-                  {android && (
-                    <div className="border border-bone/15 p-3 flex flex-col gap-2">
-                      <button
-                        onClick={() => onAmberConnect()}
-                        disabled={amberNcBusy || amberBusy}
-                        className="btn-bolt w-full disabled:opacity-40"
-                      >
-                        {amberNcBusy ? 'Waiting for Amber…' : 'Sign in with Amber'}
-                      </button>
-                      {amberNcBusy && (
-                        <span className="text-[11px] text-muted">
-                          Approve the connection in Amber, then come back here — this
-                          page finishes on its own. Nothing to paste.
-                        </span>
-                      )}
-                      {amberNcErr && (
-                        <span className="text-[11px] text-nostr/80">
-                          {connectionDropped(amberNcErr)
-                            ? 'Connection dropped — approve in Amber, then tap Sign in with Amber again.'
-                            : amberNcErr}
-                        </span>
-                      )}
-                      {/* NIP-55 stays as the fallback: the `offline` Amber build
-                          has no nostrconnect handler, and a relay outage should
-                          not lock an Android user out. */}
-                      <button
-                        onClick={onAmber}
-                        disabled={amberBusy || amberNcBusy}
-                        className="btn-ghost text-[10px] py-1 px-2 self-start disabled:opacity-40"
-                      >
-                        {amberBusy ? 'Connecting…' : 'Amber without a relay (nostrsigner link)'}
-                      </button>
-                      {amberBusy && <AmberCompletion onSubmit={submitManualPaste} />}
-                      {amberErr && <span className="text-[11px] text-nostr/80">{amberErr}</span>}
-                    </div>
+                  {!genUri && (
+                    <button
+                      onClick={onGenerate}
+                      disabled={genBusy}
+                      className="btn-bolt self-start disabled:opacity-40"
+                    >
+                      {genBusy ? 'Generating…' : 'Generate QR Code'}
+                    </button>
                   )}
-
-                  {/* iOS: hand the pairing URI straight to Clave. Mirrors the
-                      Android box above and sits in the same slot; the two are
-                      mutually exclusive by UA, so exactly one renders. Above
-                      Option 1 for the same reason Amber is: on the phone
-                      showing the QR, the QR is not an option. */}
-                  {ios && (
-                    <div className="border border-bone/15 p-3 flex flex-col gap-2">
-                      <ClaveConnectLink />
-                      {/* THE BOX HAS TO SAY WHERE IN THE FLOW IT IS, and until
-                          now it said the same thing before and after the trip.
-                          `claveBusy` was never rendered anywhere — it existed
-                          only as a guard — so coming back from Clave changed
-                          nothing on screen, and the handshake finished (or did
-                          not) in silence. Three states, because the sequence
-                          has three: not gone yet, gone, come back. */}
-                      {claveReturned && claveBusy ? (
-                        <span className="text-[11px] text-nostr animate-bolt">
-                          ◆ Finishing sign-in with Clave…
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-muted">
-                          {claveSent
-                            ? 'Approve the connection in Clave, then come back here — this page finishes on its own. Nothing to paste.'
-                            : 'Your keys stay in Clave. Tapping this opens the app with the connection request already in it.'}
-                        </span>
-                      )}
-                      {claveAuthUrl && (
-                        <div className="flex flex-col items-start gap-1 border border-nostr/40 bg-nostr/10 p-2">
-                          <span className="text-[10px] text-bone">
-                            Clave wants you to approve this connection.
-                          </span>
-                          <a
-                            href={claveAuthUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="btn-bolt text-[11px] py-1 px-3 no-underline"
-                          >
-                            ◆ Approve in Clave
-                          </a>
-                        </div>
-                      )}
-                      {/* A SILENCE MEANS TWO DIFFERENT THINGS AND THE TIMER
-                          CANNOT TELL THEM APART — `claveReturned` can.
-
-                          Before a return: the app may be missing, or Safari may
-                          have been told once, by a tap on the clave.casa
-                          breadcrumb, to stop routing that domain to the app,
-                          which no page can detect. Neither reports itself, so
-                          both answers are offered rather than guessed between.
-
-                          After one: the app plainly opened and the user came
-                          back, so telling them it may not be installed is
-                          simply false — and it was the ONLY thing that changed
-                          on screen when they returned, because the six-second
-                          timer fires around then on iOS, where a backgrounded
-                          tab's timers are throttled. The App Store link goes
-                          with it: nobody needs to install what they were just
-                          standing in. */}
-                      {claveSlow && !claveErr && (
-                        <div className="flex flex-col items-start gap-1">
-                          <span className="text-[11px] text-muted">
-                            {claveReturned
-                              ? 'Still waiting on Clave. Approve the request if it is showing, or copy its bunker:// URI into Option 2 below.'
-                              : 'Still nothing? Clave may not be installed, or this browser may not be handing it the link.'}
-                          </span>
-                          <ClaveSchemeButton label="Open the Clave app directly" />
-                          {!claveReturned && (
-                            <span className="text-[11px] text-muted">
-                              Don&apos;t have Clave?{' '}
-                              <a
-                                href={CLAVE_APP_STORE_URL}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-nostr underline underline-offset-2"
-                              >
-                                get it on the App Store ↗
-                              </a>
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {claveErr && (
-                        <div className="flex flex-col items-start gap-1">
-                          <span className="text-[11px] text-nostr/80">
-                            {connectionDropped(claveErr)
-                              ? 'No answer yet. Tap Open Clave again above — that re-subscribes and re-sends the request in one go. Or copy the bunker:// URI from Clave into Option 2 below, which keeps this page in the foreground the whole time.'
-                              : claveErr}
-                          </span>
-                          {/* Two different failures wear the same face here, and
-                              only the user can tell them apart: an ack this page
-                              was asleep for, or a request Clave never showed
-                              them. Re-tapping the button above covers both — it
-                              re-subscribes and asks Clave again in one gesture.
-                              The scheme escape belongs here too: if Safari has
-                              been told to open clave.casa as a web page, the
-                              button above navigates this tab away and the user
-                              lands back on THIS error, so tapping it again would
-                              only repeat that. This is the way out of the loop.
-
-                              THE COPY NAMES OPTION 2 because this box no longer
-                              carries its own paste fallback. Clave's own docs
-                              call a pasted `bunker://` the reliable same-device
-                              iOS path, and it must stay one sentence away — but
-                              a duplicate of Option 2 inside this box is not how
-                              you keep it reachable. */}
-                          <ClaveSchemeButton label="Nothing opened? Open the Clave app directly" />
-                        </div>
-                      )}
-
-                    </div>
-                  )}
-
-                  {/* Option 1: generate a nostrconnect:// URI / QR.
-
-                      IT STAYS GENERIC AND IT STAYS BEHIND THE BUTTON. Both were
-                      tried the other way for one commit, to make this the named
-                      "Clave on the web" surface, and both were wrong on the
-                      screen rather than in the reasoning:
-
-                      - Heading it "Scan with Clave" names one signer on the one
-                        platform where the code is genuinely signer-neutral. A
-                        phone can be asked which app it has; a desktop browser
-                        cannot, and Primal, nsec.app and Amber pair from this
-                        same code.
-                      - Preparing the pairing on open put a QR and a ~400-char
-                        URI at the top of the modal before the user had chosen
-                        anything, which pushed Option 2 off the bottom of the
-                        viewport entirely — measured at 954x906. It also opened
-                        two relay sockets and wrote `bmb:nc_pending` for someone
-                        who may only have come to paste a bunker URI.
-
-                      The iOS box above is the opposite case and is right as it
-                      is: one signer, named, prepared ahead of the tap, because
-                      an anchor's href has to exist before it is tapped. */}
-                  <div className="border border-bone/15 p-3 flex flex-col gap-2">
-                    <h4 className="font-display text-sm">Option 1: Scan QR Code</h4>
-                    <p className="text-[11px] text-muted">
-                      Generate a connection QR code to scan (or paste) with your
-                      signer app — works with Primal, Clave, nsec.app, Amber.
-                    </p>
-                    {!genUri && (
-                      <button
-                        onClick={onGenerate}
-                        disabled={genBusy}
-                        className="btn-bolt self-start disabled:opacity-40"
-                      >
-                        {genBusy ? 'Generating…' : 'Generate QR Code'}
-                      </button>
-                    )}
-                    {genUri && (
-                      <>
-                        <div className="self-stretch flex justify-center bg-bone p-3">
-                          <QRCodeSVG
-                            value={genUri}
-                            size={200}
-                            level="M"
-                            fgColor="#0a0a08"
-                            bgColor="#f5f1e8"
-                          />
-                        </div>
-                        <code className="block w-full bg-ink/40 p-2 text-[10px] leading-snug break-all select-all">
-                          {genUri}
-                        </code>
-                        <div className="flex items-center gap-2">
-                          <button onClick={copyGenUri} className="btn-ghost text-[10px] py-1 px-2">
-                            {copied ? 'Copied' : 'Copy'}
+                  {genUri && (
+                    <>
+                      <div className="self-stretch flex justify-center bg-bone p-3">
+                        <QRCodeSVG
+                          value={genUri}
+                          size={200}
+                          level="M"
+                          fgColor="#0a0a08"
+                          bgColor="#f5f1e8"
+                        />
+                      </div>
+                      <code className="block w-full bg-ink/40 p-2 text-[10px] leading-snug break-all select-all">
+                        {genUri}
+                      </code>
+                      <div className="flex items-center gap-2">
+                        <button onClick={copyGenUri} className="btn-ghost text-[10px] py-1 px-2">
+                          {copied ? 'Copied' : 'Copy'}
+                        </button>
+                        {!genBusy && genErr && (
+                          <button onClick={onGenerate} className="btn-bolt text-[10px] py-1 px-2">
+                            Try again
                           </button>
-                          {!genBusy && genErr && (
-                            <button onClick={onGenerate} className="btn-bolt text-[10px] py-1 px-2">
-                              Try again
-                            </button>
-                          )}
-                          <span className="text-[10px] text-muted">
-                            {genBusy ? 'Waiting for signer…' : ''}
-                          </span>
-                        </div>
-                      </>
-                    )}
-                    {genAuthUrl && (
-                      <div className="flex flex-col items-start gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
-                        <span className="text-[10px] text-bone">
-                          Your signer wants you to approve this connection.
-                        </span>
-                        <a
-                          href={genAuthUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="btn-bolt text-[11px] py-1 px-3 no-underline"
-                        >
-                          ◆ Approve in signer
-                        </a>
+                        )}
                         <span className="text-[10px] text-muted">
-                          Keep this open while you approve.
+                          {genBusy ? 'Waiting for signer…' : ''}
                         </span>
                       </div>
-                    )}
-                    {genErr && (
-                      <span className="text-[10px] text-nostr/80">
-                        {connectionDropped(genErr)
-                          ? 'Connection dropped — approve in your signer then tap Try again.'
-                          : genErr}
+                    </>
+                  )}
+                  {genAuthUrl && (
+                    <div className="flex flex-col items-start gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
+                      <span className="text-[10px] text-bone">
+                        Your signer wants you to approve this connection.
                       </span>
-                    )}
-                  </div>
-
-                  <div className="flex items-center gap-2 text-[10px] text-muted">
-                    <span className="flex-1 border-t border-bone/15" />
-                    <span>OR</span>
-                    <span className="flex-1 border-t border-bone/15" />
-                  </div>
-
-                  {/* Option 2: paste a bunker:// URI the signer generated. */}
-                  <div className="border border-bone/15 p-3 flex flex-col gap-2">
-                    <h4 className="font-display text-sm">Option 2: Paste Bunker URI</h4>
-                    <p className="text-[11px] text-muted">
-                      Paste a <code className="text-[9px]">bunker://</code> URI (or{' '}
-                      <code className="text-[9px]">name@example.com</code>) from your
-                      signer app — e.g. Clave on iOS, nsec.app, or Amber in server
-                      mode.
-                    </p>
-                    <div className="flex gap-2">
-                      <input
-                        value={pasteValue}
-                        onChange={(e) => setPasteValue(e.target.value)}
-                        placeholder="bunker://…"
-                        className="input flex-1 text-[11px] break-all"
-                      />
-                      {/* One tap instead of six. This lived in the iOS Clave box
-                          as "2. Paste from Clave", beside its own "1. Open
-                          Clave" — a second copy of this very section, for one
-                          signer. The convenience was real and the duplication
-                          was not worth it, so it moved here where nsec.app and
-                          Amber-in-server-mode get it too. It must be a real
-                          click: `readText()` needs transient activation, and
-                          iOS renders its own Paste confirmation on top. */}
-                      <button
-                        onClick={onPasteFromClipboard}
-                        disabled={pasteBusy}
-                        className="btn-ghost text-[11px] py-1 px-3 disabled:opacity-40"
+                      <a
+                        href={genAuthUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-bolt text-[11px] py-1 px-3 no-underline"
                       >
-                        Paste
-                      </button>
-                      <button
-                        onClick={onPasteSubmit}
-                        disabled={pasteBusy || !pasteValue.trim()}
-                        className="btn-bolt text-[11px] py-1 px-3 disabled:opacity-40"
-                      >
-                        {pasteBusy ? 'Connecting…' : 'Connect'}
-                      </button>
-                    </div>
-                    {clipErr && (
-                      <span className="text-[10px] text-nostr/80">{clipErr}</span>
-                    )}
-                    {pasteBusy && (
+                        ◆ Approve in signer
+                      </a>
                       <span className="text-[10px] text-muted">
-                        Approve in your signer if prompted, then come back here.
+                        Keep this open while you approve.
                       </span>
-                    )}
-                    {pasteAuthUrl && (
-                      <div className="flex flex-col items-start gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
-                        <span className="text-[10px] text-bone">
-                          Your signer wants you to approve this connection.
-                        </span>
-                        <a
-                          href={pasteAuthUrl}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="btn-bolt text-[11px] py-1 px-3 no-underline"
-                        >
-                          ◆ Approve in signer
-                        </a>
-                        <span className="text-[10px] text-muted">
-                          Approve in your signer, then come back here. Keep this
-                          open — closing it cancels the connection.
-                        </span>
-                      </div>
-                    )}
-                    {pasteErr && (
-                      <div className="flex flex-col items-start gap-1">
-                        <span className="text-[10px] text-nostr/80">
-                          {connectionDropped(pasteErr)
-                            ? 'Connection dropped — tap Connect again, then approve in your signer once more.'
-                            : pasteErr}
-                        </span>
-                      </div>
-                    )}
+                    </div>
+                  )}
+                  {genErr && (
+                    <span className="text-[10px] text-nostr/80">
+                      {connectionDropped(genErr)
+                        ? 'Connection dropped — approve in your signer then tap Try again.'
+                        : genErr}
+                    </span>
+                  )}
+                </div>
+              </>
+            )}
+
+            {view === 'bunker' && (
+              <>
+                <DetailHeader title="Paste a bunker URI" />
+                {/* Paste a bunker:// URI the signer generated. */}
+                <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                  <p className="text-[11px] text-muted">
+                    Paste a <code className="text-[9px]">bunker://</code> URI (or{' '}
+                    <code className="text-[9px]">name@example.com</code>) from your
+                    signer app — e.g. Clave on iOS, nsec.app, or Amber in server
+                    mode.
+                  </p>
+                  <div className="flex gap-2">
+                    <input
+                      value={pasteValue}
+                      onChange={(e) => setPasteValue(e.target.value)}
+                      placeholder="bunker://…"
+                      className="input flex-1 text-[11px] break-all"
+                    />
+                    {/* One tap instead of six. This lived in the iOS Clave box
+                        as "2. Paste from Clave", beside its own "1. Open
+                        Clave" — a second copy of this very section, for one
+                        signer. The convenience was real and the duplication
+                        was not worth it, so it moved here where nsec.app and
+                        Amber-in-server-mode get it too. It must be a real
+                        click: `readText()` needs transient activation, and
+                        iOS renders its own Paste confirmation on top. */}
+                    <button
+                      onClick={onPasteFromClipboard}
+                      disabled={pasteBusy}
+                      className="btn-ghost text-[11px] py-1 px-3 disabled:opacity-40"
+                    >
+                      Paste
+                    </button>
+                    <button
+                      onClick={onPasteSubmit}
+                      disabled={pasteBusy || !pasteValue.trim()}
+                      className="btn-bolt text-[11px] py-1 px-3 disabled:opacity-40"
+                    >
+                      {pasteBusy ? 'Connecting…' : 'Connect'}
+                    </button>
                   </div>
-                </>
-              )}
-            </div>
-          </>
+                  {clipErr && (
+                    <span className="text-[10px] text-nostr/80">{clipErr}</span>
+                  )}
+                  {pasteBusy && (
+                    <span className="text-[10px] text-muted">
+                      Approve in your signer if prompted, then come back here.
+                    </span>
+                  )}
+                  {pasteAuthUrl && (
+                    <div className="flex flex-col items-start gap-1 mt-1 border border-nostr/40 bg-nostr/10 p-2">
+                      <span className="text-[10px] text-bone">
+                        Your signer wants you to approve this connection.
+                      </span>
+                      <a
+                        href={pasteAuthUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="btn-bolt text-[11px] py-1 px-3 no-underline"
+                      >
+                        ◆ Approve in signer
+                      </a>
+                      <span className="text-[10px] text-muted">
+                        Approve in your signer, then come back here. Keep this
+                        open — closing it cancels the connection.
+                      </span>
+                    </div>
+                  )}
+                  {pasteErr && (
+                    <div className="flex flex-col items-start gap-1">
+                      <span className="text-[10px] text-nostr/80">
+                        {connectionDropped(pasteErr)
+                          ? 'Connection dropped — tap Connect again, then approve in your signer once more.'
+                          : pasteErr}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
         )}
 
       <div className="p-4 border-t border-bone/15 flex justify-end">
