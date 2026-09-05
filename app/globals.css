@@ -255,7 +255,7 @@ input[type='range'].seek::-moz-range-thumb {
   @apply font-bold mb-1.5 mt-3 first:mt-0;
 }
 /* break-words because a linkified bare URL has no spaces to wrap at, and the
-   notes container is overflow-x-hidden — an unbroken one is clipped, not
+   notes container is overflow-x-clip — an unbroken one is clipped, not
    scrolled. Not break-all: an anchor whose label is ordinary prose must still
    wrap between words. */
 .show-notes a { @apply underline underline-offset-2 break-words; color: rgb(var(--bolt)); }

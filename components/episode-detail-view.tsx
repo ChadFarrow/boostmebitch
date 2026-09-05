@@ -491,14 +491,26 @@ export function EpisodeDetailView() {
 
             {activeInfo === 'notes' && (
               <>
+                {/* `overflow-x-clip`, NOT `overflow-x-hidden` — the same rule
+                    `html, body` carries in globals.css, and it bit here for the
+                    same reason. CSS will not let one axis be `hidden` while the
+                    other is `visible`: `overflow-x: hidden` computes overflow-y
+                    to `auto`, so this became a vertical SCROLL CONTAINER. Show
+                    notes are arbitrary feed HTML and this container also has
+                    Follow buttons injected into it (`notesFollowRef`), so a few
+                    pixels of overflow are routine — an inline-flex chip sitting
+                    below the text baseline is enough. The result was a panel
+                    that scrolled a little inside the page, on a section that
+                    should simply be as tall as its content. `clip` gives the
+                    identical horizontal clipping and creates no scroll box. */}
                 {episode.contentEncoded ? (
                   <div
                     ref={notesFollowRef}
-                    className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-hidden"
+                    className="show-notes text-sm text-bone/80 leading-relaxed overflow-x-clip"
                     dangerouslySetInnerHTML={{ __html: episode.contentEncoded }}
                   />
                 ) : description ? (
-                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words overflow-x-hidden">
+                  <div className="text-sm text-bone/80 leading-relaxed whitespace-pre-wrap break-words overflow-x-clip">
                     <LinkedText text={description} />
                   </div>
                 ) : null}
