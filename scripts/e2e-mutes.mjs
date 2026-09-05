@@ -853,43 +853,60 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   // `Page.addScriptToEvaluateOnNewDocument` is what makes this faithful: the
   // lock has to exist BEFORE any app script runs, which is the one thing a
   // `Runtime.evaluate` after load cannot reproduce.
-  const lockScript = await send('Page.addScriptToEvaluateOnNewDocument', {
-    source: `Object.defineProperty(window, 'nostr', {
-      value: { __lockedByFakeExtension: true },
-      writable: false,
-      configurable: true,
-      enumerable: true,
-    });`,
-  });
-  await send('Page.navigate', { url: APP }); await wait(2000);
-  await js(`(() => { localStorage.clear();
-    localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
-    localStorage.setItem('bmb:npub', ${JSON.stringify(npub)});
-    localStorage.setItem('bmb:signer', 'bunker');
-    localStorage.setItem('bmb:bunker', ${JSON.stringify(JSON.stringify({ uri: `bunker://${bunkerPk}?relay=ws://127.0.0.1:${PORT}`, clientSk: hex(clientSk) }))});
-    return 1; })()`);
-  seen.length = 0;
-  await send('Page.navigate', { url: APP }); await wait(20000);
-  check('the lock really was in place',
-    await js(`(() => { const d = Object.getOwnPropertyDescriptor(window, 'nostr'); return !!d; })()`), true);
-  check('the bunker still connected through it', seen.includes('connect'), true);
-  check('...and the session is live rather than "nostr is read-only"',
-    await js(`localStorage.getItem('bmb:signer')`), 'bunker');
-  // THE DISCRIMINATING ASSERTION, and the only one of these four that is.
-  // Replayed against the pre-fix signer.ts: the first three still pass — the
-  // relay handshake completes and `bmb:signer` stays 'bunker', because
-  // `restoreBunkerSigner` swallows the throw — and only this one fails, with
-  // the locked stub still sitting on `window.nostr`. Do not drop it for the
-  // three that read more dramatically; they agree with a broken build.
+  // TWO LOCK SHAPES, TWO CORRECT OUTCOMES, and running only one of them is how
+  // the first version of this scenario asserted the wrong thing.
   //
-  // It exercises the RESTORE path rather than the sign-in path the bug was
-  // reported from (a QR pairing, where the throw is not swallowed and reaches
-  // the screen). Both end in `activateBunkerSigner`, so the fix is the same
-  // line; a faithful sign-in reproduction would need a live nostrconnect
-  // pairing in this harness, which is a bigger rig than the bug needs.
-  check('...with OUR adapter installed, not the locked stub',
-    await js(`!!(window.nostr && window.nostr.nip44) && !window.nostr.__lockedByFakeExtension`), true);
-  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: lockScript.result.identifier });
+  //   writable:false, configurable:TRUE   — the common shape. `defineProperty`
+  //     can still replace it, so the polyfill DOES take the global.
+  //   writable:false, configurable:FALSE  — Sidecar's shape, the one reported.
+  //     Nothing on the page can replace it, so the extension keeps the global
+  //     and the app has to work anyway.
+  //
+  // The second is the case the accessor exists for; the first proves the
+  // fallback in `setWindowNostr` is not dead code.
+  for (const shape of [
+    { configurable: true, label: 'configurable — the polyfill takes the global' },
+    { configurable: false, label: 'NON-configurable (Sidecar) — the extension keeps it' },
+  ]) {
+    console.log(`\n     lock: ${shape.label}`);
+    const lockScript = await send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `Object.defineProperty(window, 'nostr', {
+        value: { __lockedByFakeExtension: true },
+        writable: false,
+        configurable: ${shape.configurable},
+        enumerable: true,
+      });`,
+    });
+    await send('Page.navigate', { url: APP }); await wait(2000);
+    await js(`(() => { localStorage.clear();
+      localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
+      localStorage.setItem('bmb:npub', ${JSON.stringify(npub)});
+      localStorage.setItem('bmb:signer', 'bunker');
+      localStorage.setItem('bmb:bunker', ${JSON.stringify(JSON.stringify({ uri: `bunker://${bunkerPk}?relay=ws://127.0.0.1:${PORT}`, clientSk: hex(clientSk) }))});
+      return 1; })()`);
+    seen.length = 0;
+    await send('Page.navigate', { url: APP }); await wait(20000);
+
+    check('the bunker connected through the lock', seen.includes('connect'), true);
+    check('...and the session is live', await js(`localStorage.getItem('bmb:signer')`), 'bunker');
+    // Who owns the global differs by shape, and BOTH answers are correct.
+    check('...global ownership is what the shape allows',
+      await js(`!!(window.nostr && window.nostr.__lockedByFakeExtension)`), !shape.configurable);
+
+    // THE DISCRIMINATING ASSERTION, and the only one of these that is.
+    // Everything above passes on a build where the signer is unreachable: the
+    // relay handshake is independent of the polyfill and `bmb:signer` is just a
+    // string in localStorage. Only an operation that has to REACH the signer
+    // tells the difference — so unlock the private mute half, the same control
+    // scenario 5b uses, and require that a decrypt actually arrived.
+    seen.length = 0;
+    await js(`(() => { const b=[...document.querySelectorAll('[role="status"] button')].find(x=>/load|retry/i.test(x.textContent)); if(b) b.click(); return !!b; })()`);
+    await wait(12000);
+    check('...and the app can still USE it — the unlock reached the bunker',
+      seen.some((m) => m.endsWith('_decrypt')), true);
+
+    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: lockScript.result.identifier });
+  }
 
   console.log('\n  5i. SIGNING OUT tells the signer to forget this client');
   // THE PAIRING LIVES ON THE SIGNER'S SIDE TOO, and closing our socket does not

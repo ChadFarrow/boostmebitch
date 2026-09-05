@@ -26,7 +26,7 @@ import { storage } from '../storage';
 import { BRAND } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish } from './publish';
-import { canSignUnattended } from './signer';
+import { canSignUnattended, activeNostr } from './signer';
 import { collectEventsDetailed, fetchLatestEventDetailed } from './event-queries';
 import {
   VALUE_PLAYBACK_SUMMARY_KIND,
@@ -522,7 +522,7 @@ async function flushSummaries() {
   if (!canSignUnattended()) return;
   let signer: string;
   try {
-    signer = await window.nostr!.getPublicKey();
+    signer = await activeNostr()!.getPublicKey();
   } catch {
     return;
   }

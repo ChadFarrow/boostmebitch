@@ -17,6 +17,7 @@ import {
   deactivateBunkerSigner,
   revokeBunkerSession,
   deactivateLocalSigner,
+  extensionNostr,
 } from './signer';
 import { clearKey, getKey, putKey } from './local-key-store';
 import {
@@ -67,12 +68,13 @@ export interface NostrIdentity {
 }
 
 export async function loginWithExtension(): Promise<NostrIdentity> {
-  if (typeof window === 'undefined' || !window.nostr) {
+  const ext = extensionNostr();
+  if (!ext) {
     throw new Error(
       'No Nostr signer found. Install Alby, nos2x, or another NIP-07 extension.',
     );
   }
-  const pubkey = await window.nostr.getPublicKey();
+  const pubkey = await ext.getPublicKey();
   return { pubkey, npub: nip19.npubEncode(pubkey) };
 }
 

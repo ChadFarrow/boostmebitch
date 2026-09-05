@@ -3,8 +3,12 @@
 // Centralized control over which signer the rest of the app sees.
 //
 // The whole codebase (publish.ts, mutes.ts, wallet-backup.ts, zap.ts, auth.ts)
-// reads from `window.nostr`. To avoid touching every call site we polyfill
-// `window.nostr` with the active signer (AmberSigner for NIP-55, a NIP-46
+// reads a NIP-07 surface. `activeNostr()` IS that surface — the polyfill lives
+// in this module and every consumer asks here. We ALSO publish it to
+// `window.nostr` as a compatibility gesture, and that gesture is allowed to
+// fail: an extension can own the property non-configurably (Sidecar does), and
+// when it does the app carries on because nothing of ours depends on the
+// global. Signers: AmberSigner for NIP-55, a NIP-46
 // BunkerAdapter for remote signers) and restore the original (a NIP-07
 // extension, if any) on sign-out.
 //
@@ -96,10 +100,61 @@ function setWindowNostr(value: Window['nostr']): boolean {
   }
 }
 
-/** The message a user can act on, for the one case `setWindowNostr` cannot fix. */
-const NOSTR_LOCKED =
-  'A browser extension has locked window.nostr on this page, so another signer '
-  + 'cannot be installed. Sign in with that extension instead, or disable it and reload.';
+// NOT AN ERROR ANY MORE, and deleting the throw is the point. A locked global
+// used to fail the sign-in; now it only means the compatibility gesture did not
+// land, because `activeNostr()` holds the polyfill instead. Left as a one-line
+// console note so the situation is still findable from a bug report.
+function noteLockedGlobal() {
+  if (typeof console === 'undefined') return;
+  console.info(
+    '[signer] window.nostr is locked by an extension — using the in-app signer instead. '
+    + 'Anything on this page reading window.nostr directly will still see the extension.',
+  );
+}
+
+/**
+ * THE SIGNER THIS APP IS USING — read this, not `window.nostr`.
+ *
+ * WHY THE GLOBAL IS NOT THE ANSWER. Publishing our polyfill to `window.nostr`
+ * is a COMPATIBILITY gesture, not the mechanism: it is there so anything that
+ * reads the standard global sees the active signer. Our own code reading it
+ * back made the global load-bearing, and then a browser extension that owns
+ * that property took the whole app down with it.
+ *
+ * Measured: Sidecar defines `window.nostr` **non-configurable**, so neither an
+ * assignment nor `defineProperty` can replace it — `setWindowNostr` returns
+ * false and there is nothing a page can do about it. Before this accessor that
+ * was fatal: the Clave QR paired, the ack arrived, `get_public_key` answered,
+ * and the sign-in still failed on the last line because the polyfill had
+ * nowhere to go. With it, the polyfill lives HERE and the locked global is
+ * merely a global we did not get to write.
+ *
+ * Falls through to `window.nostr` when no polyfill is installed, which is the
+ * plain NIP-07 case and the reason most call sites need no other change.
+ */
+export function activeNostr(): Window['nostr'] | undefined {
+  if (amberInstance) return amberInstance as unknown as Window['nostr'];
+  if (bunkerInstance) return bunkerInstance.nostrApi;
+  if (localInstance) return localInstance.nostrApi as unknown as Window['nostr'];
+  return typeof window === 'undefined' ? undefined : window.nostr;
+}
+
+/**
+ * The NIP-07 BROWSER EXTENSION specifically, which is a different question.
+ *
+ * `activeNostr()` answers "who signs for this app". This answers "what did the
+ * browser bring", and the two diverge the moment a polyfill is installed — so
+ * "sign in with the extension" and "has the extension switched accounts?" must
+ * ask this one or they end up talking to our own adapter about itself.
+ *
+ * Prefers what `captureOriginal` saved, because after an activation the global
+ * may be ours; before any activation nothing has been captured and the global
+ * IS the extension.
+ */
+export function extensionNostr(): Window['nostr'] | undefined {
+  if (originalCaptured) return originalWindowNostr;
+  return typeof window === 'undefined' ? undefined : window.nostr;
+}
 
 export function activateAmberSigner(pubkey?: string): AmberSigner {
   if (typeof window === 'undefined') {
@@ -115,10 +170,7 @@ export function activateAmberSigner(pubkey?: string): AmberSigner {
   localInstance = null;
   amberInstance = new AmberSigner(pubkey);
   // Cast: AmberSigner satisfies the structural shape declared in auth.ts.
-  if (!setWindowNostr(amberInstance as unknown as Window['nostr'])) {
-    amberInstance = null;
-    throw new Error(NOSTR_LOCKED);
-  }
+  if (!setWindowNostr(amberInstance as unknown as Window['nostr'])) noteLockedGlobal();
   return amberInstance;
 }
 
@@ -182,10 +234,7 @@ export function activateBunkerSigner(adapter: BunkerAdapter) {
   amberInstance = null;
   localInstance = null;
   bunkerInstance = adapter;
-  if (!setWindowNostr(adapter.nostrApi)) {
-    bunkerInstance = null;
-    throw new Error(NOSTR_LOCKED);
-  }
+  if (!setWindowNostr(adapter.nostrApi)) noteLockedGlobal();
 }
 
 /**
@@ -264,10 +313,7 @@ export function activateLocalSigner(skHex: string): LocalSigner {
   // runtime, so assigning the instance would put the raw secret key on
   // window.nostr.sk for any script on this origin. Mirrors the bunker's
   // adapter.nostrApi above. See the comment on LocalSigner.nostrApi.
-  if (!setWindowNostr(localInstance.nostrApi as unknown as Window['nostr'])) {
-    localInstance = null;
-    throw new Error(NOSTR_LOCKED);
-  }
+  if (!setWindowNostr(localInstance.nostrApi as unknown as Window['nostr'])) noteLockedGlobal();
   return localInstance;
 }
 
@@ -312,7 +358,7 @@ export function isLocalActive(): boolean {
  * the other question and is not replaced by this one.
  */
 export function canSignUnattended(): boolean {
-  if (typeof window === 'undefined' || !window.nostr) return false;
+  if (!activeNostr()) return false;
   return !isAmberActive() && !isBunkerActive();
 }
 
@@ -415,13 +461,15 @@ type Nip04Api = NonNullable<NonNullable<Window['nostr']>['nip04']>;
 type Nip44Api = NonNullable<NonNullable<Window['nostr']>['nip44']>;
 
 export function getNip04(): Nip04Api | null {
-  if (typeof window === 'undefined') return null;
-  return window.nostr?.nip04 ?? null;
+  return activeNostr()?.nip04 ?? null;
 }
 
+// THROUGH `activeNostr`, NOT THE GLOBAL. These two are how the mute list, the
+// favorites private half and the wallet backup reach a cipher, so a signer that
+// could not be published to `window.nostr` — see `setWindowNostr` — would still
+// be unreachable for every one of them if these read the global directly.
 export function getNip44(): Nip44Api | null {
-  if (typeof window === 'undefined') return null;
-  return window.nostr?.nip44 ?? null;
+  return activeNostr()?.nip44 ?? null;
 }
 
 export function requireNip44(): Nip44Api {

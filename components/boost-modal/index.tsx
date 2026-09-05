@@ -26,6 +26,7 @@ import { useActiveSplit } from './use-active-split';
 import { liveTargetSnapshot } from '@/lib/v4v/live-value';
 import { PublishStatus, type PublishState } from './publish-status';
 import { ShareNostrPicker } from './share-nostr-picker';
+import { activeNostr } from '@/lib/nostr/signer';
 
 /**
  * Boostagram fields for a live show whose payment target has been redirected.
@@ -366,7 +367,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       value.recipients.length === 1 && value.recipients[0].type === 'lnaddress'
         ? value.recipients[0].address
         : null;
-    const hasSigner = typeof window !== 'undefined' && !!window.nostr;
+    const hasSigner = !!activeNostr();
     if (liveStreamId && identity && hasSigner && hostLnaddr && (await lnaddrSupportsZaps(hostLnaddr))) {
       try {
         await sendZap({

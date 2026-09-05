@@ -21,6 +21,7 @@ import { pickRail, type Rail } from './boost';
 import { storeBoostMetadata } from './boostbox';
 import { bolt11AmountMsat } from './bolt11';
 import { lnurlFetch } from './lnurl-fetch';
+import { activeNostr } from '@/lib/nostr/signer';
 
 interface LnurlPayMetadata {
   callback: string;
@@ -97,7 +98,8 @@ export async function sendZap(args: {
    */
   metadata?: { boostagram: Boostagram; recipient: ValueRecipient; legMsat: number };
 }): Promise<{ preimage: string }> {
-  if (typeof window === 'undefined' || !window.nostr) {
+  const nostr = activeNostr();
+  if (!nostr) {
     throw new Error('No Nostr signer available');
   }
   const rail = args.rail ?? pickRail();
@@ -148,7 +150,7 @@ export async function sendZap(args: {
     tags,
     content: args.comment ?? '',
   };
-  const signed = await window.nostr.signEvent(template);
+  const signed = await nostr.signEvent(template);
 
   // Same channel and same rule as an ordinary LNURL leg (`payLnurl`): the
   // descriptor is worth something only whole, the message reads fine clipped,
