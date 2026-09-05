@@ -11,10 +11,11 @@ The whole codebase reads `window.nostr`. Four paths feed it, swapped by `lib/nos
 - **NIP-07 extension** (Alby, nos2x, Flamingo, nostash on iOS Safari). Already at `window.nostr`; we don't polyfill. Sign-out clears `bmb:npub` and leaves `window.nostr` alone.
 - **Amber on Android, primary path: NIP-46 over a `nostrconnect://` link — since 2026-09-03, and this is how StableKraft's "Amber (Android)" button has always worked** (`components/Nostr/Nip46Connect.tsx` there: `window.location.href = nostrconnect://…` on Android, then the ordinary relay session). The modal's Android "Sign in with Amber" calls `loginWithNostrConnect` and opens the URI in Amber; Amber's installed build (the `free` flavor on Zapstore and F-Droid) registers `nostrconnect` as a BROWSABLE scheme on `SignerActivity`, and `getIntentData` routes a `nostrconnect:` intent BEFORE the `Browser.EXTRA_APPLICATION_ID` branch, so the Chromium change below never touches it. Nothing returns by URL: no callback tab, no clipboard, no reload, and every later signature rides the relay like any bunker — which also means it lands under `unattendedDecryptOk() === false` like Amber-as-bunker always has. The URI is opened ONCE per memoized URI (`amberNcOpened`); the visibility-return retry re-subscribes without re-launching Amber, because Android suspends the page's WebSocket while the user is in Amber and the ack can land on a dead subscription. The `offline` flavor registers only `nostrsigner`, which is why the NIP-55 path stays as a secondary button.
 - **Amber on Android, fallback path** (NIP-55, `lib/nostr/amber.ts`). Polyfills `window.nostr` with an `AmberSigner` dispatching via the `nostrsigner:` URL scheme and reading results from the system clipboard: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<…>` (no callbackUrl, per spec) → user approves → first user gesture (`pointerdown`/`touchstart`/`keydown`) reads the clipboard with fresh transient activation. `restoreAmberSigner(pubkey)` is the synchronous page-load fast path.
+- **Clave on iOS** (`lib/nostr/clave.ts`). NIP-46 and nothing else — no NIP-55 surface, no URL-scheme signing round trip, no `window.nostr` injection, and NIP-55 is titled "Android Signer Application" with no iOS section, so there is nothing else to build against. It is therefore a **bunker like any other**: `bmb:signer` stays `'bunker'`, the transport is `bunker.ts`, and `unattendedDecryptOk()` already excluded it. What is Clave-specific is three things and only three: the one-tap hand-off (a real `<a href>` to Clave's Universal Link, `clave://connect?uri=<urlencoded nostrconnect>` as the escape hatch), `wss://relay.powr.build` in the URI, and the queued-approval retry — all below.
 - **NIP-46 bunker** (`lib/nostr/bunker.ts`, wraps nostr-tools `BunkerSigner`). Paste a `bunker://` URI or generate a `nostrconnect://` one. Reconnect on reload is async (`restoreBunkerSigner()` rebuilds from `bmb:bunker:{uri,clientSk}`); signing calls before it resolves throw, but nothing signs unprompted post-load. Works with Clave, nsec.app, Amber-as-bunker, Primal. **A bunker is NOT assumed to answer inside the browser** — see "An out-of-browser signer is two signers" below.
 - **Local key** (`lib/nostr/local-signer.ts`). The only path where *we* hold the key; it exists for Google onboarding, where the user starts with no Nostr identity. Signs in-process via `finalizeEvent`, implements nip04 + nip44 directly. `restoreLocalSigner()` is **async** (IndexedDB read + decrypt), so it follows the bunker pattern, not Amber's. It **refuses a key whose pubkey doesn't match `bmb:npub`** — `putKey` swallows IndexedDB failures, so signing in as B on a device still holding A's ciphertext would run the session off the in-memory copy while disk keeps A, and after a reload sign everything as A while the UI says B.
 
-> **`nostr-tools` is pinned to exact `2.19.4` — do NOT bump or relax the caret.** The `2.20.0+` NIP-46 rewrite added `limit: 0` to the `nostrconnect`/bunker subscription filters (`fromURI` + `setupSubscription`), which on our relays silently drops the remote signer's connect-ack, so **Primal's `nostrconnect://` login hangs and times out**. Latest (`2.23.5`) and `master` still carry it; `npm update` or a `^`/`~` range reintroduces the break. `NOSTRCONNECT_RELAYS` is a 4-relay set (nsec.app/damus/primal/nos.lol) for ack redundancy — a single relay loses the ack when iOS Safari suspends the WebSocket during the app-switch.
+> **`nostr-tools` is pinned to exact `2.19.4` — do NOT bump or relax the caret.** The `2.20.0+` NIP-46 rewrite added `limit: 0` to the `nostrconnect`/bunker subscription filters (`fromURI` + `setupSubscription`), which on our relays silently drops the remote signer's connect-ack, so **Primal's `nostrconnect://` login hangs and times out**. Latest (`2.23.5`) and `master` still carry it; `npm update` or a `^`/`~` range reintroduces the break. `NOSTRCONNECT_RELAYS` is a **two**-relay set, and the count is a decision rather than what was left over. **`wss://relay.powr.build` is not redundancy and must not be pruned as if it were.** It is Clave's own persistent proxy — the subscription that fires the APNs wake, which is how a closed Clave answers at all — and Clave's `docs/nip46-compatibility.md` states that a client without `switch_relays` (nostr-tools ~2.17, and we pin exactly 2.19.4) *"cannot successfully complete nostrconnect pairing unless the URI already embeds wss://relay.powr.build"*. **No trailing slash**, and that is not cosmetic: `createNostrConnectURI` writes the string into the URI verbatim, so these are the exact bytes the signer's side reads. It carried one while the flow was slow; Conduit — whose iOS Clave flow works — ship it bare. nostr-tools' `normalizeURL` strips it before opening a socket, so *our* pool never cared; the reader that matters is the other one. **The set used to hold five, and cutting damus, primal and nos.lol is the fix rather than a tidy-up.** The argument for a wide set was ack redundancy across an iOS app-switch. On iOS it buys the opposite. WebKit bug 302561: on affected builds iCloud Private Relay can allow only the **first** WebSocket to a given host and port — recorded by Conduit (github.com/Conduit-BTC) in their mobile-Safari QA baseline, which also insists the exact OS and Private Relay state be written down on every iPhone run. The bunker runs on its **own** `SimplePool`, separate from the app-wide pool by design, and all three of those share a host with `DEFAULT_RELAYS` — so on such a device their sockets are the *second* to their host and may never open: three relays the signer can reach and this page cannot, which presents as a pairing that is merely slow. `relay.nsec.app` and `relay.powr.build` are the only two nothing else in this app connects to, which is what makes them the pair the handshake can rely on. **Conduit reach the same number from the other side**: `pairRemoteSignerFromNostrConnect` REJECTS a pairing with fewer than 2 or more than 3 relays. Two to three is the interoperable window — do not grow this list back without measuring what the extra relay answers on a phone. The set is unconditional rather than Clave-scoped because `startNostrConnect` memoizes ONE `{uri, clientSk, secret}` per session, shared by the iOS Clave button, the Android Amber button and the QR box — a second URI in one session would invalidate a QR the user had already scanned, which is the exact failure that memo exists to prevent. **And this is not the "adding a relay is a latency decision" rule from [`nostr.md`](nostr.md)**: that one is about broad scans, which resolve at *aggregate* EOSE and so pay a silent relay its full ceiling. A NIP-46 exchange resolves on the first matching kind:24133 response, so a slow or silent relay here costs nothing — the cost here is the socket, not the wait.
 
 ### Amber's round trip does not return by itself — measured, not assumed
 
@@ -127,6 +128,387 @@ browser globals, so it will not load under `node --experimental-strip-types`. It
 rests on the exact `2.19.4` pin above. If that ever moves, re-read `nip46.js` by
 hand: a version that wraps `o.error` in an `Error` reverts this silently rather
 than breaking loudly.
+
+### A pairing the page loses is one the signer thinks succeeded
+
+Reported from an iPhone on Brave, and it is the failure that matters most
+because **nothing on either screen says anything is wrong**: Clave listed
+BoostMeBitch as a connected client, permission **Full**, last seen 34 s ago —
+while the page sat on "Sign in".
+
+The pairing had completed on Clave's side only. Handing the URI over navigated
+the tab, so by the time the user came back the document had been replaced:
+module state gone, subscription gone, and the signer's ack delivered to nobody.
+kind:24133 is ephemeral, so nothing can replay it.
+
+**And the reason it navigated is the part worth carrying, because the first
+diagnosis of it was wrong.** This was measured in **Safari**, not a third-party
+browser, so "WKWebView does not route universal links" — the explanation first
+written here — cannot be it. The real rule: **a Universal Link opens the app
+only for a genuine tap on a real anchor.** iOS does not hand a *programmatic*
+navigation to an app, and `openAppLink` fires a synthesised `a.click()`. Apple
+documents this; it holds in Safari; and it is why Conduit's identical URL works
+while ours did not — **their control is an `<a href>` the user taps, ours was a
+scripted click.** Same string, different mechanism.
+
+**Two fixes, because one of them alone leaves the hole open.**
+
+**1. Do not navigate.** `clave://` is the primary launcher again — see the
+reversal below. It reaches the app from the scripted click our launcher has to
+use, and a tab that survives the app switch keeps the subscription the ack is
+addressed to, which is the whole game.
+
+**2. Make the pairing survive a tab that dies anyway.** `storage.ncPending`
+persists `{ uri, clientSk, ts }` for ten minutes, and `ensureNostrConnectMemo`
+restores it rather than minting a new pairing. It does **not** recover the
+missed ack — it recovers the ability to *ask again*: the same client key means
+the signer recognises an already-approved client and re-acks without a second
+approval. The sign-in modal resumes such a pairing on open, `launch: false`, so
+a user who comes back finds a live listener instead of a dead page.
+
+Verified under an iPhone UA: the pairing persists while waiting, survives a
+full reload byte-identically, and the modal picks the handshake back up on its
+own without re-launching the app.
+
+### The launcher, reversed three times — and the variable that was missing
+
+`clave://` → Universal Link → `clave://` → Universal Link, as an anchor. Worth
+writing down, because each change was driven by evidence that was correct about
+the case it came from, and the last one is where the cases finally reconcile.
+
+- **`clave://` first**, on the reasoning that a Universal Link ships the pairing
+  URI to a third-party origin. That privacy argument was overstated, and it was
+  never measured.
+- **Universal Link**, after Conduit (github.com/Conduit-BTC) — who verify on a
+  **physical iPhone, in Safari**, that it opens the app on the first tap with no
+  confirmation sheet. True, and still true.
+- **`clave://` again**, after a Safari field report: dispatched through
+  `openAppLink`'s scripted click, a Universal Link cannot reach the app at all
+  and silently loads clave.casa instead. Also true.
+- **Universal Link, from a real `<a href>`.** A user compared the two flows on
+  their own phone — "for conduit.market I click clave, it opens clave and I
+  switch back and it just works" — which is the case both earlier measurements
+  were about, and neither had explained.
+
+**The resolution is not "one of the measurements was wrong".** It is that the
+URL is only half the mechanism, and the other half is *how it is dispatched*. A
+Universal Link needs a real anchor and a real tap; a custom scheme also works
+from a scripted click. Conduit's control **is** an `<a href>`
+(`packages/ui/src/components/ClaveConnectButton.tsx`, an `<a>` around
+`clave.casa/connect/?uri=`); ours was a scripted click wearing the same URL.
+Same string, different mechanism, opposite outcome.
+
+**What had to change to render an anchor is the interesting part, and it is not
+cosmetic.** An anchor's `href` must exist at render time, so the pairing cannot
+be minted inside the click. That is exactly what our header row was doing, and
+why the launcher had to be scripted in the first place: Safari gates an
+app-scheme navigation on the click's transient activation, and the modal mounts
+in a later task, so the row built the URI and navigated in one handler. The
+whole constraint dissolves once the pairing is prepared when the sign-in panel
+OPENS — which is what Conduit's `useSignerPairing` hook does on mount, and what
+`<SignInModal>`'s prepare-on-open effect does now. The header row no longer
+launches anything; it opens the modal on the Remote Signer tab and stops.
+
+**That costs one tap and buys the mechanism.** The old shape saved a tap by
+launching from the menu row, and paid for it twice over: a confirmation sheet on
+the way out, and a hand-off that left before any subscription existed.
+
+`clave://` stays as the labelled escape, and it earns the place. A Universal
+Link can be switched off by the user without their realising it — one tap on the
+"clave.casa" breadcrumb in Safari's top-right and iOS opens the web page for
+that domain from then on, permanently, with no UI to undo it and **nothing on
+the page able to detect it**. The scheme is unaffected, which makes it the only
+cure for the one failure the primary cannot report. Between them the two answer
+both silences: the app is missing, or this browser will not route the link.
+
+### The approval sheet names the client, and we were sending it a hex string
+
+Clave's *Approve Connection* screen headlines whatever the `nostrconnect://`
+URI's **`url`** field says, with `name` under it as an unverified self-claim.
+We sent `name` and nothing else, so ours read
+
+> **b6ce606e…fc96** — wants to connect · calls itself "BoostMeBitch" · unverified
+
+while Conduit's, from the same signer on the same phone, read
+`shop.conduit.market`. Two screenshots side by side is how this was found; it is
+not inferable from our own screen, which never shows that sheet.
+
+`createNostrConnectURI` takes `url` and `image` and we now pass both. This is
+the one field on that screen a user can check against their own address bar, so
+omitting it made the flow's only trust decision harder for nothing.
+
+**It is `window.location.origin`, NOT `BRAND.origin`.** A security prompt has to
+describe where the request actually came from; printing the canonical domain
+while the user is standing on a preview deploy would be the app asserting
+something they cannot confirm — which is exactly what the signer's "unverified"
+label is warning about. The cost is that a preview host earns its own entry in
+the signer's connection list, and that is the honest outcome rather than a bug.
+`BRAND.origin` is the non-browser fallback, and `lib/brand.ts` remains the only
+place a brand *string* may come from — a runtime origin is not one.
+
+`image` is the manifest's 192px PNG from that same origin, so the two always
+agree. A signer with no icon falls back to initials in a coloured circle, which
+is what ours had been showing.
+
+### Coming back from the signer must never re-launch it — measured on a real iPhone
+
+Reported from an iPhone running **Brave**: tap "Sign in with Clave", approve in
+Clave, switch back to the page, and the browser throws
+
+> **Cannot Open Page** — Brave cannot open the page because it has an invalid
+> address.
+
+over a modal still reading "WAITING FOR CLAVE…". The sign-in did not complete.
+
+**The cause is a race no emulator reaches**, because it needs a connect that
+actually succeeds. `startNostrConnect` clears `nostrconnectMemo` the moment
+`getPublicKey()` resolves. The visibility listener fires on the way back — before
+React has processed that resolution — so the retry found no memo, minted a
+**brand-new pairing**, and navigated to it. Two faults at once:
+
+- **The navigation had no user activation behind it.** iOS refuses an app-scheme
+  navigation from a `visibilitychange` handler, and Brave reports that refusal as
+  an invalid address. The per-URI guards (`amberNcOpened`, and a `claimClaveHandoff`
+  record that no longer exists) could not help: the URI was genuinely new, so
+  they passed it through.
+- **The new pairing was one Clave had never seen.** Even had it opened, it could
+  only time out — while the approval the user had just given belonged to the
+  pairing we had abandoned.
+
+**And the worse half was silent.** The retry bumps `claveAttempt`, so when the
+original attempt resolved with the approved identity, its own `isCurrent()` check
+threw it away. "Approve in Clave, switch back" signed in **nowhere at all**, and
+the only thing on screen was a browser error about an address.
+
+Two rules came out of it, and both are stated as invariants because neither can
+be pinned by a `check:*`:
+
+1. **Only a handler the user tapped may launch an app.** `onAmberConnect` takes
+   `{ launch }`, default true, and every caller that is not an `onClick` — the
+   visibility retry — passes `launch: false`. That makes it reviewable by
+   reading the call sites rather than by reasoning about timing. A retry
+   re-subscribes; it never navigates.
+
+   **The Clave half of this is now structural rather than a flag.** Reaching
+   Clave is an `<a href>` the user taps, and `prepareClave()` only subscribes —
+   so there is no code path on that side that could navigate without a tap, with
+   or without a flag to forget. That is a stronger guarantee than the rule, and
+   it is why the flag is gone from the iOS branch rather than merely unused.
+2. **A success from ANY attempt signs in.** The newest-attempt rule is right for
+   reporting an *error* — an older attempt's timeout must not overwrite a live
+   session — but applied to success it discards the very thing the user did.
+   `claveSettled` / `amberNcSettled` latch the first success instead, which is
+   all `isCurrent()` was buying on that path.
+
+A retry that finds the pairing replaced also stops rather than starting another
+one silently: it reads `nostrConnectUri()` — which returns the memo **without
+subscribing** — and says "that pairing is no longer live" instead of opening a
+transport nothing will answer.
+
+**What is and is not proven here.** A CDP run under an iPhone UA confirms that
+returning to the page four times never produces a second navigation. It does
+*not* reproduce the original race: that needs a connect that succeeds, and this
+container cannot reach the public relays. The structural guarantee above is the
+argument; the field report is the evidence that it was needed.
+
+### "Subscription closed" never matched, so the reconnect never ran
+
+nostr-tools 2.19.4 throws `new Error("Subscription closed before connection was
+established.")` — **capital S**. Five places tested
+`.includes('subscription closed')` in lower case, and none of them ever matched.
+
+Two were functional. `connectBunkerFromUri` and `restoreBunkerFromStorage` each
+wrap their first `attempt()` in a `catch` that is supposed to retry once at
+`BUNKER_RECONNECT_TIMEOUT_MS`; the guard rethrew every time, so **that one-shot
+reconnect had never fired since it was written**. The case it exists for is
+exactly the one Clave and Amber hit — the OS suspends a backgrounded WebSocket
+while the user is approving in the signer app — so the miss was invisible
+precisely where it cost the most.
+
+The other three (four counting the Clave box) are the sign-in modal's friendly
+copy for a dropped handshake. Every one of them showed the raw library sentence
+instead of the line telling the user what to do next. Fixed with one
+case-insensitive predicate on each side: `isSubscriptionClosed` in `bunker.ts`,
+`connectionDropped` in the modal. Both are `/…/i` tests rather than a second
+lower-cased literal, because a literal is how this happened.
+
+### The pairing URI asks for permissions, and leaving that off cost the whole flow
+
+**`createNostrConnectURI` takes a `perms` field and we did not send one.** The
+call in `ensureNostrConnectMemo` carried `clientPubkey`, `relays`, `secret`,
+`name`, `url` and `image`, with a comment saying *"No `perms` field — bunker
+prompts per call"* as though prompting per call were a safety property being
+chosen. It is not a property this app gets to choose; it is what the signer does
+when nobody asked it for anything.
+
+What that produced on Clave: it prompts per call, so it answers `no permission`
+to the handshake's own `get_public_key` **and to every signature afterwards**,
+and the re-issue loop below then waits out an interval on each one. Sign-in, the
+boost note, the favorites publish and the mute publish all paid it. Reported as
+*"it works but it's slow to connect"*, which is exactly what a correct workaround
+for a self-inflicted problem feels like.
+
+The comparison that settled it: Conduit's iOS flow — tap Clave, approve, switch
+back, signed in, no pause — differs here and almost nowhere else.
+`CONDUIT_NIP46_PERMISSIONS` (`packages/core/src/protocol/remote-signer.ts`) goes
+straight into their `createNostrConnectURI`. nostr-tools 2.19.4 has supported the
+field the whole time: `NostrConnectParams.perms?: string[]`, joined with commas
+into the query.
+
+`NOSTRCONNECT_PERMS` is Conduit's five plus `nip04_encrypt`, which is ours to
+add — `adaptToWindowNostr` exposes it, and the mute list's private half must be
+re-encrypted in the cipher it was **read** in, which is NIP-04 for some writers.
+
+**What asking for the two decrypts does and does not change.** It stops the
+signer prompting for a decrypt. It does **not** widen `unattendedDecryptOk()` —
+that gate governs which decrypts *this app issues* before the user has touched
+anything, and still answers `false` for a bunker, so nothing new is decrypted
+unasked. What it fixes is the limitation recorded two sections down: on a signer
+that queues, the private mute half, the private favorites half and "Restore from
+Nostr" die at the 10 s `withDecryptTimeout` cap, because no human answers a
+prompt inside ten seconds. Granted at pairing, they return on the first ask. The
+conservative variant is to drop the two `*_decrypt` entries — sign-in and the
+boost note are still fast and those three features stay exactly as they were.
+
+**The re-issue loop below stays, and is now the fallback rather than the
+mechanism.** The pairing approval itself is still a tap, and `perms` is a
+request: a signer may ignore it, grant a subset, or expire it.
+
+### A permission error from Clave is a queue receipt, not a refusal
+
+The section above establishes that an error RESPONSE proves the round trip
+completed. This is the second refinement of the same discriminator: **one class
+of answer means *not yet*.**
+
+Clave does not hold a request open while its user decides. It answers
+immediately with `permission denied`, and delivers the real result on the SAME
+request id once the user taps approve. nostr-tools 2.19.4 settles on the first
+response, so the caller gets a rejection and the signature is delivered to a
+handler that no longer exists — `lib/esm/nip46.js` runs `delete listeners[id]`
+on the line after `handler.reject(error)`. Read in `node_modules`, not inferred.
+
+**It IS a sign-in bug as well, and that sentence used to say otherwise.** The
+first version of this reasoned that pairing succeeds and only later signatures
+fail, and applied `withApprovalWait` to the adapter's methods alone — the
+connect paths were excluded deliberately, on the argument that they own their
+own timeouts and a retry underneath one would stall sign-in. Two screenshots
+disproved it: the phone showed Clave holding a **Full Trust** connection to this
+site with `get_public_key` ticked green twice in its Recent Activity, while the
+sign-in modal rendered *"no permission"* in magenta. Clave answers the
+handshake's `get_public_key` exactly as it answers a signature.
+
+So **all three handshake `get_public_key` calls go through `withApprovalWait`**
+— `startNostrConnect`, `connectBunkerFromUri` and `restoreBunkerFromStorage`.
+Each attempt keeps `BUNKER_CALL_TIMEOUT_MS`, so the only added behaviour is the
+re-issue, and only on an approval-pending answer; a terminal refusal still
+throws on the first response. Without it, sign-in does not stall — it fails.
+
+The signatures afterwards fail too, and that half is unchanged: the boost note,
+the favorites publish, the mute publish, each on the first approval, each
+looking like a signer that refused.
+
+**`no permission` is a sixth phrasing, observed on a device rather than read out
+of clave-casa's source**, and none of the five copied from that file matched it.
+The lesson is about the list, not the string: a vendor's client is where this
+starts, not where it ends. When a signer produces a phrasing that is missing,
+add the observed phrase — never loosen an existing pattern into a token that
+would have swept it up, because that is the over-match direction and it turns
+another signer's terminal "no" into a ninety-second wait.
+
+`withApprovalWait` (`lib/nostr/bunker.ts`) re-issues on a **new request id**,
+because there is nothing left to listen with. The gate is `isApprovalPending`
+in the import-free `lib/nostr/nip46-errors.ts`, pinned by `npm run
+check:nip46error`, and it **fails closed on anything that is not a bare
+string** — the same `!(e instanceof Error)` fact as above, so a timeout or a
+dead transport is never approval-pending and the reconnect banner still fires.
+
+**Re-issuing is safe because of a property of THIS repo, not of NIP-46.** Every
+publisher stamps `created_at` into the template before calling `signAndPublish`,
+so a re-signed template is a byte-identical event rather than a second one. A
+caller that ever let the signer pick `created_at` would break that, and the
+wrapper would have to come off `signEvent`. There is also never a first
+signature to duplicate: we only re-issue after a rejection.
+
+90 s budget; the gaps are a **schedule**, `BUNKER_APPROVAL_GAPS_MS` =
+`[2.5 s, 4 s, 8 s]`, holding the last value. 90 is `BUNKER_CONNECT_TIMEOUT_MS`'
+number on purpose — both answer "how long do we wait for a human in another
+app", and two numbers for one question only invites the argument. The honest
+worst case is 90 + 30 s, because the last attempt can start just under the
+deadline and then time out.
+
+**Dense first, then wide, because the first gap is the whole of the delay the
+user feels.** A single 8 s interval was right about the long tail and wrong
+about the first ask: the first two land while the user is demonstrably standing
+at the signer, having just approved. The wide gap after that keeps the reason
+the 8 s existed — each re-issue is a relay round trip *and*, on a signer that
+did not queue the request, a fresh approval prompt, so a short interval spams
+the screen being waited on.
+
+**The wait ends on the first of three things, and a bare `setTimeout` is the
+wrong trigger on iOS.** Coming back to the tab is the one signal that says "they
+just approved" — the approval happens in another app, so the switch back is part
+of the act — and Safari throttles and suspends timers in a backgrounded tab, so
+the gap resumes on return with an arbitrary remainder still to run. Measured as
+*"I approve in Clave, switch back, and it sits there"*. `waitBeforeReissue` ends
+on the visibility wake, the timer (an approval given from Clave's notification
+never leaves Safari, so no visibilitychange fires), or the approval generation
+moving, which is what makes **Stop waiting** end the loop at once instead of
+after the rest of the gap. **One wake per sleep** — the listener is removed as
+it fires — so flapping between apps cannot become a burst of re-issues at the
+signer. Conduit's `waitForVisibleDocument`
+(`packages/core/src/protocol/interactive-signer.ts`) is the same primitive
+reached from the other side: theirs gates a dispatch on the page being visible.
+
+**The cancel is read BEFORE the banner is re-armed, and the order is the fix.**
+"Stop waiting" can only land while an attempt is on the wire, and the generation
+check used to sit *after* the sleep — so a cancelled wait re-armed the banner,
+slept, and then left through a `finally` whose generation guard refused to clear
+what the loop had just set: nothing waiting, notice still on screen, until some
+later wait happened to end cleanly. Pressing it twice cleared it, which is why
+it read as flaky. The `finally` now clears on `activeApprovalWaits.size === 0`
+alone: **the set is the authority**, the banner is up if and only if something
+is waiting, and a fresh wait that is waiting has its own token in the set.
+**The money path argues for the larger budget, not the smaller**, which is the
+opposite of the intuition: `publishBoostNote` signs AFTER the sats have moved,
+so a long wait costs a spinner beside a payment already reported as successful,
+while giving up early costs the note outright — `<PublishStatus>` renders
+"Publish failed" with **no retry control**, and nothing re-attempts a kind:1.
+
+**The two decrypts are deliberately NOT wrapped, and this is the inconsistency
+someone will tidy away.** Both already run inside a 10 s cap this module cannot
+see — `decryptWithTimeout` / `withDecryptTimeout` in `signer.ts`
+(`NIP44_DECRYPT_TIMEOUT_MS`), and `mutes.ts` puts the NIP-04 half through the
+same one. That cap is a `Promise.race`, which does not cancel what it outran, so
+an approval loop underneath would be **unreachable** (the outer race rejects at
+ten seconds with an `Error`) *and* would leave an orphaned loop firing
+re-issued requests at the signer for another eighty, each potentially a fresh
+prompt, with nobody left to consume the answer. Worse than not retrying. The
+cost is on the record: on a signer that queues, a private mute half, a private
+favorites half and "Restore from Nostr" still fail at ten seconds. Closing that
+means teaching `withDecryptTimeout` about the bunker case **first**, in
+`signer.ts`, and only then wrapping those two lines.
+
+**THE RISK THIS ACCEPTS, stated so it is not rediscovered as a bug.** NIP-46
+standardises no error strings, so a signer REFUSING outright may phrase it
+identically to one that is queueing — `permission denied` is a very plausible
+"the user tapped Deny" from nsec.app. That user now waits the full budget
+instead of failing fast. The answer is **not** a narrower pattern list, which
+would risk missing the string this exists for; it is that the wait is visible
+and one tap from over: `subscribeBunkerApproval` drives
+`<BunkerApprovalNotice>`, which carries **Stop waiting**
+(`cancelBunkerApprovalWait`). Rendered in the boost modal's `publishing` state,
+where the wait actually bites, and in `<AccountMenu>` so the control exists
+outside that one surface.
+
+**No `check:*` can pin the re-issue itself** — `bunker.ts` imports
+`nostr-tools` and touches browser globals. `scripts/e2e-mutes.mjs` scenarios
+**5d** and **5e** are the proof instead, against a real NIP-46 stub: 5d denies
+one `sign_event` and asserts the call still resolves, over two requests, on two
+different ids, with the template unaltered; 5e denies with different words and
+asserts one request and a fast failure. Its `signEnabled` flag is off by
+default because scenarios 1-5c were written against a stub that answered
+`sign_event` with "unsupported", and teaching it to sign underneath them would
+be editing the fixture to fit.
 
 ### Never make Amber render something the user did not ask to see
 
@@ -330,7 +712,27 @@ Two guards, both needed: `hasSpark()` before the SDK init, and **`sparkSeedIsAct
 The entry point lives in the combined **`<AuthControl>`** header control, not a standalone button — signed out, `<NostrAuth>` renders **only** the modal (its hydration effects and `completeSignIn` still run). Opening it flips `signInOpen`; the modal is a portal'd two-tab overlay (same pattern as `wallet-modal.tsx`):
 
 - **Browser Extension** — `loginWithExtension` (NIP-07); the button is disabled with a hint when `window.nostr` is absent.
-- **Remote Signer** — *Generate QR* (`nostrconnect://` via `loginWithNostrConnect`) and *Paste Bunker URI* (`loginWithBunker`) stacked, plus **"Sign in with Amber"** (`loginWithAmber`) on Android. Default tab when no extension is detected.
+- **Remote Signer** — *Option 1* (`nostrconnect://` QR via `loginWithNostrConnect`) and *Option 2: Paste Bunker URI* (`loginWithBunker`) stacked, plus **"Sign in with Amber"** (`loginWithAmber`) on Android and the **Clave** box on iOS. Default tab when no extension is detected, **and whenever a pairing is still pending** — see below.
+  **Option 1 stays GENERIC and stays BEHIND its button, and both were tried the other way.** "Clave support for the web" is not a missing mechanism: a desktop pairs Clave by scanning, and the code it scans is the same memoized URI — same client key, same two relays, same `perms` — so the flow already worked. For one commit this box was headed *"Scan with Clave"* with its pairing prepared on open, to make it the named Clave surface. Both halves were wrong on the screen rather than in the reasoning, and the screenshots are the argument: heading it after one signer names the wrong thing on the one platform where the code really is signer-neutral — a phone can be asked which app it has, a desktop browser cannot, and Primal, nsec.app and Amber pair from this same code. And preparing on open put a QR plus a ~400-character URI at the top of the modal before the user had chosen anything, which **pushed Option 2 off the bottom of the viewport entirely** (measured at 954x906) — besides opening two relay sockets and writing `bmb:nc_pending` for someone who may only have come to paste a `bunker://`. **Do not add a Clave-branded panel with its own QR either**: one pairing per session means it would draw the identical code twice on one screen. The iOS box above is the opposite case and is right as it is — one signer, named, prepared ahead of the tap, because an anchor's `href` has to exist before it is tapped.
+  **The iOS Clave box is a button and a status line, and nothing else.** It grew its own pair — *1. Open Clave* (`clave://`) and *2. Paste from Clave* (clipboard → `loginWithBunker`) — under a divider, which is Option 2 rebuilt inside one signer's panel. The tab then offered the same flow twice and the phone box was three controls deep. The convenience was real, so it MOVED rather than went: the clipboard read is Option 2's **Paste** button now, so nsec.app and Amber-in-server-mode get it too (`onPasteFromClipboard`; it must be a real click — `readText()` needs transient activation and iOS renders its own Paste confirmation on top). What did NOT move is the `clave://` scheme escape inside the slow and error blocks: that is not a duplicate of anything, it is the only cure for a Universal Link a user has switched off by tapping the clave.casa breadcrumb, which no page can detect. **Clave's docs call a pasted `bunker://` the reliable same-device iOS path**, so the Clave box's own copy names Option 2 by name in both the stall and the error case — one sentence away is reachable, a second copy of the section is not.
+
+**The iOS box mirrors the Android one and sits in the same slot** — above Option 1, because on the phone displaying the QR the QR is not an option. `isLikelyIOS()` gates it; that helper had been written and exported with zero call sites since the Amber work, and this is the first. Structurally it does NOT mirror it, and that is the point: the Android box's button dispatches, while `<ClaveConnectLink>` is an `<a href>` the user taps and `prepareClave()` only ever subscribes. There is no `launch` flag on the iOS side and nothing left for JavaScript to navigate.
+
+**`prepareClave` is called from three places, none of them a navigation**: the prepare-on-open effect, the anchor's own click (so a dead attempt gets a live subscription in the same gesture that leaves for the app — guarded on `claveBusy`, since re-subscribing over a live attempt just opens a second socket on one pairing), and the visibility retry on the way back. `claveAttempt` still means only the newest attempt may report an error, and `claveSettled` still means a success from ANY attempt signs in.
+
+**`claveBusy` is not "the user is waiting" any more, and `claveSent` is.** The pairing is prepared when the box opens, so busy is true before anyone has touched anything; only `claveSent` may say *"approve in Clave, then come back"*, relabel the control *"Open Clave again"*, or arm the nothing-happened timer. Reading the wrong one puts a *"Clave may not be installed"* hint under a button nobody has pressed.
+
+**`openAppLink` (`lib/app-link.ts`) is now the Amber button and the `clave://` escape** — the header row no longer calls it, and neither does anything else.
+
+**A fourth `visibilitychange` retry effect, and it introduces a collision the Android box never had.** The Clave button and the QR box both call `loginWithNostrConnect`, whose memo returns the SAME URI but builds a **fresh `ready`** — so if both effects fire on one return, two subscriptions resolve on one pairing and `finalizeBunkerLogin` runs twice: two live transports, `onSuccess`/`onClose` on an unmounted modal. `claveAttempt` guards only within its own branch. Reachable in two taps: tap *Sign in with Clave*, watch nothing happen because Clave is not installed, tap *Generate QR Code*. So the guards are mutual — the Clave effect bails on `genBusy || pasteBusy` (the same reason the Amber one bails on `amberBusy`: its documented next moves are in the same tab, and returning from *those* is a `visibilitychange` too), and the generate effect gains `claveBusy`.
+
+**A missing app produces no signal at all**, which is why there is a timer. An unregistered custom scheme on iOS is a silent no-op — no error, no navigation event, nothing observable — so after ~6 s of waiting the box says *"Nothing happened? Clave may not be installed"* with an App Store link. **Do not replace that with install-detection**: the usual `document.hidden` race reports "not installed" for any slow app switch, which is the ordinary case for a signer being cold-launched. The box also carries a one-tap *"Open Clave to copy a `bunker://` URI"* pointing at Option 2, because Clave's own doc recommends the bunker flow for same-device iOS pairing — it keeps this page in the foreground, so Safari never suspends the socket the handshake rides on. We lead with the deep link because it is one tap and the memoized re-subscribe already exists, but the vendor-recommended path has to be one tap away and labelled as such.
+
+**Which of the two links is the primary has been reversed three times; the argument is in "The launcher, reversed three times" above and is not repeated here.** As shipped: the Universal Link is `<ClaveConnectLink>`, a real `<a href>`, and `clave://` is `<ClaveSchemeButton>`, the labelled escape, which may go through `openAppLink` because a custom scheme IS dispatched from a scripted click. Routing the **Universal Link** through `openAppLink` is the one thing that must never happen — a scripted click cannot reach the app, so it navigates the tab to clave.casa and takes the waiting subscription with it.
+
+**Each link has a silence the other covers, and neither is detectable from the page** — see the launcher section above for both. That is why the timed hint offers the scheme escape and an App Store link rather than guessing between two nothings that look identical, and why a timer is the only signal either produces.
+
+**WHICH TAB THE MODAL OPENS ON IS A CORRECTNESS QUESTION, NOT A PREFERENCE**, and **every return-from-the-signer effect bails on `tab !== 'remote'`** — so on the wrong tab the ack arriving on the way back from the signer has nothing listening for it and the handshake fails where nobody can see it. `hasExt` answers it for a phone on its own: an iPhone has no extension, so Remote Signer is already the default and the Clave box is the first thing in it. `hasPendingNostrConnect()` is the case `hasExt` cannot answer — a pairing this tab LOST is resumed by an effect below whatever tab is showing, so the tab showing has to be the one that can report it. **There was a `signInIntent === 'clave'` and a "Sign in with Clave" row in `<AuthControl>`'s dropdown, and both are gone.** The row's stated job was to open this modal on the right tab; measured on an iPhone, "Sign in with Nostr" opens on that tab anyway. It was a second door into the same room, and the price of it was a menu listing the same sign-in twice. The signer is named in the Nostr row's SUBTITLE instead — *"Already have a key — Clave, Primal or an extension"* on iOS, Amber on Android — which does the one thing the row actually did: tell someone who owns Clave that this is their way in. Do not re-add it as a peer of "Sign in with Nostr"; Google's row is a peer because it mints a key for someone who has none, which is a different path, not a shortcut into the same one.
 
 Both tabs stay available so a desktop extension user can still pick a remote signer. The modal owns its per-method busy/error state and the **iOS visibility-retry** that re-attempts the nostrconnect handshake when Safari suspends the relay WebSocket on app-switch. On success it calls `index.tsx:completeSignIn(id, kind)`. `login-methods.tsx` now holds only the shared `<AmberCompletion>` clipboard-recovery helper.
 
@@ -348,6 +750,7 @@ One `window.focus` listener in `components/nostr-auth/index.tsx`, active only wh
 
 - **`subscribeAmberStage(fn)`** — `'idle' | 'awaiting' | 'returned'`. `<AmberCompletion>` flips its hint copy in lockstep with `invokeAmber`. While in flight it always shows a "◆ Read clipboard manually" button + paste textarea, because `visibilitychange` is unreliable on standalone-PWA returns.
 - **`subscribeBunkerHealth(fn)`** — boolean (stale or not); adapter calls run through `trackBunkerCall` with a 30 s timeout. `<BunkerHealthBanner>` in `<AccountMenu>` offers "Signer disconnected — Reconnect". Targets the iOS-PWA-suspended-WebSocket case.
+- **`subscribeBunkerApproval(fn)`** — `{ waiting, label, attempt }`, driven by `withApprovalWait`. A **third** observable rather than a second meaning for the health flag, because the two say opposite things: stale means the transport looks dead, this means it demonstrably is not. `<BunkerApprovalNotice>` renders it, carries **Stop waiting** (`cancelBunkerApprovalWait`), and returns null when idle so a surface can mount it unconditionally.
 
 
 
@@ -366,3 +769,14 @@ One `window.focus` listener in `components/nostr-auth/index.tsx`, active only wh
 So **this module passes its own pool in** (`params.pool` is public) and `BunkerAdapter` carries it. `closeBunkerTransport` then does both halves in order: `inner.close()` to end the subscription, `pool.destroy()` to return the sockets. Destroying outright is safe *only* because that pool belongs to one connection — **never hand it the shared pool from `lib/nostr/pool.ts`**, which would take every other query's connections with it.
 
 The `nostrconnect://` path owns its pool for the same reason and needs it more: it waits up to `NOSTRCONNECT_TIMEOUT_MS` for a signer that may never scan the QR at all, so the abandoned-transport case is the expected one there rather than the exception.
+
+**One pairing, many listeners, ONE live at a time — `NostrConnectAttempt.abandon`.** A pairing outlives its listener. The URI, client key and secret are memoized and reused; the *subscription* behind them is replaced whenever the page comes back from the signer app and cannot trust the socket it left with. Re-subscribing is right — iOS suspends a backgrounded WebSocket, and an ack delivered to a dead subscription is unrecoverable because kind:24133 is ephemeral. Doing it **additively** is what was wrong: all three boxes in the modal call `loginWithNostrConnect`, each returning the same URI and a fresh subscription, and the replaced listener kept its own `SimplePool` running for the rest of the 120 s window. Every app-switch stacked another set of sockets — against the per-host limit above, on the exact device the flow exists for, so the replacement's sockets could be the ones that never open.
+
+`startNostrConnect` therefore returns `abandon` beside `ready`, `loginWithNostrConnect` passes it through, and the modal routes all three call sites through one `startPairing` helper that closes the previous listener first (and `handleClose` closes the last one, which `clearPendingBunkerAttempts` never did — it forgets the memo, not the transport).
+
+Two rules on it, each a way to make things worse:
+
+- **`close()`, never `logout()`.** `close()` ends this listener's subscription; `logout()` is a NIP-46 method telling the signer to forget the client — and the client key is *shared* with the replacement, because keeping the approval the user already gave is the entire point. Conduit put the same warning in the same place: *"Never logout a superseded listener: its key may now belong to the winning listener for this same pairing."*
+- **A winning attempt cannot be abandoned.** Once `ready` resolves, that pool and that subscription **are** the app's live signer — `finalizeBunkerLogin` installed them as `window.nostr`. A caller cannot reasonably know this: the modal abandons an attempt whenever it starts another or the user dismisses it, and the winner is holding the handle at exactly that moment. So the guard lives in `abandon` itself, not at the call sites.
+
+Conduit run the same rule as a `while` loop rather than a ref, with `tests/nostrconnect-return-recovery.test.ts` asserting that a foreground return leaves the URI and the client key unchanged (`uris.length === 1`, `keyCount() === 1`) while the superseded sockets close.

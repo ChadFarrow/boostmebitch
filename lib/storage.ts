@@ -77,6 +77,7 @@ const KEYS = {
   profilePrefix: 'bmb:profile4',      // kind:0 metadata, keyed by pubkey (hex). Bumped on each PROFILE_RELAYS expansion — and here, to flush negative-cache entries poisoned by a relay-stall bug — so stale misses don't pin missing profiles for the miss TTL.
   mutedPrefix: 'bmb:muted',           // NIP-51 kind:10000 mute list cache, keyed by npub or 'guest'
   bunker: 'bmb:bunker',               // NIP-46 bunker session: { uri, clientSk } — single value (one bunker connection at a time)
+  ncPending: 'bmb:nc_pending',        // the nostrconnect:// pairing we are WAITING on: { uri, clientSk, ts }. Survives a navigation away, so an app-switch that reloads the tab can resume instead of orphaning the pairing. Ephemeral by TTL; no user key, same class of secret as bmb:bunker's clientSk.
   railPref: 'bmb:rail_pref',          // user's preferred boost rail; absent = follow pickRail() priority. 'nwc' | 'spark' | 'webln'.
   walletBalancePrefix: 'bmb:wallet_balance', // last-known balance + rail per npub, used to paint the header chip instantly while the SDK / NWC client reconnects on page load
   nwcBackupPrefix: 'bmb:nwc_backup',  // per-npub '1' when the user opted in to backing up their NWC connection string to Nostr (kind:30078, boostmebitch:wallet:nwc)
@@ -539,6 +540,51 @@ export const storage = {
     set: (v: { uri: string; clientSk: string }) =>
       safeSet(KEYS.bunker, JSON.stringify(v)),
     clear: () => safeRemove(KEYS.bunker),
+  },
+
+  /**
+   * The `nostrconnect://` pairing currently being waited on.
+   *
+   * WHY THIS IS ON DISK AND `nostrconnectMemo` IS NOT ENOUGH. Reported from an
+   * iPhone: Clave listed BoostMeBitch as a connected client with Full
+   * permission while the page still showed "Sign in". The pairing had
+   * succeeded — on Clave's side only. Handing the URI to the app navigated the
+   * tab (a scripted click on a Universal Link lands on the web page
+   * rather than opening the app), so by the time the user came back the page
+   * had reloaded: module state gone, subscription gone, and the ack delivered
+   * to nobody. kind:24133 is ephemeral, so nothing can replay it. (The tab
+   * navigated because a Universal Link only reaches the app from a real tap on
+   * a real anchor, and the launcher fires a scripted click — see
+   * lib/nostr/clave.ts.)
+   *
+   * Persisting the pairing does not recover that ack. What it recovers is the
+   * ABILITY TO ASK AGAIN: the same client secret key means Clave recognises an
+   * already-approved client and re-acks without a second approval, so "Send the
+   * request to Clave again" works after a reload instead of minting a stranger.
+   *
+   * `clientSk` is the ephemeral CLIENT identity for one NIP-46 transport, never
+   * the user's key — the same value `bmb:bunker` already persists, and for the
+   * same reason. It is cleared on a successful connect and by
+   * `clearPendingBunkerAttempts`, and ignored once older than its TTL.
+   */
+  ncPending: {
+    get: (): { uri: string; clientSk: string; ts: number } | null => {
+      const raw = safeGet(KEYS.ncPending);
+      if (!raw) return null;
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        if (typeof parsed.uri !== 'string' || typeof parsed.clientSk !== 'string') return null;
+        if (typeof parsed.ts !== 'number' || !Number.isFinite(parsed.ts)) return null;
+        if (!parsed.uri.startsWith('nostrconnect://')) return null;
+        return { uri: parsed.uri, clientSk: parsed.clientSk, ts: parsed.ts };
+      } catch {
+        return null;
+      }
+    },
+    set: (v: { uri: string; clientSk: string; ts: number }) =>
+      safeSet(KEYS.ncPending, JSON.stringify(v)),
+    clear: () => safeRemove(KEYS.ncPending),
   },
 
   nwcUri: {

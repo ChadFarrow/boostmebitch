@@ -1,5 +1,6 @@
 'use client';
 import type { PublishedNote } from '@/lib/nostr';
+import { BunkerApprovalNotice } from '../bunker-approval-notice';
 
 export type PublishState =
   | { kind: 'idle' }
@@ -11,7 +12,19 @@ export function PublishStatus({ state }: { state: PublishState }) {
   if (state.kind === 'idle') return null;
 
   if (state.kind === 'publishing') {
-    return <div className="text-xs text-nostr">◆ Publishing to nostr…</div>;
+    // The notice renders nothing unless a bunker is actually waiting on the
+    // user, so this costs a signed-out or extension user nothing. It is here
+    // because this is where the wait bites: a signer that queues its approvals
+    // can hold a boost note for up to 90 s, and "Publishing to nostr…" alone
+    // would read as a hang. It matters more here than anywhere else because
+    // there is no retry control below — a publish that gives up is a kind:1
+    // nothing re-attempts.
+    return (
+      <div className="text-xs text-nostr space-y-1">
+        <div>◆ Publishing to nostr…</div>
+        <BunkerApprovalNotice />
+      </div>
+    );
   }
 
   if (state.kind === 'error') {

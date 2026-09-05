@@ -137,13 +137,21 @@ export async function loginWithBunker(
  * resolves to a `NostrIdentity` once the signer connects back. Caller is
  * responsible for showing the URI to the user (paste / QR / copy) until
  * the promise settles.
+ *
+ * `abandon` is passed straight through from `startNostrConnect` rather than
+ * wrapped: a caller that opens a second listener on this pairing has to be able
+ * to close the first, and this is the only layer between it and the UI.
  */
 export function loginWithNostrConnect(
   onAuthUrl?: (url: string) => void,
-): { uri: string; ready: Promise<NostrIdentity> } {
-  const { uri, ready: adapterReady } = startNostrConnect(onAuthUrl);
+): { uri: string; ready: Promise<NostrIdentity>; abandon: () => void } {
+  const { uri, ready: adapterReady, abandon } = startNostrConnect(onAuthUrl);
   const ready = adapterReady.then((adapter) => finalizeBunkerLogin(adapter));
-  return { uri, ready };
+  // Same reason as `startNostrConnect`'s own: `.then` makes a NEW promise, and
+  // an abandoned attempt rejecting it with nobody attached is an unhandled
+  // rejection for a routine event.
+  ready.catch(() => { /* the caller's own handler reports what matters */ });
+  return { uri, ready, abandon };
 }
 
 function finalizeBunkerLogin(adapter: BunkerAdapter): NostrIdentity {
