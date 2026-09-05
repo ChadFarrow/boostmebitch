@@ -36,9 +36,11 @@
      with <Player>'s mini-bar sitting on top of it. `--tabbar-h` is the bar's
      own height; `--dock-b` is that plus the bottom safe-area inset, and it is
      what everything above the bar offsets by — the mini-bar's `bottom`, the
-     layout footer's padding, the episode-page BOOST FAB. The tab bar is the
-     ONLY element that pays `env(safe-area-inset-bottom)` itself; a second
-     element adding it was a visible gap on notched phones.
+     layout footer's padding, <HomePage>'s. The tab bar is the only element IN
+     THE NORMAL FLOW that pays `env(safe-area-inset-bottom)`; a second one
+     adding it was a visible gap on notched phones. The exceptions are the two
+     full-viewport overlays, <ModalShell> and <FullscreenPlayer>, which cover
+     the bar rather than sitting above it and pay the inset themselves.
      56px: a 20px icon, a 10px label, 4px between, centred — and, more to the
      point, a tap target a fifth of the screen wide and 56 tall clears the
      44px floor with no per-item min-h. */

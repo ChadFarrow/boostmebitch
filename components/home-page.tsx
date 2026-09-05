@@ -534,8 +534,8 @@ export function HomePage() {
   // client before React hydrates — so a returning user's first client render
   // disagreed with the server HTML and React 19 threw this subtree away. Every
   // term below is in-memory and null on both sides, so the hazard is gone
-  // rather than merely moved. The gate now lives in <FavoritesPage> and
-  // <FavoritesLink>, which are the surfaces that actually read those maps.
+  // rather than merely moved. The gate now lives in <FavoritesPage>, which is
+  // the surface that actually reads those maps.
   /**
    * The vocabulary for the lane that produced what is on screen.
    *

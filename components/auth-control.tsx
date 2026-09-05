@@ -182,7 +182,7 @@ export function AuthControl() {
                   here at all because search, playback and favorites all work
                   signed out, so hosting the theme control only where an
                   identity exists would take it away from every visitor who
-                  hasn't got one — the same reason <FavoritesLink> is not gated
+                  hasn't got one — the same reason the tab bar's Favorites tab is not gated
                   on `identity`. Leaves the menu open: you want to see the
                   palette land. */}
               <div className="border-t border-bone/15 mt-1 pt-1">

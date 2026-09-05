@@ -103,7 +103,8 @@ export function ThemeToggle() {
  * It is in the SIGNED-OUT menu and not only the account menu because favorites,
  * search and playback all work signed out. Hosting a preference only where an
  * identity exists would take the control away from every visitor who has not
- * signed in — the same reason `<FavoritesLink>` is not gated on `identity`.
+ * signed in — the same reason the tab bar's Favorites tab is not gated on
+ * `identity`.
  */
 export function ThemeMenuRow({ onDone }: { onDone?: () => void }) {
   const { goingLight, toggle } = useThemeMode();

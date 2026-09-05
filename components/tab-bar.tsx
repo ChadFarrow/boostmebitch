@@ -19,9 +19,11 @@ import { clearShowSelection, useApp } from '@/lib/store';
  * area, and it is the ONLY element that pays that inset. `<Player>`'s mini-bar
  * sits at `bottom: var(--dock-b)` — the tab bar's full height — and no longer
  * carries `pb-[env(safe-area-inset-bottom)]` of its own; two elements each
- * adding the inset was the visible gap on notched phones. Anything else that
- * must clear the bottom chrome (the layout footer, the episode-page BOOST FAB,
- * `<HomePage>`'s bottom padding) reads `--dock-b`, never a literal.
+ * adding the inset was the visible gap on notched phones. Anything else in the
+ * normal flow that must clear the bottom chrome (the layout footer,
+ * `<HomePage>`'s bottom padding) reads `--dock-b`, never a literal. The two
+ * full-viewport overlays are the exception and still pay the inset: they cover
+ * this bar rather than stacking on it.
  *
  * z-30, level with the mini-bar and below `<FullscreenPlayer>`'s z-50 and
  * `<ModalShell>`'s z-[60], so the expanded player and every dialog cover it

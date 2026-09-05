@@ -15,8 +15,9 @@ import { targetWord } from '@/lib/util';
 // in lists.tsx, the episode list and detail view, the fullscreen player, and the
 // podroll row — and having podroll reach into lists.tsx for it while lists.tsx
 // imports <Podroll> made a module cycle. `size`: 'sm' is the slim chip used in
-// list rows; 'md' matches .btn-ghost dimensions so it reads as a peer to SHARE
-// and BOOST in the header.
+// list rows; 'md' matches .btn-ghost dimensions; 'tile' is the `.tile` shape
+// the three action rows are built from (show header, episode page, fullscreen
+// player).
 //
 // Both shows and episodes go into ONE Nostr list, so both toggles schedule the
 // same `requestFavoritesSync`. See lib/nostr/favorites.ts.
