@@ -21,7 +21,11 @@ import { targetWord } from '@/lib/util';
 // Both shows and episodes go into ONE Nostr list, so both toggles schedule the
 // same `requestFavoritesSync`. See lib/nostr/favorites.ts.
 
-type Size = 'sm' | 'md';
+// 'tile' is the episode page's action-row shape: `.tile` from globals.css —
+// glyph over word, 52px, full width of its grid cell — with the heart's own
+// ON colours layered on. The word is always shown at this size; the tile is
+// as wide as its neighbours whatever it says.
+type Size = 'sm' | 'md' | 'tile';
 
 // `flex-shrink-0` is in the BASE string on purpose — a fixed-size control should
 // not squash. The mobile fix is making it SMALL (the 'sm' chip drops its word
@@ -31,6 +35,9 @@ type Size = 'sm' | 'md';
 // would change the chip on DESKTOP too, visibly, at lists.tsx (favorite-episode
 // rows) and podroll.tsx, where it is `self-center` and ~18px tall.
 function heartClasses(isFav: boolean, size: Size) {
+  if (size === 'tile') {
+    return `tile ${isFav ? 'border-nostr text-nostr hover:border-nostr hover:bg-nostr/10' : 'hover:border-nostr/70 hover:text-nostr'}`;
+  }
   return `inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 ${
     size === 'md'
       ? 'gap-1.5 px-2.5 py-2 text-sm sm:gap-2 sm:px-4'
@@ -84,7 +91,7 @@ function HeartButton({
           fixed macOS and let the shift straight back in somewhere else. */}
       <span
         className={`inline-block w-[0.9em] text-center ${
-          size === 'md' ? 'text-lg leading-none' : 'text-base leading-none'
+          size === 'sm' ? 'text-base leading-none' : 'text-lg leading-none'
         }`}
       >
         {isFav ? '♥' : '♡'}
@@ -114,8 +121,8 @@ function HeartButton({
           hearts indistinguishable — it just applies equally when `word` is
           unset. The aria-label is untouched and still spells out the whole
           action ("Unfavorite podcast"), so nothing is lost to a screen reader. */}
-      <span className={size === 'md' ? undefined : 'hidden sm:inline'}>
-        {word ?? 'FAVORITE'}
+      <span className={size === 'sm' ? 'hidden sm:inline' : undefined}>
+        {word ?? (size === 'tile' ? 'FAV' : 'FAVORITE')}
       </span>
     </button>
   );

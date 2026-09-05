@@ -142,6 +142,22 @@ body::before {
   .btn-compact {
     @apply px-2.5 gap-1.5 sm:px-4 sm:gap-2;
   }
+  /* A secondary action in a ROW OF PEERS: glyph over a one-word label, 52px
+     tall, full width of its grid cell. The episode page's Fav / Share / Stream /
+     Support / Discuss / More row is six of these. It exists because that row
+     was eight buttons at four sizes (.btn, .btn-ghost text-xs, text-[11px], a
+     .stamp) and the eye read it as a pile rather than a row; one shape at one
+     size is what makes it scan. Shared controls take it through their
+     `className` / `size` props (<CopyLinkButton className="tile">,
+     <FavEpisodeHeart size="tile">) so the heart's magenta ON state and the
+     COPIED flash still come from the components that own them. */
+  .tile {
+    @apply flex flex-col items-center justify-center gap-1 h-[52px] w-full px-1
+           text-[10px] font-mono uppercase tracking-wider leading-none
+           border border-bone/40 text-bone transition
+           hover:border-bone hover:bg-bone/5 active:translate-y-px;
+  }
+  .tile svg { @apply w-[18px] h-[18px]; }
   /* Inline follow toggle injected after an npub in show notes (components/notes-follows.ts). */
   .npub-follow-btn {
     @apply ml-2 align-middle inline-flex items-center text-[10px] font-mono font-semibold uppercase tracking-wider
