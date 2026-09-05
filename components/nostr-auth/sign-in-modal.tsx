@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ModalShell } from '../modal-shell';
 import dynamic from 'next/dynamic';
+import Image from 'next/image';
 // Lazy-loaded: <SignInModal> is imported by the header-mounted <NostrAuth> on
 // every page, but the QR only renders on the "Scan a QR code" screen. Dynamic
 // import keeps qrcode.react out of the initial bundle.
@@ -590,31 +591,36 @@ export function SignInModal({
    * one pairing, so `claveBusy` decides.
    */
   function ClaveConnectLink() {
+    // THE STATE LIVES IN THE SUBTITLE, which is what lets this be a row like
+    // every other one. It used to be a full-width yellow button with a
+    // paragraph under it, and that carried a rule of its own: while the
+    // handshake was finishing the button dropped to `btn-ghost`, because the
+    // loudest thing on screen telling someone who had just come back to go back
+    // again was wrong at exactly the moment it was wrongest. A row has no
+    // emphasis to drop — the three states read out of one line instead, and the
+    // rule survives as the magenta pulse rather than as a class swap.
+    const subtitle = !claveUri
+      ? 'Preparing connection…'
+      : claveReturned && claveBusy
+        ? <span className="text-nostr animate-bolt">◆ Finishing sign-in…</span>
+        : claveSent
+          ? 'Approve in Clave, then come back — this page finishes on its own.'
+          : 'Sign in with the Clave app on this phone.';
+    // No `href` until the pairing exists: an anchor whose link is not yet live
+    // is a tap that goes nowhere, and the Universal Link is the one mechanism
+    // here that cannot be built inside the click.
     if (!claveUri) {
-      return (
-        <button disabled className="btn-bolt w-full disabled:opacity-40">
-          Preparing connection…
-        </button>
-      );
+      return <MethodRow glyph="◆" logo="/clave-logo.png" title="Clave" subtitle={subtitle} onClick={() => {}} disabled />;
     }
-    // WHILE THE HANDSHAKE IS FINISHING THIS IS NOT THE ACTION, so it stops
-    // looking like one. It stays a real `<a href>` — that is the mechanism, and
-    // a class cannot change it — but a full-width yellow "Open Clave again" as
-    // the loudest thing on screen tells someone who has just come back that
-    // they still have work to do, at the exact moment they do not. The status
-    // line beside it is what matters then. Once the stall hint fires, going
-    // back to Clave IS the suggestion again, so the emphasis returns with it.
-    const finishing = claveReturned && claveBusy && !claveSlow && !claveErr;
     return (
-      <a
+      <MethodRow
+        glyph="◆"
+        logo="/clave-logo.png"
+        title="Clave"
+        subtitle={subtitle}
         href={claveUniversalLink(claveUri)}
-        target="_self"
-        rel="noopener"
         onClick={() => { markClaveSent(); if (!claveBusy) void prepareClave(); }}
-        className={`${finishing ? 'btn-ghost' : 'btn-bolt'} w-full no-underline`}
-      >
-        {claveSent ? 'Open Clave again' : 'Sign in with Clave'}
-      </a>
+      />
     );
   }
 
@@ -974,32 +980,69 @@ export function SignInModal({
    * lands the glyph beside the SUBTITLE instead of the title.
    *
    * GEOMETRIC GLYPHS, NOT EMOJI, and they inherit `text-nostr`. StableKraft use
-   * 🔌 🔑 📇 and real app logos; a colour emoji in this palette reads as a
-   * sticker beside ◆ and ⚡, which is the family `<AuthControl>`'s menu and the
-   * modal header already use. An app LOGO would be the exception worth making —
-   * it is the thing the user is looking for — but it has to be vendored rather
-   * than hot-linked, which is a separate decision.
+   * 🔌 🔑 📇 beside their app logos; a colour emoji in this palette reads as a
+   * sticker next to ◆ and ⚡, which is the family `<AuthControl>`'s menu and the
+   * modal header already use.
+   *
+   * AN APP LOGO IS THE ONE EXCEPTION, because it is the thing the user is
+   * actually scanning for: someone who owns Clave recognises its mark faster
+   * than any words beside it. It is **vendored into `public/`**, never
+   * hot-linked — an install page that goes down, changes its art or logs the
+   * request must not be able to reach into this modal. Clave's mark comes from
+   * Conduit, who vendored it for the same reason ("so the offline-capable apps
+   * never fetch it from clave.casa"); Primal's from StableKraft's own
+   * `public/primal-logo.png`. A row without a logo keeps its glyph, so the two
+   * kinds line up in one column.
    */
   function MethodRow({
-    glyph, title, subtitle, onClick, disabled,
+    glyph, logo, title, subtitle, onClick, href, disabled,
   }: {
     glyph: string;
+    /** A vendored app mark, shown INSTEAD of the glyph. See the header. */
+    logo?: string;
     title: string;
-    subtitle: string;
+    /** A node, not a string, so a row can carry its own live state — see the
+     *  Clave row, whose subtitle turns magenta while the handshake finishes. */
+    subtitle: React.ReactNode;
     onClick: () => void;
+    /** Renders an `<a>` instead of a `<button>`. ONE row component either way:
+     *  Clave's control must be a real anchor with a live `href`, because a
+     *  Universal Link opens the app only from a genuine tap on one, and a
+     *  second row component styled to match is how the two drift apart. */
+    href?: string;
     disabled?: boolean;
   }) {
-    return (
-      <button
-        onClick={onClick}
-        disabled={disabled}
-        className="w-full text-left border border-bone/15 p-3 flex items-start gap-3 transition hover:border-nostr/50 hover:bg-bone/5 disabled:opacity-40 disabled:hover:border-bone/15 disabled:hover:bg-transparent"
-      >
-        <span className="text-nostr w-5 shrink-0 text-center leading-5" aria-hidden>{glyph}</span>
+    const cls = 'w-full text-left border border-bone/15 p-3 flex items-start gap-3 transition hover:border-nostr/50 hover:bg-bone/5 disabled:opacity-40 disabled:hover:border-bone/15 disabled:hover:bg-transparent';
+    const inner = (
+      <>
+        {logo ? (
+          <Image
+            src={logo}
+            alt=""
+            aria-hidden
+            width={20}
+            height={20}
+            className="w-5 h-5 shrink-0 rounded object-contain"
+          />
+        ) : (
+          <span className="text-nostr w-5 shrink-0 text-center leading-5" aria-hidden>{glyph}</span>
+        )}
         <span className="flex flex-col min-w-0 gap-0.5">
           <span className="text-sm leading-5">{title}</span>
           <span className="text-[11px] text-muted">{subtitle}</span>
         </span>
+      </>
+    );
+    if (href) {
+      return (
+        <a href={href} target="_self" rel="noopener" onClick={onClick} className={`${cls} no-underline`}>
+          {inner}
+        </a>
+      );
+    }
+    return (
+      <button onClick={onClick} disabled={disabled} className={cls}>
+        {inner}
       </button>
     );
   }
@@ -1123,26 +1166,8 @@ export function SignInModal({
                   </div>
                 )}
                 {ios && (
-                  <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                  <>
                     <ClaveConnectLink />
-                    {/* THE BOX HAS TO SAY WHERE IN THE FLOW IT IS, and until
-                        now it said the same thing before and after the trip.
-                        `claveBusy` was never rendered anywhere — it existed
-                        only as a guard — so coming back from Clave changed
-                        nothing on screen, and the handshake finished (or did
-                        not) in silence. Three states, because the sequence
-                        has three: not gone yet, gone, come back. */}
-                    {claveReturned && claveBusy ? (
-                      <span className="text-[11px] text-nostr animate-bolt">
-                        ◆ Finishing sign-in with Clave…
-                      </span>
-                    ) : (
-                      <span className="text-[11px] text-muted">
-                        {claveSent
-                          ? 'Approve the connection in Clave, then come back here — this page finishes on its own. Nothing to paste.'
-                          : 'Your keys stay in Clave. Tapping this opens the app with the connection request already in it.'}
-                      </span>
-                    )}
                     {claveAuthUrl && (
                       <div className="flex flex-col items-start gap-1 border border-nostr/40 bg-nostr/10 p-2">
                         <span className="text-[10px] text-bone">
@@ -1226,32 +1251,16 @@ export function SignInModal({
                       </div>
                     )}
 
-                  </div>
+                  </>
                 )}
-                {/* The rest drill down, and their pairing is prepared on the way
-                    IN rather than here. Preparing on open was tried on desktop
-                    and reverted: it put a QR and a ~400-character URI on screen
-                    before the user had chosen anything, and opened two relay
-                    sockets for someone who may only have come to paste a
-                    `bunker://`. A method nobody has picked should not hold a
-                    socket. */}
-                {desktop && (
-                  <MethodRow
-                    glyph="⧉"
-                    title="Browser Extension"
-                    subtitle={hasExt
-                      ? 'Alby, nos2x, Nostr Connect — the fastest way in.'
-                      : 'No extension detected. Install Alby or nos2x, or use a signer below.'}
-                    onClick={onExtension}
-                    disabled={!hasExt || extBusy}
-                  />
-                )}
+
                 {/* PHONES ONLY. A desktop user pairs Primal by scanning, which
                     the QR row below already is — a launch link there would open
                     nothing, because the app is on the other device. */}
                 {!desktop && (
                   <MethodRow
                     glyph="◉"
+                    logo="/primal-logo.png"
                     title="Primal"
                     subtitle="Sign in with the Primal app on this phone."
                     onClick={() => goto('primal')}
