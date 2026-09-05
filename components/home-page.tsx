@@ -601,7 +601,7 @@ export function HomePage() {
   const inEpisodeDetail = useApp((s) => !!s.selectedEpisode);
 
   return (
-    <main className="min-h-screen pb-32">
+    <main className="min-h-screen" style={{ paddingBottom: 'calc(var(--dock-b) + 8rem)' }}>
       {/* Shared with /favorites — see <AppHeader> for why the wordmark is a
           button here and a link everywhere else, and for the 71px it owes
           `--app-header-h`. */}
