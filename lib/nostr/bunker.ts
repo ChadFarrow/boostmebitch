@@ -39,7 +39,7 @@ import {
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { storage } from '../storage';
 import { BRAND } from '../brand';
-import { CLAVE_RELAY } from './clave';
+import { CLAVE_RELAY, clearClaveHandoff } from './clave';
 import { isApprovalPending } from './nip46-errors';
 
 // Default relays for the GENERATE flow's nostrconnect:// URI. Multiple
@@ -283,6 +283,24 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  */
 function isRemoteSignerError(e: unknown): boolean {
   return !(e instanceof Error);
+}
+
+/**
+ * The one transient failure worth a second attempt: nostr-tools gave up on the
+ * relay subscription before the handshake completed.
+ *
+ * CASE-INSENSITIVE, and that is a fix rather than defensiveness. nostr-tools
+ * 2.19.4 throws `new Error("Subscription closed before connection was
+ * established.")` — capital S — while both retry guards here tested
+ * `String(e).includes('subscription closed')`. That never matched, so the
+ * one-shot reconnect below has never fired since it was written, and the four
+ * places the sign-in modal offers friendly copy for a dropped connection showed
+ * the raw library sentence instead. The case that retry exists for is precisely
+ * the one Clave and Amber hit: the OS suspends a backgrounded WebSocket while
+ * the user is approving in the signer app.
+ */
+function isSubscriptionClosed(e: unknown): boolean {
+  return /subscription closed/i.test(String(e));
 }
 
 // Wrap a bunker call with the timeout + stale-flag side effect.
@@ -564,7 +582,7 @@ export async function connectBunkerFromUri(
   try {
     conn = await attempt(BUNKER_CONNECT_TIMEOUT_MS);
   } catch (e) {
-    if (!String(e).includes('subscription closed')) throw e;
+    if (!isSubscriptionClosed(e)) throw e;
     await new Promise<void>(r => setTimeout(r, 1_000));
     conn = await attempt(BUNKER_RECONNECT_TIMEOUT_MS);
   }
@@ -586,6 +604,29 @@ export async function connectBunkerFromUri(
 export function clearPendingBunkerAttempts(): void {
   pendingClientSks.clear();
   nostrconnectMemo = null;
+  // The Clave handoff shadows that memo — it records which URI has already been
+  // handed to the app. Dropping one without the other leaves the next session
+  // believing it already launched for a URI that no longer exists, so the deep
+  // link silently never fires.
+  clearClaveHandoff();
+}
+
+/**
+ * Does this look like something `connectBunkerFromUri` could take?
+ *
+ * A cheap SHAPE test, not a parse — `sanitizeBunkerUri` + `parseBunkerInput`
+ * below do the real work and throw usefully. This exists so a clipboard read can
+ * tell "the user copied their bunker URI" from "the user last copied a shopping
+ * list", and decline to fire a connect attempt at the latter. Failing it costs
+ * a hint; passing junk costs a real error message, so it is deliberately loose
+ * on the two forms NIP-46 allows.
+ */
+export function looksLikeBunkerInput(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 2000) return false;
+  if (/^bunker:\/\//i.test(t)) return true;
+  // The NIP-05 form the paste box already accepts, e.g. name@example.com.
+  return /^[^\s@]+@[^\s@.]+\.[^\s@]+$/.test(t);
 }
 
 // Session-scoped memo for the GENERATE flow. iOS Safari kills the
@@ -612,41 +653,60 @@ let nostrconnectMemo:
  * previously generated clientSk + URI so the QR the user already
  * scanned remains valid.
  */
+/**
+ * The session's `nostrconnect://` URI, WITHOUT opening a subscription.
+ *
+ * `startNostrConnect` builds its `ready` eagerly — `BunkerSigner.fromURI`
+ * subscribes inside the constructor path — so calling it merely to read the URI
+ * leaves a live transport behind. That matters because a caller that only wants
+ * to build a deep link would then have TWO subscriptions on one pairing, and
+ * both would resolve on the single ack: two `finalizeBunkerLogin` calls, two
+ * transports, and the second closing the first out from under it.
+ *
+ * The header's Clave row is exactly that caller — it needs the URI inside the
+ * click, for the app-scheme activation, and wants the sign-in modal that mounts
+ * afterwards to own the one subscription. So the memo is created here and both
+ * paths read it.
+ */
+export function nostrConnectUri(): string {
+  return ensureNostrConnectMemo().uri;
+}
+
+function ensureNostrConnectMemo(): { uri: string; clientSk: Uint8Array; secret: string } {
+  if (nostrconnectMemo) return nostrconnectMemo;
+  const clientSk = generateSecretKey();
+  const clientPubkey = getPublicKey(clientSk);
+  // Random secret echoes back from the bunker's "connect" reply so we know
+  // the connection paired correctly (NIP-46 requires this).
+  const secret = bytesToHex(generateSecretKey()).slice(0, 16);
+  const uri = createNostrConnectURI({
+    clientPubkey,
+    relays: NOSTRCONNECT_RELAYS,
+    secret,
+    // `wireName`, NOT `displayName`, and the reason is the encoder rather
+    // than taste: createNostrConnectURI builds the query with
+    // URLSearchParams, which writes a space as `+`. Amber percent-decodes and
+    // leaves `+` alone, so "Boost Me Bitch" reached its approval screen as
+    // "Boost+Me+Bitch" — measured on a Pixel 6, Amber 6.5.2. That screen is
+    // where a user decides whether to trust this app, so the name has to be
+    // right. `wireName` is the brand's no-spaces form and already serves the
+    // same purpose in the boostagram `app_name` and the note `client` tag.
+    //
+    // It also keeps the two deploys apart in Amber's CONNECTION LIST, which
+    // is not a bonus but the second half of the same measurement: Amber keys
+    // a connection by this name, so while both deploys sent the identical
+    // string it offered to REPLACE the existing connection — the live site's
+    // signer link — when the other one signed in.
+    name: BRAND.wireName,
+  });
+  nostrconnectMemo = { uri, clientSk, secret };
+  return nostrconnectMemo;
+}
+
 export function startNostrConnect(
   onAuthUrl?: (url: string) => void,
 ): { uri: string; ready: Promise<BunkerAdapter> } {
-  let clientSk: Uint8Array;
-  let uri: string;
-  if (nostrconnectMemo) {
-    ({ clientSk, uri } = nostrconnectMemo);
-  } else {
-    clientSk = generateSecretKey();
-    const clientPubkey = getPublicKey(clientSk);
-    // Random secret echoes back from the bunker's "connect" reply so we know
-    // the connection paired correctly (NIP-46 requires this).
-    const secret = bytesToHex(generateSecretKey()).slice(0, 16);
-    uri = createNostrConnectURI({
-      clientPubkey,
-      relays: NOSTRCONNECT_RELAYS,
-      secret,
-      // `wireName`, NOT `displayName`, and the reason is the encoder rather
-      // than taste: createNostrConnectURI builds the query with
-      // URLSearchParams, which writes a space as `+`. Amber percent-decodes and
-      // leaves `+` alone, so "Boost Me Bitch" reached its approval screen as
-      // "Boost+Me+Bitch" — measured on a Pixel 6, Amber 6.5.2. That screen is
-      // where a user decides whether to trust this app, so the name has to be
-      // right. `wireName` is the brand's no-spaces form and already serves the
-      // same purpose in the boostagram `app_name` and the note `client` tag.
-      //
-      // It also keeps the two deploys apart in Amber's CONNECTION LIST, which
-      // is not a bonus but the second half of the same measurement: Amber keys
-      // a connection by this name, so while both deploys sent the identical
-      // string it offered to REPLACE the existing connection — the live site's
-      // signer link — when the other one signed in.
-      name: BRAND.wireName,
-    });
-    nostrconnectMemo = { uri, clientSk, secret };
-  }
+  const { uri, clientSk } = ensureNostrConnectMemo();
   const memoUri = uri;
   const ready = (async () => {
     // Our pool, for the reason on `BunkerAdapter.pool`: this flow waits up to
@@ -739,7 +799,7 @@ export async function restoreBunkerFromStorage(): Promise<BunkerAdapter | null> 
   try {
     conn = await attempt(BUNKER_CONNECT_TIMEOUT_MS);
   } catch (e) {
-    if (!String(e).includes('subscription closed')) throw e;
+    if (!isSubscriptionClosed(e)) throw e;
     await new Promise<void>(r => setTimeout(r, 1_000));
     conn = await attempt(BUNKER_RECONNECT_TIMEOUT_MS);
   }

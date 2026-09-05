@@ -129,6 +129,27 @@ rests on the exact `2.19.4` pin above. If that ever moves, re-read `nip46.js` by
 hand: a version that wraps `o.error` in an `Error` reverts this silently rather
 than breaking loudly.
 
+### "Subscription closed" never matched, so the reconnect never ran
+
+nostr-tools 2.19.4 throws `new Error("Subscription closed before connection was
+established.")` — **capital S**. Five places tested
+`.includes('subscription closed')` in lower case, and none of them ever matched.
+
+Two were functional. `connectBunkerFromUri` and `restoreBunkerFromStorage` each
+wrap their first `attempt()` in a `catch` that is supposed to retry once at
+`BUNKER_RECONNECT_TIMEOUT_MS`; the guard rethrew every time, so **that one-shot
+reconnect had never fired since it was written**. The case it exists for is
+exactly the one Clave and Amber hit — the OS suspends a backgrounded WebSocket
+while the user is approving in the signer app — so the miss was invisible
+precisely where it cost the most.
+
+The other three (four counting the Clave box) are the sign-in modal's friendly
+copy for a dropped handshake. Every one of them showed the raw library sentence
+instead of the line telling the user what to do next. Fixed with one
+case-insensitive predicate on each side: `isSubscriptionClosed` in `bunker.ts`,
+`connectionDropped` in the modal. Both are `/…/i` tests rather than a second
+lower-cased literal, because a literal is how this happened.
+
 ### A permission error from Clave is a queue receipt, not a refusal
 
 The section above establishes that an error RESPONSE proves the round trip
@@ -411,7 +432,7 @@ The entry point lives in the combined **`<AuthControl>`** header control, not a 
 - **Browser Extension** — `loginWithExtension` (NIP-07); the button is disabled with a hint when `window.nostr` is absent.
 - **Remote Signer** — *Generate QR* (`nostrconnect://` via `loginWithNostrConnect`) and *Paste Bunker URI* (`loginWithBunker`) stacked, plus **"Sign in with Amber"** (`loginWithAmber`) on Android and **"Sign in with Clave"** on iOS. Default tab when no extension is detected.
 
-**The iOS box mirrors the Android one and sits in the same slot** — above Option 1, because on the phone displaying the QR the QR is not an option. `isLikelyIOS()` gates it; that helper had been written and exported with zero call sites since the Amber work, and this is the first. `onClaveConnect` is `onAmberConnect` with one line changed: `openInSignerApp(claveOpenLink(uri))`, the `clave://connect?uri=` wrapper rather than the bare URI. Same `claveOpened` (open the memoized URI ONCE, so a return-retry re-subscribes instead of sending the user back) and same `claveAttempt` (only the newest attempt may report).
+**The iOS box mirrors the Android one and sits in the same slot** — above Option 1, because on the phone displaying the QR the QR is not an option. `isLikelyIOS()` gates it; that helper had been written and exported with zero call sites since the Amber work, and this is the first. `onClaveConnect` is `onAmberConnect` with one line changed: `openAppLink(claveOpenLink(uri))`, the `clave://connect?uri=` wrapper rather than the bare URI. Same `claveAttempt` (only the newest attempt may report); the "opened once" half is `claimClaveHandoff` above rather than a ref, because two components launch Clave. **`openAppLink` (`lib/app-link.ts`) is shared with the Amber button and the header row** — three callers now, and an anchor click rather than `location.href` for the reason `amber.ts` measured.
 
 **A fourth `visibilitychange` retry effect, and it introduces a collision the Android box never had.** The Clave button and the QR box both call `loginWithNostrConnect`, whose memo returns the SAME URI but builds a **fresh `ready`** — so if both effects fire on one return, two subscriptions resolve on one pairing and `finalizeBunkerLogin` runs twice: two live transports, `onSuccess`/`onClose` on an unmounted modal. `claveAttempt` guards only within its own branch. Reachable in two taps: tap *Sign in with Clave*, watch nothing happen because Clave is not installed, tap *Generate QR Code*. So the guards are mutual — the Clave effect bails on `genBusy || pasteBusy` (the same reason the Amber one bails on `amberBusy`: its documented next moves are in the same tab, and returning from *those* is a `visibilitychange` too), and the generate effect gains `claveBusy`.
 

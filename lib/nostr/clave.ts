@@ -80,3 +80,40 @@ export function claveOpenLink(uri: string): string {
 /** Open Clave without handing it a pairing URI — for the `bunker://` fallback,
  *  where the user goes to the app to COPY a URI and brings it back here. */
 export const CLAVE_OPEN_URL = 'clave://';
+
+// Which pairing URI has already been handed to the Clave app this session.
+//
+// IT IS MODULE STATE RATHER THAN A REF BECAUSE TWO COMPONENTS LAUNCH CLAVE. The
+// header row starts the handshake inside its own click — the only moment Safari
+// will let an app-scheme navigation through — and the sign-in modal then mounts
+// and picks the same pairing up. `startNostrConnect` memoizes ONE URI per
+// session, so both see the same string; without a shared record the modal would
+// treat it as new and fire a second navigation at an app the user is already
+// standing in.
+//
+// Cleared by `clearPendingBunkerAttempts` in bunker.ts, alongside the memo it
+// shadows, so the two can never disagree about which pairing is live.
+let handedToClave: string | null = null;
+
+/**
+ * Claim the right to open Clave for this URI. True exactly once per URI.
+ *
+ * The caller that gets `true` performs the navigation; every later caller —
+ * the modal mounting behind the header row, or a visibility retry after the
+ * user comes back — gets `false` and re-subscribes instead. That distinction is
+ * the whole point: a retry must not send someone back to an app they have
+ * already approved in.
+ */
+export function claimClaveHandoff(uri: string): boolean {
+  if (handedToClave === uri) return false;
+  handedToClave = uri;
+  return true;
+}
+
+/** Forget the claim, so the next attempt launches again. Called when the
+ *  pairing memo is dropped, and by the "Open Clave again" control — the one
+ *  case where re-launching IS the point, because the ack was lost and the user
+ *  never got to approve. */
+export function clearClaveHandoff(): void {
+  handedToClave = null;
+}

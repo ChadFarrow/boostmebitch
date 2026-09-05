@@ -3,6 +3,7 @@ import { useWalletChange } from '@/lib/use-wallet-change';
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { isGoogleAuthConfigured, preloadGis, startGoogleSignIn } from '@/lib/nostr/google-auth';
+import { isLikelyIOS, startClaveSignIn } from '@/lib/nostr';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
 import { WalletBalanceChip } from './wallet-balance';
 import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
@@ -23,6 +24,9 @@ import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
 // routes, and the tab bar's Wallet tab opens the modal from every route.
 export function AuthControl() {
   const identity = useApp((s) => s.identity);
+  // Read once on the client, like <SignInModal>'s own flag, so `navigator`
+  // stays off the server render.
+  const [ios] = useState(() => isLikelyIOS());
   const setWalletOpen = useApp((s) => s.setWalletOpen);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const walletRestoring = useApp((s) => s.walletRestoring);
@@ -132,6 +136,35 @@ export function AuthControl() {
                   <span className="text-[11px] text-muted">Already have a key — extension or signer</span>
                 </span>
               </button>
+              {/* Same argument as the Google row below, applied to the one
+                  signer an iPhone user is most likely to have: reaching Clave
+                  from here cost three taps — open this menu, "Sign in with
+                  Nostr", then the Clave button inside the modal — for a flow
+                  whose whole point is that it is one tap and an approval.
+                  iOS only, because the link goes nowhere on anything else. */}
+              {ios && (
+                <button
+                  role="menuitem"
+                  onClick={() => {
+                    // FIRST and synchronously, exactly as the Google row does
+                    // and for a stricter version of the same reason: Safari
+                    // gates an app-scheme navigation on this click's transient
+                    // activation, and the modal mounts in a later task. It
+                    // cannot launch Clave itself — it can only pick up the
+                    // pairing this started.
+                    startClaveSignIn();
+                    setMenuOpen(false);
+                    setSignInOpen(true, 'clave');
+                  }}
+                  className="w-full text-left px-3 py-2 rounded hover:bg-bone/5 transition flex items-start gap-2 text-sm"
+                >
+                  <span className="text-nostr w-4 shrink-0 text-center leading-5">◆</span>
+                  <span className="flex flex-col">
+                    <span>Sign in with Clave</span>
+                    <span className="text-[11px] text-muted">Approve in the app — nothing to paste</span>
+                  </span>
+                </button>
+              )}
               {/* A peer of the option above, not a detail inside it. This used to
                   live only INSIDE the sign-in modal, which meant the people it
                   exists for had to first pick "Sign in with Nostr" to reach the

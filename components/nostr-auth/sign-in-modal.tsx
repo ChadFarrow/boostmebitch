@@ -16,10 +16,14 @@ import {
   isLikelyAndroid,
   isLikelyIOS,
   claveOpenLink,
+  claimClaveHandoff,
+  clearClaveHandoff,
+  looksLikeBunkerInput,
   CLAVE_APP_STORE_URL,
   CLAVE_OPEN_URL,
   type NostrIdentity,
 } from '@/lib/nostr';
+import { openAppLink } from '@/lib/app-link';
 import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/amber';
 import { isGoogleAuthConfigured, preloadGis } from '@/lib/nostr/google-auth';
 import { useApp } from '@/lib/store';
@@ -32,29 +36,19 @@ type Tab = 'extension' | 'remote';
 // How long a Clave tap sits with no return signal before the box says the app
 // may not be installed. Long enough to cover a cold launch of a signer that has
 // to be woken; short enough to beat the user's own patience. It is a hint on a
-// timer, never a detection — see openInSignerApp.
+// timer, never a detection — see lib/app-link.ts.
 const CLAVE_SLOW_MS = 6_000;
 
-// Hand a signer-app URI to the OS — Android's intent picker, or iOS' scheme
-// handler. An anchor click rather than a bare `location.href` assignment, for
-// the reason lib/nostr/amber.ts gives: some Android browsers hand a custom
-// scheme to the intent picker reliably from a click and silently drop it as a
-// "navigation hint" from an assignment. iOS Safari wants the same shape, and
-// one helper for both is what keeps the two branches from drifting.
+// Did the relay handshake drop, rather than fail for a reason worth quoting?
 //
-// ON iOS THERE IS NO FAILURE SIGNAL. A custom scheme nothing has registered is
-// a silent no-op — no error, no navigation event, nothing observable. So the
-// not-installed case cannot be detected here and is handled by the timed hint
-// in the Clave box instead.
-function openInSignerApp(uri: string) {
-  const a = document.createElement('a');
-  a.href = uri;
-  a.rel = 'noopener';
-  a.style.display = 'none';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
+// CASE-INSENSITIVE: nostr-tools throws "Subscription closed before connection
+// was established." with a capital S, so the four `.includes('subscription
+// closed')` tests these replace never matched and every one of these boxes
+// showed the raw library sentence instead of copy telling the user what to do.
+function connectionDropped(msg: string): boolean {
+  return /timed out|subscription closed/i.test(msg);
 }
+
 
 
 // Single sign-in surface: one "Sign in with Nostr" button opens this modal,
@@ -95,6 +89,11 @@ export function SignInModal({
   const [googleOpen] = useState(
     () => googleConfigured && useApp.getState().signInIntent === 'google',
   );
+  // The header row already launched Clave inside its own click — it had to, for
+  // the transient activation. This modal's job is to be the screen that was
+  // missing: subscribe to the same pairing, show the waiting state, and own the
+  // retry. Read once, never subscribed, for the same reason `googleOpen` is.
+  const [claveIntent] = useState(() => useApp.getState().signInIntent === 'clave');
 
   // Browser-extension flow.
   const [extBusy, setExtBusy] = useState(false);
@@ -142,13 +141,18 @@ export function SignInModal({
   // copy that into a second branch.
   const [claveAuthUrl, setClaveAuthUrl] = useState<string | null>(null);
   // Drives the "nothing happened?" hint. It is the ONLY signal available for a
-  // missing app: see openInSignerApp's comment.
+  // missing app: see lib/app-link.ts.
   const [claveSlow, setClaveSlow] = useState(false);
+  // The clipboard route into the bunker:// fallback — see onPasteFromClave.
+  const [clipErr, setClipErr] = useState<string | null>(null);
   const claveSlowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Same roles as amberNcOpened / amberNcAttempt above: open the memoized URI
-  // ONCE (a return-retry re-subscribes, it does not send the user back to
-  // Clave), and let only the newest attempt report.
-  const claveOpened = useRef<string | null>(null);
+  // Only the newest attempt may report — same role as amberNcAttempt above.
+  //
+  // There is no `claveOpened` ref beside it, and that asymmetry with the Amber
+  // box is deliberate: the "have we already handed this URI to the app" record
+  // lives in lib/nostr/clave.ts, because the HEADER row can launch Clave before
+  // this modal exists. A ref here would start life null in that case and fire a
+  // second navigation at an app the user is already standing in.
   const claveAttempt = useRef(0);
   // Paste bunker:// flow.
   const [pasteValue, setPasteValue] = useState('');
@@ -204,7 +208,7 @@ export function SignInModal({
       const { uri, ready } = loginWithNostrConnect((url) => setGenAuthUrl(url));
       if (amberNcOpened.current !== uri) {
         amberNcOpened.current = uri;
-        openInSignerApp(uri);
+        openAppLink(uri);
       }
       const id = await ready;
       // A superseded attempt that wins its race anyway must not sign in a second
@@ -246,12 +250,12 @@ export function SignInModal({
     }, CLAVE_SLOW_MS);
     try {
       const { uri, ready } = loginWithNostrConnect((url) => setClaveAuthUrl(url));
-      if (claveOpened.current !== uri) {
-        claveOpened.current = uri;
-        // The `clave://connect?uri=` wrapper, NOT the bare nostrconnect URI —
-        // see lib/nostr/clave.ts for why the encoding is load-bearing.
-        openInSignerApp(claveOpenLink(uri));
-      }
+      // Claimed once per URI, across BOTH launch sites. A retry — the visibility
+      // effect below, or a second tap — re-subscribes without sending the user
+      // back to an app they have already approved in. The
+      // `clave://connect?uri=` wrapper, NOT the bare nostrconnect URI; see
+      // lib/nostr/clave.ts for why the encoding is load-bearing.
+      if (claimClaveHandoff(uri)) openAppLink(claveOpenLink(uri));
       const id = await ready;
       if (!isCurrent()) return;
       onSuccess(id, 'bunker');
@@ -265,6 +269,74 @@ export function SignInModal({
         if (claveSlowTimer.current) { clearTimeout(claveSlowTimer.current); claveSlowTimer.current = null; }
       }
     }
+  }
+
+  /**
+   * Take the `bunker://` URI straight off the clipboard.
+   *
+   * This is the fallback Clave's own docs call the reliable one on iOS, and it
+   * was the slowest thing in this modal: open Clave, copy, come back, tap the
+   * field, long-press, Paste, tap Connect. Reading the clipboard collapses that
+   * to one tap plus iOS' own paste confirmation.
+   *
+   * It must be called FROM A CLICK — `readText()` needs transient activation on
+   * every browser that implements it, and iOS Safari additionally renders its
+   * own "Paste" button that the user has to press. That system prompt is why
+   * this is an explicit control rather than something the visibility listener
+   * does on return: a paste sheet appearing unbidden reads as the page
+   * misbehaving.
+   *
+   * `looksLikeBunkerInput` is a shape test, not a parse. Someone whose clipboard
+   * still holds a shopping list gets a hint instead of a connect attempt and a
+   * parser error about their shopping list.
+   */
+  async function onPasteFromClave() {
+    setClipErr(null);
+    let text: string;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      // Denied, unsupported, or no activation left. The paste box below still
+      // works, so say that rather than describing a permission screen.
+      setClipErr('Could not read the clipboard — paste the URI under Option 2 below.');
+      return;
+    }
+    const trimmed = text.trim();
+    if (!looksLikeBunkerInput(trimmed)) {
+      setClipErr('That does not look like a bunker:// URI. Copy it in Clave, then tap again.');
+      return;
+    }
+    // Hand it to the existing paste flow rather than a second one, so the box
+    // below shows what is being connected and one code path owns the errors.
+    setPasteValue(trimmed);
+    setPasteBusy(true);
+    setPasteErr(null);
+    setPasteAuthUrl(null);
+    try {
+      const id = await loginWithBunker(trimmed, (url) => setPasteAuthUrl(url));
+      onSuccess(id, 'bunker');
+      onClose();
+    } catch (e) {
+      setPasteErr(getErrorMessage(e, 'bunker connect failed'));
+    } finally {
+      setPasteBusy(false);
+    }
+  }
+
+  /**
+   * Send the user back to Clave on the SAME pairing.
+   *
+   * The ordinary retry deliberately does not re-launch — a user who already
+   * approved should not be bounced into the app again. But the other failure is
+   * real and looks identical from here: iOS suspended this page's WebSocket
+   * during the app switch, the ack was lost, and the user never got a prompt to
+   * approve. kind:24133 is ephemeral, so re-subscribing cannot replay it. The
+   * only way out is to ask Clave again, and that has to be the user's call
+   * because only they know whether they saw a prompt.
+   */
+  function onReopenClave() {
+    clearClaveHandoff();
+    onClaveConnect();
   }
 
   async function onGenerate() {
@@ -402,6 +474,19 @@ export function SignInModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, pasteErr, pasteBusy, pasteValue]);
 
+  // Pick up the handshake the header row started. `startClaveSignIn` deliberately
+  // dropped its own promise, so nothing is awaiting the ack until this runs —
+  // and `claimClaveHandoff` has already been taken for that URI, so this
+  // subscribes without launching Clave a second time.
+  useEffect(() => {
+    // `ios` as well as the intent: the box that reports this attempt only
+    // renders on iOS, so without it a stray intent would leave a request in
+    // flight with no screen attached to it — busy state nobody can see or cancel.
+    if (!claveIntent || !ios) return;
+    onClaveConnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [claveIntent, ios]);
+
   // The "may not be installed" timer is the one thing here that outlives the
   // render if nobody clears it: it fires setState on an unmounted modal after
   // the user gives up and closes.
@@ -509,9 +594,17 @@ export function SignInModal({
                 </>
               ) : (
                 <>
+                  {/* Name the signer whose button is directly below this
+                      sentence. It used to read "Primal (iOS/Android), Amber
+                      (Android)" on every platform, so an iPhone user met a
+                      paragraph listing an Android app and not the one they were
+                      about to tap. */}
                   <p className="text-xs text-muted">
-                    Connect using a remote signer like Primal (iOS/Android), Amber
-                    (Android), or any NIP-46 compatible app.
+                    {ios
+                      ? 'Connect using a signer app on this phone — Clave or Primal — or any NIP-46 compatible app.'
+                      : android
+                        ? 'Connect using a signer app on this phone — Amber or Primal — or any NIP-46 compatible app.'
+                        : 'Connect using a remote signer like Primal (iOS/Android), Amber (Android), Clave (iOS), or any NIP-46 compatible app.'}
                   </p>
 
                   {android && (
@@ -531,7 +624,7 @@ export function SignInModal({
                       )}
                       {amberNcErr && (
                         <span className="text-[11px] text-nostr/80">
-                          {amberNcErr.includes('timed out') || amberNcErr.includes('subscription closed')
+                          {connectionDropped(amberNcErr)
                             ? 'Connection dropped — approve in Amber, then tap Sign in with Amber again.'
                             : amberNcErr}
                         </span>
@@ -588,7 +681,7 @@ export function SignInModal({
                       )}
                       {/* The ONLY signal a missing app produces. An unregistered
                           scheme on iOS is a silent no-op, so this is a timer, not
-                          a detection — see openInSignerApp. */}
+                          a detection — see lib/app-link.ts. */}
                       {claveSlow && claveBusy && (
                         <span className="text-[11px] text-muted">
                           Nothing happened? Clave may not be installed —{' '}
@@ -603,28 +696,58 @@ export function SignInModal({
                         </span>
                       )}
                       {claveErr && (
-                        <span className="text-[11px] text-nostr/80">
-                          {claveErr.includes('timed out') || claveErr.includes('subscription closed')
-                            ? 'Connection dropped, or Clave is not installed — approve in Clave, then tap Sign in with Clave again.'
-                            : claveErr}
-                        </span>
+                        <div className="flex flex-col items-start gap-1">
+                          <span className="text-[11px] text-nostr/80">
+                            {connectionDropped(claveErr)
+                              ? 'No answer yet. If you approved in Clave, tap Sign in with Clave again — if you never saw a prompt, send the request again.'
+                              : claveErr}
+                          </span>
+                          {/* Two different failures wear the same face here, and
+                              only the user can tell them apart: an ack this page
+                              was asleep for, or a request Clave never showed
+                              them. The ordinary retry re-subscribes; this one
+                              asks Clave again. */}
+                          <button
+                            onClick={onReopenClave}
+                            className="btn-ghost text-[10px] py-1 px-2"
+                          >
+                            Send the request to Clave again
+                          </button>
+                        </div>
                       )}
-                      {/* Clave's own compatibility doc recommends a bunker:// URI
-                          for same-device iOS pairing: that flow keeps THIS page
-                          in the foreground, so Safari never suspends the
-                          WebSocket the handshake rides on. We lead with the deep
-                          link because it is one tap, but the vendor-recommended
-                          path has to be one tap away and labelled as such. */}
-                      <button
-                        onClick={() => openInSignerApp(CLAVE_OPEN_URL)}
-                        className="btn-ghost text-[10px] py-1 px-2 self-start"
-                      >
-                        Open Clave to copy a bunker:// URI
-                      </button>
-                      <span className="text-[10px] text-muted">
-                        Then paste it under Option 2 below. Slower, but it does not
-                        depend on this page surviving the app switch.
-                      </span>
+
+                      {/* The fallback, and the reason it is one tap rather than a
+                          copy-paste chore. Clave's own compatibility doc
+                          recommends a bunker:// URI for same-device iOS pairing,
+                          because that flow keeps THIS page in the foreground and
+                          Safari never suspends the WebSocket the handshake rides
+                          on. We lead with the deep link because it is faster when
+                          it works — but the vendor-recommended path has to be
+                          right here, and it has to not feel like work. */}
+                      <div className="border-t border-bone/15 pt-2 mt-1 flex flex-col gap-1.5">
+                        <span className="text-[10px] text-muted">
+                          Nothing came back? Copy the <code className="text-[9px]">bunker://</code>{' '}
+                          URI from Clave instead — this page stays open the whole time.
+                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            onClick={() => openAppLink(CLAVE_OPEN_URL)}
+                            className="btn-ghost text-[10px] py-1 px-2"
+                          >
+                            1. Open Clave
+                          </button>
+                          <button
+                            onClick={onPasteFromClave}
+                            disabled={pasteBusy}
+                            className="btn-bolt text-[10px] py-1 px-2 disabled:opacity-40"
+                          >
+                            {pasteBusy ? 'Connecting…' : '2. Paste from Clave'}
+                          </button>
+                        </div>
+                        {clipErr && (
+                          <span className="text-[10px] text-nostr/80">{clipErr}</span>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -693,7 +816,7 @@ export function SignInModal({
                     )}
                     {genErr && (
                       <span className="text-[10px] text-nostr/80">
-                        {genErr.includes('subscription closed') || genErr.includes('timed out')
+                        {connectionDropped(genErr)
                           ? 'Connection dropped — approve in your signer then tap Try again.'
                           : genErr}
                       </span>
@@ -757,7 +880,7 @@ export function SignInModal({
                     {pasteErr && (
                       <div className="flex flex-col items-start gap-1">
                         <span className="text-[10px] text-nostr/80">
-                          {pasteErr.includes('timed out') || pasteErr.includes('subscription closed')
+                          {connectionDropped(pasteErr)
                             ? 'Connection dropped — tap Connect again, then approve in your signer once more.'
                             : pasteErr}
                         </span>

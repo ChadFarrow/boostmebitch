@@ -7,6 +7,7 @@ export {
   loginWithAmber,
   loginWithBunker,
   loginWithNostrConnect,
+  startClaveSignIn,
   loginWithLocalKey,
   restoreAmberSigner,
   restoreBunkerSigner,
@@ -33,9 +34,16 @@ export {
   subscribeBunkerApproval,
   cancelBunkerApprovalWait,
   clearPendingBunkerAttempts,
+  looksLikeBunkerInput,
   type BunkerApprovalStage,
 } from './bunker';
-export { claveOpenLink, CLAVE_APP_STORE_URL, CLAVE_OPEN_URL } from './clave';
+export {
+  claveOpenLink,
+  claimClaveHandoff,
+  clearClaveHandoff,
+  CLAVE_APP_STORE_URL,
+  CLAVE_OPEN_URL,
+} from './clave';
 
 export { fetchProfile, fetchRawProfile, publishProfile, type RawProfile } from './profile';
 
