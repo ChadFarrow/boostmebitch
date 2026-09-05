@@ -16,6 +16,7 @@ import {
   isLikelyAndroid,
   isLikelyIOS,
   claveOpenLink,
+  claveUniversalLink,
   claimClaveHandoff,
   clearClaveHandoff,
   looksLikeBunkerInput,
@@ -154,6 +155,10 @@ export function SignInModal({
   // this modal exists. A ref here would start life null in that case and fire a
   // second navigation at an app the user is already standing in.
   const claveAttempt = useRef(0);
+  // The pairing URI this modal last handed over, so the custom-scheme retry
+  // below can re-launch the SAME one. Not derived from a fresh
+  // `loginWithNostrConnect()` call, which would open another subscription.
+  const claveUriRef = useRef<string | null>(null);
   // Paste bunker:// flow.
   const [pasteValue, setPasteValue] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -250,12 +255,17 @@ export function SignInModal({
     }, CLAVE_SLOW_MS);
     try {
       const { uri, ready } = loginWithNostrConnect((url) => setClaveAuthUrl(url));
-      // Claimed once per URI, across BOTH launch sites. A retry — the visibility
-      // effect below, or a second tap — re-subscribes without sending the user
-      // back to an app they have already approved in. The
-      // `clave://connect?uri=` wrapper, NOT the bare nostrconnect URI; see
-      // lib/nostr/clave.ts for why the encoding is load-bearing.
-      if (claimClaveHandoff(uri)) openAppLink(claveOpenLink(uri));
+      // Claimed once per URI, across BOTH launch sites (this and the header
+      // row). A retry — the visibility effect below, or a second tap —
+      // re-subscribes without sending the user back to an app they have already
+      // approved in.
+      //
+      // The Universal Link is the primary: no "Open in Clave?" sheet, and a
+      // visible landing page rather than silence when the app is absent. The
+      // custom scheme stays reachable from the control below it, for the one
+      // failure this cannot report — see lib/nostr/clave.ts.
+      claveUriRef.current = uri;
+      if (claimClaveHandoff(uri)) openAppLink(claveUniversalLink(uri));
       const id = await ready;
       if (!isCurrent()) return;
       onSuccess(id, 'bunker');
@@ -321,6 +331,22 @@ export function SignInModal({
     } finally {
       setPasteBusy(false);
     }
+  }
+
+  /**
+   * Retry the launch through the CUSTOM SCHEME instead of the Universal Link.
+   *
+   * The failure this exists for is invisible from here and has no other cure:
+   * tapping the "clave.casa" breadcrumb in Safari's top-right once tells iOS to
+   * stop routing that domain to the app, permanently and with no UI to undo it.
+   * The page cannot detect it — the Universal Link simply renders a web page —
+   * so the user is the only one who can say "it opened a website, not the app".
+   * `clave://` is unaffected by that setting.
+   */
+  function onOpenClaveScheme() {
+    const uri = claveUriRef.current;
+    if (!uri) return;
+    openAppLink(claveOpenLink(uri));
   }
 
   /**
@@ -679,21 +705,36 @@ export function SignInModal({
                           </a>
                         </div>
                       )}
-                      {/* The ONLY signal a missing app produces. An unregistered
-                          scheme on iOS is a silent no-op, so this is a timer, not
-                          a detection — see lib/app-link.ts. */}
+                      {/* Two different nothings, and neither reports itself.
+                          The app may be missing, or Safari may have been told
+                          once — by a tap on the clave.casa breadcrumb — to stop
+                          routing that domain to the app, which no page can
+                          detect. A timer is the only signal either produces, so
+                          both answers are offered rather than guessed between. */}
                       {claveSlow && claveBusy && (
-                        <span className="text-[11px] text-muted">
-                          Nothing happened? Clave may not be installed —{' '}
-                          <a
-                            href={CLAVE_APP_STORE_URL}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-nostr underline underline-offset-2"
+                        <div className="flex flex-col items-start gap-1">
+                          <span className="text-[11px] text-muted">
+                            Still nothing? If a web page opened instead of the app,
+                            try the direct link:
+                          </span>
+                          <button
+                            onClick={onOpenClaveScheme}
+                            className="btn-ghost text-[10px] py-1 px-2"
                           >
-                            get it on the App Store ↗
-                          </a>
-                        </span>
+                            Open the Clave app directly
+                          </button>
+                          <span className="text-[11px] text-muted">
+                            Don&apos;t have Clave?{' '}
+                            <a
+                              href={CLAVE_APP_STORE_URL}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-nostr underline underline-offset-2"
+                            >
+                              get it on the App Store ↗
+                            </a>
+                          </span>
+                        </div>
                       )}
                       {claveErr && (
                         <div className="flex flex-col items-start gap-1">
@@ -707,12 +748,27 @@ export function SignInModal({
                               was asleep for, or a request Clave never showed
                               them. The ordinary retry re-subscribes; this one
                               asks Clave again. */}
-                          <button
-                            onClick={onReopenClave}
-                            className="btn-ghost text-[10px] py-1 px-2"
-                          >
-                            Send the request to Clave again
-                          </button>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              onClick={onReopenClave}
+                              className="btn-ghost text-[10px] py-1 px-2"
+                            >
+                              Send the request to Clave again
+                            </button>
+                            {/* AND the scheme escape belongs HERE, not only in
+                                the timed hint above. If Safari has been told to
+                                open clave.casa as a web page, the Universal Link
+                                navigates this tab away; the user comes back to
+                                THIS error, and "send again" would only navigate
+                                them away a second time. This is the way out of
+                                that loop. */}
+                            <button
+                              onClick={onOpenClaveScheme}
+                              className="btn-ghost text-[10px] py-1 px-2"
+                            >
+                              Opened a web page? Open the app
+                            </button>
+                          </div>
                         </div>
                       )}
 

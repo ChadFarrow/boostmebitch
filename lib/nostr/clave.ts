@@ -50,8 +50,60 @@ export const CLAVE_APP_STORE_URL = `https://apps.apple.com/app/id${CLAVE_APP_STO
  */
 export const CLAVE_RELAY = 'wss://relay.powr.build/';
 
+// A SECOND reason it earns its place, and this one is about iOS rather than
+// Clave. WebKit bug 302561: on affected iOS builds, iCloud Private Relay can
+// allow only the FIRST WebSocket to a given host and port — recorded by Conduit
+// (github.com/Conduit-BTC) in their mobile-Safari QA baseline. The bunker runs
+// on its OWN SimplePool, separate from the app-wide pool by design, and three of
+// the five relays in NOSTRCONNECT_RELAYS share a host with DEFAULT_RELAYS
+// (damus, primal, nos.lol) — so on such a device those three sockets are the
+// second to their host and may never open. relay.nsec.app and this one are the
+// two nothing else in the app connects to, which makes them the pair the
+// handshake can actually rely on. Do not "tidy" the nostrconnect set down to
+// the app's default relays; that overlap is the hazard, not the redundancy.
+
+
 /**
- * Hand a `nostrconnect://` URI to the installed app.
+ * THE PRIMARY WAY IN: Clave's Universal Link.
+ *
+ * Both this and `claveOpenLink` below hand the app the same pairing URI; the
+ * difference is what iOS does with them, and it is not a wash.
+ *
+ * A Universal Link is Apple's own mechanism. iOS resolves it against the
+ * app's cached `apple-app-site-association` and opens Clave directly — no
+ * "Open in Clave?" confirmation sheet, which a custom scheme does show, and no
+ * silent nothing when the app is absent. **Conduit** (github.com/Conduit-BTC,
+ * `conduit-mono`) ships this form and verifies on a physical iPhone that the
+ * app launches on the first tap with no intermediate QR or tab step; that is a
+ * measurement, which is more than this repo has for the custom scheme.
+ *
+ * ITS FAILURE MODE IS A NAVIGATION, and that is the honest cost. With Clave not
+ * installed the tab goes to clave.casa's install page instead of doing nothing,
+ * so this page — and the subscription waiting on the pairing — is gone. That is
+ * acceptable *because* of when it happens: with no signer installed there is
+ * nobody to approve the pairing, so nothing of value was lost.
+ *
+ * THE PRIVACY OBJECTION IS REAL BUT SMALLER THAN IT LOOKS, and this file used
+ * to overstate it. Yes, the URI carries the ephemeral client pubkey and the
+ * connect secret. But when Clave IS installed iOS routes the link from the
+ * cached association without fetching anything, so nothing leaves the device on
+ * the path that matters; the URI reaches clave.casa's logs only in the case
+ * where it is already worthless. The secret proves a pairing, not a key — it
+ * cannot sign — and it expires with `NOSTRCONNECT_TIMEOUT_MS`.
+ */
+export function claveUniversalLink(uri: string): string {
+  return `https://clave.casa/connect/?uri=${encodeURIComponent(uri)}`;
+}
+
+/**
+ * The custom scheme — kept as the SECOND way in, not as dead code.
+ *
+ * A Universal Link can be switched off by the user without their realising it:
+ * tap the "clave.casa" breadcrumb in the top-right once and iOS remembers the
+ * choice, opening the web page for that domain from then on. There is no UI to
+ * undo it and nothing on the page can detect it. `clave://` is unaffected,
+ * which makes it the recovery for the one failure the primary cannot report —
+ * hence the "opened a web page instead?" control in the sign-in modal.
  *
  * The shape is Clave's, verified against its reference web client
  * (DocNR/clave-casa, `src/lib/connect-inbound.ts` and the unit tests beside
@@ -60,18 +112,11 @@ export const CLAVE_RELAY = 'wss://relay.powr.build/';
  * unencoded value would be parsed as parameters of the `clave://` URL and the
  * pairing would arrive truncated at the first `?`.
  *
- * THIS IS A HANDOFF, NOT A SIGNING CHANNEL. There is no callback URL, no return
- * scheme and no pasteboard answer — nothing comes back this way. The user
- * app-switches ONCE, at pairing; every later signature is a kind:24133 relay
- * message. That is the whole reason Clave needs none of the machinery
- * `lib/nostr/amber.ts` carries for Android.
- *
- * DELIBERATELY NOT the universal link. Clave also publishes
- * `https://clave.casa/connect/?uri=…` for the not-installed case, and it is
- * tempting because it degrades to a web page. It also ships the client pubkey
- * and the connect secret to a third-party origin, where they land in an access
- * log. `clave://` keeps the pairing on the device; the App Store link above
- * covers the case it is reaching for.
+ * THIS IS A HANDOFF, NOT A SIGNING CHANNEL — and so is the link above. There is
+ * no callback URL, no return scheme and no pasteboard answer; nothing comes
+ * back this way. The user app-switches ONCE, at pairing, and every later
+ * signature is a kind:24133 relay message. That is why Clave needs none of the
+ * machinery `lib/nostr/amber.ts` carries for Android.
  */
 export function claveOpenLink(uri: string): string {
   return `clave://connect?uri=${encodeURIComponent(uri)}`;

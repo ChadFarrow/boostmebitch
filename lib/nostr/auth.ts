@@ -28,7 +28,7 @@ import {
   type BunkerAdapter,
 } from './bunker';
 import { storage } from '../storage';
-import { claimClaveHandoff, claveOpenLink } from './clave';
+import { claimClaveHandoff, claveUniversalLink } from './clave';
 import { openAppLink } from '../app-link';
 import type { ProfileMetadata } from './profile-metadata';
 
@@ -175,7 +175,10 @@ export function loginWithNostrConnect(
 export function startClaveSignIn(): boolean {
   const uri = nostrConnectUri();
   if (!claimClaveHandoff(uri)) return false;
-  openAppLink(claveOpenLink(uri));
+  // The Universal Link, not the custom scheme — see lib/nostr/clave.ts. From
+  // here it also matters that a Universal Link needs no confirmation sheet: this
+  // row's whole promise is that one tap reaches the approval screen.
+  openAppLink(claveUniversalLink(uri));
   return true;
 }
 

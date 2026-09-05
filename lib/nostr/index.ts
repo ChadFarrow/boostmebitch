@@ -39,6 +39,7 @@ export {
 } from './bunker';
 export {
   claveOpenLink,
+  claveUniversalLink,
   claimClaveHandoff,
   clearClaveHandoff,
   CLAVE_APP_STORE_URL,
