@@ -260,6 +260,14 @@ export function SignInModal({
   const [genErr, setGenErr] = useState<string | null>(null);
   const [genAuthUrl, setGenAuthUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // THE RAW URI IS COLLAPSED, NOT DELETED, and the difference is a real
+  // fallback. `copyGenUri` swallows a failed clipboard write — no permission,
+  // no transient activation, a browser that does not implement it — and shows
+  // nothing but the absence of "Copied". The selectable code block is the only
+  // way left to get the link out, so it stays reachable; it just does not have
+  // to be eleven lines of query string under the code by default, which is what
+  // pushed the QR small and the rest of the screen down.
+  const [showUri, setShowUri] = useState(false);
 
   // Fetch the GIS script the moment the modal is on screen rather than when the
   // user taps "Continue with Google" — a cold fetch inside the click path burns
@@ -711,7 +719,9 @@ export function SignInModal({
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch {
-      /* fall through — user can long-press the code block */
+      // Reveal the block rather than failing in silence: the user has just
+      // asked for the link and this is the only other way to hand it over.
+      setShowUri(true);
     }
   }
 
@@ -1391,21 +1401,35 @@ export function SignInModal({
                   )}
                   {genUri && (
                     <>
+                      {/* 248 rather than 200. It is the one thing on this screen
+                          the user has to point a camera at, and it has room now
+                          that the URI is not eleven lines underneath it. Bounded
+                          by the card rather than the viewport — the modal caps at
+                          max-w-md and this sits inside two levels of padding, so
+                          it still clears 390px. */}
                       <div className="self-stretch flex justify-center bg-bone p-3">
                         <QRCodeSVG
                           value={genUri}
-                          size={200}
+                          size={248}
                           level="M"
                           fgColor="#0a0a08"
                           bgColor="#f5f1e8"
                         />
                       </div>
-                      <code className="block w-full bg-ink/40 p-2 text-[10px] leading-snug break-all select-all">
-                        {genUri}
-                      </code>
-                      <div className="flex items-center gap-2">
+                      {showUri && (
+                        <code className="block w-full bg-ink/40 p-2 text-[10px] leading-snug break-all select-all">
+                          {genUri}
+                        </code>
+                      )}
+                      <div className="flex flex-wrap items-center gap-2">
                         <button onClick={copyGenUri} className="btn-ghost text-[10px] py-1 px-2">
-                          {copied ? 'Copied' : 'Copy'}
+                          {copied ? 'Copied' : 'Copy link'}
+                        </button>
+                        <button
+                          onClick={() => setShowUri((v) => !v)}
+                          className="btn-ghost text-[10px] py-1 px-2"
+                        >
+                          {showUri ? 'Hide link' : 'Show link'}
                         </button>
                         {!genBusy && genErr && (
                           <button onClick={onGenerate} className="btn-bolt text-[10px] py-1 px-2">
