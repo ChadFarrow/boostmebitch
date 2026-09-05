@@ -32,6 +32,18 @@
      was 69px against a "~36px" guess for the middle term, and a wrapping
      wordmark then hid the whole show header behind this one. */
   --app-header-h: calc(71px + env(safe-area-inset-top, 0px));
+  /* The dock: <TabBar> (components/tab-bar.tsx) at the bottom of every route,
+     with <Player>'s mini-bar sitting on top of it. `--tabbar-h` is the bar's
+     own height; `--dock-b` is that plus the bottom safe-area inset, and it is
+     what everything above the bar offsets by — the mini-bar's `bottom`, the
+     layout footer's padding, the episode-page BOOST FAB. The tab bar is the
+     ONLY element that pays `env(safe-area-inset-bottom)` itself; a second
+     element adding it was a visible gap on notched phones.
+     56px: a 20px icon, a 10px label, 4px between, centred — and, more to the
+     point, a tap target a fifth of the screen wide and 56 tall clears the
+     44px floor with no per-item min-h. */
+  --tabbar-h: 56px;
+  --dock-b: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
 }
 
 :root[data-theme='light'] {

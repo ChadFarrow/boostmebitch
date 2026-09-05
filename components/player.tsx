@@ -680,8 +680,14 @@ export function Player() {
           Space is `preventDefault`ed because the browser would otherwise scroll
           the page on keydown. The inner controls all `stopPropagation`, so a
           key pressed while focus is on one of them never reaches this. */}
+      {/* `bottom` is the tab bar's full height (`--dock-b`, globals.css), not
+          0, and there is no `pb-[env(safe-area-inset-bottom)]` here any more:
+          <TabBar> is the one element that pays the inset, and this sits on top
+          of it. Both read the same variable so a change to the bar's height
+          moves this with it. */}
       <div
-        className="fixed bottom-0 left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40 pb-[env(safe-area-inset-bottom)] cursor-pointer"
+        className="fixed left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40 cursor-pointer"
+        style={{ bottom: 'var(--dock-b)' }}
         onClick={() => setPlayerExpanded(true)}
         onKeyDown={(e) => {
           if (e.target !== e.currentTarget) return;
