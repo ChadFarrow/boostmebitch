@@ -48,19 +48,36 @@ export const CLAVE_APP_STORE_URL = `https://apps.apple.com/app/id${CLAVE_APP_STO
  * wss://relay.powr.build". So for this app it is not a redundancy relay, it is
  * the one that makes pairing work at all.
  */
-export const CLAVE_RELAY = 'wss://relay.powr.build/';
+// NO TRAILING SLASH, and it is not cosmetic. `createNostrConnectURI` writes
+// this string into the URI VERBATIM (URLSearchParams encodes it, it does not
+// normalize it), so this is the exact bytes Clave's proxy reads when deciding
+// whether the pairing is one it should watch. `wss://relay.powr.build/` is what
+// this held while the flow was slow; Conduit — whose iOS Clave flow is the one
+// that works — ship `wss://relay.powr.build`. Match the working value rather
+// than assume a parser tolerates the difference. (nostr-tools' own
+// `normalizeURL` strips it before opening a socket, so OUR pool never cared;
+// the signer's side is the one that reads the URI.)
+export const CLAVE_RELAY = 'wss://relay.powr.build';
 
 // A SECOND reason it earns its place, and this one is about iOS rather than
 // Clave. WebKit bug 302561: on affected iOS builds, iCloud Private Relay can
 // allow only the FIRST WebSocket to a given host and port — recorded by Conduit
 // (github.com/Conduit-BTC) in their mobile-Safari QA baseline. The bunker runs
-// on its OWN SimplePool, separate from the app-wide pool by design, and three of
-// the five relays in NOSTRCONNECT_RELAYS share a host with DEFAULT_RELAYS
-// (damus, primal, nos.lol) — so on such a device those three sockets are the
-// second to their host and may never open. relay.nsec.app and this one are the
-// two nothing else in the app connects to, which makes them the pair the
-// handshake can actually rely on. Do not "tidy" the nostrconnect set down to
-// the app's default relays; that overlap is the hazard, not the redundancy.
+// on its OWN SimplePool, separate from the app-wide pool by design, so any
+// nostrconnect relay that shares a host with DEFAULT_RELAYS opens the SECOND
+// socket to that host and may never connect. NOSTRCONNECT_RELAYS used to carry
+// three of them — damus, primal, nos.lol — and that is why they are gone: they
+// were reachable by the signer and not by this page, which reads as a pairing
+// that is merely slow. relay.nsec.app and this one are the two nothing else in
+// the app connects to, which is what makes them the pair the handshake can rely
+// on. Do not add a relay here that DEFAULT_RELAYS already holds; the overlap is
+// the hazard, and the redundancy it looks like is imaginary.
+//
+// A SECOND SOCKET IS SPENT BY AN ABANDONED LISTENER TOO, which is the same
+// limit reached from the other direction: a pairing attempt the page replaces
+// on its way back from the signer keeps its pool until the 120 s window closes,
+// so its sockets are still holding the slot the replacement needs. That is what
+// `NostrConnectAttempt.abandon` in ./bunker.ts is for.
 
 
 /**

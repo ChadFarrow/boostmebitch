@@ -197,6 +197,8 @@ export function SignInModal({
   // "Has ANY attempt signed in yet", which is not the same question as "is this
   // the newest attempt" — see the success path below.
   const claveSettled = useRef(false);
+  // THE ONE LIVE LISTENER ON THIS PAGE'S PAIRING. See startPairing below.
+  const liveAttempt = useRef<{ abandon: () => void } | null>(null);
   // Paste bunker:// flow.
   const [pasteValue, setPasteValue] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -242,6 +244,39 @@ export function SignInModal({
     return submitManualAmberResult(trimmed);
   }
 
+  /**
+   * Open a listener on the session's pairing, closing the one it replaces.
+   *
+   * ONE PAIRING, MANY LISTENERS, ONE LIVE AT A TIME. All three boxes in this
+   * modal — Clave, Amber, the QR — call `loginWithNostrConnect`, which returns
+   * the SAME memoized URI and client key every time and a FRESH subscription
+   * each time. Every one of the three also re-subscribes when the tab comes
+   * back from the signer app, which is the right thing to do (the socket the
+   * page left with may be dead) and the wrong thing to do additively: the
+   * abandoned listener kept its own SimplePool alive for the rest of the 120 s
+   * pairing window, so every app switch stacked another set of sockets.
+   *
+   * That is not merely untidy on the device this flow is for. `lib/nostr/clave.ts`
+   * records the measurement: on affected iOS builds iCloud Private Relay allows
+   * only the FIRST WebSocket to a given host and port, so the replacement
+   * listener's sockets can be the second to their host and never open — the ack
+   * then has nowhere to land, and the flow presents as "slow", then works.
+   *
+   * The URI, client key and secret are untouched by the swap. That is what lets
+   * the signer recognise an already-approved client and re-ack without asking
+   * the user a second time. Conduit
+   * (Conduit-BTC/conduit-mono, packages/core/src/protocol/remote-signer.ts) run
+   * the same rule as a loop rather than a ref — "superseded listeners and their
+   * sockets close before replacement" — and their tests assert the URI and the
+   * key are unchanged across a foreground return.
+   */
+  function startPairing(onAuthUrl: (url: string) => void) {
+    liveAttempt.current?.abandon();
+    const attempt = loginWithNostrConnect(onAuthUrl);
+    liveAttempt.current = attempt;
+    return attempt;
+  }
+
   // Same `launch` rule as onClaveConnect, and it is the SAME defect rather than
   // a precaution copied across: `amberNcOpened` is keyed on the URI, and
   // startNostrConnect clears its memo on success, so a visibility retry that
@@ -260,7 +295,7 @@ export function SignInModal({
     setAmberNcBusy(true);
     setAmberNcErr(null);
     try {
-      const { uri, ready } = loginWithNostrConnect((url) => setGenAuthUrl(url));
+      const { uri, ready } = startPairing((url) => setGenAuthUrl(url));
       if (launch && amberNcOpened.current !== uri) {
         amberNcOpened.current = uri;
         openAppLink(uri);
@@ -326,7 +361,7 @@ export function SignInModal({
     setClaveBusy(true);
     setClaveErr(null);
     try {
-      const { uri, ready } = loginWithNostrConnect((url) => setClaveAuthUrl(url));
+      const { uri, ready } = startPairing((url) => setClaveAuthUrl(url));
       // BOTH a ref and a state, and they answer different questions. The ref is
       // read synchronously inside this function on the next attempt; the state
       // is what puts a live URI into the anchor's href. Neither can do the
@@ -517,7 +552,7 @@ export function SignInModal({
     // same URI on retry, so the QR the user already scanned stays valid.
     setCopied(false);
     try {
-      const { uri, ready } = loginWithNostrConnect((url) => setGenAuthUrl(url));
+      const { uri, ready } = startPairing((url) => setGenAuthUrl(url));
       setGenUri(uri);
       const id = await ready;
       onSuccess(id, 'bunker');
@@ -686,6 +721,14 @@ export function SignInModal({
   function handleClose() {
     // Drop any half-finished paste/generate attempt so a future session
     // starts clean.
+    //
+    // The listener has to come down WITH the memo, not just after it.
+    // `clearPendingBunkerAttempts` forgets the URI and the client key; it does
+    // not touch the transport, so closing this modal used to leave a live
+    // subscription and its sockets running until the pairing timed out two
+    // minutes later — against the per-host socket limit the next attempt needs.
+    liveAttempt.current?.abandon();
+    liveAttempt.current = null;
     clearPendingBunkerAttempts();
     onClose();
   }

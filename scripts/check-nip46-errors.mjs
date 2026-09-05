@@ -42,6 +42,7 @@ import {
   APPROVAL_PENDING_PATTERNS,
   isApprovalPending,
 } from '../lib/nostr/nip46-errors.ts';
+import { readFileSync } from 'node:fs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
 let failures = 0;
@@ -194,6 +195,41 @@ section('nip46-errors.ts stays loadable under plain Node');
   const claveProblems = importFreeProblems('lib/nostr/clave.ts');
   if (claveProblems.length) { explainImportFree('lib/nostr/clave.ts', claveProblems); failures += claveProblems.length; }
   else console.log('  ok    lib/nostr/clave.ts has no imports at all');
+}
+
+// ---------------------------------------------------------------------------
+section('The pairing URI still ASKS for permissions');
+// ---------------------------------------------------------------------------
+{
+  // A SOURCE SCAN, AND IT IS HONEST ABOUT BEING ONE. `lib/nostr/bunker.ts`
+  // imports nostr-tools and touches browser globals, so it can never be loaded
+  // here the way nip46-errors.ts is — there is no version of this that calls
+  // the real function. What it guards is the only failure that has actually
+  // happened: the `perms` argument being absent from the call.
+  //
+  // WHY THAT IS WORTH A CHECK AT ALL. The URI shipped without `perms` for the
+  // life of the Clave work, with a comment presenting it as a safety choice. It
+  // is not one — it is what makes a signer prompt on EVERY call, so Clave
+  // answered `no permission` to the handshake's own `get_public_key` and to
+  // every signature after it, and `withApprovalWait` sat out a re-issue gap on
+  // each. Sign-in, the boost note, the favorites publish and the mute publish
+  // all paid it, and the whole thing presents as "it works, but it's slow" —
+  // which is why it survived review. Deleting the argument would restore that
+  // silently. See docs/signers.md.
+  const src = readFileSync(new URL('../lib/nostr/bunker.ts', import.meta.url), 'utf8');
+  const call = src.slice(src.indexOf('createNostrConnectURI({'));
+  const inCall = call.slice(0, call.indexOf('\n  });'));
+  check('createNostrConnectURI is passed perms', /\bperms:\s*NOSTRCONNECT_PERMS\b/.test(inCall), true);
+  // Each of the six is a method this app actually calls through the adapter, so
+  // a missing one is a signer prompt in the middle of a real feature. The
+  // decrypts are the pair worth naming: without them the private mute half, the
+  // private favorites half and "Restore from Nostr" die at the 10 s
+  // withDecryptTimeout cap on any signer that prompts.
+  for (const m of ['get_public_key', 'sign_event', 'nip44_encrypt', 'nip44_decrypt',
+    'nip04_encrypt', 'nip04_decrypt']) {
+    check(`NOSTRCONNECT_PERMS asks for ${m}`,
+      new RegExp(`NOSTRCONNECT_PERMS[\\s\\S]*?'${m}'[\\s\\S]*?\\];`).test(src), true);
+  }
 }
 
 if (failures) {

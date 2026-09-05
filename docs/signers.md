@@ -11,11 +11,11 @@ The whole codebase reads `window.nostr`. Four paths feed it, swapped by `lib/nos
 - **NIP-07 extension** (Alby, nos2x, Flamingo, nostash on iOS Safari). Already at `window.nostr`; we don't polyfill. Sign-out clears `bmb:npub` and leaves `window.nostr` alone.
 - **Amber on Android, primary path: NIP-46 over a `nostrconnect://` link — since 2026-09-03, and this is how StableKraft's "Amber (Android)" button has always worked** (`components/Nostr/Nip46Connect.tsx` there: `window.location.href = nostrconnect://…` on Android, then the ordinary relay session). The modal's Android "Sign in with Amber" calls `loginWithNostrConnect` and opens the URI in Amber; Amber's installed build (the `free` flavor on Zapstore and F-Droid) registers `nostrconnect` as a BROWSABLE scheme on `SignerActivity`, and `getIntentData` routes a `nostrconnect:` intent BEFORE the `Browser.EXTRA_APPLICATION_ID` branch, so the Chromium change below never touches it. Nothing returns by URL: no callback tab, no clipboard, no reload, and every later signature rides the relay like any bunker — which also means it lands under `unattendedDecryptOk() === false` like Amber-as-bunker always has. The URI is opened ONCE per memoized URI (`amberNcOpened`); the visibility-return retry re-subscribes without re-launching Amber, because Android suspends the page's WebSocket while the user is in Amber and the ack can land on a dead subscription. The `offline` flavor registers only `nostrsigner`, which is why the NIP-55 path stays as a secondary button.
 - **Amber on Android, fallback path** (NIP-55, `lib/nostr/amber.ts`). Polyfills `window.nostr` with an `AmberSigner` dispatching via the `nostrsigner:` URL scheme and reading results from the system clipboard: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<…>` (no callbackUrl, per spec) → user approves → first user gesture (`pointerdown`/`touchstart`/`keydown`) reads the clipboard with fresh transient activation. `restoreAmberSigner(pubkey)` is the synchronous page-load fast path.
-- **Clave on iOS** (`lib/nostr/clave.ts`). NIP-46 and nothing else — no NIP-55 surface, no URL-scheme signing round trip, no `window.nostr` injection, and NIP-55 is titled "Android Signer Application" with no iOS section, so there is nothing else to build against. It is therefore a **bunker like any other**: `bmb:signer` stays `'bunker'`, the transport is `bunker.ts`, and `unattendedDecryptOk()` already excluded it. What is Clave-specific is three things and only three: the one-tap hand-off `clave://connect?uri=<urlencoded nostrconnect>`, `wss://relay.powr.build/` in the URI, and the queued-approval retry — all three below.
+- **Clave on iOS** (`lib/nostr/clave.ts`). NIP-46 and nothing else — no NIP-55 surface, no URL-scheme signing round trip, no `window.nostr` injection, and NIP-55 is titled "Android Signer Application" with no iOS section, so there is nothing else to build against. It is therefore a **bunker like any other**: `bmb:signer` stays `'bunker'`, the transport is `bunker.ts`, and `unattendedDecryptOk()` already excluded it. What is Clave-specific is three things and only three: the one-tap hand-off (a real `<a href>` to Clave's Universal Link, `clave://connect?uri=<urlencoded nostrconnect>` as the escape hatch), `wss://relay.powr.build` in the URI, and the queued-approval retry — all below.
 - **NIP-46 bunker** (`lib/nostr/bunker.ts`, wraps nostr-tools `BunkerSigner`). Paste a `bunker://` URI or generate a `nostrconnect://` one. Reconnect on reload is async (`restoreBunkerSigner()` rebuilds from `bmb:bunker:{uri,clientSk}`); signing calls before it resolves throw, but nothing signs unprompted post-load. Works with Clave, nsec.app, Amber-as-bunker, Primal. **A bunker is NOT assumed to answer inside the browser** — see "An out-of-browser signer is two signers" below.
 - **Local key** (`lib/nostr/local-signer.ts`). The only path where *we* hold the key; it exists for Google onboarding, where the user starts with no Nostr identity. Signs in-process via `finalizeEvent`, implements nip04 + nip44 directly. `restoreLocalSigner()` is **async** (IndexedDB read + decrypt), so it follows the bunker pattern, not Amber's. It **refuses a key whose pubkey doesn't match `bmb:npub`** — `putKey` swallows IndexedDB failures, so signing in as B on a device still holding A's ciphertext would run the session off the in-memory copy while disk keeps A, and after a reload sign everything as A while the UI says B.
 
-> **`nostr-tools` is pinned to exact `2.19.4` — do NOT bump or relax the caret.** The `2.20.0+` NIP-46 rewrite added `limit: 0` to the `nostrconnect`/bunker subscription filters (`fromURI` + `setupSubscription`), which on our relays silently drops the remote signer's connect-ack, so **Primal's `nostrconnect://` login hangs and times out**. Latest (`2.23.5`) and `master` still carry it; `npm update` or a `^`/`~` range reintroduces the break. `NOSTRCONNECT_RELAYS` is a **5**-relay set for ack redundancy — a single relay loses the ack when iOS Safari suspends the WebSocket during the app-switch. Four are for redundancy (nsec.app/damus/primal/nos.lol); **`wss://relay.powr.build/` is not, and must not be pruned as if it were.** It is Clave's own persistent proxy — the subscription that fires the APNs wake, which is how a closed Clave answers at all — and Clave's `docs/nip46-compatibility.md` states that a client without `switch_relays` (nostr-tools ~2.17, and we pin exactly 2.19.4) *"cannot successfully complete nostrconnect pairing unless the URI already embeds wss://relay.powr.build"*. **Keep its trailing slash**: the other four have none, so a tidy-up is the likely way this breaks, and nothing in CI would notice. **It has a second, iOS-shaped reason that has nothing to do with Clave's docs.** WebKit bug 302561: on affected iOS builds iCloud Private Relay can allow only the **first** WebSocket to a given host and port — recorded by Conduit (github.com/Conduit-BTC) in their mobile-Safari QA baseline, which also insists the exact OS and Private Relay state be written down on every iPhone run. The bunker runs on its **own** `SimplePool`, separate from the app-wide pool by design, and three of these five relays share a host with `DEFAULT_RELAYS` — damus, primal, nos.lol — so on such a device those three sockets are the *second* to their host and may never open. `relay.nsec.app` and `relay.powr.build` are the only two nothing else in this app connects to, which makes them the pair the handshake can actually rely on. **So do not "tidy" this set down to the app's default relays**: the overlap is the hazard, and the non-overlap is the point. It is unconditional rather than Clave-scoped because `startNostrConnect` memoizes ONE `{uri, clientSk, secret}` per session, shared by the iOS Clave button, the Android Amber button and the QR box — a second URI in one session would invalidate a QR the user had already scanned, which is the exact failure that memo exists to prevent. **And this is not the "adding a relay is a latency decision" rule from [`nostr.md`](nostr.md)**: that one is about broad scans, which resolve at *aggregate* EOSE and so pay a silent relay its full ceiling. A NIP-46 exchange resolves on the first matching kind:24133 response, so a slow or silent relay here costs nothing.
+> **`nostr-tools` is pinned to exact `2.19.4` — do NOT bump or relax the caret.** The `2.20.0+` NIP-46 rewrite added `limit: 0` to the `nostrconnect`/bunker subscription filters (`fromURI` + `setupSubscription`), which on our relays silently drops the remote signer's connect-ack, so **Primal's `nostrconnect://` login hangs and times out**. Latest (`2.23.5`) and `master` still carry it; `npm update` or a `^`/`~` range reintroduces the break. `NOSTRCONNECT_RELAYS` is a **two**-relay set, and the count is a decision rather than what was left over. **`wss://relay.powr.build` is not redundancy and must not be pruned as if it were.** It is Clave's own persistent proxy — the subscription that fires the APNs wake, which is how a closed Clave answers at all — and Clave's `docs/nip46-compatibility.md` states that a client without `switch_relays` (nostr-tools ~2.17, and we pin exactly 2.19.4) *"cannot successfully complete nostrconnect pairing unless the URI already embeds wss://relay.powr.build"*. **No trailing slash**, and that is not cosmetic: `createNostrConnectURI` writes the string into the URI verbatim, so these are the exact bytes the signer's side reads. It carried one while the flow was slow; Conduit — whose iOS Clave flow works — ship it bare. nostr-tools' `normalizeURL` strips it before opening a socket, so *our* pool never cared; the reader that matters is the other one. **The set used to hold five, and cutting damus, primal and nos.lol is the fix rather than a tidy-up.** The argument for a wide set was ack redundancy across an iOS app-switch. On iOS it buys the opposite. WebKit bug 302561: on affected builds iCloud Private Relay can allow only the **first** WebSocket to a given host and port — recorded by Conduit (github.com/Conduit-BTC) in their mobile-Safari QA baseline, which also insists the exact OS and Private Relay state be written down on every iPhone run. The bunker runs on its **own** `SimplePool`, separate from the app-wide pool by design, and all three of those share a host with `DEFAULT_RELAYS` — so on such a device their sockets are the *second* to their host and may never open: three relays the signer can reach and this page cannot, which presents as a pairing that is merely slow. `relay.nsec.app` and `relay.powr.build` are the only two nothing else in this app connects to, which is what makes them the pair the handshake can rely on. **Conduit reach the same number from the other side**: `pairRemoteSignerFromNostrConnect` REJECTS a pairing with fewer than 2 or more than 3 relays. Two to three is the interoperable window — do not grow this list back without measuring what the extra relay answers on a phone. The set is unconditional rather than Clave-scoped because `startNostrConnect` memoizes ONE `{uri, clientSk, secret}` per session, shared by the iOS Clave button, the Android Amber button and the QR box — a second URI in one session would invalidate a QR the user had already scanned, which is the exact failure that memo exists to prevent. **And this is not the "adding a relay is a latency decision" rule from [`nostr.md`](nostr.md)**: that one is about broad scans, which resolve at *aggregate* EOSE and so pay a silent relay its full ceiling. A NIP-46 exchange resolves on the first matching kind:24133 response, so a slow or silent relay here costs nothing — the cost here is the socket, not the wait.
 
 ### Amber's round trip does not return by itself — measured, not assumed
 
@@ -332,6 +332,48 @@ case-insensitive predicate on each side: `isSubscriptionClosed` in `bunker.ts`,
 `connectionDropped` in the modal. Both are `/…/i` tests rather than a second
 lower-cased literal, because a literal is how this happened.
 
+### The pairing URI asks for permissions, and leaving that off cost the whole flow
+
+**`createNostrConnectURI` takes a `perms` field and we did not send one.** The
+call in `ensureNostrConnectMemo` carried `clientPubkey`, `relays`, `secret`,
+`name`, `url` and `image`, with a comment saying *"No `perms` field — bunker
+prompts per call"* as though prompting per call were a safety property being
+chosen. It is not a property this app gets to choose; it is what the signer does
+when nobody asked it for anything.
+
+What that produced on Clave: it prompts per call, so it answers `no permission`
+to the handshake's own `get_public_key` **and to every signature afterwards**,
+and the re-issue loop below then waits out an interval on each one. Sign-in, the
+boost note, the favorites publish and the mute publish all paid it. Reported as
+*"it works but it's slow to connect"*, which is exactly what a correct workaround
+for a self-inflicted problem feels like.
+
+The comparison that settled it: Conduit's iOS flow — tap Clave, approve, switch
+back, signed in, no pause — differs here and almost nowhere else.
+`CONDUIT_NIP46_PERMISSIONS` (`packages/core/src/protocol/remote-signer.ts`) goes
+straight into their `createNostrConnectURI`. nostr-tools 2.19.4 has supported the
+field the whole time: `NostrConnectParams.perms?: string[]`, joined with commas
+into the query.
+
+`NOSTRCONNECT_PERMS` is Conduit's five plus `nip04_encrypt`, which is ours to
+add — `adaptToWindowNostr` exposes it, and the mute list's private half must be
+re-encrypted in the cipher it was **read** in, which is NIP-04 for some writers.
+
+**What asking for the two decrypts does and does not change.** It stops the
+signer prompting for a decrypt. It does **not** widen `unattendedDecryptOk()` —
+that gate governs which decrypts *this app issues* before the user has touched
+anything, and still answers `false` for a bunker, so nothing new is decrypted
+unasked. What it fixes is the limitation recorded two sections down: on a signer
+that queues, the private mute half, the private favorites half and "Restore from
+Nostr" die at the 10 s `withDecryptTimeout` cap, because no human answers a
+prompt inside ten seconds. Granted at pairing, they return on the first ask. The
+conservative variant is to drop the two `*_decrypt` entries — sign-in and the
+boost note are still fast and those three features stay exactly as they were.
+
+**The re-issue loop below stays, and is now the fallback rather than the
+mechanism.** The pairing approval itself is still a tap, and `perms` is a
+request: a signer may ignore it, grant a subset, or expire it.
+
 ### A permission error from Clave is a queue receipt, not a refusal
 
 The section above establishes that an error RESPONSE proves the round trip
@@ -387,10 +429,45 @@ caller that ever let the signer pick `created_at` would break that, and the
 wrapper would have to come off `signEvent`. There is also never a first
 signature to duplicate: we only re-issue after a rejection.
 
-90 s budget, 8 s interval. 90 is `BUNKER_CONNECT_TIMEOUT_MS`' number on purpose
-— both answer "how long do we wait for a human in another app", and two numbers
-for one question only invites the argument. The honest worst case is 90 + 30 s,
-because the last attempt can start just under the deadline and then time out.
+90 s budget; the gaps are a **schedule**, `BUNKER_APPROVAL_GAPS_MS` =
+`[2.5 s, 4 s, 8 s]`, holding the last value. 90 is `BUNKER_CONNECT_TIMEOUT_MS`'
+number on purpose — both answer "how long do we wait for a human in another
+app", and two numbers for one question only invites the argument. The honest
+worst case is 90 + 30 s, because the last attempt can start just under the
+deadline and then time out.
+
+**Dense first, then wide, because the first gap is the whole of the delay the
+user feels.** A single 8 s interval was right about the long tail and wrong
+about the first ask: the first two land while the user is demonstrably standing
+at the signer, having just approved. The wide gap after that keeps the reason
+the 8 s existed — each re-issue is a relay round trip *and*, on a signer that
+did not queue the request, a fresh approval prompt, so a short interval spams
+the screen being waited on.
+
+**The wait ends on the first of three things, and a bare `setTimeout` is the
+wrong trigger on iOS.** Coming back to the tab is the one signal that says "they
+just approved" — the approval happens in another app, so the switch back is part
+of the act — and Safari throttles and suspends timers in a backgrounded tab, so
+the gap resumes on return with an arbitrary remainder still to run. Measured as
+*"I approve in Clave, switch back, and it sits there"*. `waitBeforeReissue` ends
+on the visibility wake, the timer (an approval given from Clave's notification
+never leaves Safari, so no visibilitychange fires), or the approval generation
+moving, which is what makes **Stop waiting** end the loop at once instead of
+after the rest of the gap. **One wake per sleep** — the listener is removed as
+it fires — so flapping between apps cannot become a burst of re-issues at the
+signer. Conduit's `waitForVisibleDocument`
+(`packages/core/src/protocol/interactive-signer.ts`) is the same primitive
+reached from the other side: theirs gates a dispatch on the page being visible.
+
+**The cancel is read BEFORE the banner is re-armed, and the order is the fix.**
+"Stop waiting" can only land while an attempt is on the wire, and the generation
+check used to sit *after* the sleep — so a cancelled wait re-armed the banner,
+slept, and then left through a `finally` whose generation guard refused to clear
+what the loop had just set: nothing waiting, notice still on screen, until some
+later wait happened to end cleanly. Pressing it twice cleared it, which is why
+it read as flaky. The `finally` now clears on `activeApprovalWaits.size === 0`
+alone: **the set is the authority**, the banner is up if and only if something
+is waiting, and a fresh wait that is waiting has its own token in the set.
 **The money path argues for the larger budget, not the smaller**, which is the
 opposite of the intuition: `publishBoostNote` signs AFTER the sats have moved,
 so a long wait costs a spinner beside a payment already reported as successful,
@@ -690,3 +767,14 @@ One `window.focus` listener in `components/nostr-auth/index.tsx`, active only wh
 So **this module passes its own pool in** (`params.pool` is public) and `BunkerAdapter` carries it. `closeBunkerTransport` then does both halves in order: `inner.close()` to end the subscription, `pool.destroy()` to return the sockets. Destroying outright is safe *only* because that pool belongs to one connection — **never hand it the shared pool from `lib/nostr/pool.ts`**, which would take every other query's connections with it.
 
 The `nostrconnect://` path owns its pool for the same reason and needs it more: it waits up to `NOSTRCONNECT_TIMEOUT_MS` for a signer that may never scan the QR at all, so the abandoned-transport case is the expected one there rather than the exception.
+
+**One pairing, many listeners, ONE live at a time — `NostrConnectAttempt.abandon`.** A pairing outlives its listener. The URI, client key and secret are memoized and reused; the *subscription* behind them is replaced whenever the page comes back from the signer app and cannot trust the socket it left with. Re-subscribing is right — iOS suspends a backgrounded WebSocket, and an ack delivered to a dead subscription is unrecoverable because kind:24133 is ephemeral. Doing it **additively** is what was wrong: all three boxes in the modal call `loginWithNostrConnect`, each returning the same URI and a fresh subscription, and the replaced listener kept its own `SimplePool` running for the rest of the 120 s window. Every app-switch stacked another set of sockets — against the per-host limit above, on the exact device the flow exists for, so the replacement's sockets could be the ones that never open.
+
+`startNostrConnect` therefore returns `abandon` beside `ready`, `loginWithNostrConnect` passes it through, and the modal routes all three call sites through one `startPairing` helper that closes the previous listener first (and `handleClose` closes the last one, which `clearPendingBunkerAttempts` never did — it forgets the memo, not the transport).
+
+Two rules on it, each a way to make things worse:
+
+- **`close()`, never `logout()`.** `close()` ends this listener's subscription; `logout()` is a NIP-46 method telling the signer to forget the client — and the client key is *shared* with the replacement, because keeping the approval the user already gave is the entire point. Conduit put the same warning in the same place: *"Never logout a superseded listener: its key may now belong to the winning listener for this same pairing."*
+- **A winning attempt cannot be abandoned.** Once `ready` resolves, that pool and that subscription **are** the app's live signer — `finalizeBunkerLogin` installed them as `window.nostr`. A caller cannot reasonably know this: the modal abandons an attempt whenever it starts another or the user dismisses it, and the winner is holding the handle at exactly that moment. So the guard lives in `abandon` itself, not at the call sites.
+
+Conduit run the same rule as a `while` loop rather than a ref, with `tests/nostrconnect-return-recovery.test.ts` asserting that a foreground return leaves the URI and the client key unchanged (`uris.length === 1`, `keyCount() === 1`) while the superseded sockets close.

@@ -42,38 +42,83 @@ import { BRAND } from '../brand';
 import { CLAVE_RELAY } from './clave';
 import { isApprovalPending } from './nip46-errors';
 
-// Default relays for the GENERATE flow's nostrconnect:// URI. Multiple
-// relays give the connect-ack redundancy: on same-device iOS, Safari
-// suspends a backgrounded WebSocket while the user switches to Primal to
-// approve, so a single-relay URI can lose the ack to a dead subscription
-// and time out. (The older nostr-tools bug where one relay's CLOSED was
-// fatal is fixed as of 2.23.x — subscribeMany.onclose now fires only when
-// ALL relays close — so multi-relay is safe again.) This set mirrors the
-// working MSP-2.0 config and is reachable by Primal, Clave, nsec.app, Amber.
-// CLAVE_RELAY is not redundancy, it is a requirement, and it is unconditional
-// for a structural reason rather than a lazy one. Clave's own
+// Relays for the GENERATE flow's nostrconnect:// URI — TWO, and the count is a
+// decision rather than what was left over.
+//
+// CLAVE_RELAY is not redundancy, it is a requirement. Clave's own
 // docs/nip46-compatibility.md: a client without `switch_relays` — nostr-tools
 // ~2.17, and CLAUDE.md pins us to exactly 2.19.4 — "cannot successfully
 // complete nostrconnect pairing unless the URI already embeds
 // wss://relay.powr.build". It is also the persistent proxy that fires the APNs
-// wake, which is how a closed Clave answers at all.
+// wake, which is how a closed Clave answers at all. relay.nsec.app is the
+// second because nsec.app and Amber-as-bunker both reach it.
 //
-// Unconditional because `startNostrConnect` memoizes ONE {uri, clientSk,
-// secret} per session, shared by the iOS Clave button, the Android Amber button
-// and the QR box. A Clave-only URI needs a second memo and a second code path,
-// and the two would drift.
+// THIS SET USED TO CARRY damus, primal AND nos.lol, and removing them is the
+// fix rather than a tidy-up. The reasoning for a wide set was ack redundancy
+// across an iOS app switch. On iOS it buys the opposite: WebKit bug 302561 —
+// on affected builds iCloud Private Relay allows only the FIRST WebSocket to a
+// given host and port, recorded in ./clave.ts off Conduit's mobile-Safari QA
+// baseline. All three of those share a host with DEFAULT_RELAYS, so the bunker's
+// own SimplePool opens the SECOND socket to each and they may never connect —
+// three relays in the URI that the signer can reach and this page cannot.
+// relay.nsec.app and relay.powr.build are the two nothing else in the app
+// connects to, which is exactly why they are the pair left standing.
+//
+// Conduit reach the same number from the other side: `pairRemoteSignerFromNostrConnect`
+// (packages/core/src/protocol/remote-signer.ts) REJECTS a pairing with fewer
+// than 2 or more than 3 relays. Two to three is the interoperable window; do not
+// grow this list back without measuring what the extra relay answers on a phone.
 //
 // AND THIS IS NOT the "adding a relay is a latency decision" rule from
 // docs/nostr.md. That rule is about broad scans, which resolve at AGGREGATE
 // EOSE and therefore pay a silent relay its full ceiling. A NIP-46 exchange
 // resolves on the first matching kind:24133 response, so a slow or silent relay
-// here costs nothing. Do not remove this by applying the wrong rule.
+// here costs nothing. The cost here is the socket, not the wait.
 const NOSTRCONNECT_RELAYS = [
   'wss://relay.nsec.app',
-  'wss://relay.damus.io',
-  'wss://relay.primal.net',
-  'wss://nos.lol',
   CLAVE_RELAY,
+];
+
+/**
+ * The NIP-46 methods the pairing URI ASKS FOR, granted once on the signer's
+ * approval screen.
+ *
+ * OMITTING THIS WAS THE MOST EXPENSIVE LINE IN THE FILE. The URI used to carry
+ * no `perms` at all, with a comment saying "bunker prompts per call" as though
+ * that were a safety property. What it actually produced: Clave prompts per
+ * call, so it answers `no permission` to the handshake's own `get_public_key`
+ * and to every signature afterwards, and `withApprovalWait` below then waits out
+ * a re-issue interval on each one. Sign-in, the boost note, the favorites
+ * publish and the mute publish all paid it. The re-issue loop is the COST of
+ * not sending this, not a feature that stands on its own.
+ *
+ * Measured against Conduit (github.com/Conduit-BTC/conduit-mono), whose iOS
+ * Clave flow is tap → approve → switch back → signed in with no pause:
+ * `CONDUIT_NIP46_PERMISSIONS` in packages/core/src/protocol/remote-signer.ts is
+ * this list minus `nip04_encrypt`, passed straight to `createNostrConnectURI`.
+ * nostr-tools 2.19.4 supports the field (`NostrConnectParams.perms`, joined with
+ * commas into the query).
+ *
+ * `nip04_encrypt` is ours to add: `adaptToWindowNostr` exposes it, and the mute
+ * list's private half must be re-encrypted in the cipher it was READ in, which
+ * is NIP-04 for some writers (see docs/nostr.md).
+ *
+ * WHAT ASKING FOR THE DECRYPTS DOES AND DOES NOT CHANGE. It stops the signer
+ * prompting for a decrypt. It does NOT widen `unattendedDecryptOk()`, which
+ * governs which decrypts THIS APP issues before the user has touched anything
+ * and still answers false for a bunker — nothing new is decrypted unasked. What
+ * it fixes is the limitation recorded under `adaptToWindowNostr`: on a signer
+ * that queues, the private mute half, the private favorites half and "Restore
+ * from Nostr" die at the 10 s `withDecryptTimeout` cap, because a prompt cannot
+ * be answered inside ten seconds. Granted, they return on the first ask.
+ */
+const NOSTRCONNECT_PERMS = [
+  'get_public_key',
+  'sign_event',
+  'nip44_encrypt',
+  'nip44_decrypt',
+  'nip04_encrypt',
+  'nip04_decrypt',
 ];
 
 const NOSTRCONNECT_TIMEOUT_MS = 120_000;
@@ -120,11 +165,26 @@ const BUNKER_RECONNECT_TIMEOUT_MS = 3_000;
 // Failing early costs the note outright: <PublishStatus> renders "Publish
 // failed" with no retry control, and nothing re-tries a kind:1.
 //
-// 8 s rather than something snappier because each re-issue is a relay round
-// trip AND, on a signer that did not queue the request, a fresh approval
-// prompt. A short interval spams the very screen we are waiting on.
+// THE GAPS ARE A SCHEDULE, NOT ONE NUMBER, and the shape carries the argument.
+// A single 8 s interval was right about the long tail and wrong about the first
+// ask: it is the whole of the delay a user feels between tapping Approve and
+// this page reacting.
+//
+// Dense first, then wide. The first two asks land while the user is
+// demonstrably standing at the signer — they just approved — so a short gap
+// there costs nothing and saves the wait. After that the wide gap is right for
+// the reason the original 8 s existed: each re-issue is a relay round trip AND,
+// on a signer that did NOT queue the request, a fresh approval prompt, so a
+// short interval spams the very screen we are waiting on. The last entry
+// repeats for every attempt past the end of the list.
+const BUNKER_APPROVAL_GAPS_MS = [2_500, 4_000, 8_000];
+
+/** The gap before re-issue number `attempt` (1-based), holding the last value. */
+function approvalGapFor(attempt: number): number {
+  const i = Math.min(Math.max(attempt, 1), BUNKER_APPROVAL_GAPS_MS.length) - 1;
+  return BUNKER_APPROVAL_GAPS_MS[i];
+}
 const BUNKER_APPROVAL_BUDGET_MS = 90_000;
-const BUNKER_APPROVAL_RETRY_MS = 8_000;
 
 // Module-level memo: the last clientSk we generated for a given pasted
 // URI. The iOS Safari + Primal failure mode is that the user approves
@@ -335,6 +395,58 @@ async function trackBunkerCall<T>(issue: () => Promise<T>, label: string): Promi
 }
 
 /**
+ * The pause between two re-issues, which ends on the FIRST of three things.
+ *
+ * A PLAIN `setTimeout` IS THE WRONG TRIGGER ON iOS, and that is what this
+ * exists for. Coming back to the tab is the one signal that says "they just
+ * approved" — the approval happens in another app, so the switch back is part
+ * of the act. Waiting out a timer instead means the page learns about it
+ * whenever the clock says so, and on iOS the clock is not even running: Safari
+ * throttles and suspends timers in a backgrounded tab, so the gap resumes on
+ * return with an arbitrary remainder still to go. Measured as "I approve in
+ * Clave, switch back, and it sits there".
+ *
+ * The three ends, and why each is needed:
+ *   - the visibility wake, for an approval given in the signer app;
+ *   - the timer, for one given without leaving the page — Clave signs from a
+ *     Notification Service Extension, so a notification tap never fires a
+ *     visibilitychange;
+ *   - the generation, so `cancelBunkerApprovalWait` ends the loop at once
+ *     rather than after the rest of the gap.
+ *
+ * ONE WAKE PER SLEEP. The listener is removed as soon as it fires, so a user
+ * flapping between apps cannot turn one wait into a burst of re-issues at the
+ * signer — the bound is one re-issue per attempt, whatever the tab does.
+ *
+ * Conduit's `waitForVisibleDocument`
+ * (Conduit-BTC/conduit-mono, packages/core/src/protocol/interactive-signer.ts)
+ * is the same primitive, reached from the other side: theirs gates a dispatch
+ * on the page being visible, this ends a wait when it becomes visible.
+ */
+function waitBeforeReissue(ms: number, generation: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const doc = typeof document === 'undefined' ? null : document;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      clearInterval(poll);
+      doc?.removeEventListener('visibilitychange', onVisible);
+      resolve();
+    };
+    const onVisible = () => { if (doc?.visibilityState === 'visible') finish(); };
+    const timer = setTimeout(finish, ms);
+    // The cancel arm. A poll rather than a listener set because the generation
+    // is a plain counter several call sites bump; a second observable for it
+    // would be one more thing to keep in step, and the resolution only has to
+    // beat a human noticing that "Stop waiting" did nothing.
+    const poll = setInterval(() => { if (approvalGeneration !== generation) finish(); }, 250);
+    doc?.addEventListener('visibilitychange', onVisible);
+  });
+}
+
+/**
  * Re-issue a request the signer has QUEUED for the user's approval.
  *
  * WHY THIS EXISTS. Clave (lib/nostr/clave.ts) does not hold a request open
@@ -390,23 +502,36 @@ async function withApprovalWait<T>(issue: () => Promise<T>, label: string): Prom
         return await trackBunkerCall(issue, label);
       } catch (e) {
         if (!isApprovalPending(e)) throw e;
+        // A CANCEL IS READ BEFORE THE BANNER GOES BACK UP, and the order is the
+        // whole fix. "Stop waiting" can only land while this attempt is on the
+        // wire — up to BUNKER_CALL_TIMEOUT_MS — and the check used to sit after
+        // the sleep instead. So a cancelled wait re-armed the banner, slept,
+        // and then left through the `finally`, whose generation guard refused
+        // to clear what the loop had just set: nothing waiting, banner up,
+        // until some later wait happened to end cleanly. Reported as the notice
+        // sticking after Stop waiting.
+        if (approvalGeneration !== generation) throw e;
+        const gap = approvalGapFor(attempt);
         // No room for another attempt inside the budget — give the caller the
         // signer's own last answer rather than a message we made up.
-        if (Date.now() - started + BUNKER_APPROVAL_RETRY_MS > BUNKER_APPROVAL_BUDGET_MS) throw e;
+        if (Date.now() - started + gap > BUNKER_APPROVAL_BUDGET_MS) throw e;
         activeApprovalWaits.add(token);
         setApprovalStage({ waiting: true, label, attempt });
-        await new Promise((r) => setTimeout(r, BUNKER_APPROVAL_RETRY_MS));
+        await waitBeforeReissue(gap, generation);
         if (approvalGeneration !== generation) throw e;
       }
     }
   } finally {
     activeApprovalWaits.delete(token);
-    // Clear only when NOTHING is still waiting, and only from the current
-    // generation. Two guards for two different mistakes: a call that never
-    // waited at all must not take down a banner a concurrent one is sitting on,
-    // and a loop that a cancel already superseded must not wipe a fresh one's
-    // state on its way out.
-    if (approvalGeneration === generation && activeApprovalWaits.size === 0) {
+    // THE SET IS THE AUTHORITY: the banner is up if and only if something is
+    // waiting, so an empty set means clear it, whatever generation this loop
+    // belongs to. The generation used to be a second condition here, guarding
+    // against a superseded loop wiping a fresh one's state on its way out — but
+    // a fresh wait that is waiting has its own token in the set, so the size
+    // check already covers that, and one that has not reached its first
+    // rejection yet has no state to wipe. Keeping both is what let a cancelled
+    // loop leave the notice on screen with nothing behind it.
+    if (activeApprovalWaits.size === 0) {
       setApprovalStage({ waiting: false, label: null, attempt: 0 });
     }
   }
@@ -646,13 +771,37 @@ let nostrconnectMemo:
   | null = null;
 
 /**
+ * One live listener on the session's pairing.
+ *
+ * `abandon` is the half that is easy to leave out and expensive to. A pairing
+ * outlives its listener: the URI, the client key and the secret are memoized
+ * and reused, while the SUBSCRIPTION behind them is replaced whenever the page
+ * comes back from the signer app and cannot trust the socket it left with. The
+ * replacement must not be added to the old one — see `abandon`'s own comment
+ * for why closing is not the same as logging out, and NOSTRCONNECT_RELAYS for
+ * why an abandoned socket is not free on iOS.
+ */
+export type NostrConnectAttempt = {
+  uri: string;
+  ready: Promise<BunkerAdapter>;
+  /** Close this listener and destroy its sockets. Safe to call twice. */
+  abandon: () => void;
+};
+
+/**
  * GENERATE flow. Creates a nostrconnect:// URI for the user to paste into
  * their remote signer; the returned promise resolves once the signer
- * connects back. No `perms` field — bunker prompts per call.
+ * connects back.
+ *
+ * The URI carries `perms` (NOSTRCONNECT_PERMS), so the methods this app uses
+ * are granted once on the signer's approval screen rather than prompted for on
+ * every call. It did not, once, and `withApprovalWait` is the machinery that
+ * bought.
  *
  * On a retry within the same session (memo present), reuses the
  * previously generated clientSk + URI so the QR the user already
- * scanned remains valid.
+ * scanned remains valid — and the caller `abandon()`s the attempt it is
+ * replacing first.
  */
 /**
  * The session's `nostrconnect://` URI, WITHOUT opening a subscription.
@@ -726,6 +875,11 @@ function ensureNostrConnectMemo(): { uri: string; clientSk: Uint8Array; secret: 
     clientPubkey,
     relays: NOSTRCONNECT_RELAYS,
     secret,
+    // WHAT THE SIGNER IS BEING ASKED TO GRANT, once, on its approval screen.
+    // See NOSTRCONNECT_PERMS: leaving this off is what made a queueing signer
+    // answer `no permission` to every later call, and withApprovalWait the
+    // price of it.
+    perms: NOSTRCONNECT_PERMS,
     // `wireName`, NOT `displayName`, and the reason is the encoder rather
     // than taste: createNostrConnectURI builds the query with
     // URLSearchParams, which writes a space as `+`. Amber percent-decodes and
@@ -775,15 +929,21 @@ function ensureNostrConnectMemo(): { uri: string; clientSk: Uint8Array; secret: 
 
 export function startNostrConnect(
   onAuthUrl?: (url: string) => void,
-): { uri: string; ready: Promise<BunkerAdapter> } {
+): NostrConnectAttempt {
   const { uri, clientSk } = ensureNostrConnectMemo();
   const memoUri = uri;
+  // Our pool, for the reason on `BunkerAdapter.pool`: this flow waits up to
+  // NOSTRCONNECT_TIMEOUT_MS for a signer that may never scan the QR at all, so
+  // the abandoned-transport case is the EXPECTED one here rather than the
+  // exception. Built OUT HERE rather than inside the async body so `abandon`
+  // below can reach it — that is the whole reason for the hoist.
+  const pool = new SimplePool();
+  let listener: BunkerSigner | null = null;
+  let abandoned = false;
+  // "This attempt WON." The transport it returned is the app's live signer from
+  // that moment, so `abandon` must become a no-op — see its guard.
+  let succeeded = false;
   const ready = (async () => {
-    // Our pool, for the reason on `BunkerAdapter.pool`: this flow waits up to
-    // NOSTRCONNECT_TIMEOUT_MS for a signer that may never scan the QR at all,
-    // so the abandoned-transport case is the EXPECTED one here rather than the
-    // exception.
-    const pool = new SimplePool();
     let signer: BunkerSigner;
     try {
       signer = await BunkerSigner.fromURI(
@@ -795,6 +955,15 @@ export function startNostrConnect(
     } catch (e) {
       try { pool.destroy(); } catch { /* ignore */ }
       throw e;
+    }
+    listener = signer;
+    // A handshake that lands after `abandon` must take itself down rather than
+    // hand back a live adapter. Its replacement owns the pairing now, and two
+    // adapters on one pairing is what `abandon` exists to prevent.
+    if (abandoned) {
+      try { await signer.close(); } catch { /* ignore */ }
+      try { pool.destroy(); } catch { /* ignore */ }
+      throw new Error('This pairing attempt was replaced by a newer one.');
     }
     let pubkey: string;
     try {
@@ -819,6 +988,7 @@ export function startNostrConnect(
     }
     nostrconnectMemo = null;
     storage.ncPending.clear();
+    succeeded = true;
     return {
       inner: signer,
       pool,
@@ -828,7 +998,31 @@ export function startNostrConnect(
       clientSkHex: bytesToHex(clientSk),
     };
   })();
-  return { uri, ready };
+  const abandon = () => {
+    // A WINNING ATTEMPT CANNOT BE ABANDONED, and this guard is the difference
+    // between tidying up and signing the user straight back out. Once `ready`
+    // has resolved, this pool and this subscription ARE the app's live signer —
+    // `finalizeBunkerLogin` installed them as `window.nostr`. A caller cannot
+    // reasonably know that: the sign-in modal closes an attempt whenever it
+    // starts another or the user dismisses it, and the winner is holding the
+    // handle at exactly that moment.
+    if (succeeded || abandoned) return;
+    abandoned = true;
+    // CLOSE, NEVER LOGOUT. `close()` ends this listener's kind:24133
+    // subscription; `logout()` is a NIP-46 method that tells the signer to
+    // forget the client — and the client key is SHARED with the replacement
+    // listener, because the whole point is to keep the pairing the user already
+    // approved. Logging out here would revoke the approval they just gave.
+    // Conduit make the same distinction, in the same place, for the same
+    // reason: "Never logout a superseded listener: its key may now belong to
+    // the winning listener for this same pairing."
+    try { void listener?.close(); } catch { /* ignore */ }
+    try { pool.destroy(); } catch { /* ignore */ }
+  };
+  // `ready` rejects when the attempt is abandoned, and nothing may be left
+  // holding that rejection: an abandoned attempt is routine, not a fault.
+  ready.catch(() => { /* the caller's own handler reports what matters */ });
+  return { uri, ready, abandon };
 }
 
 /**

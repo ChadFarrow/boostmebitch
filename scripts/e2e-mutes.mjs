@@ -152,6 +152,42 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 // this stays local rather than dragging in a dependency for eight characters.
 const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 
+// ---- the account menu ------------------------------------------------------
+//
+// TWO BANNERS THIS SUITE ASSERTS ON RENDER INSIDE IT — `<BunkerHealthBanner>`
+// ("Signer disconnected") and `<BunkerApprovalNotice>` ("Waiting for you to
+// approve") — and neither is in the document until the menu is opened. So an
+// assertion over `document.body.innerText` is not a weaker version of this one,
+// it is a different assertion: it can never see either banner, and it CAN see
+// the feed. One of them failed on a Nostr note reading *"You can just build
+// things, no permissions asked."*
+//
+// The trigger is found by role rather than by position: the header has more
+// than one popup button, so each is clicked in turn until the menu holding
+// "sign out" is the one on screen.
+const accountMenuText = () => js(`(() => {
+  const m = [...document.querySelectorAll('[role="menu"]')]
+    .find((el) => /sign out/i.test(el.innerText || ''));
+  return m ? m.innerText : null;
+})()`);
+
+async function openAccountMenu() {
+  if (await accountMenuText() !== null) return true;
+  const triggers = await js(`document.querySelectorAll('button[aria-haspopup="menu"]').length`);
+  for (let i = 0; i < triggers; i += 1) {
+    await js(`(() => { const b = document.querySelectorAll('button[aria-haspopup="menu"]')[${i}]; if (b) b.click(); return true; })()`);
+    await wait(300);
+    if (await accountMenuText() !== null) return true;
+  }
+  return false;
+}
+
+/** Is the "Signer disconnected — …" reconnect banner showing? */
+async function bannerInAccountMenu() {
+  if (!await openAccountMenu()) return null; // reported as a failure, not a pass
+  return /signer disconnected/i.test(await accountMenuText() ?? '');
+}
+
 await send('Page.enable'); await send('Runtime.enable');
 const pageLog = [];
 handlers.push((m) => {
@@ -441,6 +477,11 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   // for it — the fixture-editing antipattern CLAUDE.md names. New behaviour goes
   // behind a flag the new scenario turns on.
   let signEnabled = false;
+  // Scenario 5h: hold the answer on the wire for this long. The bug it
+  // reproduces needs a cancel to land while a request is UNANSWERED, and a
+  // local relay round trip is a few milliseconds — far too short to aim at.
+  // Zero everywhere else, so no other scenario changes timing.
+  let replyDelayMs = 0;
 
   const relayWs = new WebSocket(`ws://127.0.0.1:${PORT}`);
   await new Promise((r) => relayWs.addEventListener('open', r));
@@ -489,7 +530,8 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
       tags: [['p', clientPk]],
       content: nip44.v2.encrypt(JSON.stringify(reply), rpcKey),
     }, bunkerSk);
-    relayWs.send(JSON.stringify(['EVENT', out]));
+    const emit = () => relayWs.send(JSON.stringify(['EVENT', out]));
+    if (replyDelayMs > 0) setTimeout(emit, replyDelayMs); else emit();
   });
 
   const nip44Content = nip44.v2.encrypt(privateJson, convo);
@@ -621,9 +663,14 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   check('the request was issued twice', signRequests.length, 2);
   const signIds = seenIds.filter((_, i) => seen[i] === 'sign_event');
   check('...on two DIFFERENT request ids', signIds[0] !== signIds[1], true);
-  // BUNKER_APPROVAL_RETRY_MS is 8 s. Anything much faster means the retry did
-  // not sleep and would hammer the signer's approval queue.
-  check('...with the retry interval actually waited out', signMs >= 7000, true);
+  // THE FIRST GAP IN BUNKER_APPROVAL_GAPS_MS IS 2.5 s, and this floor moved
+  // down with it from 7000. What the assertion is for has not changed: the loop
+  // must SLEEP between asks. A re-issue is a fresh approval prompt on a signer
+  // that did not queue the request, so a loop that does not sleep hammers the
+  // very screen the user is being asked to look at. The schedule still widens
+  // to 8 s from the third ask; only the first two are dense, and only because
+  // the user is demonstrably standing at the signer for those.
+  check('...with the retry interval actually waited out', signMs >= 2000, true);
   const stillOk = await js(`/signer disconnected/i.test(document.body.innerText)`);
   check('a queued approval is not reported as a disconnect', stillOk, false);
 
@@ -645,7 +692,109 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   check('a refusal reaches the caller', String(refused).startsWith('rejected:'), true);
   check('...carrying the signer\'s own words', /user rejected the request/.test(String(refused)), true);
   check('...after exactly one request', seen.filter((m) => m === 'sign_event').length, 1);
-  check('...and without waiting out the approval interval', refusedMs < 5000, true);
+  // Under the FIRST gap (2.5 s), not merely under the old 8 s one: the point is
+  // that a terminal refusal never entered the loop at all.
+  check('...and without waiting out the approval interval', refusedMs < 2000, true);
+
+  console.log('\n  5g. the wait ends when the tab comes BACK, not when the timer says so');
+  // THE iOS HALF OF THE RE-ISSUE, and the only place it can be exercised
+  // without a phone. Approving happens in another app, so the switch back is
+  // part of the act — and Safari suspends timers in a backgrounded tab, so a
+  // plain setTimeout resumes on return with an arbitrary remainder still to
+  // run. `waitBeforeReissue` therefore ends on the first of the timer, a
+  // visibilitychange to visible, or a cancel.
+  //
+  // The page here is always visible, so a SYNTHETIC visibilitychange is what
+  // stands in for the return — the listener's own test is
+  // `visibilityState === 'visible'`, which is exactly the state a real return
+  // arrives in. Scenario 5d above still covers the timer path, so the two
+  // together pin both arms.
+  seen.length = 0;
+  seenIds.length = 0;
+  denyFirst = { method: 'sign_event', left: 1, error: 'permission denied' };
+  // Assert the premise rather than let it silently turn this into a slow copy
+  // of 5d: if the harness ever runs the page hidden, the synthetic event is
+  // ignored and the timer answers instead.
+  check('the harness page is visible, so the wake is reachable',
+    await js(`document.visibilityState`), 'visible');
+  const wokeRaw = await js(`(async () => {
+    const started = Date.now();
+    const p = window.nostr.signEvent({ kind: 1, created_at: 1700000002, tags: [], content: 'clave wake probe' });
+    // Lands inside the sleep: the denial is a local relay round trip, so the
+    // wait is running long before this fires.
+    setTimeout(() => document.dispatchEvent(new Event('visibilitychange')), 400);
+    try { const ev = await p; return JSON.stringify({ ok: true, ms: Date.now() - started, created_at: ev.created_at }); }
+    catch (e) { return JSON.stringify({ ok: false, err: String(e) }); }
+  })()`);
+  const woke = JSON.parse(wokeRaw);
+  check('the denied signature still came back', woke.ok, true);
+  check('...over the template we handed in, unaltered', woke.created_at, 1700000002);
+  check('...on two requests, so it really was a re-issue',
+    seen.filter((m) => m === 'sign_event').length, 2);
+  const wokeIds = seenIds.filter((_, i) => seen[i] === 'sign_event');
+  check('...on two DIFFERENT request ids', wokeIds[0] !== wokeIds[1], true);
+  // The whole assertion: the first gap is 2.5 s and the return beat it.
+  check('...woken by the return rather than the 2.5 s gap', woke.ms < 2000, true);
+
+  console.log('\n  5h. STOP WAITING clears the notice, and it STAYS clear');
+  // THE REGRESSION TEST FOR A NOTICE THAT STUCK. Reported as: press Stop
+  // waiting, the box goes, then it comes back and never leaves.
+  //
+  // The order is the whole bug, which is why this scenario is fiddly. A cancel
+  // can only land while an attempt is UNANSWERED, and the generation check used
+  // to sit after the sleep instead of before the re-arm — so the held answer
+  // arrived, the catch put the notice back up, the loop slept, woke on a moved
+  // generation and left through a `finally` whose generation guard refused to
+  // clear what it had just set. Nothing waiting, notice on screen.
+  //
+  // Two denials and a held reply are what make that window aimable: the first
+  // denial arms the notice, the second is stalled by `replyDelayMs` so the
+  // press lands in the middle of it.
+  seen.length = 0;
+  seenIds.length = 0;
+  denyFirst = { method: 'sign_event', left: 2, error: 'permission denied' };
+  await js(`(() => {
+    window.__bmbStuck = window.nostr.signEvent({ kind: 1, created_at: 1700000003, tags: [], content: 'stop waiting probe' });
+    // It is MEANT to reject — the user cancels it. Nothing must be left holding
+    // that rejection or the page logs an unhandled one over the assertions.
+    window.__bmbStuck.catch(() => {});
+    return true;
+  })()`);
+  await wait(900);
+  // The account menu is where <BunkerApprovalNotice> renders outside the boost
+  // modal, and every read below is scoped to that menu — see accountMenuText.
+  const noticeShowing = async () =>
+    /waiting for you to approve/i.test(await accountMenuText() ?? '');
+  check('the account menu opened', await openAccountMenu(), true);
+  check('the waiting notice reaches it', await noticeShowing(), true);
+  // Stall the NEXT answer so the press below lands while it is on the wire.
+  // Set now, before the 2.5 s gap elapses and the second ask goes out.
+  replyDelayMs = 1500;
+  await wait(2200);
+  check('the signer was asked a second time', seen.filter((m) => m === 'sign_event').length, 2);
+  const stopped = await js(`(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => /stop waiting/i.test(x.textContent || ''));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  check('Stop waiting was pressed while the request was unanswered', stopped, true);
+  await wait(300);
+  check('the notice goes at once', await noticeShowing(), false);
+  // The held denial lands inside this window. Before the fix it re-armed the
+  // notice here and nothing ever took it down again.
+  await wait(4000);
+  check('...and is STILL gone once the held answer arrives', await noticeShowing(), false);
+  // The signer answered, so the transport is demonstrably alive — cancelling a
+  // wait must not be dressed up as a disconnect. Readable here because the menu
+  // holding both banners is open.
+  check('a cancelled wait is not reported as a disconnect either',
+    /signer disconnected/i.test(await accountMenuText() ?? ''), false);
+  replyDelayMs = 0;
+  denyFirst = null;
+  // Put the menu back the way 5f expects to find it.
+  await js(`(() => { document.body.click(); return true; })()`);
+  await wait(200);
 
   // Deliberately NOT asserted: the give-up path at the end of the budget. A stub
   // that never relents costs 90 s of wall clock here, and adding a test-only
@@ -671,8 +820,15 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   const pairMs = Date.now() - pairStart;
 
   check('the session came up despite the refusal', await js(`localStorage.getItem('bmb:signer')`), 'bunker');
-  check('...and the app is not showing a signer error',
-    await js(`/signer disconnected|no permission/i.test(document.body.innerText)`), false);
+  // SCOPED TO THE ACCOUNT MENU, and the whole-body version this replaces was
+  // wrong twice over. `<BunkerHealthBanner>` renders INSIDE the menu, which is
+  // closed — so scanning `document.body.innerText` could never have seen the
+  // thing it names, and passed vacuously. What it COULD see is the feed: the
+  // assertion failed on a Nostr note reading *"You can just build things, no
+  // permissions asked."* An assertion over the whole page is an assertion over
+  // whatever strangers published that day.
+  check('...and the account menu is not offering a reconnect',
+    await bannerInAccountMenu(), false);
   const pkRequests = seen.filter((m) => m === 'get_public_key');
   check('get_public_key was issued more than once', pkRequests.length >= 2, true);
   const pkIds = seenIds.filter((_, i) => seen[i] === 'get_public_key');
