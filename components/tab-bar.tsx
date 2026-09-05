@@ -29,6 +29,15 @@ import { clearShowSelection, useApp } from '@/lib/store';
  * `<ModalShell>`'s z-[60], so the expanded player and every dialog cover it
  * without a hide-on-route rule.
  *
+ * IT IS ON EVERY ROUTE, `/live/<npub>` and `/stream/<naddr>` included, and
+ * that was decided rather than inherited (2026-09-05). Those two had no
+ * `<AppHeader>` by design, so this is the first navigation they carry — and it
+ * is wanted, because a listener who opens a live stream from a shared link has
+ * otherwise no route into the app at all. Their full-screen `z-40`
+ * "connecting…" covers paint under it, which is the same answer: a cover you
+ * can leave beats one you cannot. Do not add a hide list without a new
+ * reason.
+ *
  * TOUCH. Each item is the full `--tabbar-h` (56px) tall and a fifth (today, a
  * third) of the width wide, so it clears the 44px floor without a min-h — the
  * icon-and-label stack is centred inside the tap area, not the tap area itself.
