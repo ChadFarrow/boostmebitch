@@ -69,6 +69,7 @@ export function SelectMenu<T extends string>({
   label,
   placeholder,
   className = '',
+  triggerClassName = '',
 }: {
   options: SelectOption<T>[];
   /**
@@ -84,8 +85,16 @@ export function SelectMenu<T extends string>({
   label: string;
   /** Trigger text while `active` is null. Required to reach that state. */
   placeholder?: string;
-  /** Positioning for the wrapper. The trigger's own look is not overridable. */
+  /** Positioning for the wrapper. */
   className?: string;
+  /**
+   * Appended to the trigger's `.btn-mini`. For HEIGHT, so the menu can match
+   * the row it is in — the favorites filter sits beside a 44px input and a
+   * 44px sort toggle, and a 27px control centred between them reads as
+   * something dropped in rather than placed. Not for restyling the trigger:
+   * `.btn-mini` is what makes every one of these look like the same control.
+   */
+  triggerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement | null>(null);
@@ -144,7 +153,7 @@ export function SelectMenu<T extends string>({
         aria-expanded={open}
         aria-label={`${label}: ${triggerText}`}
         title={current?.title}
-        className="btn-mini"
+        className={`btn-mini ${triggerClassName}`}
       >
         <span className="text-bone">{triggerText}</span>
         {current?.count === undefined ? null : <span className="opacity-60">{current.count}</span>}

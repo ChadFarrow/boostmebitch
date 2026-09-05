@@ -444,6 +444,10 @@ export function FavoritesPage() {
               }}
               label="Show"
               className="shrink-0"
+              // Matches the input and the sort toggle beside it. The privacy
+              // menu and the backup tools are 27px because that cluster is
+              // secondary; this row is the one people actually use.
+              triggerClassName="h-11 px-3"
             />
             <input
               value={q}
