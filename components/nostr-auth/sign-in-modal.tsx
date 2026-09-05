@@ -21,7 +21,6 @@ import {
   nostrConnectUri,
   hasPendingNostrConnect,
   CLAVE_APP_STORE_URL,
-  CLAVE_OPEN_URL,
   type NostrIdentity,
 } from '@/lib/nostr';
 import { openAppLink } from '@/lib/app-link';
@@ -196,7 +195,7 @@ export function SignInModal({
   // link. One flag, `claveSlow`, still carries the silence; this one says which
   // silence it is.
   const [claveReturned, setClaveReturned] = useState(false);
-  // The clipboard route into the bunker:// fallback — see onPasteFromClave.
+  // The clipboard route into Option 2 — see onPasteFromClipboard.
   const [clipErr, setClipErr] = useState<string | null>(null);
   const claveSlowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Only the newest attempt may report — same role as amberNcAttempt above.
@@ -421,12 +420,20 @@ export function SignInModal({
   }
 
   /**
-   * Take the `bunker://` URI straight off the clipboard.
+   * Take the `bunker://` URI straight off the clipboard, for ANY signer.
    *
-   * This is the fallback Clave's own docs call the reliable one on iOS, and it
-   * was the slowest thing in this modal: open Clave, copy, come back, tap the
-   * field, long-press, Paste, tap Connect. Reading the clipboard collapses that
-   * to one tap plus iOS' own paste confirmation.
+   * It began as a Clave-only control inside the Clave box, on the argument that
+   * the vendor's own docs call a pasted `bunker://` the reliable same-device
+   * iOS path. That was true and the placement was wrong: the Clave box ended up
+   * carrying its own "open the app" and "paste from the app" pair beside a
+   * general Option 2 that does the same job for every signer, so the tab
+   * offered the same flow twice and the phone box was three controls deep.
+   *
+   * The convenience was worth keeping, so it moved rather than went: this is
+   * Option 2's *Paste* button now, and nsec.app and Amber-in-server-mode get it
+   * too. The tedium it removes is not Clave-specific — copy, come back, tap the
+   * field, long-press, Paste, tap Connect — and the clipboard read collapses it
+   * to one tap plus the browser's own paste confirmation.
    *
    * It must be called FROM A CLICK — `readText()` needs transient activation on
    * every browser that implements it, and iOS Safari additionally renders its
@@ -439,7 +446,7 @@ export function SignInModal({
    * still holds a shopping list gets a hint instead of a connect attempt and a
    * parser error about their shopping list.
    */
-  async function onPasteFromClave() {
+  async function onPasteFromClipboard() {
     setClipErr(null);
     let text: string;
     try {
@@ -447,16 +454,17 @@ export function SignInModal({
     } catch {
       // Denied, unsupported, or no activation left. The paste box below still
       // works, so say that rather than describing a permission screen.
-      setClipErr('Could not read the clipboard — paste the URI under Option 2 below.');
+      setClipErr('Could not read the clipboard — paste the URI into the field instead.');
       return;
     }
     const trimmed = text.trim();
     if (!looksLikeBunkerInput(trimmed)) {
-      setClipErr('That does not look like a bunker:// URI. Copy it in Clave, then tap again.');
+      setClipErr('That does not look like a bunker:// URI. Copy it in your signer, then tap again.');
       return;
     }
-    // Hand it to the existing paste flow rather than a second one, so the box
-    // below shows what is being connected and one code path owns the errors.
+    // Hand it to the existing paste flow rather than a second one, so the field
+    // beside this shows what is being connected and one code path owns the
+    // errors.
     setPasteValue(trimmed);
     setPasteBusy(true);
     setPasteErr(null);
@@ -1030,7 +1038,7 @@ export function SignInModal({
                         <div className="flex flex-col items-start gap-1">
                           <span className="text-[11px] text-muted">
                             {claveReturned
-                              ? 'Still waiting on Clave. Approve the request if it is showing, or open it again below.'
+                              ? 'Still waiting on Clave. Approve the request if it is showing, or copy its bunker:// URI into Option 2 below.'
                               : 'Still nothing? Clave may not be installed, or this browser may not be handing it the link.'}
                           </span>
                           <ClaveSchemeButton label="Open the Clave app directly" />
@@ -1053,7 +1061,7 @@ export function SignInModal({
                         <div className="flex flex-col items-start gap-1">
                           <span className="text-[11px] text-nostr/80">
                             {connectionDropped(claveErr)
-                              ? 'No answer yet. Tap Open Clave again above — that re-subscribes and re-sends the request in one go.'
+                              ? 'No answer yet. Tap Open Clave again above — that re-subscribes and re-sends the request in one go. Or copy the bunker:// URI from Clave into Option 2 below, which keeps this page in the foreground the whole time.'
                               : claveErr}
                           </span>
                           {/* Two different failures wear the same face here, and
@@ -1065,43 +1073,18 @@ export function SignInModal({
                               been told to open clave.casa as a web page, the
                               button above navigates this tab away and the user
                               lands back on THIS error, so tapping it again would
-                              only repeat that. This is the way out of the loop. */}
+                              only repeat that. This is the way out of the loop.
+
+                              THE COPY NAMES OPTION 2 because this box no longer
+                              carries its own paste fallback. Clave's own docs
+                              call a pasted `bunker://` the reliable same-device
+                              iOS path, and it must stay one sentence away — but
+                              a duplicate of Option 2 inside this box is not how
+                              you keep it reachable. */}
                           <ClaveSchemeButton label="Nothing opened? Open the Clave app directly" />
                         </div>
                       )}
 
-                      {/* The fallback, and the reason it is one tap rather than a
-                          copy-paste chore. Clave's own compatibility doc
-                          recommends a bunker:// URI for same-device iOS pairing,
-                          because that flow keeps THIS page in the foreground and
-                          Safari never suspends the WebSocket the handshake rides
-                          on. We lead with the deep link because it is faster when
-                          it works — but the vendor-recommended path has to be
-                          right here, and it has to not feel like work. */}
-                      <div className="border-t border-bone/15 pt-2 mt-1 flex flex-col gap-1.5">
-                        <span className="text-[10px] text-muted">
-                          Nothing came back? Copy the <code className="text-[9px]">bunker://</code>{' '}
-                          URI from Clave instead — this page stays open the whole time.
-                        </span>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button
-                            onClick={() => openAppLink(CLAVE_OPEN_URL)}
-                            className="btn-ghost text-[10px] py-1 px-2"
-                          >
-                            1. Open Clave
-                          </button>
-                          <button
-                            onClick={onPasteFromClave}
-                            disabled={pasteBusy}
-                            className="btn-bolt text-[10px] py-1 px-2 disabled:opacity-40"
-                          >
-                            {pasteBusy ? 'Connecting…' : '2. Paste from Clave'}
-                          </button>
-                        </div>
-                        {clipErr && (
-                          <span className="text-[10px] text-nostr/80">{clipErr}</span>
-                        )}
-                      </div>
                     </div>
                   )}
 
@@ -1209,6 +1192,21 @@ export function SignInModal({
                         placeholder="bunker://…"
                         className="input flex-1 text-[11px] break-all"
                       />
+                      {/* One tap instead of six. This lived in the iOS Clave box
+                          as "2. Paste from Clave", beside its own "1. Open
+                          Clave" — a second copy of this very section, for one
+                          signer. The convenience was real and the duplication
+                          was not worth it, so it moved here where nsec.app and
+                          Amber-in-server-mode get it too. It must be a real
+                          click: `readText()` needs transient activation, and
+                          iOS renders its own Paste confirmation on top. */}
+                      <button
+                        onClick={onPasteFromClipboard}
+                        disabled={pasteBusy}
+                        className="btn-ghost text-[11px] py-1 px-3 disabled:opacity-40"
+                      >
+                        Paste
+                      </button>
                       <button
                         onClick={onPasteSubmit}
                         disabled={pasteBusy || !pasteValue.trim()}
@@ -1217,6 +1215,9 @@ export function SignInModal({
                         {pasteBusy ? 'Connecting…' : 'Connect'}
                       </button>
                     </div>
+                    {clipErr && (
+                      <span className="text-[10px] text-nostr/80">{clipErr}</span>
+                    )}
                     {pasteBusy && (
                       <span className="text-[10px] text-muted">
                         Approve in your signer if prompted, then come back here.
