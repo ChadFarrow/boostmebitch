@@ -4,7 +4,7 @@ import type { Event as NostrEvent } from 'nostr-tools';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { clearShowSelection, useApp } from '@/lib/store';
-import { storage } from '@/lib/storage';
+import { storage, type FavView } from '@/lib/storage';
 import { BRAND } from '@/lib/brand';
 import {
   backupRefusal, backupSummary, favoritesBackupFilename, parseFavoritesBackup,
@@ -28,6 +28,7 @@ import {
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
+import { SelectMenu, type SelectOption } from '@/components/select-menu';
 import { FavoriteFeedRows, FavoriteItemRows, sortFavorites } from '@/components/lists/favorites';
 import {
   groupByMedium, feedNoun, itemNoun, splitLabels, crossSplitLabel,
@@ -283,67 +284,61 @@ export function FavoritesPage() {
   const half = splitLabels(tab);
 
   /**
-   * The segments after ALL.
+   * The library filter's options.
    *
    * A single word for a half across the whole library would have to be a
    * compound — "albums & shows" — which is two concepts in one box on a library
    * that is nearly all one medium. So a half is always named INSIDE a medium
-   * and every segment sets both axes at once. That is why there is no separate
-   * medium row any more: one press, one unambiguous state.
+   * and every option sets both axes at once. That is why there is no separate
+   * medium control: one press, one unambiguous state.
    *
    * Built from `tabs`, so only media the user actually has appear — there is no
-   * hand-written list of media here for the same reason the tab strip had none,
-   * and `~unknown` keeps its own segment.
+   * hand-written list of media here for the same reason the medium strip had
+   * none, and `~unknown` keeps its own entry.
    *
-   * THE SEGMENTS ARE ALWAYS THE WHOLE LIBRARY'S, whichever one is pressed.
-   * This used to be two rows — a medium tab strip, and under it a half row
-   * whose contents changed with the tab — and a control that reshapes when you
-   * press it is a control you cannot learn. One row, one shape, the same list
-   * whether you are looking at everything or at one pair.
-   *
-   * CLUSTERED BY MEDIUM, and each cluster opens with the medium itself:
-   * MUSIC · ALBUMS · TRACKS. The medium segment is not decoration. It is the
+   * CLUSTERED BY MEDIUM, each cluster opening with the medium itself and its
+   * halves indented under it. The medium entry is not decoration: it is the
    * "all of this medium, both halves" state, which the two-row version had as a
    * first-class control and which `bmb:fav_view` still holds on devices that
-   * used it (see the `split` derivation). Without it that stored state has no
-   * segment to light, and the strip renders inert over a filtered list.
+   * used it (see the `split` derivation). Without it that stored state has
+   * nothing to select, and the control names a filter that is not in its own
+   * list.
    *
-   * A HALF SEGMENT ONLY WHERE THE MEDIUM HAS BOTH. `~unknown` routinely holds
-   * items and no feeds; there, the medium segment and a `items` segment would
-   * select the identical rows, so the pair would be two controls doing one
-   * thing — and the derivation folds that half back to 'all' to match.
+   * A HALF ONLY WHERE THE MEDIUM HAS BOTH. `~unknown` routinely holds items and
+   * no feeds; there, the medium entry and an `items` entry would select the
+   * identical rows, so the pair would be two controls doing one thing — and the
+   * derivation folds that half back to 'all' to match.
    *
-   * The count rides on the medium segment, which is where the deleted medium
-   * strip carried it. Pressing any segment still sets BOTH `tab` and `split`,
-   * so the section headings and nouns below are unchanged.
+   * IT IS A MENU, NOT A ROW, and it got there the same way the search box's
+   * selector did — see `<SelectMenu>`. As a row this was up to sixteen
+   * segments once every medium carried three, and at 390px it ran off the edge
+   * mid-word: `ALL 287 · MUSIC 261 · ALBUMS · SINGLES · PO…`. It scrolled, but
+   * a strip whose last option is sliced in half reads as broken rather than
+   * scrollable, and the options past the cut are the ones nobody goes looking
+   * for. The `id` is `<tab>|<split>` so the two axes travel as one value.
    */
-  const splitChips = useMemo(
-    () =>
-      tabs.flatMap((t) => {
+  const filterOptions = useMemo<SelectOption<string>[]>(
+    () => [
+      { id: 'all|all', label: 'all', count: total },
+      ...tabs.flatMap((t) => {
         const bothHalves = t.feedCount > 0 && t.itemCount > 0;
         return [
-          { id: `${t.key}|all`, label: t.label, count: t.count, tab: t.key, split: 'all' as const },
+          { id: `${t.key}|all`, label: t.label, count: t.count },
           ...(bothHalves
-            ? ([
-                {
-                  id: `${t.key}|feeds`,
-                  label: crossSplitLabel(t.key, t.label, 'feeds'),
-                  count: undefined,
-                  tab: t.key,
-                  split: 'feeds' as const,
-                },
-                {
-                  id: `${t.key}|items`,
-                  label: crossSplitLabel(t.key, t.label, 'items'),
-                  count: undefined,
-                  tab: t.key,
-                  split: 'items' as const,
-                },
-              ] as const)
+            ? (['feeds', 'items'] as const).map((k) => ({
+                id: `${t.key}|${k}`,
+                label: crossSplitLabel(t.key, t.label, k),
+                // The trigger says which medium's half. "albums" alone does
+                // not, and the trigger is the only thing on screen naming the
+                // filter once the menu is shut.
+                triggerLabel: `${t.label} · ${crossSplitLabel(t.key, t.label, k)}`,
+                indent: true,
+              }))
             : []),
         ];
       }),
-    [tabs],
+    ],
+    [tabs, total],
   );
 
   const showFeeds = split !== 'items';
@@ -426,47 +421,23 @@ export function FavoritesPage() {
       ) : (
         <>
           <div className="flex flex-col gap-3">
-            {/* ONE segmented row: ALL, then a segment per (medium, half) pair
-                the library actually holds — built from `tabs`, the grouper's
-                own output, so there is no hand-written list of media here and
-                `~unknown` gets its own segment like any other. It replaces two
-                rows (medium tabs, then halves) that together held up to ten
-                chips and changed shape when pressed. Square, 44px, scrolls
-                sideways past four segments; `overscroll-x-contain` so the
-                swipe past the end does not become a back-swipe. */}
-            <div role="tablist" className="flex overflow-x-auto overscroll-x-contain border border-bone/30">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={tab === 'all' && split === 'all'}
-                onClick={() => update({ tab: 'all', split: 'all' })}
-                className={`shrink-0 h-11 px-3.5 text-xs uppercase tracking-wider transition ${
-                  tab === 'all' && split === 'all' ? 'bg-bone text-ink' : 'text-muted hover:text-bone'
-                }`}
-              >
-                all <span className="opacity-60 ml-1">{total}</span>
-              </button>
-              {splitChips.map((c) => {
-                const on = tab === c.tab && split === c.split;
-                return (
-                  <button
-                    key={c.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={on}
-                    onClick={() => update({ tab: c.tab, split: c.split })}
-                    className={`shrink-0 h-11 px-3.5 text-xs uppercase tracking-wider border-l border-bone/30 transition ${
-                      on ? 'bg-bone text-ink' : 'text-muted hover:text-bone'
-                    }`}
-                  >
-                    {c.label}
-                    {c.count === undefined ? null : (
-                      <span className="opacity-60 ml-1">{c.count}</span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+            {/* The library filter — one menu naming the current one of up to
+                sixteen (medium, half) states. See `filterOptions` above for
+                what is in it and `<SelectMenu>` for why it is a menu rather
+                than the strip of segments it replaced. It sits ABOVE the
+                filter box, matching where the search box's selector sits
+                relative to its input: the mode is a question about the whole
+                list, the text box narrows what the mode returned. */}
+            <SelectMenu
+              options={filterOptions}
+              active={`${tab}|${split}`}
+              onChange={(id) => {
+                const [nextTab, nextSplit] = id.split('|');
+                update({ tab: nextTab, split: nextSplit as FavView['split'] });
+              }}
+              label="Show"
+              className="w-fit"
+            />
             <div className="flex items-center gap-2">
               <input
                 value={q}
