@@ -186,6 +186,12 @@ function approvalGapFor(attempt: number): number {
 }
 const BUNKER_APPROVAL_BUDGET_MS = 90_000;
 
+// How long a sign-out waits for the signer to acknowledge a `logout` before
+// tearing the transport down anyway. Short on purpose: signing out must never
+// hang on a signer that is asleep, and the local half has already happened by
+// the time this is waited on. See `sendBunkerLogout`.
+const BUNKER_LOGOUT_TIMEOUT_MS = 4_000;
+
 // Module-level memo: the last clientSk we generated for a given pasted
 // URI. The iOS Safari + Primal failure mode is that the user approves
 // in Primal, but iOS suspended the WebSocket while they were in the
@@ -534,6 +540,46 @@ async function withApprovalWait<T>(issue: () => Promise<T>, label: string): Prom
     if (activeApprovalWaits.size === 0) {
       setApprovalStage({ waiting: false, label: null, attempt: 0 });
     }
+  }
+}
+
+/**
+ * Tell the signer to FORGET this client, so signing out here also removes the
+ * connection there.
+ *
+ * WHY IT IS WORTH A ROUND TRIP ON THE WAY OUT. A NIP-46 pairing is state on the
+ * signer's side, and closing our socket does not touch it: the app keeps
+ * listing this site as connected forever. **Clave caps a user at five
+ * connections**, so a few sign-in/sign-out cycles while testing fills the list
+ * with dead entries that only the user can prune, by hand, in another app.
+ *
+ * `logout` is the NIP-46 method for it (nips#2373, Amber #460). Clave
+ * implements it — `Shared/LightSigner.swift` lists it in `describe`, answers
+ * `"ack"`, and runs `performLogoutTeardown` **only once that ack has actually
+ * been published**, so the session survives a failed round trip rather than
+ * vanishing on one. It is auto-allowed there, so this costs the user no prompt.
+ *
+ * SENT WITH `sendRequest`, NOT A LIBRARY METHOD, and that is a version fact
+ * rather than a preference: nostr-tools **2.19.4 has no `logout()`** — the
+ * pinned version exposes `close()` and the generic `sendRequest` and nothing
+ * else. A later version added the wrapper, and CLAUDE.md forbids the bump for
+ * an unrelated reason, so the method name is written out here.
+ *
+ * BEST-EFFORT, ALWAYS. A signer that does not implement it answers with an
+ * error string, an asleep one answers not at all, and neither may stand between
+ * the user and being signed out — hence the timeout and the swallowed
+ * rejection. It deliberately does NOT go through `trackBunkerCall`
+ * (a stale-transport flag is meaningless for a transport being destroyed) or
+ * `withApprovalWait` (a ninety-second approval loop on the way out is absurd).
+ *
+ * Returns whether the signer acknowledged, for a caller that wants to say so.
+ */
+export async function sendBunkerLogout(adapter: BunkerAdapter): Promise<boolean> {
+  try {
+    await withTimeout(adapter.inner.sendRequest('logout', []), BUNKER_LOGOUT_TIMEOUT_MS, 'logout');
+    return true;
+  } catch {
+    return false;
   }
 }
 

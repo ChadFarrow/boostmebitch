@@ -24,7 +24,7 @@
 import { storage } from '@/lib/storage';
 import { AmberSigner } from './amber';
 import { LocalSigner } from './local-signer';
-import type { BunkerAdapter } from './bunker';
+import { sendBunkerLogout, type BunkerAdapter } from './bunker';
 
 let amberInstance: AmberSigner | null = null;
 let bunkerInstance: BunkerAdapter | null = null;
@@ -121,6 +121,41 @@ export function activateBunkerSigner(adapter: BunkerAdapter) {
   localInstance = null;
   bunkerInstance = adapter;
   window.nostr = adapter.nostrApi;
+}
+
+/**
+ * Sign out AND revoke: detach the adapter now, ask the signer to forget us, and
+ * tear the transport down once it answers.
+ *
+ * THE ORDER IS THE WHOLE FUNCTION. The reference is dropped and `window.nostr`
+ * restored FIRST, synchronously, so nothing can sign with a session the user has
+ * just ended — but the socket and the subscription stay up until the `logout`
+ * settles, because closing them first would leave nothing to publish the request
+ * on or to hear the ack with. `deactivateBunkerSigner` does the opposite and is
+ * right for its own callers; this one is for the deliberate disconnect, where
+ * the connection ALSO exists on the signer's side and only it can remove it.
+ *
+ * Fire-and-forget from the caller's point of view: `signout()` stays synchronous
+ * and the teardown lands within `BUNKER_LOGOUT_TIMEOUT_MS` either way. The cost
+ * of that is a few seconds where an abandoned pool is still open, which is
+ * bounded and is the price of the pairing not outliving the session.
+ *
+ * NOT for `abandonRestoredSession`. That path runs when a restore FAILED — a
+ * suspended socket, a relay that did not answer — and the user has not asked to
+ * disconnect anything. Revoking there would burn a working pairing over a
+ * transient fault and make them pair again from scratch.
+ */
+export function revokeBunkerSession() {
+  const adapter = bunkerInstance;
+  bunkerInstance = null;
+  if (typeof window !== 'undefined' && originalCaptured) {
+    window.nostr = originalWindowNostr;
+  }
+  if (!adapter) return;
+  void sendBunkerLogout(adapter).finally(() => {
+    try { adapter.inner.close(); } catch { /* ignore */ }
+    try { adapter.pool.destroy(); } catch { /* ignore */ }
+  });
 }
 
 export function deactivateBunkerSigner() {

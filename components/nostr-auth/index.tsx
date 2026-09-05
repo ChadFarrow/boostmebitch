@@ -619,7 +619,13 @@ export function NostrAuth() {
     storage.npub.clear();
     storage.signer.clear();
     clearAmberSigner();
-    clearBunkerSigner();
+    // `revoke` HERE AND NOWHERE ELSE. Signing out is the one moment the user has
+    // said they are done with this signer, so it is the one moment we may ask it
+    // to forget us — which matters because a NIP-46 pairing lives on the
+    // signer's side too, and Clave caps a user at five connections. The other
+    // caller, abandonRestoredSession, deliberately does not: a restore that
+    // failed on a suspended socket is not a decision to disconnect.
+    clearBunkerSigner({ revoke: true });
     // Wipes the ciphertext AND the wrap key, so nothing left behind can
     // decrypt a later blob.
     clearLocalSigner().catch(() => { /* storage already gone */ });

@@ -15,6 +15,7 @@ import {
   activateLocalSigner,
   deactivateAmberSigner,
   deactivateBunkerSigner,
+  revokeBunkerSession,
   deactivateLocalSigner,
 } from './signer';
 import { clearKey, getKey, putKey } from './local-key-store';
@@ -190,10 +191,26 @@ export async function restoreBunkerSigner(): Promise<boolean> {
   }
 }
 
-/** Drop the bunker polyfill + persisted session, restoring the underlying
- *  window.nostr (if any). */
-export function clearBunkerSigner() {
-  deactivateBunkerSigner();
+/**
+ * Drop the bunker polyfill + persisted session, restoring the underlying
+ * window.nostr (if any).
+ *
+ * `revoke` also tells the SIGNER to forget this client, and the two callers want
+ * opposite things. A deliberate sign-out should remove the connection at both
+ * ends — a NIP-46 pairing is state on the signer's side that closing our socket
+ * does not touch, and **Clave caps a user at five connections**, so dead entries
+ * from old sessions are a real cost the user can only clear by hand in another
+ * app. A FAILED RESTORE is the opposite case: the socket was suspended or a
+ * relay did not answer, the user asked for nothing, and burning a working
+ * pairing over a transient fault would make them pair again from scratch. So it
+ * is opt-in, and `abandonRestoredSession` does not opt in.
+ *
+ * Still synchronous. `revokeBunkerSession` detaches the adapter immediately and
+ * lets the round trip finish on its own — see its header.
+ */
+export function clearBunkerSigner({ revoke = false }: { revoke?: boolean } = {}) {
+  if (revoke) revokeBunkerSession();
+  else deactivateBunkerSigner();
   storage.bunker.clear();
 }
 
