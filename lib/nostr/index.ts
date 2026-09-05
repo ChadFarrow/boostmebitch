@@ -44,6 +44,7 @@ export {
   CLAVE_APP_STORE_URL,
   CLAVE_OPEN_URL,
 } from './clave';
+export { primalConnectUrl, PRIMAL_PLAY_URL } from './primal';
 
 export { fetchProfile, fetchRawProfile, publishProfile, type RawProfile } from './profile';
 
