@@ -20,6 +20,7 @@ import {
   claimClaveHandoff,
   clearClaveHandoff,
   looksLikeBunkerInput,
+  nostrConnectUri,
   CLAVE_APP_STORE_URL,
   CLAVE_OPEN_URL,
   type NostrIdentity,
@@ -126,6 +127,7 @@ export function SignInModal({
   // attempt's 120 s timeout would write "Connection dropped" over a session
   // that is still coming up. Only the newest attempt may report anything.
   const amberNcAttempt = useRef(0);
+  const amberNcSettled = useRef(false);
   // Clave flow (iOS). NIP-46 over a `nostrconnect://` URI handed to the app by
   // its own `clave://connect?uri=` scheme — the same shape as the Android Amber
   // button above, and for the same reason: on the phone that is displaying it,
@@ -159,6 +161,9 @@ export function SignInModal({
   // below can re-launch the SAME one. Not derived from a fresh
   // `loginWithNostrConnect()` call, which would open another subscription.
   const claveUriRef = useRef<string | null>(null);
+  // "Has ANY attempt signed in yet", which is not the same question as "is this
+  // the newest attempt" — see the success path below.
+  const claveSettled = useRef(false);
   // Paste bunker:// flow.
   const [pasteValue, setPasteValue] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -204,25 +209,41 @@ export function SignInModal({
     return submitManualAmberResult(trimmed);
   }
 
-  async function onAmberConnect() {
+  // Same `launch` rule as onClaveConnect, and it is the SAME defect rather than
+  // a precaution copied across: `amberNcOpened` is keyed on the URI, and
+  // startNostrConnect clears its memo on success, so a visibility retry that
+  // raced that success got a fresh URI, sailed past the guard and dispatched an
+  // intent with no user activation — for a pairing Amber has never seen. The
+  // iPhone report that found this is in onClaveConnect's header; nothing about
+  // it is iOS-specific.
+  async function onAmberConnect({ launch = true }: { launch?: boolean } = {}) {
+    if (!launch && amberNcOpened.current && nostrConnectUri() !== amberNcOpened.current) {
+      setAmberNcBusy(false);
+      setAmberNcErr('That pairing is no longer live. Tap Sign in with Amber to start a new one.');
+      return;
+    }
     const attempt = ++amberNcAttempt.current;
     const isCurrent = () => amberNcAttempt.current === attempt;
     setAmberNcBusy(true);
     setAmberNcErr(null);
     try {
       const { uri, ready } = loginWithNostrConnect((url) => setGenAuthUrl(url));
-      if (amberNcOpened.current !== uri) {
+      if (launch && amberNcOpened.current !== uri) {
         amberNcOpened.current = uri;
         openAppLink(uri);
       }
       const id = await ready;
-      // A superseded attempt that wins its race anyway must not sign in a second
-      // time; the newest attempt owns the session.
-      if (!isCurrent()) return;
+      // Same rule as onClaveConnect: a success from ANY attempt signs in, and
+      // the latch — not the newest-attempt check — is what stops two acks
+      // signing in twice. Gating success on isCurrent() discarded the approval
+      // the user had just given, because the visibility retry bumps the counter
+      // at precisely the moment the original attempt resolves.
+      if (amberNcSettled.current) return;
+      amberNcSettled.current = true;
       onSuccess(id, 'bunker');
       onClose();
     } catch (e) {
-      if (!isCurrent()) return;
+      if (!isCurrent() || amberNcSettled.current) return;
       setAmberNcErr(getErrorMessage(e, 'Amber connection failed'));
     } finally {
       if (isCurrent()) setAmberNcBusy(false);
@@ -243,7 +264,34 @@ export function SignInModal({
     }
   }
 
-  async function onClaveConnect() {
+  /**
+   * `launch` is FALSE for every path the user did not tap, and that is a rule
+   * rather than a tidy-up. Reported from a real iPhone on Brave: approve in
+   * Clave, switch back, and the page threw *"Cannot Open Page — Brave cannot
+   * open the page because it has an invalid address."*
+   *
+   * The cause is a race the emulator cannot reach. `startNostrConnect` clears
+   * its memo the moment a connect SUCCEEDS, and the visibility listener below
+   * fires on the way back — before React has processed that success. So the
+   * retry found no memo, minted a BRAND-NEW pairing, and navigated to it. Two
+   * things were wrong with that at once: the navigation had no user activation
+   * behind it, which iOS refuses and Brave reports as an invalid address; and
+   * the new pairing is one Clave has never seen, so even had it opened it could
+   * only time out while the approval the user had just given went to the
+   * pairing we abandoned.
+   *
+   * Hence both halves below: a retry never launches, and a retry that finds the
+   * pairing gone says so instead of silently starting another.
+   */
+  async function onClaveConnect({ launch = true }: { launch?: boolean } = {}) {
+    // Read the live pairing WITHOUT subscribing — that is what nostrConnectUri
+    // is for. A retry whose pairing has been replaced must stop here, before it
+    // opens a transport nothing will ever answer.
+    if (!launch && claveUriRef.current && nostrConnectUri() !== claveUriRef.current) {
+      setClaveBusy(false);
+      setClaveErr('That pairing is no longer live. Tap Sign in with Clave to start a new one.');
+      return;
+    }
     const attempt = ++claveAttempt.current;
     const isCurrent = () => claveAttempt.current === attempt;
     setClaveBusy(true);
@@ -265,13 +313,27 @@ export function SignInModal({
       // custom scheme stays reachable from the control below it, for the one
       // failure this cannot report — see lib/nostr/clave.ts.
       claveUriRef.current = uri;
-      if (claimClaveHandoff(uri)) openAppLink(claveUniversalLink(uri));
+      // `launch` first: NOTHING may navigate to an app without a gesture behind
+      // it. The claim then keeps a second TAP from re-opening an app the user is
+      // already standing in.
+      if (launch && claimClaveHandoff(uri)) openAppLink(claveUniversalLink(uri));
       const id = await ready;
-      if (!isCurrent()) return;
+      // A SUCCESS FROM ANY ATTEMPT COUNTS, and this deliberately does not ask
+      // isCurrent(). The newest-attempt rule is right for reporting an error —
+      // an older attempt's timeout must not overwrite a live one — but applied
+      // to success it throws away the very thing the user did: the visibility
+      // retry bumps the counter on the way back from the signer, which is
+      // exactly when the original attempt is resolving with the approval. That
+      // made "approve in Clave, switch back" sign in nowhere at all.
+      //
+      // The latch still keeps two acks from signing in twice, which is all
+      // isCurrent() was buying here.
+      if (claveSettled.current) return;
+      claveSettled.current = true;
       onSuccess(id, 'bunker');
       onClose();
     } catch (e) {
-      if (!isCurrent()) return;
+      if (!isCurrent() || claveSettled.current) return;
       setClaveErr(getErrorMessage(e, 'Clave connection failed'));
     } finally {
       if (isCurrent()) {
@@ -449,7 +511,9 @@ export function SignInModal({
     if (genBusy || pasteBusy) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
-      if (document.visibilityState === 'visible') onClaveConnect();
+      // Re-subscribe only. See onClaveConnect's header for the iPhone report
+      // this guards against.
+      if (document.visibilityState === 'visible') onClaveConnect({ launch: false });
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
@@ -472,7 +536,8 @@ export function SignInModal({
     if (amberBusy) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
-      if (document.visibilityState === 'visible') onAmberConnect();
+      // Re-subscribe only — never re-dispatch. See onAmberConnect's header.
+      if (document.visibilityState === 'visible') onAmberConnect({ launch: false });
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
@@ -509,7 +574,9 @@ export function SignInModal({
     // renders on iOS, so without it a stray intent would leave a request in
     // flight with no screen attached to it — busy state nobody can see or cancel.
     if (!claveIntent || !ios) return;
-    onClaveConnect();
+    // The header row already navigated, inside its own click. This effect runs
+    // in a later task with no activation left, so it must never navigate again.
+    onClaveConnect({ launch: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [claveIntent, ios]);
 
@@ -636,7 +703,7 @@ export function SignInModal({
                   {android && (
                     <div className="border border-bone/15 p-3 flex flex-col gap-2">
                       <button
-                        onClick={onAmberConnect}
+                        onClick={() => onAmberConnect()}
                         disabled={amberNcBusy || amberBusy}
                         className="btn-bolt w-full disabled:opacity-40"
                       >
@@ -678,7 +745,7 @@ export function SignInModal({
                   {ios && (
                     <div className="border border-bone/15 p-3 flex flex-col gap-2">
                       <button
-                        onClick={onClaveConnect}
+                        onClick={() => onClaveConnect()}
                         disabled={claveBusy}
                         className="btn-bolt w-full disabled:opacity-40"
                       >

@@ -35,6 +35,7 @@ export {
   cancelBunkerApprovalWait,
   clearPendingBunkerAttempts,
   looksLikeBunkerInput,
+  nostrConnectUri,
   type BunkerApprovalStage,
 } from './bunker';
 export {

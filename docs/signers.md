@@ -129,6 +129,61 @@ rests on the exact `2.19.4` pin above. If that ever moves, re-read `nip46.js` by
 hand: a version that wraps `o.error` in an `Error` reverts this silently rather
 than breaking loudly.
 
+### Coming back from the signer must never re-launch it — measured on a real iPhone
+
+Reported from an iPhone running **Brave**: tap "Sign in with Clave", approve in
+Clave, switch back to the page, and the browser throws
+
+> **Cannot Open Page** — Brave cannot open the page because it has an invalid
+> address.
+
+over a modal still reading "WAITING FOR CLAVE…". The sign-in did not complete.
+
+**The cause is a race no emulator reaches**, because it needs a connect that
+actually succeeds. `startNostrConnect` clears `nostrconnectMemo` the moment
+`getPublicKey()` resolves. The visibility listener fires on the way back — before
+React has processed that resolution — so the retry found no memo, minted a
+**brand-new pairing**, and navigated to it. Two faults at once:
+
+- **The navigation had no user activation behind it.** iOS refuses an app-scheme
+  navigation from a `visibilitychange` handler, and Brave reports that refusal as
+  an invalid address. The per-URI guards (`claimClaveHandoff`, `amberNcOpened`)
+  could not help: the URI was genuinely new, so they passed it through.
+- **The new pairing was one Clave had never seen.** Even had it opened, it could
+  only time out — while the approval the user had just given belonged to the
+  pairing we had abandoned.
+
+**And the worse half was silent.** The retry bumps `claveAttempt`, so when the
+original attempt resolved with the approved identity, its own `isCurrent()` check
+threw it away. "Approve in Clave, switch back" signed in **nowhere at all**, and
+the only thing on screen was a browser error about an address.
+
+Two rules came out of it, and both are stated as invariants because neither can
+be pinned by a `check:*`:
+
+1. **Only a handler the user tapped may launch an app.** `onClaveConnect` and
+   `onAmberConnect` take `{ launch }`, default true; every caller that is not an
+   `onClick` — the visibility retries, and the modal's pick-up of the header
+   row's handshake — passes `launch: false`. That makes it reviewable by reading
+   the call sites rather than by reasoning about timing. A retry re-subscribes;
+   it never navigates.
+2. **A success from ANY attempt signs in.** The newest-attempt rule is right for
+   reporting an *error* — an older attempt's timeout must not overwrite a live
+   session — but applied to success it discards the very thing the user did.
+   `claveSettled` / `amberNcSettled` latch the first success instead, which is
+   all `isCurrent()` was buying on that path.
+
+A retry that finds the pairing replaced also stops rather than starting another
+one silently: it reads `nostrConnectUri()` — which returns the memo **without
+subscribing** — and says "that pairing is no longer live" instead of opening a
+transport nothing will answer.
+
+**What is and is not proven here.** A CDP run under an iPhone UA confirms that
+returning to the page four times never produces a second navigation. It does
+*not* reproduce the original race: that needs a connect that succeeds, and this
+container cannot reach the public relays. The structural guarantee above is the
+argument; the field report is the evidence that it was needed.
+
 ### "Subscription closed" never matched, so the reconnect never ran
 
 nostr-tools 2.19.4 throws `new Error("Subscription closed before connection was
