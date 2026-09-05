@@ -17,8 +17,6 @@ import {
   isLikelyIOS,
   claveOpenLink,
   claveUniversalLink,
-  claimClaveHandoff,
-  clearClaveHandoff,
   looksLikeBunkerInput,
   nostrConnectUri,
   hasPendingNostrConnect,
@@ -170,6 +168,17 @@ export function SignInModal({
   // Drives the "nothing happened?" hint. It is the ONLY signal available for a
   // missing app: see lib/app-link.ts.
   const [claveSlow, setClaveSlow] = useState(false);
+  // The live pairing URI, in STATE, because it is now an `href`. The ref below
+  // keeps the same value for the synchronous reads inside prepareClave.
+  const [claveUri, setClaveUri] = useState<string | null>(null);
+  // "The user has gone to Clave at least once." NOT the same thing as
+  // `claveBusy`, which is true from the moment this box opens — the pairing is
+  // prepared before the user touches anything, so busy cannot mean "waiting for
+  // them". Only this may say "approve in Clave, then come back", and only this
+  // may arm the nothing-happened timer.
+  const [claveSent, setClaveSent] = useState(false);
+  // The same fact, readable from inside prepareClave's closure. See its catch.
+  const claveSentRef = useRef(false);
   // The clipboard route into the bunker:// fallback — see onPasteFromClave.
   const [clipErr, setClipErr] = useState<string | null>(null);
   const claveSlowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -289,59 +298,42 @@ export function SignInModal({
   }
 
   /**
-   * `launch` is FALSE for every path the user did not tap, and that is a rule
-   * rather than a tidy-up. Reported from a real iPhone on Brave: approve in
-   * Clave, switch back, and the page threw *"Cannot Open Page — Brave cannot
-   * open the page because it has an invalid address."*
+   * SUBSCRIBE TO THE PAIRING. IT NEVER NAVIGATES ANYWHERE — that is the whole
+   * shape of this flow now, and the `launch` flag this used to carry is gone.
    *
-   * The cause is a race the emulator cannot reach. `startNostrConnect` clears
-   * its memo the moment a connect SUCCEEDS, and the visibility listener below
-   * fires on the way back — before React has processed that success. So the
-   * retry found no memo, minted a BRAND-NEW pairing, and navigated to it. Two
-   * things were wrong with that at once: the navigation had no user activation
-   * behind it, which iOS refuses and Brave reports as an invalid address; and
-   * the new pairing is one Clave has never seen, so even had it opened it could
-   * only time out while the approval the user had just given went to the
-   * pairing we abandoned.
+   * Reaching Clave is an `<a href>` the user taps (`<ClaveConnectLink>` below).
+   * A Universal Link only opens an app from a genuine tap on a real anchor, so
+   * there is nothing left for JavaScript to dispatch: this function's whole job
+   * is to have a live subscription waiting before that tap happens, and to get
+   * one back when the user returns.
    *
-   * Hence both halves below: a retry never launches, and a retry that finds the
-   * pairing gone says so instead of silently starting another.
+   * It is called from three places, none of which is a navigation: the
+   * prepare-on-open effect, the anchor's own click (so the subscription is
+   * refreshed in the same gesture that leaves for the app), and the
+   * visibility retry on the way back.
    */
-  async function onClaveConnect({ launch = true }: { launch?: boolean } = {}) {
+  async function prepareClave() {
     // Read the live pairing WITHOUT subscribing — that is what nostrConnectUri
     // is for. A retry whose pairing has been replaced must stop here, before it
     // opens a transport nothing will ever answer.
-    if (!launch && claveUriRef.current && nostrConnectUri() !== claveUriRef.current) {
+    if (claveUriRef.current && nostrConnectUri() !== claveUriRef.current) {
       setClaveBusy(false);
-      setClaveErr('That pairing is no longer live. Tap Sign in with Clave to start a new one.');
+      setClaveErr('That pairing is no longer live. Close this and start again.');
       return;
     }
     const attempt = ++claveAttempt.current;
     const isCurrent = () => claveAttempt.current === attempt;
     setClaveBusy(true);
     setClaveErr(null);
-    setClaveSlow(false);
-    if (claveSlowTimer.current) clearTimeout(claveSlowTimer.current);
-    claveSlowTimer.current = setTimeout(() => {
-      if (isCurrent()) setClaveSlow(true);
-    }, CLAVE_SLOW_MS);
     try {
       const { uri, ready } = loginWithNostrConnect((url) => setClaveAuthUrl(url));
-      // Claimed once per URI, across BOTH launch sites (this and the header
-      // row). A retry — the visibility effect below, or a second tap —
-      // re-subscribes without sending the user back to an app they have already
-      // approved in.
-      //
-      // The custom scheme is the primary because it NEVER NAVIGATES THIS TAB.
-      // Outside Safari a Universal Link loads clave.casa instead of opening the
-      // app, and that reload takes this subscription with it — measured on
-      // Brave, where Clave ended up holding an approved connection the page knew
-      // nothing about. The Universal Link is the labelled recovery below.
+      // BOTH a ref and a state, and they answer different questions. The ref is
+      // read synchronously inside this function on the next attempt; the state
+      // is what puts a live URI into the anchor's href. Neither can do the
+      // other's job: a ref never re-renders, and a state read inside this
+      // closure would be the one from the render this attempt started in.
       claveUriRef.current = uri;
-      // `launch` first: NOTHING may navigate to an app without a gesture behind
-      // it. The claim then keeps a second TAP from re-opening an app the user is
-      // already standing in.
-      if (launch && claimClaveHandoff(uri)) openAppLink(claveOpenLink(uri));
+      setClaveUri(uri);
       const id = await ready;
       // A SUCCESS FROM ANY ATTEMPT COUNTS, and this deliberately does not ask
       // isCurrent(). The newest-attempt rule is right for reporting an error —
@@ -359,6 +351,14 @@ export function SignInModal({
       onClose();
     } catch (e) {
       if (!isCurrent() || claveSettled.current) return;
+      // A PREPARE THE USER NEVER ACTED ON MAY NOT REPORT A FAILURE. The pairing
+      // is subscribed when the box opens, so this attempt can time out 120 s
+      // later under someone who has not touched anything — and telling them
+      // "no answer yet" about a request they never sent is a lie about the
+      // signer. Nothing is lost by staying quiet: the anchor re-prepares on tap
+      // whenever no attempt is live, so a stale subscription is repaired at the
+      // exact moment it starts to matter.
+      if (!claveSentRef.current) return;
       setClaveErr(getErrorMessage(e, 'Clave connection failed'));
     } finally {
       if (isCurrent()) {
@@ -421,54 +421,92 @@ export function SignInModal({
   }
 
   /**
-   * Hand the pairing over through clave.casa.
+   * THE PRIMARY CONTROL, AND IT IS AN `<a href>` ON PURPOSE.
    *
-   * IT IS AN ANCHOR, NOT A BUTTON, and that is the whole reason it can work.
-   * iOS opens a Universal Link in the app only for a genuine tap on a real
-   * link; a scripted `a.click()` — which is what `openAppLink` does, and what
-   * this control used to do — is treated as an ordinary navigation and loads
-   * the web page instead. Measured in Safari. So this must stay markup the user
-   * presses, and must never be routed through `openAppLink`.
+   * A Universal Link opens the app only from a genuine tap on a real anchor;
+   * dispatched from script it is an ordinary https navigation and clave.casa's
+   * web page loads instead. That is not a browser quirk to route around — it is
+   * the mechanism — so the control has to BE the anchor rather than a button
+   * that builds one.
    *
-   * Rendered this way it answers both silences a custom scheme can produce, and
-   * neither is detectable from the page: Clave is not installed, or nothing here
-   * will dispatch `clave://`. clave.casa opens the app when it can and shows an
-   * install page when it cannot.
+   * Which is why the pairing is prepared before this renders. An anchor's href
+   * has to exist at render time, so there is no "mint the URI inside the click"
+   * step left; the effect below does it when the box opens, and this shows a
+   * disabled button for the moment in between.
    *
-   * Still the second choice, because when it does NOT reach the app it
-   * navigates, and the pairing this document waits on dies with the document.
-   * Survivable — `storage.ncPending` lets the same client key be resumed — but
-   * survivable is not free, so it is offered rather than taken.
+   * Conduit (github.com/Conduit-BTC, `packages/ui/src/components`) ships exactly
+   * this — `<ClaveConnectButton>` is an `<a>` around `clave.casa/connect/?uri=`,
+   * fed by a pairing their `useSignerPairing` prepares on mount — and it is what
+   * a user compared this against: tap, Clave opens, switch back, signed in. Ours
+   * asked them to tap a scripted `clave://` instead, which shows an "Open in
+   * Clave?" sheet on the way out and could not use the Universal Link at all.
+   *
+   * `prepareClave()` runs in the same click, but ONLY when nothing is already
+   * listening. The anchor is worth no more than the subscription behind it, and
+   * an attempt that has already timed out would let the ack arrive with nobody
+   * home — but re-subscribing over a live attempt just opens a second socket on
+   * one pairing, so `claveBusy` decides.
    */
-  function ClaveWebLink({ label }: { label: string }) {
-    const uri = claveUriRef.current;
-    if (!uri) return null;
+  function ClaveConnectLink() {
+    if (!claveUri) {
+      return (
+        <button disabled className="btn-bolt w-full disabled:opacity-40">
+          Preparing connection…
+        </button>
+      );
+    }
     return (
       <a
-        href={claveUniversalLink(uri)}
+        href={claveUniversalLink(claveUri)}
         target="_self"
         rel="noopener"
-        className="btn-ghost text-[10px] py-1 px-2 no-underline"
+        onClick={() => { markClaveSent(); if (!claveBusy) void prepareClave(); }}
+        className="btn-bolt w-full no-underline"
       >
-        {label}
+        {claveSent ? 'Open Clave again' : 'Sign in with Clave'}
       </a>
     );
   }
 
   /**
-   * Send the user back to Clave on the SAME pairing.
+   * The escape hatch, and it is the custom scheme precisely because the primary
+   * is not.
    *
-   * The ordinary retry deliberately does not re-launch — a user who already
-   * approved should not be bounced into the app again. But the other failure is
-   * real and looks identical from here: iOS suspended this page's WebSocket
-   * during the app switch, the ack was lost, and the user never got a prompt to
-   * approve. kind:24133 is ephemeral, so re-subscribing cannot replay it. The
-   * only way out is to ask Clave again, and that has to be the user's call
-   * because only they know whether they saw a prompt.
+   * A Universal Link can be switched off by the user without their realising
+   * it: one tap on the "clave.casa" breadcrumb in Safari's top-right and iOS
+   * opens the web page for that domain from then on, permanently, with no UI to
+   * undo it and nothing on the page able to detect it. `clave://` is unaffected,
+   * which makes this the only cure for the one failure the primary cannot
+   * report. It is a scripted click, which is fine — a custom scheme, unlike a
+   * Universal Link, is dispatched from one.
    */
-  function onReopenClave() {
-    clearClaveHandoff();
-    onClaveConnect();
+  function ClaveSchemeButton({ label }: { label: string }) {
+    if (!claveUri) return null;
+    return (
+      <button
+        onClick={() => { markClaveSent(); if (!claveBusy) void prepareClave(); openAppLink(claveOpenLink(claveUri)); }}
+        className="btn-ghost text-[10px] py-1 px-2"
+      >
+        {label}
+      </button>
+    );
+  }
+
+  /**
+   * Record that the user left for Clave, and start the only clock that can
+   * report a silence.
+   *
+   * It is armed HERE rather than when the pairing is prepared, because the
+   * question it answers is "you tapped and nothing opened" — asking it of a
+   * pairing the user has not acted on yet would put a "Clave may not be
+   * installed" hint under a button nobody has pressed.
+   */
+  function markClaveSent() {
+    claveSentRef.current = true;
+    setClaveSent(true);
+    setClaveSlow(false);
+    if (claveSlowTimer.current) clearTimeout(claveSlowTimer.current);
+    claveSlowTimer.current = setTimeout(() => setClaveSlow(true), CLAVE_SLOW_MS);
   }
 
   async function onGenerate() {
@@ -555,9 +593,8 @@ export function SignInModal({
     if (genBusy || pasteBusy) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
-      // Re-subscribe only. See onClaveConnect's header for the iPhone report
-      // this guards against.
-      if (document.visibilityState === 'visible') onClaveConnect({ launch: false });
+      // Re-subscribe. Nothing here navigates — see prepareClave's header.
+      if (document.visibilityState === 'visible') void prepareClave();
     };
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
@@ -609,27 +646,35 @@ export function SignInModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, pasteErr, pasteBusy, pasteValue]);
 
-  // Pick up the handshake the header row started. `startClaveSignIn` deliberately
-  // dropped its own promise, so nothing is awaiting the ack until this runs —
-  // and `claimClaveHandoff` has already been taken for that URI, so this
-  // subscribes without launching Clave a second time.
+  // PREPARE THE PAIRING WHEN THE BOX OPENS, before the user taps anything.
+  //
+  // This is not an optimisation, it is what makes the primary control possible:
+  // it is an `<a href>`, and an anchor's href has to exist at render time. The
+  // old shape minted the URI inside the click, which forced a scripted
+  // navigation, which a Universal Link cannot be dispatched from — so the whole
+  // flow had to fall back to `clave://` and its confirmation sheet.
+  //
+  // It also resumes A PAIRING THIS TAB LOST. `prepareClave` goes through
+  // `loginWithNostrConnect`, whose memo restores `storage.ncPending` when it is
+  // still fresh, so a navigation or reload gets its listener back rather than
+  // leaving the user on a dead "Sign in" page while the signer believes it is
+  // connected.
+  //
+  // Once per open, hence the ref: the deps carry `tab` so switching INTO the
+  // Remote Signer tab prepares it, and toggling tabs afterwards must not open a
+  // second subscription on the same pairing.
+  const clavePrepared = useRef(false);
   useEffect(() => {
-    // `ios` as well as the intent: the box that reports this attempt only
-    // renders on iOS, so without it a stray intent would leave a request in
-    // flight with no screen attached to it — busy state nobody can see or cancel.
+    // `ios` as well as the tab: the box that reports this attempt only renders
+    // on iOS, so without it a subscription would be in flight with no screen
+    // attached to it — busy state nobody can see or cancel.
     if (!ios) return;
-    // RESUME A PAIRING THIS TAB LOST, not just the header row's handshake.
-    // Handing the URI to a signer can navigate the tab away — a Universal Link
-    // does exactly that outside Safari — and coming back loads a fresh
-    // document with no subscription. `storage.ncPending` survives that, so an
-    // unfinished pairing gets its listener back instead of the user finding a
-    // dead "Sign in" page while the signer believes it is connected.
-    if (!claveIntent && !hasPendingNostrConnect()) return;
-    // Never navigates: the header row already did, inside its own click, and
-    // this effect runs in a later task with no activation left.
-    onClaveConnect({ launch: false });
+    if (tab !== 'remote') return;
+    if (clavePrepared.current) return;
+    clavePrepared.current = true;
+    void prepareClave();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [claveIntent, ios]);
+  }, [ios, tab]);
 
   // The "may not be installed" timer is the one thing here that outlives the
   // render if nobody clears it: it fires setState on an unmounted modal after
@@ -795,19 +840,12 @@ export function SignInModal({
                       showing the QR, the QR is not an option. */}
                   {ios && (
                     <div className="border border-bone/15 p-3 flex flex-col gap-2">
-                      <button
-                        onClick={() => onClaveConnect()}
-                        disabled={claveBusy}
-                        className="btn-bolt w-full disabled:opacity-40"
-                      >
-                        {claveBusy ? 'Waiting for Clave…' : 'Sign in with Clave'}
-                      </button>
-                      {claveBusy && (
-                        <span className="text-[11px] text-muted">
-                          Approve the connection in Clave, then come back here — this
-                          page finishes on its own. Nothing to paste.
-                        </span>
-                      )}
+                      <ClaveConnectLink />
+                      <span className="text-[11px] text-muted">
+                        {claveSent
+                          ? 'Approve the connection in Clave, then come back here — this page finishes on its own. Nothing to paste.'
+                          : 'Your keys stay in Clave. Tapping this opens the app with the connection request already in it.'}
+                      </span>
                       {claveAuthUrl && (
                         <div className="flex flex-col items-start gap-1 border border-nostr/40 bg-nostr/10 p-2">
                           <span className="text-[10px] text-bone">
@@ -829,13 +867,13 @@ export function SignInModal({
                           routing that domain to the app, which no page can
                           detect. A timer is the only signal either produces, so
                           both answers are offered rather than guessed between. */}
-                      {claveSlow && claveBusy && (
+                      {claveSlow && !claveErr && (
                         <div className="flex flex-col items-start gap-1">
                           <span className="text-[11px] text-muted">
                             Still nothing? Clave may not be installed, or this
                             browser may not be handing it the link.
                           </span>
-                          <ClaveWebLink label="Try via clave.casa" />
+                          <ClaveSchemeButton label="Open the Clave app directly" />
                           <span className="text-[11px] text-muted">
                             Don&apos;t have Clave?{' '}
                             <a
@@ -853,30 +891,20 @@ export function SignInModal({
                         <div className="flex flex-col items-start gap-1">
                           <span className="text-[11px] text-nostr/80">
                             {connectionDropped(claveErr)
-                              ? 'No answer yet. If you approved in Clave, tap Sign in with Clave again — if you never saw a prompt, send the request again.'
+                              ? 'No answer yet. Tap Open Clave again above — that re-subscribes and re-sends the request in one go.'
                               : claveErr}
                           </span>
                           {/* Two different failures wear the same face here, and
                               only the user can tell them apart: an ack this page
                               was asleep for, or a request Clave never showed
-                              them. The ordinary retry re-subscribes; this one
-                              asks Clave again. */}
-                          <div className="flex flex-wrap items-center gap-2">
-                            <button
-                              onClick={onReopenClave}
-                              className="btn-ghost text-[10px] py-1 px-2"
-                            >
-                              Send the request to Clave again
-                            </button>
-                            {/* AND the scheme escape belongs HERE, not only in
-                                the timed hint above. If Safari has been told to
-                                open clave.casa as a web page, the Universal Link
-                                navigates this tab away; the user comes back to
-                                THIS error, and "send again" would only navigate
-                                them away a second time. This is the way out of
-                                that loop. */}
-                            <ClaveWebLink label="Nothing opened? Try via clave.casa" />
-                          </div>
+                              them. Re-tapping the button above covers both — it
+                              re-subscribes and asks Clave again in one gesture.
+                              The scheme escape belongs here too: if Safari has
+                              been told to open clave.casa as a web page, the
+                              button above navigates this tab away and the user
+                              lands back on THIS error, so tapping it again would
+                              only repeat that. This is the way out of the loop. */}
+                          <ClaveSchemeButton label="Nothing opened? Open the Clave app directly" />
                         </div>
                       )}
 

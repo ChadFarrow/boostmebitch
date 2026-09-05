@@ -39,7 +39,7 @@ import {
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { storage } from '../storage';
 import { BRAND } from '../brand';
-import { CLAVE_RELAY, clearClaveHandoff } from './clave';
+import { CLAVE_RELAY } from './clave';
 import { isApprovalPending } from './nip46-errors';
 
 // Default relays for the GENERATE flow's nostrconnect:// URI. Multiple
@@ -605,11 +605,11 @@ export function clearPendingBunkerAttempts(): void {
   pendingClientSks.clear();
   nostrconnectMemo = null;
   storage.ncPending.clear();
-  // The Clave handoff shadows that memo — it records which URI has already been
-  // handed to the app. Dropping one without the other leaves the next session
-  // believing it already launched for a URI that no longer exists, so the deep
-  // link silently never fires.
-  clearClaveHandoff();
+  // Nothing shadows that memo any more. There used to be a Clave handoff record
+  // beside it — which URI had already been handed to the app — because the
+  // header row launched Clave itself and the modal had to know not to launch it
+  // again. Reaching Clave is now an `<a href>` the user taps, so there is no
+  // second launcher and nothing to keep in step.
 }
 
 /**

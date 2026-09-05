@@ -3,7 +3,7 @@ import { useWalletChange } from '@/lib/use-wallet-change';
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { isGoogleAuthConfigured, preloadGis, startGoogleSignIn } from '@/lib/nostr/google-auth';
-import { isLikelyIOS, startClaveSignIn } from '@/lib/nostr';
+import { isLikelyIOS } from '@/lib/nostr';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
 import { WalletBalanceChip } from './wallet-balance';
 import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
@@ -146,13 +146,17 @@ export function AuthControl() {
                 <button
                   role="menuitem"
                   onClick={() => {
-                    // FIRST and synchronously, exactly as the Google row does
-                    // and for a stricter version of the same reason: Safari
-                    // gates an app-scheme navigation on this click's transient
-                    // activation, and the modal mounts in a later task. It
-                    // cannot launch Clave itself — it can only pick up the
-                    // pairing this started.
-                    startClaveSignIn();
+                    // THIS ROW DOES NOT LAUNCH CLAVE, and giving up that one
+                    // saved tap is what made the flow work. It used to fire an
+                    // app-scheme navigation here, synchronously, because Safari
+                    // gates one on this click's transient activation and the
+                    // modal mounts in a later task. But a scripted navigation
+                    // can only ever be the custom scheme — a Universal Link
+                    // needs a real anchor — so the fast path was also the
+                    // unreliable one, and it left before any subscription
+                    // existed. The modal now prepares the pairing when it opens
+                    // and offers a real `<a href>`; this row's whole job is to
+                    // open it on the right tab.
                     setMenuOpen(false);
                     setSignInOpen(true, 'clave');
                   }}

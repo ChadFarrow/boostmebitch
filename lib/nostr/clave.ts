@@ -64,35 +64,34 @@ export const CLAVE_RELAY = 'wss://relay.powr.build/';
 
 
 /**
- * Clave's Universal Link — the SECOND way in, and it must be rendered as a real
- * anchor. It was the primary for one commit; a field report moved it back.
+ * Clave's Universal Link — THE PRIMARY WAY IN, and it works only as a real
+ * `<a href>`. The launcher has been reversed three times; this is the shape
+ * that both halves of the evidence agree on.
  *
  * **A UNIVERSAL LINK ONLY OPENS THE APP FROM A GENUINE TAP ON A REAL ANCHOR.**
  * iOS does not hand a *programmatic* navigation to an app: a scripted
- * `location.href = …`, or the synthesised `a.click()` inside
- * `lib/app-link.ts`, is treated as an ordinary https navigation and the web
- * page loads. Apple documents this, and it holds in SAFARI too — it is not a
- * third-party-browser quirk.
+ * `location.href = …`, or a synthesised `a.click()`, is treated as an ordinary
+ * https navigation and the web page loads. Apple documents this, and it holds
+ * in SAFARI too — it is not a third-party-browser quirk. Measured here the hard
+ * way: dispatched through `openAppLink`, this link navigated the tab to
+ * clave.casa, the user paired from that page, and Clave ended up listing
+ * BoostMeBitch as connected while the document holding the subscription the ack
+ * was addressed to had already died. kind:24133 is ephemeral, so that ack was
+ * unrecoverable.
  *
- * That is exactly what broke it, measured in Safari on an iPhone: dispatched
- * through `openAppLink`, this link navigated the tab to clave.casa. The user
- * paired from that page, so Clave listed BoostMeBitch as a connected client
- * with Full permission — while the original document, its module state and the
- * subscription the ack was addressed to had all died with the navigation.
- * kind:24133 is ephemeral, so that ack was unrecoverable.
+ * The conclusion drawn from that was too broad. The right one is narrower: the
+ * URL is only half the mechanism, and the other half is HOW IT IS DISPATCHED.
+ * Conduit (github.com/Conduit-BTC, `packages/ui/src/components`) ship this exact
+ * URL and it opens the app on the first tap on a physical iPhone — because
+ * their `<ClaveConnectButton>` is an `<a href>`, fed by a pairing their
+ * `useSignerPairing` hook prepares on mount. A user compared the two flows side
+ * by side and reported theirs simply working, which is what moved this back.
  *
- * Conduit (github.com/Conduit-BTC) verify this form opening the app on the
- * first tap on a physical iPhone, and there is no contradiction with the above:
- * their control IS an `<a href>` the user taps. Ours was a scripted click —
- * a different thing wearing the same URL.
- *
- * So: **never pass this to `openAppLink`.** It cannot work, and it fails by
- * silently navigating rather than by doing nothing. Reach it only from an
- * anchor in the DOM, which is what the sign-in modal's clave.casa control is.
- * Rendered that way it serves both silences a custom scheme can produce — the
- * app is missing, or this browser will not dispatch the scheme — because
- * clave.casa opens the app when it can and shows an install page when it
- * cannot.
+ * So it is dispatched from an anchor and **never passed to `openAppLink`**,
+ * which cannot work and fails by silently navigating rather than by doing
+ * nothing. Preferred over the scheme because it opens the app with no "Open in
+ * Clave?" sheet, and because when the app is absent it lands on an install page
+ * instead of a silence nothing can report.
  *
  * THE PRIVACY NOTE, kept because it is still the right size: the URI carries
  * the ephemeral client pubkey and the connect secret. Where iOS routes the link
@@ -106,24 +105,21 @@ export function claveUniversalLink(uri: string): string {
 }
 
 /**
- * THE PRIMARY WAY IN: Clave's custom scheme.
+ * Clave's custom scheme — THE ESCAPE HATCH, and it is the escape precisely
+ * because the primary is a Universal Link.
  *
- * It wins for one property the Universal Link cannot offer outside Safari: it
- * **never navigates this tab**. The page, its module state and the subscription
- * the signer's ack is addressed to all survive the app switch, which is the
- * whole game — a pairing whose ack lands on a destroyed subscription is one the
- * signer thinks succeeded and the page has no way to learn about.
+ * A Universal Link can be switched off by the user without their realising it:
+ * one tap on the "clave.casa" breadcrumb in Safari's top-right and iOS opens
+ * the web page for that domain from then on, permanently, with no UI to undo it
+ * and **nothing on the page able to detect it**. The custom scheme is
+ * unaffected, which makes it the only cure for the one failure the primary
+ * cannot report.
  *
- * Unlike a Universal Link it DOES work from a scripted `a.click()`, which is
- * what lets one code path serve the header row — which has to build the URI
- * inside its own click — and the modal button alike. It still needs a user
- * gesture in the call stack: without one iOS refuses the navigation and Brave
- * reports *"Cannot Open Page … invalid address"* — measured, and the reason
- * `onClaveConnect` takes a `launch` flag that only tap handlers may set.
- *
- * Its own failure mode is silence: an unregistered scheme does nothing
- * observable, which is what the sign-in modal's timed hint and the Universal
- * Link above are for.
+ * Unlike a Universal Link it DOES work from a scripted `a.click()`, so this one
+ * goes through `openAppLink`. Two costs keep it second: Safari shows an "Open
+ * in Clave?" confirmation sheet, and its own failure mode is silence — an
+ * unregistered scheme does nothing observable, which is what the sign-in
+ * modal's timed hint is for.
  *
  * The shape is Clave's, verified against its reference web client
  * (DocNR/clave-casa, `src/lib/connect-inbound.ts` and the unit tests beside
@@ -145,40 +141,3 @@ export function claveOpenLink(uri: string): string {
 /** Open Clave without handing it a pairing URI — for the `bunker://` fallback,
  *  where the user goes to the app to COPY a URI and brings it back here. */
 export const CLAVE_OPEN_URL = 'clave://';
-
-// Which pairing URI has already been handed to the Clave app this session.
-//
-// IT IS MODULE STATE RATHER THAN A REF BECAUSE TWO COMPONENTS LAUNCH CLAVE. The
-// header row starts the handshake inside its own click — the only moment Safari
-// will let an app-scheme navigation through — and the sign-in modal then mounts
-// and picks the same pairing up. `startNostrConnect` memoizes ONE URI per
-// session, so both see the same string; without a shared record the modal would
-// treat it as new and fire a second navigation at an app the user is already
-// standing in.
-//
-// Cleared by `clearPendingBunkerAttempts` in bunker.ts, alongside the memo it
-// shadows, so the two can never disagree about which pairing is live.
-let handedToClave: string | null = null;
-
-/**
- * Claim the right to open Clave for this URI. True exactly once per URI.
- *
- * The caller that gets `true` performs the navigation; every later caller —
- * the modal mounting behind the header row, or a visibility retry after the
- * user comes back — gets `false` and re-subscribes instead. That distinction is
- * the whole point: a retry must not send someone back to an app they have
- * already approved in.
- */
-export function claimClaveHandoff(uri: string): boolean {
-  if (handedToClave === uri) return false;
-  handedToClave = uri;
-  return true;
-}
-
-/** Forget the claim, so the next attempt launches again. Called when the
- *  pairing memo is dropped, and by the "Open Clave again" control — the one
- *  case where re-launching IS the point, because the ack was lost and the user
- *  never got to approve. */
-export function clearClaveHandoff(): void {
-  handedToClave = null;
-}

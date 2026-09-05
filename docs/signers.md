@@ -170,10 +170,11 @@ Verified under an iPhone UA: the pairing persists while waiting, survives a
 full reload byte-identically, and the modal picks the handshake back up on its
 own without re-launching the app.
 
-### The launcher, reversed twice — and why both reversals were right
+### The launcher, reversed three times — and the variable that was missing
 
-`clave://` → Universal Link → `clave://`. Worth writing down, because each
-change was driven by evidence that was correct about the case it came from.
+`clave://` → Universal Link → `clave://` → Universal Link, as an anchor. Worth
+writing down, because each change was driven by evidence that was correct about
+the case it came from, and the last one is where the cases finally reconcile.
 
 - **`clave://` first**, on the reasoning that a Universal Link ships the pairing
   URI to a third-party origin. That privacy argument was overstated, and it was
@@ -181,22 +182,44 @@ change was driven by evidence that was correct about the case it came from.
 - **Universal Link**, after Conduit (github.com/Conduit-BTC) — who verify on a
   **physical iPhone, in Safari**, that it opens the app on the first tap with no
   confirmation sheet. True, and still true.
-- **`clave://` again**, after the Safari report above: dispatched through
+- **`clave://` again**, after a Safari field report: dispatched through
   `openAppLink`'s scripted click, a Universal Link cannot reach the app at all
-  and silently loads clave.casa instead.
+  and silently loads clave.casa instead. Also true.
+- **Universal Link, from a real `<a href>`.** A user compared the two flows on
+  their own phone — "for conduit.market I click clave, it opens clave and I
+  switch back and it just works" — which is the case both earlier measurements
+  were about, and neither had explained.
 
-**The resolution is not "Conduit was wrong".** It is that the URL is only half
-the mechanism — the other half is *how it is dispatched*. A Universal Link needs
-a real anchor and a real tap; a custom scheme works from a scripted click. Our
-launcher is scripted by necessity, because the header row has to build the
-pairing URI inside its own click, so the custom scheme is the one that fits it.
+**The resolution is not "one of the measurements was wrong".** It is that the
+URL is only half the mechanism, and the other half is *how it is dispatched*. A
+Universal Link needs a real anchor and a real tap; a custom scheme also works
+from a scripted click. Conduit's control **is** an `<a href>`
+(`packages/ui/src/components/ClaveConnectButton.tsx`, an `<a>` around
+`clave.casa/connect/?uri=`); ours was a scripted click wearing the same URL.
+Same string, different mechanism, opposite outcome.
 
-The Universal Link stays, rendered the only way it can work: **`<ClaveWebLink>`
-is an `<a href>`, never routed through `openAppLink`.** In that form it answers
-both silences a custom scheme can produce — the app is missing, or this browser
-will not dispatch the scheme — because clave.casa opens the app when it can and
-shows an install page when it cannot. Neither silence is detectable from the
-page, which is why both are offered rather than guessed between.
+**What had to change to render an anchor is the interesting part, and it is not
+cosmetic.** An anchor's `href` must exist at render time, so the pairing cannot
+be minted inside the click. That is exactly what our header row was doing, and
+why the launcher had to be scripted in the first place: Safari gates an
+app-scheme navigation on the click's transient activation, and the modal mounts
+in a later task, so the row built the URI and navigated in one handler. The
+whole constraint dissolves once the pairing is prepared when the sign-in panel
+OPENS — which is what Conduit's `useSignerPairing` hook does on mount, and what
+`<SignInModal>`'s prepare-on-open effect does now. The header row no longer
+launches anything; it opens the modal on the Remote Signer tab and stops.
+
+**That costs one tap and buys the mechanism.** The old shape saved a tap by
+launching from the menu row, and paid for it twice over: a confirmation sheet on
+the way out, and a hand-off that left before any subscription existed.
+
+`clave://` stays as the labelled escape, and it earns the place. A Universal
+Link can be switched off by the user without their realising it — one tap on the
+"clave.casa" breadcrumb in Safari's top-right and iOS opens the web page for
+that domain from then on, permanently, with no UI to undo it and **nothing on
+the page able to detect it**. The scheme is unaffected, which makes it the only
+cure for the one failure the primary cannot report. Between them the two answer
+both silences: the app is missing, or this browser will not route the link.
 
 ### Coming back from the signer must never re-launch it — measured on a real iPhone
 
@@ -216,8 +239,9 @@ React has processed that resolution — so the retry found no memo, minted a
 
 - **The navigation had no user activation behind it.** iOS refuses an app-scheme
   navigation from a `visibilitychange` handler, and Brave reports that refusal as
-  an invalid address. The per-URI guards (`claimClaveHandoff`, `amberNcOpened`)
-  could not help: the URI was genuinely new, so they passed it through.
+  an invalid address. The per-URI guards (`amberNcOpened`, and a `claimClaveHandoff`
+  record that no longer exists) could not help: the URI was genuinely new, so
+  they passed it through.
 - **The new pairing was one Clave had never seen.** Even had it opened, it could
   only time out — while the approval the user had just given belonged to the
   pairing we had abandoned.
@@ -230,12 +254,17 @@ the only thing on screen was a browser error about an address.
 Two rules came out of it, and both are stated as invariants because neither can
 be pinned by a `check:*`:
 
-1. **Only a handler the user tapped may launch an app.** `onClaveConnect` and
-   `onAmberConnect` take `{ launch }`, default true; every caller that is not an
-   `onClick` — the visibility retries, and the modal's pick-up of the header
-   row's handshake — passes `launch: false`. That makes it reviewable by reading
-   the call sites rather than by reasoning about timing. A retry re-subscribes;
-   it never navigates.
+1. **Only a handler the user tapped may launch an app.** `onAmberConnect` takes
+   `{ launch }`, default true, and every caller that is not an `onClick` — the
+   visibility retry — passes `launch: false`. That makes it reviewable by
+   reading the call sites rather than by reasoning about timing. A retry
+   re-subscribes; it never navigates.
+
+   **The Clave half of this is now structural rather than a flag.** Reaching
+   Clave is an `<a href>` the user taps, and `prepareClave()` only subscribes —
+   so there is no code path on that side that could navigate without a tap, with
+   or without a flag to forget. That is a stronger guarantee than the rule, and
+   it is why the flag is gone from the iOS branch rather than merely unused.
 2. **A success from ANY attempt signs in.** The newest-attempt rule is right for
    reporting an *error* — an older attempt's timeout must not overwrite a live
    session — but applied to success it discards the very thing the user did.
@@ -556,15 +585,21 @@ The entry point lives in the combined **`<AuthControl>`** header control, not a 
 - **Browser Extension** — `loginWithExtension` (NIP-07); the button is disabled with a hint when `window.nostr` is absent.
 - **Remote Signer** — *Generate QR* (`nostrconnect://` via `loginWithNostrConnect`) and *Paste Bunker URI* (`loginWithBunker`) stacked, plus **"Sign in with Amber"** (`loginWithAmber`) on Android and **"Sign in with Clave"** on iOS. Default tab when no extension is detected, **and whenever the modal was opened with the Clave intent or a pairing is still pending** — see below.
 
-**The iOS box mirrors the Android one and sits in the same slot** — above Option 1, because on the phone displaying the QR the QR is not an option. `isLikelyIOS()` gates it; that helper had been written and exported with zero call sites since the Amber work, and this is the first. `onClaveConnect` is `onAmberConnect` with one line changed: `openAppLink(claveOpenLink(uri))`, the `clave://connect?uri=` wrapper rather than the bare URI. Same `claveAttempt` (only the newest attempt may report); the "opened once" half is `claimClaveHandoff` above rather than a ref, because two components launch Clave. **`openAppLink` (`lib/app-link.ts`) is shared with the Amber button and the header row** — three callers now, and an anchor click rather than `location.href` for the reason `amber.ts` measured.
+**The iOS box mirrors the Android one and sits in the same slot** — above Option 1, because on the phone displaying the QR the QR is not an option. `isLikelyIOS()` gates it; that helper had been written and exported with zero call sites since the Amber work, and this is the first. Structurally it does NOT mirror it, and that is the point: the Android box's button dispatches, while `<ClaveConnectLink>` is an `<a href>` the user taps and `prepareClave()` only ever subscribes. There is no `launch` flag on the iOS side and nothing left for JavaScript to navigate.
+
+**`prepareClave` is called from three places, none of them a navigation**: the prepare-on-open effect, the anchor's own click (so a dead attempt gets a live subscription in the same gesture that leaves for the app — guarded on `claveBusy`, since re-subscribing over a live attempt just opens a second socket on one pairing), and the visibility retry on the way back. `claveAttempt` still means only the newest attempt may report an error, and `claveSettled` still means a success from ANY attempt signs in.
+
+**`claveBusy` is not "the user is waiting" any more, and `claveSent` is.** The pairing is prepared when the box opens, so busy is true before anyone has touched anything; only `claveSent` may say *"approve in Clave, then come back"*, relabel the control *"Open Clave again"*, or arm the nothing-happened timer. Reading the wrong one puts a *"Clave may not be installed"* hint under a button nobody has pressed.
+
+**`openAppLink` (`lib/app-link.ts`) is now the Amber button and the `clave://` escape** — the header row no longer calls it, and neither does anything else.
 
 **A fourth `visibilitychange` retry effect, and it introduces a collision the Android box never had.** The Clave button and the QR box both call `loginWithNostrConnect`, whose memo returns the SAME URI but builds a **fresh `ready`** — so if both effects fire on one return, two subscriptions resolve on one pairing and `finalizeBunkerLogin` runs twice: two live transports, `onSuccess`/`onClose` on an unmounted modal. `claveAttempt` guards only within its own branch. Reachable in two taps: tap *Sign in with Clave*, watch nothing happen because Clave is not installed, tap *Generate QR Code*. So the guards are mutual — the Clave effect bails on `genBusy || pasteBusy` (the same reason the Amber one bails on `amberBusy`: its documented next moves are in the same tab, and returning from *those* is a `visibilitychange` too), and the generate effect gains `claveBusy`.
 
 **A missing app produces no signal at all**, which is why there is a timer. An unregistered custom scheme on iOS is a silent no-op — no error, no navigation event, nothing observable — so after ~6 s of waiting the box says *"Nothing happened? Clave may not be installed"* with an App Store link. **Do not replace that with install-detection**: the usual `document.hidden` race reports "not installed" for any slow app switch, which is the ordinary case for a signer being cold-launched. The box also carries a one-tap *"Open Clave to copy a `bunker://` URI"* pointing at Option 2, because Clave's own doc recommends the bunker flow for same-device iOS pairing — it keeps this page in the foreground, so Safari never suspends the socket the handshake rides on. We lead with the deep link because it is one tap and the memoized re-subscribe already exists, but the vendor-recommended path has to be one tap away and labelled as such.
 
-**Which of the two links is the primary has been reversed twice; the argument is in "The launcher, reversed twice" above and is not repeated here.** As shipped: `clave://` goes through `openAppLink`, and the Universal Link is `<ClaveWebLink>`, a real `<a href>`. Routing the Universal Link through `openAppLink` is the one thing that must never happen — a scripted click cannot reach the app, so it navigates the tab to clave.casa and takes the waiting subscription with it.
+**Which of the two links is the primary has been reversed three times; the argument is in "The launcher, reversed three times" above and is not repeated here.** As shipped: the Universal Link is `<ClaveConnectLink>`, a real `<a href>`, and `clave://` is `<ClaveSchemeButton>`, the labelled escape, which may go through `openAppLink` because a custom scheme IS dispatched from a scripted click. Routing the **Universal Link** through `openAppLink` is the one thing that must never happen — a scripted click cannot reach the app, so it navigates the tab to clave.casa and takes the waiting subscription with it.
 
-**Each link has a silence the other covers, and neither is detectable from the page.** A custom scheme no-ops when nothing claims it. A Universal Link can be switched off without the user realising: one tap on the "clave.casa" breadcrumb in Safari's top-right and iOS opens the web page for that domain from then on, permanently, with no UI to undo it. That is why the timed hint offers both answers instead of guessing between two nothings that look identical.
+**Each link has a silence the other covers, and neither is detectable from the page** — see the launcher section above for both. That is why the timed hint offers the scheme escape and an App Store link rather than guessing between two nothings that look identical, and why a timer is the only signal either produces.
 
 **WHICH TAB THE MODAL OPENS ON IS A CORRECTNESS QUESTION, NOT A PREFERENCE.** `tab` was seeded from `hasExt` alone, so "Sign in with Clave" — which launches Clave inside `<AuthControl>`'s own click and opens this modal with `signInIntent === 'clave'` — landed on **Browser Extension** for anyone whose iPhone has a NIP-07 Safari extension. Reported with screenshots: Clave showing *"Approve Connection"*, the modal showing *"Connect with extension"*, and the user having to find the Remote Signer tab before the flow they had already started could report anything. It is not cosmetic, which is why the intent outranks the extension check rather than sitting beside it: **every return-from-the-signer effect bails on `tab !== 'remote'`**, so on the wrong tab the ack arriving on the way back from Clave had nothing listening for it. `hasPendingNostrConnect()` is in the same initializer for the same reason one step removed — a pairing this tab LOST is resumed by the effect below whatever tab is showing, so the tab showing has to be the one that can report it.
 

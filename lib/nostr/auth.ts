@@ -24,12 +24,9 @@ import {
   connectBunkerFromUri,
   restoreBunkerFromStorage,
   startNostrConnect,
-  nostrConnectUri,
   type BunkerAdapter,
 } from './bunker';
 import { storage } from '../storage';
-import { claimClaveHandoff, claveOpenLink } from './clave';
-import { openAppLink } from '../app-link';
 import type { ProfileMetadata } from './profile-metadata';
 
 declare global {
@@ -147,39 +144,6 @@ export function loginWithNostrConnect(
   const { uri, ready: adapterReady } = startNostrConnect(onAuthUrl);
   const ready = adapterReady.then((adapter) => finalizeBunkerLogin(adapter));
   return { uri, ready };
-}
-
-/**
- * Start a Clave sign-in from a click, before any UI exists to host it.
- *
- * WHY THIS IS NOT SOMETHING THE MODAL DOES ON MOUNT. Safari gates an app-scheme
- * navigation on transient activation, and React schedules effects in a LATER
- * TASK — the fault that made every first Google sign-in fail (docs/signers.md,
- * "Nothing may await the script and THEN ask for the popup"). So the header row
- * launches Clave synchronously inside its own click and the modal picks the same
- * pairing up afterwards; `startNostrConnect` memoizes one URI per session, so
- * "the same pairing" is free.
- *
- * IT OPENS NO SUBSCRIPTION, and that is the whole reason it reads the URI
- * through `nostrConnectUri()` rather than `loginWithNostrConnect()`. The latter
- * builds its `ready` eagerly — `BunkerSigner.fromURI` subscribes inside the
- * constructor path — so calling it here would leave a live transport behind,
- * and the modal's own call a tick later would make two subscriptions on one
- * pairing. Both would resolve on the single ack: two `finalizeBunkerLogin`
- * calls, two transports, the second closing the first out from under it. The
- * modal owns the one subscription; this owns the navigation.
- *
- * Returns whether it actually navigated. False means this URI had already been
- * handed to Clave, so the app is already holding the request.
- */
-export function startClaveSignIn(): boolean {
-  const uri = nostrConnectUri();
-  if (!claimClaveHandoff(uri)) return false;
-  // The custom scheme, NOT the Universal Link — see lib/nostr/clave.ts. Outside
-  // Safari a Universal Link navigates this tab, and a tab that navigates takes
-  // the subscription the signer's ack is addressed to with it.
-  openAppLink(claveOpenLink(uri));
-  return true;
 }
 
 function finalizeBunkerLogin(adapter: BunkerAdapter): NostrIdentity {

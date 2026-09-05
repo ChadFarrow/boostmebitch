@@ -7,7 +7,6 @@ export {
   loginWithAmber,
   loginWithBunker,
   loginWithNostrConnect,
-  startClaveSignIn,
   loginWithLocalKey,
   restoreAmberSigner,
   restoreBunkerSigner,
@@ -42,8 +41,6 @@ export {
 export {
   claveOpenLink,
   claveUniversalLink,
-  claimClaveHandoff,
-  clearClaveHandoff,
   CLAVE_APP_STORE_URL,
   CLAVE_OPEN_URL,
 } from './clave';
