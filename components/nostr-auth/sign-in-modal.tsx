@@ -40,6 +40,14 @@ type Tab = 'extension' | 'remote';
 // timer, never a detection — see lib/app-link.ts.
 const CLAVE_SLOW_MS = 6_000;
 
+// The same hint, re-armed once the user has come BACK from Clave, where it
+// answers a different question — see `claveReturned`. Longer than the six
+// seconds above because the wait it covers is real work rather than a silence:
+// the ack has to land and `get_public_key` has to answer, and offering an
+// escape hatch over the top of a handshake that is about to finish is its own
+// kind of noise.
+const CLAVE_RETURN_STALL_MS = 12_000;
+
 // Did the relay handshake drop, rather than fail for a reason worth quoting?
 //
 // CASE-INSENSITIVE: nostr-tools throws "Subscription closed before connection
@@ -179,6 +187,19 @@ export function SignInModal({
   const [claveSent, setClaveSent] = useState(false);
   // The same fact, readable from inside prepareClave's closure. See its catch.
   const claveSentRef = useRef(false);
+  // "AND THEY HAVE COME BACK." The third state in a sequence the box used to
+  // collapse into two, which is why coming back from Clave looked like nothing
+  // had happened: the button still read "Open Clave again", the sentence still
+  // said "then come back here", and the only thing that DID change was the
+  // six-second hint firing — so the one new thing on screen said the app might
+  // not be installed, about an app the user had just been standing in.
+  //
+  // It also settles what the hint means. Before a return, a silence is "nothing
+  // opened". After one, the app demonstrably opened and the same silence is
+  // "the ack has not landed yet", which needs different words and no App Store
+  // link. One flag, `claveSlow`, still carries the silence; this one says which
+  // silence it is.
+  const [claveReturned, setClaveReturned] = useState(false);
   // The clipboard route into the bunker:// fallback — see onPasteFromClave.
   const [clipErr, setClipErr] = useState<string | null>(null);
   const claveSlowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -490,13 +511,21 @@ export function SignInModal({
         </button>
       );
     }
+    // WHILE THE HANDSHAKE IS FINISHING THIS IS NOT THE ACTION, so it stops
+    // looking like one. It stays a real `<a href>` — that is the mechanism, and
+    // a class cannot change it — but a full-width yellow "Open Clave again" as
+    // the loudest thing on screen tells someone who has just come back that
+    // they still have work to do, at the exact moment they do not. The status
+    // line beside it is what matters then. Once the stall hint fires, going
+    // back to Clave IS the suggestion again, so the emphasis returns with it.
+    const finishing = claveReturned && claveBusy && !claveSlow && !claveErr;
     return (
       <a
         href={claveUniversalLink(claveUri)}
         target="_self"
         rel="noopener"
         onClick={() => { markClaveSent(); if (!claveBusy) void prepareClave(); }}
-        className="btn-bolt w-full no-underline"
+        className={`${finishing ? 'btn-ghost' : 'btn-bolt'} w-full no-underline`}
       >
         {claveSent ? 'Open Clave again' : 'Sign in with Clave'}
       </a>
@@ -539,6 +568,10 @@ export function SignInModal({
   function markClaveSent() {
     claveSentRef.current = true;
     setClaveSent(true);
+    // A fresh trip, so we are back to "did anything open?" until they return
+    // again. Tapping "Open Clave again" after a stalled handshake has to reset
+    // this or the box keeps describing the previous round trip.
+    setClaveReturned(false);
     setClaveSlow(false);
     if (claveSlowTimer.current) clearTimeout(claveSlowTimer.current);
     claveSlowTimer.current = setTimeout(() => setClaveSlow(true), CLAVE_SLOW_MS);
@@ -635,6 +668,35 @@ export function SignInModal({
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, claveErr, claveBusy, genBusy, pasteBusy]);
+
+  // SAYING SO ON SCREEN IS A SEPARATE JOB FROM RE-SUBSCRIBING, and this is a
+  // second listener rather than two lines inside the one above on purpose: that
+  // effect bails on `genBusy || pasteBusy` and on there being no live attempt,
+  // because restarting a handshake under someone's own in-flight request is
+  // wrong. None of those reasons apply to TELLING THE USER WHAT IS HAPPENING —
+  // a box that goes quiet exactly when its guards fire is the fault being fixed
+  // here, not a case to inherit.
+  //
+  // Only armed once they have actually left (`claveSent`), so the very first
+  // paint of the box cannot claim a return that never happened.
+  useEffect(() => {
+    if (!ios || tab !== 'remote' || !claveSent) return;
+    if (typeof document === 'undefined') return;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible') return;
+      setClaveReturned(true);
+      // THE APP OPENED. Whatever the six-second timer was about to claim, it is
+      // not true any more, so drop the pending one and the hint it may already
+      // have set before re-arming for the longer question. Without this the one
+      // thing that changed on returning from Clave was "Clave may not be
+      // installed", under a button the user had just used to open it.
+      if (claveSlowTimer.current) clearTimeout(claveSlowTimer.current);
+      setClaveSlow(false);
+      claveSlowTimer.current = setTimeout(() => setClaveSlow(true), CLAVE_RETURN_STALL_MS);
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [ios, tab, claveSent]);
 
   // Same shape for the Amber nostrconnect flow: Android suspends the page's
   // WebSocket while the user is in Amber approving, so the relay ack can land
@@ -884,11 +946,24 @@ export function SignInModal({
                   {ios && (
                     <div className="border border-bone/15 p-3 flex flex-col gap-2">
                       <ClaveConnectLink />
-                      <span className="text-[11px] text-muted">
-                        {claveSent
-                          ? 'Approve the connection in Clave, then come back here — this page finishes on its own. Nothing to paste.'
-                          : 'Your keys stay in Clave. Tapping this opens the app with the connection request already in it.'}
-                      </span>
+                      {/* THE BOX HAS TO SAY WHERE IN THE FLOW IT IS, and until
+                          now it said the same thing before and after the trip.
+                          `claveBusy` was never rendered anywhere — it existed
+                          only as a guard — so coming back from Clave changed
+                          nothing on screen, and the handshake finished (or did
+                          not) in silence. Three states, because the sequence
+                          has three: not gone yet, gone, come back. */}
+                      {claveReturned && claveBusy ? (
+                        <span className="text-[11px] text-nostr animate-bolt">
+                          ◆ Finishing sign-in with Clave…
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-muted">
+                          {claveSent
+                            ? 'Approve the connection in Clave, then come back here — this page finishes on its own. Nothing to paste.'
+                            : 'Your keys stay in Clave. Tapping this opens the app with the connection request already in it.'}
+                        </span>
+                      )}
                       {claveAuthUrl && (
                         <div className="flex flex-col items-start gap-1 border border-nostr/40 bg-nostr/10 p-2">
                           <span className="text-[10px] text-bone">
@@ -904,30 +979,44 @@ export function SignInModal({
                           </a>
                         </div>
                       )}
-                      {/* Two different nothings, and neither reports itself.
-                          The app may be missing, or Safari may have been told
-                          once — by a tap on the clave.casa breadcrumb — to stop
-                          routing that domain to the app, which no page can
-                          detect. A timer is the only signal either produces, so
-                          both answers are offered rather than guessed between. */}
+                      {/* A SILENCE MEANS TWO DIFFERENT THINGS AND THE TIMER
+                          CANNOT TELL THEM APART — `claveReturned` can.
+
+                          Before a return: the app may be missing, or Safari may
+                          have been told once, by a tap on the clave.casa
+                          breadcrumb, to stop routing that domain to the app,
+                          which no page can detect. Neither reports itself, so
+                          both answers are offered rather than guessed between.
+
+                          After one: the app plainly opened and the user came
+                          back, so telling them it may not be installed is
+                          simply false — and it was the ONLY thing that changed
+                          on screen when they returned, because the six-second
+                          timer fires around then on iOS, where a backgrounded
+                          tab's timers are throttled. The App Store link goes
+                          with it: nobody needs to install what they were just
+                          standing in. */}
                       {claveSlow && !claveErr && (
                         <div className="flex flex-col items-start gap-1">
                           <span className="text-[11px] text-muted">
-                            Still nothing? Clave may not be installed, or this
-                            browser may not be handing it the link.
+                            {claveReturned
+                              ? 'Still waiting on Clave. Approve the request if it is showing, or open it again below.'
+                              : 'Still nothing? Clave may not be installed, or this browser may not be handing it the link.'}
                           </span>
                           <ClaveSchemeButton label="Open the Clave app directly" />
-                          <span className="text-[11px] text-muted">
-                            Don&apos;t have Clave?{' '}
-                            <a
-                              href={CLAVE_APP_STORE_URL}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="text-nostr underline underline-offset-2"
-                            >
-                              get it on the App Store ↗
-                            </a>
-                          </span>
+                          {!claveReturned && (
+                            <span className="text-[11px] text-muted">
+                              Don&apos;t have Clave?{' '}
+                              <a
+                                href={CLAVE_APP_STORE_URL}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-nostr underline underline-offset-2"
+                              >
+                                get it on the App Store ↗
+                              </a>
+                            </span>
+                          )}
                         </div>
                       )}
                       {claveErr && (
