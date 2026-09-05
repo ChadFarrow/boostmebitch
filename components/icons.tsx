@@ -209,3 +209,63 @@ export function MoonIcon({ className = 'w-4 h-4' }: { className?: string }) {
     </svg>
   );
 }
+
+/**
+ * A QR code, and the finder squares are the whole point: three corners with a
+ * ring and a filled centre is what the eye reads as "scan me" at 12 pixels.
+ * The scattered modules are decoration and are deliberately sparse — a denser
+ * grid turns to mud at this size.
+ *
+ * Filled rather than stroked, unlike most of the icons above, because it sits
+ * on a light tile in the sign-in list where a 2px stroke reads as grey.
+ */
+export function QrIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      className={`fill-current flex-shrink-0 ${className}`}
+    >
+      {/* Three finder squares: outer ring drawn as four bars, filled centre. */}
+      <path d="M3 3h7v7H3V3Zm2 2v3h3V5H5Z" />
+      <path d="M14 3h7v7h-7V3Zm2 2v3h3V5h-3Z" />
+      <path d="M3 14h7v7H3v-7Zm2 2v3h3v-3H5Z" />
+      {/* Sparse data modules in the free quadrant. */}
+      <path d="M14 14h3v3h-3v-3Zm5 0h2v2h-2v-2Zm-5 5h2v2h-2v-2Zm4 1h3v1h-3v-1Zm2-3h1v2h-1v-2Z" />
+    </svg>
+  );
+}
+
+/**
+ * A key — the bunker/`bunker://` mark. Every signer that hands out one of those
+ * URIs draws itself with a key (Clave's own App Store icon included), so this
+ * is the shape a user is already looking for rather than one invented here.
+ */
+export function KeyIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      className={`fill-current flex-shrink-0 ${className}`}
+    >
+      <path d="M15 3a6 6 0 0 0-5.66 8L3 17.34V21h3.66l1.5-1.5V18h1.5v-1.5H11l2-2A6 6 0 1 0 15 3Zm2 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0Z" />
+    </svg>
+  );
+}
+
+/**
+ * A puzzle piece — the universal browser-extension mark, which is what Chrome
+ * and Firefox both put in their own toolbars. Named after what it IS rather
+ * than what it means, like the rest of this file.
+ */
+export function PuzzleIcon({ className = 'w-4 h-4' }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden
+      viewBox="0 0 24 24"
+      className={`fill-current flex-shrink-0 ${className}`}
+    >
+      <path d="M10 2a2.5 2.5 0 0 1 2.5 2.5V5H15a1 1 0 0 1 1 1v2.5h.5a2.5 2.5 0 1 1 0 5H16V16a1 1 0 0 1-1 1h-2.5v-.5a2.5 2.5 0 1 0-5 0V17H5a1 1 0 0 1-1-1v-2.5h.5a2.5 2.5 0 1 0 0-5H4V6a1 1 0 0 1 1-1h2.5v-.5A2.5 2.5 0 0 1 10 2Z" />
+    </svg>
+  );
+}

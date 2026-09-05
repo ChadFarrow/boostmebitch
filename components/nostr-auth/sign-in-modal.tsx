@@ -33,6 +33,7 @@ import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
 import { AmberCompletion } from './login-methods';
 import { GoogleAuthPanel } from './google-auth-panel';
+import { KeyIcon, PuzzleIcon, QrIcon } from '../icons';
 
 /**
  * WHICH SCREEN OF THE MODAL IS SHOWING.
@@ -610,12 +611,11 @@ export function SignInModal({
     // is a tap that goes nowhere, and the Universal Link is the one mechanism
     // here that cannot be built inside the click.
     if (!claveUri) {
-      return <MethodRow glyph="◆" logo="/clave-logo.png" title="Clave" subtitle={subtitle} onClick={() => {}} disabled />;
+      return <MethodRow icon={<AppMark src="/clave-logo.png" />} title="Clave" subtitle={subtitle} onClick={() => {}} disabled />;
     }
     return (
       <MethodRow
-        glyph="◆"
-        logo="/clave-logo.png"
+        icon={<AppMark src="/clave-logo.png" />}
         title="Clave"
         subtitle={subtitle}
         href={claveUniversalLink(claveUri)}
@@ -971,35 +971,77 @@ export function SignInModal({
   }
 
   /**
+   * A signer's own app mark, vendored into `public/`. See `<MethodTile>` for
+   * why the rows that have no app still get a tile.
+   */
+  function AppMark({ src }: { src: string }) {
+    return (
+      <Image src={src} alt="" aria-hidden width={20} height={20}
+        className="w-5 h-5 shrink-0 rounded object-contain" />
+    );
+  }
+
+  /**
+   * The same 20x20 rounded square, drawn rather than fetched, for the methods
+   * that are not an app.
+   *
+   * WHY IT IS A TILE AND NOT A GLYPH. Clave and Primal arrive as filled rounded
+   * squares — that is what an app icon is — and beside them a bare ◈ in the
+   * accent colour read as a different KIND of thing: lighter, smaller, and
+   * visibly not a peer of the two rows above it. Reported from a phone. The
+   * fix is to match the silhouette, not to strip the logos back: the logos are
+   * the whole reason someone finds their signer at a glance.
+   *
+   * Drawn from `components/icons.tsx` and the palette in `tailwind.config.ts`,
+   * never as a new image: an inline SVG on a token background costs no request,
+   * scales, and cannot go stale the way a bitmap of a QR code would. The colours
+   * are chosen to mean something rather than to fill the square — `bone` on
+   * `ink` for the QR, because a real QR is dark on light and that is what makes
+   * it readable as one at 20px; `nostr` for the bunker key, the accent this app
+   * already uses for identity.
+   */
+  function MethodTile({ tone, children }: { tone: string; children: React.ReactNode }) {
+    return (
+      <span
+        aria-hidden
+        className={`w-5 h-5 shrink-0 rounded flex items-center justify-center ${tone}`}
+      >
+        {children}
+      </span>
+    );
+  }
+
+  /**
    * One row of the method list: what you own, named, with a reason to pick it.
    *
-   * The glyph sits in a fixed-width centred column with `leading-5` matching the
-   * title's line box — the same fix `<AuthControl>`'s menu needed, for the same
-   * reason: the glyphs have different advance widths, so without it three titles
-   * start at three different x positions, and `items-start` without the leading
-   * lands the glyph beside the SUBTITLE instead of the title.
+   * EVERY ROW'S MARK IS THE SAME 20x20 ROUNDED SQUARE, whether it is an app's
+   * own icon or one we draw. That is the fix for a real complaint: the two
+   * signer rows arrived as filled tiles — which is what an app icon is — and
+   * beside them a bare glyph in the accent colour read as a different KIND of
+   * thing, lighter and visibly not a peer. Matching the silhouette is the
+   * answer, not stripping the logos back; the logos are the whole reason
+   * someone finds their own signer at a glance.
    *
-   * GEOMETRIC GLYPHS, NOT EMOJI, and they inherit `text-nostr`. StableKraft use
-   * 🔌 🔑 📇 beside their app logos; a colour emoji in this palette reads as a
-   * sticker next to ◆ and ⚡, which is the family `<AuthControl>`'s menu and the
-   * modal header already use.
+   * The column is fixed-width so every title starts at the same x, and the mark
+   * aligns to the TITLE's line rather than beside the subtitle — the same fix
+   * `<AuthControl>`'s menu needed.
    *
-   * AN APP LOGO IS THE ONE EXCEPTION, because it is the thing the user is
-   * actually scanning for: someone who owns Clave recognises its mark faster
-   * than any words beside it. It is **vendored into `public/`**, never
-   * hot-linked — an install page that goes down, changes its art or logs the
-   * request must not be able to reach into this modal. Clave's mark comes from
-   * Conduit, who vendored it for the same reason ("so the offline-capable apps
-   * never fetch it from clave.casa"); Primal's from StableKraft's own
-   * `public/primal-logo.png`. A row without a logo keeps its glyph, so the two
-   * kinds line up in one column.
+   * NO EMOJI EITHER WAY. StableKraft use 🔌 🔑 📇 beside their app logos; a
+   * colour emoji in this palette reads as a sticker next to ◆ and ⚡, the family
+   * that menu and this modal's header already use. Ours are inline SVG from
+   * `components/icons.tsx` on a palette background — see `<MethodTile>`.
+   *
+   * App marks are **vendored into `public/`**, never hot-linked: an install page
+   * that goes down, changes its art or logs the request must not reach into this
+   * modal. Clave's comes from Conduit, who vendored it for that exact reason
+   * ("so the offline-capable apps never fetch it from clave.casa"); Primal's
+   * from StableKraft's own `public/primal-logo.png`.
    */
   function MethodRow({
-    glyph, logo, title, subtitle, onClick, href, disabled,
+    icon, title, subtitle, onClick, href, disabled,
   }: {
-    glyph: string;
-    /** A vendored app mark, shown INSTEAD of the glyph. See the header. */
-    logo?: string;
+    /** The 20x20 mark. `<AppMark>` for a signer, `<MethodTile>` for the rest. */
+    icon: React.ReactNode;
     title: string;
     /** A node, not a string, so a row can carry its own live state — see the
      *  Clave row, whose subtitle turns magenta while the handshake finishes. */
@@ -1015,18 +1057,7 @@ export function SignInModal({
     const cls = 'w-full text-left border border-bone/15 p-3 flex items-start gap-3 transition hover:border-nostr/50 hover:bg-bone/5 disabled:opacity-40 disabled:hover:border-bone/15 disabled:hover:bg-transparent';
     const inner = (
       <>
-        {logo ? (
-          <Image
-            src={logo}
-            alt=""
-            aria-hidden
-            width={20}
-            height={20}
-            className="w-5 h-5 shrink-0 rounded object-contain"
-          />
-        ) : (
-          <span className="text-nostr w-5 shrink-0 text-center leading-5" aria-hidden>{glyph}</span>
-        )}
+        {icon}
         <span className="flex flex-col min-w-0 gap-0.5">
           <span className="text-sm leading-5">{title}</span>
           <span className="text-[11px] text-muted">{subtitle}</span>
@@ -1271,7 +1302,7 @@ export function SignInModal({
                     now names three things a person can actually have. */}
                 {desktop && (
                   <MethodRow
-                    glyph="⧉"
+                    icon={<MethodTile tone="bg-bone text-ink"><PuzzleIcon className="w-3.5 h-3.5" /></MethodTile>}
                     title="Browser Extension"
                     subtitle={hasExt
                       ? 'Alby, nos2x, Sidecar — the fastest way in.'
@@ -1285,15 +1316,14 @@ export function SignInModal({
                     nothing, because the app is on the other device. */}
                 {!desktop && (
                   <MethodRow
-                    glyph="◉"
-                    logo="/primal-logo.png"
+                    icon={<AppMark src="/primal-logo.png" />}
                     title="Primal"
                     subtitle="Sign in with the Primal app on this phone."
                     onClick={() => goto('primal')}
                   />
                 )}
                 <MethodRow
-                  glyph="▣"
+                  icon={<MethodTile tone="bg-bone text-ink"><QrIcon className="w-3.5 h-3.5" /></MethodTile>}
                   title="Scan a QR code"
                   subtitle={desktop
                     ? 'Pair by scanning with Primal, Clave, nsec.app or Amber on your phone.'
@@ -1301,7 +1331,7 @@ export function SignInModal({
                   onClick={() => goto('qr')}
                 />
                 <MethodRow
-                  glyph="◈"
+                  icon={<MethodTile tone="bg-nostr text-ink"><KeyIcon className="w-3.5 h-3.5" /></MethodTile>}
                   title="Bunker URI"
                   subtitle="Paste a bunker:// URI from Clave, nsec.app or Amber in server mode."
                   onClick={() => goto('bunker')}
@@ -1311,7 +1341,7 @@ export function SignInModal({
                     row is noise on the platform with the least room for it. */}
                 {!desktop && hasExt && (
                   <MethodRow
-                    glyph="⧉"
+                    icon={<MethodTile tone="bg-bone text-ink"><PuzzleIcon className="w-3.5 h-3.5" /></MethodTile>}
                     title="Browser Extension"
                     subtitle="Sign in with the NIP-07 extension in this browser."
                     onClick={onExtension}
