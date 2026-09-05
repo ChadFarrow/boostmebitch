@@ -118,7 +118,7 @@ export function useFavoritesMode(): { mode: FavoritesPrivacy | null; mounted: bo
  * three options describe the same behaviour and offering a choice between them
  * would be a lie.
  */
-export function FavoritesPrivacyControl() {
+export function FavoritesPrivacyControl({ trailing }: { trailing?: React.ReactNode }) {
   const identity = useApp((s) => s.identity);
   const { mode, mounted } = useFavoritesMode();
   const [pending, setPending] = useState<FavoritesPrivacy | null>(null);
@@ -134,7 +134,8 @@ export function FavoritesPrivacyControl() {
 
   return (
     <>
-      {/* ONE ROW: the menu names the mode, the sentence names what it costs.
+      {/* ONE ROW for the whole "where this list lives" question: the mode, and
+          the controls that get a copy of the list out or put one back.
           This was three segments spanning the page, and at 390px "Not on
           Nostr" wrapped inside its own segment — so the tallest thing above a
           287-entry library was the control saying where the library is stored.
@@ -145,8 +146,9 @@ export function FavoritesPrivacyControl() {
           THE CONSEQUENCE SENTENCE STAYS ON SCREEN. It is not a tooltip and not
           a menu subtitle — it is the whole point of the feature, since a user
           who cannot tell which of the two silent modes they are in has no way
-          to find out. It shares the row and wraps beneath on a narrow screen. */}
-      <div className="mb-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          to find out. `w-full` puts it on its own line under the controls
+          rather than in the middle of them. */}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <SelectMenu
           options={MODES.map((m) => ({
             id: m,
@@ -172,7 +174,18 @@ export function FavoritesPrivacyControl() {
           label="Favorites are"
           className="shrink-0"
         />
-        <p className="text-[11px] text-muted">
+        {/* `<RelayTools>` from the page. It is passed IN rather than rendered
+            beside this component because the two belong to one question — where
+            this list lives, and getting a copy of it out or back — and the
+            controls read as unrelated the moment a blank row separates them.
+            They are all `.btn-mini`, so the row is one family; it wraps to a
+            second line on the narrowest phones and still reads as one cluster.
+
+            It rides this component's null gate, which is a small change and the
+            right one: both need an identity, and the tools alone were
+            appearing for one frame before the mode resolved. */}
+        {trailing}
+        <p className="w-full text-[11px] text-muted">
           {current
             ? describe(current)
             : 'Not set yet — you will be asked when you save your first favorite.'}

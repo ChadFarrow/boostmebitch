@@ -386,21 +386,24 @@ export function FavoritesPage() {
           who most wants to set this BEFORE their first favorite, and putting it
           inside the rows branch would hide it from them. Self-hiding signed
           out, where all three options describe the same behaviour. */}
-      <FavoritesPrivacyControl />
+      {/* The privacy menu and <RelayTools> share ONE row — see the control
+          itself for why they are passed in rather than stacked. They are the
+          same question: where this list lives, and how to get a copy of it out
+          or put one back.
 
-      {/* Directly under the privacy control, which is the other question about
-          the list ON THE RELAYS — and on its own full-width row rather than in
-          the header cluster beside `N saved`, because a refusal here is a
-          sentence, not a word, and beside the count it wrapped to four lines in
-          a column two thirds of the page wide. It is deliberately NOT gated on
-          `total`: this reads the relays, so a device holding nothing local can
-          still hold the account's list, and the empty branch below is exactly
-          where somebody checking what is stored would look.
-          NOT folded away, either — <PrivateFavoritesTool> inside it exists to
-          make a both-halves state VISIBLE, and a disclosure defaulting closed
-          would undo that (see its comment: deleted as clutter once, restored
-          the same night). */}
-      <RelayTools />
+          A FULL-WIDTH row, which is the constraint that has not changed. These
+          were once in the header cluster beside `N saved`, where a refusal —
+          a sentence, not a word — wrapped to four lines in a column two thirds
+          of the page wide.
+
+          Deliberately NOT gated on `total`: this reads the relays, so a device
+          holding nothing local can still hold the account's list, and the empty
+          branch below is exactly where somebody checking what is stored would
+          look. NOT folded away either — <PrivateFavoritesTool> exists to make a
+          both-halves state VISIBLE, and a disclosure defaulting closed would
+          undo that (see its comment: deleted as clutter once, restored the same
+          night). */}
+      <FavoritesPrivacyControl trailing={<RelayTools />} />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
@@ -559,12 +562,18 @@ function RelayTools() {
   const identity = useApp((s) => s.identity);
   // Signed out there is no event, no key that signed one, and no signer.
   if (!identity) return null;
+  // A FRAGMENT, not a wrapper. These are handed to <FavoritesPrivacyControl>
+  // as its `trailing` and sit in the same flex row as the privacy menu, so a
+  // container of their own would make the three of them one item that wraps as
+  // a block instead of three controls that wrap individually. Each tool is
+  // still its own column span, because each renders its refusal or result
+  // sentence directly under its own button.
   return (
-    <div className="flex flex-wrap items-start gap-2">
+    <>
       <DownloadFavorites />
       <PrivateFavoritesTool />
       <RestoreBackup />
-    </div>
+    </>
   );
 }
 
