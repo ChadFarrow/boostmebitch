@@ -1023,8 +1023,15 @@ export function SignInModal({
    * someone finds their own signer at a glance.
    *
    * The column is fixed-width so every title starts at the same x, and the mark
-   * aligns to the TITLE's line rather than beside the subtitle — the same fix
-   * `<AuthControl>`'s menu needed.
+   * is centred against the WHOLE row rather than pinned to the title's line.
+   *
+   * That is a departure from `<AuthControl>`'s menu, which uses `items-start`
+   * plus `leading-5`, and the difference is what the mark IS. There the mark is
+   * a text glyph, so it has a line box that has to be made to match the title's
+   * or it drifts down beside the subtitle. A 20x20 tile has no baseline to
+   * align, so `items-start` just parks it against the first line and leaves it
+   * looking top-heavy over a two-line subtitle. Do not "restore consistency"
+   * with that menu by copying the rule across — the rule is about glyphs.
    *
    * NO EMOJI EITHER WAY. StableKraft use 🔌 🔑 📇 beside their app logos; a
    * colour emoji in this palette reads as a sticker next to ◆ and ⚡, the family
@@ -1054,7 +1061,7 @@ export function SignInModal({
     href?: string;
     disabled?: boolean;
   }) {
-    const cls = 'w-full text-left border border-bone/15 p-3 flex items-start gap-3 transition hover:border-nostr/50 hover:bg-bone/5 disabled:opacity-40 disabled:hover:border-bone/15 disabled:hover:bg-transparent';
+    const cls = 'w-full text-left border border-bone/15 p-3 flex items-center gap-3 transition hover:border-nostr/50 hover:bg-bone/5 disabled:opacity-40 disabled:hover:border-bone/15 disabled:hover:bg-transparent';
     const inner = (
       <>
         {icon}
