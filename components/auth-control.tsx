@@ -3,7 +3,7 @@ import { useWalletChange } from '@/lib/use-wallet-change';
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { isGoogleAuthConfigured, preloadGis, startGoogleSignIn } from '@/lib/nostr/google-auth';
-import { isLikelyIOS } from '@/lib/nostr';
+import { isLikelyAndroid, isLikelyIOS } from '@/lib/nostr';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
 import { WalletBalanceChip } from './wallet-balance';
 import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
@@ -24,9 +24,11 @@ import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
 // routes, and the tab bar's Wallet tab opens the modal from every route.
 export function AuthControl() {
   const identity = useApp((s) => s.identity);
-  // Read once on the client, like <SignInModal>'s own flag, so `navigator`
-  // stays off the server render.
+  // Read once on the client, like <SignInModal>'s own flags, so `navigator`
+  // stays off the server render. They name the signer in the Nostr row's
+  // subtitle and nothing else — no control is gated on them here.
   const [ios] = useState(() => isLikelyIOS());
+  const [android] = useState(() => isLikelyAndroid());
   const setWalletOpen = useApp((s) => s.setWalletOpen);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const walletRestoring = useApp((s) => s.walletRestoring);
@@ -132,43 +134,28 @@ export function AuthControl() {
                   <span>Sign in with Nostr</span>
                   {/* Names the prerequisite rather than the benefit. The benefits
                       ("notes, favorites, sync") are identical to the Google
-                      option's, so leading with them gave no basis to choose. */}
-                  <span className="text-[11px] text-muted">Already have a key — extension or signer</span>
+                      option's, so leading with them gave no basis to choose.
+
+                      NAMING THE PHONE'S SIGNER HERE IS WHY THERE IS NO SECOND
+                      ROW. Clave had one of its own for a while, on the argument
+                      that reaching it cost three taps. It did not: this row
+                      already lands on the Remote Signer tab — an iPhone has no
+                      extension, so `hasExt` is false and that is the default
+                      view — and the Clave box is the first thing in it. The
+                      extra row was a second door into the same room, and the
+                      cost of one was a menu that listed the same sign-in twice.
+                      So the signer goes in the subtitle instead, where it does
+                      the one job the row actually did: telling someone who owns
+                      Clave that this is their way in. */}
+                  <span className="text-[11px] text-muted">
+                    {ios
+                      ? 'Already have a key — Clave, Primal or an extension'
+                      : android
+                        ? 'Already have a key — Amber, Primal or an extension'
+                        : 'Already have a key — extension or signer'}
+                  </span>
                 </span>
               </button>
-              {/* Same argument as the Google row below, applied to the one
-                  signer an iPhone user is most likely to have: reaching Clave
-                  from here cost three taps — open this menu, "Sign in with
-                  Nostr", then the Clave button inside the modal — for a flow
-                  whose whole point is that it is one tap and an approval.
-                  iOS only, because the link goes nowhere on anything else. */}
-              {ios && (
-                <button
-                  role="menuitem"
-                  onClick={() => {
-                    // THIS ROW DOES NOT LAUNCH CLAVE, and giving up that one
-                    // saved tap is what made the flow work. It used to fire an
-                    // app-scheme navigation here, synchronously, because Safari
-                    // gates one on this click's transient activation and the
-                    // modal mounts in a later task. But a scripted navigation
-                    // can only ever be the custom scheme — a Universal Link
-                    // needs a real anchor — so the fast path was also the
-                    // unreliable one, and it left before any subscription
-                    // existed. The modal now prepares the pairing when it opens
-                    // and offers a real `<a href>`; this row's whole job is to
-                    // open it on the right tab.
-                    setMenuOpen(false);
-                    setSignInOpen(true, 'clave');
-                  }}
-                  className="w-full text-left px-3 py-2 rounded hover:bg-bone/5 transition flex items-start gap-2 text-sm"
-                >
-                  <span className="text-nostr w-4 shrink-0 text-center leading-5">◆</span>
-                  <span className="flex flex-col">
-                    <span>Sign in with Clave</span>
-                    <span className="text-[11px] text-muted">Approve in the app — nothing to paste</span>
-                  </span>
-                </button>
-              )}
               {/* A peer of the option above, not a detail inside it. This used to
                   live only INSIDE the sign-in modal, which meant the people it
                   exists for had to first pick "Sign in with Nostr" to reach the

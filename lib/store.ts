@@ -11,7 +11,7 @@ import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from '
 import { nextPlayableIndex } from './util';
 
 /** Which view the sign-in modal opens on. See `signInIntent` below. */
-export type SignInIntent = 'default' | 'google' | 'clave';
+export type SignInIntent = 'default' | 'google';
 
 /** See `favoritesSync` below. */
 export type FavoritesSyncStatus = 'idle' | 'loading' | 'ok' | 'degraded' | 'off';

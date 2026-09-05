@@ -102,33 +102,24 @@ export function SignInModal({
   const [googleOpen] = useState(
     () => googleConfigured && useApp.getState().signInIntent === 'google',
   );
-  // The header row already launched Clave inside its own click — it had to, for
-  // the transient activation. This modal's job is to be the screen that was
-  // missing: subscribe to the same pairing, show the waiting state, and own the
-  // retry. Read once, never subscribed, for the same reason `googleOpen` is.
-  const [claveIntent] = useState(() => useApp.getState().signInIntent === 'clave');
-
-  // WHICH VIEW THIS OPENS ON IS A CORRECTNESS QUESTION, not a preference, and
-  // deciding it on `hasExt` alone was a bug reported from an iPhone. Tapping
-  // "Sign in with Clave" launches Clave inside the header row's own click and
-  // opens this modal with the intent set — so a pairing is already in flight
-  // when it mounts. It opened on the Browser Extension tab anyway: Clave showed
-  // "Approve Connection" while this showed "Connect with extension", and the
-  // user had to find the Remote Signer tab themselves before the flow they had
-  // already started could report anything.
+  // WHICH VIEW THIS OPENS ON IS A CORRECTNESS QUESTION, not a preference.
   //
-  // It is not merely cosmetic, which is why the intent outranks the extension
-  // check rather than sitting beside it. EVERY return-from-the-signer effect
-  // below bails on `tab !== 'remote'`, so on the wrong tab the ack that lands
-  // on the way back from Clave has nothing listening for it and the handshake
-  // never completes — the failure the tab strip was hiding, not just the state.
+  // `hasExt` answers it for a phone on its own: an iPhone has no extension, so
+  // the Remote Signer tab is already the default and the Clave box is the first
+  // thing in it. That is why there is no longer a "Sign in with Clave" row in
+  // the header menu, and no `signInIntent` for it — the row existed to open
+  // this modal on the tab it was going to open on anyway.
   //
-  // `hasPendingNostrConnect()` is the same defect one step removed: a pairing
-  // this tab LOST (a navigation, a reload) is resumed by the effect below
+  // `hasPendingNostrConnect()` is the case `hasExt` cannot answer: a pairing
+  // this tab LOST (a navigation, a reload) is resumed by an effect below
   // whatever tab is showing, so the tab showing has to be the one that can
-  // report it.
+  // report it. EVERY return-from-the-signer effect bails on `tab !== 'remote'`,
+  // so on the wrong tab the ack that lands on the way back from the signer has
+  // nothing listening for it and the handshake never completes. Opening on the
+  // wrong tab is not cosmetic; it is the handshake failing where nobody can see
+  // it.
   const [tab, setTab] = useState<Tab>(() => {
-    if (claveIntent || hasPendingNostrConnect()) return 'remote';
+    if (hasPendingNostrConnect()) return 'remote';
     return hasExt ? 'extension' : 'remote';
   });
 
