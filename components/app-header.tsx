@@ -1,11 +1,8 @@
 'use client';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
 import { BoltIcon } from '@/components/icons';
 import { AuthControl } from '@/components/auth-control';
 import { NostrAuth } from '@/components/nostr-auth';
-import { FavoritesLink } from '@/components/favorites-link';
-import { PlaylistsLink } from '@/components/playlists-link';
 import { clearShowSelection } from '@/lib/store';
 import { BRAND } from '@/lib/brand';
 
@@ -17,6 +14,18 @@ import { BRAND } from '@/lib/brand';
  * overlays and the third is something you read. A favorites page is neither —
  * it is a place people stay, and every affordance its empty state points at
  * (sign in, connect a wallet) lives in this cluster.
+ *
+ * IT IS BRAND + ACCOUNT, AND NOTHING ELSE. Navigation used to live in the
+ * right-hand cluster too — `<FavoritesLink>` and `<PlaylistsLink>` — and every
+ * pixel they took came straight off the wordmark: the row had zero slack from
+ * sm: to ~810px, the playlists chip had to hide below lg: and reappear as a
+ * hero button, and the favorites chip shed its word and count on phones just
+ * to keep "Boost Me Bitch" whole at 390px. Those destinations are the bottom
+ * tab bar now (`<TabBar>`, mounted in the root layout on every route), so this
+ * row holds the wordmark, the wallet half (`<AuthControl>`) and the identity
+ * half (`<NostrAuth>`). The measurements in the comments below predate that
+ * move and are kept as the record of why the sizes are what they are; the
+ * pressure they describe is gone, which is the point.
  *
  * `--app-header-h` (`app/globals.css`) is a HARD-CODED 71px derived from this
  * markup: `py-4` (32) + the tallest control (38, a `.btn-ghost`) + a 1px
@@ -32,8 +41,6 @@ import { BRAND } from '@/lib/brand';
  * local state and never backfills it.
  */
 export function AppHeader({ onHome }: { onHome?: () => void }) {
-  const pathname = usePathname();
-
   // Identical inner markup either way. `truncate` on the wordmark is
   // load-bearing, and so is the `min-w-0` beside it. A flex item's min-width is
   // `auto`, i.e. min-content, which for this element is its widest WORD — so
@@ -121,17 +128,9 @@ export function AppHeader({ onHome }: { onHome?: () => void }) {
               is the WALLET half (balance chip, connect / sign-in buttons) and
               <NostrAuth> draws <AccountMenu> as well as owning identity
               hydration. */}
-          {/* lg: and up only, and the breakpoint is measured rather than a
-              taste. This row has ZERO slack from sm: up to ~810px — the
-              wordmark is already taking exactly what it needs — and a
-              .btn-ghost carrying an uppercased word is ~140px, a peer of
-              FAVORITES rather than a glyph. At 640px it took "Boost Me Bitch"
-              from 169px to 31px. Below lg: the way into /playlists is the
-              hero's BROWSE PLAYLISTS button instead. Full measurements, and
-              the warning to re-measure on the BUDDY brand, are in
-              <PlaylistsLink>. */}
-          <PlaylistsLink current={pathname === '/playlists'} />
-          <FavoritesLink current={pathname === '/favorites'} />
+          {/* No navigation here — Favorites and Wallet are tabs in <TabBar>,
+              and /playlists is reached from the hero's BROWSE PLAYLISTS button
+              and the search box's Playlists lane. See the header comment. */}
           <AuthControl />
           <NostrAuth />
         </div>
