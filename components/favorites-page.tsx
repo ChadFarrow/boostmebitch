@@ -804,7 +804,7 @@ function PrivateFavoritesTool() {
         type="button"
         onClick={check}
         disabled={busy}
-        className="btn-ghost text-xs disabled:opacity-50"
+        className="btn-mini disabled:opacity-50"
         title="Open the encrypted half of your list and count what is in it. Nothing is published until you confirm."
       >
         {busy && !finding ? 'opening…' : '⌕ check private favorites'}
@@ -1049,7 +1049,7 @@ function RestoreBackup() {
         type="button"
         onClick={() => fileRef.current?.click()}
         disabled={busy}
-        className="btn-ghost text-xs disabled:opacity-50"
+        className="btn-mini disabled:opacity-50"
         title="Publish a backup file back to the relays, replacing the list stored there."
       >
         {busy && !plan ? 'reading file…' : '⇧ restore from backup'}
@@ -1273,7 +1273,7 @@ function DownloadFavorites() {
         type="button"
         onClick={download}
         disabled={busy}
-        className="btn-ghost text-xs disabled:opacity-50"
+        className="btn-mini disabled:opacity-50"
         title="Save the Nostr event holding your favorites, exactly as the relays store it."
       >
         {busy ? 'reading relays…' : '⇩ backup'}

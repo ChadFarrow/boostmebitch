@@ -144,7 +144,7 @@ export function SelectMenu<T extends string>({
         aria-expanded={open}
         aria-label={`${label}: ${triggerText}`}
         title={current?.title}
-        className="flex items-center gap-2 px-2.5 py-1 text-[11px] font-mono uppercase tracking-wider border border-bone/30 text-muted transition hover:border-bone/60 hover:text-bone"
+        className="btn-mini"
       >
         <span className="text-bone">{triggerText}</span>
         {current?.count === undefined ? null : <span className="opacity-60">{current.count}</span>}

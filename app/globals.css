@@ -144,6 +144,26 @@ body::before {
   .btn-compact {
     @apply px-2.5 gap-1.5 sm:px-4 sm:gap-2;
   }
+  /* A SMALL action or selector, for a cluster that is not the point of the
+     page. `/favorites` is why it exists: the privacy menu and the three
+     relay tools sat above a 287-entry library as full `.btn-ghost`s, and the
+     controls describing the list were taller than the first rows of it.
+
+     27px (an 11px text line box + py-1 + border) — over WCAG 2.5.8's 24x24
+     floor, the same height `<Chip>` was measured at, and deliberately NOT the
+     44px floor the primary rows hold: these are rarely-pressed, they carry
+     confirmations behind them, and a 44px version is what made the cluster
+     the tallest thing on the screen.
+
+     `<SelectMenu>`'s trigger uses it too, which is the point: the menu and the
+     buttons beside it are one family by construction rather than by two
+     utility strings that agree today. */
+  .btn-mini {
+    @apply inline-flex items-center justify-center gap-2 px-2.5 py-1
+           text-[11px] font-mono uppercase tracking-wider
+           border border-bone/30 text-muted transition
+           hover:border-bone/60 hover:text-bone active:translate-y-px;
+  }
   /* A secondary action in a ROW OF PEERS: glyph over a one-word label, 52px
      tall, full width of its grid cell. The episode page's Fav / Share / Stream /
      Support / Discuss / More row is six of these. It exists because that row

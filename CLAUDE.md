@@ -338,7 +338,7 @@ Custom palette in `tailwind.config.ts` — don't introduce new colors without ad
 
 **Fonts are loaded by `next/font` in `app/layout.tsx` and reached through `var(--font-display)` / `var(--font-mono)` — never name the family literally, and NEVER add an `@import` to `app/globals.css`.** A CSS `@import` on line 1 serializes the critical path four hops across three origins, all blocking first paint. That is what shipped. Naming the family literally anywhere bypasses the size-adjusted fallback `next/font` generates, which is what stops `display: swap` shifting layout. Three places hold the wiring and they move together: the two `next/font` calls in `app/layout.tsx`, `fontFamily` in `tailwind.config.ts`, and the two raw declarations in `globals.css`.
 
-Reusable element classes — `.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.input`, `.stamp`, `.headline`, `.seek` — are defined in `app/globals.css`. Read that before inventing new ones.
+Reusable element classes — `.card`, `.btn`, `.btn-bolt`, `.btn-ghost`, `.btn-mini`, `.tile`, `.input`, `.stamp`, `.headline`, `.seek` — are defined in `app/globals.css`. Read that before inventing new ones.
 
 ## Conventions worth keeping
 
