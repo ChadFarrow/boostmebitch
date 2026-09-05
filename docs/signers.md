@@ -11,10 +11,11 @@ The whole codebase reads `window.nostr`. Four paths feed it, swapped by `lib/nos
 - **NIP-07 extension** (Alby, nos2x, Flamingo, nostash on iOS Safari). Already at `window.nostr`; we don't polyfill. Sign-out clears `bmb:npub` and leaves `window.nostr` alone.
 - **Amber on Android, primary path: NIP-46 over a `nostrconnect://` link — since 2026-09-03, and this is how StableKraft's "Amber (Android)" button has always worked** (`components/Nostr/Nip46Connect.tsx` there: `window.location.href = nostrconnect://…` on Android, then the ordinary relay session). The modal's Android "Sign in with Amber" calls `loginWithNostrConnect` and opens the URI in Amber; Amber's installed build (the `free` flavor on Zapstore and F-Droid) registers `nostrconnect` as a BROWSABLE scheme on `SignerActivity`, and `getIntentData` routes a `nostrconnect:` intent BEFORE the `Browser.EXTRA_APPLICATION_ID` branch, so the Chromium change below never touches it. Nothing returns by URL: no callback tab, no clipboard, no reload, and every later signature rides the relay like any bunker — which also means it lands under `unattendedDecryptOk() === false` like Amber-as-bunker always has. The URI is opened ONCE per memoized URI (`amberNcOpened`); the visibility-return retry re-subscribes without re-launching Amber, because Android suspends the page's WebSocket while the user is in Amber and the ack can land on a dead subscription. The `offline` flavor registers only `nostrsigner`, which is why the NIP-55 path stays as a secondary button.
 - **Amber on Android, fallback path** (NIP-55, `lib/nostr/amber.ts`). Polyfills `window.nostr` with an `AmberSigner` dispatching via the `nostrsigner:` URL scheme and reading results from the system clipboard: `nostrsigner:<urlEncoded payload>?compressionType=none&returnType=event&type=<…>` (no callbackUrl, per spec) → user approves → first user gesture (`pointerdown`/`touchstart`/`keydown`) reads the clipboard with fresh transient activation. `restoreAmberSigner(pubkey)` is the synchronous page-load fast path.
+- **Clave on iOS** (`lib/nostr/clave.ts`). NIP-46 and nothing else — no NIP-55 surface, no URL-scheme signing round trip, no `window.nostr` injection, and NIP-55 is titled "Android Signer Application" with no iOS section, so there is nothing else to build against. It is therefore a **bunker like any other**: `bmb:signer` stays `'bunker'`, the transport is `bunker.ts`, and `unattendedDecryptOk()` already excluded it. What is Clave-specific is three things and only three: the one-tap hand-off `clave://connect?uri=<urlencoded nostrconnect>`, `wss://relay.powr.build/` in the URI, and the queued-approval retry — all three below.
 - **NIP-46 bunker** (`lib/nostr/bunker.ts`, wraps nostr-tools `BunkerSigner`). Paste a `bunker://` URI or generate a `nostrconnect://` one. Reconnect on reload is async (`restoreBunkerSigner()` rebuilds from `bmb:bunker:{uri,clientSk}`); signing calls before it resolves throw, but nothing signs unprompted post-load. Works with Clave, nsec.app, Amber-as-bunker, Primal. **A bunker is NOT assumed to answer inside the browser** — see "An out-of-browser signer is two signers" below.
 - **Local key** (`lib/nostr/local-signer.ts`). The only path where *we* hold the key; it exists for Google onboarding, where the user starts with no Nostr identity. Signs in-process via `finalizeEvent`, implements nip04 + nip44 directly. `restoreLocalSigner()` is **async** (IndexedDB read + decrypt), so it follows the bunker pattern, not Amber's. It **refuses a key whose pubkey doesn't match `bmb:npub`** — `putKey` swallows IndexedDB failures, so signing in as B on a device still holding A's ciphertext would run the session off the in-memory copy while disk keeps A, and after a reload sign everything as A while the UI says B.
 
-> **`nostr-tools` is pinned to exact `2.19.4` — do NOT bump or relax the caret.** The `2.20.0+` NIP-46 rewrite added `limit: 0` to the `nostrconnect`/bunker subscription filters (`fromURI` + `setupSubscription`), which on our relays silently drops the remote signer's connect-ack, so **Primal's `nostrconnect://` login hangs and times out**. Latest (`2.23.5`) and `master` still carry it; `npm update` or a `^`/`~` range reintroduces the break. `NOSTRCONNECT_RELAYS` is a 4-relay set (nsec.app/damus/primal/nos.lol) for ack redundancy — a single relay loses the ack when iOS Safari suspends the WebSocket during the app-switch.
+> **`nostr-tools` is pinned to exact `2.19.4` — do NOT bump or relax the caret.** The `2.20.0+` NIP-46 rewrite added `limit: 0` to the `nostrconnect`/bunker subscription filters (`fromURI` + `setupSubscription`), which on our relays silently drops the remote signer's connect-ack, so **Primal's `nostrconnect://` login hangs and times out**. Latest (`2.23.5`) and `master` still carry it; `npm update` or a `^`/`~` range reintroduces the break. `NOSTRCONNECT_RELAYS` is a **5**-relay set for ack redundancy — a single relay loses the ack when iOS Safari suspends the WebSocket during the app-switch. Four are for redundancy (nsec.app/damus/primal/nos.lol); **`wss://relay.powr.build/` is not, and must not be pruned as if it were.** It is Clave's own persistent proxy — the subscription that fires the APNs wake, which is how a closed Clave answers at all — and Clave's `docs/nip46-compatibility.md` states that a client without `switch_relays` (nostr-tools ~2.17, and we pin exactly 2.19.4) *"cannot successfully complete nostrconnect pairing unless the URI already embeds wss://relay.powr.build"*. **Keep its trailing slash**: the other four have none, so a tidy-up is the likely way this breaks, and nothing in CI would notice. It is unconditional rather than Clave-scoped because `startNostrConnect` memoizes ONE `{uri, clientSk, secret}` per session, shared by the iOS Clave button, the Android Amber button and the QR box — a second URI in one session would invalidate a QR the user had already scanned, which is the exact failure that memo exists to prevent. **And this is not the "adding a relay is a latency decision" rule from [`nostr.md`](nostr.md)**: that one is about broad scans, which resolve at *aggregate* EOSE and so pay a silent relay its full ceiling. A NIP-46 exchange resolves on the first matching kind:24133 response, so a slow or silent relay here costs nothing.
 
 ### Amber's round trip does not return by itself — measured, not assumed
 
@@ -127,6 +128,84 @@ browser globals, so it will not load under `node --experimental-strip-types`. It
 rests on the exact `2.19.4` pin above. If that ever moves, re-read `nip46.js` by
 hand: a version that wraps `o.error` in an `Error` reverts this silently rather
 than breaking loudly.
+
+### A permission error from Clave is a queue receipt, not a refusal
+
+The section above establishes that an error RESPONSE proves the round trip
+completed. This is the second refinement of the same discriminator: **one class
+of answer means *not yet*.**
+
+Clave does not hold a request open while its user decides. It answers
+immediately with `permission denied`, and delivers the real result on the SAME
+request id once the user taps approve. nostr-tools 2.19.4 settles on the first
+response, so the caller gets a rejection and the signature is delivered to a
+handler that no longer exists — `lib/esm/nip46.js` runs `delete listeners[id]`
+on the line after `handler.reject(error)`. Read in `node_modules`, not inferred.
+
+**So this is not a sign-in bug, and that is what makes it expensive.** Pairing
+succeeds. It is every SIGNATURE afterwards that fails — the boost note, the
+favorites publish, the mute publish — each on the first approval, each looking
+like a signer that refused.
+
+`withApprovalWait` (`lib/nostr/bunker.ts`) re-issues on a **new request id**,
+because there is nothing left to listen with. The gate is `isApprovalPending`
+in the import-free `lib/nostr/nip46-errors.ts`, pinned by `npm run
+check:nip46error`, and it **fails closed on anything that is not a bare
+string** — the same `!(e instanceof Error)` fact as above, so a timeout or a
+dead transport is never approval-pending and the reconnect banner still fires.
+
+**Re-issuing is safe because of a property of THIS repo, not of NIP-46.** Every
+publisher stamps `created_at` into the template before calling `signAndPublish`,
+so a re-signed template is a byte-identical event rather than a second one. A
+caller that ever let the signer pick `created_at` would break that, and the
+wrapper would have to come off `signEvent`. There is also never a first
+signature to duplicate: we only re-issue after a rejection.
+
+90 s budget, 8 s interval. 90 is `BUNKER_CONNECT_TIMEOUT_MS`' number on purpose
+— both answer "how long do we wait for a human in another app", and two numbers
+for one question only invites the argument. The honest worst case is 90 + 30 s,
+because the last attempt can start just under the deadline and then time out.
+**The money path argues for the larger budget, not the smaller**, which is the
+opposite of the intuition: `publishBoostNote` signs AFTER the sats have moved,
+so a long wait costs a spinner beside a payment already reported as successful,
+while giving up early costs the note outright — `<PublishStatus>` renders
+"Publish failed" with **no retry control**, and nothing re-attempts a kind:1.
+
+**The two decrypts are deliberately NOT wrapped, and this is the inconsistency
+someone will tidy away.** Both already run inside a 10 s cap this module cannot
+see — `decryptWithTimeout` / `withDecryptTimeout` in `signer.ts`
+(`NIP44_DECRYPT_TIMEOUT_MS`), and `mutes.ts` puts the NIP-04 half through the
+same one. That cap is a `Promise.race`, which does not cancel what it outran, so
+an approval loop underneath would be **unreachable** (the outer race rejects at
+ten seconds with an `Error`) *and* would leave an orphaned loop firing
+re-issued requests at the signer for another eighty, each potentially a fresh
+prompt, with nobody left to consume the answer. Worse than not retrying. The
+cost is on the record: on a signer that queues, a private mute half, a private
+favorites half and "Restore from Nostr" still fail at ten seconds. Closing that
+means teaching `withDecryptTimeout` about the bunker case **first**, in
+`signer.ts`, and only then wrapping those two lines.
+
+**THE RISK THIS ACCEPTS, stated so it is not rediscovered as a bug.** NIP-46
+standardises no error strings, so a signer REFUSING outright may phrase it
+identically to one that is queueing — `permission denied` is a very plausible
+"the user tapped Deny" from nsec.app. That user now waits the full budget
+instead of failing fast. The answer is **not** a narrower pattern list, which
+would risk missing the string this exists for; it is that the wait is visible
+and one tap from over: `subscribeBunkerApproval` drives
+`<BunkerApprovalNotice>`, which carries **Stop waiting**
+(`cancelBunkerApprovalWait`). Rendered in the boost modal's `publishing` state,
+where the wait actually bites, and in `<AccountMenu>` so the control exists
+outside that one surface.
+
+**No `check:*` can pin the re-issue itself** — `bunker.ts` imports
+`nostr-tools` and touches browser globals. `scripts/e2e-mutes.mjs` scenarios
+**5d** and **5e** are the proof instead, against a real NIP-46 stub: 5d denies
+one `sign_event` and asserts the call still resolves, over two requests, on two
+different ids, with the template unaltered; 5e denies with different words and
+asserts one request and a fast failure. Its `signEnabled` flag is off by
+default because scenarios 1-5c were written against a stub that answered
+`sign_event` with "unsupported", and teaching it to sign underneath them would
+be editing the fixture to fit.
 
 ### Never make Amber render something the user did not ask to see
 
@@ -330,7 +409,15 @@ Two guards, both needed: `hasSpark()` before the SDK init, and **`sparkSeedIsAct
 The entry point lives in the combined **`<AuthControl>`** header control, not a standalone button — signed out, `<NostrAuth>` renders **only** the modal (its hydration effects and `completeSignIn` still run). Opening it flips `signInOpen`; the modal is a portal'd two-tab overlay (same pattern as `wallet-modal.tsx`):
 
 - **Browser Extension** — `loginWithExtension` (NIP-07); the button is disabled with a hint when `window.nostr` is absent.
-- **Remote Signer** — *Generate QR* (`nostrconnect://` via `loginWithNostrConnect`) and *Paste Bunker URI* (`loginWithBunker`) stacked, plus **"Sign in with Amber"** (`loginWithAmber`) on Android. Default tab when no extension is detected.
+- **Remote Signer** — *Generate QR* (`nostrconnect://` via `loginWithNostrConnect`) and *Paste Bunker URI* (`loginWithBunker`) stacked, plus **"Sign in with Amber"** (`loginWithAmber`) on Android and **"Sign in with Clave"** on iOS. Default tab when no extension is detected.
+
+**The iOS box mirrors the Android one and sits in the same slot** — above Option 1, because on the phone displaying the QR the QR is not an option. `isLikelyIOS()` gates it; that helper had been written and exported with zero call sites since the Amber work, and this is the first. `onClaveConnect` is `onAmberConnect` with one line changed: `openInSignerApp(claveOpenLink(uri))`, the `clave://connect?uri=` wrapper rather than the bare URI. Same `claveOpened` (open the memoized URI ONCE, so a return-retry re-subscribes instead of sending the user back) and same `claveAttempt` (only the newest attempt may report).
+
+**A fourth `visibilitychange` retry effect, and it introduces a collision the Android box never had.** The Clave button and the QR box both call `loginWithNostrConnect`, whose memo returns the SAME URI but builds a **fresh `ready`** — so if both effects fire on one return, two subscriptions resolve on one pairing and `finalizeBunkerLogin` runs twice: two live transports, `onSuccess`/`onClose` on an unmounted modal. `claveAttempt` guards only within its own branch. Reachable in two taps: tap *Sign in with Clave*, watch nothing happen because Clave is not installed, tap *Generate QR Code*. So the guards are mutual — the Clave effect bails on `genBusy || pasteBusy` (the same reason the Amber one bails on `amberBusy`: its documented next moves are in the same tab, and returning from *those* is a `visibilitychange` too), and the generate effect gains `claveBusy`.
+
+**A missing app produces no signal at all**, which is why there is a timer. An unregistered custom scheme on iOS is a silent no-op — no error, no navigation event, nothing observable — so after ~6 s of waiting the box says *"Nothing happened? Clave may not be installed"* with an App Store link. **Do not replace that with install-detection**: the usual `document.hidden` race reports "not installed" for any slow app switch, which is the ordinary case for a signer being cold-launched. The box also carries a one-tap *"Open Clave to copy a `bunker://` URI"* pointing at Option 2, because Clave's own doc recommends the bunker flow for same-device iOS pairing — it keeps this page in the foreground, so Safari never suspends the socket the handshake rides on. We lead with the deep link because it is one tap and the memoized re-subscribe already exists, but the vendor-recommended path has to be one tap away and labelled as such.
+
+**The `clave.casa` universal link is deliberately unused.** Clave publishes `https://clave.casa/connect/?uri=…` for the not-installed case, and it is tempting because it degrades to a web page. It also ships the client pubkey and the connect secret to a third-party origin, where they sit in an access log. `clave://` keeps the pairing on the device; the App Store link covers what the universal link was reaching for.
 
 Both tabs stay available so a desktop extension user can still pick a remote signer. The modal owns its per-method busy/error state and the **iOS visibility-retry** that re-attempts the nostrconnect handshake when Safari suspends the relay WebSocket on app-switch. On success it calls `index.tsx:completeSignIn(id, kind)`. `login-methods.tsx` now holds only the shared `<AmberCompletion>` clipboard-recovery helper.
 
@@ -348,6 +435,7 @@ One `window.focus` listener in `components/nostr-auth/index.tsx`, active only wh
 
 - **`subscribeAmberStage(fn)`** — `'idle' | 'awaiting' | 'returned'`. `<AmberCompletion>` flips its hint copy in lockstep with `invokeAmber`. While in flight it always shows a "◆ Read clipboard manually" button + paste textarea, because `visibilitychange` is unreliable on standalone-PWA returns.
 - **`subscribeBunkerHealth(fn)`** — boolean (stale or not); adapter calls run through `trackBunkerCall` with a 30 s timeout. `<BunkerHealthBanner>` in `<AccountMenu>` offers "Signer disconnected — Reconnect". Targets the iOS-PWA-suspended-WebSocket case.
+- **`subscribeBunkerApproval(fn)`** — `{ waiting, label, attempt }`, driven by `withApprovalWait`. A **third** observable rather than a second meaning for the health flag, because the two say opposite things: stale means the transport looks dead, this means it demonstrably is not. `<BunkerApprovalNotice>` renders it, carries **Stop waiting** (`cancelBunkerApprovalWait`), and returns null when idle so a surface can mount it unconditionally.
 
 
 

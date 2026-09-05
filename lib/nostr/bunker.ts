@@ -39,6 +39,8 @@ import {
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
 import { storage } from '../storage';
 import { BRAND } from '../brand';
+import { CLAVE_RELAY } from './clave';
+import { isApprovalPending } from './nip46-errors';
 
 // Default relays for the GENERATE flow's nostrconnect:// URI. Multiple
 // relays give the connect-ack redundancy: on same-device iOS, Safari
@@ -48,11 +50,30 @@ import { BRAND } from '../brand';
 // fatal is fixed as of 2.23.x — subscribeMany.onclose now fires only when
 // ALL relays close — so multi-relay is safe again.) This set mirrors the
 // working MSP-2.0 config and is reachable by Primal, Clave, nsec.app, Amber.
+// CLAVE_RELAY is not redundancy, it is a requirement, and it is unconditional
+// for a structural reason rather than a lazy one. Clave's own
+// docs/nip46-compatibility.md: a client without `switch_relays` — nostr-tools
+// ~2.17, and CLAUDE.md pins us to exactly 2.19.4 — "cannot successfully
+// complete nostrconnect pairing unless the URI already embeds
+// wss://relay.powr.build". It is also the persistent proxy that fires the APNs
+// wake, which is how a closed Clave answers at all.
+//
+// Unconditional because `startNostrConnect` memoizes ONE {uri, clientSk,
+// secret} per session, shared by the iOS Clave button, the Android Amber button
+// and the QR box. A Clave-only URI needs a second memo and a second code path,
+// and the two would drift.
+//
+// AND THIS IS NOT the "adding a relay is a latency decision" rule from
+// docs/nostr.md. That rule is about broad scans, which resolve at AGGREGATE
+// EOSE and therefore pay a silent relay its full ceiling. A NIP-46 exchange
+// resolves on the first matching kind:24133 response, so a slow or silent relay
+// here costs nothing. Do not remove this by applying the wrong rule.
 const NOSTRCONNECT_RELAYS = [
   'wss://relay.nsec.app',
   'wss://relay.damus.io',
   'wss://relay.primal.net',
   'wss://nos.lol',
+  CLAVE_RELAY,
 ];
 
 const NOSTRCONNECT_TIMEOUT_MS = 120_000;
@@ -82,6 +103,28 @@ const BUNKER_CONNECT_TIMEOUT_MS = 90_000;
 // (3s) so we fail fast to the "go approve in Primal again" error state
 // rather than leaving the user staring at "Connecting…" for 15+ seconds.
 const BUNKER_RECONNECT_TIMEOUT_MS = 3_000;
+
+// How long we keep re-issuing a request the signer has QUEUED for the user,
+// and how long we wait between attempts. See withApprovalWait below.
+//
+// 90 s is BUNKER_CONNECT_TIMEOUT_MS' number on purpose: both answer the same
+// question — how long to wait for a human who is in another app — and two
+// different numbers for it would only invite the question of which is right.
+// The honest worst case is 90 s + BUNKER_CALL_TIMEOUT_MS, because the last
+// attempt can start just under the deadline and then time out; that lands at
+// 120 s, which is clave-casa's own maxWaitMs reached from the other side.
+//
+// THE MONEY PATH ARGUES FOR THE LARGER BUDGET, NOT THE SMALLER. publishBoostNote
+// signs AFTER the sats have moved (CLAUDE.md boost invariant 1), so a long wait
+// costs a spinner beside a payment the user has already been told succeeded.
+// Failing early costs the note outright: <PublishStatus> renders "Publish
+// failed" with no retry control, and nothing re-tries a kind:1.
+//
+// 8 s rather than something snappier because each re-issue is a relay round
+// trip AND, on a signer that did not queue the request, a fresh approval
+// prompt. A short interval spams the very screen we are waiting on.
+const BUNKER_APPROVAL_BUDGET_MS = 90_000;
+const BUNKER_APPROVAL_RETRY_MS = 8_000;
 
 // Module-level memo: the last clientSk we generated for a given pasted
 // URI. The iOS Safari + Primal failure mode is that the user approves
@@ -129,6 +172,77 @@ export function subscribeBunkerHealth(fn: (stale: boolean) => void): () => void 
   healthListeners.add(fn);
   fn(bunkerStale);
   return () => { healthListeners.delete(fn); };
+}
+
+/**
+ * "Your signer has the request and is waiting for you to approve it."
+ *
+ * A THIRD observable rather than a second meaning for bunkerStale, because the
+ * two say opposite things: stale means the transport looks dead, this means it
+ * demonstrably is not — the signer answered, it just answered "not yet". A
+ * surface that shows the reconnect banner here would send the user to fix a
+ * connection that is working, which is the exact fault
+ * docs/signers.md's "A bunker that answers with an error is not a bunker that
+ * is gone" was written against.
+ *
+ * It exists because withApprovalWait can otherwise sit for a minute and a half
+ * with nothing on screen, and CLAUDE.md's rule is that a guard which withholds
+ * must say so. `attempt` is 1-based and included so a surface can show progress
+ * rather than a frozen sentence.
+ */
+export type BunkerApprovalStage = {
+  waiting: boolean;
+  /** The NIP-46 method being waited on, e.g. 'sign_event'. Null when idle. */
+  label: string | null;
+  /** Which re-issue we are on, 1-based. 0 when idle. */
+  attempt: number;
+};
+
+let approvalStage: BunkerApprovalStage = { waiting: false, label: null, attempt: 0 };
+const approvalListeners = new Set<(s: BunkerApprovalStage) => void>();
+// Which waits are CURRENTLY sitting on an approval. A set rather than a boolean
+// because calls overlap — a background nip44_encrypt can settle while a
+// signEvent is still waiting — and a `finally` that cleared unconditionally
+// would take the banner down out from under the call still waiting on it.
+// Whichever wait most recently entered the waiting branch owns the label and
+// the count; the banner goes away when the set empties.
+const activeApprovalWaits = new Set<symbol>();
+// Bumped by cancelBunkerApprovalWait; every loop captures it and gives up if it
+// moves. A counter rather than a boolean so a cancel cannot leak into the NEXT
+// wait — the user cancelling one signature must not pre-cancel the next.
+let approvalGeneration = 0;
+
+function setApprovalStage(next: BunkerApprovalStage) {
+  if (approvalStage.waiting === next.waiting
+    && approvalStage.label === next.label
+    && approvalStage.attempt === next.attempt) return;
+  approvalStage = next;
+  for (const fn of approvalListeners) { try { fn(next); } catch { /* a listener must not break the wait */ } }
+}
+
+export function subscribeBunkerApproval(fn: (s: BunkerApprovalStage) => void): () => void {
+  approvalListeners.add(fn);
+  fn(approvalStage);
+  return () => { approvalListeners.delete(fn); };
+}
+
+/**
+ * Stop waiting, now — the escape hatch for the risk withApprovalWait accepts.
+ *
+ * NIP-46 standardises no error strings, so a signer that is refusing outright
+ * may well phrase it as "permission denied" and be indistinguishable from one
+ * that is queueing. That user would otherwise watch a spinner for the whole
+ * budget. This makes it one tap, and the pending call rejects with the signer's
+ * own last answer rather than a message we invented.
+ */
+export function cancelBunkerApprovalWait(): void {
+  approvalGeneration += 1;
+  activeApprovalWaits.clear();
+  // Clear here rather than leaving it to the loop's `finally`. That branch is
+  // guarded on the generation still matching — which cancelling has just made
+  // false — so without this line the banner the user pressed "Stop waiting" on
+  // would stay on screen until the next signature.
+  setApprovalStage({ waiting: false, label: null, attempt: 0 });
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
@@ -179,9 +293,17 @@ function isRemoteSignerError(e: unknown): boolean {
 // exactly as a success does. An Error we did not author still sets it, which
 // fails toward offering the reconnect — the right direction for a genuine
 // disconnect.
-async function trackBunkerCall<T>(p: Promise<T>, label: string): Promise<T> {
+//
+// IT TAKES A FACTORY, NOT A PROMISE, and that is not a style choice. A promise
+// handed in here is already on the wire and can only settle once, so
+// withApprovalWait below — which has to RE-ISSUE — could not be built around
+// it. Typed as `() => Promise<T>` so `npm run typecheck` catches the one
+// mistake this shape invites: passing `signer.signEvent(t)` instead of
+// `() => signer.signEvent(t)`, which would re-await a single settled rejection
+// in a tight loop until the budget expired.
+async function trackBunkerCall<T>(issue: () => Promise<T>, label: string): Promise<T> {
   try {
-    const v = await withTimeout(p, BUNKER_CALL_TIMEOUT_MS, label);
+    const v = await withTimeout(issue(), BUNKER_CALL_TIMEOUT_MS, label);
     if (bunkerStale) setBunkerStale(false);
     return v;
   } catch (e) {
@@ -191,6 +313,84 @@ async function trackBunkerCall<T>(p: Promise<T>, label: string): Promise<T> {
       setBunkerStale(true);
     }
     throw e;
+  }
+}
+
+/**
+ * Re-issue a request the signer has QUEUED for the user's approval.
+ *
+ * WHY THIS EXISTS. Clave (lib/nostr/clave.ts) does not hold a request open
+ * while the user decides. It answers immediately with `permission denied`, and
+ * then — once the user taps approve — sends the real result on the same request
+ * id. nostr-tools 2.19.4 settles on the FIRST response, so the caller gets a
+ * rejection and the signature is delivered to a handler that is already gone.
+ * Pairing succeeds and every signature afterwards fails: the boost note, the
+ * favorites publish, the mute publish, each on the first approval, each looking
+ * like the signer refused.
+ *
+ * So we ask again, on a NEW request id, until the signer stops saying "not yet".
+ * A new id rather than a second listen, because there is nothing left to listen
+ * with: nostr-tools 2.19.4 `lib/esm/nip46.js` runs `delete listeners[id]`
+ * immediately after `handler.reject(error)` (read in node_modules, not
+ * inferred), so the real result arriving later on that id is dropped by the
+ * dispatcher before anything of ours could see it. `sendRequest` allocates
+ * `${idPrefix}-${++serial}` per call, so each re-issue is a fresh kind:24133
+ * the signer treats as a new request.
+ *
+ * RE-ISSUING IS SAFE HERE, and the reason is a property of THIS repo rather
+ * than of NIP-46: every publisher stamps `created_at` into the template before
+ * calling `signAndPublish` (lib/nostr/publish.ts), so a re-signed template is a
+ * byte-identical event, not a second one. If a caller ever lets the signer pick
+ * `created_at`, that stops being true and this wrapper has to come off
+ * `signEvent`. There is also never a first signature to duplicate: we only
+ * re-issue after a rejection.
+ *
+ * `isApprovalPending` is the whole gate and it fails closed on anything that is
+ * not a bare string off the wire — see lib/nostr/nip46-errors.ts. A timeout or a
+ * dead transport is an `Error`, is never approval-pending, and propagates
+ * immediately, so the reconnect banner still fires for a genuine disconnect.
+ *
+ * The budget is enforced as a DEADLINE CHECK BEFORE THE NEXT ATTEMPT, never as
+ * an outer race. A race would reject while a request is still in flight, and
+ * the signer would then deliver a real signature that nobody consumes.
+ *
+ * THE RISK IT ACCEPTS, so it is not rediscovered as a bug: NIP-46 standardises
+ * no error strings, so a signer REFUSING outright may phrase it identically and
+ * now waits the full budget instead of failing fast. That is what
+ * `subscribeBunkerApproval` and `cancelBunkerApprovalWait` are for; narrowing
+ * the patterns instead would risk missing the string this exists for.
+ */
+async function withApprovalWait<T>(issue: () => Promise<T>, label: string): Promise<T> {
+  const generation = approvalGeneration;
+  const token = Symbol(label);
+  const started = Date.now();
+  let attempt = 0;
+  try {
+    for (;;) {
+      attempt += 1;
+      try {
+        return await trackBunkerCall(issue, label);
+      } catch (e) {
+        if (!isApprovalPending(e)) throw e;
+        // No room for another attempt inside the budget — give the caller the
+        // signer's own last answer rather than a message we made up.
+        if (Date.now() - started + BUNKER_APPROVAL_RETRY_MS > BUNKER_APPROVAL_BUDGET_MS) throw e;
+        activeApprovalWaits.add(token);
+        setApprovalStage({ waiting: true, label, attempt });
+        await new Promise((r) => setTimeout(r, BUNKER_APPROVAL_RETRY_MS));
+        if (approvalGeneration !== generation) throw e;
+      }
+    }
+  } finally {
+    activeApprovalWaits.delete(token);
+    // Clear only when NOTHING is still waiting, and only from the current
+    // generation. Two guards for two different mistakes: a call that never
+    // waited at all must not take down a banner a concurrent one is sitting on,
+    // and a loop that a cancel already superseded must not wipe a fresh one's
+    // state on its way out.
+    if (approvalGeneration === generation && activeApprovalWaits.size === 0) {
+      setApprovalStage({ waiting: false, label: null, attempt: 0 });
+    }
   }
 }
 
@@ -221,25 +421,54 @@ export interface BunkerAdapter {
   clientSkHex: string;
 }
 
-/** Wrap a connected BunkerSigner in the Window['nostr'] shape. Each call
- *  goes through trackBunkerCall so timeouts / errors flip the stale flag
- *  for the reconnect UI. */
+/**
+ * Wrap a connected BunkerSigner in the Window['nostr'] shape. Every call goes
+ * through trackBunkerCall so timeouts / errors flip the stale flag for the
+ * reconnect UI, and four of the six also go through withApprovalWait so a
+ * signer that queues the request for its user is asked again rather than
+ * reported as having refused.
+ *
+ * THE TWO DECRYPTS ARE DELIBERATELY LEFT OUT, and this is the inconsistency a
+ * future reader will try to tidy away. Both of them already run inside a 10 s
+ * cap that this module cannot see: `decryptWithTimeout` / `withDecryptTimeout`
+ * in lib/nostr/signer.ts (NIP44_DECRYPT_TIMEOUT_MS), and lib/nostr/mutes.ts
+ * puts the NIP-04 half through the same one. That cap is a `Promise.race`, so
+ * it does not cancel what it outran. An approval loop underneath it would
+ * therefore be unreachable — the outer race rejects at ten seconds with an
+ * Error — AND would leave an orphaned loop firing re-issued requests at the
+ * signer for another eighty, each one potentially a fresh prompt, with nobody
+ * left to consume the answer. That is worse than not retrying at all.
+ *
+ * The cost is real and belongs on the record: on a signer that queues, a
+ * private mute list, a private favorites half and a "Restore from Nostr" still
+ * fail at ten seconds. Closing that means teaching `withDecryptTimeout` about
+ * the bunker case FIRST, in signer.ts, and only then wrapping these two lines.
+ *
+ * The four encrypt/sign paths have no such outer cap — `wallet-backup.ts`,
+ * `settings-backup.ts` and `favorites.ts` all await `requireNip44().encrypt`
+ * bare — so the wait is reachable there. Re-issuing an encrypt produces a fresh
+ * nonce, which is harmless because only one attempt ever returns and nothing in
+ * this app compares ciphertexts.
+ */
 function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> {
   return {
-    getPublicKey: () => trackBunkerCall(signer.getPublicKey(), 'get_public_key'),
+    getPublicKey: () => withApprovalWait(() => signer.getPublicKey(), 'get_public_key'),
     signEvent: (template: EventTemplate): Promise<Event> =>
-      trackBunkerCall(signer.signEvent(template), 'sign_event') as Promise<Event>,
+      withApprovalWait(() => signer.signEvent(template), 'sign_event') as Promise<Event>,
     nip04: {
       encrypt: (peerPubkey, plaintext) =>
-        trackBunkerCall(signer.nip04Encrypt(peerPubkey, plaintext), 'nip04_encrypt'),
+        withApprovalWait(() => signer.nip04Encrypt(peerPubkey, plaintext), 'nip04_encrypt'),
+      // No approval wait — capped at 10 s by withDecryptTimeout above this. See
+      // the block comment.
       decrypt: (peerPubkey, ciphertext) =>
-        trackBunkerCall(signer.nip04Decrypt(peerPubkey, ciphertext), 'nip04_decrypt'),
+        trackBunkerCall(() => signer.nip04Decrypt(peerPubkey, ciphertext), 'nip04_decrypt'),
     },
     nip44: {
       encrypt: (peerPubkey, plaintext) =>
-        trackBunkerCall(signer.nip44Encrypt(peerPubkey, plaintext), 'nip44_encrypt'),
+        withApprovalWait(() => signer.nip44Encrypt(peerPubkey, plaintext), 'nip44_encrypt'),
+      // No approval wait — capped at 10 s by decryptWithTimeout above this.
       decrypt: (peerPubkey, ciphertext) =>
-        trackBunkerCall(signer.nip44Decrypt(peerPubkey, ciphertext), 'nip44_decrypt'),
+        trackBunkerCall(() => signer.nip44Decrypt(peerPubkey, ciphertext), 'nip44_decrypt'),
     },
   };
 }

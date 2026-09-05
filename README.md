@@ -348,7 +348,7 @@ Connected from the header's **`<AuthControl>`** (the combined "Sign in ▾" logi
 
 - **NIP-07** browser extension (Alby, nos2x, nostash on iOS).
 - **Amber** (NIP-55) on Android — `nostrsigner:` URL scheme + clipboard round-trip.
-- **NIP-46 bunker / `nostrconnect://`** remote signer (nsec.app, Clave, Amber-as-bunker, Primal).
+- **NIP-46 bunker / `nostrconnect://`** remote signer (nsec.app, Clave, Amber-as-bunker, Primal). One-tap hand-off on both mobiles — `nostrconnect://` into Amber on Android, `clave://connect?uri=` into Clave on iOS. A signer that queues a request for its user (Clave answers `permission denied` first and the real result after the tap) is asked again rather than reported as having refused.
 - **Local key** — the only path where *we* hold the key, for users who arrive with no Nostr identity at all. See Google onboarding below.
 
 The header's combined **"Sign in ▾"** control (`<AuthControl>`) opens a modal with **Continue with Google** above a two-tab picker (Extension / Remote signer). `nostr-tools` is pinned to **exactly `2.19.4`** — `2.20.0+`'s NIP-46 rewrite breaks the `nostrconnect://` handshake on our relays.

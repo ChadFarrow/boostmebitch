@@ -30,8 +30,12 @@ export { isLikelyAndroid, isLikelyIOS, normalizeAmberPubkey } from './amber';
 export {
   isBunkerStale,
   subscribeBunkerHealth,
+  subscribeBunkerApproval,
+  cancelBunkerApprovalWait,
   clearPendingBunkerAttempts,
+  type BunkerApprovalStage,
 } from './bunker';
+export { claveOpenLink, CLAVE_APP_STORE_URL, CLAVE_OPEN_URL } from './clave';
 
 export { fetchProfile, fetchRawProfile, publishProfile, type RawProfile } from './profile';
 

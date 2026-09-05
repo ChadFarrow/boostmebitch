@@ -14,6 +14,10 @@ import {
   loginWithNostrConnect,
   clearPendingBunkerAttempts,
   isLikelyAndroid,
+  isLikelyIOS,
+  claveOpenLink,
+  CLAVE_APP_STORE_URL,
+  CLAVE_OPEN_URL,
   type NostrIdentity,
 } from '@/lib/nostr';
 import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/amber';
@@ -25,10 +29,23 @@ import { GoogleAuthPanel } from './google-auth-panel';
 
 type Tab = 'extension' | 'remote';
 
-// Hand a signer-app URI to Android. An anchor click rather than a bare
-// `location.href` assignment, for the reason lib/nostr/amber.ts gives: some
-// Android browsers hand a custom scheme to the intent picker reliably from a
-// click and silently drop it as a "navigation hint" from an assignment.
+// How long a Clave tap sits with no return signal before the box says the app
+// may not be installed. Long enough to cover a cold launch of a signer that has
+// to be woken; short enough to beat the user's own patience. It is a hint on a
+// timer, never a detection — see openInSignerApp.
+const CLAVE_SLOW_MS = 6_000;
+
+// Hand a signer-app URI to the OS — Android's intent picker, or iOS' scheme
+// handler. An anchor click rather than a bare `location.href` assignment, for
+// the reason lib/nostr/amber.ts gives: some Android browsers hand a custom
+// scheme to the intent picker reliably from a click and silently drop it as a
+// "navigation hint" from an assignment. iOS Safari wants the same shape, and
+// one helper for both is what keeps the two branches from drifting.
+//
+// ON iOS THERE IS NO FAILURE SIGNAL. A custom scheme nothing has registered is
+// a silent no-op — no error, no navigation event, nothing observable. So the
+// not-installed case cannot be detected here and is handled by the timed hint
+// in the Clave box instead.
 function openInSignerApp(uri: string) {
   const a = document.createElement('a');
   a.href = uri;
@@ -60,6 +77,9 @@ export function SignInModal({
 }) {
   const [hasExt] = useState(() => typeof window !== 'undefined' && !!window.nostr);
   const [android] = useState(() => isLikelyAndroid());
+  // Lazy initializer, like `android` above: this is read once, on the client,
+  // and the deferral is what keeps `navigator` off the server render.
+  const [ios] = useState(() => isLikelyIOS());
   const [tab, setTab] = useState<Tab>(() => (hasExt ? 'extension' : 'remote'));
   // Google onboarding is a SEPARATE path, not a Nostr sign-in method: it mints
   // a key for someone who has none. So it is reachable ONLY by opening this
@@ -106,6 +126,30 @@ export function SignInModal({
   // attempt's 120 s timeout would write "Connection dropped" over a session
   // that is still coming up. Only the newest attempt may report anything.
   const amberNcAttempt = useRef(0);
+  // Clave flow (iOS). NIP-46 over a `nostrconnect://` URI handed to the app by
+  // its own `clave://connect?uri=` scheme — the same shape as the Android Amber
+  // button above, and for the same reason: on the phone that is displaying it,
+  // a QR code is not an option.
+  //
+  // Clave speaks NIP-46 and nothing else, so there is no NIP-55-style peer in
+  // this box to fall back to. Its fallback is Option 2 below, which is what
+  // Clave's own docs recommend for same-device iOS pairing.
+  const [claveBusy, setClaveBusy] = useState(false);
+  const [claveErr, setClaveErr] = useState<string | null>(null);
+  // Its OWN auth-url slot rather than reusing `genAuthUrl`. The Amber branch
+  // reuses it, which renders the "Approve in signer" box inside Option 1 —
+  // several hundred pixels below the button the user actually pressed. Do not
+  // copy that into a second branch.
+  const [claveAuthUrl, setClaveAuthUrl] = useState<string | null>(null);
+  // Drives the "nothing happened?" hint. It is the ONLY signal available for a
+  // missing app: see openInSignerApp's comment.
+  const [claveSlow, setClaveSlow] = useState(false);
+  const claveSlowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Same roles as amberNcOpened / amberNcAttempt above: open the memoized URI
+  // ONCE (a return-retry re-subscribes, it does not send the user back to
+  // Clave), and let only the newest attempt report.
+  const claveOpened = useRef<string | null>(null);
+  const claveAttempt = useRef(0);
   // Paste bunker:// flow.
   const [pasteValue, setPasteValue] = useState('');
   const [pasteBusy, setPasteBusy] = useState(false);
@@ -190,6 +234,39 @@ export function SignInModal({
     }
   }
 
+  async function onClaveConnect() {
+    const attempt = ++claveAttempt.current;
+    const isCurrent = () => claveAttempt.current === attempt;
+    setClaveBusy(true);
+    setClaveErr(null);
+    setClaveSlow(false);
+    if (claveSlowTimer.current) clearTimeout(claveSlowTimer.current);
+    claveSlowTimer.current = setTimeout(() => {
+      if (isCurrent()) setClaveSlow(true);
+    }, CLAVE_SLOW_MS);
+    try {
+      const { uri, ready } = loginWithNostrConnect((url) => setClaveAuthUrl(url));
+      if (claveOpened.current !== uri) {
+        claveOpened.current = uri;
+        // The `clave://connect?uri=` wrapper, NOT the bare nostrconnect URI —
+        // see lib/nostr/clave.ts for why the encoding is load-bearing.
+        openInSignerApp(claveOpenLink(uri));
+      }
+      const id = await ready;
+      if (!isCurrent()) return;
+      onSuccess(id, 'bunker');
+      onClose();
+    } catch (e) {
+      if (!isCurrent()) return;
+      setClaveErr(getErrorMessage(e, 'Clave connection failed'));
+    } finally {
+      if (isCurrent()) {
+        setClaveBusy(false);
+        if (claveSlowTimer.current) { clearTimeout(claveSlowTimer.current); claveSlowTimer.current = null; }
+      }
+    }
+  }
+
   async function onGenerate() {
     setGenBusy(true);
     setGenErr(null);
@@ -245,6 +322,15 @@ export function SignInModal({
   useEffect(() => {
     if (tab !== 'remote') return;
     if (!genBusy && !genErr) return;
+    // THE CLAVE BUTTON AND THIS BOX SHARE ONE PAIRING, which the Android box
+    // never had to worry about. Both call loginWithNostrConnect, whose memo
+    // returns the SAME URI but builds a FRESH `ready` — so if both effects fire
+    // on one return, two subscriptions resolve on one pairing and
+    // finalizeBunkerLogin runs twice: two live transports, and onSuccess/onClose
+    // on an unmounted modal. `claveAttempt` only guards within its own branch.
+    // Reachable in two taps on iOS: tap Sign in with Clave, watch nothing happen
+    // because Clave is not installed, tap Generate QR Code.
+    if (claveBusy) return;
     if (typeof document === 'undefined') return;
     const onVisible = () => {
       if (document.visibilityState === 'visible') onGenerate();
@@ -252,7 +338,25 @@ export function SignInModal({
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, genErr, genBusy]);
+  }, [tab, genErr, genBusy, claveBusy]);
+
+  // The Clave half of the same rule, plus the Amber one restated for its own
+  // fallback: the documented next moves after a failed Clave handshake are the
+  // QR box and the bunker paste in this same tab, and coming back from EITHER of
+  // those signer trips is a visibilitychange too. Restarting the handshake on it
+  // would disable those controls under the user's own in-flight request.
+  useEffect(() => {
+    if (tab !== 'remote') return;
+    if (!claveBusy && !claveErr) return;
+    if (genBusy || pasteBusy) return;
+    if (typeof document === 'undefined') return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') onClaveConnect();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, claveErr, claveBusy, genBusy, pasteBusy]);
 
   // Same shape for the Amber nostrconnect flow: Android suspends the page's
   // WebSocket while the user is in Amber approving, so the relay ack can land
@@ -297,6 +401,13 @@ export function SignInModal({
     return () => document.removeEventListener('visibilitychange', onVisible);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, pasteErr, pasteBusy, pasteValue]);
+
+  // The "may not be installed" timer is the one thing here that outlives the
+  // render if nobody clears it: it fires setState on an unmounted modal after
+  // the user gives up and closes.
+  useEffect(() => () => {
+    if (claveSlowTimer.current) clearTimeout(claveSlowTimer.current);
+  }, []);
 
   function handleClose() {
     // Drop any half-finished paste/generate attempt so a future session
@@ -440,6 +551,83 @@ export function SignInModal({
                     </div>
                   )}
 
+                  {/* iOS: hand the pairing URI straight to Clave. Mirrors the
+                      Android box above and sits in the same slot; the two are
+                      mutually exclusive by UA, so exactly one renders. Above
+                      Option 1 for the same reason Amber is: on the phone
+                      showing the QR, the QR is not an option. */}
+                  {ios && (
+                    <div className="border border-bone/15 p-3 flex flex-col gap-2">
+                      <button
+                        onClick={onClaveConnect}
+                        disabled={claveBusy}
+                        className="btn-bolt w-full disabled:opacity-40"
+                      >
+                        {claveBusy ? 'Waiting for Clave…' : 'Sign in with Clave'}
+                      </button>
+                      {claveBusy && (
+                        <span className="text-[11px] text-muted">
+                          Approve the connection in Clave, then come back here — this
+                          page finishes on its own. Nothing to paste.
+                        </span>
+                      )}
+                      {claveAuthUrl && (
+                        <div className="flex flex-col items-start gap-1 border border-nostr/40 bg-nostr/10 p-2">
+                          <span className="text-[10px] text-bone">
+                            Clave wants you to approve this connection.
+                          </span>
+                          <a
+                            href={claveAuthUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="btn-bolt text-[11px] py-1 px-3 no-underline"
+                          >
+                            ◆ Approve in Clave
+                          </a>
+                        </div>
+                      )}
+                      {/* The ONLY signal a missing app produces. An unregistered
+                          scheme on iOS is a silent no-op, so this is a timer, not
+                          a detection — see openInSignerApp. */}
+                      {claveSlow && claveBusy && (
+                        <span className="text-[11px] text-muted">
+                          Nothing happened? Clave may not be installed —{' '}
+                          <a
+                            href={CLAVE_APP_STORE_URL}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-nostr underline underline-offset-2"
+                          >
+                            get it on the App Store ↗
+                          </a>
+                        </span>
+                      )}
+                      {claveErr && (
+                        <span className="text-[11px] text-nostr/80">
+                          {claveErr.includes('timed out') || claveErr.includes('subscription closed')
+                            ? 'Connection dropped, or Clave is not installed — approve in Clave, then tap Sign in with Clave again.'
+                            : claveErr}
+                        </span>
+                      )}
+                      {/* Clave's own compatibility doc recommends a bunker:// URI
+                          for same-device iOS pairing: that flow keeps THIS page
+                          in the foreground, so Safari never suspends the
+                          WebSocket the handshake rides on. We lead with the deep
+                          link because it is one tap, but the vendor-recommended
+                          path has to be one tap away and labelled as such. */}
+                      <button
+                        onClick={() => openInSignerApp(CLAVE_OPEN_URL)}
+                        className="btn-ghost text-[10px] py-1 px-2 self-start"
+                      >
+                        Open Clave to copy a bunker:// URI
+                      </button>
+                      <span className="text-[10px] text-muted">
+                        Then paste it under Option 2 below. Slower, but it does not
+                        depend on this page surviving the app switch.
+                      </span>
+                    </div>
+                  )}
+
                   {/* Option 1: generate a nostrconnect:// URI / QR. */}
                   <div className="border border-bone/15 p-3 flex flex-col gap-2">
                     <h4 className="font-display text-sm">Option 1: Scan QR Code</h4>
@@ -524,7 +712,8 @@ export function SignInModal({
                     <p className="text-[11px] text-muted">
                       Paste a <code className="text-[9px]">bunker://</code> URI (or{' '}
                       <code className="text-[9px]">name@example.com</code>) from your
-                      signer app — e.g. nsec.app or Amber in server mode.
+                      signer app — e.g. Clave on iOS, nsec.app, or Amber in server
+                      mode.
                     </p>
                     <div className="flex gap-2">
                       <input

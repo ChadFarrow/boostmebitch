@@ -427,7 +427,20 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   const rpcKey = nip44.v2.utils.getConversationKey(bunkerSk, clientPk);
 
   const seen = [];
+  const seenIds = [];
   let answerWithError = null; // when set, every RPC is answered with this error
+  // Scenario 5d/5e: answer the first N requests of one method with an error and
+  // then behave normally. This is Clave's shape — it does not hold a request
+  // open while its user decides, it refuses immediately and delivers the real
+  // result only once the tap happens. `denyFirst.left` counts DOWN.
+  let denyFirst = null; // { method, left, error }
+  // OFF until scenario 5d turns it on, and that is deliberate rather than
+  // cautious. Scenarios 1-5c were written against a stub that answered
+  // `sign_event` with "unsupported", so silently teaching it to sign would
+  // change what lands on the relay underneath assertions that were not written
+  // for it — the fixture-editing antipattern CLAUDE.md names. New behaviour goes
+  // behind a flag the new scenario turns on.
+  let signEnabled = false;
 
   const relayWs = new WebSocket(`ws://127.0.0.1:${PORT}`);
   await new Promise((r) => relayWs.addEventListener('open', r));
@@ -439,16 +452,27 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
     let req;
     try { req = JSON.parse(nip44.v2.decrypt(ev.content, rpcKey)); } catch { return; }
     seen.push(req.method);
+    seenIds.push(req.id);
 
     // The signer's ANSWER. `error` is what nostr-tools rejects with, unwrapped
     // as a bare string — which is exactly what makes it distinguishable from a
     // transport failure, and what scenario 5b turns on.
     let reply;
-    if (answerWithError && req.method !== 'connect' && req.method !== 'get_public_key') {
+    if (denyFirst && denyFirst.method === req.method && denyFirst.left > 0) {
+      denyFirst.left -= 1;
+      reply = { id: req.id, error: denyFirst.error };
+    } else if (answerWithError && req.method !== 'connect' && req.method !== 'get_public_key') {
       reply = { id: req.id, error: answerWithError };
     } else if (req.method === 'connect') reply = { id: req.id, result: 'ack' };
     else if (req.method === 'get_public_key') reply = { id: req.id, result: pk };
     else if (req.method === 'ping') reply = { id: req.id, result: 'pong' };
+    else if (req.method === 'sign_event' && signEnabled) {
+      // A bunker holds the user's key, so it can sign. NIP-46 passes the
+      // template as a JSON string in params[0]; the answer is the finalized
+      // event, also JSON-stringified.
+      try { reply = { id: req.id, result: JSON.stringify(finalizeEvent(JSON.parse(req.params[0]), sk)) }; }
+      catch (e) { reply = { id: req.id, error: String((e && e.message) || e) }; }
+    }
     else if (req.method === 'nip44_decrypt') {
       // A bunker holds the user's key, so it can open a payload encrypted to
       // self. NIP-46 params are [third_party_pubkey, ciphertext]. Answering for
@@ -553,6 +577,82 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   const reloaded = await readMuted();
   check('...and the private mute survived the reload',
     reloaded?.privatePubkeys?.includes(PRIVATE_MUTE), true);
+
+  console.log('\n  5d. a QUEUED approval is asked again, on a NEW request id');
+  // THE CLAVE SHAPE, and the only automated proof of it there can be.
+  // lib/nostr/bunker.ts imports nostr-tools and touches browser globals, so it
+  // will never load under `node --experimental-strip-types` and can never have
+  // a check:* script — the predicate it branches on (lib/nostr/nip46-errors.ts)
+  // is pinned by check:nip46error, but the RE-ISSUE is only observable here.
+  //
+  // Driven straight at `window.nostr` rather than through a UI toggle. The unit
+  // under test is adaptToWindowNostr -> withApprovalWait, and going through the
+  // mute publisher would add a debounce, a relay read and a merge between the
+  // assertion and the thing it is asserting about.
+  //
+  // Clave answers `permission denied` and then, once the user approves, sends
+  // the real result on the SAME id — which nostr-tools 2.19.4 has already
+  // deleted the listener for (`delete listeners[id]` right after
+  // `handler.reject`). So the only way through is a fresh request, and that is
+  // what the id assertion below is really checking.
+  answerWithError = null;
+  seen.length = 0;
+  seenIds.length = 0;
+  signEnabled = true;
+  denyFirst = { method: 'sign_event', left: 1, error: 'permission denied' };
+
+  const signStart = Date.now();
+  const signed = await js(`(async () => {
+    try {
+      const ev = await window.nostr.signEvent({ kind: 1, created_at: 1700000000, tags: [], content: 'clave retry probe' });
+      return JSON.stringify({ ok: true, id: ev.id, pubkey: ev.pubkey, created_at: ev.created_at });
+    } catch (e) { return JSON.stringify({ ok: false, err: String(e) }); }
+  })()`);
+  const signRes = JSON.parse(signed);
+  const signMs = Date.now() - signStart;
+
+  check('the denied signature still came back', signRes.ok, true);
+  check('...signed by the account\'s own key', signRes.pubkey, pk);
+  // The whole point: re-issuing must not disturb the template. A signer that
+  // re-stamped created_at would produce a different event than the one the
+  // caller built, which is the assumption every publisher in lib/nostr rests on.
+  check('...over the template we handed in, unaltered', signRes.created_at, 1700000000);
+  const signRequests = seen.filter((m) => m === 'sign_event');
+  check('the request was issued twice', signRequests.length, 2);
+  const signIds = seenIds.filter((_, i) => seen[i] === 'sign_event');
+  check('...on two DIFFERENT request ids', signIds[0] !== signIds[1], true);
+  // BUNKER_APPROVAL_RETRY_MS is 8 s. Anything much faster means the retry did
+  // not sleep and would hammer the signer's approval queue.
+  check('...with the retry interval actually waited out', signMs >= 7000, true);
+  const stillOk = await js(`/signer disconnected/i.test(document.body.innerText)`);
+  check('a queued approval is not reported as a disconnect', stillOk, false);
+
+  console.log('\n  5e. a terminal refusal is NOT retried — it fails fast');
+  // The over-match direction, which is the expensive one: a signer that means
+  // "no" must not be asked eleven more times over ninety seconds. Only the five
+  // approval-pending phrasings may loop; everything else propagates at once.
+  seen.length = 0;
+  seenIds.length = 0;
+  denyFirst = { method: 'sign_event', left: 1, error: 'user rejected the request' };
+
+  const refusedStart = Date.now();
+  const refused = await js(`(async () => {
+    try { await window.nostr.signEvent({ kind: 1, created_at: 1700000001, tags: [], content: 'x' }); return 'resolved'; }
+    catch (e) { return 'rejected:' + String(e); }
+  })()`);
+  const refusedMs = Date.now() - refusedStart;
+
+  check('a refusal reaches the caller', String(refused).startsWith('rejected:'), true);
+  check('...carrying the signer\'s own words', /user rejected the request/.test(String(refused)), true);
+  check('...after exactly one request', seen.filter((m) => m === 'sign_event').length, 1);
+  check('...and without waiting out the approval interval', refusedMs < 5000, true);
+
+  // Deliberately NOT asserted: the give-up path at the end of the budget. A stub
+  // that never relents costs 90 s of wall clock here, and adding a test-only
+  // backdoor to the budget in a module on the money path is worse than leaving
+  // that bound to review.
+  denyFirst = null;
+  signEnabled = false;
 
   relayWs.close();
 }
