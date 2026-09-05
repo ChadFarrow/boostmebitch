@@ -44,6 +44,63 @@ function captureOriginal() {
   }
 }
 
+/**
+ * Point `window.nostr` at a polyfill, or say honestly that we could not.
+ *
+ * A PLAIN ASSIGNMENT IS NOT ENOUGH, and the failure it produces is one of the
+ * worst-shaped in the app. Several NIP-07 extensions install their provider
+ * with `Object.defineProperty(window, 'nostr', { … writable: false })` or as a
+ * getter with no setter. Assigning to that from module code — which is strict
+ * mode — throws `TypeError: "nostr" is read-only`.
+ *
+ * Reported from a desktop with an extension installed: the user scanned the QR,
+ * **Clave paired successfully**, the ack came back, `get_public_key` answered
+ * — and then `activateBunkerSigner` threw on the very last line, so the
+ * rejection surfaced under the QR as the raw words *"nostr" is read-only* and
+ * the app stayed signed out. Everything that matters had already worked. It is
+ * not Clave-specific and not new: every signer this module installs — Amber,
+ * bunker, local key — ended in the same bare assignment, so on such a browser
+ * NO remote or local sign-in could ever complete.
+ *
+ * `defineProperty` is the fix for the common case, because an extension that
+ * makes the property non-WRITABLE usually leaves it CONFIGURABLE. It is not
+ * more invasive than what the assignment was already trying to do: the
+ * descriptor written here is writable and configurable, so nothing is locked
+ * down on the extension's behalf, and `deactivate*` still restores whatever
+ * `captureOriginal` saved.
+ *
+ * Returns false only when the property is non-configurable too — genuinely
+ * nothing this page can do. Callers that are INSTALLING must turn that into a
+ * clear error; callers that are RESTORING on the way out ignore it, because a
+ * sign-out that cannot put the extension back must still sign the user out.
+ */
+function setWindowNostr(value: Window['nostr']): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    window.nostr = value;
+    if (window.nostr === value) return true;
+  } catch {
+    // Non-writable in strict mode throws; a sloppy-mode no-op is caught by the
+    // identity check above. Either way, fall through to defineProperty.
+  }
+  try {
+    Object.defineProperty(window, 'nostr', {
+      value,
+      writable: true,
+      configurable: true,
+      enumerable: true,
+    });
+    return window.nostr === value;
+  } catch {
+    return false;
+  }
+}
+
+/** The message a user can act on, for the one case `setWindowNostr` cannot fix. */
+const NOSTR_LOCKED =
+  'A browser extension has locked window.nostr on this page, so another signer '
+  + 'cannot be installed. Sign in with that extension instead, or disable it and reload.';
+
 export function activateAmberSigner(pubkey?: string): AmberSigner {
   if (typeof window === 'undefined') {
     throw new Error('Amber signer requires a browser environment');
@@ -58,7 +115,10 @@ export function activateAmberSigner(pubkey?: string): AmberSigner {
   localInstance = null;
   amberInstance = new AmberSigner(pubkey);
   // Cast: AmberSigner satisfies the structural shape declared in auth.ts.
-  window.nostr = amberInstance as unknown as Window['nostr'];
+  if (!setWindowNostr(amberInstance as unknown as Window['nostr'])) {
+    amberInstance = null;
+    throw new Error(NOSTR_LOCKED);
+  }
   return amberInstance;
 }
 
@@ -66,7 +126,9 @@ export function deactivateAmberSigner() {
   if (typeof window === 'undefined') return;
   amberInstance = null;
   if (originalCaptured) {
-    window.nostr = originalWindowNostr;
+    // Best-effort: a sign-out that cannot put the extension back must still
+    // sign the user out.
+    setWindowNostr(originalWindowNostr);
   }
 }
 
@@ -120,7 +182,10 @@ export function activateBunkerSigner(adapter: BunkerAdapter) {
   amberInstance = null;
   localInstance = null;
   bunkerInstance = adapter;
-  window.nostr = adapter.nostrApi;
+  if (!setWindowNostr(adapter.nostrApi)) {
+    bunkerInstance = null;
+    throw new Error(NOSTR_LOCKED);
+  }
 }
 
 /**
@@ -149,7 +214,7 @@ export function revokeBunkerSession() {
   const adapter = bunkerInstance;
   bunkerInstance = null;
   if (typeof window !== 'undefined' && originalCaptured) {
-    window.nostr = originalWindowNostr;
+    setWindowNostr(originalWindowNostr);
   }
   if (!adapter) return;
   void sendBunkerLogout(adapter).finally(() => {
@@ -166,7 +231,9 @@ export function deactivateBunkerSigner() {
   closeBunkerTransport();
   bunkerInstance = null;
   if (originalCaptured) {
-    window.nostr = originalWindowNostr;
+    // Best-effort: a sign-out that cannot put the extension back must still
+    // sign the user out.
+    setWindowNostr(originalWindowNostr);
   }
 }
 
@@ -197,7 +264,10 @@ export function activateLocalSigner(skHex: string): LocalSigner {
   // runtime, so assigning the instance would put the raw secret key on
   // window.nostr.sk for any script on this origin. Mirrors the bunker's
   // adapter.nostrApi above. See the comment on LocalSigner.nostrApi.
-  window.nostr = localInstance.nostrApi as unknown as Window['nostr'];
+  if (!setWindowNostr(localInstance.nostrApi as unknown as Window['nostr'])) {
+    localInstance = null;
+    throw new Error(NOSTR_LOCKED);
+  }
   return localInstance;
 }
 
@@ -205,7 +275,9 @@ export function deactivateLocalSigner() {
   if (typeof window === 'undefined') return;
   localInstance = null;
   if (originalCaptured) {
-    window.nostr = originalWindowNostr;
+    // Best-effort: a sign-out that cannot put the extension back must still
+    // sign the user out.
+    setWindowNostr(originalWindowNostr);
   }
 }
 
