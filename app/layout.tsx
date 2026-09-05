@@ -35,6 +35,7 @@ const jetbrainsMono = JetBrains_Mono({
 import { ServiceWorkerRegister } from '@/components/sw-register';
 import { Player } from '@/components/player';
 import { TabBar } from '@/components/tab-bar';
+import { WalletModalHost } from '@/components/wallet-modal-host';
 import { FavoritesPrivacyPrompt } from '@/components/favorites-privacy';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { BRAND, siteTitle } from '@/lib/brand';
@@ -321,6 +322,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             Outside the Player boundary on purpose: losing playback should not
             also lose the way to /favorites. */}
         <TabBar />
+        {/* Renders <WalletModal> whenever `walletOpen` is set. In the layout so the
+            tab bar's Wallet tab works on every route, not only the three that
+            render <AppHeader> — see the file for the dead-control failure this
+            avoids. */}
+        <WalletModalHost />
         {/* Mounted in the LAYOUT, beside <Player>, and not in <AppHeader>.
             `onFavoritesModeNeeded` is a single module-level slot that only
             exists while the component registering it is mounted, and
