@@ -77,7 +77,6 @@ export function SignInModal({
   // Lazy initializer, like `android` above: this is read once, on the client,
   // and the deferral is what keeps `navigator` off the server render.
   const [ios] = useState(() => isLikelyIOS());
-  const [tab, setTab] = useState<Tab>(() => (hasExt ? 'extension' : 'remote'));
   // Google onboarding is a SEPARATE path, not a Nostr sign-in method: it mints
   // a key for someone who has none. So it is reachable ONLY by opening this
   // modal with signInIntent === 'google' (the header dropdown lists it as a
@@ -97,6 +96,30 @@ export function SignInModal({
   // missing: subscribe to the same pairing, show the waiting state, and own the
   // retry. Read once, never subscribed, for the same reason `googleOpen` is.
   const [claveIntent] = useState(() => useApp.getState().signInIntent === 'clave');
+
+  // WHICH VIEW THIS OPENS ON IS A CORRECTNESS QUESTION, not a preference, and
+  // deciding it on `hasExt` alone was a bug reported from an iPhone. Tapping
+  // "Sign in with Clave" launches Clave inside the header row's own click and
+  // opens this modal with the intent set — so a pairing is already in flight
+  // when it mounts. It opened on the Browser Extension tab anyway: Clave showed
+  // "Approve Connection" while this showed "Connect with extension", and the
+  // user had to find the Remote Signer tab themselves before the flow they had
+  // already started could report anything.
+  //
+  // It is not merely cosmetic, which is why the intent outranks the extension
+  // check rather than sitting beside it. EVERY return-from-the-signer effect
+  // below bails on `tab !== 'remote'`, so on the wrong tab the ack that lands
+  // on the way back from Clave has nothing listening for it and the handshake
+  // never completes — the failure the tab strip was hiding, not just the state.
+  //
+  // `hasPendingNostrConnect()` is the same defect one step removed: a pairing
+  // this tab LOST (a navigation, a reload) is resumed by the effect below
+  // whatever tab is showing, so the tab showing has to be the one that can
+  // report it.
+  const [tab, setTab] = useState<Tab>(() => {
+    if (claveIntent || hasPendingNostrConnect()) return 'remote';
+    return hasExt ? 'extension' : 'remote';
+  });
 
   // Browser-extension flow.
   const [extBusy, setExtBusy] = useState(false);
