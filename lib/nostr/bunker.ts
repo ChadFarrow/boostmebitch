@@ -604,6 +604,7 @@ export async function connectBunkerFromUri(
 export function clearPendingBunkerAttempts(): void {
   pendingClientSks.clear();
   nostrconnectMemo = null;
+  storage.ncPending.clear();
   // The Clave handoff shadows that memo — it records which URI has already been
   // handed to the app. Dropping one without the other leaves the next session
   // believing it already launched for a URI that no longer exists, so the deep
@@ -672,8 +673,47 @@ export function nostrConnectUri(): string {
   return ensureNostrConnectMemo().uri;
 }
 
+/** Is there a pairing this device was in the middle of, still inside its TTL?
+ *  Read WITHOUT creating one — the sign-in modal uses it to decide whether to
+ *  resume a handshake the page lost, and asking must not manufacture the thing
+ *  it is asking about. */
+export function hasPendingNostrConnect(): boolean {
+  if (nostrconnectMemo) return true;
+  const saved = storage.ncPending.get();
+  return !!saved && Date.now() - saved.ts < NC_PENDING_TTL_MS;
+}
+
+// How long a pairing stays resumable across a page load. Deliberately longer
+// than NOSTRCONNECT_TIMEOUT_MS: the promise giving up is not the same event as
+// the pairing becoming unusable, and after a navigation the user needs time to
+// come back and press "again". Same distinction AMBER_PENDING_TTL_MS draws.
+const NC_PENDING_TTL_MS = 10 * 60_000;
+
 function ensureNostrConnectMemo(): { uri: string; clientSk: Uint8Array; secret: string } {
   if (nostrconnectMemo) return nostrconnectMemo;
+  // RESUME A PAIRING THIS TAB HAS LOST. Module state dies with the document,
+  // and handing the URI to a signer app can navigate the tab — measured on an
+  // iPhone, where Clave ended up holding an approved connection the page knew
+  // nothing about. Reusing the persisted clientSk is what lets the signer
+  // recognise an already-approved client and re-ack without a second approval;
+  // minting a fresh one here would make that recovery impossible.
+  const saved = storage.ncPending.get();
+  if (saved && Date.now() - saved.ts < NC_PENDING_TTL_MS) {
+    try {
+      const restored = {
+        uri: saved.uri,
+        clientSk: hexToBytes(saved.clientSk),
+        // The secret only matters for verifying the ack we already missed; the
+        // URI carries the one the signer will echo, so an empty value here is
+        // never compared against anything.
+        secret: '',
+      };
+      nostrconnectMemo = restored;
+      return restored;
+    } catch {
+      storage.ncPending.clear();
+    }
+  }
   const clientSk = generateSecretKey();
   const clientPubkey = getPublicKey(clientSk);
   // Random secret echoes back from the bunker's "connect" reply so we know
@@ -700,6 +740,7 @@ function ensureNostrConnectMemo(): { uri: string; clientSk: Uint8Array; secret: 
     name: BRAND.wireName,
   });
   nostrconnectMemo = { uri, clientSk, secret };
+  storage.ncPending.set({ uri, clientSk: bytesToHex(clientSk), ts: Date.now() });
   return nostrconnectMemo;
 }
 
@@ -739,6 +780,7 @@ export function startNostrConnect(
       throw e;
     }
     nostrconnectMemo = null;
+    storage.ncPending.clear();
     return {
       inner: signer,
       pool,

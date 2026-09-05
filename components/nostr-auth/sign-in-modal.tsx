@@ -21,6 +21,7 @@ import {
   clearClaveHandoff,
   looksLikeBunkerInput,
   nostrConnectUri,
+  hasPendingNostrConnect,
   CLAVE_APP_STORE_URL,
   CLAVE_OPEN_URL,
   type NostrIdentity,
@@ -308,15 +309,16 @@ export function SignInModal({
       // re-subscribes without sending the user back to an app they have already
       // approved in.
       //
-      // The Universal Link is the primary: no "Open in Clave?" sheet, and a
-      // visible landing page rather than silence when the app is absent. The
-      // custom scheme stays reachable from the control below it, for the one
-      // failure this cannot report — see lib/nostr/clave.ts.
+      // The custom scheme is the primary because it NEVER NAVIGATES THIS TAB.
+      // Outside Safari a Universal Link loads clave.casa instead of opening the
+      // app, and that reload takes this subscription with it — measured on
+      // Brave, where Clave ended up holding an approved connection the page knew
+      // nothing about. The Universal Link is the labelled recovery below.
       claveUriRef.current = uri;
       // `launch` first: NOTHING may navigate to an app without a gesture behind
       // it. The claim then keeps a second TAP from re-opening an app the user is
       // already standing in.
-      if (launch && claimClaveHandoff(uri)) openAppLink(claveUniversalLink(uri));
+      if (launch && claimClaveHandoff(uri)) openAppLink(claveOpenLink(uri));
       const id = await ready;
       // A SUCCESS FROM ANY ATTEMPT COUNTS, and this deliberately does not ask
       // isCurrent(). The newest-attempt rule is right for reporting an error —
@@ -396,19 +398,22 @@ export function SignInModal({
   }
 
   /**
-   * Retry the launch through the CUSTOM SCHEME instead of the Universal Link.
+   * Hand the pairing over through clave.casa instead of the app scheme.
    *
-   * The failure this exists for is invisible from here and has no other cure:
-   * tapping the "clave.casa" breadcrumb in Safari's top-right once tells iOS to
-   * stop routing that domain to the app, permanently and with no UI to undo it.
-   * The page cannot detect it — the Universal Link simply renders a web page —
-   * so the user is the only one who can say "it opened a website, not the app".
-   * `clave://` is unaffected by that setting.
+   * Two failures look like silence from here and neither is detectable: Clave
+   * is not installed, or nothing in this browser will dispatch the scheme.
+   * clave.casa answers both — it opens the app when it can and shows an install
+   * page when it cannot.
+   *
+   * Second choice because it NAVIGATES: outside Safari the tab really does load
+   * that page, and the pairing this document is waiting on dies with the
+   * document. Survivable now — `storage.ncPending` lets the same client key be
+   * resumed after a reload — but survivable is not free, so it is offered
+   * rather than taken.
    */
-  function onOpenClaveScheme() {
-    const uri = claveUriRef.current;
-    if (!uri) return;
-    openAppLink(claveOpenLink(uri));
+  function onOpenClaveWeb() {
+    const uri = claveUriRef.current ?? nostrConnectUri();
+    openAppLink(claveUniversalLink(uri));
   }
 
   /**
@@ -573,9 +578,16 @@ export function SignInModal({
     // `ios` as well as the intent: the box that reports this attempt only
     // renders on iOS, so without it a stray intent would leave a request in
     // flight with no screen attached to it — busy state nobody can see or cancel.
-    if (!claveIntent || !ios) return;
-    // The header row already navigated, inside its own click. This effect runs
-    // in a later task with no activation left, so it must never navigate again.
+    if (!ios) return;
+    // RESUME A PAIRING THIS TAB LOST, not just the header row's handshake.
+    // Handing the URI to a signer can navigate the tab away — a Universal Link
+    // does exactly that outside Safari — and coming back loads a fresh
+    // document with no subscription. `storage.ncPending` survives that, so an
+    // unfinished pairing gets its listener back instead of the user finding a
+    // dead "Sign in" page while the signer believes it is connected.
+    if (!claveIntent && !hasPendingNostrConnect()) return;
+    // Never navigates: the header row already did, inside its own click, and
+    // this effect runs in a later task with no activation left.
     onClaveConnect({ launch: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [claveIntent, ios]);
@@ -781,14 +793,14 @@ export function SignInModal({
                       {claveSlow && claveBusy && (
                         <div className="flex flex-col items-start gap-1">
                           <span className="text-[11px] text-muted">
-                            Still nothing? If a web page opened instead of the app,
-                            try the direct link:
+                            Still nothing? Clave may not be installed, or this
+                            browser may not be handing it the link.
                           </span>
                           <button
-                            onClick={onOpenClaveScheme}
+                            onClick={onOpenClaveWeb}
                             className="btn-ghost text-[10px] py-1 px-2"
                           >
-                            Open the Clave app directly
+                            Try via clave.casa
                           </button>
                           <span className="text-[11px] text-muted">
                             Don&apos;t have Clave?{' '}
@@ -830,10 +842,10 @@ export function SignInModal({
                                 them away a second time. This is the way out of
                                 that loop. */}
                             <button
-                              onClick={onOpenClaveScheme}
+                              onClick={onOpenClaveWeb}
                               className="btn-ghost text-[10px] py-1 px-2"
                             >
-                              Opened a web page? Open the app
+                              Nothing opened? Try via clave.casa
                             </button>
                           </div>
                         </div>

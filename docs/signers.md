@@ -129,6 +129,64 @@ rests on the exact `2.19.4` pin above. If that ever moves, re-read `nip46.js` by
 hand: a version that wraps `o.error` in an `Error` reverts this silently rather
 than breaking loudly.
 
+### A pairing the page loses is one the signer thinks succeeded
+
+Reported from an iPhone on Brave, and it is the failure that matters most
+because **nothing on either screen says anything is wrong**: Clave listed
+BoostMeBitch as a connected client, permission **Full**, last seen 34 s ago —
+while the page sat on "Sign in".
+
+The pairing had completed on Clave's side only. Handing the URI over navigated
+the tab, so by the time the user came back the document had been replaced:
+module state gone, subscription gone, and the signer's ack delivered to nobody.
+kind:24133 is ephemeral, so nothing can replay it.
+
+**Two fixes, because one of them alone leaves the hole open.**
+
+**1. Do not navigate.** `clave://` is the primary launcher again — see the
+reversal below. A tab that survives the app switch keeps the subscription the
+ack is addressed to, which is the whole game.
+
+**2. Make the pairing survive a tab that dies anyway.** `storage.ncPending`
+persists `{ uri, clientSk, ts }` for ten minutes, and `ensureNostrConnectMemo`
+restores it rather than minting a new pairing. It does **not** recover the
+missed ack — it recovers the ability to *ask again*: the same client key means
+the signer recognises an already-approved client and re-acks without a second
+approval. The sign-in modal resumes such a pairing on open, `launch: false`, so
+a user who comes back finds a live listener instead of a dead page.
+
+Verified under an iPhone UA: the pairing persists while waiting, survives a
+full reload byte-identically, and the modal picks the handshake back up on its
+own without re-launching the app.
+
+### The launcher, reversed twice — and why both reversals were right
+
+`clave://` → Universal Link → `clave://`. Worth writing down, because each
+change was driven by evidence that was correct about the case it came from.
+
+- **`clave://` first**, on the reasoning that a Universal Link ships the pairing
+  URI to a third-party origin. That privacy argument was overstated, and it was
+  never measured.
+- **Universal Link**, after Conduit (github.com/Conduit-BTC) — who verify on a
+  **physical iPhone, in Safari**, that it opens the app on the first tap with no
+  confirmation sheet. True, and still true.
+- **`clave://` again**, after a report from **Brave**. Third-party iOS browsers
+  render in a `WKWebView`, which does not route universal links to apps the way
+  Safari does, so the tab loads clave.casa instead — and takes the pairing with
+  it.
+
+**The resolution is not "Conduit was wrong".** It is that a Universal Link's
+behaviour depends on the browser, and this app cannot assume Safari. The custom
+scheme has one property that holds in every iOS browser: **it never navigates
+this tab.** That is worth more than the confirmation sheet it costs in Safari,
+because the sheet is a tap and the navigation is a lost sign-in.
+
+The Universal Link stays as the labelled recovery, where navigating away is the
+point: it is also Clave's install page, so it answers both silences a custom
+scheme can produce — the app is missing, or this browser will not dispatch the
+scheme. Neither is detectable from the page, which is why both are offered
+rather than guessed between.
+
 ### Coming back from the signer must never re-launch it — measured on a real iPhone
 
 Reported from an iPhone running **Brave**: tap "Sign in with Clave", approve in

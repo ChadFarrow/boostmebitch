@@ -96,14 +96,22 @@ export function claveUniversalLink(uri: string): string {
 }
 
 /**
- * The custom scheme — kept as the SECOND way in, not as dead code.
+ * THE PRIMARY WAY IN: Clave's custom scheme.
  *
- * A Universal Link can be switched off by the user without their realising it:
- * tap the "clave.casa" breadcrumb in the top-right once and iOS remembers the
- * choice, opening the web page for that domain from then on. There is no UI to
- * undo it and nothing on the page can detect it. `clave://` is unaffected,
- * which makes it the recovery for the one failure the primary cannot report —
- * hence the "opened a web page instead?" control in the sign-in modal.
+ * It wins for one property the Universal Link cannot offer outside Safari: it
+ * **never navigates this tab**. The page, its module state and the subscription
+ * the signer's ack is addressed to all survive the app switch, which is the
+ * whole game — a pairing whose ack lands on a destroyed subscription is one the
+ * signer thinks succeeded and the page has no way to learn about.
+ *
+ * It works in every iOS browser, Safari and `WKWebView` alike, PROVIDED a user
+ * gesture is behind it. Without one iOS refuses the navigation and Brave
+ * reports *"Cannot Open Page … invalid address"* — measured, and the reason
+ * `onClaveConnect` takes a `launch` flag that only tap handlers may set.
+ *
+ * Its own failure mode is silence: an unregistered scheme does nothing
+ * observable, which is what the sign-in modal's timed hint and the Universal
+ * Link above are for.
  *
  * The shape is Clave's, verified against its reference web client
  * (DocNR/clave-casa, `src/lib/connect-inbound.ts` and the unit tests beside
