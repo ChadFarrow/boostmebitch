@@ -64,32 +64,42 @@ export const CLAVE_RELAY = 'wss://relay.powr.build/';
 
 
 /**
- * THE PRIMARY WAY IN: Clave's Universal Link.
+ * Clave's Universal Link — the SECOND way in, and it must be rendered as a real
+ * anchor. It was the primary for one commit; a field report moved it back.
  *
- * Both this and `claveOpenLink` below hand the app the same pairing URI; the
- * difference is what iOS does with them, and it is not a wash.
+ * **A UNIVERSAL LINK ONLY OPENS THE APP FROM A GENUINE TAP ON A REAL ANCHOR.**
+ * iOS does not hand a *programmatic* navigation to an app: a scripted
+ * `location.href = …`, or the synthesised `a.click()` inside
+ * `lib/app-link.ts`, is treated as an ordinary https navigation and the web
+ * page loads. Apple documents this, and it holds in SAFARI too — it is not a
+ * third-party-browser quirk.
  *
- * A Universal Link is Apple's own mechanism. iOS resolves it against the
- * app's cached `apple-app-site-association` and opens Clave directly — no
- * "Open in Clave?" confirmation sheet, which a custom scheme does show, and no
- * silent nothing when the app is absent. **Conduit** (github.com/Conduit-BTC,
- * `conduit-mono`) ships this form and verifies on a physical iPhone that the
- * app launches on the first tap with no intermediate QR or tab step; that is a
- * measurement, which is more than this repo has for the custom scheme.
+ * That is exactly what broke it, measured in Safari on an iPhone: dispatched
+ * through `openAppLink`, this link navigated the tab to clave.casa. The user
+ * paired from that page, so Clave listed BoostMeBitch as a connected client
+ * with Full permission — while the original document, its module state and the
+ * subscription the ack was addressed to had all died with the navigation.
+ * kind:24133 is ephemeral, so that ack was unrecoverable.
  *
- * ITS FAILURE MODE IS A NAVIGATION, and that is the honest cost. With Clave not
- * installed the tab goes to clave.casa's install page instead of doing nothing,
- * so this page — and the subscription waiting on the pairing — is gone. That is
- * acceptable *because* of when it happens: with no signer installed there is
- * nobody to approve the pairing, so nothing of value was lost.
+ * Conduit (github.com/Conduit-BTC) verify this form opening the app on the
+ * first tap on a physical iPhone, and there is no contradiction with the above:
+ * their control IS an `<a href>` the user taps. Ours was a scripted click —
+ * a different thing wearing the same URL.
  *
- * THE PRIVACY OBJECTION IS REAL BUT SMALLER THAN IT LOOKS, and this file used
- * to overstate it. Yes, the URI carries the ephemeral client pubkey and the
- * connect secret. But when Clave IS installed iOS routes the link from the
- * cached association without fetching anything, so nothing leaves the device on
- * the path that matters; the URI reaches clave.casa's logs only in the case
- * where it is already worthless. The secret proves a pairing, not a key — it
- * cannot sign — and it expires with `NOSTRCONNECT_TIMEOUT_MS`.
+ * So: **never pass this to `openAppLink`.** It cannot work, and it fails by
+ * silently navigating rather than by doing nothing. Reach it only from an
+ * anchor in the DOM, which is what the sign-in modal's clave.casa control is.
+ * Rendered that way it serves both silences a custom scheme can produce — the
+ * app is missing, or this browser will not dispatch the scheme — because
+ * clave.casa opens the app when it can and shows an install page when it
+ * cannot.
+ *
+ * THE PRIVACY NOTE, kept because it is still the right size: the URI carries
+ * the ephemeral client pubkey and the connect secret. Where iOS routes the link
+ * from the cached association nothing is fetched at all; otherwise it reaches
+ * clave.casa, which is Clave's own origin and the party the pairing is with.
+ * The secret proves a pairing, not a key — it cannot sign — and it dies with
+ * the TTL.
  */
 export function claveUniversalLink(uri: string): string {
   return `https://clave.casa/connect/?uri=${encodeURIComponent(uri)}`;
@@ -104,8 +114,10 @@ export function claveUniversalLink(uri: string): string {
  * whole game — a pairing whose ack lands on a destroyed subscription is one the
  * signer thinks succeeded and the page has no way to learn about.
  *
- * It works in every iOS browser, Safari and `WKWebView` alike, PROVIDED a user
- * gesture is behind it. Without one iOS refuses the navigation and Brave
+ * Unlike a Universal Link it DOES work from a scripted `a.click()`, which is
+ * what lets one code path serve the header row — which has to build the URI
+ * inside its own click — and the modal button alike. It still needs a user
+ * gesture in the call stack: without one iOS refuses the navigation and Brave
  * reports *"Cannot Open Page … invalid address"* — measured, and the reason
  * `onClaveConnect` takes a `launch` flag that only tap handlers may set.
  *

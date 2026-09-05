@@ -398,22 +398,38 @@ export function SignInModal({
   }
 
   /**
-   * Hand the pairing over through clave.casa instead of the app scheme.
+   * Hand the pairing over through clave.casa.
    *
-   * Two failures look like silence from here and neither is detectable: Clave
-   * is not installed, or nothing in this browser will dispatch the scheme.
-   * clave.casa answers both — it opens the app when it can and shows an install
-   * page when it cannot.
+   * IT IS AN ANCHOR, NOT A BUTTON, and that is the whole reason it can work.
+   * iOS opens a Universal Link in the app only for a genuine tap on a real
+   * link; a scripted `a.click()` — which is what `openAppLink` does, and what
+   * this control used to do — is treated as an ordinary navigation and loads
+   * the web page instead. Measured in Safari. So this must stay markup the user
+   * presses, and must never be routed through `openAppLink`.
    *
-   * Second choice because it NAVIGATES: outside Safari the tab really does load
-   * that page, and the pairing this document is waiting on dies with the
-   * document. Survivable now — `storage.ncPending` lets the same client key be
-   * resumed after a reload — but survivable is not free, so it is offered
-   * rather than taken.
+   * Rendered this way it answers both silences a custom scheme can produce, and
+   * neither is detectable from the page: Clave is not installed, or nothing here
+   * will dispatch `clave://`. clave.casa opens the app when it can and shows an
+   * install page when it cannot.
+   *
+   * Still the second choice, because when it does NOT reach the app it
+   * navigates, and the pairing this document waits on dies with the document.
+   * Survivable — `storage.ncPending` lets the same client key be resumed — but
+   * survivable is not free, so it is offered rather than taken.
    */
-  function onOpenClaveWeb() {
-    const uri = claveUriRef.current ?? nostrConnectUri();
-    openAppLink(claveUniversalLink(uri));
+  function ClaveWebLink({ label }: { label: string }) {
+    const uri = claveUriRef.current;
+    if (!uri) return null;
+    return (
+      <a
+        href={claveUniversalLink(uri)}
+        target="_self"
+        rel="noopener"
+        className="btn-ghost text-[10px] py-1 px-2 no-underline"
+      >
+        {label}
+      </a>
+    );
   }
 
   /**
@@ -796,12 +812,7 @@ export function SignInModal({
                             Still nothing? Clave may not be installed, or this
                             browser may not be handing it the link.
                           </span>
-                          <button
-                            onClick={onOpenClaveWeb}
-                            className="btn-ghost text-[10px] py-1 px-2"
-                          >
-                            Try via clave.casa
-                          </button>
+                          <ClaveWebLink label="Try via clave.casa" />
                           <span className="text-[11px] text-muted">
                             Don&apos;t have Clave?{' '}
                             <a
@@ -841,12 +852,7 @@ export function SignInModal({
                                 THIS error, and "send again" would only navigate
                                 them away a second time. This is the way out of
                                 that loop. */}
-                            <button
-                              onClick={onOpenClaveWeb}
-                              className="btn-ghost text-[10px] py-1 px-2"
-                            >
-                              Nothing opened? Try via clave.casa
-                            </button>
+                            <ClaveWebLink label="Nothing opened? Try via clave.casa" />
                           </div>
                         </div>
                       )}

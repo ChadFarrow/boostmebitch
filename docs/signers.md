@@ -141,11 +141,22 @@ the tab, so by the time the user came back the document had been replaced:
 module state gone, subscription gone, and the signer's ack delivered to nobody.
 kind:24133 is ephemeral, so nothing can replay it.
 
+**And the reason it navigated is the part worth carrying, because the first
+diagnosis of it was wrong.** This was measured in **Safari**, not a third-party
+browser, so "WKWebView does not route universal links" — the explanation first
+written here — cannot be it. The real rule: **a Universal Link opens the app
+only for a genuine tap on a real anchor.** iOS does not hand a *programmatic*
+navigation to an app, and `openAppLink` fires a synthesised `a.click()`. Apple
+documents this; it holds in Safari; and it is why Conduit's identical URL works
+while ours did not — **their control is an `<a href>` the user taps, ours was a
+scripted click.** Same string, different mechanism.
+
 **Two fixes, because one of them alone leaves the hole open.**
 
 **1. Do not navigate.** `clave://` is the primary launcher again — see the
-reversal below. A tab that survives the app switch keeps the subscription the
-ack is addressed to, which is the whole game.
+reversal below. It reaches the app from the scripted click our launcher has to
+use, and a tab that survives the app switch keeps the subscription the ack is
+addressed to, which is the whole game.
 
 **2. Make the pairing survive a tab that dies anyway.** `storage.ncPending`
 persists `{ uri, clientSk, ts }` for ten minutes, and `ensureNostrConnectMemo`
@@ -170,22 +181,22 @@ change was driven by evidence that was correct about the case it came from.
 - **Universal Link**, after Conduit (github.com/Conduit-BTC) — who verify on a
   **physical iPhone, in Safari**, that it opens the app on the first tap with no
   confirmation sheet. True, and still true.
-- **`clave://` again**, after a report from **Brave**. Third-party iOS browsers
-  render in a `WKWebView`, which does not route universal links to apps the way
-  Safari does, so the tab loads clave.casa instead — and takes the pairing with
-  it.
+- **`clave://` again**, after the Safari report above: dispatched through
+  `openAppLink`'s scripted click, a Universal Link cannot reach the app at all
+  and silently loads clave.casa instead.
 
-**The resolution is not "Conduit was wrong".** It is that a Universal Link's
-behaviour depends on the browser, and this app cannot assume Safari. The custom
-scheme has one property that holds in every iOS browser: **it never navigates
-this tab.** That is worth more than the confirmation sheet it costs in Safari,
-because the sheet is a tap and the navigation is a lost sign-in.
+**The resolution is not "Conduit was wrong".** It is that the URL is only half
+the mechanism — the other half is *how it is dispatched*. A Universal Link needs
+a real anchor and a real tap; a custom scheme works from a scripted click. Our
+launcher is scripted by necessity, because the header row has to build the
+pairing URI inside its own click, so the custom scheme is the one that fits it.
 
-The Universal Link stays as the labelled recovery, where navigating away is the
-point: it is also Clave's install page, so it answers both silences a custom
-scheme can produce — the app is missing, or this browser will not dispatch the
-scheme. Neither is detectable from the page, which is why both are offered
-rather than guessed between.
+The Universal Link stays, rendered the only way it can work: **`<ClaveWebLink>`
+is an `<a href>`, never routed through `openAppLink`.** In that form it answers
+both silences a custom scheme can produce — the app is missing, or this browser
+will not dispatch the scheme — because clave.casa opens the app when it can and
+shows an install page when it cannot. Neither silence is detectable from the
+page, which is why both are offered rather than guessed between.
 
 ### Coming back from the signer must never re-launch it — measured on a real iPhone
 

@@ -549,10 +549,13 @@ export const storage = {
    * iPhone: Clave listed BoostMeBitch as a connected client with Full
    * permission while the page still showed "Sign in". The pairing had
    * succeeded — on Clave's side only. Handing the URI to the app navigated the
-   * tab (a Universal Link inside a WKWebView browser lands on the web page
+   * tab (a scripted click on a Universal Link lands on the web page
    * rather than opening the app), so by the time the user came back the page
    * had reloaded: module state gone, subscription gone, and the ack delivered
-   * to nobody. kind:24133 is ephemeral, so nothing can replay it.
+   * to nobody. kind:24133 is ephemeral, so nothing can replay it. (The tab
+   * navigated because a Universal Link only reaches the app from a real tap on
+   * a real anchor, and the launcher fires a scripted click — see
+   * lib/nostr/clave.ts.)
    *
    * Persisting the pairing does not recover that ack. What it recovers is the
    * ABILITY TO ASK AGAIN: the same client secret key means Clave recognises an
