@@ -114,14 +114,19 @@ export function useFavoritesMode(): { mode: FavoritesPrivacy | null; mounted: bo
 // The segmented control
 // ---------------------------------------------------------------------------
 
+// Square, like every other control on the page. This was a rounded-full pill
+// with a solid yellow active segment — the one rounded shape on a page of
+// right angles, and the yellow made a privacy setting the loudest thing on
+// screen. The active segment is bone-on-ink now (the same ON treatment as
+// `.btn`), a hairline divides the segments, and each is 44px tall on a phone.
 const seg = (on: boolean, disabled: boolean) =>
-  'px-3 py-1.5 text-xs font-semibold uppercase tracking-widest rounded-full transition '
-  + 'min-h-[44px] sm:min-h-0 flex items-center justify-center '
+  'px-3 text-xs font-semibold uppercase tracking-widest transition '
+  + 'h-11 sm:h-9 flex-1 flex items-center justify-center border-l border-bone/30 first:border-l-0 '
   + (disabled
     ? 'text-bone/30 cursor-not-allowed'
     : on
-      ? 'bg-bolt text-ink shadow-sm'
-      : 'text-bone/70 hover:text-bone');
+      ? 'bg-bone text-ink'
+      : 'text-bone/70 hover:text-bone hover:bg-bone/5');
 
 /**
  * The control on /favorites.
@@ -152,7 +157,7 @@ export function FavoritesPrivacyControl() {
           <div
             role="group"
             aria-label="Where your favorites are stored"
-            className="inline-flex items-center gap-0.5 p-0.5 rounded-full border border-bone/15 bg-bone/5"
+            className="flex flex-1 min-w-0 items-stretch border border-bone/30"
           >
             {MODES.map((m) => {
               // Never disable the mode the account is ALREADY in. The gate stops

@@ -25,7 +25,6 @@ import {
   loadEpisodeFromFeed, resolveEpisodeByGuid, resolvePodcastByGuid,
   warmEpisodeCache, warmPodcastCache,
 } from '@/lib/podcast-meta';
-import { Chip } from '@/components/chip';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
@@ -294,13 +293,17 @@ export function FavoritesPage() {
    * feeds, and a chip that filters to an empty section is worse than an absent
    * one.
    */
+  /**
+   * THE SEGMENTS ARE ALWAYS THE WHOLE LIBRARY'S PAIRS, whichever one is
+   * pressed. This used to be two rows — a medium tab strip, and under it a
+   * half row whose contents changed with the tab — and a control that reshapes
+   * when you press it is a control you cannot learn. One row, one shape:
+   * ALL, then every (medium, half) pair that has rows, the same list whether
+   * you are looking at everything or at one pair. Pressing a pair still sets
+   * BOTH `tab` and `split`, so the section headings and nouns below are
+   * unchanged; `half` is still read for those headings.
+   */
   const splitChips = useMemo(() => {
-    if (tab !== 'all') {
-      return [
-        { id: 'feeds', label: half.feeds, tab, split: 'feeds' as const },
-        { id: 'items', label: half.items, tab, split: 'items' as const },
-      ];
-    }
     return [
       ...tabs
         .filter((t) => t.feedCount > 0)
@@ -319,7 +322,7 @@ export function FavoritesPage() {
           split: 'items' as const,
         })),
     ];
-  }, [tabs, tab, half.feeds, half.items]);
+  }, [tabs]);
 
   const showFeeds = split !== 'items';
   const showItems = split !== 'feeds';
@@ -356,7 +359,11 @@ export function FavoritesPage() {
           a column two thirds of the page wide. It is deliberately NOT gated on
           `total`: this reads the relays, so a device holding nothing local can
           still hold the account's list, and the empty branch below is exactly
-          where somebody checking what is stored would look. */}
+          where somebody checking what is stored would look.
+          NOT folded away, either — <PrivateFavoritesTool> inside it exists to
+          make a both-halves state VISIBLE, and a disclosure defaulting closed
+          would undo that (see its comment: deleted as clutter once, restored
+          the same night). */}
       <RelayTools />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
@@ -378,50 +385,62 @@ export function FavoritesPage() {
       ) : (
         <>
           <div className="flex flex-col gap-3">
-            <input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="filter by title, show or artist…"
-              aria-label="Filter favorites"
-              className="input"
-            />
-            <div className="flex flex-wrap items-center gap-2">
-              {/* A tab press clears the half back to EVERYTHING. The two rows
-                  are one filter, and this is the row that names the WIDER of
-                  the two axes — pressing it reads as "show me this medium",
-                  not "show me this medium, still narrowed to whatever half I
-                  was in three clicks ago". Carrying the half over is defensible
-                  and was worse in practice: press SHOWS, then press MUSIC, and
-                  you land on albums with no tracks and nothing on screen
-                  saying a second filter is still on. */}
-              <Chip active={tab === 'all'} onClick={() => update({ tab: 'all', split: 'all' })}>
-                all <span className="opacity-60">{total}</span>
-              </Chip>
-              {tabs.map((t) => (
-                <Chip
-                  key={t.key}
-                  active={tab === t.key}
-                  onClick={() => update({ tab: t.key, split: 'all' })}
-                >
-                  {t.label} <span className="opacity-60">{t.count}</span>
-                </Chip>
-              ))}
+            {/* ONE segmented row: ALL, then a segment per (medium, half) pair
+                the library actually holds — built from `tabs`, the grouper's
+                own output, so there is no hand-written list of media here and
+                `~unknown` gets its own segment like any other. It replaces two
+                rows (medium tabs, then halves) that together held up to ten
+                chips and changed shape when pressed. Square, 44px, scrolls
+                sideways past four segments; `overscroll-x-contain` so the
+                swipe past the end does not become a back-swipe. */}
+            <div role="tablist" className="flex overflow-x-auto overscroll-x-contain border border-bone/30">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={tab === 'all' && split === 'all'}
+                onClick={() => update({ tab: 'all', split: 'all' })}
+                className={`shrink-0 h-11 px-3.5 text-xs uppercase tracking-wider transition ${
+                  tab === 'all' && split === 'all' ? 'bg-bone text-ink' : 'text-muted hover:text-bone'
+                }`}
+              >
+                all <span className="opacity-60 ml-1">{total}</span>
+              </button>
+              {splitChips.map((c) => {
+                const on = tab === c.tab && split === c.split;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={on}
+                    onClick={() => update({ tab: c.tab, split: c.split })}
+                    className={`shrink-0 h-11 px-3.5 text-xs uppercase tracking-wider border-l border-bone/30 transition ${
+                      on ? 'bg-bone text-ink' : 'text-muted hover:text-bone'
+                    }`}
+                  >
+                    {c.label}
+                  </button>
+                );
+              })}
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Chip active={split === 'all'} onClick={() => update({ split: 'all' })}>everything</Chip>
-              {splitChips.map((c) => (
-                <Chip
-                  key={c.id}
-                  active={tab === c.tab && split === c.split}
-                  onClick={() => update({ tab: c.tab, split: c.split })}
-                >
-                  {c.label}
-                </Chip>
-              ))}
-              <span className="ml-auto flex items-center gap-2">
-                <Chip active={view.sort === 'recent'} onClick={() => update({ sort: 'recent' })}>recent</Chip>
-                <Chip active={view.sort === 'az'} onClick={() => update({ sort: 'az' })}>a–z</Chip>
-              </span>
+            <div className="flex items-center gap-2">
+              <input
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="filter by title, show or artist…"
+                aria-label="Filter favorites"
+                className="input h-11 flex-1"
+              />
+              {/* One toggle, not two chips: the sort has exactly two states
+                  and the label names the one you are in. */}
+              <button
+                type="button"
+                onClick={() => update({ sort: view.sort === 'recent' ? 'az' : 'recent' })}
+                className="btn-ghost h-11 shrink-0 text-xs"
+                aria-label={view.sort === 'recent' ? 'Sorted by most recent; switch to A–Z' : 'Sorted A–Z; switch to most recent'}
+              >
+                {view.sort === 'recent' ? 'Recent' : 'A–Z'}
+              </button>
             </div>
           </div>
 
