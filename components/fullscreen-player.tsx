@@ -31,6 +31,7 @@ import {
 } from '@/lib/util';
 import { EpisodeSocialThread } from './episode-social-thread';
 import { LinkedText } from './linked-text';
+import { UnderlineTabs } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
@@ -122,12 +123,6 @@ function EpisodeInfoPanel({
     : chaptersPending ? 'contents'
     : 'transcript';
 
-  const tabCls = (on: boolean) =>
-    `shrink-0 whitespace-nowrap text-xs font-semibold uppercase tracking-widest px-4 py-2 rounded-full transition ${
-      on
-        ? 'bg-bolt text-ink shadow-sm'
-        : 'text-muted hover:text-bone hover:bg-bone/5'
-    }`;
   const label = (t: InfoTab) =>
     t === 'contents' ? contentsLabel
     : t === 'transcript' ? 'Transcript'
@@ -136,18 +131,15 @@ function EpisodeInfoPanel({
   return (
     <div className="border-t border-bone/10 pt-5">
       {showTabs ? (
-        // `overscroll-x-contain` — see the rail in podroll.tsx. It matters more
-        // here than anywhere: this row sits inside a `fixed` overlay, so a
-        // chained swipe drags the overlay itself off the screen.
-        <div className="inline-flex max-w-full overflow-x-auto overscroll-x-contain gap-1 mb-4 p-1 rounded-full border border-bone/15 bg-bone/5">
-          {tabs.map((t) => (
-            <button key={t} type="button" onClick={() => setTab(t)} className={tabCls(active === t)}>
-              {t === 'contents' ? contentsLabel
-                : t === 'transcript' ? 'Transcript'
-                : 'About'}
-            </button>
-          ))}
-        </div>
+        // One strip shared with the episode page — see <UnderlineTabs>. The
+        // tab says "About" where the lone-section label below says "About this
+        // episode": a tab is one word among peers, a label stands alone.
+        <UnderlineTabs
+          className="mb-4"
+          tabs={tabs.map((t) => ({ id: t, label: t === 'about' ? 'About' : label(t) }))}
+          active={active}
+          onChange={setTab}
+        />
       ) : (
         <p className="text-[11px] uppercase tracking-widest text-muted mb-2">{label(active)}</p>
       )}
