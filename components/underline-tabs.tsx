@@ -27,6 +27,12 @@
  * end of this row must not chain to the document or become a back-swipe. It
  * matters most in the fullscreen player, where the row sits inside a `fixed`
  * overlay and a chained swipe drags the overlay itself off the screen.
+ *
+ * NOTHING INSIDE MAY OVERFLOW THE STRIP VERTICALLY. `overflow-x-auto` computes
+ * overflow-y to `auto` — CSS will not give one axis a scroll and leave the
+ * other `visible` — so this row is a vertical scroll container whether or not
+ * anyone wanted one, and a single pixel of overflow is draggable on a
+ * touchscreen. See the active underline below for the pixel that was.
  */
 export type UnderlineTab<T extends string> = { id: T; label: string };
 
@@ -60,9 +66,19 @@ export function UnderlineTabs<T extends string>({
             }`}
           >
             {t.label}
-            {/* -bottom-px so the underline sits ON the container's hairline
-                rather than a pixel above it — the two read as one stroke. */}
-            {on && <span aria-hidden className="absolute left-3.5 right-3.5 -bottom-px h-0.5 bg-bolt" />}
+            {/* `bottom-0`, and it MUST NOT go back to `-bottom-px`.
+                `overflow-x-auto` on the strip computes overflow-y to `auto`
+                (CSS will not give one axis a scroll and leave the other
+                visible), so the strip is a VERTICAL scroll container too — and
+                a bar hanging 1px below the button's content box is 1px of
+                scrollable overflow in it. Measured under Chromium at 390px:
+                scrollHeight 45 against clientHeight 44. One pixel is enough to
+                drag and rubber-band on iOS, which is what made this strip
+                creep up and down under a thumb while the page stayed still.
+                At `bottom-0` the bar sits on the hairline instead of over it —
+                a 2px bolt stroke above a 1px border-bone/15 line, which is the
+                same stroke to look at and no overflow at all. */}
+            {on && <span aria-hidden className="absolute left-3.5 right-3.5 bottom-0 h-0.5 bg-bolt" />}
           </button>
         );
       })}
