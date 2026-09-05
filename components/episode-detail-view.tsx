@@ -1,5 +1,6 @@
 'use client';
-import { cloneElement, useEffect, useRef, useState } from 'react';
+import { cloneElement, useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml } from '@/lib/util';
@@ -95,23 +96,65 @@ export function EpisodeDetailView() {
   const [boostAllFor, setBoostAllFor] = useState<Episode | null>(null);
   const [valueOpen, setValueOpen] = useState(false);
   // The MORE tile's menu — the two actions that are real but rare (boost every
-  // track at once, open the episode's own web page). Dismissed on outside-click
-  // and Escape, same as <AuthControl>'s dropdown.
+  // track at once, open the episode's own web page). Dismissed on
+  // outside-click and Escape, same as <AuthControl>'s dropdown.
+  //
+  // IT PORTALS TO document.body, and that is not a style choice. The layout
+  // wraps {children} in `relative z-0` (app/layout.tsx), which is a stacking
+  // context — so no z-index inside it can rise above the root-level <TabBar>
+  // and mini-bar at z-30, whatever number it carries. Rendered in place at
+  // z-40 the menu opened downward into the dock and its items were painted
+  // over. This is the same reason CLAUDE.md requires modals to portal; a menu
+  // that opens near the bottom of the viewport has the identical problem.
+  //
+  // OUTSIDE-CLICK TESTS BOTH ELEMENTS, and both tests are `?.` rather than a
+  // `ref.current &&` guard. The trigger is CONDITIONALLY rendered — an episode
+  // with no tracks and no `link` has no MORE tile at all — so a guard that
+  // requires the ref to be live turns "the trigger went away" into "do
+  // nothing": `moreOpen` stays true, the effect never re-runs its cleanup, and
+  // both document listeners outlive the menu. Come back to an episode that
+  // does have the tile and it is already open with no gesture.
   const [moreOpen, setMoreOpen] = useState(false);
-  const moreRef = useRef<HTMLDivElement | null>(null);
+  const moreBtnRef = useRef<HTMLButtonElement | null>(null);
+  const moreMenuRef = useRef<HTMLDivElement | null>(null);
+  const [moreAt, setMoreAt] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
+
+  // Measured from the trigger each time, and again on scroll and resize: a
+  // `fixed` element does not follow the page. Below the trigger when there is
+  // room for the two rows, above it otherwise, and the right edge is clamped
+  // to the viewport so the last tile in the row cannot push it off-screen.
+  const placeMore = useCallback(() => {
+    const el = moreBtnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const right = Math.max(8, window.innerWidth - r.right);
+    setMoreAt(
+      window.innerHeight - r.bottom >= 140
+        ? { top: r.bottom + 8, right }
+        : { bottom: window.innerHeight - r.top + 8, right },
+    );
+  }, []);
+
   useEffect(() => {
     if (!moreOpen) return;
+    placeMore();
     function onDown(e: MouseEvent) {
-      if (moreRef.current && !moreRef.current.contains(e.target as Node)) setMoreOpen(false);
+      const t = e.target as Node;
+      if (moreBtnRef.current?.contains(t) || moreMenuRef.current?.contains(t)) return;
+      setMoreOpen(false);
     }
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setMoreOpen(false); }
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
+    window.addEventListener('scroll', placeMore, true);
+    window.addEventListener('resize', placeMore);
     return () => {
       document.removeEventListener('mousedown', onDown);
       document.removeEventListener('keydown', onKey);
+      window.removeEventListener('scroll', placeMore, true);
+      window.removeEventListener('resize', placeMore);
     };
-  }, [moreOpen]);
+  }, [moreOpen, placeMore]);
   // Above the early return below, so hook order stays stable.
   const { button: streamButton, panel: streamPanel } = useStreamPanel(
     podcast,
@@ -140,6 +183,11 @@ export function EpisodeDetailView() {
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
+    // A menu belongs to the episode it was opened on. Closing it here is the
+    // belt to the outside-click brace above: the next episode may have no MORE
+    // tile at all, and an open menu with no trigger is not something the user
+    // can dismiss.
+    setMoreOpen(false);
   }, [episode?.id]);
 
   if (!episode || !podcast) return null;
@@ -333,8 +381,9 @@ export function EpisodeDetailView() {
             </button>
           ) : null}
           {(episode.valueTimeSplits?.length || episodePageUrl) ? (
-            <div ref={moreRef} className="relative">
+            <>
               <button
+                ref={moreBtnRef}
                 type="button"
                 onClick={() => setMoreOpen((v) => !v)}
                 className={`tile ${moreOpen ? 'border-bone bg-bone/5' : ''}`}
@@ -344,8 +393,18 @@ export function EpisodeDetailView() {
               >
                 <span aria-hidden className="text-lg leading-none">⋯</span> MORE
               </button>
-              {moreOpen && (
-                <div role="menu" className="absolute right-0 top-full mt-2 w-64 card bg-ink p-1 z-40 shadow-xl">
+              {/* Portalled and `fixed` — see the state above for why an
+                  in-place z-index cannot clear the dock. z-40 in the ROOT
+                  stacking context, so it is over <TabBar> and the mini-bar
+                  (z-30) and still under <ModalShell> (z-[60]) and the iOS
+                  status strip (z-[70]). */}
+              {moreOpen && moreAt && createPortal(
+                <div
+                  ref={moreMenuRef}
+                  role="menu"
+                  className="fixed w-64 max-w-[calc(100vw-1rem)] card bg-ink p-1 z-40 shadow-xl"
+                  style={{ top: moreAt.top, bottom: moreAt.bottom, right: moreAt.right }}
+                >
                   {episode.valueTimeSplits?.length ? (
                     <button
                       role="menuitem"
@@ -373,9 +432,10 @@ export function EpisodeDetailView() {
                       <span>Open episode page</span>
                     </a>
                   ) : null}
-                </div>
+                </div>,
+                document.body,
               )}
-            </div>
+            </>
           ) : null}
         </div>
 
