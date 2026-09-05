@@ -1254,6 +1254,32 @@ export function SignInModal({
                   </>
                 )}
 
+                {/* The rest drill down, and their pairing is prepared on the way
+                    IN rather than here. Preparing on open was tried on desktop
+                    and reverted: it put a QR and a ~400-character URI on screen
+                    before the user had chosen anything, and opened two relay
+                    sockets for someone who may only have come to paste a
+                    `bunker://`. A method nobody has picked should not hold a
+                    socket. */}
+                {/* SIDECAR REPLACES "NOSTR CONNECT" IN THIS LIST, and dropping
+                    that one is a correction rather than a swap: Nostr Connect is
+                    NIP-46 — the protocol every other row here speaks — not a
+                    browser extension anyone can install, so naming it beside
+                    Alby sent a desktop user looking for a product that does not
+                    exist. Sidecar (sidecar.top) is a real NIP-07 signer: keys
+                    encrypted behind a PIN in the browser's side panel. The row
+                    now names three things a person can actually have. */}
+                {desktop && (
+                  <MethodRow
+                    glyph="⧉"
+                    title="Browser Extension"
+                    subtitle={hasExt
+                      ? 'Alby, nos2x, Sidecar — the fastest way in.'
+                      : 'No extension detected. Install Alby, nos2x or Sidecar, or use a signer below.'}
+                    onClick={onExtension}
+                    disabled={!hasExt || extBusy}
+                  />
+                )}
                 {/* PHONES ONLY. A desktop user pairs Primal by scanning, which
                     the QR row below already is — a launch link there would open
                     nothing, because the app is on the other device. */}
