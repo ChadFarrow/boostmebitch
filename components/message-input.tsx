@@ -18,6 +18,13 @@ import { Avatar } from './avatar';
 /** How long a keystroke waits before the index is asked. */
 const SEARCH_DEBOUNCE_MS = 200;
 
+/** Tallest the candidate list may be when there is room for it. */
+const LIST_MAX_H = 224;
+/** Below this, a side has no usable room — roughly two 44px rows. */
+const LIST_MIN_H = 96;
+/** Breathing room between the list and the edge of the visible viewport. */
+const LIST_GUTTER = 8;
+
 /**
  * The boostagram's character budget, and the default only because the boost
  * modals were this component's only callers first. It is a LIGHTNING limit —
@@ -84,6 +91,9 @@ export function MessageInput({
   const listId = useId();
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(0);
+  // WHERE THE LIST GOES, measured rather than assumed. See the effect below.
+  const [placement, setPlacement] = useState<'below' | 'above'>('below');
+  const [listMaxH, setListMaxH] = useState(LIST_MAX_H);
   const [rows, setRows] = useState<MentionCandidate[]>([]);
   const [indexState, setIndexState] = useState<IndexState>('idle');
   const [active, setActive] = useState(0);
@@ -263,6 +273,64 @@ export function MessageInput({
     else if (e.key === 'Escape') { e.preventDefault(); setDismissed(true); }
   }
 
+  // PUT THE LIST WHERE THERE IS ACTUALLY ROOM, against the VISUAL viewport.
+  //
+  // It hung below the textarea at a fixed 224px, which is fine on a desktop and
+  // wrong on the device this feature is mostly used from. Reported from an
+  // iPhone: the on-screen keyboard covered all but the first row and a sliver
+  // of the second, and `<TabBar>`'s dock took what the keyboard left. Both are
+  // bottom-anchored, so "below the input" is the one place a phone has no space.
+  //
+  // `window.visualViewport` is the part that has to be right. `innerHeight` does
+  // NOT shrink when the iOS keyboard opens — the layout viewport is unchanged
+  // and only the VISUAL one contracts — so measuring against it would compute a
+  // comfortable gap that is entirely underneath the keyboard, which is exactly
+  // the bug. `offsetTop` is included because the visual viewport can also be
+  // scrolled within the layout one.
+  //
+  // It re-measures on `resize` AND `scroll` of that viewport because iOS
+  // ANIMATES the keyboard: the first event arrives with the keyboard part-way
+  // up, so a single measurement settles on a height that is briefly right and
+  // then wrong. That is the "it still moved up for a bit" half.
+  //
+  // NOT THE SAME QUESTION AS `lib/keyboard-inset.ts`, which reads the same API
+  // and should not be folded into this. That module answers "how much of the
+  // layout viewport is covered" and publishes it as `--kb-inset` so a FIXED
+  // dock can park behind the keyboard. This one answers "which side of this
+  // particular input has room for a 224px list", which is a question about an
+  // element's rect and has a different answer for every caller. Sharing the
+  // number would tie a dropdown's placement to a dock's transform.
+  useEffect(() => {
+    if (!open) return;
+    if (typeof window === 'undefined') return;
+    const measure = () => {
+      const el = areaRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const vv = window.visualViewport;
+      const top = vv ? vv.offsetTop : 0;
+      const bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+      const below = bottom - rect.bottom - LIST_GUTTER;
+      const above = rect.top - top - LIST_GUTTER;
+      // Prefer below — it is where a dropdown belongs and where the eye goes —
+      // and flip only when that side genuinely cannot show a usable list AND
+      // the other side is better. A flip that gains nothing is just a jump.
+      const flip = below < LIST_MIN_H && above > below;
+      setPlacement(flip ? 'above' : 'below');
+      setListMaxH(Math.max(LIST_MIN_H, Math.min(LIST_MAX_H, flip ? above : below)));
+    };
+    measure();
+    const vv = window.visualViewport;
+    vv?.addEventListener('resize', measure);
+    vv?.addEventListener('scroll', measure);
+    window.addEventListener('resize', measure);
+    return () => {
+      vv?.removeEventListener('resize', measure);
+      vv?.removeEventListener('scroll', measure);
+      window.removeEventListener('resize', measure);
+    };
+  }, [open, rows.length]);
+
   return (
     <div>
       <label htmlFor={id} className="text-[11px] uppercase tracking-widest text-muted">
@@ -298,7 +366,10 @@ export function MessageInput({
             id={listId}
             role="listbox"
             aria-label="Mention someone"
-            className="absolute z-10 mt-1 max-h-56 w-full overflow-y-auto overscroll-contain rounded border border-line bg-ink shadow-lg"
+            style={{ maxHeight: listMaxH }}
+            className={`absolute z-10 w-full overflow-y-auto overscroll-contain rounded border border-line bg-ink shadow-lg ${
+              placement === 'above' ? 'bottom-full mb-1' : 'top-full mt-1'
+            }`}
           >
             {rows.map((c, i) => (
               <li key={c.pubkey} id={`${listId}-${i}`} role="option" aria-selected={i === active}>

@@ -1,6 +1,23 @@
 import { nip19, type Event, type EventTemplate } from 'nostr-tools';
 import { signAndPublish, type PublishedNote } from './publish';
 import { inlineMentions, noteMentionTags, withMentionRun, type MentionNpub } from './mention-tags';
+import { BRAND } from '../brand';
+
+/**
+ * NIP-89 attribution, the same tag a boost note carries.
+ *
+ * `BRAND.wireName` and never a literal: one repo builds two deploys, and this
+ * string is what a reader — ours and every other client — prints as "via …".
+ * A hard-coded name here is the other brand's word appearing under a reply on
+ * the family-friendly site. `boost-notes.ts` lets a boostagram override it with
+ * its own `app_name`; a reply has no boostagram, so there is nothing to defer
+ * to.
+ *
+ * Worth knowing it is READ BACK: `discover.ts` pulls `client` off an event to
+ * render that line, so a reply gains the attribution in this app's own feed as
+ * well as in other clients.
+ */
+const CLIENT_TAG: string[] = ['client', BRAND.wireName];
 
 /**
  * Turn the sender's picked mentions into `p` tags and inline `nostr:` refs.
@@ -72,6 +89,7 @@ export async function publishReply(args: {
     ['p', parent.pubkey],
     ...pTags,
     ...inheritPodcastTags(parent),
+    CLIENT_TAG,
   ];
 
   const template: EventTemplate = {
@@ -112,6 +130,7 @@ export async function publishQuoteRepost(args: {
     ['p', parent.pubkey],
     ...pTags,
     ...inheritPodcastTags(parent),
+    CLIENT_TAG,
   ];
 
   // The mention pass runs BEFORE the nevent is appended, so a name that happens
@@ -139,9 +158,14 @@ export async function publishRepost(args: {
   const { parent, relays } = args;
   const relayHint = relays[0] ?? '';
 
+  // A kind:6 carries no text of its own, so there is nothing to mention — but it
+  // is still a note this app published, and the attribution belongs on all three
+  // publishers or on none. Leaving one out is how "via BoostMeBitch" comes to
+  // mean "…except when it was a repost".
   const tags: string[][] = [
     ['e', parent.id, relayHint],
     ['p', parent.pubkey],
+    CLIENT_TAG,
   ];
 
   const template: EventTemplate = {

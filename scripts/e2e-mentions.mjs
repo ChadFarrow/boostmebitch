@@ -107,6 +107,7 @@ const relay = createRelay({ port: PORT, log: null, onEvent: (e) => received.push
 const { publishBoostNote, publishBoostNoteViaSite } =
   await import('../lib/nostr/boost-notes.ts');
 const { publishReply } = await import('../lib/nostr/interactions.ts');
+const { BRAND } = await import('../lib/brand.ts');
 
 let fails = 0;
 const check = (l, a, b) => {
@@ -301,6 +302,13 @@ console.log('\n--- 4b. A REPLY carries the sender\'s mentions too ---');
     pTags(e).filter((x) => x === parent.pubkey).length, 1);
   check('the podcast tags are still inherited',
     e?.tags.some((t) => t[0] === 'i' && t[1] === `podcast:guid:${podcast.podcastGuid}`), true);
+  // NIP-89 attribution, the same tag a boost note carries and the one
+  // `discover.ts` reads back to print "via …". Asserted on the wire because it
+  // is per-BRAND: a hard-coded name here would be the other deploy's word under
+  // a reply on the family-friendly site.
+  const clientTag = e?.tags.find((t) => t[0] === 'client');
+  check('the reply is attributed to this client', !!clientTag, true);
+  check('...by the brand wire name, not a literal', clientTag?.[1], BRAND.wireName);
 }
 
 // ===========================================================================
