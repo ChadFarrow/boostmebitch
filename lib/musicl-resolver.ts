@@ -13,8 +13,9 @@
 // the item itself has none.
 
 import type { ValueBlock, ValueRecipient } from './types';
-import { safeFetch, readCappedText } from './safe-fetch';
-import { readAttr } from './feed-xml';
+import { safeFetch } from './safe-fetch';
+import { readCappedText } from './capped-body';
+import { readAttr, findTags, firstTag, findBlocks, firstBlock } from './feed-xml';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 import { mapLimit, FEED_FANOUT } from './util';
@@ -73,10 +74,12 @@ async function fetchFeedXml(url: string): Promise<string | null> {
 // through a second parser. Two copies of an attribute reader is two places to
 // get that wrong; `npm run check:feedxml` pins the one that survives.
 function parseValueRecipients(valueXml: string): ValueRecipient[] {
-  const recRe = /<podcast:valueRecipient\b[^/>]*\/?>/g;
   const recipients: ValueRecipient[] = [];
-  for (const m of valueXml.matchAll(recRe)) {
-    const block = m[0];
+  // `findTags`, not the `[^/>]*` regex this replaced: that one ended the tag at
+  // the first `/`, so a `customValue="a/b"` written BEFORE `address` cut the
+  // address off — a recipient silently dropped by a character inside a quoted
+  // value every other client reads fine. The scanner is quote-aware.
+  for (const { attrs: block } of findTags(valueXml, 'podcast:valueRecipient')) {
     const name = readAttr(block, 'name');
     const typeStr = readAttr(block, 'type');
     const address = readAttr(block, 'address');
@@ -99,14 +102,13 @@ function parseValueRecipients(valueXml: string): ValueRecipient[] {
 }
 
 function extractValueBlock(scopeXml: string): ValueBlock | null {
-  const valMatch = /<podcast:value\b[^>]*>[\s\S]*?<\/podcast:value>/.exec(scopeXml);
-  if (!valMatch) return null;
-  const recipients = parseValueRecipients(valMatch[0]);
+  const block = firstBlock(scopeXml, 'podcast:value');
+  if (!block || block.selfClosing) return null;
+  const recipients = parseValueRecipients(block.inner);
   if (recipients.length === 0) return null;
-  // The OPEN tag only. `valMatch[0]` spans the whole element, so an unanchored
-  // read would happily take a `method=` off a nested <podcast:valueRecipient>.
-  const openTag = /<podcast:value\b[^>]*>/.exec(valMatch[0])?.[0] ?? '';
-  const method = readAttr(openTag, 'method') || 'keysend';
+  // `block.attrs` is the OPEN tag's attributes only, so a `method=` on a nested
+  // <podcast:valueRecipient> cannot be read as the block's.
+  const method = readAttr(block.attrs, 'method') || 'keysend';
   return { type: 'lightning', method, recipients };
 }
 
@@ -117,23 +119,21 @@ interface FoundItem {
 }
 
 function findItemByGuid(xml: string, itemGuid: string): FoundItem | null {
-  // Split on <item> tags. Skip the channel header (slice(1)).
-  const itemChunks = xml.split(/<item\b[^>]*>/).slice(1);
-  for (const chunk of itemChunks) {
-    const closeIdx = chunk.indexOf('</item>');
-    if (closeIdx === -1) continue;
-    const itemXml = chunk.slice(0, closeIdx);
+  for (const item of findBlocks(xml, 'item')) {
+    const itemXml = item.inner;
     // Match guid as the actual <guid> tag content, not a substring elsewhere
-    const guidMatch = /<guid\b[^>]*>([^<]+)<\/guid>/.exec(itemXml);
-    if (!guidMatch || guidMatch[1].trim() !== itemGuid) continue;
-    const titleMatch = /<title>([\s\S]*?)<\/title>/.exec(itemXml);
-    const itunesImg = /<itunes:image\b([^>]*)>/.exec(itemXml);
+    const guid = firstBlock(itemXml, 'guid');
+    if (!guid || guid.inner.trim() !== itemGuid) continue;
+    const title = firstBlock(itemXml, 'title');
+    const itunesImg = firstTag(itemXml, 'itunes:image');
+    const rssImage = firstBlock(itemXml, 'image');
+    const rssImageUrl = rssImage && !rssImage.selfClosing ? firstBlock(rssImage.inner, 'url') : undefined;
     const image =
-      (itunesImg ? readAttr(itunesImg[1], 'href') : undefined)
-      ?? /<image>[\s\S]*?<url>([^<]+)<\/url>/.exec(itemXml)?.[1];
+      (itunesImg ? readAttr(itunesImg.attrs, 'href') : undefined)
+      ?? (rssImageUrl?.inner.trim() || undefined);
     return {
       itemXml,
-      title: titleMatch?.[1].trim(),
+      title: title?.inner.trim(),
       image,
     };
   }
@@ -143,8 +143,8 @@ function findItemByGuid(xml: string, itemGuid: string): FoundItem | null {
 function channelScope(xml: string): string {
   // Everything before the first <item> tag — the channel header where
   // channel-level <podcast:value> lives.
-  const firstItem = xml.search(/<item\b[^>]*>/);
-  return firstItem === -1 ? xml : xml.slice(0, firstItem);
+  const first = firstTag(xml, 'item');
+  return first ? xml.slice(0, first.start) : xml;
 }
 
 /**
@@ -165,8 +165,8 @@ function channelScope(xml: string): string {
  */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function channelGuid(xml: string): string | undefined {
-  const m = /<podcast:guid[^>]*>([^<]+)<\/podcast:guid>/i.exec(channelScope(xml));
-  const v = m?.[1]?.trim();
+  const guid = firstBlock(channelScope(xml), 'podcast:guid');
+  const v = guid?.inner.trim();
   return v && UUID_RE.test(v) ? v : undefined;
 }
 
@@ -176,12 +176,11 @@ function isPublisherFeed(xml: string): boolean {
 
 function publisherRemoteItemUrls(xml: string): string[] {
   const urls: string[] = [];
-  const remoteItemRe = /<podcast:remoteItem\b[^>]*>/g;
-  for (const m of xml.matchAll(remoteItemRe)) {
+  for (const { attrs } of findTags(xml, 'podcast:remoteItem')) {
     // `readAttr`, not a bare `/feedUrl="…"/`: this URL decides which album feed
     // gets fetched and therefore which value block is paid, so an `x-feedUrl`
     // decoy winning the match is the same payee substitution one level up.
-    const url = readAttr(m[0], 'feedUrl');
+    const url = readAttr(attrs, 'feedUrl');
     if (url) urls.push(url);
   }
   return urls;

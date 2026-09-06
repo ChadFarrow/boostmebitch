@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch, readCappedText } from '@/lib/safe-fetch';
+import { safeFetch } from '@/lib/safe-fetch';
+import { readCappedText } from '@/lib/capped-body';
 import { parseChaptersJson } from '@/lib/chapters-json';
 import { BRAND } from '@/lib/brand';
 

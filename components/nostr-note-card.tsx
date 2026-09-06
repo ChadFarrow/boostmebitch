@@ -362,7 +362,7 @@ function NoteCardImpl({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap text-xs">
           <a
-            href={`https://njump.me/${note.npub}`}
+            href={`https://njump.me/${encodeURIComponent(note.npub)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="font-display text-sm text-bone hover:text-bolt truncate"
@@ -560,7 +560,7 @@ function NoteCardImpl({
           )}
           <span className="flex-1" />
           <a
-            href={`https://njump.me/${note.nevent}`}
+            href={`https://njump.me/${encodeURIComponent(note.nevent)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-muted hover:text-nostr"

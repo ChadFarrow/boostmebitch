@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getErrorMessage } from './util';
 import { piCouldNotAskStatus } from './pi-error';
-import { readCappedText } from './safe-fetch';
+import { readCappedText } from './capped-body';
 
 /**
  * Read a request body as text, or `null` when it is larger than `maxBytes`.
@@ -35,6 +35,25 @@ export async function readCappedRequestText(
   } catch {
     return null;
   }
+}
+
+/**
+ * 415 unless the request declares a JSON body; null when it does.
+ *
+ * Call it right after `rateLimit`, before the body is read. The four POST
+ * routes parse their body as JSON whatever `Content-Type` says, and a browser
+ * sends a cross-origin `<form enctype="text/plain">` WITHOUT a preflight — so
+ * any page on the web could reach them with a body of its choosing. There is
+ * no cookie or session on this origin, so such a request gains nothing a
+ * direct `fetch` would not; requiring `application/json` still forces the
+ * preflight, which is one line and closes the class. Every browser caller in
+ * this app already sends the header.
+ */
+export function requireJsonBody(req: Request): NextResponse | null {
+  const media = (req.headers.get('content-type') ?? '').split(';')[0]!.trim().toLowerCase();
+  return media === 'application/json'
+    ? null
+    : NextResponse.json({ error: 'expected application/json' }, { status: 415 });
 }
 
 /**

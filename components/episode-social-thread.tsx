@@ -47,7 +47,7 @@ export function EpisodeSocialThread({
 
   const primary = entries[0];
   const njumpUrl = primary.uri.startsWith('nostr:')
-    ? `https://njump.me/${primary.uri.slice(6)}`
+    ? `https://njump.me/${encodeURIComponent(primary.uri.slice(6))}`
     : null;
 
   // Re-attach any optimistic note the incoming array doesn't already contain

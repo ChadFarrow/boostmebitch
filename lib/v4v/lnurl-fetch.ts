@@ -5,6 +5,21 @@
 // which providers they can reach — they had four bare `fetch` calls between
 // them, and every one of them was unreachable for the same provider.
 
+import { readCappedText, readCappedJson } from '../capped-body';
+
+/**
+ * Ceiling on an LNURL reply. The same number `/api/lnurl` enforces on the proxied
+ * path — a payRequest is a few hundred bytes and an invoice a few KB, so this is
+ * far above any real answer. The direct read is in the BROWSER, in the origin
+ * that holds the NWC spending credential, against a host the feed named: an
+ * unbounded `res.text()` there was the one third-party body this app read
+ * without a cap. Over the cap throws inside the `try` below and falls through
+ * to the proxy, which applies the same ceiling and answers non-2xx.
+ */
+const LNURL_MAX_BYTES = 256 * 1024;
+/** The proxy's envelope wraps the same text, plus a status. */
+const LNURL_ENVELOPE_MAX_BYTES = 512 * 1024;
+
 /** What a direct fetch would have given us, whichever route produced it. */
 export interface LnurlResponse {
   ok: boolean;
@@ -57,7 +72,7 @@ export async function lnurlFetch(url: string): Promise<LnurlResponse> {
     // problem nobody reported. The failures this exists for — a blocked
     // cross-origin read, a dead name — reject fast on their own.
     const res = await fetch(url);
-    return shape(res.status, await res.text());
+    return shape(res.status, await readCappedText(res, LNURL_MAX_BYTES));
   } catch (direct) {
     let host = '';
     try {
@@ -93,7 +108,7 @@ export async function lnurlFetch(url: string): Promise<LnurlResponse> {
       // to the user as the LN service's reason.
       throw both(direct, new Error(`proxy returned ${res.status}`));
     }
-    const env = (await res.json()) as { status?: unknown; text?: unknown };
+    const env = (await readCappedJson(res, LNURL_ENVELOPE_MAX_BYTES)) as { status?: unknown; text?: unknown };
     if (typeof env?.status !== 'number' || typeof env?.text !== 'string') {
       throw both(direct, new Error('proxy returned an unreadable envelope'));
     }

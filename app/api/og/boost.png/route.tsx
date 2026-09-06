@@ -1,7 +1,8 @@
 import { ImageResponse } from 'next/og';
 import { NextResponse } from 'next/server';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch, readCappedBytes, readBytesUpTo } from '@/lib/safe-fetch';
+import { safeFetch } from '@/lib/safe-fetch';
+import { readCappedBytes, readBytesUpTo } from '@/lib/capped-body';
 import { firstGifFrame } from '@/lib/gif-first-frame';
 import { BRAND } from '@/lib/brand';
 

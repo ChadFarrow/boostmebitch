@@ -109,7 +109,7 @@ export default function PrivacyPage() {
             href="https://developers.google.com/terms/api-services-user-data-policy"
             className="underline hover:text-bolt"
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
           >
             Google API Services User Data Policy
           </a>
@@ -179,7 +179,7 @@ export default function PrivacyPage() {
               href="https://myaccount.google.com/permissions"
               className="underline hover:text-bolt"
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
             >
               myaccount.google.com/permissions
             </a>

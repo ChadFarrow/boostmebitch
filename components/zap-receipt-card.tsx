@@ -58,7 +58,7 @@ function ZapReceiptCardImpl({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap text-xs">
           <a
-            href={`https://njump.me/${zap.zapperNpub}`}
+            href={`https://njump.me/${encodeURIComponent(zap.zapperNpub)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="font-display text-sm text-bone hover:text-bolt truncate"

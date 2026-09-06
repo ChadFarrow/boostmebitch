@@ -39,7 +39,7 @@ export function PublishStatus({ state }: { state: PublishState }) {
         ◆ Published to {state.note.acceptedRelays.length}/{total} relays
       </div>
       <a
-        href={`https://njump.me/${state.note.nevent}`}
+        href={`https://njump.me/${encodeURIComponent(state.note.nevent)}`}
         target="_blank"
         rel="noopener noreferrer"
         className="text-muted hover:text-nostr underline underline-offset-2"
