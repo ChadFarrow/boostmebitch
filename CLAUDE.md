@@ -68,7 +68,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9 flat config in `eslint.config.mjs` — `next/core-web-vitals` + `next/typescript`, `no-explicit-any` off for PI's untyped JSON), and `next build`. Path alias `@/*` → repo root.
 
-**Thirty-three `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
+**Thirty-four `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
@@ -104,7 +104,8 @@ npm run dev / build / start / lint
 | `check:playlistdb` | `dbValueBlock`, `dbRowToEpisode` — another app's DB row as a track we pay | a cast type-checks and pays the wrong payee |
 | `check:favbackup` | `lib/favorites-export.ts` — what a backup file must prove before we republish it | a tampered file republishes a list nobody signed |
 | `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening: feeds hang, publishes reach nobody |
-| `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live broadcast, or an ended one never leaves |
+| `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show, or an ended one never leaves |
+| `check:liveover` | `liveBroadcastIsOver` — a `live` flag nobody cleared | a LIVE badge over silence, for days |
 | `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a background cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch, looked correct in review, and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.

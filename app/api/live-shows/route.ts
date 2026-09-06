@@ -98,7 +98,7 @@ const MAX_LIVE_FEEDS = 24;
  * Kept small on purpose: these feeds are read on top of whatever PI reported
  * live, so the two caps add up inside one function's time budget.
  */
-const MAX_FAVORITE_FEEDS = 12;
+const MAX_FAVORITE_FEEDS = 20;
 
 /**
  * How many recently-live feeds to re-read. See `rememberedFeeds` below.
