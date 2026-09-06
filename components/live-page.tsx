@@ -1,10 +1,14 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { useRouter } from 'next/navigation';
 import { fmtLiveTime } from '@/lib/format';
 import { useApp } from '@/lib/store';
-import { hasValueRecipients, liveShowToEpisode, liveShowToPodcast, payableValue, showShareUrl } from '@/lib/util';
+import { storage } from '@/lib/storage';
+import {
+  hasValueRecipients, isMusicMedium, isPlaylistMedium, liveShowToEpisode,
+  liveShowToPodcast, payableValue, showShareUrl,
+} from '@/lib/util';
 import type { LiveShow } from '@/lib/types';
 import { AppHeader } from '@/components/app-header';
 import { CopyLinkButton } from '@/components/copy-link-button';
@@ -70,18 +74,18 @@ const REFRESH_MIN_MS = 45_000;
 const LIVE_ORIGIN = { path: '/live', label: 'live' };
 
 /**
- * How many favorited feeds to ask the route to read.
+ * How many favorited feeds to ask about per poll.
  *
- * The server caps this again at `MAX_FAVORITE_FEEDS` and is the authority; this
- * one exists so the URL stays short. A library of 227 favorites would otherwise
- * build a query string of every id, which is a request nobody's proxy thanks
- * you for and which the server would truncate anyway.
+ * The server caps this again and is the authority; this one keeps the URL
+ * short. A library of 227 favorites would otherwise build a query string of
+ * every id, which the server would truncate anyway.
  *
- * Newest-first, because a favorite added recently is the show somebody is
- * actually following now — and because the alternative, an arbitrary slice of a
- * guid-keyed object, would silently pick the same wrong twelve every time.
+ * A slice rather than the whole list, because each feed costs the route a
+ * Podcast Index lookup and an 8 MB-capped RSS read, and one request must not
+ * turn a big library into a hundred of those. Which slice is the interesting
+ * part — see `favIds`.
  */
-const MAX_FAVORITE_FEEDS = 12;
+const MAX_FAVORITE_FEEDS = 20;
 
 const NostrLiveStreams = dynamic(
   () => import('@/components/nostr-live-streams').then((m) => m.NostrLiveStreams),
@@ -99,39 +103,162 @@ interface LiveShowsResponse {
 export function LivePage() {
   const [data, setData] = useState<LiveShowsResponse | null>(null);
   const [state, setState] = useState<LoadState>('loading');
+  /**
+   * Upcoming items gathered across polls, keyed by feed and item.
+   *
+   * The rotating slice below means one response describes only the feeds it
+   * happened to ask about, so replacing the list each time would make Upcoming
+   * flicker between disjoint sets and never show more than one slice at once.
+   * A schedule is stable for days, which is exactly what makes accumulating it
+   * safe — and is why only PENDING is accumulated. Live is taken fresh from
+   * every response, because "on air" is the one thing that is not stable and a
+   * remembered live row would be the forgotten-flag bug all over again.
+   *
+   * Entries are replaced per feed rather than merged, so a show removed from
+   * its own feed disappears the next time that feed is polled.
+   */
+  const [upcomingSeen, setUpcomingSeen] = useState<Record<number, LiveShow[]>>({});
   const lastLoadRef = useRef(0);
   const mountedRef = useRef(true);
 
   /**
-   * The favorited feeds worth reading, newest first.
+   * Every favorited feed that could plausibly carry a live item, newest first.
    *
-   * `id` is 0 until this device has resolved the guid through Podcast Index, and
-   * an unresolved favorite has no feed id to look up — so those are dropped
-   * here rather than sent as zeros the route would reject anyway. Favorites
-   * work signed out, so this is not gated on `identity`.
+   * TWO FILTERS, AND THE SECOND IS THE ONE THAT MAKES THIS AFFORDABLE.
    *
-   * Joined into a string rather than passed as an array because it lands in a
-   * dependency list: a fresh array every render would restart the poll on every
-   * commit.
+   * `id` is 0 until this device has resolved the guid through Podcast Index, so
+   * an unresolved favorite has no feed id to look up and is dropped rather than
+   * sent as a zero the route would reject. Favorites work signed out, so none
+   * of this is gated on `identity`.
+   *
+   * Then: **a music album never publishes a `<podcast:liveItem>`.** A library
+   * this app is built for is mostly albums and tracks, so filtering by medium
+   * typically removes the large majority of a big list before anything is
+   * asked about — turning "check my favorites" from a hundred feed reads into a
+   * handful. `medium` is absent when unknown, and unknown is KEPT: absent means
+   * "not resolved yet", never "not a podcast", and dropping those would quietly
+   * exclude every favorite PI has not answered for.
    */
-  const favIds = useApp((s) =>
+  const favIdList = useApp((s) =>
     Object.values(s.favorites)
       .filter((f) => f.id > 0)
+      .filter((f) => !f.medium || !(isMusicMedium(f) || isPlaylistMedium(f)))
       .sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))
-      .slice(0, MAX_FAVORITE_FEEDS)
       .map((f) => f.id)
       .join(','),
   );
 
+  const identity = useApp((s) => s.identity);
+  const boostsTick = useApp((s) => s.boostsTick);
+
+  /**
+   * Shows this device has actually boosted, newest first.
+   *
+   * A stronger signal than a favorite, and free: `bmb:boosts:<npub>` is already
+   * on the device, already newest-first and already capped. Somebody who sent
+   * sats to a show was listening to it, which is a better predictor of caring
+   * when it next goes live than a heart pressed once — and the two lists
+   * overlap less than you would think, because boosting does not favorite.
+   *
+   * Re-read whenever a boost is sent or the identity changes, the same shape
+   * `<GlobalNostrFeed>` uses. Per-npub isolation is `storage.boosts`' job.
+   *
+   * The global version of this list — every show ANYONE has boosted — is public
+   * data the read index already holds: boost notes carry
+   * `['i', 'podcast:guid:<uuid>']` and `ingest.ts` indexes that tag. It would
+   * need a "distinct recently-referenced guids" query, which does not exist
+   * (`notesByIdentifier` answers the opposite question), and `services/nostr-
+   * index` does not deploy on merge. Named in docs/feeds.md rather than built
+   * here.
+   */
+  const boostIdList = useMemo(
+    () =>
+      storage.boosts
+        .get(identity?.npub)
+        .map((b) => b.podcastId)
+        .filter((id): id is number => typeof id === 'number' && id > 0)
+        .join(','),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [identity?.npub, boostsTick],
+  );
+
+  /**
+   * The two lists unioned, favorites first, deduped.
+   *
+   * Favorites lead because a heart is a statement about the future — "tell me
+   * when this is on" — where a boost is a record of the past. Both are the same
+   * kind of claim once they reach the route: feed ids to go and read.
+   */
+  const favPool = useMemo(() => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const id of [...favIdList.split(','), ...boostIdList.split(',')]) {
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+    }
+    return out.join(',');
+  }, [favIdList, boostIdList]);
+
+  /**
+   * Which slice of that pool this poll asks about.
+   *
+   * A library bigger than one request can carry would otherwise mean the same
+   * twenty feeds are checked forever and everything past them is permanently
+   * invisible — which is the complaint this exists to answer. The cursor
+   * advances each poll, so a list of any size is fully covered within a few
+   * minutes of the page being open, at a constant cost per request.
+   *
+   * It rides in a ref rather than state: advancing it must not itself trigger
+   * a render, and `load` reads it at call time.
+   */
+  const cursorRef = useRef(0);
+
+  /**
+   * The pool, held for `load` to read at call time.
+   *
+   * Deliberately NOT a dependency of `load`. The slice this poll asks for
+   * depends on the cursor, which every poll advances — so computing it during
+   * render would make `load` a new function each time, and the effect below
+   * would tear down and rebuild the interval and both listeners on every tick.
+   * Reading it here keeps `load` stable for the life of the component.
+   */
+  const favPoolRef = useRef(favPool);
+  favPoolRef.current = favPool;
+
   const load = useCallback(async () => {
     lastLoadRef.current = Date.now();
+    const all = favPoolRef.current ? favPoolRef.current.split(',') : [];
+    // Wrapped so the window is contiguous around the end of the list.
+    const favIds =
+      all.length <= MAX_FAVORITE_FEEDS
+        ? all.join(',')
+        : [...all, ...all]
+            .slice(cursorRef.current % all.length, (cursorRef.current % all.length) + MAX_FAVORITE_FEEDS)
+            .join(',');
+    const askedIds = favIds ? favIds.split(',').map(Number) : [];
     try {
       const res = await fetch(`/api/live-shows${favIds ? `?feeds=${favIds}` : ''}`);
       if (!res.ok) throw new Error(String(res.status));
       const json: LiveShowsResponse = await res.json();
       if (!mountedRef.current) return;
       setData(json);
+      setUpcomingSeen((prev) => {
+        const next = { ...prev };
+        // Every feed this response covered gets its upcoming list REPLACED,
+        // including with nothing — that is how an item withdrawn from a feed
+        // stops being rendered. Feeds this poll did not ask about keep what
+        // they had; they were not described either way.
+        for (const id of askedIds) delete next[id];
+        for (const s of json.items) {
+          if (s.liveStatus !== 'pending') continue;
+          (next[s.feedId] ??= []).push(s);
+        }
+        return next;
+      });
       setState('ok');
+      // Advance to the next window for the poll after this one.
+      cursorRef.current += MAX_FAVORITE_FEEDS;
     } catch {
       if (!mountedRef.current) return;
       // Keep whatever we already painted. A retry that fails must not empty a
@@ -139,7 +266,7 @@ export function LivePage() {
       // common failure here is a PI 429 that clears within the minute.
       setState('failed');
     }
-  }, [favIds]);
+  }, []);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -161,8 +288,12 @@ export function LivePage() {
   }, [load]);
 
   const items = data?.items ?? [];
+  // Live: only ever what the latest response said. Upcoming: everything seen
+  // across the rotation, soonest first.
   const onAir = items.filter((s) => s.liveStatus === 'live');
-  const upcoming = items.filter((s) => s.liveStatus === 'pending');
+  const upcoming = Object.values(upcomingSeen)
+    .flat()
+    .sort((a, b) => (a.liveStartTime ?? 0) - (b.liveStartTime ?? 0));
   const unverified = data?.unverifiedFeeds ?? 0;
 
   // A heading over nothing is its own small lie — it says "here is the RSS
@@ -230,10 +361,10 @@ export function LivePage() {
             hasData={!!data}
             emptyLine={null}
             caption={
-              favIds
-                ? 'Scheduled broadcasts from the shows you have favorited, plus from any show ' +
-                  'on air right now. Podcast Index publishes no global schedule, so a show ' +
-                  'you have not favorited may not be here.'
+              favPool
+                ? 'Scheduled broadcasts from the shows you have favorited or boosted, plus ' +
+                  'from any show on air right now. Podcast Index publishes no global schedule, ' +
+                  'so a show you have done neither with may not be here.'
                 : 'The next broadcast from shows that are on air right now. Podcast Index ' +
                   'publishes no global schedule — favorite a show and its schedule shows up here.'
             }

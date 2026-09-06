@@ -148,7 +148,22 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // (nbd-wtf/nostr-tools#550) and upstream fixed it in 2.25.2, but 2.25.2 still
 // carries the `limit: 0` NIP-46 filters that hang `nostrconnect://` pairing. The
 // pin stays, so the fix lives in this repo and needs a rule saying where.
-const BUDGET = 14800
+//
+// 14,800 → 14,820, and like the raise above it is table rows and nothing else.
+// `check:livemerge` and `check:liveover` pin two functions that decide whether a
+// live show is on the air: whether a publisher's RSS may DELETE a row Podcast
+// Index reported, and whether a `status="live"` flag the host forgot to clear
+// still means anything. Both shipped against measured production failures — a
+// list that kept ended broadcasts forever, and a LIVE badge sitting over silence
+// for five days — so both are pinned, and the table indexes every pinned
+// function or it stops being the index it claims to be.
+//
+// The prose was cut first, which is the order that matters. Both rows were
+// written and then reduced to the shortest form carrying the function, the
+// question it answers and the cost of getting it wrong; that is what took the
+// overage from 45 words to 19. What is left is the two rows themselves. If the
+// next raise cannot say the same, cut prose instead.
+const BUDGET = 14820
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')
