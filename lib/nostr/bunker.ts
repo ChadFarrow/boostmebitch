@@ -32,11 +32,12 @@ import {
 import {
   generateSecretKey,
   getPublicKey,
-  SimplePool,
   type Event,
   type EventTemplate,
+  type SimplePool,
 } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { newPool } from './pool';
 import { storage } from '../storage';
 import { BRAND } from '../brand';
 import { CLAVE_RELAY } from './clave';
@@ -688,7 +689,7 @@ export async function connectBunkerFromUri(
   // the life of the tab until the relay refused the connection the reconnect
   // needed, which presents as the reconnect simply not working.
   async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string; pool: SimplePool }> {
-    const pool = new SimplePool();
+    const pool = newPool();
     const s = BunkerSigner.fromBunker(sk, bp, { onauth: onAuthUrl, pool });
     try {
       await withTimeout(s.connect(), timeoutMs, 'connect');
@@ -937,7 +938,13 @@ export function startNostrConnect(
   // the abandoned-transport case is the EXPECTED one here rather than the
   // exception. Built OUT HERE rather than inside the async body so `abandon`
   // below can reach it — that is the whole reason for the hoist.
-  const pool = new SimplePool();
+  //
+  // `newPool()` and never `new SimplePool()`, like every other pool in this
+  // file: it installs the patch `lib/nostr/relay-socket.ts` applies to the
+  // pinned nostr-tools, without which a failed connect leaks a CONNECTING
+  // socket. That matters most HERE — this is the flow that opens a pool per
+  // pairing attempt and abandons the ones a foreground return replaces.
+  const pool = newPool();
   let listener: BunkerSigner | null = null;
   let abandoned = false;
   // "This attempt WON." The transport it returned is the app's live signer from
@@ -1057,7 +1064,7 @@ export async function restoreBunkerFromStorage(): Promise<BunkerAdapter | null> 
   // Same ownership and same teardown as `connectBunker`'s attempt above — and
   // this is the one the Reconnect button actually calls.
   async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string; pool: SimplePool }> {
-    const pool = new SimplePool();
+    const pool = newPool();
     const s = BunkerSigner.fromBunker(clientSk, bp, { pool });
     try {
       await withTimeout(s.connect(), timeoutMs, 'reconnect');
