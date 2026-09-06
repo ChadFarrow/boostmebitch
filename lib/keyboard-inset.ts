@@ -26,17 +26,45 @@
  * closed" is not a state this module can get wrong: the inset goes back to 0px
  * and the transform is the identity again.
  *
- * FOUR THINGS THAT LOOK OPTIONAL AND ARE NOT.
+ * THE MEASUREMENT ANSWERS THREE QUESTIONS, NOT ONE, and the first version
+ * asked only the first. A visual viewport shorter than the layout viewport is
+ * not by itself a keyboard: TWO other things on iOS produce the identical
+ * arithmetic, both of them while the composer is focused, and both of them
+ * shipped. Reported off a phone as "keyboard is fine while typing but [the
+ * dock] pops up after I'm done and returns to the bottom when I scroll down
+ * but moves back up when I scroll up" — one sentence describing both.
  *
- * 1. **The inset is only counted while an EDITABLE element has focus.** The
- *    same arithmetic answers a rubber-band bounce — `visualViewport.offsetTop`
- *    goes negative at the top of the document, so the visual bottom sits above
- *    the layout bottom and the naive reading is "the keyboard is up, by 90px".
- *    Without the focus test the dock would jump down and back on every
- *    overscroll bounce, on every platform, which is a worse bug than the one
- *    being fixed and would be blamed on the transform rather than on this.
+ * SIX THINGS THAT LOOK OPTIONAL AND ARE NOT.
  *
- * 2. **Every event schedules the measurement for the next frame; none of them
+ * 1. **The inset is only counted while an EDITABLE element has focus.** It is
+ *    what keeps a viewport that shrinks for some other reason — a focused
+ *    button, a page that is not being typed into at all — from moving the dock.
+ *    It is NOT, on its own, the answer to the two cases below: iOS leaves the
+ *    field focused when the keyboard is dismissed by a scroll, so the focus
+ *    test still says yes for the whole time both of them are being measured.
+ *    That is what the first version got wrong, and why it read as a dock that
+ *    followed the scroll rather than the keyboard.
+ *
+ * 2. **A negative `offsetTop` is DISPLACEMENT, and is clamped rather than
+ *    subtracted.** At the top of the document an overscroll bounce carries the
+ *    visual viewport ABOVE the layout viewport, so `offsetTop` goes negative
+ *    and `clientHeight - (offsetTop + height)` reads "the keyboard is up, by
+ *    90px" while nothing covers anything. Clamping at 0 is exact: the bounce
+ *    moves the viewport, it does not cover the bottom of it.
+ *
+ * 3. **Coverage below `MIN_KEYBOARD_PX` is BROWSER CHROME, not a keyboard.**
+ *    Safari's bottom toolbar collapses on a downward scroll and re-expands on
+ *    an upward one, and it takes its ~51px out of the visual viewport while
+ *    leaving the layout viewport alone — the same shape as a keyboard, an
+ *    order of magnitude smaller, and tied to the scroll DIRECTION, which is
+ *    what made the dock oscillate. The floor is the one judgement in this
+ *    file, so it is sized from both sides: the chrome it must reject is ~51px
+ *    (toolbar) and ~44px (the keyboard accessory bar left behind by a hardware
+ *    keyboard), and the shortest keyboard it must still accept is an iPhone's
+ *    LANDSCAPE one at ~162px. Raising it past that brings the original bug
+ *    back on landscape only, which is where nobody is looking.
+ *
+ * 4. **Every event schedules the measurement for the next frame; none of them
  *    measures inline.** `focusout` is why: during it `document.activeElement`
  *    is still the field being left, so an inline read answers "a text field has
  *    focus" and holds the inset at the keyboard's full height. Nothing else
@@ -46,7 +74,7 @@
  *    shipping component before the frame was added. The deferral also collapses
  *    the burst of `resize` events the keyboard animation emits into one write.
  *
- * 3. **The transition to closed nudges the scroll position by a pixel.**
+ * 5. **The transition to closed nudges the scroll position by a pixel.**
  *    Publishing `0px` re-lays the dock out correctly, but the stranded offset
  *    lives in WebKit's own fixed layer, not in our transform, so the bar can
  *    come back to rest one keyboard-height too high. A one-pixel scroll and
@@ -55,7 +83,7 @@
  *    that reports full height arrives while the keyboard is still sliding away
  *    and the offset is re-applied behind it.
  *
- * 4. **Everything is guarded on `window.visualViewport`.** Where it is absent
+ * 6. **Everything is guarded on `window.visualViewport`.** Where it is absent
  *    the inset stays 0px and every transform is the identity, so this costs
  *    nothing and changes nothing off iOS.
  */
@@ -64,6 +92,14 @@
 const SETTLE_MS = 300;
 
 const VAR = '--kb-inset';
+
+/**
+ * The floor between browser chrome and a keyboard — see rule 3. A number here
+ * is only ever wrong in one of two directions, and they are not symmetric:
+ * too low and the dock rides the toolbar, too high and it rides the landscape
+ * keyboard. `scripts/e2e-keyboard.mjs` pins both edges.
+ */
+const MIN_KEYBOARD_PX = 120;
 
 /** Input types that raise no keyboard — a tap on one must not move the dock. */
 const NON_TEXT_INPUT = new Set([
@@ -114,8 +150,14 @@ export function startKeyboardInsetSync(): () => void {
     // `clientHeight` of the root IS the layout viewport, and the keyboard does
     // not change it — that is the whole reason it is the reference here rather
     // than `innerHeight`, which follows the visual viewport under pinch-zoom.
-    const covered = root.clientHeight - (vv.offsetTop + vv.height);
-    const next = raisesKeyboard(document.activeElement) ? Math.max(0, Math.round(covered)) : 0;
+    //
+    // `offsetTop` is clamped, not subtracted: negative means the viewport has
+    // bounced above the layout viewport, which is displacement (rule 2). What
+    // survives that is real coverage, and it still has to be big enough to be
+    // a keyboard rather than the browser's own bottom chrome (rule 3).
+    const covered = Math.round(root.clientHeight - (Math.max(0, vv.offsetTop) + vv.height));
+    const isKeyboard = covered >= MIN_KEYBOARD_PX && raisesKeyboard(document.activeElement);
+    const next = isKeyboard ? covered : 0;
     if (next === current) return;
     const closing = next === 0;
     current = next;
