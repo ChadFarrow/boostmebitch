@@ -2018,7 +2018,7 @@ function isProxyable(url: string): boolean {
  *  concatenation — a real cover URL routinely carries its own query string
  *  (`megaphone.imgix.net/...?ixlib=rails-4.3.1&w=3000`) and appending `&w=` to
  *  that changes the *upstream* request instead of ours. */
-export function artProxyUrl(url: string, width: ArtWidth): string {
+function artProxyUrl(url: string, width: ArtWidth): string {
   return `/api/art?url=${encodeURIComponent(url)}&w=${width}`;
 }
 

@@ -488,7 +488,7 @@ export function Player() {
       window.removeEventListener('focus', onForeground);
       if (resumeTimer.current) { clearTimeout(resumeTimer.current); resumeTimer.current = null; }
     };
-  }, [current?.episode.enclosureUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [current?.episode.enclosureUrl]);
 
   // PiP applies to the <video> path (HLS stream or a video alternateEnclosure);
   // recompute when the item OR the audio/video mode changes. The <video> is

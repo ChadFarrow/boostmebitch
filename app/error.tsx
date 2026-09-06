@@ -20,7 +20,6 @@ export default function Error({
   const setSelected = useApp((s) => s.selectPodcast);
 
   useEffect(() => {
-    // eslint-disable-next-line no-console
     console.error(`[${BRAND.id}] route error:`, error);
   }, [error]);
 

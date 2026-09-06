@@ -126,7 +126,6 @@ export async function POST(req: Request) {
       // hardest on the error path, which is exactly where a body stops being
       // the small JSON the happy path expects.
       const detail = await readCappedText(upstream, 4096).catch(() => '');
-      // eslint-disable-next-line no-console
       console.error(`[boostbox] upstream ${upstream.status}:`, detail.slice(0, 500));
       return NextResponse.json(
         { error: `BoostBox error: ${upstream.status}` },

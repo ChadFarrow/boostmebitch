@@ -171,7 +171,6 @@ async function readPrivateHalf(
   if (!content) return { privateList: null, privateTags: [], privateUnreadable: false };
 
   if (!opts.decryptPrivate || !opts.purpose) {
-    // eslint-disable-next-line no-console
     console.info(
       '[favorites] kind:10333 carries an encrypted half and we are not spending a signer '
       + 'call to read it here — carried verbatim, and the local cache still renders',
@@ -179,7 +178,6 @@ async function readPrivateHalf(
     return unreadable();
   }
   if (!getNip44()) {
-    // eslint-disable-next-line no-console
     console.info(
       '[favorites] kind:10333 carries an encrypted half but this signer has no NIP-44 — '
       + 'private favorites will round-trip opaquely',
@@ -191,13 +189,11 @@ async function readPrivateHalf(
     const plaintext = await decryptWithTimeout(pubkey, content, opts.purpose);
     const tags = decodePrivateFavorites(plaintext);
     if (!tags) {
-      // eslint-disable-next-line no-console
       console.warn('[favorites] private half decrypted to something that is not a tag array — preserving as an opaque blob');
       return unreadable();
     }
     return { privateList: parseFavoritesList(tags), privateTags: tags, privateUnreadable: false };
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.warn(
       '[favorites] private half decrypt failed — preserving as an opaque blob:',
       (e as Error)?.message ?? e,
@@ -544,7 +540,6 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
 
   if (plan.reason === 'degraded') {
     opts.onDegraded?.(plan.reason);
-    // eslint-disable-next-line no-console
     console.warn('[favorites] skipping publish — could not read the current list');
     return null;
   }
@@ -559,7 +554,6 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
   // one — that is the same rule the degraded branch above exists for.
   if (plan.reason === 'wholesale-delete') {
     opts.onDegraded?.(plan.reason);
-    // eslint-disable-next-line no-console
     console.warn(
       '[favorites] REFUSING to publish — the merge came out empty over a list that is not. '
       + 'This device is holding no favorites while the relay holds some, which is what an '
@@ -575,7 +569,6 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
   // been able to open it", and both render as a shorter list.
   if (plan.reason === 'private-unreadable') {
     opts.onDegraded?.(plan.reason);
-    // eslint-disable-next-line no-console
     console.warn(
       '[favorites] REFUSING to publish — this list has an encrypted half we could not read, '
       + 'and this change would replace it. Carried verbatim instead.',
@@ -585,7 +578,6 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
 
   if (plan.reason === 'private-too-large') {
     opts.onDegraded?.(plan.reason);
-    // eslint-disable-next-line no-console
     console.warn(
       '[favorites] REFUSING to publish — the private half is over the NIP-44 plaintext '
       + 'ceiling, and a payload past it reads back as EMPTY on an older signer rather than '
@@ -615,7 +607,6 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
   // same treatment.
   if (plan.encryptPrivate && plan.privateTags && !getNip44()) {
     opts.onDegraded?.('private-unreadable');
-    // eslint-disable-next-line no-console
     console.warn(
       '[favorites] this signer cannot NIP-44 encrypt, so the private half cannot be written — '
       + 'keeping local favorites as-is and publishing nothing',
@@ -639,7 +630,6 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     // would be a lie — it rethrows to the debounce's own warn instead.
     if (!(e instanceof NoRelayAcceptedError)) throw e;
     opts.onDegraded?.('degraded');
-    // eslint-disable-next-line no-console
     console.warn('[favorites] publish reached no relay — baseline unchanged, next toggle retries');
     return null;
   }

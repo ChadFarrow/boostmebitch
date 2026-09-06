@@ -384,7 +384,6 @@ export function NostrAuth() {
           // silently re-point the session — and every subsequent publish — at
           // an identity the user did not choose. Dropping it is the safe
           // direction: they can sign in again deliberately.
-          // eslint-disable-next-line no-console
           console.warn('[amber] callback returned a different account than the signed-in one; ignoring');
         } else {
           storage.signer.set('amber');
@@ -395,7 +394,6 @@ export function NostrAuth() {
           // second sign-in code path to keep in step with this one.
         }
       } catch (e) {
-        // eslint-disable-next-line no-console
         console.warn('[amber] parked callback result was unusable:', (e as Error)?.message ?? e);
       }
     }

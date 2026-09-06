@@ -29,7 +29,6 @@ export class ErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    // eslint-disable-next-line no-console
     console.error(`[boundary] ${this.props.label ?? 'subtree'} threw:`, error, info.componentStack);
   }
 

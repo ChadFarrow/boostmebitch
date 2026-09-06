@@ -250,7 +250,6 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     // next toggle or page load retries. Silently adopting the empty result here
     // is how a relay wobble turns into a wiped favorites list.
     setFavoritesSync('degraded');
-    // eslint-disable-next-line no-console
     console.warn('[favorites] relay read was degraded — keeping local favorites as-is');
     return;
   }
@@ -371,7 +370,6 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     // is broken and the notice must not say a signer "couldn't". It shipped
     // saying exactly that, and an Amber user read it as an error on every load.
     setFavoritesSync('degraded', decryptPrivate ? 'private-unreadable' : 'private-withheld');
-    // eslint-disable-next-line no-console
     console.warn(
       '[favorites] this list has an encrypted half we could not read — keeping local '
       + 'favorites as-is and carrying the ciphertext untouched',
@@ -431,7 +429,6 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
       // recorded for a list this device has not agreed to. The adoption is
       // one-way: the next cycle sees a populated store, `localFed` is non-zero,
       // and the ordinary path takes over from there.
-      // eslint-disable-next-line no-console
       console.warn(
         '[favorites] this device holds nothing yet, so there is nothing for the wipe guard '
         + `to protect — adopting the ${carriedNodes} entr(y/ies) the relay carries so they render. `
@@ -439,7 +436,6 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
       );
     } else {
       setFavoritesSync('degraded', 'wholesale-delete');
-      // eslint-disable-next-line no-console
       console.warn(
         '[favorites] REFUSING to adopt an empty merge — this device holds favorites '
         + `(cache: ${Object.keys(cached).length} feeds, ${Object.keys(cachedEpisodes).length} items; `
@@ -464,7 +460,6 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   // told why the list is short instead of being left to notice.
   if (modeAmbiguous) {
     setFavoritesSync('degraded', 'mode-ambiguous');
-    // eslint-disable-next-line no-console
     console.warn(
       '[favorites] this list has entries in BOTH halves, so which one this device owns '
       + 'is unknowable from the wire — rendering the public half only and asking the user to choose',
@@ -728,7 +723,6 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     // painted, so this deliberately does not return early; only the promise is
     // withheld.
     setFavoritesSync('degraded', plan.reason);
-    // eslint-disable-next-line no-console
     console.warn(`[favorites] not recording a baseline — the planner refused this publish (${plan.reason})`);
   }
 }
@@ -837,7 +831,6 @@ function installCleanupHook(identity: NostrIdentity, malformed: string[]) {
       return `removed ${removed} malformed entries`;
     });
   }
-  // eslint-disable-next-line no-console
   console.warn(
     `[favorites] ${malformed.length} entries in your shared list aren't valid podcast guids:`,
     malformed,

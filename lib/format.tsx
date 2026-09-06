@@ -76,7 +76,7 @@ const NOSTR_URI_RE =
   /nostr:n(?:event|ote|pub|profile|addr)1[023456789acdefghjklmnpqrstuvwxyz]+/gi;
 
 /** Peel trailing grammar punctuation off a URL token. */
-export function splitTrailingPunct(token: string): { token: string; trailing: string } {
+function splitTrailingPunct(token: string): { token: string; trailing: string } {
   let trailing = '';
   while (token.length > 0 && /[.,;:!?)\]]$/.test(token)) {
     trailing = token.slice(-1) + trailing;

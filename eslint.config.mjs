@@ -25,10 +25,14 @@ const config = [
   },
   ...compat.extends('next/core-web-vitals', 'next/typescript'),
   {
-    // Existing inline `eslint-disable-next-line no-console` comments (amber.ts)
-    // target a rule we don't enable; ESLint 9 would otherwise report them all
-    // as unused directives.
-    linterOptions: { reportUnusedDisableDirectives: 'off' },
+    // A disable comment that no longer suppresses anything is reported, so a
+    // `react-hooks/exhaustive-deps` disable whose dep array later became
+    // correct does not sit there forever, unaudited. This was `'off'` to hide
+    // 39 `no-console` disables that targeted a rule the config never enabled;
+    // those comments are gone. `'warn'` rather than `'error'` so a plugin
+    // upgrade that changes what a rule reports cannot break `npm run lint`
+    // — a warning here is a comment to delete, not a build to fix.
+    linterOptions: { reportUnusedDisableDirectives: 'warn' },
     rules: {
       // lib/pi.ts deliberately types PI's untyped JSON as `any` throughout.
       '@typescript-eslint/no-explicit-any': 'off',

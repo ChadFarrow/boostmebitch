@@ -6,7 +6,6 @@ export function createScheduledPublish(label: string) {
     timer = setTimeout(() => {
       timer = null;
       fn().catch((e: unknown) => {
-        // eslint-disable-next-line no-console
         console.warn(`[${label}] publish failed:`, (e as Error)?.message ?? e);
       });
     }, delayMs);

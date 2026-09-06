@@ -1,6 +1,7 @@
 'use client';
 
 import { readCappedText, readCappedJson } from '../capped-body';
+import { randomId } from '../util';
 
 // Google is not a hostile host, but a body is still read into this tab's heap
 // and every reader in the app goes through the same cap — an uncapped
@@ -138,8 +139,10 @@ export async function downloadBackup(token: string, fileId: string): Promise<str
  * is a separate feature, not a cleanup.
  */
 export async function uploadBackup(token: string, payload: string): Promise<string> {
-  const name = `bmb_bk_${crypto.randomUUID()}.bin`;
-  const boundary = `bmb${crypto.randomUUID().replace(/-/g, '')}`;
+  // `randomId`, not `crypto.randomUUID`: the latter is secure-context-only and
+  // absent over `http://<LAN-IP>`, which is how this app is tested on a phone.
+  const name = `bmb_bk_${randomId()}.bin`;
+  const boundary = `bmb${randomId().replace(/-/g, '')}`;
   const body =
     `--${boundary}\r\n` +
     'Content-Type: application/json; charset=UTF-8\r\n\r\n' +

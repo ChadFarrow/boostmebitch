@@ -9,7 +9,7 @@ import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, record
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, payableSplit, payableValue, splitSats, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { getErrorMessage, payableSplit, payableValue, splitSats, splitTrackAndHost, storedBoostLegs, randomId } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -313,7 +313,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       // adds no keys at all.
       ...(anonymous ? {} : replyFields),
       action: 'boost',
-      uuid: crypto.randomUUID(),
+      uuid: randomId(),
       remote_feed_guid: podcast.podcastGuid,
       ...(episode && {
         episode: episode.title,
@@ -455,7 +455,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           // Its own uuid — it's a distinct payment and a recipient aggregator
           // dedupes on that field — but the same remote_* guids as the track
           // leg, which is what lets the host see which song earned their share.
-          boostagram: { ...boostagram, uuid: crypto.randomUUID(), value_msat_total: hostSats * 1000 },
+          boostagram: { ...boostagram, uuid: randomId(), value_msat_total: hostSats * 1000 },
           rail,
           onProgress: (res, index) =>
             setHostResults((prev) => {

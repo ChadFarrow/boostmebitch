@@ -97,7 +97,6 @@ export async function withErrorHandling(
   try {
     return await fn();
   } catch (e) {
-    // eslint-disable-next-line no-console
     console.error(`[api] ${fallback}:`, getErrorMessage(e, 'unknown error'));
     return NextResponse.json({ error: fallback }, { status: piCouldNotAskStatus(e) ?? 500 });
   }

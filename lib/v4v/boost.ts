@@ -63,6 +63,12 @@ export function pickRail(): Rail | null {
 // the v4v swap-out boundary are unchanged.
 export { splitSats } from '@/lib/util';
 
+// The reply-address lookup is part of this engine's surface, not a module a
+// component reaches past it for: components import from `lib/v4v/boost.ts`
+// (and the handful of files CLAUDE.md names), never `keysend-lookup.ts`.
+export { lookupReplyTarget, replyFieldsFor } from './keysend-lookup';
+export type { ReplyFields } from './keysend-lookup';
+
 // NIP-47 pay_keysend expects { type, value } where value is hex-encoded.
 function tlvHexFor(
   boostagram: Boostagram,

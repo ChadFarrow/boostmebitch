@@ -141,7 +141,6 @@ export async function fetchMutedPubkeys(
       // byte-for-byte on republish whichever way we failed.
       const park = (why: string) => {
         unreadablePrivateContent = newest.content;
-        // eslint-disable-next-line no-console
         console.info(`[mutes] private mute list left unread — ${why}`);
       };
 
@@ -198,7 +197,6 @@ export async function fetchMutedPubkeys(
             }
           } catch (e) {
             unreadablePrivateContent = newest.content;
-            // eslint-disable-next-line no-console
             console.warn(
               `[mutes] ${privateCipher} decrypt failed — preserving as opaque blob:`,
               (e as Error)?.message ?? e,
@@ -267,7 +265,6 @@ export async function publishMuteList(
     // other device. Opening the half once (the <MutesSyncNotice> button) clears
     // the park and this stops applying.
     if (state.privatePubkeys.length > 0) {
-      // eslint-disable-next-line no-console
       console.warn(
         `[mutes] ${state.privatePubkeys.length} private mute(s) are NOT in this publish — `
         + 'the private half is an unopened blob and merging into it would destroy it. '
@@ -302,7 +299,6 @@ export async function publishMuteList(
     } else {
       // Degraded: signer can't encrypt with the cipher this list uses, so we
       // surface privates as publics rather than silently drop them.
-      // eslint-disable-next-line no-console
       console.warn(
         `[mutes] signer has no ${wanted === 'nip44' ? 'NIP-44' : 'NIP-04'} encrypt — `
         + 'falling back to public p-tags for new mutes',

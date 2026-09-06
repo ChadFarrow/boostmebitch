@@ -515,7 +515,7 @@ export function HomePage() {
     } else {
       setSelected(p);
     }
-  }, [setSelected]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setSelected]);
 
   function goHome() {
     setFeeds([]);

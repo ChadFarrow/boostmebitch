@@ -9,7 +9,7 @@ import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, record
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, splitTrackAndHost, storedBoostLegs, randomId } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
@@ -222,7 +222,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         sender_name: senderName,
         sender_id: anonymous ? undefined : identity?.pubkey,
         action: 'boost',
-        uuid: crypto.randomUUID(),
+        uuid: randomId(),
       };
       let trackOk = false;
       // Only meaningful when trackOk is false: at least one leg's wallet never
@@ -289,7 +289,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           sender_name: senderName,
           sender_id: anonymous ? undefined : identity?.pubkey,
           action: 'boost',
-          uuid: crypto.randomUUID(),
+          uuid: randomId(),
         };
         try {
           const hostResults = await sendBoost({
@@ -369,7 +369,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       sender_name: senderName,
       sender_id: anonymous ? undefined : identity?.pubkey,
       action: 'boost',
-      uuid: crypto.randomUUID(),
+      uuid: randomId(),
     };
 
     const lines: string[] = ['⚡ Boost ⚡', ''];
