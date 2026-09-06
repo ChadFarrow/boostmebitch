@@ -4,7 +4,7 @@ import { httpUrl } from '../util';
 import { BRAND } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
-import { noteMentionTags, type MentionNpub, inlineMentions } from './mention-tags';
+import { noteMentionTags, type MentionNpub, inlineMentions, withMentionRun } from './mention-tags';
 
 interface PublishArgs {
   podcast: Podcast;
@@ -176,7 +176,7 @@ function boostBannerUrl(
 /**
  * Append the artwork URL to a note body.
  *
- * Applied to the FINAL content for the same reason `withMentions` is:
+ * Applied to the FINAL content for the same reason `withMentionRun` is:
  * boost-all-modal hand-builds its summary body and passes it as a
  * `contentOverride`, so art added inside `formatContent` would be silently
  * missing from every boost-all note. It sits ABOVE the mentions because a
@@ -222,39 +222,6 @@ export function noteNpubs(podcast: Podcast, episode?: Episode): FeedNpub[] {
   return out;
 }
 
-/**
- * Append `nostr:npub…` mentions to a note body.
- *
- * Applied to the FINAL content, after contentOverride has had its say —
- * boost-all-modal hand-builds its summary body and passes it as an override, so
- * a mention added inside formatContent would be silently missing from every
- * boost-all note. Appending here is the one place both paths converge.
- *
- * Append-only, so the '⚡ Boost ⚡' prefix the site-sign route validates on is
- * untouched. Mirrors publishQuoteRepost's tag-plus-trailing-`nostr:`-URI shape.
- *
- * This takes `inBody`, which is NOT the same list as the `p` tags. A mention a
- * site-signed note may not tag is still written here — see noteMentionTags for
- * why the two lists differ.
- *
- * ONE PER LINE, not space-joined. A client replaces each `nostr:npub…` with the
- * profile's display name, and display names contain spaces — so three of them
- * on one line rendered as
- *
- *   @Chad and Reeds Podcast (candr) @ChadF and 33 others @Reed
- *
- * which no reader can split back into three people. Measured on a real note,
- * 2026-09-03. A space is what a compose box writes, which is why it was chosen,
- * but a compose box is joining handles that have no spaces in them.
- *
- * A newline rather than a visible separator: anything printable placed between
- * a name and the next URI is a character a client may absorb into the link
- * text, and this content is a signed kind:1 that can never be edited.
- */
-function withMentions(content: string, npubs: MentionNpub[]): string {
-  if (!npubs.length) return content;
-  return `${content}\n\n${npubs.map((n) => `nostr:${n.npub}`).join('\n')}`;
-}
 
 function formatContent(args: PublishArgs): string {
   const { podcast, episode, boostagram } = args;
@@ -355,7 +322,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     content: (() => {
       const body = withArt(args.contentOverride ?? formatContent(args), banner);
       const { content: inlined, remaining } = inlineMentions(body, inBody);
-      return withMentions(inlined, remaining);
+      return withMentionRun(inlined, remaining);
     })(),
   };
 }

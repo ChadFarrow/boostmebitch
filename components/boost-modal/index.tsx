@@ -16,7 +16,7 @@ import { BoltIcon } from '../icons';
 import { BoostModalBalance } from '../wallet-balance';
 import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
-import { MessageInput } from './message-input';
+import { MessageInput } from '../message-input';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { SenderName } from './sender-name';
 import { useReplyAddress } from './use-reply-address';
