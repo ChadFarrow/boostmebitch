@@ -132,7 +132,23 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // The ~130 words of slack are deliberate and are NOT a budget for the next rule.
 // A rule that earns its place here still displaces something — that is the whole
 // mechanism, and this pass is evidence it works rather than licence to skip it.
-const BUDGET = 14700
+//
+// Raised again, 14,700 -> 14,800, and it is the `check:fanout` shape rather than
+// the trim above: the repo grew by a check script and the budget grew by a row.
+// `check:relaysocket` is the thirty-second, and the table names its own count in
+// its first line, so a script that exists and is not listed makes the file wrong
+// rather than merely incomplete. What is NOT paid for by that precedent is the
+// clause it arrived with — `newPool()`, never `new SimplePool()` — so that one
+// displaced its own prose: the row and the clause were both written twice and cut
+// to the shortest form carrying every fact, which is what took 14,709 to 14,701.
+// The remaining ~99 words are the row's raise and nothing else.
+//
+// Why the rule could not simply be a dependency bump, which is the version of
+// this that would have cost no words at all: the leak is nostr-tools 2.19.4's
+// (nbd-wtf/nostr-tools#550) and upstream fixed it in 2.25.2, but 2.25.2 still
+// carries the `limit: 0` NIP-46 filters that hang `nostrconnect://` pairing. The
+// pin stays, so the fix lives in this repo and needs a rule saying where.
+const BUDGET = 14800
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')
