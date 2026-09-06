@@ -90,6 +90,19 @@
  *    keeps it off the scroll path: a measurement that agrees with the last one
  *    returns before the timer.
  *
+ *    AND THE TWO HALVES MUST BE IN DIFFERENT FRAMES, OR NOTHING IS SETTLED.
+ *    Both `scrollTo` calls in ONE TASK leave the scroll offset exactly where it
+ *    started, so no scroll is ever composited: the nudge runs, costs two
+ *    function calls, and the bar stays stranded behind a transform that is
+ *    already correct. That is how it shipped, and it is the reason this symptom
+ *    was reported again against a build with every other rule here right. At
+ *    the very BOTTOM of the document it is worse than a no-op — the downward
+ *    half is clamped away, so the upward one has to be retried — and that is
+ *    where someone replying to the last note in the feed is standing. The
+ *    restore is relative to where the page is a frame later, not to the
+ *    captured offset, so a nudge landing mid-flick does not yank the reader
+ *    back.
+ *
  * 6. **A pinch-zoomed page is left alone.** Above scale 1 `offsetTop` is a pan
  *    offset in layout pixels against a screen that is no longer painting them
  *    1:1, so correcting by it moves the dock somewhere nobody asked for. The
@@ -150,13 +163,32 @@ export function startKeyboardInsetSync(): () => void {
   let frame = 0;
   /** Whether the current stranded episode has already had its one nudge. */
   let nudged = false;
+  let settleFrame = 0;
 
-  // A one-pixel scroll and back. `scrollTo` with an unchanged offset is a no-op
-  // in WebKit and settles nothing, which is why this moves first.
+  // A one-pixel scroll and back — and THE TWO HALVES MUST BE IN DIFFERENT
+  // FRAMES (rule 5). Both in one task leaves the scroll offset exactly where it
+  // started, so the compositor never sees a scroll at all: the nudge runs,
+  // costs two function calls, and settles nothing. That is how it shipped, and
+  // it is why the bar was still stranded after the transform was correct.
+  //
+  // The restore is relative to wherever the page is a frame later, not to the
+  // captured offset, so a nudge that lands mid-flick does not yank the reader
+  // back. A page too short to scroll cannot be nudged at all — nothing here can
+  // fix that case, and pretending otherwise would hide it.
   const settleFixedLayer = () => {
-    const y = window.scrollY;
-    window.scrollTo(0, y + 1);
-    window.scrollTo(0, y);
+    const before = window.scrollY;
+    window.scrollTo(0, before + 1);
+    let moved = window.scrollY - before;
+    if (moved === 0) {
+      // Already at the bottom, where a downward nudge is clamped away.
+      window.scrollTo(0, before - 1);
+      moved = window.scrollY - before;
+    }
+    if (moved === 0) return;
+    settleFrame = requestAnimationFrame(() => {
+      settleFrame = 0;
+      window.scrollTo(0, window.scrollY - moved);
+    });
   };
 
   const measure = () => {
@@ -215,6 +247,7 @@ export function startKeyboardInsetSync(): () => void {
 
   return () => {
     if (frame) cancelAnimationFrame(frame);
+    if (settleFrame) cancelAnimationFrame(settleFrame);
     if (settleTimer) clearTimeout(settleTimer);
     vv.removeEventListener('resize', schedule);
     vv.removeEventListener('scroll', schedule);

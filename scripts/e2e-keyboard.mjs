@@ -129,13 +129,40 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
       L.resize.forEach((f) => f());
     };
     window.__scrolls = 0;
+    // A frame counter, so a scroll log can say WHICH FRAME each call landed in.
+    // The settle nudge is only a nudge if its two halves are in different ones —
+    // both in the same task leaves the offset where it started and the
+    // compositor sees no scroll at all.
+    window.__frame = 0;
+    (function loop() { window.__frame++; requestAnimationFrame(loop); })();
+    window.__scrollLog = [];
     const real = window.scrollTo.bind(window);
-    window.scrollTo = (...a) => { window.__scrolls++; return real(...a); };
+    window.scrollTo = (...a) => {
+      const r = real(...a);
+      window.__scrolls++;
+      window.__scrollLog.push({ y: Math.round(window.scrollY), f: window.__frame });
+      return r;
+    };
   })();
 `});
 
 await send('Page.navigate', { url: `${APP}/privacy` });
 await wait(2500);
+
+// The nudge needs a document that can actually scroll, and it has to be able to
+// scroll BOTH ways — scenario 6 asserts a real movement, and at the very top or
+// the very bottom one direction is clamped to nothing.
+const makeScrollable = () => js(`(() => {
+  if (!document.getElementById('tall')) {
+    const d = document.createElement('div');
+    d.id = 'tall'; d.style.height = '3000px';
+    document.body.appendChild(d);
+  }
+  window.scrollTo(0, 500);
+  window.__scrollLog.length = 0;
+  window.__scrolls = 0;
+})()`);
+await makeScrollable();
 
 // Every read waits a frame first: the module coalesces its measurement into one
 // rAF on purpose, so an immediate read is reading the state BEFORE the event.
@@ -149,6 +176,8 @@ const read = async () => {
       kb: getComputedStyle(document.documentElement).getPropertyValue('--kb-inset').trim(),
       navBottom: Math.round(r.bottom),
       scrolls: window.__scrolls,
+      scrollY: Math.round(window.scrollY),
+      log: window.__scrollLog.slice(-4),
     });
   })()`));
 };
@@ -225,10 +254,50 @@ check('the tab bar is back on the bottom', s.navBottom, restBottom);
 scrollsBefore = s.scrolls;
 
 console.log(`\n6. ...and the fixed layer is settled after the dismissal animation`);
+// The nudge is what un-strands WebKit's own fixed layer, which our transform
+// cannot reach. Counting the calls is not enough to know it happened: the first
+// version made both calls in ONE TASK, so the offset ended where it started,
+// no scroll was ever composited, and the bar stayed stranded with a transform
+// that was already correct. What is asserted here is that the page MOVED and
+// that the two halves are in DIFFERENT FRAMES.
+// Away from the document bottom first, so the ordinary two-call path is what
+// runs here — focusing the textarea scrolled to it, and it is the last element
+// on the page. The clamped path is 6b.
+await js(`window.scrollTo(0, 500)`);
+const beforeNudge = await read();
+scrollsBefore = beforeNudge.scrolls;
 await wait(600);
 s = await read();
 check('scrollTo ran the nudge (twice: away and back)', s.scrolls - scrollsBefore, 2);
+let [away, back] = s.log.slice(-2);
+check('the first half actually moved the page', away.y - beforeNudge.scrollY, 1);
+check('the second half is in a LATER frame', back.f > away.f, true);
+check('and it put the scroll position back', s.scrollY, beforeNudge.scrollY);
 check('and the dock did not move doing it', s.navBottom, restBottom);
+
+console.log(`\n6b. ...including at the very BOTTOM of the page, where a downward nudge`);
+console.log(`    is clamped away — which is where someone replying to the last note is`);
+await js(`document.getElementById('c').focus()`);
+await js(`window.__vv(${LAYOUT_H - KB})`);
+await read();
+await js(`window.scrollTo(0, 1e6)`);
+const atBottom = await read();
+scrollsBefore = atBottom.scrolls;
+await js(`(() => {
+  const t = document.getElementById('c');
+  t.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+  t.blur();
+})()`);
+await js(`window.__vv(${LAYOUT_H})`);
+await wait(600);
+s = await read();
+check('the clamped half is retried the other way', s.scrolls - scrollsBefore, 3);
+[away, back] = s.log.slice(-2);
+check('so the page still moved', away.y - atBottom.scrollY, -1);
+check('and still in a LATER frame', back.f > away.f, true);
+check('and the scroll position is back', s.scrollY, atBottom.scrollY);
+check('and the dock is on the bottom', s.navBottom, restBottom);
+await js(`window.scrollTo(0, 500)`);
 
 console.log(`\n7. a bounce at the TOP of the document (negative offsetTop) reads as no keyboard`);
 await js(`window.__vv(${LAYOUT_H}, -90)`);
@@ -284,17 +353,29 @@ console.log(`    versions netted off to a NEGATIVE number and published as 0px.`
 // it. Measured off the phone: an 874px screen, a 90px bar at full height,
 // 68.3px of feed below it. Nothing else in this file reaches this state — the
 // bounce scenarios are the same shape with the sign the other way.
+// Away from the document bottom first. Scenarios 8-10 focus the textarea, which
+// `makeScrollable` leaves as the LAST element on the page, so without this the
+// nudge takes the clamped upward retry of 6b and makes three calls rather than
+// two. The count is only stable once the scroll position is stated — which is
+// itself the lesson of 6: a call count says nothing about whether a scroll
+// happened.
+await js(`window.scrollTo(0, 500)`);
 await js(`window.__vv(${LAYOUT_H}, ${STRANDED})`);
 s = await read();
 check('the variable is the leftover', s.kb, `${STRANDED}px`);
 check('the tab bar is pushed back down by exactly that', s.navBottom, restBottom + STRANDED);
 scrollsBefore = s.scrolls;
+const beforeStrandNudge = s.scrollY;
 
 console.log(`\n11b. ...and the nudge runs for it too, because the transform only HIDES`);
 console.log(`     the leftover — a scroll and back is what settles it at the source`);
 await wait(600);
 s = await read();
 check('scrollTo ran the nudge (twice: away and back)', s.scrolls - scrollsBefore, 2);
+[away, back] = s.log.slice(-2);
+check('the first half actually moved the page', away.y - beforeStrandNudge, 1);
+check('the second half is in a LATER frame', back.f > away.f, true);
+check('and it put the scroll position back', s.scrollY, beforeStrandNudge);
 await js(`window.__vv(${LAYOUT_H})`);
 check('and it relaxes when the viewport comes back', (await read()).navBottom, restBottom);
 

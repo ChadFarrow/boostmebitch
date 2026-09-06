@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { startKeyboardInsetSync } from '@/lib/keyboard-inset';
 import { clearShowSelection, useApp } from '@/lib/store';
+import { KbDebug } from './kb-debug';
 
 /**
  * The bottom tab bar — the navigation half of the dock. The mini-player
@@ -141,48 +142,53 @@ export function TabBar() {
   useEffect(() => startKeyboardInsetSync(), []);
 
   return (
-    <nav
-      aria-label="Main"
-      className="fixed inset-x-0 bottom-0 z-30 bg-ink/95 backdrop-blur border-t border-bone/15 pb-[env(safe-area-inset-bottom)]"
-      style={{ transform: 'translateY(var(--kb-inset, 0px))' }}
-    >
-      <div
-        className="max-w-7xl mx-auto grid h-[var(--tabbar-h)]"
-        style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}
+    <>
+      {/* Renders nothing without `?kbdebug=1`. Mounted here because this is the
+          component whose position it reports on. */}
+      <KbDebug />
+      <nav
+        aria-label="Main"
+        className="fixed inset-x-0 bottom-0 z-30 bg-ink/95 backdrop-blur border-t border-bone/15 pb-[env(safe-area-inset-bottom)]"
+        style={{ transform: 'translateY(var(--kb-inset, 0px))' }}
       >
-        {TABS.map((tab) => {
-          if (tab.kind === 'modal') {
+        <div
+          className="max-w-7xl mx-auto grid h-[var(--tabbar-h)]"
+          style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}
+        >
+          {TABS.map((tab) => {
+            if (tab.kind === 'modal') {
+              return (
+                <button
+                  key={tab.label}
+                  type="button"
+                  onClick={() => setWalletOpen(true)}
+                  aria-pressed={walletOpen}
+                  className={itemClass(walletOpen)}
+                >
+                  {tab.icon}
+                  <span>{tab.label}</span>
+                </button>
+              );
+            }
+            const current = tab.match(pathname);
             return (
-              <button
-                key={tab.label}
-                type="button"
-                onClick={() => setWalletOpen(true)}
-                aria-pressed={walletOpen}
-                className={itemClass(walletOpen)}
+              <Link
+                key={tab.href}
+                href={tab.href}
+                // The home tab is the one that must clear the selection — see
+                // the header comment. Harmless elsewhere but not needed: the
+                // other routes read the store as a handoff, not a filter.
+                onClick={tab.href === '/' ? clearShowSelection : undefined}
+                aria-current={current ? 'page' : undefined}
+                className={itemClass(current)}
               >
                 {tab.icon}
                 <span>{tab.label}</span>
-              </button>
+              </Link>
             );
-          }
-          const current = tab.match(pathname);
-          return (
-            <Link
-              key={tab.href}
-              href={tab.href}
-              // The home tab is the one that must clear the selection — see
-              // the header comment. Harmless elsewhere but not needed: the
-              // other routes read the store as a handoff, not a filter.
-              onClick={tab.href === '/' ? clearShowSelection : undefined}
-              aria-current={current ? 'page' : undefined}
-              className={itemClass(current)}
-            >
-              {tab.icon}
-              <span>{tab.label}</span>
-            </Link>
-          );
-        })}
-      </div>
-    </nav>
+          })}
+        </div>
+      </nav>
+    </>
   );
 }
