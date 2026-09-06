@@ -107,6 +107,8 @@ const KEYS = {
   nwcUriSessPrefix: 'bmb:nwc_uri_sess', // + ':<npub>' — NWC URI parked across a same-account sign-out → sign-in in one tab. A SPENDING CREDENTIAL; tab-scoped on purpose.
   amberTab: 'bmb:amber_tab',          // the rid of the Amber request THIS TAB dispatched. Its presence on /amber-callback means the callback replaced the very window that asked, instead of opening a new tab beside it.
   piDead: 'bmb:pi:dead',              // '1' while the Podcast Index breaker is tripped. Survives a reload (an outage doesn't end because someone refreshed), not the tab.
+  launcher: 'bmb:launcher',           // the `android-app://<package>/` package that opened this tab at `/`, per lib/launcher.ts. A package NAME and nothing else; tab-scoped because the referrer belongs to the first document.
+  launcherDismissed: 'bmb:launcher_dismissed', // '1' once the unofficial-app notice was dismissed in this tab.
   // Streaming rate and streaming on/off are SEPARATE keys, at both scopes, so
   // switching streaming off doesn't destroy the number the user typed. Also the
   // prefixes for the per-show overrides `…:<podcastGuid|feedId>`.
@@ -1969,6 +1971,28 @@ export const storage = {
       };
       window.addEventListener('storage', onStorage);
       return () => window.removeEventListener('storage', onStorage);
+    },
+  },
+
+  /** The Android package that opened this tab, per lib/launcher.ts. sessionStorage: the answer belongs to the tab. */
+  launcher: {
+    get: (): string | null => {
+      if (!isBrowser()) return null;
+      try { return sessionStorage.getItem(KEYS.launcher); } catch { return null; }
+    },
+    set: (pkg: string) => {
+      if (!isBrowser()) return;
+      try { sessionStorage.setItem(KEYS.launcher, pkg); } catch { /* blocked */ }
+    },
+  },
+  launcherNoticeDismissed: {
+    get: (): boolean => {
+      if (!isBrowser()) return false;
+      try { return sessionStorage.getItem(KEYS.launcherDismissed) === '1'; } catch { return false; }
+    },
+    set: () => {
+      if (!isBrowser()) return;
+      try { sessionStorage.setItem(KEYS.launcherDismissed, '1'); } catch { /* blocked */ }
     },
   },
 

@@ -104,6 +104,15 @@ export interface Brand {
   userAgent: string;
   /** `<meta name="description">`, the OG description, and the manifest's. */
   description: string;
+  /**
+   * The Android package this deploy's own TWA is published under. Mirrors
+   * `android/twa-manifest*.json` — `check:brand` asserts the two agree — and is
+   * what lib/launcher.ts compares an `android-app://` referrer against, so a
+   * fork of the APK that keeps this origin can be named on screen.
+   */
+  androidPackageId: string;
+  /** Where a person gets the official Android build. */
+  androidAppUrl: string;
 }
 
 const BMB: Brand = {
@@ -120,6 +129,9 @@ const BMB: Brand = {
   userAgent: 'boostmebitch/0.1',
   description:
     'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
+  androidPackageId: 'com.boostmebitch',
+  // The bitch APK ships on GitHub releases; only the buddy app is on Zapstore.
+  androidAppUrl: 'https://github.com/ChadFarrow/boostmebitch/releases',
 };
 
 const BUDDY: Brand = {
@@ -142,6 +154,8 @@ const BUDDY: Brand = {
   userAgent: 'boostmebuddy/0.1',
   description:
     'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
+  androidPackageId: 'com.boostmebuddy',
+  androidAppUrl: 'https://zapstore.dev',
 };
 
 export const BRANDS: Record<BrandId, Brand> = { bmb: BMB, buddy: BUDDY };

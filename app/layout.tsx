@@ -33,6 +33,7 @@ const jetbrainsMono = JetBrains_Mono({
   variable: '--font-mono',
 });
 import { ServiceWorkerRegister } from '@/components/sw-register';
+import { UnofficialAppNotice } from '@/components/unofficial-app-notice';
 import { Player } from '@/components/player';
 import { TabBar } from '@/components/tab-bar';
 import { WalletModalHost } from '@/components/wallet-modal-host';
@@ -281,6 +282,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="absolute inset-0 bg-ink/75" />
         </div>
         <div className="relative z-0">
+          {/* Names an Android wrapper that is not ours, when one opened the
+              site. A notice and never a gate — see lib/launcher.ts. */}
+          <UnofficialAppNotice />
           {children}
           {/* Google OAuth verification requires the privacy policy to be linked
               from the homepage, with the same URL entered on the consent

@@ -107,6 +107,7 @@ for (const v of ID_VECTORS) {
 const REQUIRED = [
   'id', 'displayName', 'shortName', 'wireName', 'domain', 'origin', 'siteNpub',
   'senderName', 'boostSound', 'manifest', 'userAgent', 'description',
+  'androidPackageId', 'androidAppUrl',
 ];
 
 // ---------------------------------------------------------------------------
@@ -140,6 +141,8 @@ const LITERALS = {
     userAgent: 'boostmebitch/0.1',
     description:
       'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
+    androidPackageId: 'com.boostmebitch',
+    androidAppUrl: 'https://github.com/ChadFarrow/boostmebitch/releases',
   },
   buddy: {
     id: 'buddy',
@@ -155,6 +158,8 @@ const LITERALS = {
     userAgent: 'boostmebuddy/0.1',
     description:
       'Search, listen, and boost Podcasting 2.0 shows over Lightning. Sign in with Nostr.',
+    androidPackageId: 'com.boostmebuddy',
+    androidAppUrl: 'https://zapstore.dev',
   },
 };
 
@@ -337,6 +342,13 @@ for (const [rel, allowed] of Object.entries(ALLOWED)) {
   const b = JSON.parse(readFileSync(join(REPO, 'android/twa-manifest-buddy.json'), 'utf8'));
   ok('the two Android apps have different package ids', a.packageId !== b.packageId,
     `both are ${JSON.stringify(a.packageId)}`);
+  // The brand table carries each deploy's package id so the browser can name a
+  // fork of the APK (lib/launcher.ts). A second copy of the id is a copy that
+  // drifts, so it is pinned to the manifest here rather than trusted.
+  ok('BRANDS.bmb.androidPackageId matches android/twa-manifest.json', BRANDS.bmb.androidPackageId === a.packageId,
+    `${JSON.stringify(BRANDS.bmb.androidPackageId)} vs ${JSON.stringify(a.packageId)}`);
+  ok('BRANDS.buddy.androidPackageId matches android/twa-manifest-buddy.json', BRANDS.buddy.androidPackageId === b.packageId,
+    `${JSON.stringify(BRANDS.buddy.androidPackageId)} vs ${JSON.stringify(b.packageId)}`);
   ok('the two Android apps wrap different origins', a.host !== b.host,
     `both are ${JSON.stringify(a.host)}`);
   // Same keystore on purpose: a shared certificate is normal for one
