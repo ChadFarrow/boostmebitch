@@ -1,5 +1,5 @@
 'use client';
-import { memo, useEffect, useId, useState } from 'react';
+import { memo, useEffect, useId, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ModalShell } from './modal-shell';
 import {
@@ -98,7 +98,12 @@ function NoteCardImpl({
     note.author?.display_name?.trim() ||
     note.author?.name?.trim() ||
     shortNpub(note.npub);
-  const visibleReplies = (note.replies ?? []).filter((r) => !mutedPubkeys.has(r.pubkey));
+  // Memoised: this card is `memo`'d, but `mutedPubkeys` changes identity on
+  // every hydrate and there is one of these per note in a feed.
+  const visibleReplies = useMemo(
+    () => (note.replies ?? []).filter((r) => !mutedPubkeys.has(r.pubkey)),
+    [note.replies, mutedPubkeys],
+  );
   const sats =
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)

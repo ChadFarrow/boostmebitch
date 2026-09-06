@@ -168,7 +168,7 @@ export function FavHeart({
   nameTarget?: boolean;
 }) {
   const guid = podcast.podcastGuid;
-  const isFav = useApp((s) => s.isFavorite(guid));
+  const isFav = useApp((s) => !!guid && !!s.favorites[guid]);
   const addFavorite = useApp((s) => s.addFavorite);
   const removeFavorite = useApp((s) => s.removeFavorite);
   const identity = useApp((s) => s.identity);
@@ -240,7 +240,7 @@ export function FavEpisodeRowHeart({
   favorite: FavoriteEpisode;
   size?: Size;
 }) {
-  const isFav = useApp((s) => s.isFavoriteEpisode(favorite.itemGuid));
+  const isFav = useApp((s) => !!favorite.itemGuid && !!s.favoriteEpisodes[favorite.itemGuid]);
   const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
   const removeFavoriteEpisode = useApp((s) => s.removeFavoriteEpisode);
   const identity = useApp((s) => s.identity);
@@ -282,7 +282,7 @@ export function FavFeedRowHeart({
   favorite: FavoritePodcast;
   size?: Size;
 }) {
-  const isFav = useApp((s) => s.isFavorite(favorite.podcastGuid));
+  const isFav = useApp((s) => !!favorite.podcastGuid && !!s.favorites[favorite.podcastGuid]);
   const addFavorite = useApp((s) => s.addFavorite);
   const removeFavorite = useApp((s) => s.removeFavorite);
   const identity = useApp((s) => s.identity);
@@ -338,7 +338,7 @@ export function FavEpisodeHeart({
    * is silent and unrecoverable.
    */
   const containerIsParent = !!podcast?.podcastGuid && podcast.podcastGuid === feedGuid;
-  const isFav = useApp((s) => s.isFavoriteEpisode(itemGuid));
+  const isFav = useApp((s) => !!itemGuid && !!s.favoriteEpisodes[itemGuid]);
   const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
   const removeFavoriteEpisode = useApp((s) => s.removeFavoriteEpisode);
   const identity = useApp((s) => s.identity);
@@ -454,7 +454,7 @@ export function FavTrackHeart({
     split.parentFeedGuid === null
       ? undefined
       : split.parentFeedGuid ?? split.remoteItem?.feedGuid;
-  const isFav = useApp((s) => s.isFavoriteEpisode(itemGuid));
+  const isFav = useApp((s) => !!itemGuid && !!s.favoriteEpisodes[itemGuid]);
   const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
   const removeFavoriteEpisode = useApp((s) => s.removeFavoriteEpisode);
   const identity = useApp((s) => s.identity);

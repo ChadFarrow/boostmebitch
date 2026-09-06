@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { splitAtPosition } from './util';
+import { loadValueSplits } from './podcast-meta';
 import type { Episode, ValueTimeSplit } from './types';
 
 /**
@@ -63,10 +64,9 @@ export function useResolvedSplits(episode: Episode | undefined): ValueTimeSplit[
     }
     let cancelled = false;
     setSplits(null);
-    fetch(`/api/value-splits?feedId=${feedId}&episodeId=${episodeId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!cancelled) setSplits((data?.splits as ValueTimeSplit[]) ?? null);
+    loadValueSplits(feedId, episodeId)
+      .then((list) => {
+        if (!cancelled) setSplits(list);
       })
       .catch(() => {
         // Neither consumer is worth surfacing an error for: the cover falls

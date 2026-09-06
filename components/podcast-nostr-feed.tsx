@@ -1,8 +1,7 @@
 'use client';
-import { useMemo } from 'react';
 import {
   fetchPodcastNotes,
-  noteHasSubstance,
+  useVisibleNotes,
   useNostrFeed,
   indexedPodcastNotes,
   useViewerReposts,
@@ -38,10 +37,7 @@ export function PodcastNostrFeed({
   const identity = useApp((s) => s.identity);
   const mutedPubkeys = useApp((s) => s.mutedPubkeys);
   const repostedIds = useViewerReposts(notes, identity);
-  const visibleNotes = useMemo(
-    () => (notes ? notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)) : notes),
-    [notes, mutedPubkeys],
-  );
+  const visibleNotes = useVisibleNotes(notes, mutedPubkeys);
 
   return (
     <FeedSection

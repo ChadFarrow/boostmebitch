@@ -1,7 +1,7 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { storage } from '../storage';
-import type { DiscoveredNote } from './discover';
+import { noteHasSubstance, type DiscoveredNote } from './discover';
 
 /**
  * Stale-while-revalidate hook for any DiscoveredNote[] surface.
@@ -202,4 +202,23 @@ function richer(existing: DiscoveredNote, incoming: DiscoveredNote): DiscoveredN
     // resolved @name back off the screen.
     mentioned: incoming.mentioned ?? existing.mentioned,
   };
+}
+
+/**
+ * The notes a feed actually renders: the muted authors dropped, and the
+ * notes with nothing to show (`noteHasSubstance`) dropped.
+ *
+ * ONE definition, because the podcast feed and the episode feed each carried a
+ * byte-identical copy of this `useMemo` — the shape that drifts. Memoised on
+ * the two inputs, since a feed can hold hundreds of notes and `mutedPubkeys`
+ * changes identity on every mute-list hydrate.
+ */
+export function useVisibleNotes(
+  notes: DiscoveredNote[] | null,
+  mutedPubkeys: ReadonlySet<string>,
+): DiscoveredNote[] | null {
+  return useMemo(
+    () => (notes ? notes.filter((n) => !mutedPubkeys.has(n.pubkey) && noteHasSubstance(n)) : notes),
+    [notes, mutedPubkeys],
+  );
 }

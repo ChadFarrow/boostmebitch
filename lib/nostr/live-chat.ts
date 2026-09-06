@@ -60,7 +60,12 @@ export function subscribeLiveChat(
 
   // Phase 3 — re-sync backstop.
   const pollOnce = async () => {
-    if (closed) return;
+    // Every other poller in the app gates on `document.hidden`
+    // (lib/use-live-status-poll.ts is the house pattern); a backgrounded tab
+    // otherwise keeps issuing a `querySync` across the live relays every 12 s
+    // for as long as it is open. The `visibilitychange` listener below does
+    // the catch-up poll the moment the tab comes back.
+    if (closed || (typeof document !== 'undefined' && document.hidden)) return;
     try {
       const since = newest ? newest - 30 : Math.floor(Date.now() / 1000) - 3600;
       const events = await pool.querySync(

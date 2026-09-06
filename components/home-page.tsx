@@ -10,7 +10,7 @@ import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { AppHeader } from '@/components/app-header';
 import Link from 'next/link';
 import { useApp } from '@/lib/store';
-import { loadEpisodeFromFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
+import { loadEpisodeFromFeed, loadFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
 import { SEARCH_TYPES, isMusicMedium, isPlaylistMedium } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
@@ -237,9 +237,12 @@ export function HomePage() {
         const id = Number(feedId);
         if (Number.isInteger(id) && id > 0 && piMaybeUp()) {
           try {
-            const res = await fetch(`/api/feed?id=${id}`);
-            if (res.ok) podcast = (await res.json()).podcast ?? null;
-            else if (res.status >= 500) tripPiBreaker();
+            // Through `loadFeed`, never a bare fetch: it is the one place the
+            // URL is built and it coalesces with <EpisodeList>'s own request
+            // for the same feed, which mounts a moment later on this path.
+            const d = await loadFeed({ feedId: id });
+            if (d.status >= 500) tripPiBreaker();
+            else if (d.status < 300) podcast = d.podcast ?? null;
           } catch { /* ignore */ }
         }
       }

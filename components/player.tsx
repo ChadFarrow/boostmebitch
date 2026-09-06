@@ -361,7 +361,10 @@ export function Player() {
     // The video branch above already removes its copy in cleanup. This is the
     // same line; the two branches had simply drifted.
     return () => { el.removeEventListener('loadedmetadata', seekOnLoad); };
-  }, [current?.episode.id, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  // `enclosureUrl` is a dep as well as `id`: an episode object can be enriched
+  // in place (`syncSelectedPodcast`, the /api/feed backfill) and a NEW url on
+  // the same id must re-attach the source; an identical url never re-runs.
+  }, [current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Streaming sats. The engine is a module singleton driven by its own 1 Hz
   // timer reading useApp.getState() — mounted from here because <Player> is the

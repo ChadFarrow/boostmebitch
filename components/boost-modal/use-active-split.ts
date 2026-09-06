@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { Episode, ValueTimeSplit } from '@/lib/types';
 import { hasValueRecipients, splitAtPosition } from '@/lib/util';
+import { loadValueSplits } from '@/lib/podcast-meta';
 
 /**
  * The `<podcast:valueTimeSplit>` redirect in force at the moment the boost modal
@@ -67,16 +68,16 @@ export function useActiveSplit(episode: Episode | undefined, positionSec: number
     }
     let cancelled = false;
     setResolved({ state: 'loading' });
-    // Same endpoint <BoostAllModal> uses, and it answers with a one-hour CDN
-    // cache, so opening the modal twice during a song costs one request.
-    fetch(`/api/value-splits?feedId=${feedId}&episodeId=${episodeId}`)
-      .then((r) => r.json())
-      .then((data) => {
+    // Same endpoint <BoostAllModal> and the track art use, through the one
+    // coalescing loader, so opening the modal while the art is asking costs
+    // one request (and the route answers with a one-hour CDN cache anyway).
+    loadValueSplits(feedId, episodeId)
+      .then((list) => {
         if (cancelled) return;
         // Re-run the SAME window rule over the resolved list rather than
         // matching the unresolved window against it by guid: one rule, one
         // place, and no second definition of "which split is this" to drift.
-        const split = splitAtPosition((data.splits as ValueTimeSplit[]) ?? [], frozen);
+        const split = splitAtPosition(list ?? [], frozen);
         setResolved(
           split && hasValueRecipients(split.value)
             ? { state: 'ready', split }
