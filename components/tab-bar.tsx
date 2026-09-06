@@ -1,6 +1,8 @@
 'use client';
+import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { startKeyboardInsetSync } from '@/lib/keyboard-inset';
 import { clearShowSelection, useApp } from '@/lib/store';
 
 /**
@@ -24,6 +26,13 @@ import { clearShowSelection, useApp } from '@/lib/store';
  * `<HomePage>`'s bottom padding) reads `--dock-b`, never a literal. The two
  * full-viewport overlays are the exception and still pay the inset: they cover
  * this bar rather than stacking on it.
+ *
+ * THE ON-SCREEN KEYBOARD. `translateY(var(--kb-inset))` parks the whole dock
+ * at the layout bottom — behind the keyboard — while a field is focused, and is
+ * the identity every other moment. Without it iOS carries the fixed layer up
+ * with the visual viewport and does not always give the offset back, leaving
+ * the bar stranded in the middle of the page after a reply. This component
+ * mounts the one publisher of that variable; see `lib/keyboard-inset.ts`.
  *
  * z-30, level with the mini-bar and below `<FullscreenPlayer>`'s z-50 and
  * `<ModalShell>`'s z-[60], so the expanded player and every dialog cover it
@@ -124,10 +133,15 @@ export function TabBar() {
   const walletOpen = useApp((s) => s.walletOpen);
   const setWalletOpen = useApp((s) => s.setWalletOpen);
 
+  // Mounted here rather than in the layout because this is the component the
+  // variable exists for, and it is on every route already.
+  useEffect(() => startKeyboardInsetSync(), []);
+
   return (
     <nav
       aria-label="Main"
       className="fixed inset-x-0 bottom-0 z-30 bg-ink/95 backdrop-blur border-t border-bone/15 pb-[env(safe-area-inset-bottom)]"
+      style={{ transform: 'translateY(var(--kb-inset, 0px))' }}
     >
       <div
         className="max-w-7xl mx-auto grid h-[var(--tabbar-h)]"
