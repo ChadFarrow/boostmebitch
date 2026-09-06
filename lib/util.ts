@@ -413,9 +413,20 @@ export function liveShowToPodcast(s: LiveShow): Podcast {
  * with no declared end is the one shape this gets wrong, and it is rare enough
  * to be worth the trade.
  *
- * **`pending` is never over.** A scheduled item's `end` is in the future by
- * definition, and an item whose start has passed but which has not been flipped
- * to `live` is a host running late, not a broadcast that finished.
+ * **IT IGNORES `status`, AND THAT IS THE SECOND THING MEASUREMENT CHANGED.**
+ * This first shipped as "`pending` is never over", on the reasoning that a
+ * scheduled item's end is in the future by definition and an item whose start
+ * has passed is a host running late. Both are true for hours and false for
+ * months. Before The Sch3m3s was serving
+ * `status="pending" end="2025-03-10T04:30:00.000Z"` on 2026-09-06 — a broadcast
+ * scheduled EIGHTEEN MONTHS earlier that never aired and was never cleared, and
+ * it sat at the top of Upcoming under a start date in the past.
+ *
+ * So the window is what matters and the flag is what does not, whichever flag
+ * it is: a declared `end` that has passed means this did not happen or is no
+ * longer happening, and neither reading belongs on a page about what is on now.
+ * A host running late is still covered, because lateness is measured against
+ * `end` where one exists and against a whole day where one does not.
  */
 export const MAX_UNBOUNDED_LIVE_SECS = 24 * 60 * 60;
 
@@ -423,13 +434,13 @@ export function liveBroadcastIsOver(
   item: { status?: string; startTime?: number; endTime?: number },
   nowSec: number,
 ): boolean {
-  if (item.status !== 'live') return false;
-  // The publisher's own end time wins over the flag it sits beside.
+  // The publisher's own end time is the authoritative half, and it outranks
+  // both the status flag beside it and the ceiling below it.
   if (typeof item.endTime === 'number' && Number.isFinite(item.endTime)) {
     return item.endTime < nowSec;
   }
   // No declared end: fall back to a generous ceiling on how long a broadcast
-  // nobody has ended is still believable.
+  // nobody has ended — or a schedule nobody has updated — stays believable.
   if (typeof item.startTime === 'number' && Number.isFinite(item.startTime)) {
     return nowSec - item.startTime > MAX_UNBOUNDED_LIVE_SECS;
   }

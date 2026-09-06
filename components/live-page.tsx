@@ -14,7 +14,7 @@ import { AppHeader } from '@/components/app-header';
 import { CopyLinkButton } from '@/components/copy-link-button';
 import { FavHeart } from '@/components/fav-heart';
 import { LiveBadge } from '@/components/live-badge';
-import { PodcastCover } from '@/components/podcast-cover';
+import { LiveCard, LIVE_GRID } from '@/components/live-card';
 
 /**
  * `/live` — everything on air, from both of this app's live sources.
@@ -441,13 +441,13 @@ function ShowGroup({
       {caption && <p className="text-muted text-xs mb-3 max-w-2xl">{caption}</p>}
 
       {showSkeletons ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className={LIVE_GRID}>
           {[0, 1, 2].map((i) => (
             <div key={i} className="card h-28 animate-pulse opacity-40" />
           ))}
         </div>
       ) : shows.length ? (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <div className={LIVE_GRID}>
           {shows.map((s) => (
             // Keyed by guid where the publisher gave one, because the id a row
             // carries can legitimately change between polls: a verified row is
@@ -497,29 +497,15 @@ function ShowCard({ show }: { show: LiveShow }) {
   }
 
   return (
-    <div className="card p-3 flex gap-3">
-      <button
-        type="button"
-        onClick={() => playable && play(episode, podcast)}
-        disabled={!playable}
-        title={pending ? 'Not started yet' : `Play ${show.title}`}
-        className="shrink-0 disabled:opacity-60 disabled:cursor-not-allowed"
-      >
-        <PodcastCover
-          image={show.image}
-          artwork={show.feedImage}
-          title={show.feedTitle ?? show.title}
-          seed={show.podcastGuid ?? String(show.feedId)}
-          // The width is an ALLOWLIST, not a free integer — each (url, width)
-          // is a CDN cache key. 160 is the smallest offered and the closest
-          // above this 64px box at 2x.
-          w={160}
-          className="w-16 h-16 rounded"
-        />
-      </button>
-
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 mb-1 flex-wrap">
+    <LiveCard
+      image={show.image}
+      artwork={show.feedImage}
+      title={show.feedTitle ?? show.title}
+      seed={show.podcastGuid ?? String(show.feedId)}
+      onArtClick={playable ? () => play(episode, podcast) : undefined}
+      artLabel={playable ? `Play ${show.title}` : undefined}
+      badges={
+        <>
           <LiveBadge status={show.liveStatus} />
           {!show.verified && (
             <span
@@ -529,10 +515,11 @@ function ShowCard({ show }: { show: LiveShow }) {
               UNCHECKED
             </span>
           )}
-        </div>
-
-        {/* The SHOW is the primary line. On a directory the reader is scanning
-            for the show; on the show's own page the episode is the subject. */}
+        </>
+      }
+      heading={
+        /* The SHOW is the primary line. On a directory the reader is scanning
+           for the show; on the show's own page the episode is the subject. */
         <button
           type="button"
           onClick={openShow}
@@ -541,16 +528,21 @@ function ShowCard({ show }: { show: LiveShow }) {
         >
           {show.feedTitle ?? show.title}
         </button>
-        {show.feedTitle && show.title !== show.feedTitle && (
+      }
+      sub={
+        show.feedTitle && show.title !== show.feedTitle ? (
           <p className="text-muted text-xs truncate">{show.title}</p>
-        )}
-        {show.liveStartTime != null && (
-          <p className="text-muted text-xs">
+        ) : undefined
+      }
+      meta={
+        show.liveStartTime != null ? (
+          <p className={`text-xs font-mono ${pending ? 'text-bolt' : 'text-nostr'}`}>
             {pending ? 'starts' : 'started'} {fmtLiveTime(show.liveStartTime)}
           </p>
-        )}
-
-        <div className="flex items-center gap-2 mt-2 flex-wrap">
+        ) : undefined
+      }
+      actions={
+        <>
           <button
             type="button"
             onClick={() => playable && play(episode, podcast)}
@@ -571,8 +563,8 @@ function ShowCard({ show }: { show: LiveShow }) {
             className="btn-mini"
           />
           {boostable && <span className="stamp text-bolt border-bolt/60">V4V</span>}
-        </div>
-      </div>
-    </div>
+        </>
+      }
+    />
   );
 }
