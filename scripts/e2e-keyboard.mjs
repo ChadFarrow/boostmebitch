@@ -44,6 +44,11 @@ const HEADED = process.argv.includes('--headed');
 const LAYOUT_H = 800;
 const WIDTH = 390;
 const KB = 300;
+// What iOS's own bottom toolbar covers when it re-expands, and the shortest
+// keyboard that has to keep working. Everything between them is the judgement
+// the module makes; see MIN_KEYBOARD_PX in lib/keyboard-inset.ts.
+const CHROME_H = 51;
+const SHORT_KB = 162;
 
 const appUp = await fetch(`${APP}/privacy`).then((r) => r.ok).catch(() => false);
 if (!appUp) {
@@ -224,6 +229,45 @@ await js(`window.__vv(${LAYOUT_H}, -90)`);
 s = await read();
 check('the variable is 0px', s.kb, '0px');
 check('the tab bar has not moved', s.navBottom, restBottom);
+
+console.log(`\n8. the keyboard closes but the field KEEPS FOCUS, and the browser's own`);
+console.log(`   bottom chrome takes its height back — not a keyboard, and the dock`);
+console.log(`   must not move`);
+// iOS's bottom toolbar collapses on a downward scroll and re-expands on an
+// upward one, and it shrinks the VISUAL viewport by its own height while the
+// layout viewport is unchanged: the same shape as a keyboard, an order of
+// magnitude smaller. The focus test cannot answer it, because the field really
+// is still focused — iOS leaves it focused when the keyboard is dismissed by a
+// scroll — so this reads as a ~50px keyboard that follows the scroll DIRECTION.
+// Reported off a phone as "returns to the bottom when I scroll down but moves
+// back up when I scroll up".
+await js(`document.getElementById('c').focus()`);
+await js(`window.__vv(${LAYOUT_H - CHROME_H})`);
+s = await read();
+check('the variable is 0px', s.kb, '0px');
+check('the tab bar has not moved', s.navBottom, restBottom);
+
+console.log(`\n9. ...and the bounce of scenario 7 with the field still focused`);
+// Scenario 7 passes on the focus test alone, so it says nothing about the case
+// the phone actually hits: the bounce happens while the composer is focused. A
+// negative offsetTop means the visual viewport has travelled ABOVE the layout
+// viewport, which is displacement and not coverage.
+await js(`window.__vv(${LAYOUT_H}, -90)`);
+s = await read();
+check('the variable is 0px', s.kb, '0px');
+check('the tab bar has not moved', s.navBottom, restBottom);
+
+console.log(`\n10. ...and a SHORT keyboard is still a keyboard`);
+// The must-still-work half of 8, and the reason the floor is a floor rather
+// than a bigger number: an iPhone's landscape keyboard is about a fifth of the
+// screen, far below the portrait one this file otherwise fakes. Raising the
+// floor past this brings back the bug #342 exists for, on landscape only.
+await js(`window.__vv(${LAYOUT_H - SHORT_KB})`);
+s = await read();
+check('the variable is the covered height', s.kb, `${SHORT_KB}px`);
+check('the tab bar is pushed down by exactly that', s.navBottom, restBottom + SHORT_KB);
+await js(`(() => { const t = document.getElementById('c'); t.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); t.blur(); })()`);
+await js(`window.__vv(${LAYOUT_H})`);
 
 ws.close();
 stopChrome();
