@@ -1,21 +1,31 @@
 // NWC / NIP-47 payments using @getalby/sdk.
 // When v4v-toolkit ships its own NWC client, swap this file's imports.
+//
+// **This module is loaded with `import()`, never statically, from anything in
+// the first-load graph** — see lib/v4v/nwc-state.ts, which holds the SDK-free
+// half (connect state, the URI, the method cache, the observable) and is what
+// components and the streaming engine import. `boost.ts` loads this module
+// once at the top of `sendBoost`; the balance chip loads it inside its effect;
+// `<NwcWallet>` is a `next/dynamic` import. Re-adding a static import of this
+// file from a component puts the SDK back into every route's first load.
 
 import { nwc } from '@getalby/sdk';
-import { storage } from '../storage';
 // The budget arithmetic lives in `lib/util.ts` so `npm run check:nwcbudget`
-// can load the shipping functions under plain Node — this module imports
-// `../storage` and the SDK, and cannot be loaded that way.
+// can load the shipping functions under plain Node — this module imports the
+// SDK (and, through nwc-state, `../storage`) and cannot be loaded that way.
 import { parseNwcBudget, spendableSats, type NwcBudget } from '../util';
-import { createObservable } from '../pubsub';
 import { createLeasePool, type Lease } from './lease';
+import {
+  hasNwc,
+  loadNwcUri,
+  nwcGetMethods,
+  registerNwcClientHooks,
+  setNwcMethods,
+} from './nwc-state';
 
-// Components reading hasNwc() during render need to refresh when an outside
-// actor flips the connect state — most commonly the wallet modal showing the
-// connect form alongside another component reading the same flag. The Spark
-// rail uses the same pattern (lib/v4v/spark.ts:subscribeSpark).
-const { subscribe: subscribeNwc, notify } = createObservable();
-export { subscribeNwc };
+// Re-exported so the sites that load this module still find the state half
+// under one import.
+export { subscribeNwc, hasNwc, loadNwcUri, saveNwcUri, clearNwcUri, nwcGetMethods } from './nwc-state';
 
 // The NIP-47 error classification lives in `nwc-errors.ts` so it can load under
 // plain Node and be pinned by `npm run check:nwcerror` — this module imports
@@ -47,54 +57,6 @@ export {
   shouldDemoteAddress,
 };
 
-// Cached methods list from the last successful get_info call. Populated by
-// nwcValidate (at connect time) and nwcFetchCapabilities (lazy on card mount).
-// Null means "we don't know" — and so does an EMPTY list, deliberately: see
-// nwcGetMethods.
-let cachedNwcMethods: string[] | null = null;
-
-/**
- * Record the method list both in memory and in localStorage, tagged with the
- * URI it belongs to. Connect-time validation is the main writer: capturing it
- * there means the boost path never has to ask the wallet what it can do.
- *
- * `uri` is passed explicitly during validation because the connection hasn't
- * been saved yet at that point.
- *
- * An empty list is deliberately NOT persisted. It carries no information (the
- * wallet answered but told us nothing), and writing it created a permanent
- * latch: the persisted `[]` read back as a settled answer, so the connection
- * could never be re-probed for the life of that URI.
- */
-function setNwcMethods(methods: string[], uri?: string): string[] {
-  cachedNwcMethods = methods;
-  const target = uri ?? loadNwcUri();
-  if (target && methods.length) storage.nwcMethods.set({ uri: target, methods });
-  return methods;
-}
-
-/**
- * Supported NIP-47 methods for the current connection, or null when we don't
- * know. Falls back to the persisted record so the answer survives a page
- * reload — but only when it was captured for the URI that's connected now, so
- * switching wallets can't inherit the old one's capabilities.
- *
- * **An empty list counts as "don't know," not "fetched, empty."** Some wallets
- * omit `methods` from their `get_info` response entirely, and `[]` is truthy
- * in JS — so returning it here handed callers a confident "this wallet can do
- * nothing," permanently disabling the keysend upgrade for a wallet that may
- * well support it. Callers that need certainty must treat null as unknown and
- * decide for themselves (see railCanKeysend's tri-state).
- */
-export const nwcGetMethods = (): string[] | null => {
-  if (cachedNwcMethods?.length) return cachedNwcMethods;
-  const rec = storage.nwcMethods.get();
-  const uri = loadNwcUri();
-  if (!rec || !uri || rec.uri !== uri || !rec.methods.length) return null;
-  cachedNwcMethods = rec.methods;
-  return cachedNwcMethods;
-};
-
 /** Fetch and cache the wallet's supported methods. No-op if not connected. */
 export async function nwcFetchCapabilities(): Promise<string[]> {
   if (!hasNwc()) return [];
@@ -106,44 +68,6 @@ export async function nwcFetchCapabilities(): Promise<string[]> {
     return nwcGetMethods() ?? [];
   }
 }
-
-// Re-export the URI accessors so existing call sites keep their imports.
-// Drops the in-memory list only. The persisted record is uri-tagged, so if
-// this save is the one that follows nwcValidate (same URI) the connect-time
-// capability is still readable; a genuinely different URI won't match it.
-//
-// Every connect path funnels through here — paste, the Nostr-backup auto
-// restore, the manual restore button, and the login-time restore in
-// loadProfile — so this is where we make sure the wallet's capabilities are
-// settled at connect rather than during a boost. Fire-and-forget: it's a
-// prefetch, and a failure just defers the question to the first boost. The
-// guard makes it a no-op on the paste path, where nwcValidate already
-// recorded the methods for this URI.
-export const saveNwcUri = (uri: string) => {
-  storage.nwcUri.set(uri);
-  cachedNwcMethods = null;
-  budgetUnsupportedFor = null;
-  // Drop any socket held against the previous wallet. `acquire` also catches a
-  // URI change, but only on the next call — this makes it immediate, and a
-  // shared client outliving the wallet it authenticates to is worth no window
-  // at all.
-  disposeNwcClient();
-  notify();
-  if (!nwcGetMethods()) void nwcFetchCapabilities().catch(() => {});
-};
-export const loadNwcUri = () => storage.nwcUri.get();
-export const clearNwcUri = () => {
-  storage.nwcUri.clear();
-  storage.nwcMethods.clear();
-  cachedNwcMethods = null;
-  budgetUnsupportedFor = null;
-  // MUST be explicit here, not left to `acquire`: with no URI stored, `acquire`
-  // throws before it can compare, so a disconnect would otherwise strand the
-  // socket until the idle timer happened to fire.
-  disposeNwcClient();
-  notify();
-};
-export const hasNwc = () => storage.nwcUri.has();
 
 /**
  * ONE shared NIP-47 client, leased by every caller and closed when idle.
@@ -507,3 +431,16 @@ export async function nwcKeysend(args: {
     throw mapNwcError(e);
   }
 }
+
+// The two things a URI change needs from THIS half, handed to the state half
+// now that it is loaded: drop the shared client (and the per-wallet budget
+// verdict), and prefetch the wallet's capabilities. See nwc-state.ts.
+registerNwcClientHooks({
+  reset() {
+    budgetUnsupportedFor = null;
+    disposeNwcClient();
+  },
+  prefetchCapabilities() {
+    void nwcFetchCapabilities().catch(() => {});
+  },
+});

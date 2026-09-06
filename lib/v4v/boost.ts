@@ -5,17 +5,7 @@
 // import from there and delete the bodies of the helpers below.
 
 import type { Boostagram, ValueBlock, ValueRecipient, BoostResult } from '@/lib/types';
-import {
-  hasNwc,
-  nwcFetchCapabilities,
-  nwcGetMethods,
-  nwcKeysend,
-  nwcPayInvoice,
-  NwcNotAttemptedError,
-  NwcIndeterminateError,
-  routingFailureProvesUnpaid,
-  shouldDemoteAddress,
-} from './nwc';
+import { hasNwc, nwcGetMethods } from './nwc-state';
 import { hasWebln, weblnKeysend, weblnPayInvoice, WeblnNotAttemptedError } from './webln';
 import { hasSpark, sparkPayInvoice } from './spark';
 import { fetchLnInvoice } from './lnaddr';
@@ -46,6 +36,38 @@ export type { BoostResult };
 // NWC (explicit user setup) > Spark (auto-provisioned self-custodial) >
 // WebLN (browser extension fallback). Users can override per-boost in the
 // modal; this is just the default.
+/**
+ * The SDK-bearing half of the NWC rail, loaded on demand.
+ *
+ * `lib/v4v/nwc.ts` imports `@getalby/sdk` at module top level, and this file
+ * is in the first load of every route (via the streaming engine and the boost
+ * modal). A static import here put the NIP-47 client in front of a visitor
+ * with no wallet. So it is `import()`ed ONCE, at the top of `sendBoost`, before
+ * any leg is paid — for every rail, because the retry arms in `payOne` read
+ * `NwcNotAttemptedError`, `NwcIndeterminateError`, `routingFailureProvesUnpaid`
+ * and `shouldDemoteAddress` from it whichever rail paid. A chunk that fails to
+ * load therefore fails the BOOST, before a sat has moved — never a leg after
+ * one. `nwcEngine()` is the synchronous accessor the legs use once it is in.
+ */
+type NwcEngine = typeof import('./nwc');
+let nwcEngineModule: NwcEngine | null = null;
+let nwcEngineLoading: Promise<NwcEngine> | null = null;
+export function loadNwcEngine(): Promise<NwcEngine> {
+  if (nwcEngineModule) return Promise.resolve(nwcEngineModule);
+  nwcEngineLoading ??= import('./nwc').then((m) => {
+    nwcEngineModule = m;
+    return m;
+  }).catch((e) => {
+    nwcEngineLoading = null;
+    throw e;
+  });
+  return nwcEngineLoading;
+}
+function nwcEngine(): NwcEngine {
+  if (!nwcEngineModule) throw new Error('payment engine not loaded — call loadNwcEngine() first');
+  return nwcEngineModule;
+}
+
 export function pickRail(): Rail | null {
   const pref = storage.railPref.get();
   if (pref === 'nwc' && hasNwc()) return 'nwc';
@@ -138,7 +160,7 @@ async function payLnurl(
     message: boostagram.message,
   });
   let preimage: string;
-  if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);
+  if (rail === 'nwc') preimage = await nwcEngine().nwcPayInvoice(invoice);
   else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
   else preimage = await weblnPayInvoice(invoice);
   return {
@@ -169,7 +191,7 @@ async function payKeysend(
     name: recipient.name,
   };
   if (rail === 'nwc') {
-    const preimage = await nwcKeysend({
+    const preimage = await nwcEngine().nwcKeysend({
       pubkey: recipient.address,
       amount_msat: sats * 1000,
       tlv_records: tlvHexFor(recPerRecipient, recipient),
@@ -232,7 +254,7 @@ async function railCanKeysend(rail: Rail): Promise<KeysendCapability> {
   // empty list" — an empty list is no evidence either way.
   let methods = nwcGetMethods();
   if (!methods) {
-    await nwcFetchCapabilities();
+    await nwcEngine().nwcFetchCapabilities();
     methods = nwcGetMethods();
   }
   if (!methods) return 'unknown';
@@ -342,6 +364,7 @@ async function payOne(
       // reach it, because `nwc-errors.ts` has to stay loadable under plain Node
       // and so cannot import a browser-only module. Hence the union here rather
       // than one predicate — and hence the ordering: read the refusal first.
+      const { NwcNotAttemptedError, NwcIndeterminateError, routingFailureProvesUnpaid, shouldDemoteAddress } = nwcEngine();
       const refused = e instanceof NwcNotAttemptedError || e instanceof WeblnNotAttemptedError;
       // `shouldDemoteAddress` holds the rule — DEMOTE ONLY WHAT COULD NOT BE
       // RESCUED — because the two decisions read the same two facts and had
@@ -428,7 +451,7 @@ async function payOne(
     // and both timeout leaves outright, ahead of reading any message. That
     // exclusion is the load-bearing half of `routingFailureProvesUnpaid` —
     // "the wallet never answered" outranks whatever its text happened to say.
-    const indeterminate = e instanceof NwcIndeterminateError;
+    const indeterminate = e instanceof nwcEngine().NwcIndeterminateError;
     return { ...base, ok: false, indeterminate, error: e?.message ?? String(e) };
   }
 }
@@ -456,6 +479,14 @@ export async function sendBoost(args: {
   // recipient mid-send.
   onProgress?: (r: BoostResult, index: number, total: number) => void;
 }): Promise<BoostResult[]> {
+  // Before ANY leg: the retry arms below read the NWC error classes whichever
+  // rail pays, and a payment engine that cannot load must fail the boost while
+  // nothing has moved, not a leg after something has.
+  try {
+    await loadNwcEngine();
+  } catch (e) {
+    throw new Error(`payment engine failed to load — nothing was sent (${e instanceof Error ? e.message : String(e)})`);
+  }
   const rail = args.rail ?? pickRail();
   if (!rail) throw new Error('No payment provider available (connect NWC, Spark, or WebLN)');
 

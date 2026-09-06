@@ -14,7 +14,6 @@ import { bech32 } from '@scure/base';
 import type { EventTemplate } from 'nostr-tools';
 import type { Boostagram, ValueRecipient } from '../types';
 import { buildLnurlComment } from '../util';
-import { nwcPayInvoice } from './nwc';
 import { sparkPayInvoice } from './spark';
 import { weblnPayInvoice } from './webln';
 import { pickRail, type Rail } from './boost';
@@ -214,7 +213,9 @@ export async function sendZap(args: {
 
   let preimage: string;
   try {
-    if (rail === 'nwc') preimage = await nwcPayInvoice(invoice);
+    // Loaded here, not at module top: `sendZap` is reached from the boost modal,
+    // which is in every route's first load. See lib/v4v/nwc-state.ts.
+    if (rail === 'nwc') preimage = await (await import('./nwc')).nwcPayInvoice(invoice);
     else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
     else preimage = await weblnPayInvoice(invoice);
   } catch (e) {

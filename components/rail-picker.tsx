@@ -1,5 +1,5 @@
 'use client';
-import { hasNwc } from '@/lib/v4v/nwc';
+import { hasNwc } from '@/lib/v4v/nwc-state';
 import { hasSpark } from '@/lib/v4v/spark';
 import { hasWebln } from '@/lib/v4v/webln';
 import type { Rail } from '@/lib/v4v/boost';

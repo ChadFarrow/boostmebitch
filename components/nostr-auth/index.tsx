@@ -27,7 +27,7 @@ import {
   type NostrIdentity,
 } from '@/lib/nostr';
 import { hasSpark, sparkDisconnect, sparkInitFromMnemonic, sparkSeedIsActive } from '@/lib/v4v/spark';
-import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
+import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc-state';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -38,7 +38,7 @@ import { resetFollows } from '@/lib/nostr/follows';
 import { deriveSparkFromLocalKey } from './provision-spark';
 import { AccountMenu } from './account-menu';
 import { SignInModal } from './sign-in-modal';
-import { markNwcRestored } from '../nwc-wallet';
+import { markNwcRestored } from '@/lib/v4v/nwc-state';
 
 // Module-level promise cache keyed by pubkey, so the same loadProfile call
 // isn't fired twice when React remounts the component (StrictMode in dev,

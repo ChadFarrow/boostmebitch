@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { subscribeNwc } from './v4v/nwc';
+import { subscribeNwc } from './v4v/nwc-state';
 import { subscribeSpark } from './v4v/spark';
 import { subscribeWebln } from './v4v/webln';
 import { subscribeRailPref } from './storage';
