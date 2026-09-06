@@ -273,7 +273,7 @@ The wordmark is a `<button>` on `/` (where "home" means clearing the search and 
 
 ## The dock: `<TabBar>` and the two layout variables
 
-**Navigation is a bottom tab bar on every route** (`components/tab-bar.tsx`, mounted in the root layout beside `<Player>`). Search / Favorites / Wallet. It exists because `<AppHeader>`'s right-hand cluster had zero slack and every link added there came off the wordmark — the measurements are in the header section above, and they are why this is a move rather than a re-division.
+**Navigation is a bottom tab bar on every route** (`components/tab-bar.tsx`, mounted in the root layout beside `<Player>`). Home / Favorites / Wallet. It exists because `<AppHeader>`'s right-hand cluster had zero slack and every link added there came off the wordmark — the measurements are in the header section above, and they are why this is a move rather than a re-division.
 
 **Playlists is deliberately not a tab.** Playlists are content, not a destination; the two ways in are documented in the playlists section. **Live is the one destination still missing** — it needs an index route, since today live streams are a section of `/` and `/live/<npub>` is one stream. It is one more entry in `TABS` when that exists.
 

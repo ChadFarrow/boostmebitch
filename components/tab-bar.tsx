@@ -44,7 +44,7 @@ import { clearShowSelection, useApp } from '@/lib/store';
  *
  * THE HOME TAB CLEARS THE SELECTION. The store is module-level and survives
  * a route change on purpose (see `<AppHeader>`'s wordmark for the same rule):
- * without `clearShowSelection` a tap on Search from /favorites re-opens the
+ * without `clearShowSelection` a tap on Home from /favorites re-opens the
  * last show the visitor had open, and the selection-to-URL mirror rewrites
  * the address bar to `?podcast=<old>`.
  *
@@ -82,12 +82,12 @@ const TABS: Tab[] = [
   {
     kind: 'link',
     href: '/',
-    label: 'Search',
+    label: 'Home',
     match: (p) => p === '/',
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
-        <circle cx="11" cy="11" r="7" />
-        <path d="m20 20-3.5-3.5" />
+        <path d="M3 10.5 12 3l9 7.5" />
+        <path d="M5.5 9.5V20h13V9.5" />
       </svg>
     ),
   },
