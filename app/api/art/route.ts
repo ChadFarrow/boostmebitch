@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import sharp from 'sharp';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch, readCappedBytes } from '@/lib/safe-fetch';
+import { safeFetch } from '@/lib/safe-fetch';
+import { readCappedBytes } from '@/lib/capped-body';
 import { artTypeVerdict, artWidth } from '@/lib/util';
 
 /**
@@ -121,6 +122,16 @@ export async function GET(req: Request) {
       // the artwork itself.
       limitInputPixels: 24_000_000,
     })
+      // A wall-clock budget on the decode+resize itself. The pixel ceiling
+      // bounds the working set; it does not bound the TIME a pathological but
+      // legal image costs libvips, and the bytes come from a feed-supplied URL
+      // at 300 requests a minute. Three seconds is an order of magnitude above
+      // a real cover. A timeout rejects into the catch below → 502 → the
+      // `artCandidates` ladder falls through to the raw URL, like every other
+      // refusal here. `sharp.concurrency(1)` at module scope was considered —
+      // it would stop N concurrent decodes oversubscribing a small lambda —
+      // and rejected: it serialises every cover behind the slowest one.
+      .timeout({ seconds: 3 })
       // `inside`, NEVER `cover`: this route RESIZES, and the surface that
       // draws the picture decides whether to CROP it. A server-side square
       // crop is a decision no caller can undo — every tile here is a square

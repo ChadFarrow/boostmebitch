@@ -9,6 +9,7 @@ import {
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
 import { useMediaSession } from './player/use-media-session';
+import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
 import { hasValueRecipients, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
@@ -361,7 +362,10 @@ export function Player() {
     // The video branch above already removes its copy in cleanup. This is the
     // same line; the two branches had simply drifted.
     return () => { el.removeEventListener('loadedmetadata', seekOnLoad); };
-  }, [current?.episode.id, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  // `enclosureUrl` is a dep as well as `id`: an episode object can be enriched
+  // in place (`syncSelectedPodcast`, the /api/feed backfill) and a NEW url on
+  // the same id must re-attach the source; an identical url never re-runs.
+  }, [current?.episode.id, current?.episode.enclosureUrl, videoMode, reloadNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Streaming sats. The engine is a module singleton driven by its own 1 Hz
   // timer reading useApp.getState() — mounted from here because <Player> is the
@@ -485,7 +489,7 @@ export function Player() {
       window.removeEventListener('focus', onForeground);
       if (resumeTimer.current) { clearTimeout(resumeTimer.current); resumeTimer.current = null; }
     };
-  }, [current?.episode.enclosureUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [current?.episode.enclosureUrl]);
 
   // PiP applies to the <video> path (HLS stream or a video alternateEnclosure);
   // recompute when the item OR the audio/video mode changes. The <video> is
@@ -528,6 +532,11 @@ export function Player() {
     lastTick.current = Math.floor(clamped);
     setPosition(clamped);
   }, [setPosition]);
+
+  // Space / k, ← / j, → / l — document-wide, guarded so a key pressed while
+  // typing or on a focused control is left alone. See the hook.
+  const togglePlay = useCallback(() => setPlaying(!isPlayingRef.current), [setPlaying]);
+  usePlayerHotkeys({ enabled: !!current, togglePlay, skipBy });
 
   // Single chapters fetch for the whole player — passed down to <FullscreenPlayer>
   // so it isn't fetched twice. No-ops on an empty url (music/live/no tag). Above
@@ -857,6 +866,11 @@ export function Player() {
                       max={duration || 0}
                       value={positionSec}
                       onChange={(e) => seekMedia(Number(e.target.value))}
+                      // The scrub control of a podcast player announced as
+                      // "slider, 412" without these — a name, and the value in
+                      // the clock form the sighted user reads beside it.
+                      aria-label="Seek"
+                      aria-valuetext={fmt(positionSec)}
                     />
                   </div>
                   <span className="text-[10px] text-muted tabular-nums">{fmt(duration)}</span>

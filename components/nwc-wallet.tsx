@@ -5,6 +5,7 @@ import {
   hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate,
   nwcFetchCapabilities, nwcGetMethods, nwcGetBudget, type NwcBudget,
 } from '@/lib/v4v/nwc';
+import { markNwcRestored, wasNwcRestored, clearNwcRestored } from '@/lib/v4v/nwc-state';
 import {
   publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, fetchEncryptedNwcDetailed,
   getNip44, isAmberActive,
@@ -104,15 +105,6 @@ function BackupToggle({ checked, disabled, canBackup, signedIn, amber, onToggle 
 // Module-scope Set so reopening the modal doesn't re-run the relay query.
 const autoCheckedNpubs = new Set<string>();
 
-// Set whenever a connection is restored from the Nostr backup (login-time,
-// form auto-check, or the manual button). The connected card shows a one-time
-// "✓ Restored" confirmation and clears the flag when it unmounts, so the
-// notice appears on the first wallet-modal view after a restore and not on
-// every open thereafter.
-let restoredFromBackupNpub: string | null = null;
-export function markNwcRestored(npub: string) {
-  restoredFromBackupNpub = npub;
-}
 
 export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   const [, setTick] = useState(0);
@@ -165,10 +157,10 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   // One-time restore confirmation: visible while this card mount lives,
   // cleared on unmount so the next modal open shows the plain card.
   const showRestoredNotice =
-    mode === 'card' && !!identity && restoredFromBackupNpub === identity.npub;
+    mode === 'card' && !!identity && wasNwcRestored(identity.npub);
   useEffect(() => {
     if (!showRestoredNotice) return;
-    return () => { restoredFromBackupNpub = null; };
+    return () => { clearNwcRestored(); };
   }, [showRestoredNotice]);
 
   // Lazily fetch capabilities on first card render so we can warn the user if
@@ -458,6 +450,12 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
       <input
         className="input"
         placeholder="nostr+walletconnect://…"
+        aria-label="NWC connection string (nostr+walletconnect://)"
+        // A pasted credential, hand-edited on a phone: iOS would otherwise
+        // capitalise the first letter and autocorrect the rest.
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') connect(); }}

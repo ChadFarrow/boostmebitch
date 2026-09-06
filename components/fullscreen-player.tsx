@@ -698,6 +698,8 @@ export function FullscreenPlayer({
                     max={duration || 0}
                     value={positionSec}
                     onChange={(e) => seekTo(Number(e.target.value))}
+                    aria-label="Seek"
+                    aria-valuetext={fmt(positionSec)}
                   />
                 </div>
                 <div className="flex justify-between text-[11px] text-muted tabular-nums">

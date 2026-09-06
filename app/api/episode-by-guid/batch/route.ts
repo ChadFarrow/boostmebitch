@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling, readCappedRequestText } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { batchEpisodes, MAX_BATCH, type EpisodeRef } from '@/lib/pi-batch';
 
@@ -24,6 +24,8 @@ const MAX_REQUEST_BYTES = 512 * 1024;
 export async function POST(req: Request) {
   const limited = rateLimit(req, 'episode-by-guid-batch', 30);
   if (limited) return limited;
+  const notJson = requireJsonBody(req);
+  if (notJson) return notJson;
 
   // Capped read, then parse — see `readCappedRequestText`. Sized against the
   // widest legitimate call: MAX_REFS entries, each an itemGuid of up to 2048

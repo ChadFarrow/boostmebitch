@@ -1,16 +1,20 @@
 'use client';
 
 import { useWalletChange } from '@/lib/use-wallet-change';
+import dynamic from 'next/dynamic';
 import { useState } from 'react';
 import { ModalShell } from './modal-shell';
-import { hasNwc } from '@/lib/v4v/nwc';
+import { hasNwc } from '@/lib/v4v/nwc-state';
 import { hasSpark } from '@/lib/v4v/spark';
 import { hasWebln, isWeblnEnabled, weblnEnable } from '@/lib/v4v/webln';
 import { clearOtherWallets } from '@/lib/v4v/wallets';
 import { recordLastRail } from '@/lib/nostr';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
-import { NwcWallet } from './nwc-wallet';
+// `next/dynamic`: <NwcWallet> imports the SDK-bearing lib/v4v/nwc.ts, and this
+// modal is mounted by <WalletModalHost> in the root layout — a static import
+// put `@getalby/sdk` in every route's first load. See lib/v4v/nwc-state.ts.
+const NwcWallet = dynamic(() => import('./nwc-wallet').then((m) => m.NwcWallet), { ssr: false });
 import { SparkWallet } from './spark-wallet';
 import { WeblnWallet } from './webln-wallet';
 import { StreamRate, StreamedLog } from './streaming-settings';
@@ -183,10 +187,13 @@ export function WalletModal({ onClose }: Props) {
     type PickerRow = { rail: 'nwc' | 'spark' | 'webln'; icon: string; title: string; desc: string };
     const rows: PickerRow[] = [
       ...(weblnDetected
-        ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Alby extension · tap to enable' }]
+        ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Use the Alby browser extension · tap to enable' }]
         : []),
-      { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Paste a nostr+walletconnect:// URI' },
-      { rail: 'spark', icon: '✶', title: 'Spark', desc: 'Self-custodial, create or restore' },
+      // Plain words first, the protocol name second: these three rows are the
+      // first thing a newcomer reads about paying, and "NWC · Paste a
+      // nostr+walletconnect:// URI" told them nothing about which to pick.
+      { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Connect a Lightning wallet you already have (Nostr Wallet Connect)' },
+      { rail: 'spark', icon: '✶', title: 'Spark', desc: 'A wallet this app creates and backs up for you — self-custodial' },
     ];
 
     return (

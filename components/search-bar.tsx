@@ -307,6 +307,9 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
           onChange={(e) => edit(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && npubHit) { e.preventDefault(); openBoosts(); } }}
           placeholder={active.placeholder}
+          // Not `type="search"`: WebKit paints its own cancel control on one,
+          // beside the clear button below. The keyboard hint is the useful half.
+          enterKeyHint="search"
           // The placeholder verbatim, not `Search ${noun}`. An aria-label
           // REPLACES the placeholder as the accessible name, so a shorter one
           // loses the instruction — and under NPUB "Search people" would promise
@@ -319,7 +322,7 @@ export function SearchBar({ onResults, onLoading, onQueryChange, type, onTypeCha
             type="button"
             onClick={() => edit('')}
             aria-label="Clear search"
-            className="absolute right-2 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-full text-muted hover:bg-line hover:text-bone"
+            className="absolute right-1 top-1/2 -translate-y-1/2 flex h-6 w-6 min-h-6 min-w-6 items-center justify-center rounded-full text-muted hover:bg-line hover:text-bone"
           >
             ×
           </button>

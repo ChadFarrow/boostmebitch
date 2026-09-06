@@ -10,7 +10,7 @@ import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { AppHeader } from '@/components/app-header';
 import Link from 'next/link';
 import { useApp } from '@/lib/store';
-import { loadEpisodeFromFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
+import { loadEpisodeFromFeed, loadFeed, loadPlaylistPage, resolvePodcastByGuid, piMaybeUp, tripPiBreaker } from '@/lib/podcast-meta';
 import { useRouter } from 'next/navigation';
 import { SEARCH_TYPES, isMusicMedium, isPlaylistMedium } from '@/lib/util';
 import type { SearchType } from '@/lib/util';
@@ -237,9 +237,12 @@ export function HomePage() {
         const id = Number(feedId);
         if (Number.isInteger(id) && id > 0 && piMaybeUp()) {
           try {
-            const res = await fetch(`/api/feed?id=${id}`);
-            if (res.ok) podcast = (await res.json()).podcast ?? null;
-            else if (res.status >= 500) tripPiBreaker();
+            // Through `loadFeed`, never a bare fetch: it is the one place the
+            // URL is built and it coalesces with <EpisodeList>'s own request
+            // for the same feed, which mounts a moment later on this path.
+            const d = await loadFeed({ feedId: id });
+            if (d.status >= 500) tripPiBreaker();
+            else if (d.status < 300) podcast = d.podcast ?? null;
           } catch { /* ignore */ }
         }
       }
@@ -512,7 +515,7 @@ export function HomePage() {
     } else {
       setSelected(p);
     }
-  }, [setSelected]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setSelected]);
 
   function goHome() {
     setFeeds([]);
@@ -611,11 +614,15 @@ export function HomePage() {
 
       {/* Hero */}
       <section className="max-w-7xl mx-auto px-4 pt-10 pb-6">
-        <h2 className="headline text-4xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
+        {/* An <h1>: this is the home page's one top-level heading, and every
+            other route has one. The document outline started at level 2 here
+            (with the wordmark a <button>), so a screen reader's heading list
+            had no level-1 entry on `/`. `.headline` carries the styling. */}
+        <h1 className="headline text-4xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
           search<span className="text-bolt">.</span>{' '}
           listen<span className="text-bolt">.</span>{' '}
           <span className="text-bolt animate-bolt">boost</span><span className="text-bone">.</span>
-        </h2>
+        </h1>
         {/* Load-bearing for Google OAuth verification, not just marketing copy:
             the app home page must "fully describe your app's functionality" and
             "explain with transparency the purpose for which your app requests

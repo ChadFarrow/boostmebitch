@@ -1,5 +1,6 @@
 'use client';
 import { cloneElement, useCallback, useEffect, useRef, useState } from 'react';
+import { useMenuKeys } from './use-menu-keys';
 import { createPortal } from 'react-dom';
 import { useApp } from '@/lib/store';
 import { fmtDate, fmtDuration } from '@/lib/format';
@@ -117,6 +118,8 @@ export function EpisodeDetailView() {
   const [moreOpen, setMoreOpen] = useState(false);
   const moreBtnRef = useRef<HTMLButtonElement | null>(null);
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
+  const closeMore = useCallback(() => setMoreOpen(false), []);
+  useMenuKeys({ open: moreOpen, menuRef: moreMenuRef, triggerRef: moreBtnRef, close: closeMore });
   const [moreAt, setMoreAt] = useState<{ top?: number; bottom?: number; right: number } | null>(null);
 
   // Measured from the trigger each time, and again on scroll and resize: a

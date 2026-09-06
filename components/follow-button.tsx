@@ -69,6 +69,7 @@ export function FollowButton({ pubkey, className = '' }: { pubkey: string; class
       type="button"
       onClick={onClick}
       disabled={busy || loading}
+      aria-pressed={on}
       className={`npub-follow-btn${on ? ' is-following' : ''} ${className}`}
       title={
         err

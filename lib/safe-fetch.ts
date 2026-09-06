@@ -25,6 +25,14 @@
 // which is the one that needs no attacker infrastructure at all.
 //
 // http is allowed: a long tail of real podcast RSS feeds is still plain-http.
+//
+// The capped body readers (`readCappedText` and friends) used to live here and
+// now live in `lib/capped-body.ts`, an import-free leaf: browser code — the
+// direct LNURL read in lib/v4v/lnurl-fetch.ts, in the origin that holds the NWC
+// credential — needs the same cap, and cannot import a module that pulls in
+// `node:dns`. Nothing is re-exported from here on purpose: `check:ssrf` loads
+// this file under plain Node, which cannot resolve an extensionless relative
+// import, so a re-export line would break the pin.
 import { lookup } from 'node:dns/promises';
 
 const PRIVATE_V4 = [
@@ -159,152 +167,6 @@ export async function assertResolvedHostSafe(host: string): Promise<void> {
 }
 
 const MAX_REDIRECTS = 5;
-
-/** 8 MB. Larger than any real RSS feed, chapters file or transcript. */
-export const MAX_BODY_BYTES = 8 * 1024 * 1024;
-
-/**
- * The half of `Response` the capping loop below actually touches.
- *
- * A `Request` carries the same three members, so widening the parameter from
- * `Response` to this lets the INBOUND direction reuse one capping loop rather
- * than growing a second copy of it — see `readCappedRequestText` in
- * lib/api-handler.ts. Nothing else changes: every existing caller passes a
- * `Response`, which still satisfies this structurally.
- */
-type CappableBody = Pick<Response, 'headers' | 'body' | 'arrayBuffer'>;
-
-/**
- * Read a response body as text, refusing anything past `maxBytes`.
- *
- * `AbortSignal.timeout(...)` — which every caller here passes — caps how LONG a
- * fetch may run, not how much it may return. Eight seconds of a fast upstream is
- * hundreds of megabytes, and the URL is feed-supplied, so `await res.text()`
- * handed an attacker a way to fill a serverless instance's heap from one
- * request. Worse where the result is then cached: `lib/pi.ts` retains feed XML
- * keyed by that same URL.
- *
- * Streams and aborts mid-body rather than buffering first and measuring after,
- * which would defeat the point. `Content-Length` is only a fast path — it is
- * absent on chunked responses and trivially lied about, so the byte count while
- * reading is what actually enforces the limit.
- */
-export async function readCappedText(
-  res: CappableBody,
-  maxBytes: number = MAX_BODY_BYTES,
-): Promise<string> {
-  return new TextDecoder().decode(await readCappedBytes(res, maxBytes));
-}
-
-/**
- * Read at most `maxBytes` and **stop**, rather than refusing the response.
- *
- * The distinction from {@link readCappedBytes} is the whole point: that one
- * throws past the cap, which is right when a partial body is worthless (a
- * half-read feed is not a feed). Here a prefix is exactly what the caller
- * wants — `/api/og/boost.png` needs the first frame of an animated GIF, which
- * sits at the front of the file, and a real one measured 606 KB inside a 19 MB
- * episode artwork. Reading the prefix and cancelling costs 0.6 MB instead of 19.
- *
- * `truncated` says whether more was available, so a caller can tell "the whole
- * file, which happens to be small" from "as much as you allowed" — those need
- * different handling and the byte count alone cannot separate them.
- *
- * Cancelling the reader is what actually aborts the transfer; without it the
- * rest of the body keeps arriving on a socket nobody reads.
- */
-export async function readBytesUpTo(
-  res: Response,
-  maxBytes: number,
-): Promise<{ bytes: Uint8Array; truncated: boolean }> {
-  if (!res.body) {
-    const all = new Uint8Array(await res.arrayBuffer());
-    return all.byteLength > maxBytes
-      ? { bytes: all.subarray(0, maxBytes), truncated: true }
-      : { bytes: all, truncated: false };
-  }
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let truncated = false;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const room = maxBytes - total;
-      if (value.byteLength >= room) {
-        chunks.push(value.subarray(0, room));
-        total += room;
-        truncated = true;
-        break;
-      }
-      chunks.push(value);
-      total += value.byteLength;
-    }
-  } finally {
-    await reader.cancel().catch(() => {});
-  }
-  const joined = new Uint8Array(total);
-  let at = 0;
-  for (const c of chunks) {
-    joined.set(c, at);
-    at += c.byteLength;
-  }
-  return { bytes: joined, truncated };
-}
-
-/**
- * {@link readCappedText}'s byte half — the same streaming cap, without the
- * decode. Artwork is binary, and `TextDecoder` over a PNG returns replacement
- * characters, so a caller that needs the bytes cannot go through the text
- * reader and must not fall back to a bare `res.arrayBuffer()`: that buffers the
- * whole body first and measures after, which is the behaviour this module
- * exists to prevent. One capping loop, two shapes on top of it.
- */
-export async function readCappedBytes(
-  res: CappableBody,
-  maxBytes: number = MAX_BODY_BYTES,
-): Promise<Uint8Array> {
-  const declared = Number(res.headers.get('content-length'));
-  if (Number.isFinite(declared) && declared > maxBytes) {
-    throw new Error(`response too large (${declared} bytes, max ${maxBytes})`);
-  }
-  if (!res.body) return new Uint8Array(await res.arrayBuffer());
-
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        throw new Error(`response too large (exceeded ${maxBytes} bytes)`);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    // Releases the socket on the throw path too — an abandoned reader keeps the
-    // connection half-open against the pool.
-    await reader.cancel().catch(() => {});
-  }
-  const joined = new Uint8Array(total);
-  let at = 0;
-  for (const c of chunks) {
-    joined.set(c, at);
-    at += c.byteLength;
-  }
-  return joined;
-}
-
-/** {@link readCappedText}, then `JSON.parse`. */
-export async function readCappedJson(
-  res: CappableBody,
-  maxBytes: number = MAX_BODY_BYTES,
-): Promise<unknown> {
-  return JSON.parse(await readCappedText(res, maxBytes));
-}
 
 /**
  * `fetch` that re-runs {@link assertSafeFetchUrl} on **every** hop.

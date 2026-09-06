@@ -167,11 +167,17 @@ export function isLnurlOnlyAddress(address: string): boolean {
  * key from one source with a value from another would misroute the payment to
  * the wrong sub-account on a shared node.
  */
-function firstCustomPair(data: any): { customKey?: string; customValue?: string } {
-  const entries: any[] = Array.isArray(data?.customData) ? data.customData : [];
+/** A third-party JSON document is `unknown` until its shape is checked. */
+function isRecord(x: unknown): x is Record<string, unknown> {
+  return !!x && typeof x === 'object';
+}
+
+function firstCustomPair(data: Record<string, unknown>): { customKey?: string; customValue?: string } {
+  const entries: unknown[] = Array.isArray(data.customData) ? data.customData : [];
   for (const entry of [...entries, data]) {
-    const k = entry?.customKey;
-    const v = entry?.customValue;
+    if (!isRecord(entry)) continue;
+    const k = entry.customKey;
+    const v = entry.customValue;
     if (k == null || v == null) continue;
     const customKey = String(k).trim();
     const customValue = String(v).trim();
@@ -182,8 +188,8 @@ function firstCustomPair(data: any): { customKey?: string; customValue?: string 
   return {};
 }
 
-export function parseKeysendResponse(data: any): KeysendTarget | null {
-  if (!data || typeof data !== 'object') return null;
+export function parseKeysendResponse(data: unknown): KeysendTarget | null {
+  if (!isRecord(data)) return null;
   if (typeof data.status === 'string' && data.status.toUpperCase() === 'ERROR') return null;
   // `pubkey` is the documented field; `destination` and `nodeId` appear in the
   // wild. We deliberately don't require `tag: "keysend"` — the strict pubkey

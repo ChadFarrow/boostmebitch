@@ -139,7 +139,14 @@ const nextConfig = {
           // Clipboard intentionally untouched: the Amber signer reads and the
           // Share button writes via same-origin JS, covered by the default
           // `self` allowlist.
-          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+          // Beyond the three sensors: on an origin that holds a spending
+          // credential, the Payment Request API and the hardware bridges (USB,
+          // serial, Bluetooth, MIDI) are surfaces injected script could reach
+          // and nothing here uses — grep confirmed before each was added.
+          {
+            key: 'Permissions-Policy',
+            value: 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), midi=()',
+          },
           // Deliberately NOT a script-src CSP. Two hard blockers, both
           // structural rather than laziness:
           //   1. The FOUC blocker in app/layout.tsx is an inline <script> that

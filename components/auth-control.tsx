@@ -1,6 +1,7 @@
 'use client';
 import { useWalletChange } from '@/lib/use-wallet-change';
-import { useEffect, useRef, useState } from 'react';
+import { useMenuKeys } from './use-menu-keys';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { useApp } from '@/lib/store';
 import { isGoogleAuthConfigured, preloadGis, startGoogleSignIn } from '@/lib/nostr/google-auth';
 import { isLikelyAndroid, isLikelyIOS } from '@/lib/nostr';
@@ -69,6 +70,11 @@ export function AuthControl() {
     };
   }, [menuOpen]);
 
+  const authTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const authMenuRef = useRef<HTMLDivElement | null>(null);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  useMenuKeys({ open: menuOpen, menuRef: authMenuRef, triggerRef: authTriggerRef, close: closeMenu });
+
   const walletConnected = mounted && hasAnyWallet();
   const needNostr = !identity;
   // Reads an inlined NEXT_PUBLIC_* var, so it's identical on server and client —
@@ -94,6 +100,7 @@ export function AuthControl() {
       {!walletConnected && needNostr && (
         <>
           <button
+            ref={authTriggerRef}
             onClick={() => {
               // Fetch the GIS script one gesture BEFORE the Google item is
               // tapped. That tap has to open the consent popup synchronously
@@ -111,6 +118,7 @@ export function AuthControl() {
           </button>
           {menuOpen && (
             <div
+              ref={authMenuRef}
               role="menu"
               className="absolute right-0 top-full mt-2 w-60 card bg-ink p-2 z-40 shadow-xl"
             >

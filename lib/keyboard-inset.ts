@@ -140,7 +140,8 @@ const NON_TEXT_INPUT = new Set([
   'submit',
 ]);
 
-function raisesKeyboard(el: Element | null): boolean {
+/** Exported for the player's hotkeys: the same answer to "is the user typing?". */
+export function raisesKeyboard(el: Element | null): boolean {
   if (!el) return false;
   if (el instanceof HTMLTextAreaElement) return true;
   if (el instanceof HTMLInputElement) return !NON_TEXT_INPUT.has(el.type);

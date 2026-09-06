@@ -1,8 +1,10 @@
 import { NextResponse } from 'next/server';
 import { finalizeEvent, type EventTemplate } from 'nostr-tools/pure';
-import { withErrorHandling, readCappedRequestText } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { siteSecretKey } from '@/lib/nostr/site-key';
+import { httpUrl } from '@/lib/util';
+import { BRAND } from '@/lib/brand';
 
 // Server-side signer for the SITE's own Nostr identity. Lets a signed-OUT user
 // still post their boost note to Nostr — signed by the app's key, not theirs.
@@ -75,6 +77,24 @@ const MAX_IMETA_TAGS = 1;
 // to have already filtered is not one.
 const MAX_P_TAGS = 8;
 
+// The two tags that carry a URL a reader's client will render or FETCH, bound
+// to the shape `buildBoostNoteTemplate` (lib/nostr/boost-notes.ts) actually
+// emits, rather than to "any 512-character string":
+//
+//   - `r` is the episode's landing page and this site's own link — at most two,
+//     and each one an http(s) URL. Tested with `httpUrl(v) !== null`, not
+//     `httpUrl(v) === v`: `bmbLandingUrl` does not encode the guid it embeds,
+//     so the normalised form can differ from the literal by a character.
+//   - `imeta` names the banner, which is ALWAYS this deploy's own
+//     `/api/og/boost.png` (`boostBannerUrl`, from `BRAND.origin`). A note that
+//     names a different host is not one this app built.
+//
+// Both are cheap to prove and close the one thing left in this oracle worth
+// abusing after the `e`-tag refusal below: a signed instruction, from a
+// NIP-05-verified identity, to render or load an attacker-chosen URL.
+const MAX_R_TAGS = 2;
+const BANNER_PREFIX = `url ${BRAND.origin}/api/og/boost.png?`;
+
 // Bound the signing oracle: this endpoint must only ever sign boost-shaped
 // kind:1 notes as the site, never arbitrary events (DMs, kind:0 hijack, etc.).
 function validateBoostTemplate(body: unknown): EventTemplate {
@@ -111,6 +131,15 @@ function validateBoostTemplate(body: unknown): EventTemplate {
   if (strTags.filter((tag) => tag[0] === 'imeta').length > MAX_IMETA_TAGS) {
     throw new Error('too many imeta tags');
   }
+  const rTags = strTags.filter((tag) => tag[0] === 'r');
+  if (rTags.length > MAX_R_TAGS) throw new Error('too many r tags');
+  if (!rTags.every((tag) => tag.length === 2 && httpUrl(tag[1]) !== null)) {
+    throw new Error('invalid r tag');
+  }
+  const imeta = strTags.find((tag) => tag[0] === 'imeta');
+  if (imeta && !(imeta[1] ?? '').startsWith(BANNER_PREFIX)) {
+    throw new Error('invalid imeta tag');
+  }
   const hasT = (v: string) => strTags.some((tag) => tag[0] === 't' && tag[1] === v);
   // The two markers publishBoostNote always emits — proves this is a boost note.
   if (!hasT('boostagram') || !hasT('value4value')) {
@@ -133,6 +162,8 @@ const MAX_REQUEST_BYTES = 32 * 1024;
 export async function POST(req: Request) {
   const limited = rateLimit(req, 'site-sign', 30);
   if (limited) return limited;
+  const notJson = requireJsonBody(req);
+  if (notJson) return notJson;
 
   const sk = siteSecretKey();
   if (!sk) {

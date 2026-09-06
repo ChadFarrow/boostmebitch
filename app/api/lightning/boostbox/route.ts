@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling, readCappedRequestText } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { readCappedText, readCappedJson } from '@/lib/safe-fetch';
+import { readCappedText, readCappedJson } from '@/lib/capped-body';
 
 // Server-side proxy for the BoostBox metadata service.
 // Defaults match the public reference instance so the integration works
@@ -54,6 +54,8 @@ const MAX_REQUEST_BYTES = 10_000;
 export async function POST(req: Request) {
   const limited = rateLimit(req, 'boostbox', BOOSTBOX_RATE_LIMIT);
   if (limited) return limited;
+  const notJson = requireJsonBody(req);
+  if (notJson) return notJson;
   return withErrorHandling(async () => {
     // Capped while READING. This was `req.text()` followed by a length
     // check, which allocates the whole body first and measures after — the
@@ -98,7 +100,18 @@ export async function POST(req: Request) {
       // the user is waiting on, with the legs paid serially behind it, so an
       // unbounded upstream stalls the whole send.
       signal: AbortSignal.timeout(4500),
+      // Never follow a redirect with the API key attached. `fetch` strips
+      // `Authorization` on a cross-origin hop but NOT a custom header, so a
+      // 302 from the configured host would hand `X-Api-Key` to wherever it
+      // pointed. The reference instance's key is public; an operator's private
+      // `BOOSTBOX_API_KEY` is not. Same posture `safeFetch` enforces on every
+      // other outbound fetch.
+      redirect: 'manual',
     });
+    if (upstream.status >= 300 && upstream.status < 400) {
+      console.error(`[boostbox] upstream answered ${upstream.status} — a redirect is not followed with the API key`);
+      return NextResponse.json({ error: 'BoostBox error: redirect' }, { status: 502 });
+    }
 
     if (!upstream.ok) {
       // The upstream's body goes to OUR log, not back to the caller — it's a
@@ -113,7 +126,6 @@ export async function POST(req: Request) {
       // hardest on the error path, which is exactly where a body stops being
       // the small JSON the happy path expects.
       const detail = await readCappedText(upstream, 4096).catch(() => '');
-      // eslint-disable-next-line no-console
       console.error(`[boostbox] upstream ${upstream.status}:`, detail.slice(0, 500));
       return NextResponse.json(
         { error: `BoostBox error: ${upstream.status}` },

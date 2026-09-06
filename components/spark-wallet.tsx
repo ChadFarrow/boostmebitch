@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useConfirm } from './confirm-dialog';
 import dynamic from 'next/dynamic';
 // Lazy-loaded (reached only through the wallet modal's Spark tab) so
 // qrcode.react stays out of the initial bundle.
@@ -38,6 +39,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
   const [confirmed, setConfirmed] = useState(false);
   const [pasteSeed, setPasteSeed] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const [confirm, confirmEl] = useConfirm();
 
   const owner = sparkOwner();
 
@@ -50,12 +52,20 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
       // Force the user to acknowledge before destroying the old one.
       const existing = await fetchEncryptedMnemonic(identity, 'user-initiated').catch(() => null);
       if (existing) {
-        const ok = window.confirm(
-          'A Spark wallet backup already exists on your relays.\n\n' +
-          'Creating a new wallet will OVERWRITE that backup. The old wallet ' +
-          'will be unrecoverable unless you wrote its seed phrase down.\n\n' +
-          'Continue and overwrite?'
-        );
+        const ok = await confirm({
+          title: 'Overwrite your Spark wallet backup?',
+          body: (
+            <>
+              <p>A Spark wallet backup already exists on your relays.</p>
+              <p>
+                Creating a new wallet will <strong>overwrite</strong> that backup. The old wallet
+                will be unrecoverable unless you wrote its seed phrase down.
+              </p>
+            </>
+          ),
+          confirmLabel: 'Overwrite backup',
+          danger: true,
+        });
         if (!ok) { setInternalMode('idle'); return; }
       }
       const m = await sparkGenerateMnemonic();
@@ -129,12 +139,20 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
       // wallet is already backed up. Re-pasting the same seed is harmless.
       const existing = await fetchEncryptedMnemonic(identity, 'user-initiated').catch(() => null);
       if (existing && existing.trim().replace(/\s+/g, ' ') !== trimmed) {
-        const ok = window.confirm(
-          'A different Spark wallet backup already exists on your relays.\n\n' +
-          'Connecting this seed will OVERWRITE that backup. The old wallet ' +
-          'will be unrecoverable unless you wrote its seed phrase down.\n\n' +
-          'Continue and overwrite?'
-        );
+        const ok = await confirm({
+          title: 'Overwrite your Spark wallet backup?',
+          body: (
+            <>
+              <p>A different Spark wallet backup already exists on your relays.</p>
+              <p>
+                Connecting this seed will <strong>overwrite</strong> that backup. The old wallet
+                will be unrecoverable unless you wrote its seed phrase down.
+              </p>
+            </>
+          ),
+          confirmLabel: 'Overwrite backup',
+          danger: true,
+        });
         if (!ok) { setInternalMode('idle'); return; }
       }
       storage.sparkOptOut.clear(identity?.npub);
@@ -209,6 +227,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
 
   return (
     <div className="space-y-2">
+      {confirmEl}
       <div className="text-xs text-bone/70 leading-relaxed">
         Self-custodial wallet. Mnemonic is NIP-44 encrypted to your pubkey and stored on your write relays.
       </div>
@@ -219,6 +238,7 @@ export function SparkWallet({ mode, onConnected, onDisconnected }: Props) {
         <textarea
           className="input w-full h-16 resize-none"
           placeholder="word1 word2 word3 …"
+          aria-label="Seed phrase"
           autoComplete="off"
           autoCapitalize="off"
           spellCheck={false}
@@ -351,8 +371,11 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
         <button
           onClick={refresh}
           disabled={refreshing}
-          className="text-muted hover:text-bolt ml-2 disabled:opacity-30"
+          className="text-muted hover:text-bolt ml-2 min-h-6 min-w-6 disabled:opacity-30"
           title="Re-read balance from the SDK"
+          // The glyph is the content, and content outranks `title` in the
+          // accessible-name algorithm — so the name was "↻".
+          aria-label="Refresh balance"
         >
           {refreshing ? '…' : '↻'}
         </button>
@@ -375,8 +398,10 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
             <input
               className="input"
               type="number"
+              inputMode="numeric"
               min={1}
               placeholder="amount in sats (optional)"
+              aria-label="Amount in sats (optional)"
               value={amountSats}
               onChange={(e) => setAmountSats(e.target.value)}
             />
@@ -397,7 +422,7 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
           <div className="text-muted">
             Scan with another Lightning wallet, or copy the BOLT11 below.
             Balance updates the moment Spark claims the deposit.
-            {feeSats != null && feeSats > 0 ? ` Spark settle fee: ${feeSats.toLocaleString()} sats.` : ''}
+            {feeSats != null && feeSats > 0 ? ` Network fee: ${feeSats.toLocaleString()} sats.` : ''}
           </div>
           <div className="flex justify-center bg-bone p-3">
             <QRCodeSVG

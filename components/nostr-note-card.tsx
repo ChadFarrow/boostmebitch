@@ -1,7 +1,8 @@
 'use client';
-import { memo, useEffect, useId, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { memo, useEffect, useId, useMemo, useState } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import { ModalShell } from './modal-shell';
+import { useConfirm } from './confirm-dialog';
 import {
   resolvePublishRelays,
   shortNpub,
@@ -98,7 +99,12 @@ function NoteCardImpl({
     note.author?.display_name?.trim() ||
     note.author?.name?.trim() ||
     shortNpub(note.npub);
-  const visibleReplies = (note.replies ?? []).filter((r) => !mutedPubkeys.has(r.pubkey));
+  // Memoised: this card is `memo`'d, but `mutedPubkeys` changes identity on
+  // every hydrate and there is one of these per note in a feed.
+  const visibleReplies = useMemo(
+    () => (note.replies ?? []).filter((r) => !mutedPubkeys.has(r.pubkey)),
+    [note.replies, mutedPubkeys],
+  );
   const sats =
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)
@@ -224,22 +230,25 @@ function NoteCardImpl({
 
   const [zapOpen, setZapOpen] = useState(false);
   const router = useRouter();
+  const [confirm, confirmEl] = useConfirm();
+  // The house pattern (tab-bar.tsx), not `window.location.pathname`: the
+  // hook is SSR-safe and re-renders on a client navigation.
+  const pathname = usePathname() ?? '/';
 
   function openShow(p: Podcast) {
     selectPodcast(p);
-    if (typeof window === 'undefined') return;
     // `selectedPodcast` is read by <HomePage>, and <HomePage> renders at `/`
     // only. This card also renders on /npub/<npub>, where setting the store
     // changes nothing you can see — the tap scrolled to the top and did
     // otherwise NOTHING, with no error to notice. The selection is already in
     // the (in-memory) store and survives a client-side navigation, so go to the
     // view that reads it.
-    if (window.location.pathname !== '/') {
+    if (pathname !== '/') {
       // Record where we're leaving from, AFTER selectPodcast (which clears it),
       // so the show page's back control offers a return here instead of "back
       // to results" — a results list a visitor who arrived on /npub/<npub> has
       // never seen. The label can't be derived from the path, so it's named.
-      useApp.getState().setShowOrigin({ path: window.location.pathname, label: 'boosts' });
+      useApp.getState().setShowOrigin({ path: pathname, label: 'boosts' });
       router.push('/');
     }
     window.scrollTo({ top: 0 });
@@ -339,19 +348,20 @@ function NoteCardImpl({
   // callback, and an episode with no guid can't be looked up in the feed.
   const episodeGuid = episode?.guid;
 
-  function onMute() {
+  async function onMute() {
     if (!identity) return;
-    const ok =
-      typeof window !== 'undefined' &&
-      window.confirm(
-        `Mute ${name}? Their notes won't appear in your feed. You can unmute from the account menu.`,
-      );
+    const ok = await confirm({
+      title: `Mute ${name}?`,
+      body: <p>Their notes won&apos;t appear in your feed. You can unmute from the account menu.</p>,
+      confirmLabel: 'Mute',
+    });
     if (!ok) return;
     mutePubkey(note.pubkey);
   }
 
   return (
     <div>
+    {confirmEl}
     <article className="card p-3 flex gap-3">
       <Avatar
         pubkey={note.pubkey}
@@ -362,7 +372,7 @@ function NoteCardImpl({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap text-xs">
           <a
-            href={`https://njump.me/${note.npub}`}
+            href={`https://njump.me/${encodeURIComponent(note.npub)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="font-display text-sm text-bone hover:text-bolt truncate"
@@ -560,7 +570,7 @@ function NoteCardImpl({
           )}
           <span className="flex-1" />
           <a
-            href={`https://njump.me/${note.nevent}`}
+            href={`https://njump.me/${encodeURIComponent(note.nevent)}`}
             target="_blank"
             rel="noopener noreferrer"
             className="text-muted hover:text-nostr"

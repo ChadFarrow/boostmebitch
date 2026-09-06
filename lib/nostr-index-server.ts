@@ -9,7 +9,7 @@
 // so an index that is down, slow or unconfigured costs nothing but the
 // speed-up. Nothing in this file may throw its way out to a route.
 
-import { readCappedJson } from './safe-fetch';
+import { readCappedJson } from './capped-body';
 
 const TIMEOUT_MS = 6_000;
 

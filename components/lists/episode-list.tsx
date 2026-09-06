@@ -835,7 +835,20 @@ export function EpisodeList({
             <li
               className={`group transition ${
                 playing ? 'bg-bolt/10' : 'hover:bg-bone/5'
-              } cursor-pointer`}
+              } cursor-pointer${
+                // A music feed and a playlist render EVERY row (a playlist is
+                // paged by fetch, see `visibleEpisodes`; the live HGH list is
+                // ~800 tracks). `content-visibility: auto` lets the browser
+                // skip layout and paint for the rows off screen, which is the
+                // whole of the scroll cost; the intrinsic size seeds the
+                // scrollbar before first paint and `auto` remembers the real
+                // height after it. 73px = py-3 (24) + the 48px cover + the
+                // 1px divider. No React tree changes: `episodeQueue` is still
+                // built from the full array, ⏭ and play-all are untouched, and
+                // each row's heart still subscribes (each is a map lookup).
+                // Safari before 18 ignores the property and renders as before.
+                asTracks || isPlaylist ? ' [content-visibility:auto] [contain-intrinsic-size:auto_73px]' : ''
+              }`}
               onClick={openRow}
             >
               <div className="flex gap-2 sm:gap-3 py-3 pr-1 sm:pr-3">

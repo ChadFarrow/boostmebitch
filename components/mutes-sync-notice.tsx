@@ -88,7 +88,7 @@ export function MutesSyncNotice() {
         type="button"
         onClick={load}
         disabled={busy}
-        className="underline underline-offset-2 hover:text-nostr disabled:opacity-40 flex-shrink-0"
+        className="underline underline-offset-2 hover:text-nostr disabled:opacity-40 flex-shrink-0 py-1"
       >
         {busy ? 'loading…' : withheld ? 'load' : 'retry'}
       </button>

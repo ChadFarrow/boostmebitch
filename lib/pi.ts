@@ -2,9 +2,26 @@
 import crypto from 'node:crypto';
 import { PiHttpError } from './pi-error';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
-import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRemoteItems, parsePlaylistSourceFeed, type PlaylistItemRef } from './feed-xml';
+import {
+  readAttr,
+  decodeXmlText,
+  channelSlice,
+  parseFeedNpubs,
+  parsePlaylistRemoteItems,
+  parsePlaylistSourceFeed,
+  type PlaylistItemRef,
+  findTags,
+  firstTag,
+  findBlocks,
+  firstBlock,
+  stripBlocks,
+  stripComments,
+  splitAnchors,
+  escapeDanglingLt,
+} from './feed-xml';
 import { resolveRemoteItemFromRss } from './musicl-resolver';
-import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
+import { safeFetch } from './safe-fetch';
+import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
 import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT } from './util';
 import { createBoundedCache } from './bounded-cache';
@@ -465,10 +482,7 @@ function parseNostrSocialInteracts(raw: any): SocialInteract[] | undefined {
 
 function parseSocialInteractsFromRss(xml: string): SocialInteract[] | undefined {
   const results: SocialInteract[] = [];
-  const re = /<podcast:socialInteract\b([^>]*?)\/?>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml))) {
-    const attrs = m[1];
+  for (const { attrs } of findTags(xml, 'podcast:socialInteract')) {
     if (readAttr(attrs, 'protocol') !== 'nostr') continue;
     const rawUri = readAttr(attrs, 'uri');
     if (!rawUri) continue;
@@ -520,6 +534,19 @@ function buildEpisode(e: any): Episode {
  * than this is the one case the app still truncates; see docs/feeds.md.
  */
 export const PI_EPISODE_MAX = 1000;
+
+/**
+ * Ceiling on how many `<item>` blocks one RSS document is walked for.
+ *
+ * The walk is linear now (`findBlocks`), so this bounds the work AFTER the
+ * scan — the sanitizer, the value-block parse and the enrichment map built per
+ * item — against a document that is nothing but items. 5000 rather than
+ * `PI_EPISODE_MAX`: an oldest-first feed longer than PI's own cap would
+ * otherwise lose enrichment for its NEWEST episodes, which are the ones the
+ * reader is looking at. Same number as `MAX_PLAYLIST_REFS`, for the same
+ * reason — far above any real feed, and a bound rather than a guess.
+ */
+export const MAX_RSS_ITEMS = 5000;
 
 export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> {
   const data = await pi<any>(
@@ -776,20 +803,20 @@ interface RawLiveItem {
  * allowlist direction as safeUrlAttr, for the same reason.
  */
 function parseLiveValue(xml: string): { uri: string; protocol: string } | undefined {
-  const m = xml.match(/<podcast:liveValue\b([^>]*?)\/?>/i);
-  if (!m) return undefined;
-  const uri = httpUrl(readAttr(m[1], 'uri'));
+  const tag = firstTag(xml, 'podcast:liveValue');
+  if (!tag) return undefined;
+  const uri = httpUrl(readAttr(tag.attrs, 'uri'));
   if (!uri) return undefined;
-  return { uri, protocol: (readAttr(m[1], 'protocol') || '').toLowerCase() };
+  return { uri, protocol: (readAttr(tag.attrs, 'protocol') || '').toLowerCase() };
 }
 
 function parseRssLiveItems(xml: string): RawLiveItem[] {
   const out: RawLiveItem[] = [];
-  const blockRe = /<podcast:liveItem\b([^>]*)>([\s\S]*?)<\/podcast:liveItem>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = blockRe.exec(xml))) {
-    const attrs = m[1];
-    const inner = m[2];
+  for (const hit of findBlocks(xml, 'podcast:liveItem')) {
+    // A self-closing live item has no enclosure and no title: not a broadcast.
+    if (hit.selfClosing) continue;
+    const attrs = hit.attrs;
+    const inner = hit.inner;
     const rawStatus = readAttr(attrs, 'status')?.toLowerCase();
     if (rawStatus !== 'pending' && rawStatus !== 'live') continue;
     const startStr = readAttr(attrs, 'start');
@@ -804,8 +831,8 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
     // demoted to 'ended' because `ended` is already dropped two lines above —
     // one shape for "this is over", not two. See `liveBroadcastIsOver`.
     if (liveBroadcastIsOver({ status: rawStatus, startTime, endTime }, Math.floor(Date.now() / 1000))) continue;
-    const enc = inner.match(/<enclosure\b([^>]*?)\/?>/i);
-    const itunesImg = inner.match(/<itunes:image\b([^>]*?)\/?>/i);
+    const enc = firstTag(inner, 'enclosure');
+    const itunesImg = firstTag(inner, 'itunes:image');
     out.push({
       status: rawStatus,
       startTime,
@@ -813,9 +840,9 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
       title: extractText(inner, 'title'),
       description: extractText(inner, 'description'),
       guid: extractText(inner, 'guid'),
-      enclosureUrl: enc ? readAttr(enc[1], 'url') : undefined,
-      enclosureType: enc ? readAttr(enc[1], 'type') : undefined,
-      image: itunesImg ? readAttr(itunesImg[1], 'href') : undefined,
+      enclosureUrl: enc ? readAttr(enc.attrs, 'url') : undefined,
+      enclosureType: enc ? readAttr(enc.attrs, 'type') : undefined,
+      image: itunesImg ? readAttr(itunesImg.attrs, 'href') : undefined,
       value: parseValueBlock(inner),
       socialInteract: parseSocialInteractsFromRss(inner),
       // The "now playing" signals. A remoteItem placed directly in the live
@@ -831,19 +858,17 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
 }
 
 function parseValueBlock(xml: string): ValueBlock | null {
-  const vMatch = xml.match(/<podcast:value\b([^>]*)>([\s\S]*?)<\/podcast:value>/i);
-  if (!vMatch) return null;
-  const vAttrs = vMatch[1];
+  const vBlock = firstBlock(xml, 'podcast:value');
+  // A self-closing <podcast:value/> names no recipient, so it is no block.
+  if (!vBlock || vBlock.selfClosing) return null;
+  const vAttrs = vBlock.attrs;
   // <podcast:valueTimeSplit> is a CHILD of <podcast:value>, and it may carry
   // its own inline <podcast:valueRecipient> tags. Strip those blocks before
   // scanning, or a split's recipients get merged into the block's own — the
   // show would pay a guest's segment splits for the whole episode.
-  const vInner = stripValueTimeSplits(vMatch[2]);
+  const vInner = stripValueTimeSplits(vBlock.inner);
   const recipients: ValueRecipient[] = [];
-  const recipRe = /<podcast:valueRecipient\b([^>]*?)\/?>/gi;
-  let rm: RegExpExecArray | null;
-  while ((rm = recipRe.exec(vInner))) {
-    const ra = rm[1];
+  for (const { attrs: ra } of findTags(vInner, 'podcast:valueRecipient')) {
     const address = readAttr(ra, 'address');
     if (!address) continue;
     recipients.push({
@@ -865,10 +890,10 @@ function parseValueBlock(xml: string): ValueBlock | null {
   };
 }
 
-const VALUE_TIME_SPLIT_RE = /<podcast:valueTimeSplit\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:valueTimeSplit>)/gi;
+const VALUE_TIME_SPLIT_TAG = 'podcast:valueTimeSplit';
 
 function stripValueTimeSplits(xml: string): string {
-  return xml.replace(VALUE_TIME_SPLIT_RE, '');
+  return stripBlocks(xml, [VALUE_TIME_SPLIT_TAG]);
 }
 
 /** A <podcast:remoteItem> tag's attributes, or null when it names no feed. */
@@ -884,8 +909,8 @@ function parseRemoteItem(tagAttrs: string): ValueTimeSplitRemoteItem | null {
 
 /** The first <podcast:remoteItem> in a block, if any. */
 function firstRemoteItem(xml: string): ValueTimeSplitRemoteItem | undefined {
-  const m = xml.match(/<podcast:remoteItem\b([^>]*?)\/?>/i);
-  return (m && parseRemoteItem(m[1])) || undefined;
+  const tag = firstTag(xml, 'podcast:remoteItem');
+  return (tag && parseRemoteItem(tag.attrs)) || undefined;
 }
 
 /**
@@ -899,11 +924,9 @@ function firstRemoteItem(xml: string): ValueTimeSplitRemoteItem | undefined {
  */
 function parseValueTimeSplitsFromRss(xml: string): ValueTimeSplit[] {
   const out: ValueTimeSplit[] = [];
-  const re = new RegExp(VALUE_TIME_SPLIT_RE.source, 'gi');
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml))) {
-    const attrs = m[1];
-    const inner = m[2] ?? '';
+  for (const hit of findBlocks(xml, VALUE_TIME_SPLIT_TAG)) {
+    const attrs = hit.attrs;
+    const inner = hit.inner;
     const remotePctStr = readAttr(attrs, 'remotePercentage');
     const remoteStartStr = readAttr(attrs, 'remoteStartTime');
     // Inline <podcast:valueRecipient> children are an alternative to a
@@ -924,10 +947,10 @@ function parseValueTimeSplitsFromRss(xml: string): ValueTimeSplit[] {
 }
 
 function extractText(xml: string, tag: string): string | undefined {
-  const re = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-  const m = xml.match(re);
-  if (!m) return undefined;
-  const stripped = m[1].replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1').trim();
+  const hit = firstBlock(xml, tag);
+  // A self-closing <tag/> has no text node: absent, not ''.
+  if (!hit || hit.selfClosing) return undefined;
+  const stripped = hit.inner.replace(/^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/i, '$1').trim();
   return stripped
     .replace(/&amp;/g, '&')
     .replace(/&lt;/g, '<')
@@ -941,10 +964,9 @@ function extractText(xml: string, tag: string): string | undefined {
 // Extract the raw HTML content of a namespaced RSS tag like content:encoded,
 // without entity-decoding or tag-stripping. Handles CDATA wrapping.
 function extractRawContent(xml: string, tag: string): string | undefined {
-  const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, 'i');
-  const m = xml.match(re);
-  if (!m) return undefined;
-  const inner = m[1].trim();
+  const hit = firstBlock(xml, tag);
+  if (!hit || hit.selfClosing) return undefined;
+  const inner = hit.inner.trim();
   const cdata = inner.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/i);
   return ((cdata ? cdata[1] : inner).trim()) || undefined;
 }
@@ -985,25 +1007,50 @@ function decodeMarkupEntities(s: string): string {
     .replace(/&amp;/g, '&');
 }
 
+/**
+ * Ceiling on the show notes handed to the sanitizer, in characters.
+ *
+ * Everything below is linear in the input now, but linear in 8 MB is still 8 MB
+ * of regex passes per item, and a document can be nothing but items. Podcast
+ * Index itself truncates a description at ~3,000 characters, and the longest
+ * real `<content:encoded>` observed is a few tens of KB, so nothing genuine is
+ * lost at half a megabyte. Cut BEFORE any pass runs — measuring after is the
+ * mistake `readCappedText` exists to prevent, pointed at CPU instead of memory.
+ */
+const MAX_SHOW_NOTES_CHARS = 512 * 1024;
+
+/**
+ * Elements whose CONTENT must go, not just the tag. The allowlist pass below
+ * keeps text and drops unknown tags, which is right for `<font>` and wrong for
+ * `<script>`: the body of a script is not prose.
+ */
+const DANGEROUS_BLOCK_TAGS = [
+  'script', 'style', 'iframe', 'object', 'embed', 'form', 'input', 'textarea', 'select', 'button', 'noscript',
+] as const;
+
 function sanitizeShowNotes(html: string): string {
-  let out = html;
+  let out = html.length > MAX_SHOW_NOTES_CHARS ? html.slice(0, MAX_SHOW_NOTES_CHARS) : html;
   // Whole-notes-escaped feeds (e.g. Bowl After Bowl): decode the markup first so
   // <p>/<a>/lists render instead of showing as literal tag text. The allowlist
   // pass below still runs, so decoding can't smuggle anything unsafe.
   if (looksEscapedHtml(out)) out = decodeMarkupEntities(out);
-  out = out
-    // Feeds that escape only inline emphasis (real <p>/<a> but &lt;b&gt;/&lt;i&gt;,
-    // e.g. Podcasting 2.0's own): un-escape a small whitelist so bold/italic render.
-    .replace(/&lt;(\/?)(b|strong|i|em|u|s|br)\s*\/?&gt;/gi, '<$1$2>')
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .replace(
-      /<(script|style|iframe|object|embed|form|input|textarea|select|button|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,
-      '',
-    )
-    .replace(
-      /<(script|style|iframe|object|embed|form|input|textarea|select|button|noscript)\b[^>]*\/?>/gi,
-      '',
-    );
+  // Feeds that escape only inline emphasis (real <p>/<a> but &lt;b&gt;/&lt;i&gt;,
+  // e.g. Podcasting 2.0's own): un-escape a small whitelist so bold/italic render.
+  out = out.replace(/&lt;(\/?)(b|strong|i|em|u|s|br)\s*\/?&gt;/gi, '<$1$2>');
+  // The three passes that used to be `[\s\S]*?` regexes, and were quadratic on
+  // a document of repeated opens with no close (800 KB of `<!--` measured
+  // 38.7 s). Linear scanners now, and `'consume'` because an unclosed
+  // <script> swallows the rest of the document in a browser too — see the
+  // scanner header in lib/feed-xml.ts.
+  out = stripComments(out);
+  out = stripBlocks(out, DANGEROUS_BLOCK_TAGS, { unclosed: 'consume' });
+  // The two `[^>]*` regexes that follow are linear ONLY once every `<` has a
+  // `>` somewhere after it. This makes that true (see escapeDanglingLt).
+  out = escapeDanglingLt(out);
+  out = out.replace(
+    /<(script|style|iframe|object|embed|form|input|textarea|select|button|noscript)\b[^>]*\/?>/gi,
+    '',
+  );
 
   out = out.replace(/<(\/?)([a-zA-Z][a-zA-Z0-9:.-]*)([^>]*)>/g, (_, slash, rawTag, attrs) => {
     const tag = rawTag.toLowerCase();
@@ -1047,8 +1094,10 @@ function sanitizeShowNotes(html: string): string {
  * `<a>` into the middle of the tag, which would corrupt the markup.
  */
 function mapNotesText(html: string, fn: (text: string) => string): string {
-  return html
-    .split(/(<a\b[^>]*>[\s\S]*?<\/a>)/gi)
+  // `escapeDanglingLt` again, not only in sanitizeShowNotes: the allowlist tag
+  // pass between the two can delete the document's last `>`, which re-exposes
+  // a `<` tail and with it the quadratic shape in the tag split below.
+  return splitAnchors(escapeDanglingLt(html))
     .map((block, i) =>
       i % 2 === 1
         ? block // an existing anchor block — leave verbatim
@@ -1190,12 +1239,10 @@ function transcriptFromPi(e: any): { transcriptUrl?: string; transcriptType?: st
 // Parse an item's <podcast:transcript url type /> tags and pick the best one.
 function parseTranscripts(inner: string): { transcriptUrl?: string; transcriptType?: string } {
   const entries: { url: string; type?: string }[] = [];
-  const re = /<podcast:transcript\b([^>]*?)\/?>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(inner))) {
-    const url = readAttr(m[1], 'url');
+  for (const { attrs } of findTags(inner, 'podcast:transcript')) {
+    const url = readAttr(attrs, 'url');
     if (!url) continue;
-    entries.push({ url, type: readAttr(m[1], 'type') });
+    entries.push({ url, type: readAttr(attrs, 'type') });
   }
   return pickBestTranscript(entries);
 }
@@ -1207,19 +1254,17 @@ function parseTranscripts(inner: string): { transcriptUrl?: string; transcriptTy
 // server-side fetch / SSRF surface here.
 function parseAlternateEnclosures(inner: string): AlternateEnclosure[] | undefined {
   const out: AlternateEnclosure[] = [];
-  const blockRe = /<podcast:alternateEnclosure\b([^>]*)>([\s\S]*?)<\/podcast:alternateEnclosure>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = blockRe.exec(inner))) {
-    const attrs = m[1];
-    const body = m[2];
+  for (const hit of findBlocks(inner, 'podcast:alternateEnclosure')) {
+    // A self-closing block lists no <podcast:source>, so there is nothing to play.
+    if (hit.selfClosing) continue;
+    const attrs = hit.attrs;
+    const body = hit.inner;
     // Collect all <podcast:source uri> mirrors (with their contentType), then
     // prefer an https URL.
     const sources: { uri: string; contentType?: string }[] = [];
-    const srcRe = /<podcast:source\b([^>]*?)\/?>/gi;
-    let sm: RegExpExecArray | null;
-    while ((sm = srcRe.exec(body))) {
-      const uri = readAttr(sm[1], 'uri');
-      if (uri) sources.push({ uri, contentType: readAttr(sm[1], 'contentType') });
+    for (const src of findTags(body, 'podcast:source')) {
+      const uri = readAttr(src.attrs, 'uri');
+      if (uri) sources.push({ uri, contentType: readAttr(src.attrs, 'contentType') });
     }
     const chosen = sources.find((s) => /^https:/i.test(s.uri)) ?? sources[0];
     if (!chosen) continue;
@@ -1249,9 +1294,7 @@ function parseAlternateEnclosures(inner: string): AlternateEnclosure[] | undefin
 // carry several.
 function parseFunding(channelXml: string): FundingLink[] | undefined {
   const out: FundingLink[] = [];
-  const re = /<podcast:funding\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:funding>)/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(channelXml))) {
+  for (const hit of findBlocks(channelXml, 'podcast:funding')) {
     // Through `httpUrl`, for the same reason `parseLiveValue` does it: this is
     // an attacker-chosen attribute that ends up as a live `href` on the SUPPORT
     // button, and **React does not block a `javascript:` href — it only warns
@@ -1264,9 +1307,9 @@ function parseFunding(channelXml: string): FundingLink[] | undefined {
     // At the PARSE boundary rather than at the two render sites, so a third
     // surface that shows a funding link inherits the guard instead of
     // re-deciding it.
-    const url = httpUrl(readAttr(m[1], 'url'));
+    const url = httpUrl(readAttr(hit.attrs, 'url'));
     if (!url) continue;
-    const message = m[2] != null ? decodeXmlText(m[2]) : '';
+    const message = hit.selfClosing ? '' : decodeXmlText(hit.inner);
     out.push({ url, message: message || undefined });
   }
   return out.length ? out : undefined;
@@ -1292,15 +1335,13 @@ function fundingFromPi(f: any): FundingLink[] | undefined {
 // Parse a channel-level <podcast:podroll> block into its remoteItem entries.
 // Same before-first-<item> channel slice + readAttr idiom used for feedMedium.
 function parsePodroll(channelXml: string): PodrollItem[] | undefined {
-  const podrollMatch = /<podcast:podroll\b[^>]*>([\s\S]*?)<\/podcast:podroll>/i.exec(channelXml);
-  if (!podrollMatch) return undefined;
+  const block = firstBlock(channelXml, 'podcast:podroll');
+  if (!block || block.selfClosing) return undefined;
   const items: PodrollItem[] = [];
-  const riRe = /<podcast:remoteItem\b([^>]*?)\/?>/gi;
-  let rm: RegExpExecArray | null;
-  while ((rm = riRe.exec(podrollMatch[1]))) {
-    const feedGuid = readAttr(rm[1], 'feedGuid');
+  for (const { attrs } of findTags(block.inner, 'podcast:remoteItem')) {
+    const feedGuid = readAttr(attrs, 'feedGuid');
     if (!feedGuid) continue;
-    items.push({ feedGuid, feedUrl: readAttr(rm[1], 'feedUrl') });
+    items.push({ feedGuid, feedUrl: readAttr(attrs, 'feedUrl') });
   }
   return items.length ? items : undefined;
 }
@@ -1330,10 +1371,8 @@ export async function getRssEpisodeEnrichment(
   const feedNostrNpubs = parseFeedNpubs(channelXml);
   const feedTitle = extractText(channelXml, 'title') || undefined;
 
-  const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = itemRe.exec(xml))) {
-    const inner = m[1];
+  for (const item of findBlocks(xml, 'item', { max: MAX_RSS_ITEMS })) {
+    const inner = item.inner;
     const guid = extractText(inner, 'guid');
     if (!guid) continue;
     const socialInteract = parseSocialInteractsFromRss(inner) ?? undefined;
@@ -1397,8 +1436,8 @@ export async function getRssEpisodeEnrichment(
  * something we can't use.
  */
 function parseSeasonEpisode(inner: string): { season: number | null; episode: number | null } {
-  const seasonTagMatch = /<podcast:season\b([^>]*)>/i.exec(inner);
-  const seasonStr = (seasonTagMatch ? readAttr(seasonTagMatch[1], 'number') : undefined)
+  const seasonTag = firstTag(inner, 'podcast:season');
+  const seasonStr = (seasonTag ? readAttr(seasonTag.attrs, 'number') : undefined)
     ?? extractText(inner, 'podcast:season');
   const episodeStr = extractText(inner, 'podcast:episode') ?? extractText(inner, 'itunes:episode');
   return {
@@ -1429,12 +1468,16 @@ function parsePubDate(raw: string | undefined): number | undefined {
 // Artwork for a channel or item: prefer <itunes:image href>, fall back to the
 // RSS <image><url> block (same two-source fallback as musicl-resolver).
 function extractItunesImageHref(xml: string): string | undefined {
-  const m = xml.match(/<itunes:image\b([^>]*?)\/?>/i);
-  return m ? readAttr(m[1], 'href') : undefined;
+  const tag = firstTag(xml, 'itunes:image');
+  return tag ? readAttr(tag.attrs, 'href') : undefined;
 }
 function extractRssImageUrl(xml: string): string | undefined {
-  const m = xml.match(/<image\b[^>]*>[\s\S]*?<url>([^<]+)<\/url>/i);
-  return m ? decodeXmlText(m[1]) : undefined;
+  const image = firstBlock(xml, 'image');
+  if (!image || image.selfClosing) return undefined;
+  const url = firstBlock(image.inner, 'url');
+  if (!url || url.selfClosing) return undefined;
+  const text = decodeXmlText(url.inner);
+  return text || undefined;
 }
 
 /**
@@ -1498,14 +1541,12 @@ export async function getFeedFromRss(
   const medium = podcast.medium;
 
   const episodes: Episode[] = [];
-  const itemRe = /<item\b[^>]*>([\s\S]*?)<\/item>/gi;
-  let m: RegExpExecArray | null;
   let idx = 0;
-  while ((m = itemRe.exec(xml))) {
-    const inner = m[1];
+  for (const item of findBlocks(xml, 'item', { max: MAX_RSS_ITEMS })) {
+    const inner = item.inner;
     const guid = extractText(inner, 'guid');
-    const enc = inner.match(/<enclosure\b([^>]*?)\/?>/i);
-    const enclosureUrl = enc ? readAttr(enc[1], 'url') : undefined;
+    const enc = firstTag(inner, 'enclosure');
+    const enclosureUrl = enc ? readAttr(enc.attrs, 'url') : undefined;
     // Not a playable episode without either a guid or a media enclosure.
     if (!enclosureUrl && !guid) { idx++; continue; }
     const title = extractText(inner, 'title') || 'Untitled';
@@ -1514,8 +1555,8 @@ export async function getFeedFromRss(
     const itemImage = extractItunesImageHref(inner) ?? extractRssImageUrl(inner);
     const { season, episode: episodeNum } = parseSeasonEpisode(inner);
     const { transcriptUrl, transcriptType } = parseTranscripts(inner);
-    const chaptersMatch = inner.match(/<podcast:chapters\b([^>]*?)\/?>/i);
-    const chaptersUrl = chaptersMatch ? readAttr(chaptersMatch[1], 'url') : undefined;
+    const chaptersTag = firstTag(inner, 'podcast:chapters');
+    const chaptersUrl = chaptersTag ? readAttr(chaptersTag.attrs, 'url') : undefined;
     const itemValue = parseValueBlock(inner);
     const alternateEnclosures = parseAlternateEnclosures(inner);
     episodes.push({
@@ -1526,7 +1567,7 @@ export async function getFeedFromRss(
       contentEncoded,
       link: extractText(inner, 'link') || undefined,
       enclosureUrl: enclosureUrl ?? '',
-      enclosureType: enc ? readAttr(enc[1], 'type') : undefined,
+      enclosureType: enc ? readAttr(enc.attrs, 'type') : undefined,
       alternateEnclosures,
       duration: parseItunesDuration(extractText(inner, 'itunes:duration')),
       datePublished: parsePubDate(extractText(inner, 'pubDate')),

@@ -8,7 +8,8 @@ import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './boost-modal/use-share-picker';
-import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, splitTrackAndHost, storedBoostLegs } from '@/lib/util';
+import { loadValueSplits } from '@/lib/podcast-meta';
+import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, splitTrackAndHost, storedBoostLegs, randomId } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
@@ -136,18 +137,28 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
   // Fetch resolved value splits for this episode.
   useEffect(() => {
+    // `cancelled`, like the two sibling readers of this endpoint: closing the
+    // modal mid-flight, or switching episodes with it open, otherwise writes a
+    // stale answer into whatever is mounted now.
+    let cancelled = false;
     setLoadState('loading');
-    fetch(`/api/value-splits?feedId=${episode.feedId}&episodeId=${episode.id}`)
-      .then((r) => r.json())
-      .then((data) => {
-        const all = (data.splits as ValueTimeSplit[]) ?? [];
+    loadValueSplits(episode.feedId, episode.id)
+      .then((list) => {
+        if (cancelled) return;
+        const all: ValueTimeSplit[] = list ?? [];
         const resolved = all.filter((s) => hasValueRecipients(s.value));
         setSplits(resolved);
         setTotalSplits(all.length);
         setLoadState('ready');
       })
-      .catch(() => setLoadState('error'));
+      .catch(() => { if (!cancelled) setLoadState('error'); });
+    return () => { cancelled = true; };
   }, [episode.feedId, episode.id]);
+
+  // One lookup per row rather than a `find` inside the map: `progress` grows
+  // by one entry per settled leg during a boost-all, and the list re-renders on
+  // each, so the scan was O(tracks²) at exactly the moment the UI is busiest.
+  const progressByIndex = useMemo(() => new Map(progress.map((p) => [p.index, p])), [progress]);
 
   const total = sats * splits.length;
 
@@ -211,7 +222,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         sender_name: senderName,
         sender_id: anonymous ? undefined : identity?.pubkey,
         action: 'boost',
-        uuid: crypto.randomUUID(),
+        uuid: randomId(),
       };
       let trackOk = false;
       // Only meaningful when trackOk is false: at least one leg's wallet never
@@ -278,7 +289,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           sender_name: senderName,
           sender_id: anonymous ? undefined : identity?.pubkey,
           action: 'boost',
-          uuid: crypto.randomUUID(),
+          uuid: randomId(),
         };
         try {
           const hostResults = await sendBoost({
@@ -358,7 +369,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       sender_name: senderName,
       sender_id: anonymous ? undefined : identity?.pubkey,
       action: 'boost',
-      uuid: crypto.randomUUID(),
+      uuid: randomId(),
     };
 
     const lines: string[] = ['⚡ Boost ⚡', ''];
@@ -412,7 +423,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     >
         <button
           onClick={onClose}
-          className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
+          // `px-3 py-2`, the same as <WalletModal>'s close: with no padding the
+          // glyph's hit box was ~10×28, under the 24px floor.
+          className="absolute top-0 right-1 px-3 py-2 text-muted hover:text-bone text-lg z-10"
           aria-label="Close"
         >×</button>
 
@@ -455,7 +468,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               </p>
               <ul className="space-y-2">
                 {splits.map((split, i) => {
-                  const result = progress.find((p) => p.index === i);
+                  const result = progressByIndex.get(i);
                   return (
                     <li key={i} className="card p-3 flex items-center gap-3">
                       <PodcastCover

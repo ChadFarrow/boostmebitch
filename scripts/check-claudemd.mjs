@@ -163,7 +163,19 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // question it answers and the cost of getting it wrong; that is what took the
 // overage from 45 words to 19. What is left is the two rows themselves. If the
 // next raise cannot say the same, cut prose instead.
-const BUDGET = 14820
+//
+// 14,820 → 14,870, table rows again: `check:feedscan` and `check:cappedbody`
+// are the thirty-fifth and thirty-sixth scripts, and both pin functions whose
+// silent breakage is measured rather than hypothetical — a 1 MB feed of `<!--`
+// took a request 38.7 s under the regexes the scanner replaced, and the null-body
+// branch of `readCappedBytes` returned an unmeasured buffer. The RULE that
+// arrived with them ("walk a document with `findBlocks`, never a `[\s\S]*?`
+// regex") displaced its own prose, as the precedent above requires: it was
+// folded into the `readAttr` bullet, and the `readAttr` bullet, the proxied-body
+// bullet and the dev-server paragraph were each cut to the shortest form that
+// still names every fact, which is what paid for it. The ~10 words left are the
+// rows' raise and nothing else.
+const BUDGET = 14870
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')

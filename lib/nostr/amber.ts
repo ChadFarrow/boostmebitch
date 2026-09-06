@@ -203,7 +203,6 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
   // prompt for a question that has been answered.
   const parked = takeParkedResult(opts.type);
   if (parked) {
-    // eslint-disable-next-line no-console
     console.info('[amber] ✓', opts.type, '(resumed from callback)');
     storage.amberPending.clear();
     storage.amberTab.clear();
@@ -262,7 +261,6 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
     if (held && !fresh(held.ts)) storage.amberPending.clear();
   }
 
-  // eslint-disable-next-line no-console
   console.info(
     '[amber] →', opts.type,
     useCallback ? `(callback ${AMBER_CALLBACK_PATH})` : '(clipboard)',
@@ -294,7 +292,6 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
         //
         // A clipboard request has no such second chance, so its record goes.
         if (!useCallback) storage.amberPending.clear();
-        // eslint-disable-next-line no-console
         console.warn('[amber] ✗', opts.type, error);
         return reject(new Error(error));
       }
@@ -304,7 +301,6 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       storage.amberPending.clear();
       storage.amberTab.clear();
       if (!raw) return reject(new Error('Amber returned no result'));
-      // eslint-disable-next-line no-console
       console.info('[amber] ✓', opts.type, 'len=', raw.length);
       resolve(raw);
     };
@@ -351,7 +347,6 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       if (settled || !useCallback) return false;
       const raw = takeParkedResult(opts.type);
       if (!raw) return false;
-      // eslint-disable-next-line no-console
       console.info('[amber] ✓', opts.type, '(parked by the callback tab, via', origin + ')');
       finish(raw);
       return true;
@@ -381,17 +376,14 @@ async function invokeAmber(opts: InvokeOptions): Promise<string> {
       try {
         text = await navigator.clipboard.readText();
       } catch (e) {
-        // eslint-disable-next-line no-console
         console.warn('[amber] clipboard read denied via', origin, ':', (e as Error)?.message ?? e);
         return;
       }
       if (!text) return;
       if (looksLikeAmberResult(text, opts.type)) {
-        // eslint-disable-next-line no-console
         console.info('[amber] auto-resolved via', origin);
         finish(text.trim());
       } else {
-        // eslint-disable-next-line no-console
         console.info('[amber] clipboard via', origin, 'didn\'t match expected shape (len=', text.length, ')');
       }
     };

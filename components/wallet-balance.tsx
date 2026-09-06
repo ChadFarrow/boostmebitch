@@ -31,13 +31,8 @@ import {
   subscribeSpark,
   subscribeSparkEvents,
 } from '@/lib/v4v/spark';
-import {
-  hasNwc,
-  nwcGetSpendable,
-  subscribeNwc,
-  subscribeNwcNotifications,
-  type NwcBudget,
-} from '@/lib/v4v/nwc';
+import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc-state';
+import type { NwcBudget } from '@/lib/util';
 import {
   isWeblnEnabled,
   subscribeWebln,
@@ -133,7 +128,10 @@ export function useWalletBalance(
         const info = await sparkGetInfo();
         if (!cancelled && info) setBalance(info.balanceSats);
       } else if (rail === 'nwc') {
-        const spendable = await nwcGetSpendable();
+        // The SDK half, loaded on first use: this chip is in the header of
+        // every route, and a static import put the NIP-47 client in the first
+        // load for visitors with no wallet. See lib/v4v/nwc-state.ts.
+        const spendable = await (await import('@/lib/v4v/nwc')).nwcGetSpendable();
         if (!cancelled && spendable !== null) {
           setBalance(spendable.sats);
           // Only when the BUDGET is what caps the number. A connection with a
@@ -193,11 +191,11 @@ export function useWalletBalance(
     } else if (rail === 'nwc') {
       let unsubNotifs: (() => void) | null = null;
       refresh();
-      subscribeNwcNotifications((e) => {
+      import('@/lib/v4v/nwc').then((m) => m.subscribeNwcNotifications((e) => {
         if (e.notification_type === 'payment_received' || e.notification_type === 'payment_sent') {
           scheduleRefresh();
         }
-      }).then((fn) => {
+      })).then((fn) => {
         if (cancelled) { fn(); return; }
         unsubNotifs = fn;
       });

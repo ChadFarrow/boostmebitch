@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling, readCappedRequestText } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch, readCappedText } from '@/lib/safe-fetch';
+import { safeFetch } from '@/lib/safe-fetch';
+import { readCappedText } from '@/lib/capped-body';
 import { BRAND } from '@/lib/brand';
 
 // An LNURL-pay response is small, but LUD-06 lets the `metadata` string carry a
@@ -58,6 +59,8 @@ export async function POST(req: Request) {
   // roomy limit here costs no more than the traffic it admits.
   const limited = rateLimit(req, 'lnurl', 240);
   if (limited) return limited;
+  const notJson = requireJsonBody(req);
+  if (notJson) return notJson;
 
   // Capped read, then parse — see `readCappedRequestText`. The only field
   // this route uses is a URL already bounded by MAX_URL_LENGTH below, so

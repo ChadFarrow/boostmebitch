@@ -22,6 +22,10 @@ function AmberManualPaste({ onSubmit }: { onSubmit: (value: string) => boolean }
         value={value}
         onChange={(e) => setValue(e.target.value)}
         placeholder="Paste pubkey / npub from Amber"
+        aria-label="Pubkey or npub from Amber"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
         className="input text-[11px] w-full"
         rows={2}
       />

@@ -432,7 +432,6 @@ function dropBaselineIfWriteFailed(landed: boolean, npub: string | undefined, wh
     feeds: [], items: [],
     privateFeeds: prev.privateFeeds ?? [], privateItems: prev.privateItems ?? [],
   });
-  // eslint-disable-next-line no-console
   console.warn(
     `[favorites] the ${what} cache did not reach disk — dropping this device's baseline so it `
     + 'cannot be read as a removal on the next load. Local state is intact for this session only.',
@@ -680,7 +679,6 @@ function persistMuted(identity: NostrIdentity | null, state: MuteListState) {
     // on the next load — which reads as "I muted them and they came back", not
     // as a storage problem, because nothing else on screen looks wrong. Say so
     // here rather than letting it be discovered as a mute that won't stick.
-    // eslint-disable-next-line no-console
     console.warn(
       '[mutes] could not write the mute list to storage — it will not survive a reload' +
         (identity ? '. The relay copy still will, once the publish below lands.' : '.'),

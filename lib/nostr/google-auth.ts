@@ -14,6 +14,10 @@
 // is still live (see refreshAccessToken), interactively where it isn't.
 
 import { getErrorMessage } from '@/lib/util';
+import { readCappedJson } from '@/lib/capped-body';
+
+/** A userinfo answer is a few hundred bytes; capped like every other body read. */
+const USERINFO_MAX_BYTES = 16 * 1024;
 
 const GIS_SRC = 'https://accounts.google.com/gsi/client';
 const USERINFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
@@ -126,7 +130,7 @@ async function fetchSub(accessToken: string): Promise<string> {
     signal: AbortSignal.timeout(USERINFO_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error('Could not read your Google account id');
-  const json = (await res.json()) as { sub?: unknown };
+  const json = (await readCappedJson(res, USERINFO_MAX_BYTES)) as { sub?: unknown };
   if (typeof json.sub !== 'string' || !json.sub) {
     throw new Error('Google did not return an account id');
   }

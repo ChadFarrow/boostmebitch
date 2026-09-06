@@ -1,5 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useMenuKeys } from './use-menu-keys';
 import { createPortal } from 'react-dom';
 
 /**
@@ -100,6 +101,10 @@ export function SelectMenu<T extends string>({
   const btnRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [at, setAt] = useState<{ top?: number; bottom?: number; left: number; width: number } | null>(null);
+  const close = useCallback(() => setOpen(false), []);
+  // Arrow keys, Home/End, and focus that goes INTO the menu on open and back to
+  // the trigger on close — a `role="menu"` promised those. See the hook.
+  useMenuKeys({ open, menuRef, triggerRef: btnRef, close });
   const current = active === null ? null : options.find((o) => o.id === active);
 
   // Measured from the trigger, and again on scroll and resize: a `fixed`

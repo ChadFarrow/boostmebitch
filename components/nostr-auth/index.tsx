@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, startTransition } from 'react';
+import { useConfirm } from '../confirm-dialog';
 import { nip19 } from 'nostr-tools';
 import {
   unattendedDecryptOk,
@@ -26,7 +27,7 @@ import {
   type NostrIdentity,
 } from '@/lib/nostr';
 import { hasSpark, sparkDisconnect, sparkInitFromMnemonic, sparkSeedIsActive } from '@/lib/v4v/spark';
-import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc';
+import { hasNwc, saveNwcUri, clearNwcUri, loadNwcUri } from '@/lib/v4v/nwc-state';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
@@ -37,7 +38,7 @@ import { resetFollows } from '@/lib/nostr/follows';
 import { deriveSparkFromLocalKey } from './provision-spark';
 import { AccountMenu } from './account-menu';
 import { SignInModal } from './sign-in-modal';
-import { markNwcRestored } from '../nwc-wallet';
+import { markNwcRestored } from '@/lib/v4v/nwc-state';
 
 // Module-level promise cache keyed by pubkey, so the same loadProfile call
 // isn't fired twice when React remounts the component (StrictMode in dev,
@@ -53,6 +54,7 @@ const EXTENSION_RECHECK_THROTTLE_MS = 30_000;
 export function NostrAuth() {
   const identity = useApp((s) => s.identity);
   const setIdentity = useApp((s) => s.setIdentity);
+  const [confirm, confirmEl] = useConfirm();
   const setFavorites = useApp((s) => s.setFavorites);
   const setFavoriteEpisodes = useApp((s) => s.setFavoriteEpisodes);
   const resetFavoritesSync = useApp((s) => s.resetFavoritesSync);
@@ -384,7 +386,6 @@ export function NostrAuth() {
           // silently re-point the session — and every subsequent publish — at
           // an identity the user did not choose. Dropping it is the safe
           // direction: they can sign in again deliberately.
-          // eslint-disable-next-line no-console
           console.warn('[amber] callback returned a different account than the signed-in one; ignoring');
         } else {
           storage.signer.set('amber');
@@ -395,7 +396,6 @@ export function NostrAuth() {
           // second sign-in code path to keep in step with this one.
         }
       } catch (e) {
-        // eslint-disable-next-line no-console
         console.warn('[amber] parked callback result was unusable:', (e as Error)?.message ?? e);
       }
     }
@@ -574,19 +574,27 @@ export function NostrAuth() {
     setMutesSync('idle');
   }
 
-  function signout() {
+  async function signout() {
     // The local signer is the only kind where signing out destroys something:
     // clearLocalSigner wipes the ciphertext AND the non-extractable wrap key,
     // and the only way back in is the same Google account plus the PIN. An
     // extension or bunker sign-out costs nothing, so it stays one click. Read
     // the kind before the storage.signer.clear() below.
     if (storage.signer.get() === 'local') {
-      const ok = window.confirm(
-        "Signing out erases this account's key from this browser.\n\n" +
-        'You can only get back in with the same Google account and the PIN you set. ' +
-        "If you've forgotten the PIN, this account is gone for good.\n\n" +
-        'Sign out anyway?',
-      );
+      const ok = await confirm({
+        title: 'Sign out and erase this key?',
+        body: (
+          <>
+            <p>Signing out erases this account&apos;s key from this browser.</p>
+            <p>
+              You can only get back in with the same Google account and the PIN you set. If
+              you&apos;ve forgotten the PIN, this account is gone for good.
+            </p>
+          </>
+        ),
+        confirmLabel: 'Sign out and erase',
+        danger: true,
+      });
       if (!ok) return;
     }
     if (identity) {
@@ -632,7 +640,12 @@ export function NostrAuth() {
   }
 
   if (identity) {
-    return <AccountMenu identity={identity} onSignOut={signout} />;
+    return (
+      <>
+        {confirmEl}
+        <AccountMenu identity={identity} onSignOut={signout} />
+      </>
+    );
   }
 
   // Common sign-in completion path used by the modal's extension / Amber /

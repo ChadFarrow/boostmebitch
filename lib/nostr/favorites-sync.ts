@@ -206,7 +206,6 @@ export function trustedBaseline(npub: string): FavoritesBaseline {
     Object.keys(storage.favorites.get(npub)).length > 0
     || Object.keys(storage.favoriteEpisodes.get(npub)).length > 0;
   if (baselineIsTrustworthy(baseline, localHasEntries, deliberatelyEmpty)) return baseline;
-  // eslint-disable-next-line no-console
   console.warn(
     '[favorites] ignoring the baseline this cycle — it names '
     + `${baseline.feeds.length + baseline.items.length} id(s) while this device caches none. `

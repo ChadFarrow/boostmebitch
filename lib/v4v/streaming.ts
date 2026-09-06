@@ -52,7 +52,7 @@ import { canSignUnattended } from '@/lib/nostr/signer';
 import { resolvePublishRelays } from '@/lib/nostr/relays';
 import { publishValuePlaybackReceipt, queueSummaryUpdate } from '@/lib/nostr/value-playback';
 import { sendBoost, pickRail, paidAny } from './boost';
-import { subscribeNwc } from './nwc';
+import { subscribeNwc } from './nwc-state';
 import { subscribeSpark } from './spark';
 import { subscribeWebln } from './webln';
 import { liveEndedGuid, liveTargetSnapshot, subscribeLiveTarget, type LiveTarget } from './live-value';

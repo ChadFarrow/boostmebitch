@@ -153,13 +153,22 @@ export function LivePage() {
    * "not resolved yet", never "not a podcast", and dropping those would quietly
    * exclude every favorite PI has not answered for.
    */
-  const favIdList = useApp((s) =>
-    Object.values(s.favorites)
-      .filter((f) => f.id > 0)
-      .filter((f) => !f.medium || !(isMusicMedium(f) || isPlaylistMedium(f)))
-      .sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))
-      .map((f) => f.id)
-      .join(','),
+  // The map is selected and the string derived from it in a memo, NOT derived
+  // inside the selector: a selector runs on every store write, and <Player> in
+  // the root layout writes `positionSec` once a second while audio plays. The
+  // returned string compared equal so nothing re-rendered, but the
+  // values→filter→sort→map→join ran at 1 Hz for the life of the page, scaling
+  // with the library. The map's identity changes only when a favorite does.
+  const favorites = useApp((s) => s.favorites);
+  const favIdList = useMemo(
+    () =>
+      Object.values(favorites)
+        .filter((f) => f.id > 0)
+        .filter((f) => !f.medium || !(isMusicMedium(f) || isPlaylistMedium(f)))
+        .sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))
+        .map((f) => f.id)
+        .join(','),
+    [favorites],
   );
 
   const identity = useApp((s) => s.identity);

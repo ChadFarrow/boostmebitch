@@ -1,7 +1,7 @@
 // Cross-wallet cleanup — enforces one-active-wallet-at-a-time.
 // Call clearOtherWallets(keep, npub) after a new wallet successfully connects.
 
-import { clearNwcUri, hasNwc } from './nwc';
+import { clearNwcUri, hasNwc } from './nwc-state';
 import { hasSpark, sparkDisconnect } from './spark';
 import { isWeblnEnabled, weblnDisable } from './webln';
 import { storage } from '@/lib/storage';

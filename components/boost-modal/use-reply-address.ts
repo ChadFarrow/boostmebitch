@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import type { NostrIdentity } from '@/lib/nostr';
-import { lookupReplyTarget, replyFieldsFor, type ReplyFields } from '@/lib/v4v/keysend-lookup';
+import { lookupReplyTarget, replyFieldsFor, type ReplyFields } from '@/lib/v4v/boost';
 
 /**
  * The boostagram fields naming where this user can be sent a reply boost, or

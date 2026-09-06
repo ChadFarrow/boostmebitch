@@ -280,6 +280,7 @@ export function LiveChat({ streamId }: { streamId: string }) {
                   }
                 }}
                 placeholder="Send a message…"
+                aria-label="Send a message"
                 maxLength={500}
                 className="input flex-1 text-sm py-1.5"
               />

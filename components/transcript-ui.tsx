@@ -118,6 +118,7 @@ export function TranscriptPanel({
           <input
             className="input w-full text-xs py-1 pr-8"
             placeholder="Search transcript…"
+            aria-label="Search transcript"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -129,7 +130,7 @@ export function TranscriptPanel({
               type="button"
               onClick={() => setQuery('')}
               aria-label="Clear transcript search"
-              className="absolute right-2 top-1/2 -translate-y-1/2 flex h-5 w-5 items-center justify-center rounded-full text-muted hover:bg-line hover:text-bone"
+              className="absolute right-1 top-1/2 -translate-y-1/2 flex h-6 w-6 min-h-6 min-w-6 items-center justify-center rounded-full text-muted hover:bg-line hover:text-bone"
             >
               ×
             </button>

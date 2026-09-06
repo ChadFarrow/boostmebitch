@@ -1,5 +1,18 @@
 'use client';
 
+import { readCappedText, readCappedJson } from '../capped-body';
+import { randomId } from '../util';
+
+// Google is not a hostile host, but a body is still read into this tab's heap
+// and every reader in the app goes through the same cap — an uncapped
+// `res.json()` is the shape that was wrong on the LNURL path and is not kept
+// anywhere. Sized against the real answers: an error envelope, a page of file
+// ids, one encrypted backup blob (a few KB), one created-file id.
+const DRIVE_ERROR_MAX_BYTES = 64 * 1024;
+const DRIVE_LIST_MAX_BYTES = 256 * 1024;
+const DRIVE_BLOB_MAX_BYTES = 1024 * 1024;
+const DRIVE_ID_MAX_BYTES = 16 * 1024;
+
 // The user's encrypted key blob, stored in their own Google Drive appdata
 // folder. Ported from Wisp's auth/DriveBackupService.kt.
 //
@@ -60,7 +73,7 @@ async function driveFetch(url: string, token: string, init?: RequestInit): Promi
     // on its own.
     let reason = '';
     try {
-      const body = (await res.json()) as { error?: { message?: string; status?: string } };
+      const body = (await readCappedJson(res, DRIVE_ERROR_MAX_BYTES)) as { error?: { message?: string; status?: string } };
       reason = body.error?.message ?? '';
     } catch { /* non-JSON body — the status is all we have */ }
     throw new Error(
@@ -99,7 +112,7 @@ export async function listBackups(token: string): Promise<DriveFile[]> {
     });
     if (pageToken) params.set('pageToken', pageToken);
     const res = await driveFetch(`${FILES_URL}?${params}`, token);
-    const json = (await res.json()) as { files?: DriveFile[]; nextPageToken?: string };
+    const json = (await readCappedJson(res, DRIVE_LIST_MAX_BYTES)) as { files?: DriveFile[]; nextPageToken?: string };
     if (json.files?.length) files.push(...json.files);
     pageToken = json.nextPageToken;
     if (!pageToken) break;
@@ -110,7 +123,7 @@ export async function listBackups(token: string): Promise<DriveFile[]> {
 /** Fetch one blob's ciphertext. */
 export async function downloadBackup(token: string, fileId: string): Promise<string> {
   const res = await driveFetch(`${FILES_URL}/${encodeURIComponent(fileId)}?alt=media`, token);
-  return res.text();
+  return readCappedText(res, DRIVE_BLOB_MAX_BYTES);
 }
 
 /**
@@ -126,8 +139,10 @@ export async function downloadBackup(token: string, fileId: string): Promise<str
  * is a separate feature, not a cleanup.
  */
 export async function uploadBackup(token: string, payload: string): Promise<string> {
-  const name = `bmb_bk_${crypto.randomUUID()}.bin`;
-  const boundary = `bmb${crypto.randomUUID().replace(/-/g, '')}`;
+  // `randomId`, not `crypto.randomUUID`: the latter is secure-context-only and
+  // absent over `http://<LAN-IP>`, which is how this app is tested on a phone.
+  const name = `bmb_bk_${randomId()}.bin`;
+  const boundary = `bmb${randomId().replace(/-/g, '')}`;
   const body =
     `--${boundary}\r\n` +
     'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
@@ -142,7 +157,7 @@ export async function uploadBackup(token: string, payload: string): Promise<stri
     headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
     body,
   });
-  const json = (await res.json()) as { id?: string };
+  const json = (await readCappedJson(res, DRIVE_ID_MAX_BYTES)) as { id?: string };
   if (!json.id) throw new Error('Google Drive did not return a file id');
   return json.id;
 }

@@ -9,6 +9,20 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Focus is VISIBLE, everywhere. Nothing in this file styled it, so every
+   control rode the UA default ring (and `.input` removed even that, leaving a
+   1px border-colour change). `:focus-visible` rather than `:focus`: a mouse
+   click paints no ring, a Tab does — WCAG 2.4.11 wants the ring, not the
+   click. The bolt yellow at 2px on a 2px offset clears both themes' surfaces.
+   A `.seek` thumb and <ModalShell>'s programmatically focused card keep the
+   rule too; neither matches `:focus-visible` on a click. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid rgb(var(--bolt));
+    outline-offset: 2px;
+  }
+}
+
 /* Theme tokens — `ink` = page bg, `bone` = primary fg; values swap between
    modes so Tailwind classes (bg-ink, text-bone, bg-ink/75) keep working in
    both themes. The FOUC-blocker script in app/layout.tsx sets
@@ -205,7 +219,7 @@ body::before {
   }
   .input {
     @apply w-full bg-transparent border border-bone/30 px-3 py-2 font-mono text-sm
-           placeholder:text-muted focus:border-bolt focus:outline-none;
+           placeholder:text-muted focus:border-bolt;
   }
   .card {
     @apply border border-bone/40 bg-ink/40;

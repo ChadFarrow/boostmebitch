@@ -20,7 +20,7 @@
 // collide with a guid in either cache.
 
 import { storage } from './storage';
-import type { Episode, PlayGroup, Podcast } from './types';
+import type { Episode, PlayGroup, Podcast, ValueTimeSplit } from './types';
 
 /**
  * Entry cap for the two in-memory tiers below.
@@ -427,7 +427,7 @@ export interface FeedResponse {
  */
 export function loadFeed(
   source: { feedId: number; feedUrl?: undefined } | { feedUrl: string; feedId?: undefined },
-): Promise<FeedResponse> {
+): Promise<FeedResponse & { status: number }> {
   // Preview (not-in-PI) feeds load by URL — their synthetic negative id cannot
   // be resolved server-side.
   const endpoint = source.feedUrl
@@ -435,14 +435,48 @@ export function loadFeed(
     : `/api/feed?id=${source.feedId}`;
   const existing = feedInFlight.get(endpoint);
   if (existing) return existing;
+  // The status rides along so a caller can tell the route's own 500 (PI is
+  // down — trip the breaker) from a 404 or a body with no podcast. A non-JSON
+  // body still rejects, which keeps every caller's error path as it was.
   const p = fetch(endpoint)
-    .then((r) => r.json() as Promise<FeedResponse>)
+    .then((r) => r.json().then((body: FeedResponse) => ({ ...body, status: r.status })))
     .finally(() => { feedInFlight.delete(endpoint); });
   feedInFlight.set(endpoint, p);
   return p;
 }
 
-const feedInFlight = new Map<string, Promise<FeedResponse>>();
+const feedInFlight = new Map<string, Promise<FeedResponse & { status: number }>>();
+
+/**
+ * `/api/value-splits`, coalesced the way `loadFeed` is.
+ *
+ * Three surfaces ask for the same document — the player's track art
+ * (`useResolvedSplits`), the boost modal's active window (`useActiveSplit`) and
+ * BOOST ALL — and each built the URL by hand, so opening the boost modal during
+ * a song with art issued two identical requests. Same in-flight map, same rule:
+ * the entry is dropped the moment the promise settles, so nothing is cached
+ * past that (the route already answers with a one-hour CDN cache).
+ *
+ * `null` means the route answered non-2xx or without a `splits` array; a
+ * rejection means the fetch or the parse failed. Callers decide what each
+ * means for them — the art falls back, the modal says "unresolved".
+ */
+export function loadValueSplits(feedId: number, episodeId: number): Promise<ValueTimeSplit[] | null> {
+  const key = `${feedId}:${episodeId}`;
+  const existing = valueSplitsInFlight.get(key);
+  if (existing) return existing;
+  const p = fetch(`/api/value-splits?feedId=${feedId}&episodeId=${episodeId}`)
+    .then(async (r) => {
+      if (!r.ok) return null;
+      const data = (await r.json()) as { splits?: unknown };
+      return Array.isArray(data.splits) ? (data.splits as ValueTimeSplit[]) : null;
+    })
+    .finally(() => { valueSplitsInFlight.delete(key); });
+  valueSplitsInFlight.set(key, p);
+  return p;
+}
+
+const valueSplitsInFlight = new Map<string, Promise<ValueTimeSplit[] | null>>();
 
 /** What `/api/playlist` answers with. Loose for the same reason `FeedResponse` is. */
 export interface PlaylistResponse {

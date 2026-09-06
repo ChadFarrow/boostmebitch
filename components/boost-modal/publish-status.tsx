@@ -20,7 +20,7 @@ export function PublishStatus({ state }: { state: PublishState }) {
     // there is no retry control below — a publish that gives up is a kind:1
     // nothing re-attempts.
     return (
-      <div className="text-xs text-nostr space-y-1">
+      <div role="status" className="text-xs text-nostr space-y-1">
         <div>◆ Publishing to nostr…</div>
         <BunkerApprovalNotice />
       </div>
@@ -28,18 +28,21 @@ export function PublishStatus({ state }: { state: PublishState }) {
   }
 
   if (state.kind === 'error') {
-    return <div className="text-xs text-nostr">◆ Publish failed: {state.message}</div>;
+    return <div role="status" className="text-xs text-nostr">◆ Publish failed: {state.message}</div>;
   }
 
   // state.kind === 'done'
   const total = state.note.acceptedRelays.length + state.note.failedRelays.length;
+  // `role="status"` on every branch: the payment rows beside this announce
+  // each leg (splits-preview.tsx), and the note's publishing → done/failed
+  // sequence changed silently in the same modal.
   return (
-    <div className="text-xs space-y-1">
+    <div role="status" className="text-xs space-y-1">
       <div className="text-nostr">
         ◆ Published to {state.note.acceptedRelays.length}/{total} relays
       </div>
       <a
-        href={`https://njump.me/${state.note.nevent}`}
+        href={`https://njump.me/${encodeURIComponent(state.note.nevent)}`}
         target="_blank"
         rel="noopener noreferrer"
         className="text-muted hover:text-nostr underline underline-offset-2"

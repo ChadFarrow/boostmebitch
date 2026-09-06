@@ -1,5 +1,7 @@
 // Small RSS/XML readers shared by the feed parsers, split out of lib/pi.ts so
-// `node --experimental-strip-types` can load them.
+// `node --experimental-strip-types` can load them — the attribute reader, the
+// entity decoder, and the LINEAR tag/block scanner every parser walks a
+// document with (see the scanner header below, and `npm run check:feedscan`).
 //
 // Deliberately carries NO runtime imports beyond `nostr-tools` and no Node
 // APIs — same reasoning as lib/v4v/stream-ledger.ts and lib/v4v/spark-derive.ts.
@@ -61,7 +63,327 @@ export function decodeXmlText(raw: string): string {
     .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)));
 }
 
-const LIVE_ITEM_RE = /<podcast:liveItem\b[^>]*>[\s\S]*?<\/podcast:liveItem>/gi;
+// ── Linear tag / block scanner ──────────────────────────────────────────────
+//
+// **Every feed parser and the show-notes sanitizer go through these, never a
+// regex with a `[\s\S]*?` or `[^>]*` body — pinned by `npm run check:feedscan`.**
+//
+// The failure this replaces: `/api/feed?url=` fetches a caller-chosen URL, caps
+// it at 8 MB, and used to walk it with regexes of the shape
+// `<item\b[^>]*>([\s\S]*?)<\/item>`. A regex retries from every candidate start,
+// so a document that is N open tags with no close tag makes each attempt scan
+// to the end and fail — O(N²). Measured on this machine: 800 KB of `<!--` took
+// 38.7 s in the sanitizer's comment strip, 720 KB of `<script >` 10.8 s, 420 KB
+// of `<item >` 6.3 s, and the 8 MB cap licences tens of minutes of pinned CPU
+// for one unauthenticated request. The `[^>]*` half has the same shape with the
+// `>` missing instead of the close tag: each `<enclosure` start scans to the
+// end looking for a `>` that is not there.
+//
+// A forward scan cannot retry. It finds the next open tag with `indexOf`, walks
+// its attributes once (quote-aware, so `feedGuid="a>b"` reads correctly, which
+// the regexes got wrong), finds the close tag with `indexOf`, and resumes AFTER
+// the hit. The two rules that make it linear are also the two that make it
+// fail closed:
+//
+//   - An open tag with no `>` after it (or an unterminated quote) STOPS the
+//     scan and returns what was found. Nothing after that point can be a
+//     complete tag, so there is nothing to search for.
+//   - A block whose close tag is absent STOPS the scan. No later open of that
+//     name can be closed either, so a match is impossible from here on.
+//
+// Both answer with FEWER tags, never a wrong one — a malformed feed loses its
+// tail rather than costing a request its lifetime. The regexes recovered at the
+// next `>`; a feed that depends on that is a broken feed.
+//
+// Case folding is ASCII-only and LENGTH-PRESERVING (`asciiLower`), because the
+// indices found in the lowered copy are used to slice the original.
+// `String.prototype.toLowerCase` can change length (`İ` becomes two code units),
+// which would shift every index after it. Tag names are ASCII, and the regexes'
+// `i` flag folded ASCII names the same way.
+//
+// A tag name must END at whitespace, `/` or `>`. That is tighter than the
+// regexes' `\b` (a word boundary), under which `<item-x>` and `<item:x>`
+// satisfied `<item\b` — the same class of decoy `readAttr`'s comment documents,
+// one level up.
+
+/** One open tag: `<name …>` or `<name …/>`. */
+export interface TagHit {
+  /**
+   * The text between the name and the closing `>`, with a self-closing tag's
+   * trailing `/` removed — exactly what `readAttr` takes. Leading whitespace is
+   * kept; `readAttr` anchors on it.
+   */
+  attrs: string;
+  selfClosing: boolean;
+  /** Index of the `<`. */
+  start: number;
+  /** Index just past the open tag's `>`. */
+  openEnd: number;
+}
+
+/** An open tag with its matching close: `<name …>inner</name>`. */
+export interface BlockHit extends TagHit {
+  /**
+   * The raw text between the open tag's `>` and the close tag's `<`. CDATA is
+   * NOT unwrapped — `decodeXmlText` and `extractText` do that, as before.
+   * Empty for a self-closing tag.
+   */
+  inner: string;
+  /** Index just past `</name>`; equals `openEnd` for a self-closing tag. */
+  end: number;
+}
+
+export function asciiLower(s: string): string {
+  return s.replace(/[A-Z]+/g, (m) => m.toLowerCase());
+}
+
+// XML's whitespace set. Deliberately not `\s`: the lowered copy is
+// length-preserving, so a Unicode space would not misalign anything, but a tag
+// name followed by U+00A0 is not a tag name followed by whitespace to any XML
+// parser, and agreeing with them is the point.
+function isNameEnd(ch: string): boolean {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '/' || ch === '>';
+}
+
+/** `nextOpen` found `<name` but the tag never closes — the scan must stop. */
+interface Malformed {
+  malformed: true;
+  start: number;
+}
+
+/**
+ * The next `<name …>` at or after `from`, or null when there is none, or a
+ * `Malformed` marker when one starts but has no `>` (a quote left open counts:
+ * the `>` inside it belongs to the attribute).
+ */
+function nextOpen(xml: string, lower: string, lname: string, from: number): TagHit | Malformed | null {
+  const needle = '<' + lname;
+  let i = from;
+  for (;;) {
+    i = lower.indexOf(needle, i);
+    if (i === -1) return null;
+    const after = i + needle.length;
+    if (after < xml.length && !isNameEnd(xml[after]!)) {
+      // `<items` when looking for `item`: not this tag. Resume past the `<`.
+      i += 1;
+      continue;
+    }
+    let j = after;
+    let quote: string | null = null;
+    for (; j < xml.length; j++) {
+      const ch = xml[j]!;
+      if (quote) {
+        if (ch === quote) quote = null;
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '>') {
+        break;
+      }
+    }
+    if (j >= xml.length) return { malformed: true, start: i };
+    let attrs = xml.slice(after, j);
+    let selfClosing = false;
+    if (attrs.endsWith('/')) {
+      selfClosing = true;
+      attrs = attrs.slice(0, -1);
+    }
+    return { attrs, selfClosing, start: i, openEnd: j + 1 };
+  }
+}
+
+/**
+ * The next `</name>` at or after `from` — optional whitespace before the `>`
+ * is accepted, as XML allows — or null when there is none.
+ */
+function nextClose(xml: string, lower: string, lname: string, from: number): { at: number; end: number } | null {
+  const needle = '</' + lname;
+  let i = from;
+  for (;;) {
+    i = lower.indexOf(needle, i);
+    if (i === -1) return null;
+    let j = i + needle.length;
+    while (j < xml.length && (xml[j] === ' ' || xml[j] === '\t' || xml[j] === '\n' || xml[j] === '\r')) j++;
+    if (j < xml.length && xml[j] === '>') return { at: i, end: j + 1 };
+    i += 1;
+  }
+}
+
+/**
+ * Every `<name …>` open tag in document order, self-closing ones included.
+ * Stops at the first malformed one (see the header). `max` bounds the walk.
+ */
+export function findTags(xml: string, name: string, opts?: { max?: number }): TagHit[] {
+  const lower = asciiLower(xml);
+  const lname = asciiLower(name);
+  const max = opts?.max ?? Infinity;
+  const out: TagHit[] = [];
+  let from = 0;
+  while (out.length < max) {
+    const hit = nextOpen(xml, lower, lname, from);
+    if (!hit || 'malformed' in hit) break;
+    out.push(hit);
+    from = hit.openEnd;
+  }
+  return out;
+}
+
+export function firstTag(xml: string, name: string): TagHit | undefined {
+  return findTags(xml, name, { max: 1 })[0];
+}
+
+/**
+ * Every `<name …>…</name>` block in document order. A self-closing tag is a
+ * block with an empty `inner`; the caller decides whether that counts. The
+ * FIRST close tag wins, so nested same-name tags end at the inner close — the
+ * same answer `[\s\S]*?` gave. Stops at a malformed open tag or a missing
+ * close (see the header).
+ */
+export function findBlocks(xml: string, name: string, opts?: { max?: number }): BlockHit[] {
+  const lower = asciiLower(xml);
+  const lname = asciiLower(name);
+  const max = opts?.max ?? Infinity;
+  const out: BlockHit[] = [];
+  let from = 0;
+  while (out.length < max) {
+    const hit = nextOpen(xml, lower, lname, from);
+    if (!hit || 'malformed' in hit) break;
+    if (hit.selfClosing) {
+      out.push({ ...hit, inner: '', end: hit.openEnd });
+      from = hit.openEnd;
+      continue;
+    }
+    const close = nextClose(xml, lower, lname, hit.openEnd);
+    if (!close) break;
+    out.push({ ...hit, inner: xml.slice(hit.openEnd, close.at), end: close.end });
+    from = close.end;
+  }
+  return out;
+}
+
+export function firstBlock(xml: string, name: string): BlockHit | undefined {
+  return findBlocks(xml, name, { max: 1 })[0];
+}
+
+/**
+ * Remove every `<name …>…</name>` block (and every self-closing `<name …/>`)
+ * for each name, in the order given.
+ *
+ * `unclosed` decides what an open tag with NO close does. `'keep'` (the
+ * default) leaves it and everything after it in place — XML parity, since the
+ * regex this replaces did not match either. `'consume'` drops from the open
+ * tag to the end of input, which is what a browser does with an unclosed
+ * `<script>` or `<style>`: the sanitizer wants the browser's answer, because
+ * text we keep that the browser would treat as script is the whole hazard.
+ */
+export function stripBlocks(
+  xml: string,
+  names: readonly string[],
+  opts?: { unclosed?: 'keep' | 'consume' },
+): string {
+  const unclosed = opts?.unclosed ?? 'keep';
+  let out = xml;
+  for (const name of names) out = stripOne(out, asciiLower(name), unclosed);
+  return out;
+}
+
+function stripOne(xml: string, lname: string, unclosed: 'keep' | 'consume'): string {
+  const lower = asciiLower(xml);
+  const parts: string[] = [];
+  let kept = 0;
+  let from = 0;
+  for (;;) {
+    const hit = nextOpen(xml, lower, lname, from);
+    if (!hit) break;
+    if ('malformed' in hit) {
+      if (unclosed === 'consume') {
+        parts.push(xml.slice(kept, hit.start));
+        kept = xml.length;
+      }
+      break;
+    }
+    if (hit.selfClosing) {
+      parts.push(xml.slice(kept, hit.start));
+      kept = hit.openEnd;
+      from = hit.openEnd;
+      continue;
+    }
+    const close = nextClose(xml, lower, lname, hit.openEnd);
+    if (!close) {
+      if (unclosed === 'consume') {
+        parts.push(xml.slice(kept, hit.start));
+        kept = xml.length;
+      }
+      break;
+    }
+    parts.push(xml.slice(kept, hit.start));
+    kept = close.end;
+    from = close.end;
+  }
+  parts.push(xml.slice(kept));
+  return parts.join('');
+}
+
+/**
+ * Remove every `<!-- … -->`. An unclosed `<!--` consumes to the end of input,
+ * and `<!-->` / `<!--->` are complete comments — both are the HTML tokenizer's
+ * rules, and being at least as aggressive as the browser is the safe direction:
+ * text we drop is text it would never have shown.
+ */
+export function stripComments(html: string): string {
+  const parts: string[] = [];
+  let kept = 0;
+  let from = 0;
+  for (;;) {
+    const i = html.indexOf('<!--', from);
+    if (i === -1) break;
+    parts.push(html.slice(kept, i));
+    const j = html.indexOf('-->', i + 2);
+    if (j === -1) {
+      kept = html.length;
+      break;
+    }
+    kept = j + 3;
+    from = kept;
+  }
+  parts.push(html.slice(kept));
+  return parts.join('');
+}
+
+/**
+ * Split sanitized HTML on its `<a …>…</a>` blocks: even indices are text
+ * (which may still hold other tags), odd indices are whole anchors. The shape
+ * `String.split` with a capturing group produced. An unclosed `<a>` stays in
+ * the text half, as it did under the regex.
+ */
+export function splitAnchors(html: string): string[] {
+  const out: string[] = [];
+  let kept = 0;
+  for (const b of findBlocks(html, 'a')) {
+    out.push(html.slice(kept, b.start), html.slice(b.start, b.end));
+    kept = b.end;
+  }
+  out.push(html.slice(kept));
+  return out;
+}
+
+/**
+ * Turn every `<` that has no `>` anywhere after it into `&lt;`.
+ *
+ * The sanitizer keeps two greedy `[^>]*` regexes after this (the allowlist tag
+ * pass and `mapNotesText`'s tag split), and each is linear ONLY when every `<`
+ * is followed by a `>` somewhere: then a `[^>]*` run always terminates at the
+ * next `>` and the match consumes what it scanned. A tail of `<<<<` with no
+ * `>` is the input that made each start re-scan to the end. Only the tail
+ * after the LAST `>` can hold such a `<`, so that is all this touches;
+ * everything before it is unchanged. Idempotent, and the browser would not have
+ * rendered those characters as a tag anyway.
+ */
+export function escapeDanglingLt(html: string): string {
+  const k = html.lastIndexOf('>');
+  const tail = html.slice(k + 1);
+  if (!tail.includes('<')) return html;
+  return html.slice(0, k + 1) + tail.replace(/</g, '&lt;');
+}
 
 /**
  * The channel header: everything before the first <item>, with any
@@ -74,10 +396,15 @@ const LIVE_ITEM_RE = /<podcast:liveItem\b[^>]*>[\s\S]*?<\/podcast:liveItem>/gi;
  * channel fields off that gives the live item's value block as the SHOW's,
  * which is a money-path answer, not a cosmetic one. Same trap for
  * <podcast:txt>: it would make one broadcast's guest the show's npub forever.
+ *
+ * The first-item search is a single `search` with no `[^>]*` body, so it is
+ * linear as it stands. It is deliberately looser than `findBlocks` (it accepts
+ * `<item-x` as the first item where the scanner would not): the cost of that
+ * disagreement is a SHORTER channel slice, which is the fail-closed direction.
  */
 export function channelSlice(xml: string): string {
   const firstItem = xml.search(/<item\b/i);
-  return (firstItem === -1 ? xml : xml.slice(0, firstItem)).replace(LIVE_ITEM_RE, '');
+  return stripBlocks(firstItem === -1 ? xml : xml.slice(0, firstItem), ['podcast:liveItem']);
 }
 
 /** Cap on how many npubs one feed level contributes. */
@@ -138,13 +465,12 @@ function decodeNpub(raw: string): FeedNpub | null {
 
 function txtNpubs(xml: string): FeedNpub[] {
   const out: FeedNpub[] = [];
-  const re = /<podcast:txt\b([^>]*?)(?:\/>|>([\s\S]*?)<\/podcast:txt>)/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml))) {
-    const purpose = readAttr(m[1], 'purpose')?.toLowerCase();
+  for (const hit of findBlocks(xml, 'podcast:txt')) {
+    const purpose = readAttr(hit.attrs, 'purpose')?.toLowerCase();
     if (!purpose || !NOSTR_TXT_PURPOSES.has(purpose)) continue;
-    if (m[2] == null) continue;
-    const n = decodeNpub(decodeXmlText(m[2]));
+    // A self-closing tag carries no text node, so it names nobody.
+    if (hit.selfClosing) continue;
+    const n = decodeNpub(decodeXmlText(hit.inner));
     if (n) out.push(n);
   }
   return out;
@@ -165,10 +491,9 @@ function txtNpubs(xml: string): FeedNpub[] {
  */
 function personNpubs(xml: string): FeedNpub[] {
   const out: FeedNpub[] = [];
-  const re = /<podcast:person\b([^>]*?)(?:\/>|>[\s\S]*?<\/podcast:person>)/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(xml))) {
-    const raw = readAttr(m[1], 'npub');
+  // Open tags only: the npub is an attribute, and the text node is the name.
+  for (const hit of findTags(xml, 'podcast:person')) {
+    const raw = readAttr(hit.attrs, 'npub');
     if (!raw) continue;
     const n = decodeNpub(raw);
     if (n) out.push(n);
@@ -257,7 +582,7 @@ function parsePlayCount(text: string): number | undefined {
  * recommended shows as songs, and there is nothing on the entry itself to tell
  * them apart. The nesting is the only signal, so it has to be honoured here.
  */
-const PODROLL_BLOCK_RE = /<podcast:podroll\b[^>]*>[\s\S]*?<\/podcast:podroll>/gi;
+const PODROLL_BLOCK_TAG = 'podcast:podroll';
 
 /**
  * Ceiling on how many tracks one playlist contributes.
@@ -334,15 +659,14 @@ const MAX_ITEM_GUID_LEN = 2048;
  * `parsePlaylistRemoteItems`.)
  */
 export function parsePlaylistSourceFeed(channelXml: string): string | undefined {
-  const re = /<podcast:txt\b([^>]*)>([\s\S]*?)<\/podcast:txt>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(channelXml))) {
+  for (const hit of findBlocks(channelXml, 'podcast:txt')) {
+    if (hit.selfClosing) continue;
     // Through `readAttr`, never a local regex — `-` is a non-word character, so
     // a `\b`-anchored test for `purpose` matches inside `x-purpose` and a decoy
     // attribute ahead of the real one would steer this. Same rule the ref
     // parser above follows.
-    if (readAttr(m[1], 'purpose')?.toLowerCase() !== 'source-feed') continue;
-    const raw = m[2].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+    if (readAttr(hit.attrs, 'purpose')?.toLowerCase() !== 'source-feed') continue;
+    const raw = hit.inner.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
     const url = decodeXmlText(raw).trim();
     // It is going to be FETCHED, so the shape is checked here rather than at
     // the call site: a non-http string is not worth carrying, and the length
@@ -354,25 +678,45 @@ export function parsePlaylistSourceFeed(channelXml: string): string | undefined 
 }
 
 export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] {
-  const scoped = channelXml.replace(PODROLL_BLOCK_RE, '');
+  const scoped = stripBlocks(channelXml, [PODROLL_BLOCK_TAG]);
   const out: PlaylistItemRef[] = [];
   const seen = new Set<string>();
-  // ONE pass over both tag types, so the caption and the items it captions are
-  // read in DOCUMENT ORDER. Two separate scans could not associate them: a
-  // marker's only claim on a track is that it appears above it.
-  const re = /<podcast:txt\b([^>]*)>([\s\S]*?)<\/podcast:txt>|<podcast:remoteItem\b([^>]*?)\/?>/gi;
+  // Both tag types, merged into DOCUMENT ORDER, so the caption and the items it
+  // captions are read in sequence. Two scans that were not merged could not
+  // associate them: a marker's only claim on a track is that it appears above
+  // it. A remoteItem that sits INSIDE a txt block belongs to the caption, not
+  // the list — the one-pass regex this replaces consumed the whole block and
+  // never saw it, and that is kept.
+  const txts = findBlocks(scoped, 'podcast:txt');
+  const items = findTags(scoped, 'podcast:remoteItem');
+  type Entry = { at: number; txt?: BlockHit; item?: TagHit };
+  const merged: Entry[] = [];
+  let ti = 0;
+  let ii = 0;
+  while (ti < txts.length || ii < items.length) {
+    const t = txts[ti];
+    const it = items[ii];
+    if (t && (!it || t.start <= it.start)) {
+      merged.push({ at: t.start, txt: t });
+      ti++;
+      // Skip every remoteItem the block encloses.
+      while (ii < items.length && items[ii]!.start < t.end) ii++;
+    } else if (it) {
+      merged.push({ at: it.start, item: it });
+      ii++;
+    }
+  }
   let episode: string | undefined;
   let plays: number | undefined;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(scoped))) {
-    if (m[1] !== undefined) {
+  for (const entry of merged) {
+    if (entry.txt) {
       // `<podcast:txt>` is a general container — the same feeds carry
       // `purpose="source-feed"`, and others carry platform verification tokens
       // and npubs (see NOSTR_TXT_PURPOSES). An unqualified one is not a caption,
       // so the purpose is READ, through `readAttr` like every other attribute.
-      const purpose = readAttr(m[1], 'purpose')?.toLowerCase();
+      const purpose = readAttr(entry.txt.attrs, 'purpose')?.toLowerCase();
       if (purpose !== 'episode' && purpose !== 'playcount') continue;
-      const raw = m[2].replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
+      const raw = entry.txt.inner.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1');
       const text = decodeXmlText(raw).trim();
       if (purpose === 'playcount') {
         // Two INDEPENDENT states: a play-count marker never clears an episode
@@ -389,8 +733,9 @@ export function parsePlaylistRemoteItems(channelXml: string): PlaylistItemRef[] 
       episode = label || undefined;
       continue;
     }
-    const feedGuid = readAttr(m[3], 'feedGuid');
-    const itemGuid = readAttr(m[3], 'itemGuid');
+    const attrs = entry.item!.attrs;
+    const feedGuid = readAttr(attrs, 'feedGuid');
+    const itemGuid = readAttr(attrs, 'itemGuid');
     if (!feedGuid || !itemGuid) continue;
     if (feedGuid.length > MAX_FEED_GUID_LEN || itemGuid.length > MAX_ITEM_GUID_LEN) continue;
     const key = `${feedGuid}:${itemGuid}`;

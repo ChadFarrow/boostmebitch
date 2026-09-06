@@ -580,7 +580,7 @@ export const SEARCH_TYPES: readonly {
   { type: 'music', label: '♫ MUSIC', noun: 'albums', placeholder: 'search music albums…' },
   { type: 'podcast', label: 'PODCASTS', noun: 'shows', placeholder: 'search podcasts…' },
   { type: 'playlist', label: 'PLAYLISTS', noun: 'playlists', placeholder: 'search playlists…' },
-  { type: 'npub', label: '⚡ NPUB', noun: 'people', placeholder: 'paste an npub, nprofile or hex pubkey…' },
+  { type: 'npub', label: '⚡ NPUB', noun: 'people', placeholder: 'paste a Nostr public key (npub, nprofile or hex)…' },
 ];
 
 /**
@@ -2018,7 +2018,7 @@ function isProxyable(url: string): boolean {
  *  concatenation — a real cover URL routinely carries its own query string
  *  (`megaphone.imgix.net/...?ixlib=rails-4.3.1&w=3000`) and appending `&w=` to
  *  that changes the *upstream* request instead of ours. */
-export function artProxyUrl(url: string, width: ArtWidth): string {
+function artProxyUrl(url: string, width: ArtWidth): string {
   return `/api/art?url=${encodeURIComponent(url)}&w=${width}`;
 }
 

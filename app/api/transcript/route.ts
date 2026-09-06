@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { safeFetch, readCappedText } from '@/lib/safe-fetch';
+import { safeFetch } from '@/lib/safe-fetch';
+import { readCappedText } from '@/lib/capped-body';
 import { BRAND } from '@/lib/brand';
 
 // Server-side proxy for Podcasting 2.0 <podcast:transcript> files. Same reason
