@@ -69,6 +69,7 @@ function HeartButton({
   return (
     <button
       onClick={onToggle}
+      aria-pressed={isFav}
       aria-label={isFav ? `Unfavorite ${label}` : `Favorite ${label}`}
       title={
         synced

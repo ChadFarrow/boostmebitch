@@ -149,7 +149,7 @@ export function FavoritesSyncNotice() {
           type="button"
           onClick={retry}
           disabled={retrying}
-          className="underline underline-offset-2 hover:text-nostr disabled:opacity-40 flex-shrink-0"
+          className="underline underline-offset-2 hover:text-nostr disabled:opacity-40 flex-shrink-0 py-1"
         >
           {retrying ? 'retrying…' : privateUnreadable ? 'unlock' : 'retry'}
         </button>

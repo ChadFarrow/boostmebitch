@@ -49,6 +49,9 @@ function StreamSwitch({
       type="button"
       role="switch"
       aria-checked={on}
+      // Without a name the switch's accessible name was its own visible text:
+      // "On, switch, on". This says WHAT is switched; `aria-checked` says how.
+      aria-label="Streaming payments"
       onClick={() => onChange(!on)}
       className={`inline-flex items-center gap-2 min-h-[44px] py-2 ${dimmed ? 'opacity-60' : ''}`}
     >

@@ -145,7 +145,7 @@ change, nobody had a reason to paste key material into it. That is the setup.
 **The content-type selector did not make this smaller, and reading it that way
 is the trap.** `ALL`'s placeholder no longer mentions a key, because only the
 NPUB mode looks one up now — but NPUB's placeholder asks for one outright
-("paste an npub, nprofile or hex pubkey…"), so the box still invites exactly the
+("paste a Nostr public key (npub, nprofile or hex)…"), so the box still invites exactly the
 paste this guard exists for, and now does so in the most direct words it has
 ever used. `looksLikeSecretKey` therefore runs in **all five modes**,
 unconditionally, before the fetch. It is not downstream of `parseNpubInput` and

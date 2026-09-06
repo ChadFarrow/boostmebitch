@@ -51,6 +51,21 @@ export function UnderlineTabs<T extends string>({
     <div
       role="tablist"
       className={`flex max-w-full overflow-x-auto overscroll-x-contain border-b border-bone/15 ${className}`}
+      // Roving focus: `role="tablist"` promises ←/→ between tabs with one tab
+      // stop for the strip (WAI-ARIA tabs). Only the active tab is in the tab
+      // order; the arrows select AND focus, Home/End jump to the ends.
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight' && e.key !== 'Home' && e.key !== 'End') return;
+        const idx = Math.max(0, tabs.findIndex((t) => t.id === active));
+        const next =
+          e.key === 'ArrowLeft' ? (idx - 1 + tabs.length) % tabs.length
+          : e.key === 'ArrowRight' ? (idx + 1) % tabs.length
+          : e.key === 'Home' ? 0
+          : tabs.length - 1;
+        e.preventDefault();
+        onChange(tabs[next]!.id);
+        e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')[next]?.focus();
+      }}
     >
       {tabs.map((t) => {
         const on = t.id === active;
@@ -60,6 +75,7 @@ export function UnderlineTabs<T extends string>({
             type="button"
             role="tab"
             aria-selected={on}
+            tabIndex={on ? 0 : -1}
             onClick={() => onChange(t.id)}
             className={`relative shrink-0 whitespace-nowrap h-11 px-3.5 text-xs font-semibold uppercase tracking-widest transition ${
               on ? 'text-bone' : 'text-muted hover:text-bone'

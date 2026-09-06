@@ -48,7 +48,7 @@ export function CopyLinkButton({
   word?: string;
   className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'ok' | 'failed' | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
@@ -56,21 +56,25 @@ export function CopyLinkButton({
   if (!url) return null;
 
   async function onClick() {
+    if (timer.current) clearTimeout(timer.current);
     try {
       await navigator.clipboard.writeText(url!);
-      setCopied(true);
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => setCopied(false), COPIED_FLASH_MS);
+      setCopied('ok');
     } catch {
-      /* clipboard blocked (insecure context, denied permission) — silent no-op,
-         same as both originals: there is no useful recovery and a toast here
-         would be noise. */
+      // Clipboard blocked (insecure context, denied permission). There is no
+      // recovery to offer, but a button that does NOTHING is indistinguishable
+      // from one that worked — so the failure flashes in the same slot, for
+      // the same time, and then the button reads SHARE again.
+      setCopied('failed');
     }
+    timer.current = setTimeout(() => setCopied(null), COPIED_FLASH_MS);
   }
 
   return (
     <button onClick={onClick} className={className} title={title} aria-label={title}>
-      <ShareIcon /> {copied ? 'COPIED' : word}
+      <ShareIcon />{' '}
+      {/* `role="status"` so the flash is announced, not only painted. */}
+      <span role="status">{copied === 'ok' ? 'COPIED' : copied === 'failed' ? 'COPY FAILED' : word}</span>
     </button>
   );
 }

@@ -262,6 +262,7 @@ export function EpisodeSocialThread({
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
                     placeholder="comment on this episode…"
+                    aria-label="Comment on this episode"
                     rows={3}
                     className="input w-full resize-y text-sm"
                   />

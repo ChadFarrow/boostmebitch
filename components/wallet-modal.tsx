@@ -183,10 +183,13 @@ export function WalletModal({ onClose }: Props) {
     type PickerRow = { rail: 'nwc' | 'spark' | 'webln'; icon: string; title: string; desc: string };
     const rows: PickerRow[] = [
       ...(weblnDetected
-        ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Alby extension · tap to enable' }]
+        ? [{ rail: 'webln' as const, icon: '◈', title: 'WebLN', desc: 'Use the Alby browser extension · tap to enable' }]
         : []),
-      { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Paste a nostr+walletconnect:// URI' },
-      { rail: 'spark', icon: '✶', title: 'Spark', desc: 'Self-custodial, create or restore' },
+      // Plain words first, the protocol name second: these three rows are the
+      // first thing a newcomer reads about paying, and "NWC · Paste a
+      // nostr+walletconnect:// URI" told them nothing about which to pick.
+      { rail: 'nwc', icon: '⚡', title: 'NWC', desc: 'Connect a Lightning wallet you already have (Nostr Wallet Connect)' },
+      { rail: 'spark', icon: '✶', title: 'Spark', desc: 'A wallet this app creates and backs up for you — self-custodial' },
     ];
 
     return (

@@ -9,6 +9,7 @@ import {
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
 import { useMediaSession } from './player/use-media-session';
+import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
 import { hasValueRecipients, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
@@ -532,6 +533,11 @@ export function Player() {
     setPosition(clamped);
   }, [setPosition]);
 
+  // Space / k, ← / j, → / l — document-wide, guarded so a key pressed while
+  // typing or on a focused control is left alone. See the hook.
+  const togglePlay = useCallback(() => setPlaying(!isPlayingRef.current), [setPlaying]);
+  usePlayerHotkeys({ enabled: !!current, togglePlay, skipBy });
+
   // Single chapters fetch for the whole player — passed down to <FullscreenPlayer>
   // so it isn't fetched twice. No-ops on an empty url (music/live/no tag). Above
   // the early return (and the lock-screen metadata effect below, which reads the
@@ -860,6 +866,11 @@ export function Player() {
                       max={duration || 0}
                       value={positionSec}
                       onChange={(e) => seekMedia(Number(e.target.value))}
+                      // The scrub control of a podcast player announced as
+                      // "slider, 412" without these — a name, and the value in
+                      // the clock form the sighted user reads beside it.
+                      aria-label="Seek"
+                      aria-valuetext={fmt(positionSec)}
                     />
                   </div>
                   <span className="text-[10px] text-muted tabular-nums">{fmt(duration)}</span>

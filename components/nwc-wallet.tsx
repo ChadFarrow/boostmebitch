@@ -458,6 +458,12 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
       <input
         className="input"
         placeholder="nostr+walletconnect://…"
+        aria-label="NWC connection string (nostr+walletconnect://)"
+        // A pasted credential, hand-edited on a phone: iOS would otherwise
+        // capitalise the first letter and autocorrect the rest.
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') connect(); }}

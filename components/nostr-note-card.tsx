@@ -2,6 +2,7 @@
 import { memo, useEffect, useId, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { ModalShell } from './modal-shell';
+import { useConfirm } from './confirm-dialog';
 import {
   resolvePublishRelays,
   shortNpub,
@@ -229,6 +230,7 @@ function NoteCardImpl({
 
   const [zapOpen, setZapOpen] = useState(false);
   const router = useRouter();
+  const [confirm, confirmEl] = useConfirm();
   // The house pattern (tab-bar.tsx), not `window.location.pathname`: the
   // hook is SSR-safe and re-renders on a client navigation.
   const pathname = usePathname() ?? '/';
@@ -346,19 +348,20 @@ function NoteCardImpl({
   // callback, and an episode with no guid can't be looked up in the feed.
   const episodeGuid = episode?.guid;
 
-  function onMute() {
+  async function onMute() {
     if (!identity) return;
-    const ok =
-      typeof window !== 'undefined' &&
-      window.confirm(
-        `Mute ${name}? Their notes won't appear in your feed. You can unmute from the account menu.`,
-      );
+    const ok = await confirm({
+      title: `Mute ${name}?`,
+      body: <p>Their notes won&apos;t appear in your feed. You can unmute from the account menu.</p>,
+      confirmLabel: 'Mute',
+    });
     if (!ok) return;
     mutePubkey(note.pubkey);
   }
 
   return (
     <div>
+    {confirmEl}
     <article className="card p-3 flex gap-3">
       <Avatar
         pubkey={note.pubkey}

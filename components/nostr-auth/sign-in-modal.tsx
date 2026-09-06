@@ -1539,6 +1539,10 @@ export function SignInModal({
                       value={pasteValue}
                       onChange={(e) => setPasteValue(e.target.value)}
                       placeholder="bunker://…"
+                      aria-label="bunker:// URI"
+                      autoCapitalize="off"
+                      autoCorrect="off"
+                      spellCheck={false}
                       className="input flex-1 text-[11px] break-all"
                     />
                     {/* One tap instead of six. This lived in the iOS Clave box

@@ -12,6 +12,12 @@ import type { Rail } from '@/lib/v4v/boost';
 // rail, let alone changing it. The money moved from a wallet the user wasn't
 // looking at. Same component in both places now, so they can't drift again.
 const RAIL_LABELS: Record<Rail, string> = { nwc: 'NWC', spark: 'Spark', webln: 'WebLN' };
+/** The plain-words sentence behind each acronym, as the button's tooltip. */
+const RAIL_DESCRIPTIONS: Record<Rail, string> = {
+  nwc: 'Nostr Wallet Connect — a Lightning wallet you already have, connected by its NWC string',
+  spark: 'Spark — the wallet this app created and backs up for you',
+  webln: 'WebLN — the Alby browser extension',
+};
 
 /** Rails with a usable wallet right now, in pickRail()'s own priority order.
  *
@@ -58,6 +64,7 @@ export function RailPicker({
             key={r}
             onClick={() => onChange(r)}
             aria-pressed={rail === r}
+            title={RAIL_DESCRIPTIONS[r]}
             className={`btn-ghost !px-3 text-xs ${rail === r ? '!border-bolt text-bolt' : ''}`}
           >
             {RAIL_LABELS[r]}

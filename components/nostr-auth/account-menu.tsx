@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
+import { useMenuKeys } from '../use-menu-keys';
 import { useRouter } from 'next/navigation';
 import { subscribeBunkerHealth, restoreBunkerSigner, isKeyEphemeral, shortNpub, type NostrIdentity } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
@@ -122,6 +123,10 @@ export function AccountMenu({
   const [editing, setEditing] = useState(false);
   const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const close = useCallback(() => setOpen(false), []);
+  useMenuKeys({ open, menuRef, triggerRef, close });
 
   // Dismiss on click-outside / Escape so the menu doesn't trap focus.
   useEffect(() => {
@@ -148,10 +153,15 @@ export function AccountMenu({
   return (
     <div ref={wrapperRef} className="relative">
       <button
+        ref={triggerRef}
         onClick={() => setOpen((o) => !o)}
         className="btn-ghost group flex items-center gap-2"
         aria-haspopup="menu"
         aria-expanded={open}
+        // The visible name is `hidden` below `sm:` — display:none is out of
+        // the accessibility tree — so on a phone this button had NO name: an
+        // `alt=""` avatar and a ▾. The label is the same text at every width.
+        aria-label={`Account: ${name || shortNpub(identity.npub, 6)}`}
       >
         {pic ? (
           // eslint-disable-next-line @next/next/no-img-element
@@ -174,6 +184,7 @@ export function AccountMenu({
 
       {open && (
         <div
+          ref={menuRef}
           role="menu"
           className="absolute right-0 top-full mt-2 w-[min(360px,calc(100vw-2rem))] card bg-ink p-4 z-30 shadow-xl"
         >

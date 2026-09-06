@@ -614,11 +614,15 @@ export function HomePage() {
 
       {/* Hero */}
       <section className="max-w-7xl mx-auto px-4 pt-10 pb-6">
-        <h2 className="headline text-4xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
+        {/* An <h1>: this is the home page's one top-level heading, and every
+            other route has one. The document outline started at level 2 here
+            (with the wordmark a <button>), so a screen reader's heading list
+            had no level-1 entry on `/`. `.headline` carries the styling. */}
+        <h1 className="headline text-4xl sm:text-6xl lg:text-7xl drop-shadow-[0_2px_12px_rgba(0,0,0,0.6)]">
           search<span className="text-bolt">.</span>{' '}
           listen<span className="text-bolt">.</span>{' '}
           <span className="text-bolt animate-bolt">boost</span><span className="text-bone">.</span>
-        </h2>
+        </h1>
         {/* Load-bearing for Google OAuth verification, not just marketing copy:
             the app home page must "fully describe your app's functionality" and
             "explain with transparency the purpose for which your app requests

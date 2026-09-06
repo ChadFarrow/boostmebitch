@@ -40,6 +40,9 @@ function is247(stream: NostrLiveStream): boolean {
 export function NostrLiveStreams() {
   const [resolved, setResolved] = useState<ResolvedStream[]>([]);
   const [loading, setLoading] = useState(true);
+  // Said out loud: a failed relay pass and "nobody is live" rendered the same
+  // nothing, with no way to retry. Every peer surface offers ↻ RETRY.
+  const [failed, setFailed] = useState(false);
   const [boostTarget, setBoostTarget] = useState<{ episode: Episode; podcast: Podcast } | null>(null);
   const play = useApp((s) => s.play);
   const router = useRouter();
@@ -189,8 +192,11 @@ export function NostrLiveStreams() {
 
     try {
       await commit(await fetchNostrLiveStreams());
+      if (mountedRef.current) setFailed(false);
     } catch {
-      // silently ignore — live streams section just stays empty / stale
+      // What is already on screen stays (stale beats blank); when nothing is,
+      // the render below says so and offers a retry.
+      if (mountedRef.current) setFailed(true);
     } finally {
       await indexPass;
       if (mountedRef.current) setLoading(false);
@@ -212,7 +218,22 @@ export function NostrLiveStreams() {
     );
   }
 
-  if (!resolved.length) return null;
+  if (!resolved.length) {
+    if (!failed) return null;
+    return (
+      <section>
+        <h3 className="font-display text-lg mb-3 text-bone/70">
+          <span className="text-nostr animate-bolt">●</span> Live on Nostr
+        </h3>
+        <div className="card p-3 text-sm flex items-center justify-between gap-3 flex-wrap">
+          <span className="text-muted">Couldn&apos;t reach the live-stream relays just now.</span>
+          <button type="button" onClick={() => load()} className="btn-ghost text-xs">
+            ↻ RETRY
+          </button>
+        </div>
+      </section>
+    );
+  }
 
   // Split into their own rows so live streams aren't buried behind a long list
   // of upcoming ones, and so perpetual 24/7 stations don't crowd out genuine

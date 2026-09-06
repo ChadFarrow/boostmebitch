@@ -423,7 +423,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     >
         <button
           onClick={onClose}
-          className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
+          // `px-3 py-2`, the same as <WalletModal>'s close: with no padding the
+          // glyph's hit box was ~10×28, under the 24px floor.
+          className="absolute top-0 right-1 px-3 py-2 text-muted hover:text-bone text-lg z-10"
           aria-label="Close"
         >×</button>
 

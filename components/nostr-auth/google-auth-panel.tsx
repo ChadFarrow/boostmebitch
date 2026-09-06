@@ -663,6 +663,7 @@ function PinField({
     <input
       type="password"
       inputMode="numeric"
+      aria-label="PIN"
       autoComplete="one-time-code"
       autoFocus={autoFocus}
       value={value}

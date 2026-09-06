@@ -580,7 +580,7 @@ export const SEARCH_TYPES: readonly {
   { type: 'music', label: '♫ MUSIC', noun: 'albums', placeholder: 'search music albums…' },
   { type: 'podcast', label: 'PODCASTS', noun: 'shows', placeholder: 'search podcasts…' },
   { type: 'playlist', label: 'PLAYLISTS', noun: 'playlists', placeholder: 'search playlists…' },
-  { type: 'npub', label: '⚡ NPUB', noun: 'people', placeholder: 'paste an npub, nprofile or hex pubkey…' },
+  { type: 'npub', label: '⚡ NPUB', noun: 'people', placeholder: 'paste a Nostr public key (npub, nprofile or hex)…' },
 ];
 
 /**
