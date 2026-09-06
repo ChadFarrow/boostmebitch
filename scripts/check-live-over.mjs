@@ -84,9 +84,24 @@ const VECTORS = [
     alsoNaive: true,
   },
   {
-    name: 'a PENDING item whose end is in the past is NOT over',
-    // A scheduled item is a host running late, never a broadcast that finished.
-    args: [{ status: 'pending', startTime: NOW - HOUR, endTime: NOW - 60 }, NOW],
+    name: 'THE SECOND FAILURE: a PENDING window that closed 18 months ago',
+    // Before The Sch3m3s, read 2026-09-06: scheduled for 2025-03-10, never
+    // aired, never cleared, and sitting at the top of Upcoming under a start
+    // date in the past. This vector is why the rule ignores `status`.
+    args: [{ status: 'pending', startTime: sec('2025-03-10T01:00:00.000Z'), endTime: sec('2025-03-10T04:30:00.000Z') }, NOW],
+    expect: true,
+  },
+  {
+    name: 'a PENDING host running an hour late is still coming',
+    // The case the old "pending is never over" rule existed to protect, and it
+    // still holds: lateness is measured against `end`, which has not passed.
+    args: [{ status: 'pending', startTime: NOW - HOUR, endTime: NOW + 2 * HOUR }, NOW],
+    expect: false,
+    alsoNaive: true,
+  },
+  {
+    name: 'a PENDING item with no end, an hour past its start, is still coming',
+    args: [{ status: 'pending', startTime: NOW - HOUR }, NOW],
     expect: false,
     alsoNaive: true,
   },

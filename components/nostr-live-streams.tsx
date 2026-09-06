@@ -16,10 +16,9 @@ import type { Event } from 'nostr-tools';
 import { hasValueRecipients } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
-import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel';
 import type { Episode, Podcast, ValueBlock } from '@/lib/types';
 import { BoostModal } from './boost-modal';
-import { PodcastCover } from './podcast-cover';
+import { LiveCard, LIVE_GRID } from './live-card';
 import { fmtLiveTime } from '@/lib/format';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
 
@@ -61,7 +60,6 @@ export function NostrLiveStreams() {
   // would pay the whole bill again — and the early paint below would blank a
   // boost button that was working a moment ago.
   const valueRef = useRef<Map<string, ValueBlock | null>>(new Map());
-  const rowRef = useHorizontalWheelScroll<HTMLDivElement>();
   // Which group the single row shows. Falls back to the first non-empty group
   // (see `active` below) when the selected one has nothing.
   const [filter, setFilter] = useState<StreamFilter>('live');
@@ -205,9 +203,9 @@ export function NostrLiveStreams() {
         <h3 className="font-display text-lg mb-3 text-bone/70">
           <span className="text-nostr animate-bolt">●</span> Live on Nostr
         </h3>
-        <div className="flex gap-3 overflow-x-auto pb-1">
+        <div className={LIVE_GRID}>
           {[0, 1, 2].map((i) => (
-            <div key={i} className="flex-shrink-0 w-64 h-24 card animate-pulse opacity-40" />
+            <div key={i} className="h-28 card animate-pulse opacity-40" />
           ))}
         </div>
       </section>
@@ -259,7 +257,15 @@ export function NostrLiveStreams() {
       { key: 'radio', label: '24/7', icon: '📻', items: radio },
       { key: 'upcoming', label: 'Upcoming', icon: '◷', items: upcoming },
     ] as const
-  ).filter((t) => t.items.length > 0);
+    // Live and Upcoming are the two states every broadcast is in, so they stay
+    // on screen with a count of 0 rather than vanishing — a hidden tab and a
+    // tab reading `0` look the same from the reader's side only if you already
+    // know the tab exists. 24/7 is a SUBDIVISION of live rather than a state of
+    // its own, so it earns its place only when something is in it. The RSS
+    // strip on `/live` follows the same rule for the same reason; this section
+    // renders nothing at all when every group is empty, so a row of zeroes is
+    // never what greets anybody.
+  ).filter((t) => t.items.length > 0 || t.key !== 'radio');
   const active = tabs.find((t) => t.key === filter) ?? tabs[0];
 
   return (
@@ -289,14 +295,22 @@ export function NostrLiveStreams() {
         </div>
       </div>
 
-      {/* `overscroll-x-contain`: a swipe that runs past either end of this rail
-          otherwise chains outward to the document, and on iOS that drags the
-          whole fixed layer with it — the same failure live-chat.tsx contains at
-          its own boundary. It also stops the gesture becoming Safari's
-          back-swipe, which on a row of cards is easy to trigger by accident. */}
-      <div ref={rowRef} className="flex gap-3 overflow-x-auto overscroll-x-contain pb-2 -mx-1 px-1">
-        {active.items.map(renderCard)}
-      </div>
+      {/* A GRID, NOT A RAIL, AND THE REASON CHANGED RATHER THAN BEING FORGOTTEN.
+          This was a horizontal `overflow-x-auto` row for as long as it was ONE
+          section of the home page, competing with a search box and a feed —
+          there, hiding cards off the side was the right trade. It now lives on
+          `/live`, whose entire job is listing what is on, beside a section of
+          `<podcast:liveItem>` rows in a grid. Two containers for the same kind
+          of object read as two different kinds of thing, which is how this was
+          reported: "one is a list and one is a row".
+
+          Deleted with the rail: `overscroll-x-contain` (there is no sideways
+          gesture left to contain, so it guarded nothing) and
+          `useHorizontalWheelScroll` (it existed because a mouse has no sideways
+          wheel and the off-screen cards were otherwise unreachable — a grid
+          leaves nothing off-screen). The hook itself stays; `<Podroll>` is
+          still a rail and still needs it. */}
+      <div className={LIVE_GRID}>{active.items.map(renderCard)}</div>
 
       {boostTarget && (
         <BoostModal
@@ -337,163 +351,135 @@ function StreamCard({
     profile?.display_name ?? profile?.name ?? stream.npub.slice(0, 12) + '…';
   const image = stream.image ?? profile?.picture;
 
-  // Artwork + status + title. Written once and mounted into either a <button>
-  // or a plain <div> below, because whether this is a control depends on
-  // `playable` and duplicating the markup is how the two copies drift.
-  const header = (
-    <>
-      <PodcastCover
-        image={image}
-        title={stream.title}
-        seed={stream.id}
-        className="w-10 h-10 rounded object-cover flex-shrink-0"
-      />
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1 mb-0.5 flex-wrap">
+  return (
+    <LiveCard
+      image={image}
+      title={stream.title}
+      seed={stream.id}
+      // Art is a control only where there is something to open. An upcoming or
+      // URL-less card is not one and must not take focus on the way to the
+      // buttons that do work — the rule the old hand-rolled header followed,
+      // now the shell's.
+      onArtClick={playable ? onOpen : undefined}
+      artLabel={playable ? `Open ${stream.title}` : undefined}
+      badges={
+        <>
           {stream.status === 'live' ? (
-            <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt text-[10px] px-1 py-0">
+            <span className="stamp shrink-0 whitespace-nowrap text-nostr border-nostr/60 bg-nostr/10 animate-bolt">
               ● LIVE
             </span>
           ) : (
-            <span className="stamp text-bolt border-bolt/60 text-[10px] px-1 py-0">
-              UPCOMING
-            </span>
+            <span className="stamp shrink-0 whitespace-nowrap text-bolt border-bolt/60">UPCOMING</span>
           )}
           {stream.currentViewers != null && stream.currentViewers > 0 && (
-            <span className="text-[10px] text-muted font-mono">
-              {stream.currentViewers} 👁
-            </span>
+            <span className="text-[10px] text-muted font-mono">{stream.currentViewers} 👁</span>
           )}
-        </div>
-        <p className="text-sm font-display leading-tight line-clamp-2" title={stream.title}>
-          {stream.title}
-        </p>
-      </div>
-    </>
-  );
-
-  return (
-    <article
-      className={`flex-shrink-0 w-64 card p-3 flex flex-col gap-2 ${
-        playable ? 'hover:border-bone/30 transition-colors' : ''
-      }`}
-    >
-      {/* Header row: artwork + status badge.
-          `onOpen` used to live on the <article> itself, which made opening the
-          fullscreen player pointer-only — the PLAY and BOOST buttons below were
-          the only things a keyboard could reach, so the card's own action was
-          the one part of it that could not be used without a mouse. It is a
-          real <button> here, and only when there is something to open; an
-          upcoming or URL-less card is not a control and must not take focus. */}
-      {playable ? (
-        <button
-          type="button"
-          onClick={onOpen}
-          aria-label={`Open ${stream.title}`}
-          className="flex items-start gap-2 text-left cursor-pointer hover:opacity-90 transition-opacity"
-        >
-          {header}
-        </button>
-      ) : (
-        <div className="flex items-start gap-2">{header}</div>
-      )}
-
-      {/* Host name */}
-      <p className="text-xs text-muted truncate">by {displayName}</p>
-
-      {/* Start time for upcoming streams */}
-      {stream.status === 'planned' && stream.startsAt != null && (
-        <p className="text-xs text-bolt font-mono">
-          starts {fmtLiveTime(stream.startsAt)}
-        </p>
-      )}
-      {stream.status === 'live' && stream.startsAt != null && (
-        <p className="text-xs text-nostr font-mono">
-          started {fmtLiveTime(stream.startsAt)}
-        </p>
-      )}
-
-      {/* Hashtags */}
-      {stream.hashtags.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {stream.hashtags.slice(0, 3).map((tag) => (
-            <span key={tag} className="text-[10px] text-muted font-mono bg-bone/5 px-1 rounded">
-              #{tag}
-            </span>
-          ))}
-        </div>
-      )}
-
-      {/* Action buttons */}
-      <div className="flex gap-1.5 mt-auto pt-1">
-        {/* **Only the PAUSE case toggles.** A control drawing ❚❚ has to pause,
-            and `onPlay()` there writes `isPlaying: true` over `true` — a silent
-            no-op, since neither of the player's effects re-runs. But RESUME
-            must NOT toggle: `onPlay()` is `play(streamToEpisode(stream, …))`,
-            rebuilt from the newest kind:30311, and `togglePlay()` replays
-            whatever `current.episode.enclosureUrl` was seeded with. A host who
-            restarts mid-broadcast republishes the event with a new `streaming`
-            tag, so the card refreshes while `current` does not, and resuming
-            through the toggle re-sources a dead URL. Sending everything except
-            the pause down `onPlay()` costs nothing — it is the same live edge
-            either way — and removes the question. */}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (isCurrentStream && isPlaying) togglePlay();
-            else onPlay();
-          }}
-          // A stream we are PLAYING stays pressable whatever the event now
-          // says. `stream.status` and `stream.streamUrl` are live-refreshed, so
-          // a host republishing without a `streaming` tag mid-broadcast would
-          // otherwise disable the only control that can stop the audio — while
-          // it renders ❚❚ and keeps playing.
-          disabled={(stream.status === 'planned' || !stream.streamUrl) && !(isCurrentStream && isPlaying)}
-          className="btn text-xs py-1 flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
-          title={
-            isCurrentStream && isPlaying
-              ? 'Pause'
-              : stream.status === 'planned'
-              ? "Stream hasn't started yet"
-              : !stream.streamUrl
-              ? 'No stream URL'
-              : isCurrentStream
-              ? 'Resume'
-              : 'Play stream'
-          }
-          // REQUIRED, like the BOOST button below: `title` is not an accessible
-          // name, so without this the name is the text content — which read
-          // "❚❚ PLAY", announcing a pause control as "play".
-          aria-label={
-            isCurrentStream && isPlaying ? 'Pause' : isCurrentStream ? 'Resume' : 'Play stream'
-          }
-        >
-          {/* The WORD moves with the glyph. It read "❚❚ PLAY" — the icon said
-              pause and the label said play, on the same control, which is the
-              lie this branch exists to remove. Same vocabulary as
-              <EpisodeDetailView>: PAUSE / RESUME / PLAY. */}
-          {isCurrentStream && isPlaying ? '❚❚ PAUSE' : isCurrentStream ? '▶ RESUME' : '▶ PLAY'}
-        </button>
-        {/* hasValueRecipients, not a bare truthiness check: resolveStreamV4V can
-            return a block with an empty `recipients` array, which opened the
-            boost modal with nobody to pay. */}
-        {hasValueRecipients(value) && (
+        </>
+      }
+      heading={
+        playable ? (
           <button
             type="button"
-            onClick={(e) => { e.stopPropagation(); onBoost(); }}
-            className="btn-bolt text-xs py-1 px-2 flex-shrink-0 flex items-center gap-1"
-            title="Boost this stream"
-            // REQUIRED, not decorative — `title` is not an accessible name, so
-            // without this the button reads as unlabelled and its only content
-            // is an emoji whose announced name is "high voltage". Same rule
-            // player.tsx and lists.tsx already spell out for their own buttons.
-            aria-label="Boost this stream"
+            onClick={onOpen}
+            className="block text-left w-full truncate font-medium hover:text-bolt transition"
+            title={`Open ${stream.title}`}
           >
-            ⚡
+            {stream.title}
           </button>
-        )}
-      </div>
-    </article>
+        ) : (
+          <p className="truncate font-medium" title={stream.title}>{stream.title}</p>
+        )
+      }
+      sub={<p className="text-muted text-xs truncate">by {displayName}</p>}
+      meta={
+        stream.startsAt != null ? (
+          <p className={`text-xs font-mono ${stream.status === 'planned' ? 'text-bolt' : 'text-nostr'}`}>
+            {stream.status === 'planned' ? 'starts' : 'started'} {fmtLiveTime(stream.startsAt)}
+          </p>
+        ) : undefined
+      }
+      extra={
+        stream.hashtags.length > 0 ? (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {stream.hashtags.slice(0, 3).map((tag) => (
+              <span key={tag} className="text-[10px] text-muted font-mono bg-bone/5 px-1 rounded">
+                #{tag}
+              </span>
+            ))}
+          </div>
+        ) : undefined
+      }
+      actions={
+        <>
+          {/* **Only the PAUSE case toggles.** A control drawing ❚❚ has to pause,
+              and `onPlay()` there writes `isPlaying: true` over `true` — a silent
+              no-op, since neither of the player's effects re-runs. But RESUME
+              must NOT toggle: `onPlay()` is `play(streamToEpisode(stream, …))`,
+              rebuilt from the newest kind:30311, and `togglePlay()` replays
+              whatever `current.episode.enclosureUrl` was seeded with. A host who
+              restarts mid-broadcast republishes the event with a new `streaming`
+              tag, so the card refreshes while `current` does not, and resuming
+              through the toggle re-sources a dead URL. Sending everything except
+              the pause down `onPlay()` costs nothing — it is the same live edge
+              either way — and removes the question. */}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (isCurrentStream && isPlaying) togglePlay();
+              else onPlay();
+            }}
+            // A stream we are PLAYING stays pressable whatever the event now
+            // says. `stream.status` and `stream.streamUrl` are live-refreshed, so
+            // a host republishing without a `streaming` tag mid-broadcast would
+            // otherwise disable the only control that can stop the audio — while
+            // it renders ❚❚ and keeps playing.
+            disabled={(stream.status === 'planned' || !stream.streamUrl) && !(isCurrentStream && isPlaying)}
+            className="btn-mini disabled:opacity-60 disabled:cursor-not-allowed"
+            title={
+              isCurrentStream && isPlaying
+                ? 'Pause'
+                : stream.status === 'planned'
+                ? "Stream hasn't started yet"
+                : !stream.streamUrl
+                ? 'No stream URL'
+                : isCurrentStream
+                ? 'Resume'
+                : 'Play stream'
+            }
+            // REQUIRED, like the BOOST button below: `title` is not an accessible
+            // name, so without this the name is the text content — which read
+            // "❚❚ PLAY", announcing a pause control as "play".
+            aria-label={
+              isCurrentStream && isPlaying ? 'Pause' : isCurrentStream ? 'Resume' : 'Play stream'
+            }
+          >
+            {/* The WORD moves with the glyph. It read "❚❚ PLAY" — the icon said
+                pause and the label said play, on the same control, which is the
+                lie this branch exists to remove. Same vocabulary as
+                <EpisodeDetailView>: PAUSE / RESUME / PLAY. */}
+            {isCurrentStream && isPlaying ? '❚❚ PAUSE' : isCurrentStream ? '▶ RESUME' : '▶ PLAY'}
+          </button>
+          {/* hasValueRecipients, not a bare truthiness check: resolveStreamV4V can
+              return a block with an empty `recipients` array, which opened the
+              boost modal with nobody to pay. */}
+          {hasValueRecipients(value) && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onBoost(); }}
+              className="btn-bolt text-xs py-1 px-2 shrink-0 flex items-center gap-1"
+              title="Boost this stream"
+              // REQUIRED, not decorative — `title` is not an accessible name, so
+              // without this the button reads as unlabelled and its only content
+              // is an emoji whose announced name is "high voltage". Same rule
+              // player.tsx and lists.tsx already spell out for their own buttons.
+              aria-label="Boost this stream"
+            >
+              ⚡
+            </button>
+          )}
+        </>
+      }
+    />
   );
 }
