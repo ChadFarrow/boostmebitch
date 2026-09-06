@@ -51,9 +51,12 @@ import { KbDebug } from './kb-debug';
  * can leave beats one you cannot. Do not add a hide list without a new
  * reason.
  *
- * TOUCH. Each item is the full `--tabbar-h` (56px) tall and a fifth (today, a
- * third) of the width wide, so it clears the 44px floor without a min-h — the
+ * TOUCH. Each item is the full `--tabbar-h` (56px) tall and a quarter (today)
+ * of the width wide, so it clears the 44px floor without a min-h — the
  * icon-and-label stack is centred inside the tap area, not the tap area itself.
+ * At 390px four columns are 97.5px each, and height is the binding dimension at
+ * 56 > 44. The floor is not threatened until SEVEN tabs (390/7 = 55.7px), which
+ * is the number to check against rather than re-deriving it.
  *
  * THE HOME TAB CLEARS THE SELECTION. The store is module-level and survives
  * a route change on purpose (see `<AppHeader>`'s wordmark for the same rule):
@@ -69,14 +72,21 @@ import { KbDebug } from './kb-debug';
  *
  * PLAYLISTS IS NOT A TAB, deliberately. Playlists are content: the search box
  * has a Playlists lane and `/playlists` stays a linkable page, but it is not a
- * place people live. Live is the one destination still missing — it needs an
- * index route (today live streams are a section of `/`), and it is one more
- * entry in `TABS` when that exists.
+ * place people live.
+ *
+ * LIVE IS ONE, and it is the entry this comment used to say was missing. It
+ * needed an index route to point at, which `/live` now is. Its arrival also
+ * moved the Nostr live row OFF the home page: that row was the only way to find
+ * a live broadcast, `<podcast:liveItem>` shows had no discovery surface at all,
+ * and putting both behind one tab is what let the home page stop paying for a
+ * relay scan on every first paint. `match` is a PREFIX, so the tab also lights
+ * on `/live/<npub>` — correct, that route is a live stream, and until now
+ * nothing lit there.
  */
 
 type LinkTab = {
   kind: 'link';
-  href: '/' | '/favorites';
+  href: '/' | '/live' | '/favorites';
   label: string;
   icon: React.ReactNode;
   /** Whether `pathname` belongs to this tab. `/` is exact; the rest are prefixes. */
@@ -101,6 +111,24 @@ const TABS: Tab[] = [
       <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
         <path d="M3 10.5 12 3l9 7.5" />
         <path d="M5.5 9.5V20h13V9.5" />
+      </svg>
+    ),
+  },
+  {
+    kind: 'link',
+    href: '/live',
+    label: 'Live',
+    match: (p) => p.startsWith('/live'),
+    icon: (
+      // A broadcast glyph: a filled centre with two pairs of arcs radiating.
+      // Deliberately NOT a red dot — the `● LIVE` stamp owns that colour, and a
+      // tab that looks permanently on air is a lie every hour of the day.
+      <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
+        <circle cx="12" cy="12" r="2.25" fill="currentColor" stroke="none" />
+        <path d="M8.2 8.2a5.5 5.5 0 0 0 0 7.6" />
+        <path d="M15.8 8.2a5.5 5.5 0 0 1 0 7.6" />
+        <path d="M5.3 5.3a10 10 0 0 0 0 13.4" />
+        <path d="M18.7 5.3a10 10 0 0 1 0 13.4" />
       </svg>
     ),
   },

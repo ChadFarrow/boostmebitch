@@ -39,6 +39,7 @@ Get Podcast Index keys at <https://api.podcastindex.org/>.
 | `npm run check:sanitizer` | `safeUrlAttr` — the show-notes URL scheme allowlist (this origin holds the NWC spending credential) |
 | `npm run check:ssrf` | `assertSafeFetchUrl` — server-side fetch guard, including the ALLOWED half so it can't start rejecting real podcast hosts |
 | `npm run check:liveblock` | `parseLiveBlock` — the Split Kit live-value payload → value block |
+| `npm run check:livemerge` | `mergeLiveOverPi` — when a publisher's RSS may DELETE a live row, and when an unreadable one may not |
 | `npm run check:stream` | the streaming ledger's arithmetic, settle batching, and every money constant |
 | `npm run check:assetlinks` | `buildAssetLinks` — the Digital Asset Links statement that lets the Android app represent this origin, and so reach the Chrome profile holding the wallet credential |
 
@@ -89,7 +90,8 @@ The Android build is a **Trusted Web Activity** — a signed shell around `https
 - **Boost-all tracks** — split a boost across every `valueTimeSplit` remote item on a music episode.
 - **Live value switching** — on a live show, payment follows the artist actually broadcasting, over The Split Kit's `<podcast:liveValue>` socket channel with an RSS-polling fallback.
 - **Signed-out boosts still reach Nostr** — the app has its own Nostr identity that signs the kind:1 note server-side (`SITE_NOSTR_SK`), with a NIP-05 (`_@boostmebitch.com`) + kind:0 profile + kind:10002 relay list.
-- **Nostr live streams** — a "Live on Nostr" row of kind:30311 streams; watch HLS video in-app; **live chat** (kind:1311) and **boosts/zaps** (kind:9735) rendered together; shareable `/stream/<naddr>` and permanent per-host `/live/<npub>` pages.
+- **A `/live` destination** — every `<podcast:liveItem>` on air anywhere, discovered from Podcast Index's global roster and verified against each publisher's own RSS, beside the Nostr streams. Reached from the dock; a live show used to be visible only once you had already opened it.
+- **Nostr live streams** — kind:30311 streams, now a section of `/live` rather than a row on the home page; watch HLS video in-app; **live chat** (kind:1311) and **boosts/zaps** (kind:9735) rendered together; shareable `/stream/<naddr>` and permanent per-host `/live/<npub>` pages.
 - **Chapters + transcripts** (`<podcast:chapters>` / `<podcast:transcript>`) — seek-bar ticks, chapter-stepping transport, a follow-along transcript with in-panel search.
 - **Podroll** (`<podcast:podroll>`) and **funding** (`<podcast:funding>` → `⊙ SUPPORT`).
 - **Favorites** (NIP-78 kind:30078, shared cross-app), **mutes** (NIP-51 kind:10000) and **follows** (NIP-02 kind:3) that sync across Nostr clients.
@@ -109,6 +111,7 @@ app/
   api/by-guid/           → /podcasts/byguid | byfeedurl         (favorites, podroll)
   api/value-splits/      → resolve valueTimeSplit remote items  (PI + RSS fallback)
   api/live-value/        → resolve a live item's CURRENT payment target (polled)
+  api/live-shows/        → EVERY show on air: PI roster, verified against each RSS
   api/publisher/         → publisher feed → children           (capped fan-out, PI then RSS)
   api/playlist/          → any *L playlist → ONE PAGE of items   (remote items via PI batch)
   api/chapters/          → <podcast:chapters> JSON proxy        (hosts send no CORS)
@@ -119,7 +122,8 @@ app/
   .well-known/nostr.json → NIP-05 for the site identity (_@boostmebitch.com)
   .well-known/keysend/   → OUR lightning address's keysend doc (LNURL half is a vercel.json rewrite)
   layout.tsx             → bg art layer + OG metadata + FOUC theme blocker + <Player>
-  page.tsx               → search, favorites, live-streams row, global feed; URL-restored views
+  page.tsx               → search, favorites, global feed; URL-restored views
+  live/                  → everything on air: podcast liveItems + Nostr streams
   stream/[naddr]/        → one broadcast, shareable            (opens the layout player)
   live/[npub]/           → a host's CURRENT broadcast          (permanent link, survives new dTags)
   privacy/               → privacy policy (linked from the layout footer — Google requires both)

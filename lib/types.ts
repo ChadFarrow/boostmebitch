@@ -488,3 +488,48 @@ export interface FavoriteEpisode {
    */
   carried?: boolean;
 }
+
+/**
+ * One `<podcast:liveItem>` on the wire between `/api/live-shows` and the Live
+ * page.
+ *
+ * Deliberately NOT an `Episode`. The route answers with a LIST, and an
+ * `Episode` carries show notes, transcripts, chapters and value-time-splits —
+ * none of which a live card renders and all of which multiply by the number of
+ * shows on air. This is the subset a card actually needs, plus the feed
+ * identifiers required to open the show or resolve who to pay.
+ *
+ * `liveShowToEpisode` / `liveShowToPodcast` (`lib/util.ts`) turn one back into
+ * the pair the player stores, the same way `streamToEpisode` /
+ * `streamToPodcast` do for a Nostr broadcast.
+ */
+export interface LiveShow {
+  /** The live item's own guid, when the publisher declared one. */
+  guid?: string;
+  title: string;
+  description?: string;
+  image?: string;
+  /** The live stream URL. Empty for a `pending` item that names none yet. */
+  enclosureUrl: string;
+  enclosureType?: string;
+  liveStatus: 'live' | 'pending';
+  /** Scheduled or actual start, unix seconds. */
+  liveStartTime?: number;
+  value?: ValueBlock | null;
+  feedId: number;
+  feedTitle?: string;
+  feedImage?: string;
+  /** The parent feed's RSS URL, when Podcast Index could name it. */
+  feedUrl?: string;
+  podcastGuid?: string;
+  /**
+   * Whether the publisher's own RSS was read for this feed.
+   *
+   * `false` means the row is Podcast Index's word alone — PI lags the live
+   * transition in both directions, so an unverified row may be a broadcast that
+   * has already finished. The page renders it and says the list may be stale;
+   * it must never silently drop it, because "we could not read the feed" is not
+   * evidence the show ended. See `mergeLiveOverPi`.
+   */
+  verified: boolean;
+}
