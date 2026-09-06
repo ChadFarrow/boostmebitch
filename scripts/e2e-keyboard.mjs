@@ -49,6 +49,8 @@ const KB = 300;
 // the module makes; see MIN_KEYBOARD_PX in lib/keyboard-inset.ts.
 const CHROME_H = 51;
 const SHORT_KB = 162;
+// What a phone measured stranded after a reply in the installed app.
+const STRAND_H = 88;
 
 const appUp = await fetch(`${APP}/privacy`).then((r) => r.ok).catch(() => false);
 if (!appUp) {
@@ -123,13 +125,40 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
     Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
     window.__vv = (h, top = 0) => { fake.height = h; fake.offsetTop = top; L.resize.forEach((f) => f()); };
     window.__scrolls = 0;
+    // A frame counter, so a scroll log can say WHICH FRAME each call landed in.
+    // The settle nudge is only a nudge if its two halves are in different ones —
+    // both in the same task leaves the offset where it started and the
+    // compositor sees no scroll at all.
+    window.__frame = 0;
+    (function loop() { window.__frame++; requestAnimationFrame(loop); })();
+    window.__scrollLog = [];
     const real = window.scrollTo.bind(window);
-    window.scrollTo = (...a) => { window.__scrolls++; return real(...a); };
+    window.scrollTo = (...a) => {
+      const r = real(...a);
+      window.__scrolls++;
+      window.__scrollLog.push({ y: Math.round(window.scrollY), f: window.__frame });
+      return r;
+    };
   })();
 `});
 
 await send('Page.navigate', { url: `${APP}/privacy` });
 await wait(2500);
+
+// The nudge needs a document that can actually scroll, and it has to be able to
+// scroll BOTH ways — scenario 6 asserts a real movement, and at the very top or
+// the very bottom one direction is clamped to nothing.
+const makeScrollable = () => js(`(() => {
+  if (!document.getElementById('tall')) {
+    const d = document.createElement('div');
+    d.id = 'tall'; d.style.height = '3000px';
+    document.body.appendChild(d);
+  }
+  window.scrollTo(0, 500);
+  window.__scrollLog.length = 0;
+  window.__scrolls = 0;
+})()`);
+await makeScrollable();
 
 // Every read waits a frame first: the module coalesces its measurement into one
 // rAF on purpose, so an immediate read is reading the state BEFORE the event.
@@ -143,6 +172,8 @@ const read = async () => {
       kb: getComputedStyle(document.documentElement).getPropertyValue('--kb-inset').trim(),
       navBottom: Math.round(r.bottom),
       scrolls: window.__scrolls,
+      scrollY: Math.round(window.scrollY),
+      log: window.__scrollLog.slice(-4),
     });
   })()`));
 };
@@ -219,10 +250,50 @@ check('the tab bar is back on the bottom', s.navBottom, restBottom);
 scrollsBefore = s.scrolls;
 
 console.log(`\n6. ...and the fixed layer is settled after the dismissal animation`);
+// The nudge is what un-strands WebKit's own fixed layer, which our transform
+// cannot reach. Counting the calls is not enough to know it happened: the first
+// version made both calls in ONE TASK, so the offset ended where it started,
+// no scroll was ever composited, and the bar stayed stranded with a transform
+// that was already correct. What is asserted here is that the page MOVED and
+// that the two halves are in DIFFERENT FRAMES.
+// Away from the document bottom first, so the ordinary two-call path is what
+// runs here — focusing the textarea scrolled to it, and it is the last element
+// on the page. The clamped path is 6b.
+await js(`window.scrollTo(0, 500)`);
+const beforeNudge = await read();
+scrollsBefore = beforeNudge.scrolls;
 await wait(600);
 s = await read();
 check('scrollTo ran the nudge (twice: away and back)', s.scrolls - scrollsBefore, 2);
+let [away, back] = s.log.slice(-2);
+check('the first half actually moved the page', away.y - beforeNudge.scrollY, 1);
+check('the second half is in a LATER frame', back.f > away.f, true);
+check('and it put the scroll position back', s.scrollY, beforeNudge.scrollY);
 check('and the dock did not move doing it', s.navBottom, restBottom);
+
+console.log(`\n6b. ...including at the very BOTTOM of the page, where a downward nudge`);
+console.log(`    is clamped away — which is where someone replying to the last note is`);
+await js(`document.getElementById('c').focus()`);
+await js(`window.__vv(${LAYOUT_H - KB})`);
+await read();
+await js(`window.scrollTo(0, 1e6)`);
+const atBottom = await read();
+scrollsBefore = atBottom.scrolls;
+await js(`(() => {
+  const t = document.getElementById('c');
+  t.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+  t.blur();
+})()`);
+await js(`window.__vv(${LAYOUT_H})`);
+await wait(600);
+s = await read();
+check('the clamped half is retried the other way', s.scrolls - scrollsBefore, 3);
+[away, back] = s.log.slice(-2);
+check('so the page still moved', away.y - atBottom.scrollY, -1);
+check('and still in a LATER frame', back.f > away.f, true);
+check('and the scroll position is back', s.scrollY, atBottom.scrollY);
+check('and the dock is on the bottom', s.navBottom, restBottom);
+await js(`window.scrollTo(0, 500)`);
 
 console.log(`\n7. a bounce at the TOP of the document (negative offsetTop) reads as no keyboard`);
 await js(`window.__vv(${LAYOUT_H}, -90)`);
@@ -268,6 +339,38 @@ check('the variable is the covered height', s.kb, `${SHORT_KB}px`);
 check('the tab bar is pushed down by exactly that', s.navBottom, restBottom + SHORT_KB);
 await js(`(() => { const t = document.getElementById('c'); t.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); t.blur(); })()`);
 await js(`window.__vv(${LAYOUT_H})`);
+
+console.log(`\n11. THE INSTALLED APP — where there is no browser chrome, the floor has`);
+console.log(`    nothing to reject and a small shortfall is WebKit's stranded offset`);
+// Rule 3's floor exists to reject a collapsing toolbar. A home-screen app has
+// no toolbar and no address bar, so the same 88px that is ambiguous in a tab is
+// unambiguous here — and 88px is what a phone measured, under the browser floor
+// and over the truth. This needs its own page load because the display mode is
+// read once at start-up, which is also how the real thing behaves.
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `
+  (() => {
+    const real = window.matchMedia.bind(window);
+    window.matchMedia = (q) => (String(q).includes('display-mode')
+      ? { matches: String(q).includes('standalone'), media: String(q),
+          onchange: null, addEventListener() {}, removeEventListener() {},
+          addListener() {}, removeListener() {}, dispatchEvent: () => false }
+      : real(q));
+  })();
+`});
+await send('Page.navigate', { url: `${APP}/privacy` });
+await wait(2500);
+await makeScrollable();
+s = await read();
+check('(precondition) at rest, and the dock is on the bottom', [s.kb, s.navBottom], ['0px', LAYOUT_H]);
+await js(`(() => { const t = document.createElement('textarea'); t.id = 'c'; document.body.appendChild(t); t.focus(); })()`);
+await js(`window.__vv(${LAYOUT_H - STRAND_H})`);
+s = await read();
+check('the strand is cancelled, not floored away', s.kb, `${STRAND_H}px`);
+check('the tab bar is pushed back down by exactly it', s.navBottom, LAYOUT_H + STRAND_H);
+await js(`document.getElementById('c').blur()`);
+await js(`window.__vv(${LAYOUT_H - STRAND_H})`);
+s = await read();
+check('and with nothing focused it is still 0px', s.kb, '0px');
 
 ws.close();
 stopChrome();

@@ -64,6 +64,14 @@
  *    LANDSCAPE one at ~162px. Raising it past that brings the original bug
  *    back on landscape only, which is where nobody is looking.
  *
+ *    AND IT APPLIES ONLY WHERE THERE IS CHROME TO REJECT. An installed
+ *    home-screen app has no toolbar and no address bar, so nothing there can
+ *    shorten the visual viewport except the keyboard and WebKit's own stranded
+ *    offset — both of which want cancelling at any size. `display-mode:
+ *    browser` is the test, read once. Applying the browser's floor there would
+ *    suppress exactly the correction the installed app needs, and the strand
+ *    measured on a phone is ~88px: under the floor, over the truth.
+ *
  * 4. **Every event schedules the measurement for the next frame; none of them
  *    measures inline.** `focusout` is why: during it `document.activeElement`
  *    is still the field being left, so an inline read answers "a text field has
@@ -74,12 +82,19 @@
  *    shipping component before the frame was added. The deferral also collapses
  *    the burst of `resize` events the keyboard animation emits into one write.
  *
- * 5. **The transition to closed nudges the scroll position by a pixel.**
- *    Publishing `0px` re-lays the dock out correctly, but the stranded offset
- *    lives in WebKit's own fixed layer, not in our transform, so the bar can
- *    come back to rest one keyboard-height too high. A one-pixel scroll and
- *    back is what makes WebKit re-settle that layer, and it is scheduled after
- *    the dismissal animation rather than on the resize event, because the event
+ * 5. **The transition to closed nudges the scroll position by a pixel, IN TWO
+ *    DIFFERENT FRAMES.** Publishing `0px` re-lays the dock out correctly, but
+ *    the stranded offset lives in WebKit's own fixed layer, not in our
+ *    transform, so the bar can come back to rest one keyboard-height too high.
+ *    A one-pixel scroll and back is what makes WebKit re-settle that layer —
+ *    but only if a scroll actually happens, and BOTH HALVES IN ONE TASK LEAVE
+ *    THE OFFSET WHERE IT STARTED. The compositor then sees nothing, the nudge
+ *    settles nothing, and the bar stays stranded with a transform that is
+ *    already correct: measured on a phone at ~88px, reported as "dock still
+ *    moves around" against a build that had every other rule here right. The
+ *    restore is relative to where the page is a frame later, so a nudge landing
+ *    mid-flick does not yank the reader back. It is scheduled after the
+ *    dismissal animation rather than on the resize event, because the event
  *    that reports full height arrives while the keyboard is still sliding away
  *    and the offset is re-applied behind it.
  *
@@ -100,6 +115,15 @@ const VAR = '--kb-inset';
  * keyboard. `scripts/e2e-keyboard.mjs` pins both edges.
  */
 const MIN_KEYBOARD_PX = 120;
+
+/**
+ * The same floor where there is no browser chrome to reject — an installed
+ * home-screen app has no toolbar and no address bar, so a short visual viewport
+ * there is the keyboard or WebKit's own stranded offset, and both of those want
+ * cancelling however small they are. This is only big enough to reject the
+ * pixel of rounding a correction could not show anyway.
+ */
+const MIN_STRANDED_PX = 24;
 
 /** Input types that raise no keyboard — a tap on one must not move the dock. */
 const NON_TEXT_INPUT = new Set([
@@ -136,13 +160,40 @@ export function startKeyboardInsetSync(): () => void {
   let current = 0;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let frame = 0;
+  let settleFrame = 0;
 
-  // A one-pixel scroll and back. `scrollTo` with an unchanged offset is a no-op
-  // in WebKit and settles nothing, which is why this moves first.
+  // Whether this document has browser chrome at the bottom that can take its
+  // own height out of the visual viewport — read once, because installing an
+  // app is not something that happens mid-session. See rule 3.
+  const browserChrome = typeof window.matchMedia === 'function'
+    ? window.matchMedia('(display-mode: browser)').matches
+    : true;
+  const floor = browserChrome ? MIN_KEYBOARD_PX : MIN_STRANDED_PX;
+
+  // A one-pixel scroll and back — and THE TWO HALVES MUST BE IN DIFFERENT
+  // FRAMES. Both in one task leaves the scroll offset exactly where it started,
+  // so the compositor never sees a scroll at all: the nudge runs, costs a
+  // function call, and settles nothing. That is how it shipped, and it is why
+  // the bar was still stranded after the transform was already correct.
+  //
+  // The restore is relative to wherever the page is a frame later, not to the
+  // captured offset, so a nudge that lands mid-flick does not yank the reader
+  // back. A page too short to scroll cannot be nudged at all — nothing here can
+  // fix that case, and pretending otherwise would hide it.
   const settleFixedLayer = () => {
-    const y = window.scrollY;
-    window.scrollTo(0, y + 1);
-    window.scrollTo(0, y);
+    const before = window.scrollY;
+    window.scrollTo(0, before + 1);
+    let moved = window.scrollY - before;
+    if (moved === 0) {
+      // Already at the bottom, where a downward nudge is clamped away.
+      window.scrollTo(0, before - 1);
+      moved = window.scrollY - before;
+    }
+    if (moved === 0) return;
+    settleFrame = requestAnimationFrame(() => {
+      settleFrame = 0;
+      window.scrollTo(0, window.scrollY - moved);
+    });
   };
 
   const measure = () => {
@@ -156,7 +207,7 @@ export function startKeyboardInsetSync(): () => void {
     // survives that is real coverage, and it still has to be big enough to be
     // a keyboard rather than the browser's own bottom chrome (rule 3).
     const covered = Math.round(root.clientHeight - (Math.max(0, vv.offsetTop) + vv.height));
-    const isKeyboard = covered >= MIN_KEYBOARD_PX && raisesKeyboard(document.activeElement);
+    const isKeyboard = covered >= floor && raisesKeyboard(document.activeElement);
     const next = isKeyboard ? covered : 0;
     if (next === current) return;
     const closing = next === 0;
@@ -183,6 +234,7 @@ export function startKeyboardInsetSync(): () => void {
 
   return () => {
     if (frame) cancelAnimationFrame(frame);
+    if (settleFrame) cancelAnimationFrame(settleFrame);
     if (settleTimer) clearTimeout(settleTimer);
     vv.removeEventListener('resize', schedule);
     vv.removeEventListener('scroll', schedule);
