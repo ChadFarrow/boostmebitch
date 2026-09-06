@@ -8,6 +8,7 @@ import { MutedAccountsSection } from './muted-accounts';
 import { ExportKeySection } from './export-key';
 import { ProfileEditor } from '../profile-editor';
 import { ThemeMenuLink } from '../theme-toggle';
+import { BunkerApprovalNotice } from '../bunker-approval-notice';
 
 // Surfaced inside AccountMenu when the NIP-46 bunker subscription has
 // gone stale (typically because iOS suspended the PWA's WebSocket while
@@ -199,6 +200,12 @@ export function AccountMenu({
             </div>
           </div>
 
+          {/* Beside the health banner, never instead of it: they say opposite
+              things. Stale means the transport looks dead; this means it
+              demonstrably is not — the signer answered, it just answered "not
+              yet". The one that matters here is the "Stop waiting" control,
+              which is otherwise only reachable from the boost modal. */}
+          <BunkerApprovalNotice className="mb-3" />
           <BunkerHealthBanner />
           <LocalKeyEphemeralBanner />
 

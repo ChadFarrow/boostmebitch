@@ -3,6 +3,7 @@ import { useWalletChange } from '@/lib/use-wallet-change';
 import { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { isGoogleAuthConfigured, preloadGis, startGoogleSignIn } from '@/lib/nostr/google-auth';
+import { isLikelyAndroid, isLikelyIOS } from '@/lib/nostr';
 import { hasAnyWallet } from '@/lib/v4v/wallets';
 import { WalletBalanceChip } from './wallet-balance';
 import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
@@ -23,6 +24,11 @@ import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
 // routes, and the tab bar's Wallet tab opens the modal from every route.
 export function AuthControl() {
   const identity = useApp((s) => s.identity);
+  // Read once on the client, like <SignInModal>'s own flags, so `navigator`
+  // stays off the server render. They name the signer in the Nostr row's
+  // subtitle and nothing else — no control is gated on them here.
+  const [ios] = useState(() => isLikelyIOS());
+  const [android] = useState(() => isLikelyAndroid());
   const setWalletOpen = useApp((s) => s.setWalletOpen);
   const setSignInOpen = useApp((s) => s.setSignInOpen);
   const walletRestoring = useApp((s) => s.walletRestoring);
@@ -128,8 +134,26 @@ export function AuthControl() {
                   <span>Sign in with Nostr</span>
                   {/* Names the prerequisite rather than the benefit. The benefits
                       ("notes, favorites, sync") are identical to the Google
-                      option's, so leading with them gave no basis to choose. */}
-                  <span className="text-[11px] text-muted">Already have a key — extension or signer</span>
+                      option's, so leading with them gave no basis to choose.
+
+                      NAMING THE PHONE'S SIGNER HERE IS WHY THERE IS NO SECOND
+                      ROW. Clave had one of its own for a while, on the argument
+                      that reaching it cost three taps. It did not: this row
+                      already lands on the Remote Signer tab — an iPhone has no
+                      extension, so `hasExt` is false and that is the default
+                      view — and the Clave box is the first thing in it. The
+                      extra row was a second door into the same room, and the
+                      cost of one was a menu that listed the same sign-in twice.
+                      So the signer goes in the subtitle instead, where it does
+                      the one job the row actually did: telling someone who owns
+                      Clave that this is their way in. */}
+                  <span className="text-[11px] text-muted">
+                    {ios
+                      ? 'Already have a key — Clave, Primal or an extension'
+                      : android
+                        ? 'Already have a key — Amber, Primal or an extension'
+                        : 'Already have a key — extension or signer'}
+                  </span>
                 </span>
               </button>
               {/* A peer of the option above, not a detail inside it. This used to
