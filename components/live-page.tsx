@@ -73,6 +73,15 @@ const REFRESH_MIN_MS = 45_000;
 /** Read by `<HomePage>`'s back control — see `showOrigin` in lib/store.ts. */
 const LIVE_ORIGIN = { path: '/live', label: 'live' };
 
+type RssTab = 'live' | 'upcoming';
+
+/** The two states a `<podcast:liveItem>` can be in that this page renders.
+ *  Same vocabulary and same glyphs as the Nostr strip, deliberately. */
+const RSS_TABS = [
+  { key: 'live', label: 'Live', icon: '●' },
+  { key: 'upcoming', label: 'Upcoming', icon: '◷' },
+] as const;
+
 /**
  * How many favorited feeds to ask about per poll.
  *
@@ -120,6 +129,11 @@ export function LivePage() {
   const [upcomingSeen, setUpcomingSeen] = useState<Record<number, LiveShow[]>>({});
   const lastLoadRef = useRef(0);
   const mountedRef = useRef(true);
+  /**
+   * `null` until the reader picks one, so the default can follow the content
+   * without overriding a choice they made.
+   */
+  const [rssTab, setRssTab] = useState<RssTab | null>(null);
 
   /**
    * Every favorited feed that could plausibly carry a live item, newest first.
@@ -296,6 +310,18 @@ export function LivePage() {
     .sort((a, b) => (a.liveStartTime ?? 0) - (b.liveStartTime ?? 0));
   const unverified = data?.unverifiedFeeds ?? 0;
 
+  /**
+   * Land on content, without hiding the state.
+   *
+   * Opening on an empty Live tab while four shows sit one press away is a bad
+   * first screen, and defaulting to Upcoming instead would normally cost the
+   * reader the answer to "is anything on right now". It does not here, because
+   * the `● LIVE 0` tab is still on screen saying exactly that — in less space
+   * than the sentence would take. An explicit choice always wins.
+   */
+  const rssActive: RssTab =
+    rssTab ?? (onAir.length === 0 && upcoming.length > 0 ? 'upcoming' : 'live');
+
   // A heading over nothing is its own small lie — it says "here is the RSS
   // list" and then shows blank. The groups inside already refuse to speak when
   // the route has not answered, so the SECTION has to make the same decision
@@ -339,36 +365,73 @@ export function LivePage() {
             siblings rather than a list and a footnote. */}
         {rssSpeaks && (
         <section className="mb-10">
-          <h3 className="font-display text-lg flex items-center gap-2 mb-3">
-            <span className="text-nostr animate-bolt text-sm">●</span>
-            Live on RSS
-          </h3>
+          <div className="flex items-center gap-2 mb-3 flex-wrap">
+            {/* The heading matches `<NostrLiveStreams>`'s markup exactly — same
+                level, same dot, same type — because the whole point of naming
+                them by protocol is that the reader can see they are siblings
+                rather than a list and a footnote. */}
+            <h3 className="font-display text-lg flex items-center gap-2">
+              <span className="text-nostr animate-bolt text-sm">●</span>
+              Live on RSS
+            </h3>
+            {/* BOTH TABS ALWAYS, AND THAT IS THE DIFFERENCE FROM THE NOSTR
+                STRIP. That one hides a group with nothing in it, which is right
+                for a section making no claim — it renders nothing at all when
+                empty. This section DOES make one: "nothing is broadcasting on
+                RSS right now" is a statement about the world, and hiding the
+                tab that carries it would take it off the page exactly when it
+                is true. A count of 0 on a visible tab says the same thing in
+                less space, and says it without the reader having to switch. */}
+            <div className="inline-flex gap-1">
+              {RSS_TABS.map((t) => {
+                const on = rssActive === t.key;
+                const count = t.key === 'live' ? onAir.length : upcoming.length;
+                return (
+                  <button
+                    key={t.key}
+                    type="button"
+                    onClick={() => setRssTab(t.key)}
+                    aria-pressed={on}
+                    className={`btn-ghost !px-2.5 !py-1 text-xs ${on ? '!border-nostr text-nostr' : 'text-muted'}`}
+                  >
+                    <span aria-hidden className="mr-1">{t.icon}</span>
+                    {t.label} <span className="opacity-60">{count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
-          <ShowGroup
-            shows={onAir}
-            state={state}
-            hasData={!!data}
-            // The one place this page may say a list is empty. It is scoped to
-            // RSS, and only spoken once the route has actually answered — see
-            // ShowGroup.
-            emptyLine="Nothing is broadcasting on RSS right now."
-          />
-
-          <ShowGroup
-            heading="Upcoming"
-            shows={upcoming}
-            state={state}
-            hasData={!!data}
-            emptyLine={null}
-            caption={
-              favPool
-                ? 'Scheduled broadcasts from the shows you have favorited or boosted, plus ' +
-                  'from any show on air right now. Podcast Index publishes no global schedule, ' +
-                  'so a show you have done neither with may not be here.'
-                : 'The next broadcast from shows that are on air right now. Podcast Index ' +
-                  'publishes no global schedule — favorite a show and its schedule shows up here.'
-            }
-          />
+          {rssActive === 'live' ? (
+            <ShowGroup
+              shows={onAir}
+              state={state}
+              hasData={!!data}
+              // The one place this page may say a list is empty. It is scoped
+              // to RSS, and only spoken once the route has answered — see
+              // ShowGroup.
+              emptyLine="Nothing is broadcasting on RSS right now."
+            />
+          ) : (
+            <ShowGroup
+              shows={upcoming}
+              state={state}
+              hasData={!!data}
+              // "That we can see", never "nothing is scheduled". Podcast Index
+              // publishes no global schedule, so this list is the shows you
+              // have favorited or boosted plus whatever is on air — and an
+              // empty one is a statement about our reach, not about the world.
+              emptyLine="Nothing scheduled that we can see."
+              caption={
+                favPool
+                  ? 'Scheduled broadcasts from the shows you have favorited or boosted, plus ' +
+                    'from any show on air right now. Podcast Index publishes no global schedule, ' +
+                    'so a show you have done neither with may not be here.'
+                  : 'The next broadcast from shows that are on air right now. Podcast Index ' +
+                    'publishes no global schedule — favorite a show and its schedule shows up here.'
+              }
+            />
+          )}
 
           {/* Inside the section, because both describe THIS list. Between the
               two sections they sit directly above "Live on Nostr" and read as
@@ -388,7 +451,6 @@ export function LivePage() {
           )}
         </section>
         )}
-
 
         <div className="pt-4">
           <NostrLiveStreams />

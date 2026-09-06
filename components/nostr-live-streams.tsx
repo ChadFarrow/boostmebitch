@@ -257,7 +257,15 @@ export function NostrLiveStreams() {
       { key: 'radio', label: '24/7', icon: '📻', items: radio },
       { key: 'upcoming', label: 'Upcoming', icon: '◷', items: upcoming },
     ] as const
-  ).filter((t) => t.items.length > 0);
+    // Live and Upcoming are the two states every broadcast is in, so they stay
+    // on screen with a count of 0 rather than vanishing — a hidden tab and a
+    // tab reading `0` look the same from the reader's side only if you already
+    // know the tab exists. 24/7 is a SUBDIVISION of live rather than a state of
+    // its own, so it earns its place only when something is in it. The RSS
+    // strip on `/live` follows the same rule for the same reason; this section
+    // renders nothing at all when every group is empty, so a row of zeroes is
+    // never what greets anybody.
+  ).filter((t) => t.items.length > 0 || t.key !== 'radio');
   const active = tabs.find((t) => t.key === filter) ?? tabs[0];
 
   return (
