@@ -1,6 +1,6 @@
 import type {
   Podcast, ValueBlock, ValueRecipient, Episode, AlternateEnclosure,
-  BoostResult, StoredBoostLeg, ChapterEntry, ValueTimeSplit,
+  BoostResult, StoredBoostLeg, ChapterEntry, ValueTimeSplit, LiveShow,
 } from './types';
 
 // True when the feed is a Podcasting 2.0 music album (`<podcast:medium>music`).
@@ -262,6 +262,132 @@ export function mergeRssOverPi(pi: Podcast, rss: Podcast): Podcast {
     itunesId: pi.itunesId ?? rss.itunesId,
     isPreview: undefined,
   };
+}
+
+/**
+ * One feed's live items, with the publisher's own RSS deciding what is true.
+ *
+ * This is {@link mergeRssOverPi}'s rule pointed at live items instead of feed
+ * metadata — PI keeps only what solely it can supply, and everything the
+ * publisher declares comes from the feed, which was read moments ago. Live
+ * items need one clause more than that, and it is the whole reason this is a
+ * named function rather than a spread at the call site:
+ *
+ * **An `ok: true` RSS read is authoritative about which items EXIST, including
+ * the ones it does not list. An `ok: false` read is authoritative about
+ * nothing.**
+ *
+ * Both halves have already cost this repo something in the per-feed path.
+ * Podcast Index lags the live transition in BOTH directions — measured
+ * 2026-08-07 returning zero live items for a feed actively publishing
+ * `status="live"`, and it equally holds rows for broadcasts that have finished.
+ * So a merge that unions the two sources (which is what the obvious
+ * implementation does, and what `naive()` does in `check:livemerge`) leaves
+ * ended shows on a "what is on air" page indefinitely, with no signal that
+ * would ever remove them.
+ *
+ * The other direction is the more expensive mistake. `getLiveItemsFromRss-
+ * Detailed` returns `ok` precisely because `[]` means both "this feed has no
+ * live items" and "we could not read this feed", and treating the second as the
+ * first ends a broadcast that is still running. So on `ok: false` PI's rows
+ * survive untouched and the feed is reported `verified: false` — the caller
+ * renders them and says the list may be short, rather than silently taking a
+ * live show off the air because one publisher's server was slow.
+ *
+ * Matching is by guid. An RSS item with no guid cannot be paired with a PI row,
+ * so it is kept as the publisher wrote it rather than dropped — unmatchable is
+ * not absent, the same rule `applyLiveStatuses` follows for the same reason.
+ * Where a pair does match, PI contributes only its numeric episode `id` (the
+ * RSS parser has to synthesize a negative one) and the identifiers RSS may not
+ * carry; every field describing the BROADCAST comes from the feed.
+ */
+export function mergeLiveOverPi(
+  piRows: Episode[],
+  rssRead: { ok: boolean; items: Episode[] },
+): { items: Episode[]; verified: boolean } {
+  if (!rssRead.ok) return { items: piRows, verified: false };
+
+  const byGuid = new Map<string, Episode>();
+  for (const e of piRows) if (e.guid) byGuid.set(e.guid, e);
+
+  const items = rssRead.items.map((rss) => {
+    const pi = rss.guid ? byGuid.get(rss.guid) : undefined;
+    if (!pi) return rss;
+    return {
+      ...rss,
+      // PI's real episode id beats the parser's synthetic `-fnvHash(...)`.
+      id: pi.id,
+      podcastGuid: rss.podcastGuid ?? pi.podcastGuid,
+      feedTitle: rss.feedTitle ?? pi.feedTitle,
+      feedImage: rss.feedImage ?? pi.feedImage,
+      image: rss.image ?? pi.image,
+    };
+  });
+
+  return { items, verified: true };
+}
+
+/**
+ * A {@link LiveShow} as the `Episode` the player stores.
+ *
+ * The same bridge `streamToEpisode` builds for a Nostr broadcast, and for the
+ * same reason: `<Player>`, `<LiveBadge>`, the seek-bar suppression and the
+ * boost modal all key off `Episode.liveStatus`, so a live item that arrives
+ * through a new door still has to arrive as an `Episode`.
+ *
+ * `feedId` is carried through REAL, unlike the Nostr bridge's `0` — these rows
+ * do belong to a Podcast Index feed, and the live-value poller
+ * (`/api/live-value?feedId=&guid=`) needs it to follow the artist on stage.
+ */
+export function liveShowToEpisode(s: LiveShow): Episode {
+  return {
+    id: s.guid ? -fnvHash(s.guid) : -fnvHash(`${s.feedId}#${s.title}`),
+    guid: s.guid,
+    title: s.title,
+    description: s.description,
+    enclosureUrl: s.enclosureUrl,
+    enclosureType: s.enclosureType,
+    image: s.image ?? s.feedImage,
+    feedId: s.feedId,
+    feedTitle: s.feedTitle,
+    feedImage: s.feedImage,
+    podcastGuid: s.podcastGuid,
+    liveStatus: s.liveStatus,
+    liveStartTime: s.liveStartTime,
+    datePublished: s.liveStartTime,
+    value: s.value ?? null,
+  };
+}
+
+/** The `Podcast` context that goes beside {@link liveShowToEpisode}. */
+export function liveShowToPodcast(s: LiveShow): Podcast {
+  return {
+    id: s.feedId,
+    title: s.feedTitle ?? s.title,
+    image: s.feedImage,
+    artwork: s.feedImage,
+    url: s.feedUrl,
+    podcastGuid: s.podcastGuid,
+    value: s.value ?? null,
+  };
+}
+
+/**
+ * Live first, then upcoming by soonest start.
+ *
+ * The same precedence `/api/feed` applies with its `LIVE_RANK` table, restated
+ * here because this list spans feeds rather than sitting inside one. A show
+ * that is on air right now is the only actionable row on the page — a `pending`
+ * one cannot even be played — so sorting them together by start time would bury
+ * the thing the visitor came for under a week of schedule.
+ */
+export function compareLiveShows(a: LiveShow, b: LiveShow): number {
+  const rank = (s: LiveShow) => (s.liveStatus === 'live' ? 0 : 1);
+  if (rank(a) !== rank(b)) return rank(a) - rank(b);
+  const at = a.liveStartTime ?? 0;
+  const bt = b.liveStartTime ?? 0;
+  // Upcoming: soonest first. Live: most recently started first.
+  return a.liveStatus === 'live' ? bt - at : at - bt;
 }
 
 /**

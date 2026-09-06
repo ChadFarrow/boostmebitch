@@ -534,15 +534,36 @@ export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> 
   return (data.items ?? []).map(buildEpisode);
 }
 
-// PI exposes liveItem records globally at /episodes/live. There is no per-feed
-// endpoint, so we pull a wide page and filter. PI's status field can be
-// 'live' | 'pending' | 'ended'; we drop ended — old broadcasts shouldn't
-// crowd the top of the episode list.
-export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
+/**
+ * Every liveItem record Podcast Index currently holds, across every feed.
+ *
+ * PI exposes these globally at `/episodes/live` and there is no per-feed
+ * endpoint, so this one call is the whole world's live set. `/api/feed` has
+ * always paid for it and thrown away every row but one show's (see
+ * `getLiveItemsForFeed` below); `/api/live-shows` is the reader that wants the
+ * rest of it.
+ *
+ * PI's `status` can be 'live' | 'pending' | 'ended'; we drop ended — an old
+ * broadcast should not crowd either the top of an episode list or a "what is on
+ * air" page. `pending` is accepted defensively rather than optimistically: PI
+ * documents this endpoint as currently-broadcasting only, and measured that
+ * way, but if it ever starts indexing scheduled items we get them free. The
+ * publisher's own RSS is where pending items actually live today — see
+ * `getLiveItemsFromRssDetailed`.
+ *
+ * NOT routed through `episodeFromPiRecord`. Neither it nor `buildEpisode` maps
+ * `liveStatus`/`liveStartTime`, which are the only two fields that make one of
+ * these rows a live item rather than an ordinary episode, so they are added
+ * here — in the one place that parses this payload.
+ *
+ * Shares the `pi()` helper's `next: { revalidate: 60 }` entry, so a show page
+ * and the live page hitting this within a minute of each other cost one
+ * upstream call between them.
+ */
+export async function getGlobalLiveItems(): Promise<Episode[]> {
   const data = await pi<any>(`/episodes/live?max=1000`);
   const out: Episode[] = [];
   for (const e of data.items ?? []) {
-    if (Number(e.feedId) !== feedId) continue;
     const status = typeof e.status === 'string' ? e.status.toLowerCase() : undefined;
     if (status !== 'live' && status !== 'pending') continue;
     out.push({
@@ -552,6 +573,19 @@ export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
     });
   }
   return out;
+}
+
+/**
+ * The live items for one feed, filtered out of the global roster above.
+ *
+ * `Number(...)` on both sides is load-bearing: PI does not reliably send
+ * `feedId` as a number, `buildEpisode` copies it through unconverted, and a
+ * strict `===` against a string matches nothing at all — which would empty the
+ * live section of every show page while looking like PI had simply gone quiet.
+ */
+export async function getLiveItemsForFeed(feedId: number): Promise<Episode[]> {
+  const all = await getGlobalLiveItems();
+  return all.filter((e) => Number(e.feedId) === Number(feedId));
 }
 
 // In-memory cache of raw feed XML, keyed by URL. A single feed-page load

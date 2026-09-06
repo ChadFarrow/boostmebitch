@@ -22,6 +22,7 @@ import { BoostModal } from '../boost-modal';
 import { BoltIcon, CoinIcon } from '../icons';
 import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';
+import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
 import { FavEpisodeHeart, FavHeart } from '../fav-heart';
 import { ValueSplitRows } from '../value-split-rows';
@@ -90,20 +91,6 @@ interface PlaylistMeta {
    * Read from page 0 and not accumulated, for the same reason as `sourceShow`.
    */
   playGroups?: PlayGroup[];
-}
-
-function LiveBadge({ status }: { status: NonNullable<Episode['liveStatus']> }) {
-  if (status === 'live') {
-    return (
-      <span className="stamp shrink-0 whitespace-nowrap text-nostr border-nostr/60 bg-nostr/10 animate-bolt">
-        ● LIVE
-      </span>
-    );
-  }
-  if (status === 'pending') {
-    return <span className="stamp shrink-0 whitespace-nowrap text-bolt border-bolt/60">PENDING</span>;
-  }
-  return null;
 }
 
 function ShareButton({ podcast }: { podcast: Podcast }) {

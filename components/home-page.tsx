@@ -19,34 +19,34 @@ import { loadCollection } from '@/lib/playlist-collection';
 import type { Podcast } from '@/lib/types';
 
 /**
- * The four heavy surfaces this page can show but usually does not, split out of
- * the first-load bundle.
+ * The three heavy surfaces this page can show but usually does not, split out
+ * of the first-load bundle.
  *
  * **Each one is already gated by a condition that is FALSE on the first commit,
- * and three of the four are false for the whole life of a deep link** — which
- * is what makes this a code-splitting question rather than a rendering one. The
- * two Nostr sections wait for `entryResolved && !inDetailView`, so a
- * `/?podcast=…` visitor never sees them at all; the episode and discussion views
- * wait for a store field that is null on the server and on the first client
- * render. Statically imported, all four were downloaded, parsed and evaluated
- * before the page could hydrate, on every visit, to render nothing.
+ * and all three are false for the whole life of a deep link** — which is what
+ * makes this a code-splitting question rather than a rendering one. The Nostr
+ * feed waits for `entryResolved && !inDetailView`, so a `/?podcast=…` visitor
+ * never sees it at all; the episode and discussion views wait for a store field
+ * that is null on the server and on the first client render. Statically
+ * imported, all three were downloaded, parsed and evaluated before the page
+ * could hydrate, on every visit, to render nothing.
  *
  * `ssr: false` costs nothing here for the same reason: not one of them is in
  * the server HTML today, because every gate above is false at that point. So
  * this changes what the browser DOWNLOADS and never what it first paints.
  *
  * The trade is a chunk fetch at the moment each gate first opens. It is paid on
- * the same tick as work these surfaces already do — the two feeds open relay
+ * the same tick as work these surfaces already do — the feed opens relay
  * subscriptions, the episode view fetches chapters and a transcript — and
  * `<HomePage>` keeps rendering its own layout around them either way, so no
  * placeholder is needed for something that was blank a moment ago regardless.
+ *
+ * There were FOUR. `<NostrLiveStreams>` moved to `/live` when that route gained
+ * a dock tab, so this page no longer opens a relay subscription to render a row
+ * about broadcasts — see `components/live-page.tsx`.
  */
 const GlobalNostrFeed = dynamic(
   () => import('@/components/global-nostr-feed').then((m) => m.GlobalNostrFeed),
-  { ssr: false },
-);
-const NostrLiveStreams = dynamic(
-  () => import('@/components/nostr-live-streams').then((m) => m.NostrLiveStreams),
   { ssr: false },
 );
 const DiscussionView = dynamic(
@@ -119,13 +119,15 @@ export function HomePage() {
    * Whether we yet know which page this is — the home page, or a `?podcast=` /
    * `?feed=` deep link on its way to a show.
    *
-   * **It gates the two relay-backed home surfaces, and it is a load-time rule
+   * **It gates the relay-backed home surface, and it is a load-time rule
    * rather than a rendering preference.** `inDetailView` cannot answer it:
    * it is `!!selectedPodcast`, which a deep link does not set until
    * `resolvePodcastByGuid` has been to the server and back. So on a cold
-   * `/?podcast=…&episode=…` the first commit mounted `<NostrLiveStreams>` and
-   * `<GlobalNostrFeed>`, whose effects run BEFORE this component's, and threw
-   * the whole thing away a moment later. Measured against a stubbed API, both
+   * `/?podcast=…&episode=…` the first commit mounted `<GlobalNostrFeed>` (and,
+   * until it moved to `/live`, `<NostrLiveStreams>` beside it), whose effects
+   * run BEFORE this component's, and threw the whole thing away a moment later.
+   * One section rather than two does not weaken the rule — the cost was never
+   * the count, it was the relay path each one opens. Measured against a stubbed API, both
    * of their index requests went out ahead of the deep link's own first
    * request — and behind an index that answers 503 (or none at all) that is not
    * two requests, it is the full relay path: a kind:1 scan, a reply-tree BFS,
@@ -136,9 +138,9 @@ export function HomePage() {
    * is deterministic and there is no hydration mismatch — which is why this is
    * a state flag set from an effect rather than a read of
    * `window.location.search` during render. The cost is that an ordinary home
-   * visit paints its two feed sections one commit later than it used to; they
-   * are below the hero and the search box, and their own skeletons are what
-   * appears either way.
+   * visit paints its feed section one commit later than it used to; it is
+   * below the hero and the search box, and its own skeleton is what appears
+   * either way.
    *
    * It is only ever set, never cleared, and that is deliberate: once the URL
    * question is answered `inDetailView` alone governs, so pressing "← back to
@@ -821,14 +823,9 @@ export function HomePage() {
       </section>
 
       {entryResolved && !inDetailView && (
-        <>
-          <section className="max-w-7xl mx-auto px-4 pt-8">
-            <NostrLiveStreams />
-          </section>
-          <section className="max-w-7xl mx-auto px-4 pt-12">
-            <GlobalNostrFeed />
-          </section>
-        </>
+        <section className="max-w-7xl mx-auto px-4 pt-12">
+          <GlobalNostrFeed />
+        </section>
       )}
     </main>
   );
