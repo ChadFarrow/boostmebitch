@@ -46,6 +46,15 @@
      44px floor with no per-item min-h. */
   --tabbar-h: 56px;
   --dock-b: calc(var(--tabbar-h) + env(safe-area-inset-bottom, 0px));
+  /* How much of the layout viewport the on-screen keyboard covers. Published
+     by lib/keyboard-inset.ts (mounted by <TabBar>) and read as a translateY by
+     both halves of the dock, which is what makes them hide BEHIND the keyboard
+     instead of riding up the page with it. 0px everywhere else, so every
+     transform reading it is the identity — including on the server, where the
+     JS has not run and the declaration below is the only value there is.
+     Anything new that anchors itself to the bottom of the viewport needs the
+     same transform; see docs/ui.md. */
+  --kb-inset: 0px;
 }
 
 :root[data-theme='light'] {
