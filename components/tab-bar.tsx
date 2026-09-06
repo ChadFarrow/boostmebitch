@@ -27,12 +27,15 @@ import { clearShowSelection, useApp } from '@/lib/store';
  * full-viewport overlays are the exception and still pay the inset: they cover
  * this bar rather than stacking on it.
  *
- * THE ON-SCREEN KEYBOARD. `translateY(var(--kb-inset))` parks the whole dock
- * at the layout bottom — behind the keyboard — while a field is focused, and is
- * the identity every other moment. Without it iOS carries the fixed layer up
- * with the visual viewport and does not always give the offset back, leaving
- * the bar stranded in the middle of the page after a reply. This component
- * mounts the one publisher of that variable; see `lib/keyboard-inset.ts`.
+ * THE ON-SCREEN KEYBOARD, AND THE VIEWPORT IT LEAVES BEHIND.
+ * `translateY(var(--kb-inset))` pushes the whole dock down by two things at
+ * once: the keyboard's height while a field is focused, so the bar hides
+ * behind it rather than riding the composer, and whatever iOS has left
+ * `visualViewport.offsetTop` holding afterwards. `bottom: 0` is measured from
+ * the LAYOUT viewport, so that leftover is the bar stranded in the middle of
+ * the page after a reply. It is the identity every other moment. This
+ * component mounts the one publisher of that variable; see
+ * `lib/keyboard-inset.ts`.
  *
  * z-30, level with the mini-bar and below `<FullscreenPlayer>`'s z-50 and
  * `<ModalShell>`'s z-[60], so the expanded player and every dialog cover it

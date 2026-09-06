@@ -2,11 +2,11 @@
 // while the on-screen keyboard is open, and — the half that matters — where it
 // ends up after the keyboard closes.
 //
-// WHY THIS IS AN E2E AND NOT A `check:*`. `lib/keyboard-inset.ts` holds no
-// arithmetic worth pinning; every way it goes wrong is a wiring fault between
-// three things a pure function cannot see: a `visualViewport` event, what
-// `document.activeElement` says at the moment that event fires, and the
-// `translateY` the shipping component actually resolves. The first version of
+// WHY THIS IS AN E2E AND NOT A `check:*`. The arithmetic in
+// `lib/keyboard-inset.ts` is two additions, and every way it goes wrong is a
+// wiring fault between three things a pure function cannot see: a
+// `visualViewport` event, what `document.activeElement` says at the moment that
+// event fires, and the `translateY` the shipping component actually resolves. The first version of
 // the module measured inline from the event handler and passed review; driven
 // here it held the dock 300px off the bottom of the screen FOREVER after a
 // blur, because during `focusout` the field being left is still
@@ -49,6 +49,9 @@ const KB = 300;
 // the module makes; see MIN_KEYBOARD_PX in lib/keyboard-inset.ts.
 const CHROME_H = 51;
 const SHORT_KB = 162;
+// What the phone in the report was left holding in `visualViewport.offsetTop`
+// after a reply, rounded off the screenshot: 68.3 CSS px on an 874px screen.
+const STRANDED = 68;
 
 const appUp = await fetch(`${APP}/privacy`).then((r) => r.ok).catch(() => false);
 if (!appUp) {
@@ -116,12 +119,15 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   (() => {
     const L = { resize: [], scroll: [] };
     const fake = {
-      height: ${LAYOUT_H}, offsetTop: 0, offsetLeft: 0, width: ${WIDTH},
+      height: ${LAYOUT_H}, offsetTop: 0, offsetLeft: 0, width: ${WIDTH}, scale: 1,
       addEventListener: (t, f) => L[t] && L[t].push(f),
       removeEventListener: (t, f) => { const a = L[t]; if (!a) return; const i = a.indexOf(f); if (i >= 0) a.splice(i, 1); },
     };
     Object.defineProperty(window, 'visualViewport', { value: fake, configurable: true });
-    window.__vv = (h, top = 0) => { fake.height = h; fake.offsetTop = top; L.resize.forEach((f) => f()); };
+    window.__vv = (h, top = 0, scale = 1) => {
+      fake.height = h; fake.offsetTop = top; fake.scale = scale;
+      L.resize.forEach((f) => f());
+    };
     window.__scrolls = 0;
     const real = window.scrollTo.bind(window);
     window.scrollTo = (...a) => { window.__scrolls++; return real(...a); };
@@ -266,6 +272,47 @@ await js(`window.__vv(${LAYOUT_H - SHORT_KB})`);
 s = await read();
 check('the variable is the covered height', s.kb, `${SHORT_KB}px`);
 check('the tab bar is pushed down by exactly that', s.navBottom, restBottom + SHORT_KB);
+await js(`(() => { const t = document.getElementById('c'); t.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); t.blur(); })()`);
+await js(`window.__vv(${LAYOUT_H})`);
+
+console.log(`\n11. THE STRANDED VIEWPORT — nothing covers the screen, nothing has focus,`);
+console.log(`    and iOS has left the visual viewport scrolled ${STRANDED}px past the`);
+console.log(`    layout one. This is the report, and it is the case both earlier`);
+console.log(`    versions netted off to a NEGATIVE number and published as 0px.`);
+// `bottom: 0` is measured from the layout viewport, so the dock is sitting
+// exactly this far above the bottom of the screen with the feed showing under
+// it. Measured off the phone: an 874px screen, a 90px bar at full height,
+// 68.3px of feed below it. Nothing else in this file reaches this state — the
+// bounce scenarios are the same shape with the sign the other way.
+await js(`window.__vv(${LAYOUT_H}, ${STRANDED})`);
+s = await read();
+check('the variable is the leftover', s.kb, `${STRANDED}px`);
+check('the tab bar is pushed back down by exactly that', s.navBottom, restBottom + STRANDED);
+scrollsBefore = s.scrolls;
+
+console.log(`\n11b. ...and the nudge runs for it too, because the transform only HIDES`);
+console.log(`     the leftover — a scroll and back is what settles it at the source`);
+await wait(600);
+s = await read();
+check('scrollTo ran the nudge (twice: away and back)', s.scrolls - scrollsBefore, 2);
+await js(`window.__vv(${LAYOUT_H})`);
+check('and it relaxes when the viewport comes back', (await read()).navBottom, restBottom);
+
+console.log(`\n12. a keyboard on top of a scrolled viewport — the two terms ADD.`);
+console.log(`    Netting them off is what under-corrected the keyboard case by the`);
+console.log(`    same number it stranded the dock by afterwards.`);
+await js(`document.getElementById('c').focus()`);
+await js(`window.__vv(${LAYOUT_H - KB}, ${STRANDED})`);
+s = await read();
+check('the variable is the keyboard PLUS the lift', s.kb, `${KB + STRANDED}px`);
+check('the tab bar is pushed down by exactly that', s.navBottom, restBottom + KB + STRANDED);
+
+console.log(`\n13. a pinch-zoomed page is left alone — above scale 1 offsetTop is a pan`);
+console.log(`    offset against a screen no longer painting layout pixels 1:1`);
+await js(`window.__vv(${LAYOUT_H - KB}, ${STRANDED}, 2)`);
+s = await read();
+check('the variable is 0px', s.kb, '0px');
+check('the tab bar has not moved', s.navBottom, restBottom);
 await js(`(() => { const t = document.getElementById('c'); t.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); t.blur(); })()`);
 await js(`window.__vv(${LAYOUT_H})`);
 

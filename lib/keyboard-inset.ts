@@ -1,6 +1,7 @@
 /**
- * `--kb-inset`: how much of the layout viewport the on-screen keyboard covers,
- * published as a CSS variable on `<html>` so the dock can get out of its way.
+ * `--kb-inset`: how far DOWN the dock has to move to stay on the bottom of the
+ * screen while iOS moves the viewport around underneath it. Published as a CSS
+ * variable on `<html>`, read as a `translateY` by both halves of the dock.
  *
  * THE BUG THIS EXISTS FOR. Reported 2026-09-06 off an iPhone 16 Pro screenshot,
  * installed home-screen app: the tab bar sat 68 CSS px above the bottom of the
@@ -9,48 +10,52 @@
  * `<textarea>` on the main feed, so tapping it raises the keyboard with no
  * overlay involved and nothing in this app aware that it happened.
  *
- * WHAT iOS ACTUALLY DOES. The keyboard does not resize the LAYOUT viewport, so
- * `bottom: 0` still resolves to the bottom of the screen; what shrinks is the
- * VISUAL viewport. WebKit then offsets the fixed layer to keep it on screen,
- * which is the bar travelling up. The part that is a bug rather than a policy
- * is what happens on dismissal: the offset is not always given back, so the bar
- * is left stranded over the page with no gesture that puts it back. A reload
- * clears it, which is why it reads as a rendering glitch rather than a state.
+ * TWO VIEWPORTS, AND WHICH ONE THE DOCK IS NAILED TO. The keyboard does not
+ * resize the LAYOUT viewport; what shrinks, and what iOS then scrolls, is the
+ * VISUAL one. `position: fixed; bottom: 0` resolves against the LAYOUT
+ * viewport, so the dock does not follow the visual viewport at all — and that
+ * is the whole defect. To keep the focused field in sight iOS scrolls the
+ * visual viewport DOWN, past the end of the layout viewport if it has to, and
+ * on dismissal it does not always scroll back. `visualViewport.offsetTop` is
+ * left holding that leftover, the layout viewport's bottom is that far above
+ * the screen's, and the dock is sitting on it. A reload clears it, which is
+ * why it reads as a rendering glitch rather than a state.
  *
- * SO THE DOCK STOPS RIDING THE KEYBOARD AND HIDES BEHIND IT INSTEAD.
- * `--kb-inset` is the covered height; `<TabBar>` and `<Player>`'s mini-bar both
- * carry `translateY(var(--kb-inset))`, which cancels WebKit's lift and parks
- * the dock at the layout bottom — under the keyboard, out of the composer's
- * way, the same thing a native app does while you type. It is derived from a
- * measurement every frame it changes rather than remembered, so "the keyboard
- * closed" is not a state this module can get wrong: the inset goes back to 0px
- * and the transform is the identity again.
+ * SO THE CORRECTION IS A SUM OF TWO INDEPENDENT TERMS, AND THE FIRST TWO
+ * ATTEMPTS AT THIS FILE COLLAPSED THEM INTO ONE SUBTRACTION.
  *
- * THE MEASUREMENT ANSWERS THREE QUESTIONS, NOT ONE, and the first version
- * asked only the first. A visual viewport shorter than the layout viewport is
- * not by itself a keyboard: TWO other things on iOS produce the identical
- * arithmetic, both of them while the composer is focused, and both of them
- * shipped. Reported off a phone as "keyboard is fine while typing but [the
- * dock] pops up after I'm done and returns to the bottom when I scroll down
- * but moves back up when I scroll up" — one sentence describing both.
+ *   lift    = visualViewport.offsetTop        — how far the visual viewport has
+ *             been scrolled past the layout viewport, keyboard or leftover.
+ *   covered = clientHeight - visualViewport.height — how much of the layout
+ *             viewport something is sitting on top of.
  *
- * SIX THINGS THAT LOOK OPTIONAL AND ARE NOT.
+ * `--kb-inset` is `lift + (covered, if a keyboard explains it)`. The two answer
+ * different questions and neither implies the other: a stranded viewport has a
+ * lift and covers nothing, an open keyboard covers and usually also lifts. The
+ * shipped formula was `clientHeight - (offsetTop + height)`, which is
+ * `covered - lift` — so the 68px leftover measured as MINUS 68, failed the
+ * "is this a keyboard" test, published 0px, and left the transform the
+ * identity while the dock sat 68px up the page. Measured off the screenshot in
+ * the report: a 874px screen, a 90px bar at full height, 68.3px of feed under
+ * it. That is why the symptom survived two fixes and was scroll-shaped both
+ * times — `offsetTop` IS a scroll offset.
  *
- * 1. **The inset is only counted while an EDITABLE element has focus.** It is
+ * SEVEN THINGS THAT LOOK OPTIONAL AND ARE NOT.
+ *
+ * 1. **`covered` is only counted while an EDITABLE element has focus.** It is
  *    what keeps a viewport that shrinks for some other reason — a focused
  *    button, a page that is not being typed into at all — from moving the dock.
  *    It is NOT, on its own, the answer to the two cases below: iOS leaves the
  *    field focused when the keyboard is dismissed by a scroll, so the focus
  *    test still says yes for the whole time both of them are being measured.
- *    That is what the first version got wrong, and why it read as a dock that
- *    followed the scroll rather than the keyboard.
  *
- * 2. **A negative `offsetTop` is DISPLACEMENT, and is clamped rather than
- *    subtracted.** At the top of the document an overscroll bounce carries the
- *    visual viewport ABOVE the layout viewport, so `offsetTop` goes negative
- *    and `clientHeight - (offsetTop + height)` reads "the keyboard is up, by
- *    90px" while nothing covers anything. Clamping at 0 is exact: the bounce
- *    moves the viewport, it does not cover the bottom of it.
+ * 2. **`lift` is counted whatever has focus, and is clamped at 0 rather than
+ *    subtracted.** Clamped, because at the top of the document an overscroll
+ *    bounce carries the visual viewport ABOVE the layout viewport and
+ *    `offsetTop` goes negative; the dock is then already below the fold and
+ *    pushing it further down is not the repair. Counted unconditionally,
+ *    because the state this file exists for outlives the focus: the leftover is
+ *    read on a page nobody is typing into, minutes after the reply.
  *
  * 3. **Coverage below `MIN_KEYBOARD_PX` is BROWSER CHROME, not a keyboard.**
  *    Safari's bottom toolbar collapses on a downward scroll and re-expands on
@@ -74,16 +79,23 @@
  *    shipping component before the frame was added. The deferral also collapses
  *    the burst of `resize` events the keyboard animation emits into one write.
  *
- * 5. **The transition to closed nudges the scroll position by a pixel.**
- *    Publishing `0px` re-lays the dock out correctly, but the stranded offset
- *    lives in WebKit's own fixed layer, not in our transform, so the bar can
- *    come back to rest one keyboard-height too high. A one-pixel scroll and
- *    back is what makes WebKit re-settle that layer, and it is scheduled after
+ * 5. **The nudge is the only thing that clears a stranded viewport AT THE
+ *    SOURCE, and it is armed whenever the dock has to move with no keyboard to
+ *    explain it — not only on the way back from one.** The transform hides the
+ *    leftover; a one-pixel scroll and back is what makes WebKit settle it, and
+ *    it costs nothing when there is nothing to settle. It is scheduled after
  *    the dismissal animation rather than on the resize event, because the event
  *    that reports full height arrives while the keyboard is still sliding away
- *    and the offset is re-applied behind it.
+ *    and the offset is re-applied behind it. Arming it only on a CHANGE is what
+ *    keeps it off the scroll path: a measurement that agrees with the last one
+ *    returns before the timer.
  *
- * 6. **Everything is guarded on `window.visualViewport`.** Where it is absent
+ * 6. **A pinch-zoomed page is left alone.** Above scale 1 `offsetTop` is a pan
+ *    offset in layout pixels against a screen that is no longer painting them
+ *    1:1, so correcting by it moves the dock somewhere nobody asked for. The
+ *    dock is not usable zoomed in either way; not moving is the honest answer.
+ *
+ * 7. **Everything is guarded on `window.visualViewport`.** Where it is absent
  *    the inset stays 0px and every transform is the identity, so this costs
  *    nothing and changes nothing off iOS.
  */
@@ -136,6 +148,8 @@ export function startKeyboardInsetSync(): () => void {
   let current = 0;
   let settleTimer: ReturnType<typeof setTimeout> | undefined;
   let frame = 0;
+  /** Whether the current stranded episode has already had its one nudge. */
+  let nudged = false;
 
   // A one-pixel scroll and back. `scrollTo` with an unchanged offset is a no-op
   // in WebKit and settles nothing, which is why this moves first.
@@ -147,23 +161,41 @@ export function startKeyboardInsetSync(): () => void {
 
   const measure = () => {
     frame = 0;
-    // `clientHeight` of the root IS the layout viewport, and the keyboard does
-    // not change it — that is the whole reason it is the reference here rather
-    // than `innerHeight`, which follows the visual viewport under pinch-zoom.
+    // `clientHeight` of the root IS the layout viewport, and neither the
+    // keyboard nor a scroll changes it — that is the whole reason it is the
+    // reference here rather than `innerHeight`, which follows the visual
+    // viewport under pinch-zoom.
     //
-    // `offsetTop` is clamped, not subtracted: negative means the viewport has
-    // bounced above the layout viewport, which is displacement (rule 2). What
-    // survives that is real coverage, and it still has to be big enough to be
-    // a keyboard rather than the browser's own bottom chrome (rule 3).
-    const covered = Math.round(root.clientHeight - (Math.max(0, vv.offsetTop) + vv.height));
-    const isKeyboard = covered >= MIN_KEYBOARD_PX && raisesKeyboard(document.activeElement);
-    const next = isKeyboard ? covered : 0;
+    // The two terms are independent and are ADDED, never netted off against
+    // each other (see the header): `lift` is how far the visual viewport has
+    // been scrolled past the layout viewport — including the leftover iOS
+    // forgets to give back — and `covered` is how much of the layout viewport
+    // something sits on top of. Only `covered` has to prove it is a keyboard.
+    const scale = Number.isFinite(vv.scale) ? vv.scale : 1;
+    const lift = Math.max(0, Math.round(vv.offsetTop));
+    const covered = Math.max(0, Math.round(root.clientHeight - vv.height));
+    const keyboard = covered >= MIN_KEYBOARD_PX && raisesKeyboard(document.activeElement);
+    const next = scale > 1 ? 0 : lift + (keyboard ? covered : 0);
     if (next === current) return;
-    const closing = next === 0;
     current = next;
     root.style.setProperty(VAR, `${next}px`);
+    // Rule 5: the transform above only HIDES a stranded viewport, so try to
+    // settle it at the source whenever the dock has to move with no keyboard to
+    // explain it — the keyboard closing, and the leftover arriving on its own.
+    // Armed on a CHANGE only, which makes it a debounce rather than something
+    // on the scroll path: a run of changing measurements re-arms one timer and
+    // fires once, 300ms after the last of them.
     if (settleTimer) clearTimeout(settleTimer);
-    settleTimer = closing ? setTimeout(settleFixedLayer, SETTLE_MS) : undefined;
+    settleTimer = undefined;
+    if (keyboard) { nudged = false; return; }
+    // ONE attempt per stranded episode. A nudge that moves the viewport
+    // publishes a new value and would otherwise arm the next nudge, and a
+    // leftover that settles to something else instead of to zero would keep
+    // that going every 300ms for the life of the page. Reaching 0px is the
+    // exit, and it re-arms for the next episode.
+    if (next > 0 && nudged) return;
+    nudged = next > 0;
+    settleTimer = setTimeout(settleFixedLayer, SETTLE_MS);
   };
 
   const schedule = () => {
@@ -172,7 +204,7 @@ export function startKeyboardInsetSync(): () => void {
   };
 
   // `focusout` is what drops the inset when the field is left, and it is the
-  // reason none of these measures inline — see rule 2 in the header.
+  // reason none of these measures inline — see rule 4 in the header.
   vv.addEventListener('resize', schedule);
   vv.addEventListener('scroll', schedule);
   window.addEventListener('orientationchange', schedule);
