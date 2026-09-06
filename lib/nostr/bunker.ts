@@ -32,11 +32,12 @@ import {
 import {
   generateSecretKey,
   getPublicKey,
-  SimplePool,
   type Event,
   type EventTemplate,
+  type SimplePool,
 } from 'nostr-tools';
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js';
+import { newPool } from './pool';
 import { storage } from '../storage';
 import { BRAND } from '../brand';
 
@@ -316,7 +317,7 @@ export async function connectBunkerFromUri(
   // the life of the tab until the relay refused the connection the reconnect
   // needed, which presents as the reconnect simply not working.
   async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string; pool: SimplePool }> {
-    const pool = new SimplePool();
+    const pool = newPool();
     const s = BunkerSigner.fromBunker(sk, bp, { onauth: onAuthUrl, pool });
     try {
       await withTimeout(s.connect(), timeoutMs, 'connect');
@@ -424,7 +425,7 @@ export function startNostrConnect(
     // NOSTRCONNECT_TIMEOUT_MS for a signer that may never scan the QR at all,
     // so the abandoned-transport case is the EXPECTED one here rather than the
     // exception.
-    const pool = new SimplePool();
+    const pool = newPool();
     let signer: BunkerSigner;
     try {
       signer = await BunkerSigner.fromURI(
@@ -494,7 +495,7 @@ export async function restoreBunkerFromStorage(): Promise<BunkerAdapter | null> 
   // Same ownership and same teardown as `connectBunker`'s attempt above — and
   // this is the one the Reconnect button actually calls.
   async function attempt(timeoutMs: number): Promise<{ inner: BunkerSigner; pubkey: string; pool: SimplePool }> {
-    const pool = new SimplePool();
+    const pool = newPool();
     const s = BunkerSigner.fromBunker(clientSk, bp, { pool });
     try {
       await withTimeout(s.connect(), timeoutMs, 'reconnect');

@@ -1,4 +1,5 @@
 import { SimplePool } from 'nostr-tools';
+import { installRelaySocketFix } from './relay-socket';
 
 // Wall-time bounds on `pool.querySync`. Without these, a relay that never
 // sends EOSE keeps the subscription open indefinitely, the pool can't close,
@@ -36,8 +37,27 @@ export const FEED_QUIET_MS = 2500;
 // uses.
 let sharedPool: SimplePool | null = null;
 function getSharedPool(): SimplePool {
-  if (!sharedPool) sharedPool = new SimplePool();
+  if (!sharedPool) sharedPool = newPool();
   return sharedPool;
+}
+
+/**
+ * Build a pool. **Never `new SimplePool()` directly** — this is the one place
+ * that installs the leaked-socket fix (`relay-socket.ts`), and the pinned
+ * nostr-tools drops a WebSocket stuck in CONNECTING on every failed relay
+ * connect. A pool built the raw way looks identical and quietly spends the
+ * tab's WebSocket budget until sockets stop opening at all.
+ *
+ * The install is a prototype patch, so one call covers every pool in the tab.
+ * Routing all five construction sites through here anyway is what keeps that
+ * true when a sixth is added: the shared pool here, the live-chat pool, and the
+ * three short-lived NIP-46 pools in `bunker.ts` — which need it most, since a
+ * `nostrconnect://` pairing waits out its whole window against relays a phone
+ * may never reach.
+ */
+export function newPool(): SimplePool {
+  installRelaySocketFix();
+  return new SimplePool();
 }
 
 // Runs `fn` against the shared pool. Used for every kind:0 / 10002 / 30078
@@ -65,6 +85,12 @@ export async function withPool<T>(
  * persistent connection set bounded to the relays we actually reuse. Close
  * errors are swallowed since extras going down mid-query is a normal
  * condition we never want to propagate.
+ *
+ * That teardown only actually reclaims a DEAD extra because of the fix in
+ * `relay-socket.ts`: the pinned nostr-tools guards its own `close()` on
+ * `readyState === OPEN`, so for a relay that never finished connecting — the
+ * case this list is most likely to contain, since these are feed-supplied
+ * hints — `pool.close()` is a no-op. See docs/nostr.md.
  */
 export async function withExtraRelays<T>(
   pool: SimplePool,

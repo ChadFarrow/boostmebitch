@@ -1,6 +1,6 @@
-import { SimplePool, type Event, type EventTemplate } from 'nostr-tools';
+import { type Event, type EventTemplate } from 'nostr-tools';
 import { LIVE_STREAM_RELAYS } from './live-streams';
-import { FEED_QUERY_MAX_WAIT_MS, QUERY_MAX_WAIT_MS } from './pool';
+import { FEED_QUERY_MAX_WAIT_MS, newPool, QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish, type PublishedNote } from './publish';
 
 // NIP-53 live chat. Messages are kind:1311 events tagged with the stream's
@@ -29,7 +29,7 @@ export function subscribeLiveChat(
   streamId: string,
   onEvent: (e: Event) => void,
 ): () => void {
-  const pool = new SimplePool();
+  const pool = newPool();
   const relays = LIVE_STREAM_RELAYS;
   // kind:1311 = chat messages, kind:9735 = zap receipts (boosts from Fountain /
   // zap.stream / any NIP-57 client) — both tagged with the stream's `a` address.
