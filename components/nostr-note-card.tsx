@@ -8,6 +8,8 @@ import {
   type DiscoveredNote,
 } from '@/lib/nostr';
 import { publishQuoteRepost, publishReply, publishRepost } from '@/lib/nostr/interactions';
+import { MessageInput } from './message-input';
+import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { sendZap } from '@/lib/v4v/zap';
 import { useApp } from '@/lib/store';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
@@ -198,6 +200,12 @@ function NoteCardImpl({
 
   const [composerMode, setComposerMode] = useState<'reply' | 'quote' | null>(null);
   const [composerDraft, setComposerDraft] = useState('');
+  // Identity lives HERE, not in the text. What the user sees is `@name`;
+  // what the event carries is a `p` tag and a `nostr:npub…` ref, and the two
+  // are joined by `inlineMentions` at publish time. Keeping the npub out of
+  // the textarea is what lets someone edit the sentence around a mention
+  // without breaking it.
+  const [composerMentions, setComposerMentions] = useState<MentionNpub[]>([]);
   const [composerState, setComposerState] = useState<ActionState>('idle');
   const [composerErr, setComposerErr] = useState<string | null>(null);
 
@@ -270,6 +278,7 @@ function NoteCardImpl({
   function closeComposer() {
     setComposerMode(null);
     setComposerDraft('');
+    setComposerMentions([]);
     setComposerErr(null);
     setComposerState('idle');
   }
@@ -285,12 +294,14 @@ function NoteCardImpl({
           parent: note.rawEvent,
           content: composerDraft.trim(),
           relays: resolvePublishRelays(identity),
+          mentions: composerMentions,
         });
       } else {
         await publishQuoteRepost({
           parent: note.rawEvent,
           comment: composerDraft,
           relays: resolvePublishRelays(identity),
+          mentions: composerMentions,
         });
       }
       setComposerState('done');
@@ -565,16 +576,23 @@ function NoteCardImpl({
             <div className="text-[10px] uppercase tracking-widest text-muted mb-1">
               {composerMode === 'reply' ? 'replying' : 'quoting'} ↩ {name}
             </div>
-            <textarea
+            {/* The same picker the boost modals use, which is why it moved out
+                of `boost-modal/`. A reply is a kind:1 like any other, so it
+                passes its OWN maxLength — 200 is the boostagram's Lightning
+                budget and has nothing to say about a Nostr reply. */}
+            <MessageInput
               value={composerDraft}
-              onChange={(e) => setComposerDraft(e.target.value)}
+              onChange={setComposerDraft}
+              mentions={composerMentions}
+              onMentionsChange={setComposerMentions}
+              label={composerMode === 'reply' ? 'reply' : 'comment'}
               placeholder={
                 composerMode === 'reply'
                   ? 'reply on Nostr…'
                   : 'add a comment (optional) — the original note is auto-attached'
               }
-              rows={3}
-              className="input w-full resize-y text-sm"
+              maxLength={2000}
+              textareaRows={3}
             />
             <div className="flex items-center gap-2 mt-2">
               <button

@@ -13,10 +13,18 @@ import { MAX_MENTION_NPUBS, type MentionNpub } from '@/lib/nostr/mention-tags';
 import { fetchProfilesFor } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { shortNpub } from '@/lib/nostr/profile-metadata';
-import { Avatar } from '../avatar';
+import { Avatar } from './avatar';
 
 /** How long a keystroke waits before the index is asked. */
 const SEARCH_DEBOUNCE_MS = 200;
+
+/**
+ * The boostagram's character budget, and the default only because the boost
+ * modals were this component's only callers first. It is a LIGHTNING limit —
+ * the keysend TLV and the LNURL comment both carry the message — so any caller
+ * that is not sending sats should pass its own.
+ */
+const BOOSTAGRAM_MAX = 200;
 
 /** The `@…` immediately before the caret, if the caret is inside one. */
 function activeMention(value: string, caret: number): { q: string; start: number } | null {
@@ -38,6 +46,10 @@ export function MessageInput({
   onMentionsChange,
   feedNpubs = [],
   willNotify = true,
+  label = 'Boostagram',
+  placeholder = 'optional message…',
+  maxLength = BOOSTAGRAM_MAX,
+  textareaRows = 2,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -52,6 +64,21 @@ export function MessageInput({
    * which case they appear in the note body and carry no `p` tag.
    */
   willNotify?: boolean;
+  /**
+   * The four presentation props, defaulted to what the boost modals had
+   * inline, so this file's move out of `boost-modal/` changed nothing for them.
+   *
+   * `maxLength` IS NOT COSMETIC and is the reason it is a prop at all. 200 is
+   * the boostagram's budget — a keysend TLV and an LNURL comment both have to
+   * carry it — and it has nothing to say about a Nostr reply, which is a
+   * kind:1 like any other. A reply inheriting it would truncate people's
+   * sentences for a limit that does not apply to them.
+   */
+  label?: string;
+  placeholder?: string;
+  maxLength?: number;
+  /** Named to avoid the `rows` candidate list below. */
+  textareaRows?: number;
 }) {
   const id = useId();
   const listId = useId();
@@ -239,15 +266,15 @@ export function MessageInput({
   return (
     <div>
       <label htmlFor={id} className="text-[11px] uppercase tracking-widest text-muted">
-        Boostagram
+        {label}
       </label>
       <div className="relative">
         <textarea
           id={id}
           ref={areaRef}
           className="input mt-1.5 resize-none"
-          rows={2}
-          maxLength={200}
+          rows={textareaRows}
+          maxLength={maxLength}
           value={value}
           onChange={(e) => {
             onChange(e.target.value);
@@ -262,7 +289,7 @@ export function MessageInput({
           aria-controls={pickable && open ? listId : undefined}
           aria-autocomplete={pickable ? 'list' : undefined}
           aria-activedescendant={open && rows[active] ? `${listId}-${active}` : undefined}
-          placeholder={pickable ? 'optional message… @ to mention' : 'optional message…'}
+          placeholder={pickable ? `${placeholder} @ to mention` : placeholder}
         />
 
         {open && (

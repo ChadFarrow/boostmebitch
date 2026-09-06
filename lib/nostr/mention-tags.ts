@@ -174,3 +174,37 @@ export function inlineMentions(
   const left = new Set(remaining.map((m) => m.pubkey));
   return { content: out, remaining: mentions.filter((m) => left.has(m.pubkey)) };
 }
+
+/**
+ * Append `nostr:npub…` mentions to a note body.
+ *
+ * Applied to the FINAL content, after contentOverride has had its say —
+ * boost-all-modal hand-builds its summary body and passes it as an override, so
+ * a mention added inside formatContent would be silently missing from every
+ * boost-all note. Appending here is the one place both paths converge.
+ *
+ * Append-only, so the '⚡ Boost ⚡' prefix the site-sign route validates on is
+ * untouched. Mirrors publishQuoteRepost's tag-plus-trailing-`nostr:`-URI shape.
+ *
+ * This takes `inBody`, which is NOT the same list as the `p` tags. A mention a
+ * site-signed note may not tag is still written here — see noteMentionTags for
+ * why the two lists differ.
+ *
+ * ONE PER LINE, not space-joined. A client replaces each `nostr:npub…` with the
+ * profile's display name, and display names contain spaces — so three of them
+ * on one line rendered as
+ *
+ *   @Chad and Reeds Podcast (candr) @ChadF and 33 others @Reed
+ *
+ * which no reader can split back into three people. Measured on a real note,
+ * 2026-09-03. A space is what a compose box writes, which is why it was chosen,
+ * but a compose box is joining handles that have no spaces in them.
+ *
+ * A newline rather than a visible separator: anything printable placed between
+ * a name and the next URI is a character a client may absorb into the link
+ * text, and this content is a signed kind:1 that can never be edited.
+ */
+export function withMentionRun(content: string, npubs: MentionNpub[]): string {
+  if (!npubs.length) return content;
+  return `${content}\n\n${npubs.map((n) => `nostr:${n.npub}`).join('\n')}`;
+}

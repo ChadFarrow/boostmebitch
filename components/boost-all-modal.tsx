@@ -13,7 +13,7 @@ import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
-import { MessageInput } from './boost-modal/message-input';
+import { MessageInput } from './message-input';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
