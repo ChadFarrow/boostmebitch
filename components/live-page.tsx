@@ -41,6 +41,15 @@ import { PodcastCover } from '@/components/podcast-cover';
  * they are than merged into this file. Moving the row is a change of where it
  * mounts, not a rewrite.
  *
+ * WHERE THE RSS ROWS COME FROM. Three rosters, because Podcast Index indexes
+ * currently-broadcasting rows only and `/podcasts/bytag` has no "publishes live
+ * items" tag — so there is no global list to ask for. PI's roster, the feeds
+ * this server has watched go live recently, and the visitor's own favorites,
+ * which this component sends as `?feeds=`. The last one is why a show you
+ * follow shows its schedule here, and it also repairs PI's false NEGATIVES for
+ * those feeds: a favorited show that is live but missing from the roster is
+ * found by reading it directly.
+ *
  * NO PAGE-LEVEL "NOTHING IS LIVE". Each section makes only the claim its own
  * data supports: the RSS one says nothing is on air over RSS, and the Nostr
  * renders nothing when it has nothing (its existing rule). A combined claim
@@ -59,6 +68,20 @@ const REFRESH_MIN_MS = 45_000;
 
 /** Read by `<HomePage>`'s back control — see `showOrigin` in lib/store.ts. */
 const LIVE_ORIGIN = { path: '/live', label: 'live' };
+
+/**
+ * How many favorited feeds to ask the route to read.
+ *
+ * The server caps this again at `MAX_FAVORITE_FEEDS` and is the authority; this
+ * one exists so the URL stays short. A library of 227 favorites would otherwise
+ * build a query string of every id, which is a request nobody's proxy thanks
+ * you for and which the server would truncate anyway.
+ *
+ * Newest-first, because a favorite added recently is the show somebody is
+ * actually following now — and because the alternative, an arbitrary slice of a
+ * guid-keyed object, would silently pick the same wrong twelve every time.
+ */
+const MAX_FAVORITE_FEEDS = 12;
 
 const NostrLiveStreams = dynamic(
   () => import('@/components/nostr-live-streams').then((m) => m.NostrLiveStreams),
@@ -79,10 +102,31 @@ export function LivePage() {
   const lastLoadRef = useRef(0);
   const mountedRef = useRef(true);
 
+  /**
+   * The favorited feeds worth reading, newest first.
+   *
+   * `id` is 0 until this device has resolved the guid through Podcast Index, and
+   * an unresolved favorite has no feed id to look up — so those are dropped
+   * here rather than sent as zeros the route would reject anyway. Favorites
+   * work signed out, so this is not gated on `identity`.
+   *
+   * Joined into a string rather than passed as an array because it lands in a
+   * dependency list: a fresh array every render would restart the poll on every
+   * commit.
+   */
+  const favIds = useApp((s) =>
+    Object.values(s.favorites)
+      .filter((f) => f.id > 0)
+      .sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))
+      .slice(0, MAX_FAVORITE_FEEDS)
+      .map((f) => f.id)
+      .join(','),
+  );
+
   const load = useCallback(async () => {
     lastLoadRef.current = Date.now();
     try {
-      const res = await fetch('/api/live-shows');
+      const res = await fetch(`/api/live-shows${favIds ? `?feeds=${favIds}` : ''}`);
       if (!res.ok) throw new Error(String(res.status));
       const json: LiveShowsResponse = await res.json();
       if (!mountedRef.current) return;
@@ -95,7 +139,7 @@ export function LivePage() {
       // common failure here is a PI 429 that clears within the minute.
       setState('failed');
     }
-  }, []);
+  }, [favIds]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -186,8 +230,12 @@ export function LivePage() {
             hasData={!!data}
             emptyLine={null}
             caption={
-              'The next broadcast from shows that are on air right now. Podcast Index publishes ' +
-              'no global schedule, so a show that has not started yet may not be here.'
+              favIds
+                ? 'Scheduled broadcasts from the shows you have favorited, plus from any show ' +
+                  'on air right now. Podcast Index publishes no global schedule, so a show ' +
+                  'you have not favorited may not be here.'
+                : 'The next broadcast from shows that are on air right now. Podcast Index ' +
+                  'publishes no global schedule — favorite a show and its schedule shows up here.'
             }
           />
 
