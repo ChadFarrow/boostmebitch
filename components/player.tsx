@@ -686,10 +686,12 @@ export function Player() {
           of it. Both read the same variable so a change to the bar's height
           moves this with it.
 
-          `--kb-inset` is the other half of the same rule: both halves of the
-          dock hide behind the on-screen keyboard together, or the mini-bar is
-          left floating over the composer with the tab bar gone from under it.
-          See lib/keyboard-inset.ts — <TabBar> publishes it. */}
+          `--kb-inset` is the other half of the same rule, and it is TWO
+          corrections in one number: both halves of the dock hide behind the
+          on-screen keyboard together, or the mini-bar is left floating over the
+          composer with the tab bar gone from under it — and both come back down
+          together when iOS leaves the visual viewport scrolled past the layout
+          one. See lib/keyboard-inset.ts — <TabBar> publishes it. */}
       <div
         className="fixed left-0 right-0 z-30 bg-ink/95 backdrop-blur border-t border-bolt/40 cursor-pointer"
         style={{ bottom: 'var(--dock-b)', transform: 'translateY(var(--kb-inset, 0px))' }}
