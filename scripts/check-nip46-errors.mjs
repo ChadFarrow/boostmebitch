@@ -189,12 +189,15 @@ section('nip46-errors.ts stays loadable under plain Node');
   if (problems.length) { explainImportFree('lib/nostr/nip46-errors.ts', problems); failures += problems.length; }
   else console.log('  ok    lib/nostr/nip46-errors.ts has no imports at all');
 
-  // clave.ts is not pinned by a vector — its one function fails loudly at the
-  // first tap — but it is the other leaf the sign-in modal reads, and keeping
-  // it import-free costs nothing and keeps the option open.
-  const claveProblems = importFreeProblems('lib/nostr/clave.ts');
-  if (claveProblems.length) { explainImportFree('lib/nostr/clave.ts', claveProblems); failures += claveProblems.length; }
-  else console.log('  ok    lib/nostr/clave.ts has no imports at all');
+  // clave.ts and primal.ts are not pinned by vectors — each builds one launch
+  // URL, and a wrong one fails loudly at the first tap rather than silently —
+  // but they are the other leaves the sign-in modal reads, and keeping them
+  // import-free costs nothing and keeps the option open.
+  for (const leaf of ['lib/nostr/clave.ts', 'lib/nostr/primal.ts']) {
+    const problems = importFreeProblems(leaf);
+    if (problems.length) { explainImportFree(leaf, problems); failures += problems.length; }
+    else console.log(`  ok    ${leaf} has no imports at all`);
+  }
 }
 
 // ---------------------------------------------------------------------------

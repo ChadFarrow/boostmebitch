@@ -835,8 +835,114 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   check('...on DIFFERENT request ids', pkIds[0] !== pkIds[1], true);
   check('...with the retry interval waited out', pairMs >= 7000, true);
 
+  console.log('\n  5j. A LOCKED window.nostr does not stop a signer installing');
+  // THE EXTENSION CASE, injected the way an extension actually behaves.
+  //
+  // Several NIP-07 extensions install their provider with
+  // `Object.defineProperty(window, 'nostr', { … writable: false })`, or as a
+  // getter with no setter. Assigning to that from module code — strict mode —
+  // throws `TypeError: "nostr" is read-only`, and every signer this app
+  // installs ended in exactly that bare assignment.
+  //
+  // Reported from a desktop: the QR was scanned, **Clave paired successfully**,
+  // the ack came back and `get_public_key` answered — then the last line of
+  // `activateBunkerSigner` threw, so the words *"nostr" is read-only* appeared
+  // under the QR and the app stayed signed out. Everything that mattered had
+  // already worked.
+  //
+  // `Page.addScriptToEvaluateOnNewDocument` is what makes this faithful: the
+  // lock has to exist BEFORE any app script runs, which is the one thing a
+  // `Runtime.evaluate` after load cannot reproduce.
+  // TWO LOCK SHAPES, TWO CORRECT OUTCOMES, and running only one of them is how
+  // the first version of this scenario asserted the wrong thing.
+  //
+  //   writable:false, configurable:TRUE   — the common shape. `defineProperty`
+  //     can still replace it, so the polyfill DOES take the global.
+  //   writable:false, configurable:FALSE  — Sidecar's shape, the one reported.
+  //     Nothing on the page can replace it, so the extension keeps the global
+  //     and the app has to work anyway.
+  //
+  // The second is the case the accessor exists for; the first proves the
+  // fallback in `setWindowNostr` is not dead code.
+  for (const shape of [
+    { configurable: true, label: 'configurable — the polyfill takes the global' },
+    { configurable: false, label: 'NON-configurable (Sidecar) — the extension keeps it' },
+  ]) {
+    console.log(`\n     lock: ${shape.label}`);
+    const lockScript = await send('Page.addScriptToEvaluateOnNewDocument', {
+      source: `Object.defineProperty(window, 'nostr', {
+        value: { __lockedByFakeExtension: true },
+        writable: false,
+        configurable: ${shape.configurable},
+        enumerable: true,
+      });`,
+    });
+    await send('Page.navigate', { url: APP }); await wait(2000);
+    await js(`(() => { localStorage.clear();
+      localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`]))});
+      localStorage.setItem('bmb:npub', ${JSON.stringify(npub)});
+      localStorage.setItem('bmb:signer', 'bunker');
+      localStorage.setItem('bmb:bunker', ${JSON.stringify(JSON.stringify({ uri: `bunker://${bunkerPk}?relay=ws://127.0.0.1:${PORT}`, clientSk: hex(clientSk) }))});
+      return 1; })()`);
+    seen.length = 0;
+    await send('Page.navigate', { url: APP }); await wait(20000);
+
+    check('the bunker connected through the lock', seen.includes('connect'), true);
+    check('...and the session is live', await js(`localStorage.getItem('bmb:signer')`), 'bunker');
+    // Who owns the global differs by shape, and BOTH answers are correct.
+    check('...global ownership is what the shape allows',
+      await js(`!!(window.nostr && window.nostr.__lockedByFakeExtension)`), !shape.configurable);
+
+    // THE DISCRIMINATING ASSERTION, and the only one of these that is.
+    // Everything above passes on a build where the signer is unreachable: the
+    // relay handshake is independent of the polyfill and `bmb:signer` is just a
+    // string in localStorage. Only an operation that has to REACH the signer
+    // tells the difference — so unlock the private mute half, the same control
+    // scenario 5b uses, and require that a decrypt actually arrived.
+    seen.length = 0;
+    await js(`(() => { const b=[...document.querySelectorAll('[role="status"] button')].find(x=>/load|retry/i.test(x.textContent)); if(b) b.click(); return !!b; })()`);
+    await wait(12000);
+    check('...and the app can still USE it — the unlock reached the bunker',
+      seen.some((m) => m.endsWith('_decrypt')), true);
+
+    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: lockScript.result.identifier });
+  }
+
+  console.log('\n  5i. SIGNING OUT tells the signer to forget this client');
+  // THE PAIRING LIVES ON THE SIGNER'S SIDE TOO, and closing our socket does not
+  // touch it — the app goes on listing this site as connected. Clave caps a user
+  // at five connections, so every sign-in/sign-out cycle that does not revoke
+  // burns one of five slots that only the user can reclaim, by hand, in another
+  // app.
+  //
+  // `logout` is the NIP-46 method for it (nips#2373, Amber #460) and Clave
+  // implements it. What this pins is the half that is ours: that the request is
+  // actually PUT ON THE WIRE before the transport is torn down. Getting the
+  // order wrong — closing first, as every other teardown path correctly does —
+  // is silent, because sign-out succeeds either way and the leftover connection
+  // is only visible inside the signer app.
+  //
+  // The stub answers `unsupported: logout`, which is deliberate: a signer that
+  // does not implement it must not keep anyone signed in, so the assertion is
+  // about the request going out, never about the answer.
   denyFirst = null;
   signEnabled = false;
+  seen.length = 0;
+  check('the session is still live before we sign out',
+    await js(`localStorage.getItem('bmb:signer')`), 'bunker');
+  check('the account menu opened', await openAccountMenu(), true);
+  const signedOut = await js(`(() => {
+    const m = [...document.querySelectorAll('[role="menu"]')].find((el) => /sign out/i.test(el.innerText || ''));
+    if (!m) return false;
+    const b = [...m.querySelectorAll('button')].find((x) => /^sign out$/i.test((x.textContent || '').trim()));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  check('sign out was pressed', signedOut, true);
+  await wait(1500);
+  check('the session is gone locally', await js(`localStorage.getItem('bmb:signer')`), null);
+  check('...and a logout reached the signer', seen.includes('logout'), true);
 
   relayWs.close();
 }

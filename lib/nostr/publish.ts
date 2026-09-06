@@ -1,5 +1,6 @@
 import { nip19, type Event, type EventTemplate } from 'nostr-tools';
 import { withPool } from './pool';
+import { activeNostr } from './signer';
 
 export interface PublishedNote {
   id: string;
@@ -45,10 +46,11 @@ export async function signAndPublish(
   template: EventTemplate,
   relays: string[],
 ): Promise<PublishedNote> {
-  if (typeof window === 'undefined' || !window.nostr) {
+  const nostr = activeNostr();
+  if (!nostr) {
     throw new Error('No Nostr signer available');
   }
-  const signed = await window.nostr.signEvent(template);
+  const signed = await nostr.signEvent(template);
   return publishSignedEvent(signed, relays);
 }
 
