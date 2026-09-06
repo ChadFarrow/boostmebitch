@@ -62,7 +62,8 @@
     "check:playlistdb": "node --experimental-strip-types scripts/check-playlist-db.mjs",
     "check:cache": "node --experimental-strip-types scripts/check-bounded-cache.mjs",
     "check:relaysocket": "node --experimental-strip-types scripts/check-relay-socket.mjs",
-    "check:livemerge": "node --experimental-strip-types scripts/check-live-merge.mjs"
+    "check:livemerge": "node --experimental-strip-types scripts/check-live-merge.mjs",
+    "check:liveover": "node --experimental-strip-types scripts/check-live-over.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",

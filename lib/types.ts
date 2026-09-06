@@ -252,6 +252,12 @@ export interface Episode {
   liveStatus?: 'pending' | 'live' | 'ended';
   /** Scheduled start, unix seconds. */
   liveStartTime?: number;
+  /** The live item's `end` attribute, unix seconds — the publisher's own
+   *  declaration of when the broadcast finishes. Load-bearing because
+   *  `status="live"` is a flag a human flips and humans forget: an `end` in the
+   *  past means the show is over whatever the status says. See
+   *  `liveBroadcastIsOver` (`lib/util.ts`). RSS-only; PI does not index it. */
+  liveEndTime?: number;
   /** `<podcast:liveValue uri protocol>` inside the live item — a push channel
    *  the show broadcasts its current payment target on. This is what The Split
    *  Kit publishes, and it is how the live V4V music shows actually switch

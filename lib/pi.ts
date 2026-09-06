@@ -6,7 +6,7 @@ import { readAttr, decodeXmlText, channelSlice, parseFeedNpubs, parsePlaylistRem
 import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch, readCappedText, MAX_BODY_BYTES } from './safe-fetch';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 
@@ -566,10 +566,20 @@ export async function getGlobalLiveItems(): Promise<Episode[]> {
   for (const e of data.items ?? []) {
     const status = typeof e.status === 'string' ? e.status.toLowerCase() : undefined;
     if (status !== 'live' && status !== 'pending') continue;
+    const startTime = typeof e.startTime === 'number' ? e.startTime : undefined;
+    const endTime = typeof e.endTime === 'number' ? e.endTime : undefined;
+    // The same rule the RSS parser applies, for the case RSS never gets read.
+    // A `pi-only` row survives an unreadable feed on purpose, so without this a
+    // broadcast whose flag was never flipped would sit on the page unchallenged
+    // by anything. PI is not observed to send `end`, so in practice this is the
+    // 24 h ceiling — which is exactly the shape of the failure: a show that
+    // ended days ago and still says `live`.
+    if (liveBroadcastIsOver({ status, startTime, endTime }, Math.floor(Date.now() / 1000))) continue;
     out.push({
       ...buildEpisode(e),
       liveStatus: status,
-      liveStartTime: typeof e.startTime === 'number' ? e.startTime : undefined,
+      liveStartTime: startTime,
+      liveEndTime: endTime,
     });
   }
   return out;
@@ -713,6 +723,7 @@ export async function getLiveItemsFromRssDetailed(
     podcastGuid,
     liveStatus: r.status,
     liveStartTime: r.startTime,
+    liveEndTime: r.endTime,
     value: r.value,
     socialInteract: r.socialInteract,
     liveValue: r.liveValue,
@@ -735,6 +746,9 @@ export async function getLiveItemsFromRss(
 interface RawLiveItem {
   status: 'pending' | 'live';
   startTime?: number;
+  /** The `end` attribute, unix seconds — the publisher's own declaration of
+   *  when this broadcast finishes. See `liveBroadcastIsOver`. */
+  endTime?: number;
   title?: string;
   description?: string;
   guid?: string;
@@ -781,11 +795,21 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
     const startStr = readAttr(attrs, 'start');
     const startMs = startStr ? Date.parse(startStr) : NaN;
     const startTime = Number.isFinite(startMs) ? Math.floor(startMs / 1000) : undefined;
+    const endStr = readAttr(attrs, 'end');
+    const endMs = endStr ? Date.parse(endStr) : NaN;
+    const endTime = Number.isFinite(endMs) ? Math.floor(endMs / 1000) : undefined;
+    // `status="live"` is a flag a human flips, and humans forget. The feed's
+    // own `end` contradicts it here, so drop the broadcast rather than render a
+    // pulsing badge and a working PLAY button over silence. Dropped rather than
+    // demoted to 'ended' because `ended` is already dropped two lines above —
+    // one shape for "this is over", not two. See `liveBroadcastIsOver`.
+    if (liveBroadcastIsOver({ status: rawStatus, startTime, endTime }, Math.floor(Date.now() / 1000))) continue;
     const enc = inner.match(/<enclosure\b([^>]*?)\/?>/i);
     const itunesImg = inner.match(/<itunes:image\b([^>]*?)\/?>/i);
     out.push({
       status: rawStatus,
       startTime,
+      endTime,
       title: extractText(inner, 'title'),
       description: extractText(inner, 'description'),
       guid: extractText(inner, 'guid'),

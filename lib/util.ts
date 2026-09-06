@@ -381,6 +381,62 @@ export function liveShowToPodcast(s: LiveShow): Podcast {
  * one cannot even be played — so sorting them together by start time would bury
  * the thing the visitor came for under a week of schedule.
  */
+/**
+ * A live broadcast that is over, whatever its `status` attribute still says.
+ *
+ * THE FAILURE. `<podcast:liveItem status="live">` is a flag a human flips, and
+ * humans forget. Measured 2026-09-06: Behind the Sch3m3s was publishing
+ * `status="live"` for `S02E49: It's Alive!!` with `end="2026-09-01T05:30:00Z"`
+ * — the show declared its own finish FIVE DAYS earlier and the status never
+ * moved. Rendered faithfully, that puts a pulsing `● LIVE` badge and a working
+ * PLAY button on a broadcast nobody is running, on `/live` and on the show page
+ * both.
+ *
+ * This repo already solved the same problem once, on the other protocol.
+ * `LIVE_FRESH_SECS` in `lib/nostr/live-streams.ts` drops a kind:30311 event not
+ * updated within 2 h because "most clients never publish the `ended` status —
+ * they just stop updating". RSS had no equivalent.
+ *
+ * TWO RULES, AND THE FIRST IS NOT A GUESS. `end` is the publisher's own
+ * declaration of when the broadcast finishes, so an `end` in the past is
+ * authoritative and needs no heuristic — it is the same feed contradicting
+ * itself, and the specific field wins over the stale flag. Observed on every
+ * live feed checked (Behind the Sch3m3s, Satellite Skirmish, Homegrown Hits),
+ * so this covers the common case on its own.
+ *
+ * The second is a fallback for feeds that publish no `end` at all, and it IS a
+ * guess, which is why it is deliberately generous. A podcast broadcast runs for
+ * hours where a Nostr stream runs for minutes — Satellite Skirmish's own items
+ * are 3.5 h — so 2 h would be far too tight here. `MAX_UNBOUNDED_LIVE_SECS` is
+ * a day: long enough that no real broadcast is cut off, short enough that a
+ * forgotten flag does not sit on the page for a week. A continuously-live item
+ * with no declared end is the one shape this gets wrong, and it is rare enough
+ * to be worth the trade.
+ *
+ * **`pending` is never over.** A scheduled item's `end` is in the future by
+ * definition, and an item whose start has passed but which has not been flipped
+ * to `live` is a host running late, not a broadcast that finished.
+ */
+export const MAX_UNBOUNDED_LIVE_SECS = 24 * 60 * 60;
+
+export function liveBroadcastIsOver(
+  item: { status?: string; startTime?: number; endTime?: number },
+  nowSec: number,
+): boolean {
+  if (item.status !== 'live') return false;
+  // The publisher's own end time wins over the flag it sits beside.
+  if (typeof item.endTime === 'number' && Number.isFinite(item.endTime)) {
+    return item.endTime < nowSec;
+  }
+  // No declared end: fall back to a generous ceiling on how long a broadcast
+  // nobody has ended is still believable.
+  if (typeof item.startTime === 'number' && Number.isFinite(item.startTime)) {
+    return nowSec - item.startTime > MAX_UNBOUNDED_LIVE_SECS;
+  }
+  // No end and no start is not evidence of anything.
+  return false;
+}
+
 export function compareLiveShows(a: LiveShow, b: LiveShow): number {
   const rank = (s: LiveShow) => (s.liveStatus === 'live' ? 0 : 1);
   if (rank(a) !== rank(b)) return rank(a) - rank(b);
