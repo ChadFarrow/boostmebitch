@@ -35,6 +35,7 @@ import { UnderlineTabs } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
 import { ValueSplitRows } from './value-split-rows';
+import { QueueList } from './lists/queue-list';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 import { LiveChat } from './live-chat';
@@ -822,6 +823,11 @@ export function FullscreenPlayer({
                 )}
               </div>
             )}
+
+            {/* ABOVE the album tracklist: the queue is what plays after this
+                item, and the tracklist is what this item sits inside. It
+                renders nothing when the queue is empty. */}
+            <QueueList />
 
             {isMusic && episodeQueue.length > 1 && (
               <div className="border-t border-bone/10 pt-5">

@@ -1,0 +1,155 @@
+'use client';
+
+// "Up Next" — the user-assembled listen queue, rendered inside
+// <FullscreenPlayer> beside the album tracklist it is modelled on.
+//
+// WHY IT LIVES IN THE PLAYER AND NOT ON A PAGE. <Player> is mounted from
+// app/layout.tsx, so this one mount reaches the queue from `/`, `/favorites`,
+// `/playlists`, `/live`, `/npub/*` and `/stream/*` with no new route, no fifth
+// <TabBar> tab to re-measure the dock against, and no page-level gate. The
+// three alternatives each fail on something already written down:
+//
+//   - A section on `/` re-creates the home aside that was deleted for measured
+//     reasons, and both of that page's optional sections pair `entryResolved`
+//     with `!inDetailView` — so the panel would vanish exactly while the user
+//     is on a show page pressing `+ queue`.
+//   - A panel on `/favorites` puts a self-draining list on the page whose whole
+//     contract is that nothing disappears.
+//   - A `/queue` route is reachable only through a fifth dock tab, which is a
+//     measurement obligation for a surface most people open zero times a day.
+//
+// It is also the only surface where the drain is observable: you watch the row
+// you just finished leave.
+
+import { useApp } from '@/lib/store';
+import { epKey } from '@/lib/util';
+import { fmtDuration } from '@/lib/format';
+import { PodcastCover } from '../podcast-cover';
+
+export function QueueList() {
+  const queue = useApp((s) => s.listenQueue);
+  const current = useApp((s) => s.current);
+  const isPlaying = useApp((s) => s.isPlaying);
+  const saved = useApp((s) => s.listenQueueSaved);
+  const togglePlay = useApp((s) => s.togglePlay);
+  const playFromQueue = useApp((s) => s.playFromQueue);
+  const removeFromQueue = useApp((s) => s.removeFromQueue);
+  const moveQueueItem = useApp((s) => s.moveQueueItem);
+  const clearQueue = useApp((s) => s.clearQueue);
+
+  // No empty state, deliberately: the panel does not render at all when the
+  // queue is empty, so it can never make an emptiness claim over data that has
+  // not answered. There is nothing to wait for here — the queue is local — but
+  // rendering "nothing queued" under a heading is still worse than rendering
+  // nothing at all inside a player that is already full of controls.
+  if (!queue.length) return null;
+
+  const currentKey = current ? epKey(current.episode) : null;
+
+  return (
+    <div className="border-t border-bone/10 pt-5">
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <p className="text-[11px] uppercase tracking-widest text-muted">
+          Up Next · {queue.length}
+        </p>
+        <button type="button" onClick={clearQueue} className="btn-mini" aria-label="Clear the queue">
+          CLEAR
+        </button>
+      </div>
+
+      {/* A write that did not reach disk holds for the session and is gone on
+          the next load, which reads as the app forgetting the queue rather than
+          as a full store. Saying so is the same rule the favorites and mutes
+          notices follow: a guard that withholds must not do it silently. */}
+      {!saved && (
+        <p className="text-[11px] text-muted mb-2">
+          Held for this session only — device storage is full or blocked.
+        </p>
+      )}
+
+      <ul className="space-y-1 text-sm max-h-80 overflow-y-auto pr-2">
+        {queue.map((item, i) => {
+          const active = currentKey === epKey(item.episode);
+          return (
+            <li key={epKey(item.episode)} className="flex items-center gap-1">
+              {/* The row's tap target is a real <button> and the three controls
+                  are its SIBLINGS — a button may not contain a button, and a
+                  row whose only handler sits on the <li> cannot be reached from
+                  a keyboard. */}
+              <button
+                type="button"
+                onClick={() => {
+                  // The active row draws ❚❚, so it has to pause. Re-selecting
+                  // the current item writes `isPlaying: true` over `true` and
+                  // re-runs neither of the player's effects, so the press would
+                  // be a silent no-op — the same trap the album tracklist below
+                  // documents.
+                  if (active) togglePlay();
+                  else playFromQueue(i);
+                }}
+                className={`flex-1 min-w-0 flex items-center gap-3 text-left transition py-1.5 px-2 -mx-2 ${
+                  active ? 'bg-bolt/10 text-bolt' : 'text-bone/80 hover:bg-bone/5'
+                }`}
+                aria-label={active ? `Pause ${item.episode.title}` : `Play ${item.episode.title}`}
+              >
+                <span className="text-muted tabular-nums w-5 flex-shrink-0 text-right">
+                  {active && isPlaying ? '❚❚' : i + 1}
+                </span>
+                <PodcastCover
+                  image={item.episode.image ?? item.podcast.image}
+                  artwork={item.podcast.artwork}
+                  title={item.podcast.title}
+                  seed={item.podcast.podcastGuid ?? String(item.podcast.id)}
+                  className="w-9 h-9 border border-bone/20 flex-shrink-0 text-xs"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate leading-tight">{item.episode.title}</span>
+                  {/* The show, on every row. The queue mixes them, so a title
+                      alone does not say what you are about to hear. */}
+                  <span className="block truncate text-xs text-muted">{item.podcast.title}</span>
+                </span>
+                {item.episode.duration ? (
+                  <span className="text-muted tabular-nums text-xs flex-shrink-0">
+                    {fmtDuration(item.episode.duration)}
+                  </span>
+                ) : null}
+              </button>
+
+              {/* Each is at least 24x24 (WCAG 2.5.8) by its own min-h/min-w —
+                  the glyph and the padding alone do not get there, which is how
+                  a control passes review looking right and cannot be hit. */}
+              <div className="flex items-center flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => moveQueueItem(i, -1)}
+                  disabled={i === 0}
+                  className="min-h-[24px] min-w-[24px] inline-flex items-center justify-center text-xs text-muted hover:text-bone disabled:opacity-30 transition"
+                  aria-label={`Move ${item.episode.title} up`}
+                >
+                  ↑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => moveQueueItem(i, 1)}
+                  disabled={i === queue.length - 1}
+                  className="min-h-[24px] min-w-[24px] inline-flex items-center justify-center text-xs text-muted hover:text-bone disabled:opacity-30 transition"
+                  aria-label={`Move ${item.episode.title} down`}
+                >
+                  ↓
+                </button>
+                <button
+                  type="button"
+                  onClick={() => removeFromQueue(epKey(item.episode))}
+                  className="min-h-[24px] min-w-[24px] inline-flex items-center justify-center text-xs text-muted hover:text-bone transition"
+                  aria-label={`Remove ${item.episode.title} from the queue`}
+                >
+                  ✕
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
