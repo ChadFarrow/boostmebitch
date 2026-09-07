@@ -4,7 +4,7 @@ import { collectEventsByAuthors } from './event-queries';
 import { DEFAULT_RELAYS, sanitizeRelays } from './relays';
 import { fetchProfile } from './profile';
 import { storage } from '../storage';
-import { fnvHash } from '../util';
+import { fnvHash, isHlsUrl } from '../util';
 import type { Episode, Podcast, ValueBlock, ValueRecipient } from '../types';
 import type { ProfileMetadata } from './auth';
 
@@ -44,7 +44,7 @@ export interface NostrLiveStream {
   title: string;
   summary?: string;
   image?: string;
-  /** First `streaming` tag URL — HLS, RTMP, etc. */
+  /** The playable `streaming` tag URL — see `pickStreamUrl`. */
   streamUrl?: string;
   status: 'live' | 'planned' | 'ended';
   /** Scheduled/actual start, unix seconds. */
@@ -72,6 +72,36 @@ export const LIVE_STREAM_RELAYS = sanitizeRelays([
 // status update). Generous enough not to hide a real stream whose client
 // updates the event infrequently.
 const LIVE_FRESH_SECS = 2 * 3600;
+
+/**
+ * The `streaming` tag a BROWSER can actually play.
+ *
+ * NIP-53 permits several `streaming` tags on one kind:30311 and says nothing
+ * about their order, so publishers list what they have: an HLS playlist beside
+ * an RTMP ingest/egress URL, sometimes a WHEP endpoint. We took `tags.find`,
+ * which is whichever the host happened to write first — and when that was the
+ * RTMP one the page did everything right except make a sound. `streamUrl` was
+ * truthy, so `/live/<npub>` opened the player, `<video>` got a URL no browser
+ * has ever been able to load, and the only signal was an `error` event.
+ *
+ * Order: HLS (hls.js, or native on Safari), then any other http(s) URL (a plain
+ * progressive/icecast stream, which the media element can try), then the first
+ * tag whatever it is. That last arm is deliberate rather than a `undefined`: it
+ * preserves the old behaviour for an event carrying only an unplayable URL, so
+ * the failure keeps surfacing as the player's own error instead of becoming
+ * "this host isn't live right now" — which is a claim about the host, and false.
+ */
+export function pickStreamUrl(tags: string[][]): string | undefined {
+  const urls = tags
+    .filter((t) => t[0] === 'streaming' && typeof t[1] === 'string' && t[1].trim() !== '')
+    .map((t) => t[1]);
+  if (!urls.length) return undefined;
+  return (
+    urls.find((u) => isHlsUrl(u)) ??
+    urls.find((u) => /^https?:\/\//i.test(u)) ??
+    urls[0]
+  );
+}
 
 function parseNostrLiveStream(event: Event): NostrLiveStream {
   const getTag = (name: string) => event.tags.find((t) => t[0] === name)?.[1];
@@ -109,7 +139,7 @@ function parseNostrLiveStream(event: Event): NostrLiveStream {
     title: getTag('title') ?? 'Untitled Stream',
     summary: getTag('summary') ?? getTag('about'),
     image: getTag('image') ?? getTag('thumb'),
-    streamUrl: getTag('streaming'),
+    streamUrl: pickStreamUrl(event.tags),
     status,
     startsAt: getTag('starts') ? parseInt(getTag('starts')!, 10) : undefined,
     endsAt: getTag('ends') ? parseInt(getTag('ends')!, 10) : undefined,
