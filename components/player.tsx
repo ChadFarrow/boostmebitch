@@ -364,11 +364,38 @@ export function Player() {
             return;
           }
           // We're a *viewer* client, not the broadcaster: smooth playback beats
-          // sub-second latency. lowLatencyMode hugged the live edge with a tiny
-          // buffer, so any jitter stalled playback and then hard-seeked forward to
-          // catch up — skipping content. Default live behaviour keeps a ~3-segment
-          // cushion and gently catches up (maxLiveSyncPlaybackRate) instead of
-          // seeking past missed segments.
+          // sub-second latency. `lowLatencyMode` loads `#EXT-X-PART` fragments
+          // and hugged the live edge with a tiny buffer, so any jitter stalled
+          // playback; off, hls.js waits for whole segments, and a
+          // `liveSyncDurationCount` of 4 keeps a four-segment cushion in front
+          // of the play head.
+          //
+          // **DO NOT PUT `maxLiveSyncPlaybackRate` BACK.** It was here, set to
+          // 1.5, with a comment claiming it "gently catches up instead of
+          // seeking past missed segments" — and it had never once run.
+          // `latency-controller.onTimeupdate` returns before reading it unless
+          // `lowLatencyMode` is true, so the option is inert for every config
+          // this player can hold, and buying it back means buying part loading
+          // back with it. Nothing catches a drifting play head up here: latency
+          // grows, and `synchronizeToLiveEdge` seeks only once the play head
+          // falls out of the sliding window entirely. That is the trade, and it
+          // is deliberate — a seek is audible and a few extra seconds behind
+          // live is not.
+          //
+          // `backBufferLength` IS A LIVE-STREAM MEMORY BOUND, NOT A TUNING
+          // KNOB. hls.js defaults it to `Infinity`, and `trimBuffers` skips the
+          // flush entirely on a non-finite value — so a broadcast keeps every
+          // second it ever appended, for the whole show, in one SourceBuffer on
+          // a phone. What that buys is a rewind this player does not offer on
+          // the item it matters for: a live item has no seek bar (the ● LIVE
+          // stamp replaces it) and no skip buttons, so the back buffer is held
+          // for a control that is not on the screen. What it costs is real — an
+          // append that runs out of room raises `QuotaExceededError`, which
+          // hls.js answers by flushing and reloading, and that is heard as a
+          // dropout that gets worse the longer somebody listens. The one item
+          // that does pay is an HLS `alternateEnclosure` VOD, which IS
+          // seekable: a backward seek past 90 s re-downloads. That is what
+          // every other player does, and the browser cache usually answers it.
           //
           // `ignorePlaylistParsingErrors` IS THE FIX FOR `levelParsingError`,
           // AND IT IS NOT A WAY OF HIDING A BROKEN STREAM. On a live playlist
@@ -404,7 +431,7 @@ export function Player() {
             enableWorker: true,
             lowLatencyMode: false,
             liveSyncDurationCount: 4,
-            maxLiveSyncPlaybackRate: 1.5,
+            backBufferLength: 90,
             ignorePlaylistParsingErrors: true,
           });
           hls.current = inst;
