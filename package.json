@@ -58,6 +58,7 @@
     "e2e:mutes": "node scripts/e2e-mutes.mjs",
     "e2e:mentions": "node --experimental-strip-types scripts/e2e-mentions.mjs",
     "e2e:playlist": "node scripts/e2e-playlist.mjs",
+    "e2e:yield": "node scripts/e2e-yield.mjs",
     "e2e:launcher": "node scripts/e2e-launcher.mjs",
     "probe:index": "node --experimental-strip-types scripts/probe-index.mjs",
     "probe:kinds": "node --experimental-strip-types scripts/probe-relay-kinds.mjs",

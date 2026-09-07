@@ -130,7 +130,7 @@ Each **imports the real module** via `node --experimental-strip-types`: a copy p
 
 | Command | What it is |
 | --- | --- |
-| `npm run relay` | ~40 lines of NIP-01 on `ws://127.0.0.1:7447`, in-memory, WITH replaceable-event semantics — the behaviour under test. Point the app at it with `localStorage.setItem('bmb:relays', …)`; that key REPLACES the default set. `PROFILE_RELAYS` is separate and still reads the public network, so this is not a hermetic offline mode. |
+| `npm run relay` | ~40 lines of NIP-01 on `ws://127.0.0.1:7447`, in-memory, WITH replaceable-event semantics — the behaviour under test. Point the app at it with `localStorage.setItem('bmb:relays', …)`; that key replaces only the PUBLISH set. Feed reads and `PROFILE_RELAYS` still reach the public network, so this is not a hermetic offline mode. |
 | `npm run seed:relay -- <npub>` | Copies that account's real kind:10333 into it, strictly read-only against the public relays. An empty relay is the EASY state; the ones that have cost this repo data need a list with history in it. |
 | `npm run e2e:favorites` | The whole loop with no account involved: a throwaway key reached from the page over a CDP binding, so `window.nostr` is indistinguishable from an extension and the NIP-44 is real. `--headed` to watch it. |
 | `npm run e2e:mutes` | The same harness over the kind:10000 private half — which cipher each payload routes to, that a NIP-44 list is republished as NIP-44, and that an unreadable blob is carried and said so on screen. Scenario 5 stands up a **real NIP-46 bunker**, because writing `bmb:signer = 'bunker'` alone signs the app out inside a second. Seed timestamps must be in the PAST, or the app's own republish is the older event and the relay rejects it. |
