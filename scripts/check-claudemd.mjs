@@ -96,9 +96,9 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // plainly rather than quietly ratcheting.
 //
 // What it buys, and both pay the (a)/(b)/(c) test the file states: a warning
-// that the browser must NOT get `node-yield.ts`'s fix (removing MessageChannel
-// there makes the yield a no-op, and the person who would try it is reading app
-// code, not the service module), and one clause saying a `BadRecordMac` upload
+// that the browser must NOT get `node-yield.ts`'s fix (the person who would try
+// it is reading app code, not the service module; the reason that clause gives
+// was corrected under #313), and one clause saying a `BadRecordMac` upload
 // still leaves a deployment record — which the sentence beside it needs, since
 // it tells you to read a build log that a phantom deployment does not have.
 // Both were compressed twice before this raise was considered.
