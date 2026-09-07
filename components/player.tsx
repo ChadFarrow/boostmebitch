@@ -117,6 +117,7 @@ export function Player() {
   const setPlaying = useApp((s) => s.setPlaying);
   const setPosition = useApp((s) => s.setPosition);
   const playNext = useApp((s) => s.playNext);
+  const handlePlaybackEnded = useApp((s) => s.handlePlaybackEnded);
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
@@ -1172,7 +1173,17 @@ export function Player() {
           // the queue, so `isPlaying` stayed true over an element that had
           // stopped and the transport drew ❚❚ over silence — true of albums
           // since before playlists existed. Ask whether it moved.
+          //
+          // **The listen queue is asked FIRST**, because it is an explicit
+          // decision and outranks both the medium test and a show's display
+          // order. It answers false — changing nothing — unless the item that
+          // just ended is in it, which is what leaves the two lines below on
+          // exactly the states they ran on before. It is also what makes a
+          // queued TALK show advance, which `playsAsTracks` would refuse: that
+          // gate decides whether a FEED plays as tracks, and a queue is not a
+          // feed.
           onEnded={() => {
+            if (handlePlaybackEnded()) return;
             if (current && playsAsTracks(current.podcast) && playNext()) return;
             setPlaying(false);
           }}
