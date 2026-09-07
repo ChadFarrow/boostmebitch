@@ -1,10 +1,18 @@
 // "Up Next" — the user-assembled listen queue.
 //
-// THREE MOUNTS, ONE COMPONENT: the home page (where you manage a queue),
+// TWO MOUNTS, ONE COMPONENT: the /queue route the dock points at, and
 // <FullscreenPlayer> (where you are while listening, beside the album
-// tracklist this is modelled on), and the /queue route the dock points at.
-// That is not the drift this repo warns about — three hand-rolled lists would
-// be. Same arrangement <ValueSplitRows> already has.
+// tracklist this is modelled on). That is not the drift this repo warns about
+// — two hand-rolled lists would be. Same arrangement <ValueSplitRows> has.
+//
+// IT WAS ON THE HOME PAGE TOO, AND THE DOCK TAB IS WHY IT IS NOT. That mount
+// existed because the queue had no destination of its own: the panel had to
+// sit where somebody would find it, including on a show page, which is why it
+// deliberately skipped `!inDetailView`. Once /queue became a dock tab the
+// queue was one press away from every route, and the home-page block was a
+// screen's worth of vertical space on a phone — measured against a 390px
+// screenshot, it pushed the global boost feed below the fold — spent on a
+// second way to reach something already one tap away.
 //
 // The /queue mount is the only one that has to say something when the queue is
 // EMPTY, and it does that in <QueuePage> rather than here: a panel under other
