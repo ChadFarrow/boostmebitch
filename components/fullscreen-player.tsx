@@ -735,8 +735,17 @@ export function FullscreenPlayer({
                   nowhere to be shed TO, so BOOST takes its own line instead and
                   gets the full width, which is the better shape for the primary
                   action anyway. Unchanged from sm: up, where it is flex-1 on one
-                  line exactly as before. */}
-              <div className="flex flex-wrap items-center gap-3">
+                  line exactly as before.
+
+                  `justify-center` because the wrap is what makes it necessary:
+                  once BOOST leaves the line, the five transport buttons are the
+                  only thing on it and they measured 248px + 48px of gap against
+                  a 358px content box at 390px — so a left-aligned row left 62px
+                  of dead space on the right, under a full-width BOOST and a
+                  full-width tile grid that are both symmetric. It costs nothing
+                  from sm: up: BOOST is `sm:flex-1` there, so the line has no
+                  free space for justify-content to distribute. */}
+              <div className="flex flex-wrap items-center justify-center gap-3">
                 <TransportControls
                   size="lg"
                   prev={chapterNav?.prev}
