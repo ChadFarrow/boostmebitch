@@ -78,15 +78,14 @@ export function QueueButton({
       <span className="inline-block w-[0.9em] text-center text-base leading-none">
         {queued ? '✓' : '＋'}
       </span>
-      {/* The word only from sm: up on a list row. At 390px this control sits in
-          a ~314px row that already holds a BOOST button and a heart, and the
-          BOOST button's own note records that its word cost ~100px there. The
-          aria-label above already carries the whole meaning.
-
-          THE WORD DOES NOT CHANGE WITH STATE — QUEUE, not QUEUE/QUEUED — for
+      {/* THE WORD DOES NOT CHANGE WITH STATE — QUEUE, not QUEUE/QUEUED — for
           the same layout reason the heart states: a word that grows by two
-          characters on press moves everything to its left. */}
-      <span className={size === 'tile' ? '' : 'hidden sm:inline'}>QUEUE</span>
+          characters on press moves everything to its left.
+
+          It is not hidden below sm: any more. The one surface where that width
+          is tight is the episode row, and that row now hides this control
+          outright below sm: rather than shrinking it — see the note there. */}
+      <span>QUEUE</span>
     </button>
   );
 }
