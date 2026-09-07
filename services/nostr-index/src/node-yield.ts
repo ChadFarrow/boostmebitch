@@ -55,10 +55,27 @@
 // from `require('worker_threads')`, not from `globalThis`. Fastify runs with
 // `logger: false`, so those transports never load at all.
 //
-// The browser build has the same leak and MUST NOT be fixed this way — a page
-// has no `setImmediate`, so removing `MessageChannel` there would fall through
-// to `resolve()` and turn the yield into a no-op, starving the event loop
-// under exactly the burst this is about.
+// The browser build has the same leak and MUST NOT be fixed this way, for two
+// reasons — neither of which is the one this comment used to give. It said a
+// page falls through to `resolve()` and loses the yield entirely. It does not:
+// 2.19.4's ladder is three steps, not two (`lib/esm/index.js:605-612`), so a
+// page lands on `setTimeout(resolve, 0)`. The real reasons:
+//
+//   The clamp. `setTimeout(0)` is held to 4 ms past nesting depth 5, which caps
+//   the drain at roughly 250 messages/second — worse under exactly the burst
+//   this is about, which is the right conclusion by a different route.
+//
+//   The neighbour. React's scheduler reads `globalThis.MessageChannel` at
+//   module load (`scheduler/cjs/scheduler.production.js`), so deleting it in a
+//   page degrades React's own scheduling. Node had nothing else reading the
+//   global, which is what makes the delete acceptable HERE and nowhere else.
+//
+// And the browser's leak is not the same shape either. Blink's
+// `MessagePort::HasPendingActivity()` is `started_ && IsEntangled()`, so Chrome
+// retains the pair exactly as Node does; WebKit's `virtualHasPendingActivity()`
+// returns false once the port has no message listener, and nostr-tools' handler
+// removes its own — so Safari collects them and does not leak. See #313 and
+// `docs/nostr.md`; `npm run e2e:yield` measures it.
 if (typeof globalThis.MessageChannel !== 'undefined' && typeof setImmediate !== 'undefined') {
   delete (globalThis as { MessageChannel?: unknown }).MessageChannel;
 }
