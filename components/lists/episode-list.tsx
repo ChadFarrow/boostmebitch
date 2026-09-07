@@ -995,7 +995,22 @@ export function EpisodeList({
                   a button may not contain a button. Both are `flex-shrink-0`
                   so neither squashes the title column. */}
               <div className="self-center flex-shrink-0 flex items-center gap-1">
-                <QueueButton episode={e} podcast={data.podcast} />
+                {/* HIDDEN BELOW sm:, and the number is why. Measured A/B on this
+                    row against the same episode: the control costs the title a
+                    flat 48px under sm:, which at 320px takes it from 90px to
+                    **42px** — the "Vi…" / "Co…" collapse the BOOST button above
+                    documents, on a row that already sheds that button's word for
+                    the same reason. From sm: up it costs 88px of a 269px title
+                    and leaves 181px, which is fine.
+
+                    A HIDE, NOT A DROP: the episode page carries QUEUE as a tile
+                    at every width and is one tap away through this row's own
+                    handler — the same trade <VideoToggle> and
+                    `sidesOnDesktopOnly` already make. Below sm: this row is
+                    byte-identical to what it was before the queue existed. */}
+                <span className="hidden sm:inline-flex">
+                  <QueueButton episode={e} podcast={data.podcast} />
+                </span>
                 <FavEpisodeHeart episode={e} podcast={data.podcast} />
               </div>
               </div>
