@@ -1,25 +1,22 @@
-'use client';
-
-// "Up Next" — the user-assembled listen queue, rendered inside
-// <FullscreenPlayer> beside the album tracklist it is modelled on.
+// "Up Next" — the user-assembled listen queue.
 //
-// WHY IT LIVES IN THE PLAYER AND NOT ON A PAGE. <Player> is mounted from
-// app/layout.tsx, so this one mount reaches the queue from `/`, `/favorites`,
-// `/playlists`, `/live`, `/npub/*` and `/stream/*` with no new route, no fifth
-// <TabBar> tab to re-measure the dock against, and no page-level gate. The
-// three alternatives each fail on something already written down:
+// TWO MOUNTS, ONE COMPONENT. It renders on the home page (the surface you
+// manage a queue on) and inside <FullscreenPlayer> (the surface you are on
+// while listening, beside the album tracklist it is modelled on). That is not
+// the drift this repo warns about: there is one component and one set of
+// rules, rendered twice, the same arrangement <ValueSplitRows> already has.
 //
-//   - A section on `/` re-creates the home aside that was deleted for measured
-//     reasons, and both of that page's optional sections pair `entryResolved`
-//     with `!inDetailView` — so the panel would vanish exactly while the user
-//     is on a show page pressing `+ queue`.
-//   - A panel on `/favorites` puts a self-draining list on the page whose whole
-//     contract is that nothing disappears.
-//   - A `/queue` route is reachable only through a fifth dock tab, which is a
-//     measurement obligation for a surface most people open zero times a day.
+// THE HOME-PAGE MOUNT IS NOT BEHIND `!inDetailView`, and that is the whole
+// reason it works. The two optional sections around it are, because they are
+// relay-backed and a deep link should not pay for them. This one reads the
+// store and touches no network — and a show page is exactly where somebody
+// presses `+ queue`, so a panel that vanished at that moment would be useless
+// at the one moment it is used.
 //
-// It is also the only surface where the drain is observable: you watch the row
-// you just finished leave.
+// THE PLAYER MOUNT IS WHERE THE DRAIN IS OBSERVABLE: you watch the row you
+// just finished leave. It is also why `revealQueue` exists — <Player> renders
+// nothing without a `current`, and `current` is in-memory while the queue is
+// not, so every reload would otherwise hide this panel from that surface.
 
 import { useApp } from '@/lib/store';
 import { epKey } from '@/lib/util';
@@ -41,7 +38,7 @@ export function QueueList() {
   // queue is empty, so it can never make an emptiness claim over data that has
   // not answered. There is nothing to wait for here — the queue is local — but
   // rendering "nothing queued" under a heading is still worse than rendering
-  // nothing at all inside a player that is already full of controls.
+  // nothing at all, on either of the two surfaces this mounts on.
   if (!queue.length) return null;
 
   const currentKey = current ? epKey(current.episode) : null;

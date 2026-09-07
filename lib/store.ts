@@ -105,6 +105,21 @@ interface AppState {
   /** Jump to a queued item. **Removes nothing** — see the drain rules on
    *  `stepTo`. */
   playFromQueue: (index: number) => void;
+  /**
+   * Point the player at the queue's head **without playing it**, when nothing
+   * is playing and the queue is not empty.
+   *
+   * This is what makes a persisted queue REACHABLE. `<Player>` renders nothing
+   * without a `current`, and the Up Next panel lives inside it — so somebody
+   * who queued three episodes, closed the tab and came back had a queue on
+   * disk with no way to see it, and no way to start it. `current` is
+   * in-memory, so every reload lands in exactly that state.
+   *
+   * It must not start playback: an autoplay the listener did not ask for is
+   * the wrong answer, and a browser would block it anyway, leaving `isPlaying`
+   * true over an element that never started — the ❚❚-over-silence lie again.
+   */
+  revealQueue: () => void;
   setListenQueue: (items: QueueItem[]) => void;
   /**
    * What `<Player>`'s `<audio onEnded>` asks FIRST, returning whether the
@@ -662,17 +677,14 @@ export const useApp = create<AppState>((set, get) => ({
     if (s.listenQueue.some((i) => epKey(i.episode) === key)) return false;
 
     const next = [...s.listenQueue, { episode: trimForQueue(episode), podcast }];
-    // **Adding to an empty queue with nothing playing SELECTS the item, paused.**
-    // The queue is rendered inside <FullscreenPlayer>, which <Player> does not
-    // mount without a `current` — so without this the first thing anybody ever
-    // queues is invisible, and the feature has no way in. It deliberately does
-    // NOT start playback: the button says queue, not play, and somebody lining
-    // up three episodes for later has not asked for noise. Nothing is
-    // interrupted, because nothing was playing.
-    const reveal = !s.current && !s.listenQueue.length
-      ? { current: { episode: next[0].episode, podcast: next[0].podcast }, positionSec: 0, videoMode: false }
-      : null;
-    set({ listenQueue: next, listenQueueSaved: persistQueue(s.identity, next), ...reveal });
+    set({ listenQueue: next, listenQueueSaved: persistQueue(s.identity, next) });
+    // **Adding while nothing plays SELECTS the queue's head, paused.** The
+    // panel lives inside <FullscreenPlayer>, which does not mount without a
+    // `current`, so without this the queue is invisible and has no way in. It
+    // is the queue's HEAD rather than the item just added, because the head is
+    // what plays first — and it never starts playback, because the button says
+    // queue, not play.
+    get().revealQueue();
     return true;
   },
   removeFromQueue: (key) =>
@@ -702,6 +714,17 @@ export const useApp = create<AppState>((set, get) => ({
       return {
         current: { episode: item.episode, podcast: item.podcast },
         isPlaying: true,
+        positionSec: 0,
+        videoMode: false,
+      };
+    }),
+  revealQueue: () =>
+    set((s) => {
+      if (s.current || !s.listenQueue.length) return {};
+      const head = s.listenQueue[0];
+      if (!isPlayableRow(head.episode)) return {};
+      return {
+        current: { episode: head.episode, podcast: head.podcast },
         positionSec: 0,
         videoMode: false,
       };
