@@ -241,6 +241,24 @@ from the internet.
 > `boostmebitch`. **A green deployment is not evidence the right thing is
 > running** — the package name in the log is.
 
+**`services/nostr-index/railway.json` pins the deploy settings — and it cannot
+pin the one that matters most.** Railway reads a config file from the service's
+ROOT DIRECTORY, so the file only takes effect once `rootDirectory` is set on the
+instance; `rootDirectory` is not a field the schema accepts, so it can never
+move into the repo. Config-as-code overrides the dashboard for the keys it
+names, and leaves everything else a dashboard setting.
+
+| Key | Why it is in the repo rather than on the instance |
+| --- | --- |
+| `restartPolicyMaxRetries: 100` | **This is the field that turned an OOM into a three-day outage** (#301). Railway's default is 10 and the leak took hours to develop, so the container spent its ten retries and set `deploymentStopped: true` rather than restarting. It was raised on the instance during that incident, where a re-created service would have silently reverted to 10. |
+| `restartPolicyType: ON_FAILURE` | Deliberately not `ALWAYS`. A persistent failure has to be able to stop eventually: a container that restarts forever on a bad variable produces nothing that reads as an error. |
+| `healthcheckPath: /health` | Matches what Railway already probes. That route answers HTTP 200 in every case on purpose, so it cannot restart-loop the box during a relay-side outage. |
+| `startCommand: npm start` | Matches the instance. It is the other half of the wrong-application trap above, and free to pin. |
+
+There is deliberately **no `--max-old-space-size`**. It changes when the process
+dies, never whether it leaks, and the #301 leak is fixed in `src/node-yield.ts`.
+Adding one would only move the crash.
+
 **3. Set the service variables.** `DATABASE_URL` (the private string),
 `INDEX_API_KEY` (a long random secret), and `PODCAST_INDEX_KEY` /
 `PODCAST_INDEX_SECRET` — the same pair Vercel already holds, so the warm-fill
