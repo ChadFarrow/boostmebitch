@@ -139,6 +139,32 @@ export function Player() {
   // reconnect rather than continue. Cleared by the source effect, so the FIRST
   // play of an item takes the normal path (that effect owns that play).
   const pausedLive = useRef(false);
+  /**
+   * The HLS URL whose NATIVE playback already failed, so the next attempt uses
+   * hls.js instead.
+   *
+   * NATIVE HLS IS AN ATTEMPT, NOT A VERDICT. `canPlayType` answers whether the
+   * browser *implements* HLS, which on iOS is always yes — it says nothing about
+   * this playlist. When Safari's own player then rejects one it fires
+   * `MEDIA_ERR_SRC_NOT_SUPPORTED`, and because `canPlayType` had already sent us
+   * down the native branch, hls.js was never even loaded: the stream ended at
+   * `live stream format not supported or URL unreachable`, on the platform where
+   * we have the least to say about why. Reported from an iPhone against a
+   * zap.stream broadcast that other clients played.
+   *
+   * hls.js is a real second chance there rather than a formality. Safari 17.1
+   * ships `ManagedMediaSource`, which `Hls.isSupported()` accepts, so the same
+   * MSE path desktop takes is available — and it parses playlists Safari's own
+   * player refuses, fetches over CORS, and carries the retry/recover ladder
+   * below. Failing that, it at least names the failure (`manifestLoadError`,
+   * `manifestParsingError`, …) where the native element only ever said `4`.
+   *
+   * Keyed by URL rather than a boolean, so the flag cannot outlive the source it
+   * describes: a new stream starts on native again, and a `reloadNonce` retry of
+   * the SAME url stays on hls.js instead of ping-ponging. `onMediaError` sets it
+   * and bumps the nonce; that is the one path here, and it fires once per url.
+   */
+  const nativeHlsFailedUrl = useRef<string | null>(null);
   // The element ran out of data and is waiting on the network. NOT an error: the
   // request is still open and it may recover on its own, so this only drives a
   // readout and the resume path below — nothing here calls pause().
@@ -271,7 +297,9 @@ export function Player() {
       }
 
       let cancelled = false;
-      const nativeHls = el.canPlayType('application/vnd.apple.mpegurl') !== '';
+      const nativeHls =
+        el.canPlayType('application/vnd.apple.mpegurl') !== '' &&
+        nativeHlsFailedUrl.current !== url;
       if (nativeHls) {
         el.src = url;
         if (isPlayingRef.current) playOrPark(el, () => setPlaying(false));
@@ -686,6 +714,18 @@ export function Player() {
     : miniChapter || podcast.title;
 
   function onMediaError(code: number | undefined) {
+    // A native-HLS refusal is not the end of the road — retry the same url
+    // through hls.js first. `hls.current` is null exactly when the native branch
+    // owns the element, and the url guard makes this fire once, so a genuinely
+    // dead playlist still reaches the message below on the second pass. See
+    // `nativeHlsFailedUrl`.
+    const url = episode.enclosureUrl;
+    if (isHlsRef.current && !hls.current && url && nativeHlsFailedUrl.current !== url) {
+      nativeHlsFailedUrl.current = url;
+      setAudioErr(null);
+      setReloadNonce((n) => n + 1);
+      return;
+    }
     // Fired by the <video> too, so name the right medium.
     const what = isHlsRef.current ? 'live stream' : isVideoRef.current ? 'video' : 'audio';
     setAudioErr(
