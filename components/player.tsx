@@ -999,6 +999,15 @@ export function Player() {
     setPosition, setPlaying, skipBy,
   });
 
+  // **A queue that survived a reload has to be reachable.** `current` is
+  // in-memory and the queue is not, so every page load lands with items on disk
+  // and nothing playing — and the two lines below then render nothing at all,
+  // taking Up Next with them. Effects still run for a component that returns
+  // null, which is what lets this sit above that return; doing it in the store
+  // initializer instead would paint a mini-bar on the client that the server
+  // did not, which is a hydration mismatch.
+  useEffect(() => { useApp.getState().revealQueue(); }, []);
+
   if (!current) return null;
   const { episode, podcast } = current;
   const hasValue = hasValueRecipients(episode.value);
