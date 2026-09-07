@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { startKeyboardInsetSync } from '@/lib/keyboard-inset';
-import { clearShowSelection, useApp } from '@/lib/store';
+import { clearShowSelection } from '@/lib/store';
 import { KbDebug } from './kb-debug';
 
 /**
@@ -84,26 +84,21 @@ import { KbDebug } from './kb-debug';
  * nothing lit there.
  */
 
-type LinkTab = {
-  kind: 'link';
-  href: '/' | '/live' | '/favorites';
+// Every tab is a LINK now. The Wallet tab was the only `kind: 'modal'` one and
+// it is gone — see the Queue entry below for why that swap needed the boost
+// modal's own connect control to land first.
+type Tab = {
+  href: '/' | '/live' | '/favorites' | '/queue';
   label: string;
   icon: React.ReactNode;
   /** Whether `pathname` belongs to this tab. `/` is exact; the rest are prefixes. */
   match: (pathname: string) => boolean;
 };
-type ModalTab = {
-  kind: 'modal';
-  label: string;
-  icon: React.ReactNode;
-};
-type Tab = LinkTab | ModalTab;
 
 const stroke = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
 
 const TABS: Tab[] = [
   {
-    kind: 'link',
     href: '/',
     label: 'Home',
     match: (p) => p === '/',
@@ -115,7 +110,6 @@ const TABS: Tab[] = [
     ),
   },
   {
-    kind: 'link',
     href: '/live',
     label: 'Live',
     match: (p) => p.startsWith('/live'),
@@ -133,7 +127,6 @@ const TABS: Tab[] = [
     ),
   },
   {
-    kind: 'link',
     href: '/favorites',
     label: 'Favorites',
     match: (p) => p.startsWith('/favorites'),
@@ -144,12 +137,24 @@ const TABS: Tab[] = [
     ),
   },
   {
-    kind: 'modal',
-    label: 'Wallet',
+    // REPLACED THE WALLET TAB, and the order of the two changes mattered.
+    // The wallet was reachable from the header on `/`, /live, /favorites and
+    // /playlists — and NOWHERE ELSE, because those are the only routes that
+    // render <AppHeader>. This tab was the only way to reach a wallet from
+    // /stream/<naddr>, /npub/<npub> and /live/<npub>, which are exactly the
+    // routes a shared link lands on and where BOOST is the point. So the boost
+    // modal grew its own "no wallet — connect one" control FIRST; that message
+    // used to point at "top right", which on those three routes is empty space.
+    href: '/queue',
+    label: 'Queue',
+    match: (p) => p.startsWith('/queue'),
     icon: (
+      // A stack of rows with a play glyph at the head: a list that plays,
+      // rather than a bare list (which reads as another favorites) or a bare
+      // triangle (which reads as the transport).
       <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
-        <rect x="3" y="6" width="18" height="13" />
-        <path d="M3 10h18M16 15h2" />
+        <path d="M4 7h10M4 12h10M4 17h6" />
+        <path d="M17 11.2v5.6l4.5-2.8z" fill="currentColor" stroke="none" />
       </svg>
     ),
   },
@@ -162,9 +167,6 @@ const itemClass = (current: boolean) =>
 
 export function TabBar() {
   const pathname = usePathname() ?? '/';
-  const walletOpen = useApp((s) => s.walletOpen);
-  const setWalletOpen = useApp((s) => s.setWalletOpen);
-
   // Mounted here rather than in the layout because this is the component the
   // variable exists for, and it is on every route already.
   useEffect(() => startKeyboardInsetSync(), []);
@@ -184,20 +186,6 @@ export function TabBar() {
           style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}
         >
           {TABS.map((tab) => {
-            if (tab.kind === 'modal') {
-              return (
-                <button
-                  key={tab.label}
-                  type="button"
-                  onClick={() => setWalletOpen(true)}
-                  aria-pressed={walletOpen}
-                  className={itemClass(walletOpen)}
-                >
-                  {tab.icon}
-                  <span>{tab.label}</span>
-                </button>
-              );
-            }
             const current = tab.match(pathname);
             return (
               <Link

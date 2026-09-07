@@ -1,10 +1,14 @@
 // "Up Next" — the user-assembled listen queue.
 //
-// TWO MOUNTS, ONE COMPONENT. It renders on the home page (the surface you
-// manage a queue on) and inside <FullscreenPlayer> (the surface you are on
-// while listening, beside the album tracklist it is modelled on). That is not
-// the drift this repo warns about: there is one component and one set of
-// rules, rendered twice, the same arrangement <ValueSplitRows> already has.
+// THREE MOUNTS, ONE COMPONENT: the home page (where you manage a queue),
+// <FullscreenPlayer> (where you are while listening, beside the album
+// tracklist this is modelled on), and the /queue route the dock points at.
+// That is not the drift this repo warns about — three hand-rolled lists would
+// be. Same arrangement <ValueSplitRows> already has.
+//
+// The /queue mount is the only one that has to say something when the queue is
+// EMPTY, and it does that in <QueuePage> rather than here: a panel under other
+// content is right to render nothing, and a page somebody navigated to is not.
 //
 // THE HOME-PAGE MOUNT IS NOT BEHIND `!inDetailView`, and that is the whole
 // reason it works. The two optional sections around it are, because they are
