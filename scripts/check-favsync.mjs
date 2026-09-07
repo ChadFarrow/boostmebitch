@@ -81,6 +81,7 @@ import {
   showId,
   tagsFromList,
   effectiveListMode,
+  foldHalves,
   statedVisibility,
   withVisibility,
   VISIBILITY_TAG,
@@ -2225,6 +2226,84 @@ section('everything past the identifier on an `i` tag is carried, never authored
       .map((t) => (t[0] === 'i' ? t.slice(0, 2) : t));
   check('(naive) rebuilding the entry bare drops the marks',
     JSON.stringify(naiveEmit(parseFavoritesList(wire))) === JSON.stringify(wire), false);
+
+  // THE ITEM HALF. An item entry is an `i` tag like any other, so NIP-73's URL
+  // hint can land on one, and `tagsFromList` rebuilt it out of `itemGuids` —
+  // the identical defect, one line below the one above. What hid it is the
+  // loose branch: with no group open the SAME tag is carried whole, so whether
+  // a hint survived a republish depended on where on the list it sat, which is
+  // not a difference anyone would think to look for.
+  const EP_HINT = 'https://example.com/ep.mp3';
+  const itemWire = [
+    ['alt', 'PC 2.0 Favorites'],
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`],
+    ['i', `podcast:item:guid:${I_A}`, EP_HINT],
+    ['i', `podcast:item:guid:${I_B}`],
+    ['k', 'podcast:guid'],
+    ['k', 'podcast:item:guid'],
+  ];
+  check('an item tag under an open group keeps its hint',
+    emit(parseFavoritesList(itemWire)), itemWire);
+
+  check('the item hint survives the merge that rebuilds the group we HOLD',
+    emit(parseFavoritesList(itemWire), holding,
+      { feeds: [showId(F_MUSIC)], items: [itemId(I_A)] })
+      .find((t) => t[1] === `podcast:item:guid:${I_A}`),
+    ['i', `podcast:item:guid:${I_A}`, EP_HINT]);
+
+  // MUST STILL WORK. The same tag with no group open above it goes down the
+  // loose path, which already carried it whole. Fixing the grouped path must
+  // not disturb that — the two now agree, which is the point.
+  check('an orphan item is still carried whole',
+    emit(parseFavoritesList([['i', `podcast:item:guid:${I_A}`, EP_HINT]]))
+      .find((t) => t[0] === 'i'),
+    ['i', `podcast:item:guid:${I_A}`, EP_HINT]);
+
+  // MUST STILL WORK. Carry only, on this half too.
+  check('we author no item tail of our own',
+    originated.filter((t) => t[0] === 'i').every((t) => t.length === 2), true);
+
+  check('(naive) rebuilding the item entry bare drops the hint',
+    JSON.stringify(naiveEmit(parseFavoritesList(itemWire))) === JSON.stringify(itemWire),
+    false);
+
+  // FOLDING THE TWO HALVES IS A THIRD PLACE A GROUP IS REBUILT, and the only
+  // one that does not go through a spread. A whole-list privacy move runs it,
+  // so a feed named in BOTH halves met a branch that filled the medium gap and
+  // dropped the tail outright. The spec names the mutation: "keep the first
+  // copy's marker when folding two halves", vector 25.
+  const bare = parseFavoritesList([['i', `podcast:guid:${F_MUSIC}`]]);
+  const marked = parseFavoritesList([['i', `podcast:guid:${F_MUSIC}`, HINT, 'fav']]);
+  check('a tail on the moving half fills a gap on the half we keep',
+    tagsFromList(foldHalves(bare, marked)).find((t) => t[0] === 'i'),
+    ['i', `podcast:guid:${F_MUSIC}`, HINT, 'fav']);
+
+  // MUST STILL WORK. Fill a gap, NEVER overwrite — the same direction as the
+  // medium hint beside it. We cannot read either marker, so we cannot prefer
+  // one. The half we keep goes through a spread either way, so this passed
+  // before the change too; it is here to stop the gap-fill above from growing
+  // into a preference.
+  const otherMark = parseFavoritesList([['i', `podcast:guid:${F_MUSIC}`, '', 'placement']]);
+  check('...and never overwrites a tail the half we keep already had',
+    tagsFromList(foldHalves(marked, otherMark)).find((t) => t[0] === 'i'),
+    ['i', `podcast:guid:${F_MUSIC}`, HINT, 'fav']);
+
+  // An item merged in across the fold brings its own tail with it.
+  const foldItems = foldHalves(
+    parseFavoritesList([['i', `podcast:guid:${F_MUSIC}`], ['i', `podcast:item:guid:${I_B}`]]),
+    parseFavoritesList([['i', `podcast:guid:${F_MUSIC}`], ['i', `podcast:item:guid:${I_A}`, EP_HINT]]),
+  );
+  check('an item crossing the fold keeps its hint',
+    tagsFromList(foldItems).find((t) => t[1] === `podcast:item:guid:${I_A}`),
+    ['i', `podcast:item:guid:${I_A}`, EP_HINT]);
+
+  // (naive) the fold as it stood: medium filled, tail dropped.
+  const naiveFold = (here, moving) =>
+    tagsFromList(foldHalves(here, moving)).map((t) => (t[0] === 'i' ? t.slice(0, 2) : t));
+  check('(naive) a fold that rebuilds the entry bare loses the marker',
+    JSON.stringify(naiveFold(bare, marked).find((t) => t[0] === 'i')),
+    JSON.stringify(['i', `podcast:guid:${F_MUSIC}`]));
 }
 
 // ---------------------------------------------------------------------------

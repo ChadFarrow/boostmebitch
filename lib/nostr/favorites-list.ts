@@ -26,13 +26,18 @@
 // we cannot read is carried whole, and that is as true of the tail of a tag we
 // can place as of one we cannot. Re-rendering `['i', id]` from our own model
 // erases another writer's marker on the first publish after the read, silently,
-// with our own screen correct throughout. An item's parent feed and its medium
-// are carried by POSITION IN THE ARRAY and by nothing on the entry itself: `['medium', v]` is a running value applying to every entry
-// after it, and an item belongs to the most recently opened feed group. So a
-// client that parses entries into structs and rebuilds the array from them —
-// sorting, deduping, or emitting groups in a different order — silently
-// reattaches every item to the wrong feed, and nothing else in the format
-// recovers the association.
+// with our own screen correct throughout. THAT HOLDS FOR EVERY `i` TAG, feed
+// and item alike: an item entry took the same rebuild, and the loose branch
+// hid it, because the identical tag survives whole when no group is open above
+// it. `FeedGroup.extra` and `FeedGroup.itemExtra` are the two carries.
+//
+// An item's parent feed and its medium are carried by POSITION IN THE ARRAY
+// and by nothing on the entry itself: `['medium', v]` is a running value
+// applying to every entry after it, and an item belongs to the most recently
+// opened feed group. So a client that parses entries into structs and rebuilds
+// the array from them — sorting, deduping, or emitting groups in a different
+// order — silently reattaches every item to the wrong feed, and nothing else
+// in the format recovers the association.
 //
 // That is why the parsed model here is an ORDERED NODE LIST rather than the
 // maps this app renders from, and why `tagsFromList` walks `nodes` in place
@@ -243,6 +248,25 @@ export interface FeedGroup {
    * device cares most about — while the carried-group path still looks right.
    */
   extra?: string[];
+  /**
+   * The same carry, for the ITEM entries under this group, keyed by item guid.
+   *
+   * `itemGuids` is the ordering-and-identity spine and stays a plain
+   * `string[]`: every dedupe, splice and baseline test in this file reads it,
+   * and widening it would put a struct where those all expect an id. So the
+   * tail rides beside it instead, exactly the way `extra` rides beside
+   * `feedGuid`.
+   *
+   * An item entry is an `i` tag like any other, so NIP-73's URL hint at
+   * position 2 can land on one — and re-emitting `['i', itemId(guid)]` from
+   * `itemGuids` alone erased it, the same defect as on a feed tag. It was
+   * hidden by the loose branch: the SAME tag survives whole when no group is
+   * open above it, so whether a hint lived through a republish depended on
+   * where on the list it sat.
+   *
+   * Carry only. We author no item tail, and we read none.
+   */
+  itemExtra?: Record<string, string[]>;
 }
 
 /**
@@ -848,6 +872,12 @@ export function parseFavoritesList(tags: string[][]): ParsedList {
     const itemGuid = parseItemGuid(id);
     if (itemGuid !== null && current) {
       if (!current.itemGuids.includes(itemGuid)) current.itemGuids.push(itemGuid);
+      // The tail of the FIRST tag naming this item wins, for the same reason
+      // the item itself is deduped rather than appended twice: the wire order
+      // is the data, and the first mention is the one holding the position.
+      if (tag.length > 2 && current.itemExtra?.[itemGuid] === undefined) {
+        current.itemExtra = { ...current.itemExtra, [itemGuid]: tag.slice(2) };
+      }
       continue;
     }
 
@@ -966,7 +996,9 @@ export function tagsFromList(list: ParsedList): string[][] {
     }
     // The identifier from our model, everything past it from the tag we read.
     tags.push(['i', showId(node.group.feedGuid), ...(node.group.extra ?? [])]);
-    for (const guid of node.group.itemGuids) tags.push(['i', itemId(guid)]);
+    for (const guid of node.group.itemGuids) {
+      tags.push(['i', itemId(guid), ...(node.group.itemExtra?.[guid] ?? [])]);
+    }
   };
 
   for (const node of list.nodes) if (!mediumOfNode(node)) emit(node);
@@ -1093,6 +1125,24 @@ export function foldHalves(here: ParsedList, moving: ParsedList): ParsedList {
     // The medium hint only ever FILLS a gap. Overwriting one the feed declared
     // with one it did not is how a hint becomes wrong.
     if (!existing.group.medium && node.group.medium) existing.group.medium = node.group.medium;
+    // AND THE TAIL, on exactly the same terms. This branch is the one place a
+    // group survives the fold without going through a spread, so a marker on
+    // the moving half's copy was dropped outright here — not merely deferred to
+    // the other copy, which is what the medium rule above would suggest. The
+    // spec names this case: "keep the first copy's marker when folding two
+    // halves" is a mutation its vector 25 catches. A whole-list privacy move is
+    // the only thing that runs it, so nothing on screen is wrong first.
+    if (!existing.group.extra?.length && node.group.extra?.length) {
+      existing.group.extra = node.group.extra;
+    }
+    // Items merged in above bring their own tails; ones already here keep
+    // theirs. Fill a gap, never overwrite.
+    for (const guid of node.group.itemGuids) {
+      const tail = node.group.itemExtra?.[guid];
+      if (!tail?.length) continue;
+      if (existing.group.itemExtra?.[guid] !== undefined) continue;
+      existing.group.itemExtra = { ...existing.group.itemExtra, [guid]: tail };
+    }
   }
 
   const foreignTags = [...here.foreignTags];
@@ -1206,6 +1256,15 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
         if (!into.group.extra?.length && group.extra?.length) {
           into.group.extra = group.extra;
         }
+        // Item tails ride along with the items the fold just spliced in, on the
+        // same terms. `kept` is what actually moved, so a tail for an item we
+        // removed is not resurrected with it.
+        for (const guid of kept) {
+          const tail = group.itemExtra?.[guid];
+          if (!tail?.length) continue;
+          if (into.group.itemExtra?.[guid] !== undefined) continue;
+          into.group.itemExtra = { ...into.group.itemExtra, [guid]: tail };
+        }
       }
       continue;
     }
@@ -1237,6 +1296,11 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
         // device's own favorites and has none to offer, so taking it from there
         // would blank whatever another writer put past the identifier.
         extra: group.extra,
+        // Same, for the items. This literal names its fields one at a time, so
+        // a field left out is dropped by construction — and the carried-group
+        // path a few lines up spreads, which is why omitting it here looks
+        // correct from every test that does not hold the feed.
+        itemExtra: group.itemExtra,
         // Local items the read didn't carry are either NEW here, or ones we
         // published that another writer has since removed. Only the first may
         // go up: re-adding the second is the resurrection loop, the same one
