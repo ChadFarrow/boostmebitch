@@ -107,6 +107,26 @@ function parseNostrLiveStream(event: Event): NostrLiveStream {
   const getTag = (name: string) => event.tags.find((t) => t[0] === name)?.[1];
   const getAllTags = (name: string) =>
     event.tags.filter((t) => t[0] === name).map((t) => t[1]).filter(Boolean) as string[];
+  /**
+   * The first of these tags carrying an actual value.
+   *
+   * `getTag(a) ?? getTag(b)` is wrong for every pair below, because `??` only
+   * falls through on `undefined`: a publisher that writes `["image", ""]` — and
+   * they do, the tag is emitted from a template whether or not a thumbnail
+   * exists yet — hands the caller an empty string, which SATISFIES the fallback
+   * and takes `thumb` out of play. `<PodcastCover>` then has one dead slot and
+   * one it was never given, so the card renders no picture and nothing anywhere
+   * says why. Only for tags where empty means absent; `d` is deliberately not
+   * one of them, since `d: ""` is a real NIP-33 address that `streamAddrOf`
+   * must keep agreeing with.
+   */
+  const firstTagValue = (...names: string[]): string | undefined => {
+    for (const name of names) {
+      const v = getTag(name)?.trim();
+      if (v) return v;
+    }
+    return undefined;
+  };
 
   const dTag = getTag('d') ?? event.id;
   const rawStatus = getTag('status') ?? '';
@@ -136,9 +156,9 @@ function parseNostrLiveStream(event: Event): NostrLiveStream {
     dTag,
     pubkey: event.pubkey,
     npub,
-    title: getTag('title') ?? 'Untitled Stream',
-    summary: getTag('summary') ?? getTag('about'),
-    image: getTag('image') ?? getTag('thumb'),
+    title: firstTagValue('title') ?? 'Untitled Stream',
+    summary: firstTagValue('summary', 'about'),
+    image: firstTagValue('image', 'thumb'),
     streamUrl: pickStreamUrl(event.tags),
     status,
     startsAt: getTag('starts') ? parseInt(getTag('starts')!, 10) : undefined,

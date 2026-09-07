@@ -370,11 +370,20 @@ function StreamCard({
 
   const displayName =
     profile?.display_name ?? profile?.name ?? stream.npub.slice(0, 12) + '…';
-  const image = stream.image ?? profile?.picture;
-
   return (
     <LiveCard
-      image={image}
+      // BOTH SLOTS, never one `??` expression over the two. `<PodcastCover>`'s
+      // onError ladder is what turns a dead URL into a picture, and it can only
+      // fall through to a source it was actually handed — so
+      // `stream.image ?? profile?.picture` threw the host's avatar away the
+      // moment the event carried an `image` tag at all, and a thumbnail that
+      // 404s, is blocked, or is a format the browser refuses left the card with
+      // nothing but the initial tile. A stream's thumbnail is generated at the
+      // broadcast, so it is exactly the kind of URL that is missing early and
+      // fine later; the host's avatar is the stable one behind it. This is the
+      // same rule the RSS section beside it already keeps.
+      image={stream.image}
+      artwork={profile?.picture}
       title={stream.title}
       seed={stream.id}
       // Art is a control only where there is something to open. An upcoming or

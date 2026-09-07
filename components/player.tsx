@@ -55,7 +55,34 @@ import { VideoToggle } from './video-toggle';
  * one rejection a tap can fix, and the only one that means the element is
  * parked rather than progressing.
  */
+/**
+ * Tell WebKit this is long-form PLAYBACK audio, not a UI sound.
+ *
+ * iOS decides whether audio survives a lock screen, a ringer switch and an app
+ * switch from the page's audio-session type, and the default (`auto`) gets a
+ * web app the conservative answer: audio stops the moment the PWA is not in
+ * front. `navigator.audioSession.type = 'playback'` is the documented lever
+ * (Safari 16.4+), and it is the one this app wants everywhere — a podcast and a
+ * live stream are both content somebody keeps listening to with the screen off.
+ *
+ * Set on the first play attempt rather than at mount, because it is a statement
+ * about audio we are about to make: `playback` interrupts other apps' audio and
+ * ignores the silent switch, which is right for a player and rude for a page
+ * nobody has pressed play on. Feature-detected and wrapped, so every browser
+ * without it is a no-op.
+ *
+ * It does NOT make a backgrounded `<video>` keep its picture — iOS suspends
+ * that regardless, and Picture-in-Picture is the answer there.
+ */
+function primePlaybackAudioSession(): void {
+  try {
+    const s = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+    if (s && s.type !== 'playback') s.type = 'playback';
+  } catch { /* unsupported, or refused — nothing to fall back to */ }
+}
+
 function playOrPark(el: HTMLMediaElement, park: () => void): void {
+  primePlaybackAudioSession();
   el.play().catch((e: unknown) => {
     if (e instanceof DOMException && e.name === 'NotAllowedError') park();
   });
@@ -356,10 +383,23 @@ export function Player() {
               // Backoff 1s→15s so a longer dropout doesn't spin the network; no
               // hard give-up — keep retrying so the stream auto-resumes when the
               // broadcaster comes back (what a manual refresh used to do).
-              setAudioErr(`stream unreachable — reconnecting…${detail}`);
               clearRecover();
               const delay = Math.min(1000 * 2 ** netRetries, 15000);
               netRetries++;
+              // A FATAL NETWORK ERROR IS NOT PROOF THE LISTENER HEARD ANYTHING
+              // STOP, so the recovery starts on the first one and the CLAIM
+              // waits. zap.stream's playlist reload intermittently fails to
+              // parse, and on a single-rendition stream hls.js has no level to
+              // switch to, so it escalates `levelParsingError` to fatal —
+              // while the fragments already in the buffer play on. The banner
+              // painted, `FRAG_BUFFERED` cleared it, the next reload painted it
+              // again: reported as a message flashing over a stream that was
+              // fine. Speak when the listener can actually tell — the element
+              // is starved (below HAVE_FUTURE_DATA), or this is the SECOND
+              // consecutive failure with no fragment buffered between them.
+              if (netRetries > 1 || el.readyState < 3) {
+                setAudioErr(`stream unreachable — reconnecting…${detail}`);
+              }
               recoverTimer.current = setTimeout(() => {
                 if (hls.current === inst) inst.startLoad();
               }, delay);
@@ -403,7 +443,10 @@ export function Player() {
     if (startAt > 0) {
       el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
     }
-    if (isPlaying) el.play().catch(() => setPlaying(false));
+    if (isPlaying) {
+      primePlaybackAudioSession();
+      el.play().catch(() => setPlaying(false));
+    }
     // `{ once: true }` removes the listener when it FIRES, which is not the same
     // as removing it when this effect is torn down — and the audio element is a
     // single long-lived node (it lives in the reverse portal), so an unfired
@@ -485,6 +528,7 @@ export function Player() {
       setReloadNonce((n) => n + 1);
       return;
     }
+    primePlaybackAudioSession();
     el.play().catch(() => setPlaying(false));
   }, [isPlaying]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -512,36 +556,35 @@ export function Player() {
       const el = video.current;
       if (!el) return;
 
+      // Try a plain resume first — a short background often recovers without a
+      // rebuffer. On the hls.js path, restart the loader too: it re-fetches the
+      // playlist and catches back up to the live edge. `playOrPark` because
+      // coming back to the tab is not a user gesture, so a browser that wants
+      // one declines here as well, and no amount of reloading fixes that — only
+      // a tap does. Leaving the flag set draws ❚❚ over a stream that stopped
+      // while the phone was in a pocket.
+      const before = el.currentTime;
       const inst = hls.current;
       if (inst) {
-        // hls.js path (Android Chrome / desktop): restart the loader, which
-        // re-fetches the playlist and catches back up to the live edge.
         try { inst.startLoad(); } catch { /* destroyed mid-call — ignore */ }
-        // Parks on a refusal for the same reason the source effect does: coming
-        // back to the tab is not a user gesture, so a browser that wants one
-        // will decline here too — and no amount of reloading fixes that, only a
-        // tap does. Leaving the flag set draws ❚❚ over a stream that stopped
-        // while the phone was in a pocket.
-        playOrPark(el, () => setPlaying(false));
-        return;
       }
-
-      // Native HLS (iOS Safari). Try a plain resume first — a short background
-      // often recovers without a rebuffer. If it's still stalled shortly after,
-      // re-source to snap to the live edge (the manual-refresh path).
-      const before = el.currentTime;
       playOrPark(el, () => setPlaying(false));
+
+      // THE WATCHDOG COVERS BOTH PATHS, AND IT RE-SOURCES THROUGH THE NONCE
+      // RATHER THAN BY HAND. It was on the native branch only, and a plain
+      // `startLoad()` is not always enough for hls.js either: iOS suspends the
+      // app on a switch away, and a `ManagedMediaSource` that was torn down
+      // while hidden comes back with a loader that restarts onto nothing. The
+      // hand-rolled `el.src = url; el.load()` this replaces also went behind
+      // `nativeHlsFailedUrl`, so it would put a stream that only plays under
+      // hls.js back on the native element it had already failed. Re-running the
+      // source effect is the one reload that rebuilds whichever path this url
+      // needs, and it starts at the live edge.
       if (resumeTimer.current) clearTimeout(resumeTimer.current);
       resumeTimer.current = setTimeout(() => {
         if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
         if (!isPlayingRef.current) return;
-        const stalled = el.paused || el.currentTime === before;
-        const url = current?.episode.enclosureUrl;
-        if (stalled && url) {
-          el.src = url;
-          el.load();
-          playOrPark(el, () => setPlaying(false));
-        }
+        if (el.paused || el.currentTime === before) setReloadNonce((n) => n + 1);
       }, 1500);
     }
 
