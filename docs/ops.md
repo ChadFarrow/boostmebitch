@@ -252,8 +252,17 @@ names, and leaves everything else a dashboard setting.
 | --- | --- |
 | `restartPolicyMaxRetries: 100` | **This is the field that turned an OOM into a three-day outage** (#301). Railway's default is 10 and the leak took hours to develop, so the container spent its ten retries and set `deploymentStopped: true` rather than restarting. It was raised on the instance during that incident, where a re-created service would have silently reverted to 10. |
 | `restartPolicyType: ON_FAILURE` | Deliberately not `ALWAYS`. A persistent failure has to be able to stop eventually: a container that restarts forever on a bad variable produces nothing that reads as an error. |
-| `healthcheckPath: /health` | Matches what Railway already probes. That route answers HTTP 200 in every case on purpose, so it cannot restart-loop the box during a relay-side outage. |
 | `startCommand: npm start` | Matches the instance. It is the other half of the wrong-application trap above, and free to pin. |
+
+**`healthcheckPath` is deliberately NOT in that file, and the reason is a
+correction.** Read back from the live deploy manifest on 2026-09-07, the service
+runs with `healthcheckPath: null` — **no health check is configured at all.**
+The comment in `src/api.ts` about "Railway's check sends a bare `/health`", and
+the note below about a health check that cannot restart-loop the container,
+both describe a safeguard that is not currently wired up. The route is built for
+it and answers HTTP 200 in every case, so turning it on is a small change; it is
+a change, not a pin, so it does not belong in a file whose job is to record what
+already runs.
 
 There is deliberately **no `--max-old-space-size`**. It changes when the process
 dies, never whether it leaks, and the #301 leak is fixed in `src/node-yield.ts`.
