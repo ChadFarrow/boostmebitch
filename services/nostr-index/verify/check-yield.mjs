@@ -14,6 +14,12 @@
 // so asserting a factor of 10 is far from the observed value in both
 // directions: it cannot pass by noise, and it will not fail on a slow machine.
 //
+// The fallback child IMPORTS src/node-yield.ts rather than repeating its one
+// line, and that is load-bearing. The fix ships as an import with no binding,
+// so it is unusually easy to tidy away; a probe that deleted the global itself
+// would stay green over a deleted fix and let production go back to leaking.
+// Delete the module now and this check dies at the import instead.
+//
 // If this starts FAILING after a nostr-tools bump, read `yieldThread` in
 // lib/esm/abstract-relay.js before changing anything here. Two outcomes are
 // both fine and mean opposite things: upstream closed the ports (the gap
@@ -33,7 +39,10 @@ const MIN_RATIO = 10;
 if (process.env.YIELD_PROBE_MODE) {
   const mode = process.env.YIELD_PROBE_MODE;
   const port = Number(process.env.YIELD_PROBE_PORT);
-  if (mode === 'fallback') delete globalThis.MessageChannel;
+  // The module under test. It has no exports; the whole effect is the side
+  // effect, so the import IS the call. Importing it before `nostr-tools` also
+  // matches production, where src/index.ts imports it first.
+  if (mode === 'fallback') await import('../src/node-yield.ts');
 
   const { WebSocketServer } = await import('ws');
   const { finalizeEvent, generateSecretKey } = await import('nostr-tools');
@@ -81,7 +90,19 @@ if (process.env.YIELD_PROBE_MODE) {
   await new Promise((r) => setTimeout(r, 400));
   global.gc();
 
-  process.send({ mode, drained, bytesPerMsg: (process.memoryUsage().heapUsed - before) / drained });
+  process.send({
+    mode,
+    drained,
+    bytesPerMsg: (process.memoryUsage().heapUsed - before) / drained,
+    // Which branch of `yieldThread` this process takes. The library reads the
+    // global at CALL time, so these two booleans decide it outright: no
+    // MessageChannel and a setImmediate is the branch we want. Reporting them
+    // is what lets the parent tell "the fix ran" from "the numbers happened to
+    // come out right", and it is deterministic where a timing probe would not
+    // be.
+    chanGone: typeof globalThis.MessageChannel === 'undefined',
+    hasSetImmediate: typeof setImmediate !== 'undefined',
+  });
   relay.close(); wss.close();
   process.exit(0);
 }
@@ -114,11 +135,25 @@ const ratio = stock.bytesPerMsg / fallback.bytesPerMsg;
 console.log(`  stock         ${stock.bytesPerMsg.toFixed(0).padStart(6)} B/msg heap over ${stock.drained} messages`);
 console.log(`  setImmediate  ${fallback.bytesPerMsg.toFixed(0).padStart(6)} B/msg heap over ${fallback.drained} messages`);
 console.log(`  ratio         ${ratio.toFixed(1)}x`);
+console.log(`  branch        stock MessageChannel=${!stock.chanGone}  fallback MessageChannel=${!fallback.chanGone} setImmediate=${fallback.hasSetImmediate}`);
 
 ok(stock.drained === MESSAGES, `stock drained every message (got ${stock.drained})`);
 ok(fallback.drained === MESSAGES, `fallback drained every message (got ${fallback.drained})`);
-// The must-still-work half: the fallback has to actually yield, or this
-// "fix" is a starved event loop rather than a saved allocation.
+
+// The fix RAN, and it took the branch we meant.
+//
+// These two are the assertions the byte counts cannot make. `yieldThread`
+// falls through MessageChannel -> setImmediate -> setTimeout -> a bare
+// `resolve()`, and that last one is a NO-OP yield: it retains nothing per
+// message and would pass every number below. It is the hazard the module
+// header warns about for the browser build, and only the globals distinguish
+// it. src/node-yield.ts guards the delete on setImmediate existing, so
+// reading both globals here pins that guard — nothing else does.
+ok(fallback.chanGone, 'importing src/node-yield.ts removed the MessageChannel global');
+ok(fallback.hasSetImmediate, 'the fallback has a setImmediate to yield to, so the yield is not a no-op resolve()');
+// And the control is genuinely the other branch, not a second copy of the fix.
+ok(stock.chanGone === false, 'the stock probe still has MessageChannel, so it measures the leaking path');
+
 ok(fallback.bytesPerMsg < 500, `setImmediate path retains almost nothing per message (got ${fallback.bytesPerMsg.toFixed(0)} B)`);
 ok(stock.bytesPerMsg > 500, `the MessageChannel path still leaks, so this check still discriminates (got ${stock.bytesPerMsg.toFixed(0)} B)`);
 ok(ratio > MIN_RATIO, `setImmediate retains at least ${MIN_RATIO}x less per message (got ${ratio.toFixed(1)}x)`);
