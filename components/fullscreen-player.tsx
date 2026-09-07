@@ -438,7 +438,22 @@ export function FullscreenPlayer({
       // Safari a fixed inset-0 element sizes to the large (toolbar-hidden)
       // viewport, so its bottom — the live-chat composer — hides behind Safari's
       // bottom address bar. 100dvh tracks the visible area as the bar shows/hides.
-      className={`fixed inset-x-0 top-0 h-[100dvh] z-50 flex flex-col bg-ink transition-transform duration-300 ease-in-out ${open ? 'translate-y-0' : 'translate-y-full pointer-events-none'}`}
+      //
+      // CLOSED IS `invisible`, NOT `translate-y-full` ALONE. The transform moves
+      // the element by 100% of ITS OWN height, which is 100dvh, while a `fixed`
+      // element is laid out against the initial containing block — the LARGE
+      // (100lvh) viewport. The two units are the same number only while the
+      // browser chrome is hidden. Any moment they disagree, the closed overlay
+      // stops exactly (lvh - dvh) short of clearing the screen and its header
+      // strip — `← back  NOW PLAYING  ✕` — sits at the bottom of the page under
+      // the dock, on top of whatever the user is actually reading. It reads as a
+      // second, broken back button rather than as the player, because the rest
+      // of the player is off-screen. The safe-area padding below makes the same
+      // mismatch on its own in the installed app, where there is no chrome to
+      // blame. `visibility` is in the transition list so the slide-out is still
+      // seen: CSS keeps a visible→hidden transition visible for its whole
+      // duration and flips at the end, while hidden→visible shows immediately.
+      className={`fixed inset-x-0 top-0 h-[100dvh] z-50 flex flex-col bg-ink transition-[transform,visibility] duration-300 ease-in-out ${open ? 'translate-y-0 visible' : 'translate-y-full invisible pointer-events-none'}`}
       style={{ paddingTop: 'env(safe-area-inset-top)', paddingBottom: 'env(safe-area-inset-bottom)' }}
     >
       {/* MOUNT GATE. "Closed" here is a CSS transform, not an unmount, so this
