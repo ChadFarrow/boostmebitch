@@ -5,6 +5,7 @@ import { SearchBar } from '@/components/search-bar';
 import type { SearchInfo } from '@/components/search-bar';
 import { Chip } from '@/components/chip';
 import { PodcastResults, EpisodeList } from '@/components/lists';
+import { QueueList } from '@/components/lists/queue-list';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { AppHeader } from '@/components/app-header';
@@ -147,6 +148,17 @@ export function HomePage() {
    * results" out of a deep-linked show brings the home surfaces up as it always
    * did.
    */
+  // **A BOOLEAN selector, and a MOUNT gate, and the gate is not optional.**
+  // The store seeds `listenQueue` from localStorage at module scope, so the
+  // server renders `false` here and the client's first render answers `true`
+  // for anybody who has a queue — a hydration mismatch (React #418), which is
+  // an error in the console and a subtree React throws away and re-renders.
+  // Nothing else on this page reads persisted state this early. `entryResolved`
+  // is deliberately not reused for it: that flag answers a different question
+  // and waits on a network round trip a local queue has no reason to.
+  const hasQueue = useApp((s) => s.listenQueue.length > 0);
+  const [queueMounted, setQueueMounted] = useState(false);
+  useEffect(() => { setQueueMounted(true); }, []);
   const [entryResolved, setEntryResolved] = useState(false);
 
   /**
@@ -828,6 +840,29 @@ export function HomePage() {
           </aside>
         ) : null}
       </section>
+
+      {/* UP NEXT.
+          **Deliberately NOT behind `!inDetailView`**, unlike the two sections
+          around it. A show page is exactly where somebody presses `+ queue`,
+          and a panel that vanishes at that moment is the one thing this
+          placement has to avoid. It is not behind `entryResolved` either:
+          that gate exists so a deep link does not pay for a relay-backed
+          section, and this one reads the store and touches no network.
+          `!query` keeps it out of a search, where the screen belongs to the
+          results. It renders nothing when the queue is empty — the panel makes
+          that decision itself. */}
+      {queueMounted && !query && hasQueue && (
+        <section className="max-w-7xl mx-auto px-4 pt-8">
+          {/* The inner cap is not decoration. The section aligns with the hero
+              above it, but a queue row at the full 1280px puts its reorder and
+              remove controls a screen-width from the title they act on. The
+              player's pane is narrower than this, so the cap changes nothing
+              there. */}
+          <div className="max-w-3xl">
+            <QueueList />
+          </div>
+        </section>
+      )}
 
       {entryResolved && !inDetailView && (
         <section className="max-w-7xl mx-auto px-4 pt-12">
