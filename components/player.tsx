@@ -628,6 +628,28 @@ export function Player() {
   const chapterNav = buildChapterNav(chapters, activeIdx, positionSec, seekMedia);
   const transcriptActiveIdx = transcriptIndexAt(transcriptCues, positionSec);
 
+  // Below `sm:` the text column carries ONE secondary line instead of three.
+  // The mini-bar stacks the show title, a buffering readout and the chapter
+  // label on top of the episode title and the seek row — five lines of text at
+  // 390px in a bar that exists to be glanced at, reported as "too busy". Every
+  // one of those lines still renders at `sm:` and up, and all three are one tap
+  // away in the fullscreen player, which this whole bar is a button for: the
+  // same hide-don't-drop trade `sidesOnDesktopOnly` and <VideoToggle> already
+  // make on this row.
+  //
+  // The ladder is what the listener needs NOW: a stall is actionable, the
+  // chapter names what is playing, the show is context the episode title above
+  // it usually carries anyway. **`audioErr` is deliberately NOT in it** — an
+  // error keeps its own wrapping line at every width, because truncating the
+  // one sentence that says why playback died is the failure this bar already
+  // documents. The chapter keeps its `text-bolt/90` here so the collapsed line
+  // still says which of the three it is showing.
+  const miniStalled = stalled && !audioErr;
+  const miniChapter = !miniStalled ? activeChapter?.title : undefined;
+  const miniSecondary = miniStalled
+    ? '⋯ buffering — press play to retry'
+    : miniChapter || podcast.title;
+
   function onMediaError(code: number | undefined) {
     // Fired by the <video> too, so name the right medium.
     const what = isHlsRef.current ? 'live stream' : isVideoRef.current ? 'video' : 'audio';
@@ -822,8 +844,11 @@ export function Player() {
                 (~40px) so the already-truncating title just truncates slightly
                 earlier; nothing else moves. <StreamPulse> subscribes to the
                 engine itself, so this stays off <Player>'s render path. */}
-            <div className="flex items-center gap-2 text-[11px]">
-              <span className="text-muted truncate">{podcast.title}</span>
+            <div className="flex items-center gap-2 text-[11px] min-w-0">
+              <span className={`truncate sm:hidden ${miniChapter ? 'text-bolt/90' : 'text-muted'}`}>
+                {miniSecondary}
+              </span>
+              <span className="hidden sm:inline text-muted truncate">{podcast.title}</span>
               <StreamPulse />
             </div>
             {/* The error is the one line the user actually needs to read when
@@ -843,8 +868,11 @@ export function Player() {
                 plain slow network — and guessing at a cause we've already
                 mitigated would be a confident lie. Say what is true and what to
                 do about it. */}
-            {stalled && !audioErr && (
-              <div className="text-[11px] text-muted mt-1">
+            {/* `hidden sm:block`: below `sm:` this line is folded into the one
+                secondary line above — the same sentence, shortened to fit one
+                truncating row. It is hidden, never dropped. */}
+            {miniStalled && (
+              <div className="hidden sm:block text-[11px] text-muted mt-1">
                 ⋯ buffering — press play to retry if it doesn&rsquo;t resume.
               </div>
             )}
@@ -875,10 +903,13 @@ export function Player() {
                   </div>
                   <span className="text-[10px] text-muted tabular-nums">{fmt(duration)}</span>
                 </div>
+                {/* Same fold: below `sm:` the chapter is named on the one
+                    secondary line above, without the time range that does not
+                    fit beside it. */}
                 <ChapterLabel
                   chapter={activeChapter}
                   end={activeChapterEnd}
-                  className="text-[10px] mt-0.5"
+                  className="hidden sm:block text-[10px] mt-0.5"
                 />
               </>
             )}
