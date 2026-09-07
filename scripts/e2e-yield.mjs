@@ -95,7 +95,7 @@
 // short-circuits every copy after the first, so `handleNext` returns before
 // `JSON.parse` and before `verifyEvent` (`lib/esm/index.js:842`, `:1209-1216`)
 // — and still pays a yield. That is the duplicate path, which is what a real
-// session mostly receives, and it is the same choice `check-yield.mjs:72-75`
+// session mostly receives, and it is the same choice `check-yield.mjs:81-84`
 // makes for the same reason.
 //
 // IT MUST DRIVE THE REAL BUNDLE, AND `bmb:relays` CANNOT GET IT THERE
@@ -151,7 +151,7 @@ const HEADED = process.argv.includes('--headed');
 const KEEP = process.argv.includes('--keep');
 const LIVE = process.argv.includes('--live');
 
-// The same N as the Node measurement (`check-yield.mjs:29`), so the two halves
+// The same N as the Node measurement (`check-yield.mjs:34`), so the two halves
 // of #313 are quoted against the same denominator. It is the PUMP that is
 // capped at this, not the poll loop — see `startPump`.
 const TARGET_YIELDS = 60_000;
@@ -490,7 +490,7 @@ async function measure({ mode, cdpPort, pumpPort, hermetic }) {
   // Then collect repeatedly with a wait between. One collection does not finish
   // weak-callback reclamation, and a FinalizationRegistry's callbacks need task
   // turns of their own — V8 runs them in batches. Same shape as
-  // check-yield.mjs:79-82, with more rounds because there are far more objects.
+  // check-yield.mjs:88-91, with more rounds because there are far more objects.
   for (let i = 0; i < 4; i += 1) { await gc(); await wait(900); }
 
   const after = await js('window.__yieldProbe()');
