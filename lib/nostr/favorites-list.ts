@@ -20,9 +20,14 @@
 //
 //   TAG ORDER IS THE DATA.
 //
-// An `i` tag is bare — `['i', '<identifier>']`, two elements. An item's parent
-// feed and its medium are carried by POSITION IN THE ARRAY and by nothing on
-// the entry itself: `['medium', v]` is a running value applying to every entry
+// An `i` tag is `['i', identifier, hint, marker]`, and only position 1 is ours
+// to author. Position 2 is NIP-73's URL hint and position 3 is the spec's
+// feed-favorite marker; we read neither, and we CARRY BOTH — rule 4 says a tag
+// we cannot read is carried whole, and that is as true of the tail of a tag we
+// can place as of one we cannot. Re-rendering `['i', id]` from our own model
+// erases another writer's marker on the first publish after the read, silently,
+// with our own screen correct throughout. An item's parent feed and its medium
+// are carried by POSITION IN THE ARRAY and by nothing on the entry itself: `['medium', v]` is a running value applying to every entry
 // after it, and an item belongs to the most recently opened feed group. So a
 // client that parses entries into structs and rebuilds the array from them —
 // sorting, deduping, or emitting groups in a different order — silently
@@ -225,6 +230,19 @@ export interface FeedGroup {
   /** undefined means "not told". NEVER defaulted — see `tagsFromList`. */
   medium?: string;
   itemGuids: string[];
+  /**
+   * Everything past the identifier on the `i` tag we READ, verbatim.
+   *
+   * `['i', id, ...extra]` — position 2 is NIP-73's URL hint, position 3 the
+   * spec's feed-favorite marker. We author neither and we drop neither.
+   * Undefined for a group this device originated: there is nothing to carry on
+   * an entry no other writer has seen.
+   *
+   * `mergeFavoritesList` rebuilds a group we HOLD field by field, so this has
+   * to be named there explicitly or the tail is lost on exactly the groups this
+   * device cares most about — while the carried-group path still looks right.
+   */
+  extra?: string[];
 }
 
 /**
@@ -818,7 +836,11 @@ export function parseFavoritesList(tags: string[][]): ParsedList {
 
     const feedGuid = parseShowGuid(id);
     if (feedGuid !== null) {
-      current = { feedGuid, medium, itemGuids: [] };
+      // Carried, not read. "We can't read this" is not "this is junk" — the
+      // same rule the loose branch below applies to a whole tag, applied here
+      // to the tail of one we can place.
+      const extra = tag.length > 2 ? tag.slice(2) : undefined;
+      current = { feedGuid, medium, itemGuids: [], extra };
       nodes.push({ t: 'group', group: current });
       continue;
     }
@@ -942,7 +964,8 @@ export function tagsFromList(list: ParsedList): string[][] {
       tags.push(node.loose.tag.slice());
       return;
     }
-    tags.push(['i', showId(node.group.feedGuid)]);
+    // The identifier from our model, everything past it from the tag we read.
+    tags.push(['i', showId(node.group.feedGuid), ...(node.group.extra ?? [])]);
     for (const guid of node.group.itemGuids) tags.push(['i', itemId(guid)]);
   };
 
@@ -1176,6 +1199,13 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
           first.wireItems += 1;
         }
         if (!into.group.medium && group.medium) into.group.medium = group.medium;
+        // Same rule as the medium hint: fill a gap, never overwrite. The first
+        // group's tag is the one that survives the fold, so a tail on the
+        // second is taken only when the first had none — dropping it would lose
+        // a mark nothing else on the list names.
+        if (!into.group.extra?.length && group.extra?.length) {
+          into.group.extra = group.extra;
+        }
       }
       continue;
     }
@@ -1203,6 +1233,10 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
         feedGuid: group.feedGuid,
         // Fill a gap, never overwrite a value another writer set.
         medium: group.medium ?? mine.medium,
+        // The tail comes from the WIRE, always. `mine` is built from this
+        // device's own favorites and has none to offer, so taking it from there
+        // would blank whatever another writer put past the identifier.
+        extra: group.extra,
         // Local items the read didn't carry are either NEW here, or ones we
         // published that another writer has since removed. Only the first may
         // go up: re-adding the second is the resurrection loop, the same one

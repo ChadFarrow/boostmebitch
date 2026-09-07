@@ -2120,6 +2120,114 @@ section('a refused read may still be PAINTED when the guard protects nothing');
 }
 
 // ---------------------------------------------------------------------------
+section('everything past the identifier on an `i` tag is carried, never authored');
+// ---------------------------------------------------------------------------
+//
+// `['i', id, hint, marker]`. Position 2 is NIP-73's URL hint and position 3 is
+// the spec's feed-favorite marker — the thing that finally distinguishes "the
+// user favorited this show" from "this group is open so the track below it can
+// name a parent". We read neither yet. Rule 4 says a tag we cannot read is
+// carried WHOLE, and we honoured that only for a tag we could not PLACE: a feed
+// group came back out of `tagsFromList` as `['i', id]`, rebuilt from our own
+// model, so every element past the identifier was dropped on the first publish
+// after the read. Silently, and with our own screen correct throughout.
+//
+// Nothing is on those positions today, which is the only reason no data has
+// been lost yet. Both writers of this event had the same defect, so the spec
+// names it as the prerequisite: neither app may start WRITING a marker until
+// both can CARRY one.
+{
+  const HINT = 'https://example.com/feed.xml';
+
+  // A tail on a carried group and a tail on a held one are different code
+  // paths, and only the first is fixed by the parser. A held group is rebuilt
+  // field by field from local state in `mergeFavoritesList`, and local state is
+  // this device's own favorites — which have no tail to offer.
+  const wire = [
+    ['alt', 'PC 2.0 Favorites'],
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`, HINT, 'fav'],
+    ['i', `podcast:item:guid:${I_A}`],
+    ['i', `podcast:guid:${F_MUSIC2}`, '', 'placement'],
+    ['i', `podcast:item:guid:${I_B}`],
+    ['k', 'podcast:guid'],
+    ['k', 'podcast:item:guid'],
+  ];
+
+  check('a list of marked groups we contribute nothing to comes back byte-identical',
+    emit(parseFavoritesList(wire)), wire);
+
+  const holding = groupLocalFavorites([
+    { id: showId(F_MUSIC), medium: 'music' },
+    { id: itemId(I_A), feedRef: showId(F_MUSIC), medium: 'music' },
+  ]);
+  const held = emit(parseFavoritesList(wire), holding,
+    { feeds: [showId(F_MUSIC)], items: [itemId(I_A)] });
+  check('the tail of a group we HOLD survives the merge that rebuilds it',
+    held.find((t) => t[1] === `podcast:guid:${F_MUSIC}`),
+    ['i', `podcast:guid:${F_MUSIC}`, HINT, 'fav']);
+
+  // Rule 5 compares the merged array against the read. While the tail was
+  // dropped, every load of a marked list produced different bytes, so we
+  // republished — and the republish is what erased the marks. Two apps doing
+  // that to each other is the rewrite loop with data loss on top.
+  check('a marked list is a fixed point, so we publish nothing',
+    emit(parseFavoritesList(emit(parseFavoritesList(wire), holding,
+      { feeds: [showId(F_MUSIC)], items: [itemId(I_A)] })), holding,
+      { feeds: [showId(F_MUSIC)], items: [itemId(I_A)] }),
+    wire);
+
+  // Two groups for one feed fold into the first, so the first tag is the one
+  // that survives. A tail on the second is taken only to fill a gap — the same
+  // rule the medium hint follows — because dropping it loses a mark nothing
+  // else on the list names.
+  const dupFirst = parseFavoritesList([
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`, HINT, 'fav'],
+    ['i', `podcast:item:guid:${I_A}`],
+    ['i', `podcast:guid:${F_MUSIC}`, '', 'placement'],
+    ['i', `podcast:item:guid:${I_B}`],
+  ]);
+  check('the first group\'s tail wins the fold',
+    mergeFavoritesList({ read: dupFirst, local: NO_LOCAL, baseline: EMPTY_BASELINE })
+      .nodes.find((n) => n.t === 'group').group.extra,
+    [HINT, 'fav']);
+
+  const dupSecond = parseFavoritesList([
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`],
+    ['i', `podcast:item:guid:${I_A}`],
+    ['i', `podcast:guid:${F_MUSIC}`, '', 'fav'],
+    ['i', `podcast:item:guid:${I_B}`],
+  ]);
+  check('...and a tail on the duplicate fills a gap rather than going with it',
+    mergeFavoritesList({ read: dupSecond, local: NO_LOCAL, baseline: EMPTY_BASELINE })
+      .nodes.find((n) => n.t === 'group').group.extra,
+    ['', 'fav']);
+
+  // MUST STILL WORK. Carrying is what this change is; authoring is a separate
+  // feature we have not shipped. A tail invented here would state an answer the
+  // user never gave — `fav` manufactures a feed favorite, `placement` deletes
+  // one no other app will restate.
+  const originated = emit(parseFavoritesList([]), groupLocalFavorites([
+    { id: showId(F_POD), medium: 'podcast' },
+    { id: itemId(I_C), feedRef: showId(F_POD), medium: 'podcast' },
+  ]));
+  check('we author no tail of our own',
+    originated.filter((t) => t[0] === 'i').every((t) => t.length === 2), true);
+
+  // (naive) the implementation this replaces: the identifier out of our model
+  // and nothing else. It is the version that was shipping, so every check above
+  // that a correct writer must pass has to fail against it, or it proves
+  // nothing.
+  const naiveEmit = (read) =>
+    tagsFromList(mergeFavoritesList({ read, local: NO_LOCAL, baseline: EMPTY_BASELINE }))
+      .map((t) => (t[0] === 'i' ? t.slice(0, 2) : t));
+  check('(naive) rebuilding the entry bare drops the marks',
+    JSON.stringify(naiveEmit(parseFavoritesList(wire))) === JSON.stringify(wire), false);
+}
+
+// ---------------------------------------------------------------------------
 console.log('\nfavorites-list.ts stays loadable under plain Node');
 // ---------------------------------------------------------------------------
 {
