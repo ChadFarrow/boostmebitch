@@ -82,6 +82,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // a 63-character npub would be truncated mid-bech32 with nothing reporting it.
   const [mentions, setMentions] = useState<MentionNpub[]>([]);
   const [name, setName] = useState('');
+  const setWalletOpen = useApp((s) => s.setWalletOpen);
   const [rail, setRail] = useState<Rail | null>(null);
 
   // Sparse while a send is in flight — legs settle biggest-share-first, not in
@@ -575,10 +576,27 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
         <div className="p-5 space-y-4">
 
+          {/* A CONTROL, not an instruction, and the instruction was WRONG.
+              It read "connect one with ⚡ Connect wallet (top right)", which
+              names a control in <AppHeader> — and <AppHeader> renders on `/`,
+              /live, /favorites, /playlists and /queue ONLY. On /stream/<naddr>,
+              /npub/<npub> and /live/<npub> there is nothing in the top right,
+              and those are exactly the routes somebody arrives on from a shared
+              link and presses BOOST. The message pointed at empty space.
+
+              Opening the wallet from here also stacks correctly: `lockScroll`
+              is refcounted app-wide, <WalletModalHost> lives in the layout, and
+              this modal already re-picks its rail through `useWalletChange`, so
+              connecting a wallet updates the picker underneath without losing
+              the amount or the message the user has typed. */}
           {!rail && (
-            <div className="text-[11px] text-nostr/80">
-              No wallet connected — connect one with ⚡ Connect wallet (top right).
-            </div>
+            <button
+              type="button"
+              onClick={() => setWalletOpen(true)}
+              className="btn-mini border-nostr/60 text-nostr hover:border-nostr hover:text-nostr w-full justify-center"
+            >
+              ⚡ NO WALLET — CONNECT ONE
+            </button>
           )}
           {/* Above the amount deliberately: which wallet pays is the decision
               the sticky-footer balance is reporting on, so it has to be
