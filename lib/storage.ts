@@ -5,12 +5,17 @@
 // raw key strings live in exactly one file and SSR/quota guards aren't
 // duplicated across components.
 
-import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, StoredBoost } from './types';
+import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, QueueItem, StoredBoost } from './types';
 import type { DiscoveredNote, FavoritesBaseline, FavoritesPrivacy, MuteListState, ProfileMetadata } from './nostr';
 // Value import, so it must come from the import-free leaf rather than the
 // './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
 // and unlike the type-only line above a value import does NOT erase.
 import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
+// `lib/util.ts` imports nothing at runtime (its one import line is type-only,
+// which is what lets the check scripts load it under plain Node), so taking a
+// value import from it here cannot close a cycle.
+import { LISTEN_QUEUE_CAP } from './util';
+
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -63,6 +68,7 @@ const KEYS = {
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
+  listenQueuePrefix: 'bmb:listen_queue', // + ':<npub>' — the "Up Next" cross-show listen queue. An ORDERED ARRAY, never a keyed object: the order IS the data. A user DECISION, not a network-regenerable cache — deliberately absent from EVICTABLE_PREFIXES, same class as bmb:ep_order and bmb:list_unlock. Items are trimmed at ENQUEUE (lib/util.ts `trimForQueue`) and capped at LISTEN_QUEUE_CAP. No migration from any global key: there has never been one.
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
   favClearedPrefix: 'bmb:fav_cleared', // + ':<npub>' — '1' while this device is DELIBERATELY holding no favorites. The one thing that tells "the user unfavorited everything" from "the store has not hydrated yet", which are otherwise the same bytes: an empty store beside a baseline that claims ids. Set only by a removal that empties the list; cleared by any add and by the publish that carries the removal.
@@ -1613,6 +1619,53 @@ export const storage = {
         JSON.stringify([entry, ...list].slice(0, STREAMED_CAP)),
       );
     },
+  },
+
+  /**
+   * The "Up Next" listen queue, per npub (`:guest` signed out).
+   *
+   * **An ARRAY, not a `Record`, because the order is the data.** Every other
+   * per-npub user value here is keyed by guid; this one is a list the listener
+   * reorders by hand, and a keyed object would leave that order to whatever
+   * `Object.keys` returns.
+   *
+   * **A user decision, not a cache**, so deliberately absent from
+   * `EVICTABLE_PREFIXES`. Nothing on the network can rebuild a queue somebody
+   * assembled, which is the whole membership test for that list. The
+   * consequence runs the other way too and is worth knowing: because it is not
+   * evictable, a queue write on a full store will evict `bmb:social:*` /
+   * `bmb:feed:*` to fit. That is the correct precedence — a cache never
+   * displaces a setting — and it is why the cap in `lib/util.ts` matters.
+   *
+   * The read REFUSES a row with no audio or no show. An older schema or a
+   * hand-edited value would otherwise put a dead track in the player, which
+   * reports as playing and is silent — the same refusal `isPlayableRow` makes
+   * one level up, kept here as well because this is the one input that does not
+   * come from the app.
+   */
+  listenQueue: {
+    get: (npub: string | null | undefined): QueueItem[] => {
+      const raw = safeGet(identityKey(KEYS.listenQueuePrefix, npub));
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return (parsed as QueueItem[])
+          .filter((i) => !!i?.episode?.enclosureUrl && typeof i?.podcast?.id === 'number')
+          .slice(0, LISTEN_QUEUE_CAP);
+      } catch {
+        return [];
+      }
+    },
+    /** Returns whether the value reached DISK. `persistQueue` in lib/store.ts
+     *  must not drop that answer: a queue held only in `safeSet`'s memory
+     *  mirror works all session and is gone on the next load, which presents as
+     *  "it forgot my queue", never as a storage fault. */
+    set: (npub: string | null | undefined, v: QueueItem[]): boolean =>
+      safeSet(
+        identityKey(KEYS.listenQueuePrefix, npub),
+        JSON.stringify(v.slice(0, LISTEN_QUEUE_CAP)),
+      ),
   },
 
   /** Favorites are namespaced by npub; signed-out users use `:guest`. */
