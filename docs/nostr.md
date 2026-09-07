@@ -1947,3 +1947,47 @@ So an *explicit* close cannot reclaim a socket that never finished connecting. `
 **`newPool()` (`lib/nostr/pool.ts`) is the only way to build a pool.** The install is a prototype patch, so in principle one call anywhere covers the tab — routing all five construction sites through one door is what keeps that true when a sixth is added in a file nobody thought to check. The three short-lived NIP-46 pools in `bunker.ts` need it most: a `nostrconnect://` pairing waits out its whole 120-second window against a two-relay set a phone may never reach, and `docs/signers.md` already records that every app-switch used to stack another set of sockets against the per-host limit on the exact device the flow exists for.
 
 **The `@getalby/sdk` copy at 2.15.0 is deliberately left alone.** It leaks on a failed connect the same way, but its `close()` is unconditional, and [`CLAUDE.md`](../CLAUDE.md) already requires every `client()` in `lib/v4v/nwc.ts` to be closed in a `finally` — which runs on a connect failure too. So that copy's sockets are reclaimed by the teardown this repo already mandates. Lifting it with an `overrides` entry would move a package we do not control across ten minor versions to fix a path that is already covered.
+
+## The yielded MessagePort, and why the browser is a different question from Node
+
+`AbstractRelay` pumps every incoming message through `handleNext()` and then `await yieldThread()`. In the pinned 2.19.4 that yield builds a fresh `MessageChannel` per message, calls `port1.start()`, and closes neither port (`node_modules/nostr-tools/lib/esm/index.js:593-613`, awaited from `runQueue` at `:820`, driven from `_onmessage` at `:1006`).
+
+The service half of this is settled — [#312](https://github.com/ChadFarrow/boostmebitch/issues/312), `services/nostr-index/src/node-yield.ts`, measured at 2,375 B/message and pinned by `verify:yield`. The browser half is [#313](https://github.com/ChadFarrow/boostmebitch/issues/313), and it is **not the same question**, because the answer is per engine.
+
+**Chrome retains the ports, structurally.** Blink decides collection with `MessagePort::HasPendingActivity() { return started_ && IsEntangled(); }`, beside the comment *"entangled message ports should always be treated as if they have a strong reference"*. nostr-tools starts port1 and closes nothing, so both conditions hold for the life of the page. **The `removeEventListener` inside the handler does not help** — Blink never consults listeners, which is the trap here: the library looks like it cleans up after itself.
+
+**WebKit does not.** `virtualHasPendingActivity()` returns false once a port has no message listener, and the handler removes its own. So the pair becomes collectable and Safari — including the installed iOS home-screen app, which is where this app is tested most — does not pay it. **This is a Chrome and Android problem.** Do not generalize a measurement taken on one engine to the other.
+
+### Measured, with a control
+
+`npm run e2e:yield` drives the real app in real Chrome and compares two arms differing by exactly one thing: whether the ports a yield builds are closed after delivery. Over 60,000 yields, three runs:
+
+```
+  stock    100.0% of ports kept    ~20,000 msg/s
+  closing    0.0% of ports kept     ~8,000 msg/s
+  cost     ~4,100 B of renderer memory retained per relay message
+```
+
+Not one port is collected in the stock arm — the 100% is not a rounding artefact, it is every port the page ever built.
+
+**Quote the RSS difference between the arms, never one arm's RSS.** Neither allocator returns pages eagerly, so each arm's figure is a high-water mark including the message churn both pay equally; the stock arm alone overstates the leak by roughly 2x. And **do not quote the V8 heap number** (`Runtime.getHeapUsage` reported ~130 B/yield): a Blink `MessagePort` is an Oilpan object holding a Mojo pipe, mostly off that heap, so it understates by more than an order of magnitude.
+
+### Does it matter? On a homepage, less than it looks
+
+`npm run e2e:yield -- --live` runs a signed-out homepage against the real relays for five minutes. Across two runs, **every yield landed in the first minute** (1,762 and 3,168) and the **last minute took zero**. So the cost is bounded per page load at roughly 8–13 MB, and it does **not** grow with session length on that surface — which is the opposite of the service, whose whole problem was that it ran for days.
+
+That is the argument against rushing a fix, and it is why #313 stays open rather than becoming a patch. Two things it does not cover, and either could change the answer: `lib/nostr/live-chat.ts` holds a subscription open for the life of a live show and polls every 12s, and a long session of in-page navigation pays the cold-load burst again on each show it opens.
+
+### If a fix is ever wanted, it needs no build-time patch
+
+`yieldThread` is module-private, but **`runQueue` is an ordinary method on `AbstractRelay.prototype`**, and `queueRunning`/`handleNext` are `private` only in the `.d.ts` — no runtime privacy, the same situation `signers.md` records for `BunkerSigner.pool`. So the handle already used for the socket fix above, `Object.getPrototypeOf(Relay.prototype)` (`lib/nostr/relay-socket.ts:104`), reaches it. No `patch-package`, no webpack alias, no global touched.
+
+**The shape is a pooled channel, not a per-message close.** The control arm closes both ports per message and runs ~2.7x slower for it. React's scheduler shows the right pattern: one `MessageChannel` at module scope, driven forever (`scheduler/cjs/scheduler.production.js:197`). A `runQueue` override awaiting a single pooled channel keeps the yield and drops the churn.
+
+**Never fix it by deleting `globalThis.MessageChannel`**, the way the service does. Two reasons, and the one this repo used to give was wrong — it said the yield becomes a no-op, but 2.19.4's ladder has three rungs, so a page lands on `setTimeout(resolve, 0)`. The real reasons: that path is clamped to 4 ms past nesting depth 5, capping the drain at roughly 250 messages/second under exactly the burst the yield exists for; and **React's scheduler reads that global at module load**, so deleting it degrades React's own scheduling. Node had no such neighbour, which is what makes the delete acceptable there and nowhere else.
+
+### Two traps in measuring this, both already paid for
+
+**`bmb:relays` cannot point the app at a local relay.** `storage.relays` has exactly one reader, `resolvePublishRelays` (`lib/nostr/relays.ts:161`), so it governs publishes and the reads that go with them — favorites, mutes, backups. The feed, the live-stream strip and the profile ladder use `DEFAULT_RELAYS` / `LIVE_STREAM_RELAYS` / `PROFILE_RELAYS` directly and ignore it. The first version of `e2e-yield.mjs` set it and received **zero** REQ frames while the page happily drained the public network — a run that looks hermetic and is not. Redirection has to happen at name resolution instead (`--host-resolver-rules` onto a local TLS pump), which is what the script does now.
+
+**A probe on `MessageChannel` must arm on `start()`, not on construction.** React's scheduler builds one and drives it with `onmessage`, never calling `start()`. Counting constructions folds it into the numbers, and a control that closes ports would close **React's scheduler channel** underneath the page.
