@@ -278,6 +278,26 @@ function NoteCardImpl({
     if (loaded.episode) openEpisode(loaded.episode);
   }
 
+  /**
+   * Queue this note's episode, resolved the same way `openBoostedEpisode`
+   * resolves it.
+   *
+   * **The `/api/feed` round trip is the point, not an overhead to optimise
+   * away.** The episode this card was labelled from is PI's indexed record,
+   * and only the feed route carries the value block. Queueing the PI record
+   * would put an item in Up Next that plays and pays nobody — a boost button
+   * with nothing to boost, and a streaming settle with no recipients, neither
+   * of which says anything on screen.
+   *
+   * It is cheap in practice: `loadFeed` coalesces a request already in flight,
+   * so queueing from a feed of notes about one show pays once.
+   */
+  async function queueBoostedEpisode(p: Podcast, guid: string): Promise<boolean> {
+    const loaded = await loadEpisodeFromFeed(p.id, guid);
+    if (!loaded?.episode) return false;
+    return useApp.getState().enqueueEpisode(loaded.episode, loaded.podcast);
+  }
+
   function openComposer(mode: 'reply' | 'quote') {
     setComposerMode((curr) => (curr === mode ? null : mode));
     setComposerErr(null);
@@ -512,6 +532,13 @@ function NoteCardImpl({
             // resolves to nothing.
             onOpenEpisode={
               episodeGuid ? () => openBoostedEpisode(podcast, episodeGuid) : undefined
+            }
+            // Same shape and the same reason as `onOpenEpisode`: built only
+            // when there is a guid to look up, and it goes through
+            // `loadEpisodeFromFeed` rather than handing over the PI record
+            // above, which carries no value block.
+            onQueue={
+              episodeGuid ? () => queueBoostedEpisode(podcast, episodeGuid) : undefined
             }
           />
         )}
