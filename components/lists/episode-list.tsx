@@ -25,6 +25,7 @@ import { PodcastCover } from '../podcast-cover';
 import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
 import { FavEpisodeHeart, FavHeart } from '../fav-heart';
+import { QueueButton } from '../queue-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 
@@ -990,7 +991,11 @@ export function EpisodeList({
                   <span className="hidden sm:inline">BOOST</span>
                 </button>
               )}
-              <div className="self-center flex-shrink-0">
+              {/* SIBLINGS of the row's tap targets, never children of them —
+                  a button may not contain a button. Both are `flex-shrink-0`
+                  so neither squashes the title column. */}
+              <div className="self-center flex-shrink-0 flex items-center gap-1">
+                <QueueButton episode={e} podcast={data.podcast} />
                 <FavEpisodeHeart episode={e} podcast={data.podcast} />
               </div>
               </div>
