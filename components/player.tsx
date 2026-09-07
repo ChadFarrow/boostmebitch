@@ -81,6 +81,17 @@ function primePlaybackAudioSession(): void {
   } catch { /* unsupported, or refused — nothing to fall back to */ }
 }
 
+/**
+ * `HTMLMediaElement.HAVE_FUTURE_DATA` — the lowest readyState at which the
+ * element can play the next frame. Below it, playback has run dry.
+ *
+ * Named rather than written as `3`, because it is the whole test behind whether
+ * the player may claim a live stream stopped: everything at or above it is
+ * audible, everything below it is the gap the listener is hearing. A bare `3`
+ * in that comparison reads as a tuning knob somebody may nudge.
+ */
+const HAVE_FUTURE_DATA = 3;
+
 function playOrPark(el: HTMLMediaElement, park: () => void): void {
   primePlaybackAudioSession();
   el.play().catch((e: unknown) => {
@@ -273,6 +284,20 @@ export function Player() {
   const videoNode = videoNodeRef.current;
   const hls = useRef<Hls | null>(null);
   const recoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * The sentence a live-stream reconnect WOULD say, held until the listener can
+   * tell. Non-null exactly while an hls.js network recovery is armed.
+   *
+   * A fatal hls.js error and an audible gap are different moments: the loader
+   * gives up the instant a request fails, while the fragments already in the
+   * buffer keep playing for as long as they last. Painting on the error is what
+   * put "stream unreachable" over a stream nobody heard stop. So the error
+   * records the sentence here, and it reaches the screen from the two places
+   * that know the element actually ran dry — this handler's own readyState
+   * test, and the `waiting`/`stalled` events. Cleared by FRAG_BUFFERED (the
+   * loader caught back up) and by a fresh source.
+   */
+  const reconnectMsg = useRef<string | null>(null);
   // Watchdog for the foreground-resume nudge — see the visibilitychange effect.
   const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPlayingRef = useRef(isPlaying);
@@ -286,6 +311,7 @@ export function Player() {
     lastTick.current = -1;
     pausedLive.current = false;
     setAudioErr(null);
+    reconnectMsg.current = null;
     // A fresh source is a fresh verdict — clear the stall so a recovered element
     // (this effect re-runs on the reload nonce that recovery itself bumps) can't
     // keep reporting the starvation it was just rescued from.
@@ -343,11 +369,43 @@ export function Player() {
           // catch up — skipping content. Default live behaviour keeps a ~3-segment
           // cushion and gently catches up (maxLiveSyncPlaybackRate) instead of
           // seeking past missed segments.
+          //
+          // `ignorePlaylistParsingErrors` IS THE FIX FOR `levelParsingError`,
+          // AND IT IS NOT A WAY OF HIDING A BROKEN STREAM. On a live playlist
+          // that error is a CONTINUITY ASSERTION over two snapshots, not a
+          // report that the playlist could not be read: hls.js merges each
+          // reload over the previous one and gives up if a segment URI moved to
+          // a different media-sequence number, or if the discontinuity counter
+          // changed under it (`mapFragmentIntersection` — "media sequence
+          // mismatch" / "discontinuity sequence mismatch"). A broadcaster that
+          // restarts its encoder, an origin that rolls its live window across
+          // backends, a stream stitched from more than one source — all of them
+          // trip it while the media stays perfectly playable. Every zap.stream
+          // broadcast is SINGLE-RENDITION, and that is what makes it fatal
+          // rather than a warning: `error-controller` answers a parsing error
+          // by switching level, there is no other level, so it escalates and
+          // calls `stopLoad()`.
+          //
+          // RECONNECTING CANNOT FIX IT, which is why the handler below is not
+          // the answer: `stream-controller` stores the new snapshot even on the
+          // error path, so the next reload merges against the newest playlist
+          // and mismatches again. An origin that mismatches every consecutive
+          // pair keeps the stream behind "stream unreachable — reconnecting…"
+          // for as long as it is live.
+          //
+          // What we give up is nothing a viewer wants: the flag only suppresses
+          // the assertion, so a playlist that genuinely cannot be read still
+          // surfaces — a body that yields no fragments becomes `levelEmptyError`,
+          // which hls.js retries by itself on a LIVE playlist and escalates to
+          // the handler below only after exhausting that, and an unreachable one
+          // is still `levelLoadError`/`levelLoadTimeout`. We are a viewer, not a
+          // packager: a stream we can play beats a playlist that validates.
           const inst = new HlsLib({
             enableWorker: true,
             lowLatencyMode: false,
             liveSyncDurationCount: 4,
             maxLiveSyncPlaybackRate: 1.5,
+            ignorePlaylistParsingErrors: true,
           });
           hls.current = inst;
           inst.loadSource(url);
@@ -371,6 +429,7 @@ export function Player() {
           inst.on(HlsLib.Events.FRAG_BUFFERED, () => {
             netRetries = 0;
             mediaRetries = 0;
+            reconnectMsg.current = null;
             setAudioErr(null);
           });
           inst.on(HlsLib.Events.ERROR, (_evt, data) => {
@@ -388,18 +447,25 @@ export function Player() {
               netRetries++;
               // A FATAL NETWORK ERROR IS NOT PROOF THE LISTENER HEARD ANYTHING
               // STOP, so the recovery starts on the first one and the CLAIM
-              // waits. zap.stream's playlist reload intermittently fails to
-              // parse, and on a single-rendition stream hls.js has no level to
-              // switch to, so it escalates `levelParsingError` to fatal —
-              // while the fragments already in the buffer play on. The banner
-              // painted, `FRAG_BUFFERED` cleared it, the next reload painted it
-              // again: reported as a message flashing over a stream that was
-              // fine. Speak when the listener can actually tell — the element
-              // is starved (below HAVE_FUTURE_DATA), or this is the SECOND
-              // consecutive failure with no fragment buffered between them.
-              if (netRetries > 1 || el.readyState < 3) {
-                setAudioErr(`stream unreachable — reconnecting…${detail}`);
-              }
+              // waits for the gap. The fragments already in the buffer play on
+              // for as long as they last — routinely tens of seconds — so an
+              // error-driven banner is a message over a stream the listener can
+              // still hear. **A COUNT OF FAILURES IS NOT A MEASURE OF SILENCE
+              // EITHER**: the previous version also spoke on the second
+              // consecutive failure, which on a deep buffer is the same lie two
+              // seconds later, and that is the report this replaces.
+              //
+              // The element is the only witness. `readyState` below
+              // HAVE_FUTURE_DATA means it cannot play the next frame, which is
+              // exactly what the listener hears; `waiting`/`stalled` say the
+              // same thing at the moment it happens, so the sentence is parked
+              // in `reconnectMsg` for those handlers to paint. Both matter: the
+              // buffer usually outlives the error that killed the loader, and
+              // the retry backoff runs out to 15 s, so waiting for the next
+              // error to coincide with the gap would leave a dead stream silent
+              // and unexplained.
+              reconnectMsg.current = `stream unreachable — reconnecting…${detail}`;
+              if (el.readyState < HAVE_FUTURE_DATA) setAudioErr(reconnectMsg.current);
               recoverTimer.current = setTimeout(() => {
                 if (hls.current === inst) inst.startLoad();
               }, delay);
@@ -407,6 +473,9 @@ export function Player() {
               inst.recoverMediaError();
             } else {
               clearRecover();
+              // Nothing is coming back from this one, so there is no gap to wait
+              // for — say it now.
+              reconnectMsg.current = null;
               setAudioErr(`live stream unavailable${detail}`);
               inst.destroy();
               if (hls.current === inst) hls.current = null;
@@ -417,6 +486,7 @@ export function Player() {
       }
       return () => {
         cancelled = true;
+        reconnectMsg.current = null;
         if (recoverTimer.current) { clearTimeout(recoverTimer.current); recoverTimer.current = null; }
         if (hls.current) {
           hls.current.destroy();
@@ -756,6 +826,13 @@ export function Player() {
     ? '⋯ buffering — press play to retry'
     : miniChapter || podcast.title;
 
+  // The element ran dry. If a live-stream reconnect is armed, this is the moment
+  // its sentence becomes true, so paint it; otherwise there is nothing to add to
+  // the plain buffering state.
+  function noteLiveGap() {
+    if (reconnectMsg.current) setAudioErr(reconnectMsg.current);
+  }
+
   function onMediaError(code: number | undefined) {
     // A native-HLS refusal is not the end of the road — retry the same url
     // through hls.js first. `hls.current` is null exactly when the native branch
@@ -810,8 +887,14 @@ export function Player() {
             // Progressive video (a podcast video rendition) just stops at the end;
             // live HLS never fires this. Music auto-advance stays on the <audio>.
             onEnded={() => setPlaying(false)}
-            onWaiting={() => { setStalled(true); setArtOk(false); }}
-            onStalled={() => { setStalled(true); setArtOk(false); }}
+            // THIS IS WHERE A LIVE-STREAM RECONNECT BECOMES VISIBLE, and the
+            // ordinary rebuffer must stay distinguishable from it. `stalled`
+            // alone is the mini-bar's "⋯ buffering — press play to retry"; only
+            // a reconnect that is actually armed has a sentence parked in
+            // `reconnectMsg`, so a normal buffer dip still says nothing about
+            // the stream being unreachable.
+            onWaiting={() => { setStalled(true); setArtOk(false); noteLiveGap(); }}
+            onStalled={() => { setStalled(true); setArtOk(false); noteLiveGap(); }}
             onProgress={(e) => sampleHeadroom(e.currentTarget)}
             onPlaying={(e) => { setStalled(false); sampleHeadroom(e.currentTarget); }}
             onError={(e) => onMediaError(e.currentTarget.error?.code)}
