@@ -482,6 +482,29 @@ export interface FavoritePodcast {
  * Same rule as {@link FavoritePodcast}: the favorite is the guid. An entry
  * whose parent feed is unknown is unresolvable, not deletable.
  */
+/**
+ * One entry in the "Up Next" listen queue: an episode AND the show it belongs
+ * to.
+ *
+ * **The pair is the point.** `stepTo` (lib/store.ts) can reuse
+ * `current.podcast` when it walks `episodeQueue`, because that array is one
+ * feed's display order and every row in it belongs to the same show. This
+ * queue mixes shows, so the next item is usually a different one: its artwork,
+ * its title and — the half that matters — its VALUE BLOCK have to travel with
+ * it. Carrying the previous podcast forward would point the BOOST button and
+ * the streaming engine at the artist who was playing a moment ago.
+ *
+ * It lives HERE rather than in lib/store.ts because lib/storage.ts types its
+ * accessor with it, and storage.ts sits UNDER the store: declaring it there
+ * would close a `storage -> store -> storage` import cycle, which does not
+ * fail the build — it surfaces as an export that plainly exists reading back
+ * as `undefined`.
+ */
+export interface QueueItem {
+  episode: Episode;
+  podcast: Podcast;
+}
+
 export interface FavoriteEpisode {
   itemGuid: string;       // <guid> of the RSS item — the key
   /** Parent <podcast:guid>. Absent when the wire entry carried no position-3
