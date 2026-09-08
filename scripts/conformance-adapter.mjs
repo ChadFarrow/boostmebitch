@@ -38,9 +38,12 @@ import {
   decodePrivateFavorites,
   effectiveListMode,
   encodePrivateFavorites,
+  entryKind,
   foldHalves,
+  itemClaim,
   groupLocalFavorites,
   identifierKind,
+  isItemClaim,
   itemId,
   mergeFavoritesList,
   parseFavoritesList,
@@ -79,6 +82,16 @@ export function decodePrivate(content) {
 
 export const kindOf = (id) => (typeof id === 'string' ? identifierKind(id) : null);
 
+/**
+ * A baseline claim on one item favorite: the real one, from the shipping module.
+ *
+ * The contract only requires that one pair always produce the same string and
+ * two pairs never collide. This app encodes it as the feed identifier, a
+ * separator, then the item identifier — feed first, because a feed guid is a
+ * UUID and an item guid is routinely a permalink URL.
+ */
+export { itemClaim };
+
 const MANAGED = new Set(['alt', 'medium', 'i', 'k', 'visibility']);
 
 /** The contract's flat entry list, derived from this app's ordered node list. */
@@ -86,15 +99,18 @@ export function parseTags(tags) {
   const input = tags ?? [];
   const list = parseFavoritesList(input);
   const entries = [];
-  const groups = [];
+  const favorited = new Map();
   const foreign = [];
 
-  // Tag positions, so a reader can check that order survived. First unused
-  // match, because a duplicate group names the same identifier twice.
+  // Tag positions, so a reader can check that order survived. Matched on the
+  // WHOLE tag and first-unused, because a duplicate group names the same
+  // identifier twice and a feed entry shares position 1 with every item entry
+  // under it.
   const used = new Set();
-  const indexOf = (id) => {
+  const indexOf = (tag) => {
+    const want = JSON.stringify(tag);
     for (let i = 0; i < input.length; i++) {
-      if (!used.has(i) && input[i][0] === 'i' && input[i][1] === id) {
+      if (!used.has(i) && input[i][0] === 'i' && JSON.stringify(input[i]) === want) {
         used.add(i);
         return i;
       }
@@ -106,19 +122,68 @@ export function parseTags(tags) {
     if (node.t === 'group') {
       const id = showId(node.group.feedGuid);
       const medium = node.group.medium ?? null;
-      const items = node.group.itemGuids.map(itemId);
-      entries.push({ id, kind: SHOW_KIND, medium, parent: null, index: indexOf(id) });
-      for (const item of items) {
-        entries.push({ id: item, kind: ITEM_KIND, medium, parent: id, index: indexOf(item) });
+      const feedTag = node.group.feedTag ?? ['i', id];
+      const index = indexOf(feedTag);
+      // A FEED ENTRY IS A FEED FAVORITE, which is what the format now says. This
+      // app's own hydrator is stricter — it only believes an ITEMLESS group,
+      // because on a legacy list a group with items under it may exist purely to
+      // name their parent. That stays until stage 3 stops writing those.
+      entries.push({
+        id, kind: SHOW_KIND, medium, feed: null, favorited: true, key: id, index,
+      });
+      favorited.set(id, true);
+      for (const guid of node.group.itemGuids) {
+        const item = itemId(guid);
+        const tag = node.group.itemTags?.[guid] ?? ['i', item];
+        entries.push({
+          id: item,
+          kind: ITEM_KIND,
+          medium,
+          // The LEGACY form: its feed came from the entry above it, not from
+          // its own tag, which is exactly what `legacy` records.
+          feed: node.group.feedGuid,
+          legacy: true,
+          key: itemClaim(item, node.group.feedGuid),
+          index: indexOf(tag),
+        });
       }
-      groups.push({ id, medium, items });
       continue;
     }
+
+    if (node.t === 'item') {
+      const item = itemId(node.item.itemGuid);
+      entries.push({
+        id: item,
+        kind: ITEM_KIND,
+        medium: node.item.medium ?? null,
+        // Off position 1 of its OWN tag.
+        feed: node.item.feedGuid,
+        key: itemClaim(item, node.item.feedGuid),
+        index: indexOf(node.item.tag),
+      });
+      continue;
+    }
+
     const tag = node.loose.tag;
-    const kind = kindOf(tag[1]);
-    const index = indexOf(tag[1]);
-    if (kind === null) foreign.push({ index, tag });
-    else entries.push({ id: tag[1], kind, medium: node.loose.medium ?? null, parent: null, index });
+    const kind = entryKind(tag);
+    const index = indexOf(tag);
+    if (kind === null) {
+      foreign.push({ index, tag });
+      continue;
+    }
+    // A publisher entry, or an item that named no feed. Neither belongs to a
+    // feed and neither is given one.
+    entries.push({
+      id: tag[1],
+      kind,
+      medium: node.loose.medium ?? null,
+      feed: null,
+      legacy: kind === ITEM_KIND ? true : undefined,
+      favorited: kind === PUBLISHER_KIND ? true : undefined,
+      key: tag[1],
+      index,
+    });
+    if (kind === PUBLISHER_KIND) favorited.set(tag[1], true);
   }
   entries.sort((a, b) => a.index - b.index);
 
@@ -129,7 +194,7 @@ export function parseTags(tags) {
 
   return {
     entries,
-    groups,
+    favorited,
     kinds: input.filter((t) => t[0] === 'k').map((t) => t[1]),
     foreign,
   };
@@ -137,7 +202,13 @@ export function parseTags(tags) {
 
 // --- shapes -----------------------------------------------------------------
 
+// A PAIRED ITEM CLAIM OPENS WITH THE FEED'S IDENTIFIER, so asking
+// `identifierKind` first files every one of them under feeds — and the merge
+// then never sees the claim that licenses a removal. `isItemClaim` is asked
+// first, and it comes from the shipping module rather than being a `|` written
+// down a second time here.
 const isFeedId = (id) => {
+  if (isItemClaim(id)) return false;
   const k = identifierKind(id);
   return k === SHOW_KIND || k === PUBLISHER_KIND;
 };
@@ -146,7 +217,10 @@ const isFeedId = (id) => {
 function localList(groups) {
   const entries = [];
   for (const g of groups ?? []) {
-    entries.push({ id: g.id, medium: g.medium ?? undefined });
+    // `favorited: false` means the group is held only to supply its items' feed
+    // guid, so the FEED itself is not an entry. Absent reads as true, which is
+    // what every vector written before the field meant.
+    if (g.favorited !== false) entries.push({ id: g.id, medium: g.medium ?? undefined });
     for (const item of g.items ?? []) {
       entries.push({ id: item, feedRef: g.id, medium: g.medium ?? undefined });
     }
@@ -182,11 +256,15 @@ function holdsFrom(active, inactive, baseline, inactiveHalf) {
   const groups = new Map();
   const group = (feedGuid, medium) => {
     const id = showId(feedGuid);
-    if (!groups.has(id)) groups.set(id, { id, medium: medium ?? null, items: [] });
+    if (!groups.has(id)) groups.set(id, { id, medium: medium ?? null, items: [], favorited: false });
     return groups.get(id);
   };
   const take = (part) => {
-    for (const f of part.feeds) group(f.feedGuid, f.medium);
+    // ONLY AN ITEMLESS GROUP IS A FEED FAVORITE HERE, which is what the hydrator
+    // believes: on a legacy list a group with items under it may exist purely to
+    // name their parent, and reading it as a favorite manufactures albums the
+    // user never chose. Stage 3 is where that stops being true.
+    for (const f of part.feeds) group(f.feedGuid, f.medium).favorited ||= f.itemless;
     for (const it of part.items) {
       if (!it.feedGuid) continue;
       const g = group(it.feedGuid, it.medium);

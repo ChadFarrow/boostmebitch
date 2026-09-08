@@ -66,8 +66,11 @@ import {
   encodePrivateFavorites,
   plaintextBytes,
   entriesFromList,
+  entryKind,
+  frameForCompare,
   groupLocalFavorites,
   identifierKind,
+  itemClaim,
   itemId,
   mergeFavoritesList,
   parseFavoritesList,
@@ -116,6 +119,13 @@ const I_C = '19670162-a9cd-43f2-bc95-6354f218852a';
 const I_ODD = 'thenogs-donkey-01-porky-piggin-it'; // real, and not a UUID
 const I_URL = 'https://example.com/ep/42';
 
+// The identifier an entry DECLARES: position 2 when there is one, position 1
+// otherwise. Every assertion about an ITEM goes through this. Reading `t[1]`
+// directly was right while an item entry was two elements; now position 1 is
+// the FEED on an item entry, so a `t[1] === itemId(X)` test does not merely
+// stop finding the item — it silently answers false, which makes every NEGATIVE
+// assertion pass for the wrong reason.
+const idOf = (t) => t[2] ?? t[1];
 const NO_LOCAL = { groups: [], loose: [] };
 const emit = (read, local = NO_LOCAL, baseline = EMPTY_BASELINE) =>
   tagsFromList(mergeFavoritesList({ read, local, baseline }));
@@ -138,8 +148,36 @@ section('Spec vector 1 — a foreign entry survives your republish');
     ['k', 'podcast:guid'],
     ['k', 'podcast:item:guid'],
   ];
-  check('a list we contribute nothing to is republished byte-identically',
-    emit(parseFavoritesList(wire)), wire);
+  // A LEGACY LIST, so a republish is not byte-identical and must not be: the
+  // items are rewritten to name their own feed, which is the one-time migration
+  // (spec vector 27). Everything ELSE comes back untouched — the feed entries,
+  // the medium blocks, the head run, the `k` tags — and each item takes the guid
+  // of the group it was read under, never the last feed on the event.
+  const upgraded = [
+    ['alt', 'PC 2.0 Favorites'],
+    ['i', `podcast:guid:${F_UNKNOWN}`],
+    ['i', `podcast:guid:${F_UNKNOWN}`, `podcast:item:guid:${I_B}`],
+    ['i', `podcast:guid:${F_UNKNOWN}`, `podcast:item:guid:${I_C}`],
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`],
+    ['i', `podcast:guid:${F_MUSIC2}`],
+    ['i', `podcast:guid:${F_MUSIC2}`, `podcast:item:guid:${I_A}`],
+    ['k', 'podcast:guid'],
+    ['k', 'podcast:item:guid'],
+  ];
+  check('a legacy list we contribute nothing to is upgraded, and nothing else moves',
+    emit(parseFavoritesList(wire)), upgraded);
+
+  // THE UPGRADE HAPPENS ONCE. A migration that is not idempotent republishes on
+  // every load, forever, and two apps then rewrite the event at each other.
+  check('...and reading the result back publishes nothing new',
+    emit(parseFavoritesList(upgraded)), upgraded);
+
+  // The foreign entries that are NOT items come back byte for byte, which is
+  // what vector 1 is actually about.
+  check('every foreign feed entry survives untouched',
+    emit(parseFavoritesList(wire)).filter((t) => t[0] === 'i' && t.length === 2),
+    wire.filter((t) => t[0] === 'i' && t[1].startsWith('podcast:guid:')));
 
   // The hard half, and the one that costs another app's data if you get it
   // wrong: the feed IS in our baseline (we opened the group) and we no longer
@@ -150,7 +188,7 @@ section('Spec vector 1 — a foreign entry survives your republish');
   check('a group we published survives while a foreign item remains under it',
     kept.some((t) => t[1] === `podcast:guid:${F_MUSIC2}`), true);
   check('...and so does that item',
-    kept.some((t) => t[1] === `podcast:item:guid:${I_A}`), true);
+    kept.some((t) => idOf(t) === `podcast:item:guid:${I_A}`), true);
 
   // Same baseline, but now the group is empty — that IS a removal.
   const emptyWire = [
@@ -184,7 +222,7 @@ section('Spec vector 19 — the same feed twice on the wire loses no item');
   ];
   const folded = emit(parseFavoritesList(wire));
   check('both items survive a carry, under one group, in wire order',
-    folded.filter((t) => t[0] === 'i').map((t) => t[1]),
+    folded.filter((t) => t[0] === 'i').map(idOf),
     [`podcast:guid:${F_MUSIC}`, `podcast:item:guid:${I_A}`, `podcast:item:guid:${I_B}`]);
 
   // The same when this device holds the feed and adds an item of its own: the
@@ -196,7 +234,7 @@ section('Spec vector 19 — the same feed twice on the wire loses no item');
   ]);
   const added = emit(parseFavoritesList(wire), local, { feeds: [showId(F_MUSIC)], items: [itemId(I_A)] });
   check('...and when we hold the feed, the duplicate\'s item is kept and ours appends',
-    added.filter((t) => t[0] === 'i').map((t) => t[1]),
+    added.filter((t) => t[0] === 'i').map(idOf),
     [`podcast:guid:${F_MUSIC}`, `podcast:item:guid:${I_A}`, `podcast:item:guid:${I_B}`, `podcast:item:guid:${I_C}`]);
 
   // A removal of ours under the duplicate still propagates — folding is not
@@ -206,7 +244,7 @@ section('Spec vector 19 — the same feed twice on the wire loses no item');
     { id: itemId(I_A), feedRef: showId(F_MUSIC), medium: 'music' },
   ]), { feeds: [showId(F_MUSIC)], items: [itemId(I_A), itemId(I_B)] });
   check('...and an item we published under the duplicate and no longer hold is dropped',
-    removed.some((t) => t[1] === `podcast:item:guid:${I_B}`), false);
+    removed.some((t) => idOf(t) === `podcast:item:guid:${I_B}`), false);
 }
 
 // ---------------------------------------------------------------------------
@@ -364,10 +402,20 @@ section('Spec vector 2c — a baseline the local cache cannot back is not believ
   // `k` tags that declare which identifier kinds the list uses, and those are
   // emitter output rather than anything the merge decided.
   const keptTags = tagsFromList(mergeFavoritesList({ read, local: NO_LOCAL, baseline: EMPTY_BASELINE }));
+  // Every entry survives. The item is rewritten to name its feed — the
+  // migration, not a loss — so this compares what each entry IS, not the bytes
+  // the legacy fixture arrived in.
   check('refusing it keeps every entry',
-    keptTags.filter((t) => t[0] === 'i'), wire.filter((t) => t[0] === 'i'));
+    keptTags.filter((t) => t[0] === 'i').map(idOf),
+    wire.filter((t) => t[0] === 'i').map(idOf));
   check('...and their order and medium block with them',
-    keptTags.slice(0, wire.length), wire);
+    keptTags.slice(0, wire.length),
+    [
+      ['alt', 'PC 2.0 Favorites'],
+      ['medium', 'music'],
+      ['i', `podcast:guid:${F_MUSIC}`],
+      ['i', `podcast:guid:${F_MUSIC}`, `podcast:item:guid:${I_A}`],
+    ]);
 }
 
 // ---------------------------------------------------------------------------
@@ -505,9 +553,11 @@ section('Spec vector 4 — an unrecognized tag or identifier kind survives');
   // The one that matters most: an unrecognized `i` must not re-parent the
   // entries after it. The item below belongs to F_MUSIC, not to nothing.
   const parsed = parseFavoritesList(out);
-  const group = parsed.nodes.find((n) => n.t === 'group');
+  // Read off the ITEM's own tag now, because the publish above rewrote it with
+  // the feed it resolved to. That is the assertion either way: the item belongs
+  // to F_MUSIC, and the unreadable entry between them changed nothing.
   check('an unrecognized i between a feed and its item does not re-parent the item',
-    group.group.itemGuids, [I_A]);
+    partitionList(parsed).items.map((i) => [i.itemGuid, i.feedGuid]), [[I_A, F_MUSIC]]);
   check('...and it stays inside the music block, in position',
     out.findIndex((t) => t[1] === 'something:else:entirely')
       > out.findIndex((t) => t[0] === 'medium' && t[1] === 'music'), true);
@@ -624,14 +674,14 @@ section('The baseline — foreign entry vs. one we removed');
   const baseline = { feeds: [showId(F_MUSIC)], items: [itemId(I_A), itemId(I_B)] };
   const out = emit(parseFavoritesList(wire), local, baseline);
   check('an item we published and no longer hold is removed',
-    out.some((t) => t[1] === `podcast:item:guid:${I_B}`), false);
+    out.some((t) => idOf(t) === `podcast:item:guid:${I_B}`), false);
   check('an item we still hold stays',
-    out.some((t) => t[1] === `podcast:item:guid:${I_A}`), true);
+    out.some((t) => idOf(t) === `podcast:item:guid:${I_A}`), true);
 
   // An item we never published, sitting under a feed we hold, is another app's.
   const out2 = emit(parseFavoritesList(wire), local, { feeds: [showId(F_MUSIC)], items: [itemId(I_A)] });
   check('an item we never published is not ours to delete',
-    out2.some((t) => t[1] === `podcast:item:guid:${I_B}`), true);
+    out2.some((t) => idOf(t) === `podcast:item:guid:${I_B}`), true);
 
   // An empty baseline must delete nothing — a device that has never synced
   // holds no opinion about what anyone else added.
@@ -656,7 +706,7 @@ section('The baseline — foreign entry vs. one we removed');
   const orphanedRemoval = emit(parseFavoritesList(wire), NO_LOCAL,
     { feeds: [], items: [itemId(I_B)] });
   check('an item removal propagates under a group we do not hold',
-    orphanedRemoval.some((t) => t[1] === `podcast:item:guid:${I_B}`), false);
+    orphanedRemoval.some((t) => idOf(t) === `podcast:item:guid:${I_B}`), false);
 
   // A feed another writer removed must not come back just because we still
   // have a local row for it — that is the resurrection loop.
@@ -679,7 +729,7 @@ section('The baseline — foreign entry vs. one we removed');
   const revived = emit(parseFavoritesList([]), newTrackUnderRemovedFeed,
     { feeds: [showId(F_MUSIC)], items: [] });
   check('a new track under a feed another app removed is still published',
-    revived.some((t) => t[1] === `podcast:item:guid:${I_A}`), true);
+    revived.some((t) => idOf(t) === `podcast:item:guid:${I_A}`), true);
   check('...and its parent group is reopened to place it',
     revived.some((t) => t[1] === `podcast:guid:${F_MUSIC}`), true);
   // The group comes back ONLY to carry the track — it is not a revived feed
@@ -709,7 +759,7 @@ section('The baseline — foreign entry vs. one we removed');
   check('an item another app removed is not resurrected under a surviving group',
     emit(parseFavoritesList(survivingGroup), stillHoldsRemoved,
       { feeds: [showId(F_MUSIC)], items: [itemId(I_A), itemId(I_C)] })
-      .some((t) => t[1] === itemId(I_A)), false);
+      .some((t) => idOf(t) === itemId(I_A)), false);
 
   // The mirror, and the reason the test is the BASELINE and not mere absence
   // from the read: a track the user has just favorited here has never been
@@ -717,7 +767,7 @@ section('The baseline — foreign entry vs. one we removed');
   check('...but a genuinely new track under that group IS published',
     emit(parseFavoritesList(survivingGroup), stillHoldsRemoved,
       { feeds: [showId(F_MUSIC)], items: [itemId(I_C)] })
-      .some((t) => t[1] === itemId(I_A)), true);
+      .some((t) => idOf(t) === itemId(I_A)), true);
 }
 
 // ---------------------------------------------------------------------------
@@ -769,7 +819,7 @@ section('Malformed and unplaceable entries');
     [['alt', LIST_ALT]]);
   check('an orphan we never published is not ours to delete',
     emit(parseFavoritesList(orphanWire), NO_LOCAL, EMPTY_BASELINE)
-      .some((t) => t[1] === `podcast:item:guid:${I_A}`), true);
+      .some((t) => idOf(t) === `podcast:item:guid:${I_A}`), true);
   check('baselineFrom records orphans, or the above could never fire',
     baselineFrom(orphanLocal).items, [`podcast:item:guid:${I_A}`]);
 }
@@ -815,8 +865,40 @@ section('The store projection is a fixed point');
   ];
   const read = parseFavoritesList(wire);
   const local = groupLocalFavorites(entriesFromList(read));
+  const once = tagsFromList(mergeFavoritesList({ read, local, baseline: baselineFrom(local) }));
+
+  // The fixture is a LEGACY list, so the first pass upgrades its items and is
+  // not expected to reproduce the input. Each item takes the guid of the group
+  // it was read under — I_B from the head run, I_A from the music run — and
+  // nothing else moves.
+  // Each item takes the guid of the group it was read under — I_B from the head
+  // run, I_A from the music run — and each run comes out in BAND order: albums
+  // and podcasts first, then the tracks grouped by the feed they name. So
+  // F_MUSIC2 moves ahead of I_A here, and that reordering moves no data,
+  // because I_A carries its own feed guid.
+  check('one pass upgrades the legacy items and bands each run', once, [
+    ['alt', 'PC 2.0 Favorites'],
+    ['i', `podcast:guid:${F_UNKNOWN}`],
+    ['i', `podcast:guid:${F_UNKNOWN}`, `podcast:item:guid:${I_B}`],
+    ['medium', 'music'],
+    ['i', `podcast:guid:${F_MUSIC}`],
+    ['i', `podcast:guid:${F_MUSIC2}`],
+    ['i', `podcast:guid:${F_MUSIC}`, `podcast:item:guid:${I_A}`],
+    ['medium', 'podcast'],
+    ['i', `podcast:guid:${F_POD}`],
+    ['k', 'podcast:guid'],
+    ['k', 'podcast:item:guid'],
+  ]);
+
+  // THE FIXED POINT, which is the property this section exists for: render the
+  // upgraded list, regroup it out of the store, merge, and the wire comes back
+  // unchanged. Without it a rendering pass can quietly rewrite the event on
+  // every publish.
+  const read2 = parseFavoritesList(once);
+  const local2 = groupLocalFavorites(entriesFromList(read2));
   check('render → regroup → merge reproduces the wire',
-    tagsFromList(mergeFavoritesList({ read, local, baseline: baselineFrom(local) })), wire);
+    tagsFromList(mergeFavoritesList({ read: read2, local: local2, baseline: baselineFrom(local2) })),
+    once);
 }
 
 // ---------------------------------------------------------------------------
@@ -1495,8 +1577,8 @@ section('The private half — a withdrawal takes ONLY our own entries');
     read: parseFavoritesList(wire), local: EMPTY_LOCAL, baseline: baselineHalf(split, 'public'),
   }));
 
-  check('our track goes', after.some((t) => t[1] === itemId(I_A)), false);
-  check('their track stays', after.some((t) => t[1] === itemId(I_ODD)), true);
+  check('our track goes', after.some((t) => idOf(t) === itemId(I_A)), false);
+  check('their track stays', after.some((t) => idOf(t) === itemId(I_ODD)), true);
   check('the group naming its parent stays with it', after.some((t) => t[1] === showId(F_MUSIC)), true);
   check('and their own feed is untouched', after.some((t) => t[1] === showId(F_POD)), true);
 }
@@ -1661,7 +1743,7 @@ section('The private half — TWO CYCLES, because one cycle cannot see this');
     };
   };
 
-  const entries = (tags) => tags.filter((t) => t[0] === 'i').map((t) => t[1]);
+  const entries = (tags) => tags.filter((t) => t[0] === 'i').map(idOf);
   const wireOf = (...guids) => tagsFromList(parseFavoritesList([
     ['alt', LIST_ALT], ...guids.map((g) => ['i', showId(g)]),
   ]));
@@ -2117,6 +2199,548 @@ section('a refused read may still be PAINTED when the guard protects nothing');
     } else proved += 1;
   }
   console.log(`        ${proved} vector(s) proved against naive(), ${exempt} exempt as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 27 — an item entry that names its own feed is carried WHOLE');
+// ---------------------------------------------------------------------------
+{
+  // The three-element form, off the wire. This app does not write one yet
+  // (stage 2), so every one of these belongs to another writer and the only
+  // correct thing to do with it is put it back exactly as it arrived.
+  //
+  // `NEWER` sits at position 3, which nothing defines. That is precisely where
+  // the next revision will put something, and a writer that rebuilds entries
+  // from its own model drops it — along with position 2, which is the item's
+  // feed guid and therefore half its address. An item guid is unique only inside
+  // its feed, so that is not a lost label, it is a favorite nobody can ever look
+  // up again.
+  const NEWER = 'written-by-a-writer-newer-than-this-one';
+  const wire = [
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC), itemId(I_A), NEWER],
+    ['i', showId(F_MUSIC2), itemId(I_B)],
+    ['k', 'podcast:guid'],
+    ['k', 'podcast:item:guid'],
+  ];
+  const parsed = parseFavoritesList(wire);
+
+  check('a three-element item is its own node, not a group',
+    parsed.nodes.map((n) => n.t), ['item', 'item']);
+  check('...and its feed comes off ITS OWN position 1',
+    parsed.nodes.map((n) => (n.t === 'item' ? n.item.feedGuid : null)), [F_MUSIC, F_MUSIC2]);
+  check('...and the tag is kept whole, position 3 included',
+    parsed.nodes[0].t === 'item' ? parsed.nodes[0].item.tag : null,
+    ['i', showId(F_MUSIC), itemId(I_A), NEWER]);
+
+  check('a republish returns both entries byte-identical',
+    emit(parsed).filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC), itemId(I_A), NEWER], ['i', showId(F_MUSIC2), itemId(I_B)]]);
+
+  // The one that catches a rebuild: `['i', id]` type-checks and renders right.
+  const naiveRebuild = parsed.nodes.map((n) => (n.t === 'item' ? ['i', itemId(n.item.itemGuid)] : n));
+  check('(naive) rebuilding from the model would lose the feed guid AND position 3',
+    JSON.stringify(naiveRebuild) === JSON.stringify(emit(parsed).filter((t) => t[0] === 'i')),
+    false);
+
+  check('idempotence — reading our own output changes nothing',
+    emit(parseFavoritesList(emit(parsed))), emit(parsed));
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 4 — an unreadable position 2 is NOT a feed favorite');
+// ---------------------------------------------------------------------------
+{
+  // Nothing but `podcast:item:guid:` is defined at position 2 today. An entry
+  // carrying something else belongs to a writer newer than this one — and the
+  // dangerous reading is not "drop it", it is "ignore what I don't understand",
+  // because position 1 is a perfectly good feed guid and the entry then reads as
+  // a followed show the user never chose.
+  const wire = [
+    ['alt', LIST_ALT],
+    ['medium', 'podcast'],
+    ['i', showId(F_POD), 'podcast:chapter:guid:12345'],
+  ];
+  const parsed = parseFavoritesList(wire);
+  check('it is carried as loose, never as a group', parsed.nodes.map((n) => n.t), ['loose']);
+  check('...so it yields no feed favorite at all', partitionList(parsed).feeds, []);
+  check('...and it comes back whole',
+    emit(parsed).filter((t) => t[0] === 'i'), [['i', showId(F_POD), 'podcast:chapter:guid:12345']]);
+
+  // A three-element entry sits between a feed entry and a LEGACY item. Neither
+  // the readable nor the unreadable one may end the legacy run, or that item is
+  // stranded with no feed at all — which no other app can repair either.
+  const run = parseFavoritesList([
+    ['alt', LIST_ALT],
+    ['medium', 'podcast'],
+    ['i', showId(F_POD)],
+    ['i', showId(F_MUSIC), itemId(I_C)],
+    ['i', showId(F_POD), 'podcast:chapter:guid:12345'],
+    ['i', itemId(I_A)],
+  ]);
+  const part = partitionList(run);
+  check('a legacy item still finds the feed opened above the interlopers',
+    part.items.find((i) => i.itemGuid === I_A)?.feedGuid, F_POD);
+  check('...and the three-element entry keeps naming its own feed',
+    part.items.find((i) => i.itemGuid === I_C)?.feedGuid, F_MUSIC);
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 6 — an entry declares the kind of its LAST identifier');
+// ---------------------------------------------------------------------------
+{
+  check('a two-element feed entry is podcast:guid',
+    entryKind(['i', showId(F_MUSIC)]), 'podcast:guid');
+  check('a three-element entry is podcast:item:guid, not what position 1 says',
+    entryKind(['i', showId(F_MUSIC), itemId(I_A)]), 'podcast:item:guid');
+  check('a legacy two-element item is podcast:item:guid',
+    entryKind(['i', itemId(I_A)]), 'podcast:item:guid');
+  // A table lookup, never a string split. This is the value most likely to be
+  // at position 2, and `podcast:item:guid:https` is a `k` no relay filter ever
+  // matches — it breaks `#k` discovery without breaking anything visible.
+  check('a URL-shaped item guid at position 2 does not corrupt the kind',
+    entryKind(['i', showId(F_MUSIC), itemId(I_URL)]), 'podcast:item:guid');
+
+  const tags = emit(parseFavoritesList([
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC), itemId(I_URL)],
+  ]));
+  check('...and the emitted k tags say so',
+    tags.filter((t) => t[0] === 'k'), [['k', 'podcast:item:guid']]);
+  // THE BUG THIS PINS: deriving from position 1 keeps `podcast:item:guid` off
+  // the event entirely, so `#k` discovery stops finding item favorites.
+  check('(naive) deriving the kind from position 1 would emit podcast:guid',
+    identifierKind(showId(F_MUSIC)) === 'podcast:item:guid', false);
+}
+
+// ---------------------------------------------------------------------------
+section('An item already on the wire naming its feed is emitted ONCE');
+// ---------------------------------------------------------------------------
+{
+  // This app's local state is a cache of the merge, so an entry it renders is
+  // projected back into `local` on the next cycle. Without the carried-item
+  // bookkeeping the merge emits our own two-element copy of it as well —
+  // duplicating the favorite and downgrading it to a tag nobody can resolve.
+  const wire = [
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC), itemId(I_A)],
+  ];
+  const read = parseFavoritesList(wire);
+  // What the hydrator holds after painting that read.
+  const local = groupLocalFavorites(entriesFromList(read));
+  check('the read is adopted as an item under its feed',
+    local.groups.map((g) => [g.feedGuid, g.itemGuids, g.favorited]),
+    [[F_MUSIC, [I_A], false]]);
+
+  const out = emit(read, local);
+  check('the entry is emitted once, in the form it arrived in',
+    out.filter((t) => t[0] === 'i'), [['i', showId(F_MUSIC), itemId(I_A)]]);
+  check('...and no placement feed entry is invented for it',
+    out.some((t) => t[0] === 'i' && t.length === 2 && t[1] === showId(F_MUSIC)), false);
+
+  // Unfavoriting it here must take it off the list. The claim is what licenses
+  // that, and this app claims what it adopts — otherwise the heart empties
+  // locally and the tag never leaves the relay, on any device, with no error.
+  const baseline = baselineOfList(mergeFavoritesList({ read, local, baseline: EMPTY_BASELINE }));
+  // THE PAIR, never the bare item guid — two feeds may hold one item guid.
+  check('the adopted item enters the baseline as a PAIR',
+    baseline.items, [itemClaim(itemId(I_A), F_MUSIC)]);
+  check('...so unfavoriting it removes it',
+    emit(read, NO_LOCAL, baseline).filter((t) => t[0] === 'i'), []);
+  // The other direction, from the same fixture: with no claim it is another
+  // writer's and must survive.
+  check('...while an unclaimed one is carried, not deleted',
+    emit(read, NO_LOCAL, EMPTY_BASELINE).filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC), itemId(I_A)]]);
+
+  // THE SAME QUESTION ON THE OTHER PATH, and it needs its own fixture. Above,
+  // the feed appears on the wire only inside the item's own tag, so the group
+  // arrives through the append pass. Here the wire ALSO carries a feed entry for
+  // it, so the merge takes the held-group branch instead — a different filter,
+  // and one a fixture without a feed entry never reaches.
+  const withFeed = parseFavoritesList([
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC)],
+    ['i', showId(F_MUSIC), itemId(I_A)],
+  ]);
+  const heldLocal = groupLocalFavorites(entriesFromList(withFeed));
+  check('the feed favorite and the item are both adopted',
+    heldLocal.groups.map((g) => [g.feedGuid, g.itemGuids, g.favorited]),
+    [[F_MUSIC, [I_A], true]]);
+  check('the held-group branch emits the item once, in the form it arrived in',
+    emit(withFeed, heldLocal).filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC)], ['i', showId(F_MUSIC), itemId(I_A)]]);
+
+  // And the append pass, on a feed the read does not mention at all: the item is
+  // carried in three-element form, so our own legacy copy must not join it.
+  const elsewhere = groupLocalFavorites([
+    ...entriesFromList(read),
+    { id: showId(F_POD), medium: 'podcast' },
+  ]);
+  check('the append pass adds only the genuinely new entry',
+    emit(read, elsewhere).filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC), itemId(I_A)], ['i', showId(F_POD)]]);
+}
+
+// ---------------------------------------------------------------------------
+section('A carried item entry does not claim its FEED (TWO cycles)');
+// ---------------------------------------------------------------------------
+{
+  // `baseline.feeds` means "did I write this group", and it is what licenses
+  // dropping a group whose last item is gone. An `item` node names its parent
+  // feed, so regrouping the merged list through `entriesFromList` rebuilds a
+  // group for that parent — and claiming it says we wrote a feed entry that was
+  // never on the event.
+  //
+  // THE DAMAGE NEEDS TWO CYCLES, which is why the single-cycle checks above all
+  // pass over it: cycle 1 emits perfectly correct bytes and only the baseline
+  // recorded beside them is wrong.
+  const read1 = parseFavoritesList([
+    ['alt', LIST_ALT], ['medium', 'music'],
+    ['i', showId(F_MUSIC), itemId(I_A)],
+  ]);
+  const local1 = groupLocalFavorites(entriesFromList(read1));
+  const merged1 = mergeFavoritesList({ read: read1, local: local1, baseline: EMPTY_BASELINE });
+  check('cycle 1 emits the carried entry and nothing else',
+    tagsFromList(merged1).filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC), itemId(I_A)]]);
+
+  const b1 = baselineOfList(merged1);
+  check('cycle 1 claims the ITEM', b1.items, [itemClaim(itemId(I_A), F_MUSIC)]);
+  check('cycle 1 claims NO feed — no feed entry was written', b1.feeds, []);
+
+  // Cycle 2, fed that baseline: another app adds a feed favorite for the same
+  // feed, and the user has unfavorited the track here so this device holds
+  // nothing. A false claim reads their entry as ours-and-removed.
+  const read2 = parseFavoritesList([
+    ['alt', LIST_ALT], ['medium', 'music'],
+    ['i', showId(F_MUSIC)],
+  ]);
+  check("cycle 2 leaves another app's feed favorite alone",
+    tagsFromList(mergeFavoritesList({ read: read2, local: NO_LOCAL, baseline: b1 }))
+      .filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC)]]);
+
+  // (naive) The round trip this replaced, spelled out: it is the obvious
+  // implementation and it claims the feed.
+  check('(naive) regrouping through entriesFromList would claim the feed',
+    baselineFrom(groupLocalFavorites(entriesFromList(merged1))).feeds,
+    [showId(F_MUSIC)]);
+
+  // MUST STILL WORK: a placement group we DO write is still claimed, or a
+  // legacy item's group is carried forever and can never be dropped.
+  const legacy = parseFavoritesList([
+    ['alt', LIST_ALT], ['medium', 'music'],
+    ['i', showId(F_MUSIC)],
+    ['i', itemId(I_A)],
+  ]);
+  const legacyBase = baselineOfList(mergeFavoritesList({
+    read: legacy,
+    local: groupLocalFavorites(entriesFromList(legacy)),
+    baseline: EMPTY_BASELINE,
+  }));
+  check('a group we emitted IS claimed, placement or not',
+    [legacyBase.feeds, legacyBase.items], [[showId(F_MUSIC)], [itemClaim(itemId(I_A), F_MUSIC)]]);
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 7 — rule 5 compares the read REFRAMED, never as it arrived');
+// ---------------------------------------------------------------------------
+{
+  // Two conforming events differ byte for byte. A reader MUST accept a `k`
+  // beside every `i`; a writer MUST emit one `k` per distinct kind at the end.
+  // Compare the read as it ARRIVED and a list nobody touched reports a change on
+  // every load — and if the other app compares raw too, neither ever stops.
+  const paired = [
+    ['alt', 'someone else’s label'],
+    ['medium', 'podcast'],
+    ['i', showId(F_POD)],
+    ['k', 'podcast:guid'],
+    ['visibility', 'public'],
+  ];
+  const merged = mergeFavoritesList({
+    read: parseFavoritesList(paired),
+    local: groupLocalFavorites([{ id: showId(F_POD), medium: 'podcast' }]),
+    baseline: EMPTY_BASELINE,
+  });
+  const plan = planFavoritesPublish({
+    merged, readTags: paired, exists: true, trustworthy: true,
+    local: groupLocalFavorites([{ id: showId(F_POD), medium: 'podcast' }]),
+    previousBaseline: EMPTY_BASELINE,
+  });
+  check('a differently-framed read of the same list publishes nothing', plan.reason, 'unchanged');
+  // Proof the vector is not vacuous: raw bytes really do differ.
+  check('...even though the raw bytes differ',
+    JSON.stringify(plan.tags) === JSON.stringify(paired), false);
+
+  // `alt` is regenerated, `visibility` is restated in our position, `k` is
+  // rebuilt from the entries present. `medium` is positional and is left alone.
+  check('framing regenerates alt, restates visibility and rebuilds k',
+    frameForCompare(paired, statedVisibility(paired)),
+    [['alt', LIST_ALT], [VISIBILITY_TAG, 'public'], ['medium', 'podcast'],
+      ['i', showId(F_POD)], ['k', 'podcast:guid']]);
+  check('a k naming a kind we never emit is carried through the framing',
+    frameForCompare([['i', showId(F_POD)], ['k', 'podcast:season:guid']], null)
+      .filter((t) => t[0] === 'k'),
+    [['k', 'podcast:guid'], ['k', 'podcast:season:guid']]);
+
+  // FRAMED AS IT WAS, with its own visibility. Ours would make a list that
+  // predates the tag differ from itself forever, republishing on every load.
+  check('a read with no visibility tag does not grow one from the framing',
+    frameForCompare([['i', showId(F_POD)]], null).some((t) => t[0] === VISIBILITY_TAG), false);
+
+  // A real change still publishes. Without this the section proves only that
+  // the comparison always says "same".
+  const withMore = planFavoritesPublish({
+    merged: mergeFavoritesList({
+      read: parseFavoritesList(paired),
+      local: groupLocalFavorites([
+        { id: showId(F_POD), medium: 'podcast' },
+        { id: showId(F_MUSIC), medium: 'music' },
+      ]),
+      baseline: EMPTY_BASELINE,
+    }),
+    readTags: paired, exists: true, trustworthy: true,
+    local: groupLocalFavorites([
+      { id: showId(F_POD), medium: 'podcast' },
+      { id: showId(F_MUSIC), medium: 'music' },
+    ]),
+    previousBaseline: EMPTY_BASELINE,
+  });
+  check('a genuinely new favorite still publishes', withMore.publish, true);
+
+  // "Unchanged" is a claim that the relay already holds these bytes. Framing an
+  // empty read yields our `alt` tag, so an absent event would otherwise match
+  // its own empty merge and be reported as unchanged — which tells the caller to
+  // record a baseline for an event nobody ever wrote.
+  check('an absent event is nothing-to-create, never unchanged',
+    planFavoritesPublish({
+      merged: parseFavoritesList([]), readTags: [], exists: false, trustworthy: true, local: NO_LOCAL,
+    }).reason,
+    'nothing-to-create');
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 27 — the legacy item migration, and it happens ONCE');
+// ---------------------------------------------------------------------------
+{
+  // A legacy item takes its feed from the entry above it. A writer that touches
+  // the list republishes it naming that feed — the WHOLE tag, with the
+  // identifier MOVED to position 2, never a third element appended to it.
+  const legacy = [
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC)],
+    ['i', itemId(I_A)],
+    ['i', showId(F_MUSIC2)],
+    ['i', itemId(I_B)],
+  ];
+  const once = emit(parseFavoritesList(legacy));
+  check('each item is rewritten under the feed it was READ under',
+    once.filter((t) => t[0] === 'i'),
+    [
+      ['i', showId(F_MUSIC)],
+      ['i', showId(F_MUSIC2)],
+      ['i', showId(F_MUSIC), itemId(I_A)],
+      ['i', showId(F_MUSIC2), itemId(I_B)],
+    ]);
+  // The trap the band order opens: with every feed entry moved above every
+  // item, an item that did NOT take its feed with it resolves to the LAST feed
+  // in band 2 — F_MUSIC2 for both. Worse than the nothing it had.
+  check('...never to whichever feed ends up last in the band',
+    once.filter((t) => t[0] === 'i' && t.length === 3).map((t) => t[1]),
+    [showId(F_MUSIC), showId(F_MUSIC2)]);
+
+  check('the upgrade is idempotent — a second pass publishes nothing new',
+    emit(parseFavoritesList(once)), once);
+
+  // An element past the pair belongs to a writer newer than us. It survives the
+  // rewrite because such a tag is CARRIED, never rebuilt.
+  const newer = [
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC), itemId(I_A), 'written-by-a-writer-newer-than-this-one'],
+  ];
+  check('an item already naming its feed keeps everything past the pair',
+    emit(parseFavoritesList(newer)).filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC), itemId(I_A), 'written-by-a-writer-newer-than-this-one']]);
+
+  // An item whose feed nobody knows has no feed identifier to write, so it goes
+  // back exactly as it arrived. A placeholder guid is an invented one, and a
+  // wrong feed resolves to the wrong thing.
+  const orphan = [['alt', LIST_ALT], ['medium', 'music'], ['i', itemId(I_ODD)]];
+  check('an orphan is never given a feed guid',
+    emit(parseFavoritesList(orphan)).filter((t) => t[0] === 'i'), [['i', itemId(I_ODD)]]);
+}
+
+// ---------------------------------------------------------------------------
+section('A new local item names its feed, and needs no group above it');
+// ---------------------------------------------------------------------------
+{
+  // The case the old format could not write. The user saves one track from an
+  // album they never favorited: ONE tag, and no feed entry — the album is not
+  // on the list, because they did not put it there.
+  const local = groupLocalFavorites([{ id: itemId(I_A), feedRef: F_MUSIC, medium: 'music' }]);
+  const out = emit(parseFavoritesList([]), local);
+  check('one favorite, one tag, and no invented album favorite',
+    out.filter((t) => t[0] === 'i'), [['i', showId(F_MUSIC), itemId(I_A)]]);
+  check('...and its k tag says podcast:item:guid',
+    out.filter((t) => t[0] === 'k'), [['k', 'podcast:item:guid']]);
+
+  // Favorite the album as well and a SECOND tag appears, with the item
+  // untouched. The two share position 1 byte for byte and differ only in
+  // length, which is what a reader keyed on position 1 gets wrong.
+  const both = groupLocalFavorites([
+    { id: showId(F_MUSIC), medium: 'music' },
+    { id: itemId(I_A), feedRef: F_MUSIC, medium: 'music' },
+  ]);
+  const outBoth = emit(parseFavoritesList([]), both).filter((t) => t[0] === 'i');
+  check('the feed favorite is stated separately',
+    outBoth, [['i', showId(F_MUSIC)], ['i', showId(F_MUSIC), itemId(I_A)]]);
+  check('...and both name the same feed at position 1',
+    outBoth[0][1] === outBoth[1][1], true);
+
+  // The mirror, from the same fixture: a feed favorite alone is one tag.
+  check('a feed favorite alone is one tag and no item',
+    emit(parseFavoritesList([]), groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]))
+      .filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC)]]);
+
+  // TWO FEEDS, ONE ITEM GUID. They are two different favorites; a baseline
+  // keyed on the item guid alone folds them into one, so taking back one takes
+  // the other with it.
+  const shared = groupLocalFavorites([
+    { id: itemId(I_A), feedRef: F_MUSIC, medium: 'music' },
+    { id: itemId(I_A), feedRef: F_MUSIC2, medium: 'music' },
+  ]);
+  const sharedWire = emit(parseFavoritesList([]), shared);
+  check('one item guid under two feeds is two entries',
+    sharedWire.filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC), itemId(I_A)], ['i', showId(F_MUSIC2), itemId(I_A)]]);
+
+  const claims = baselineOfList(mergeFavoritesList({
+    read: parseFavoritesList([]), local: shared, baseline: EMPTY_BASELINE,
+  }));
+  check('...claimed as two distinct pairs',
+    claims.items, [itemClaim(itemId(I_A), F_MUSIC), itemClaim(itemId(I_A), F_MUSIC2)]);
+
+  // Take back only the one under F_MUSIC. The other must survive.
+  const keepOne = groupLocalFavorites([{ id: itemId(I_A), feedRef: F_MUSIC2, medium: 'music' }]);
+  check('taking one back leaves the other alone',
+    emit(parseFavoritesList(sharedWire), keepOne, claims).filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC2), itemId(I_A)]]);
+  // (naive) A claim on the bare item guid cannot express that at all.
+  check('(naive) a baseline keyed on the item guid alone folds the two into one',
+    new Set([itemId(I_A), itemId(I_A)]).size, 1);
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 18 — each run comes out in band order');
+// ---------------------------------------------------------------------------
+{
+  const ARTIST = 'podcast:publisher:guid:0e8f6a1b-2c3d-4e5f-8a9b-0c1d2e3f4a5b';
+  // Interleaved on the wire, one of each level, plus an orphan that names no
+  // feed. Bands: items with no feed, artists, feeds, then items by feed.
+  // I_ODD is a GENUINE orphan only because no feed entry precedes it in its
+  // run. Put it lower and the parser attaches it to whatever group is open, and
+  // the publish rewrites it under that feed — correctly, and the vector then
+  // proves nothing about band 0.
+  const wire = [
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', itemId(I_ODD)],
+    ['i', showId(F_MUSIC)],
+    ['i', showId(F_MUSIC), itemId(I_A)],
+    ['i', ARTIST],
+    ['i', showId(F_MUSIC2)],
+    ['i', showId(F_MUSIC), itemId(I_B)],
+  ];
+  check('bands, in order, with band 3 grouped by the feed each item names',
+    emit(parseFavoritesList(wire)).filter((t) => t[0] === 'i'),
+    [
+      ['i', itemId(I_ODD)],
+      ['i', ARTIST],
+      ['i', showId(F_MUSIC)],
+      ['i', showId(F_MUSIC2)],
+      ['i', showId(F_MUSIC), itemId(I_A)],
+      ['i', showId(F_MUSIC), itemId(I_B)],
+    ]);
+
+  // BAND 0 IS NOT COSMETIC. The orphan takes its feed from the entry above it,
+  // so putting it after band 2 hands it whichever album ended up last.
+  check('an orphan stays ahead of every feed entry in its run',
+    emit(parseFavoritesList(wire)).findIndex((t) => t[0] === 'i' && t[1] === itemId(I_ODD))
+      < emit(parseFavoritesList(wire)).findIndex((t) => t[0] === 'i' && t[1] === showId(F_MUSIC)),
+    true);
+
+  check('banding is a fixed point', emit(parseFavoritesList(emit(parseFavoritesList(wire)))),
+    emit(parseFavoritesList(wire)));
+
+  // BAND 3 GROUPS BY FEED, and only an INTERLEAVED fixture can prove it — with
+  // one feed's items already adjacent, grouping and not grouping produce the
+  // same bytes and the assertion passes against nothing.
+  const interleaved = [
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC), itemId(I_A)],
+    ['i', showId(F_MUSIC2), itemId(I_C)],
+    ['i', showId(F_MUSIC), itemId(I_B)],
+  ];
+  check("an album's tracks are brought back together, albums in first-seen order",
+    emit(parseFavoritesList(interleaved)).filter((t) => t[0] === 'i'),
+    [
+      ['i', showId(F_MUSIC), itemId(I_A)],
+      ['i', showId(F_MUSIC), itemId(I_B)],
+      ['i', showId(F_MUSIC2), itemId(I_C)],
+    ]);
+  // (naive) Left ungrouped, the run comes back in wire order — which is a
+  // different byte sequence, so the two writers never converge on one.
+  check('(naive) leaving band 3 in wire order is a different event',
+    JSON.stringify(emit(parseFavoritesList(interleaved)).filter((t) => t[0] === 'i'))
+      === JSON.stringify(interleaved.filter((t) => t[0] === 'i')),
+    false);
+
+  // A new entry joins the END of its own band, never the end of the event —
+  // which would open a second run for a medium that already has one.
+  const withNew = emit(parseFavoritesList(wire), groupLocalFavorites([
+    { id: itemId(I_C), feedRef: F_MUSIC, medium: 'music' },
+    { id: showId(F_POD), medium: 'podcast' },
+  ]));
+  check('a new item lands at the end of its feed group, inside its own run',
+    withNew.filter((t) => t[0] === 'i' && t[1] === showId(F_MUSIC) && t.length === 3),
+    [['i', showId(F_MUSIC), itemId(I_A)],
+      ['i', showId(F_MUSIC), itemId(I_B)],
+      ['i', showId(F_MUSIC), itemId(I_C)]]);
+  check('...and a medium run is never split in two',
+    withNew.filter((t) => t[0] === 'medium' && t[1] === 'music').length, 1);
+
+  // A RUN HOLDING A TAG WE CANNOT CLASSIFY IS EMITTED AS READ. Inventing a
+  // place for a carried tag is how it ends up somewhere that changes what it
+  // means.
+  const unreadable = [
+    ['alt', LIST_ALT],
+    ['medium', 'music'],
+    ['i', showId(F_MUSIC), itemId(I_A)],
+    ['i', 'something:else:entirely'],
+    ['i', showId(F_MUSIC)],
+  ];
+  check('a run holding an unclassifiable entry keeps wire order',
+    emit(parseFavoritesList(unreadable)).filter((t) => t[0] === 'i'),
+    [['i', showId(F_MUSIC), itemId(I_A)],
+      ['i', 'something:else:entirely'],
+      ['i', showId(F_MUSIC)]]);
+  // Proof the vector is not vacuous: banding that run WOULD move things, so the
+  // wire order above is a real choice rather than a coincidence of the fixture.
+  check('...and banding it would have moved the feed entry above the item',
+    JSON.stringify(emit(parseFavoritesList(unreadable)).filter((t) => t[0] === 'i'))
+      === JSON.stringify([['i', showId(F_MUSIC)],
+        ['i', 'something:else:entirely'],
+        ['i', showId(F_MUSIC), itemId(I_A)]]),
+    false);
 }
 
 // ---------------------------------------------------------------------------

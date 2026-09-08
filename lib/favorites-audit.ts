@@ -106,6 +106,19 @@ export function favoriteEntries(list: ParsedList): PrivateOnlyEntry[] {
       }
       continue;
     }
+    if (node.t === 'item') {
+      // An item entry that names its own feed. Its parent comes off its own tag
+      // rather than from the entry above it, which is the whole point of the
+      // three-element form.
+      out.push({
+        id: `podcast:item:guid:${node.item.itemGuid}`,
+        kind: 'item',
+        guid: node.item.itemGuid,
+        parentFeedGuid: node.item.feedGuid,
+        medium: node.item.medium,
+      });
+      continue;
+    }
     const { feedGuid, itemGuids, medium } = node.group;
     if (itemGuids.length === 0) {
       out.push({ id: `podcast:guid:${feedGuid}`, kind: 'feed', guid: feedGuid, medium });
