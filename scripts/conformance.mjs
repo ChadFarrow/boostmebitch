@@ -38,14 +38,25 @@
 //       change that breaks a reader still on stage 0 hardest, and the spec says
 //       to hold it back longest.
 //
-//   27  Its carry half and its migration half both pass. It fails on one
-//       assertion — that a writer may not claim an entry it carries — which this
-//       app's model reads differently: it paints the shared list into ONE library
-//       and lets the user unfavorite any of it, so it has to claim what it
-//       renders. Rule 2 allows exactly that ("you may claim an entry you have
-//       adopted and will keep asserting"), `adapter.d.ts` documents this app by
-//       name as that model, and vector 14 asserts the opposite direction. A
+//   27  Its carry half and its migration half both pass. It fails on TWO
+//       assertions — that a writer may not claim an entry it carries — which
+//       this app's model reads differently: it paints the shared list into ONE
+//       library and lets the user unfavorite any of it, so it has to claim what
+//       it renders. Rule 2 allows exactly that ("you may claim an entry you have
+//       adopted and will keep asserting; you may never claim one you are merely
+//       carrying"), and its test is whether we will still be HOLDING them next
+//       cycle rather than where the ids came from — which this app passes, since
+//       the adapter's `holds` names every entry the baseline claims.
+//       `conformance/adapter.d.ts` documents this app by name as that model and
+//       says an adopted entry is "claimed in the baseline", so the contract file
+//       and the vector disagree with each other. Filed as PC20-Nostr#44. A
 //       question for the spec repo, not a defect here.
+//
+//       An earlier revision of this note also said vector 14 asserted the
+//       opposite direction. It does not: in that fixture the entry is already
+//       held AND already claimed going in, so nothing there is a carried entry
+//       being claimed for the first time. Checked before opening the issue, and
+//       left out of it.
 //
 // So 28 pass / 3 fail is this branch's expected result. A NEW red is a
 // regression; these three are not.
