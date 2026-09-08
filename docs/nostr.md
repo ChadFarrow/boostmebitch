@@ -457,24 +457,66 @@ this app exists to pay.
 This is the one property everything else follows from, and the easiest thing in
 the format to break by accident.
 
-An `i` tag is **bare** — `['i', '<identifier>']`, two elements. There is no
-parent field and no medium field. Instead:
+An `i` tag is `['i', feedId, itemId]`, and **position 2 is optional**:
 
 | Tag | Meaning |
 |---|---|
 | `['alt', 'PC 2.0 Favorites']` | NIP-31 label, first, ours — a read `alt` is discarded and re-emitted |
 | `['medium', v]` | a **running value**: applies to every entry after it, until the next one |
-| `['i', 'podcast:guid:<uuid>']` | opens a **feed group**, tagged with the current medium |
-| `['i', 'podcast:item:guid:<guid>']` | belongs to the **most recently opened** feed group |
+| `['i', 'podcast:guid:<uuid>']` | a **feed favorite**. Two elements |
+| `['i', 'podcast:guid:<uuid>', 'podcast:item:guid:<guid>']` | **item `X` of feed `F`**. Three elements, and it names its own feed |
+| `['i', 'podcast:item:guid:<guid>']` | **legacy** item — belongs to the **most recently opened** feed group |
+| `['i', 'podcast:publisher:guid:<uuid>']` | an artist. Belongs to no feed, and this app carries one without originating it |
 | `['k', kind]` | trailing, **one per distinct kind** — ignored entirely on read |
+
+**The element count is the whole difference between a feed favorite and an item
+favorite** — their position 1 is byte-for-byte the same string. Branch on
+position 1 alone and one saved episode reads as a followed show, which is worse
+than losing it: the app is confidently wrong and republishes the mistake.
+
+**An entry's kind is the kind of its LAST identifier** (`entryKind`) — position 2
+when there is one, position 1 otherwise. Read position 1 alone and
+`podcast:item:guid` never reaches the `k` tags at all, so `#k` discovery stops
+finding item favorites on every list. Still a table lookup, never a string split,
+and that matters most at position 2, where a URL-shaped item guid is the value
+most likely to sit.
+
+**An unreadable position 2 is an unreadable ENTRY, not a feed favorite.** Nothing
+but `podcast:item:guid:` is defined there today, so an entry carrying something
+else belongs to a writer newer than us. Carry the whole tag; reading it as a
+two-element feed entry turns their entry into a followed show.
+
+**This app is at stage 1 of the migration and that is deliberate.** It reads the
+three-element form and carries it; it still writes its own items in the legacy
+two-element form under a feed group. Writing the new form is stage 2 and may not
+land until StableKraft reads it — a reader on stage 0 converts every item entry
+it sees into a feed favorite. `scripts/conformance.mjs` lists which vectors are
+red on that schedule; see `pc20-favorites-feed-guid-migration.md` in the spec
+repo for the four stages.
+
+**Carry the whole tag, never rebuild it from the model.** A `FeedGroup` records
+the `i` tags it was read from (`feedTag`, `itemTags`) and an `ItemEntry` records
+its own, and `tagsFromList` emits those back verbatim; only a node this device
+originated is built from the model. Rebuilding an entry as `['i', id]`
+type-checks, renders correctly, and strips every item of the guid that makes it
+resolvable — position 3 is undefined, which is exactly where the next revision
+will put something.
+
+The legacy path is **mandatory, not a courtesy**: every list in production is
+full of two-element item tags, and dropping it does not lose a label, it makes
+every item favorite already published unresolvable by anybody. An item guid is
+unique only inside its feed — Podcast Index refuses `/episodes/byguid` without a
+`feedid`, `feedurl` or `podcastguid` beside it.
 
 So a client that parses entries into structs and rebuilds the array from them —
 sorting, deduping, or emitting groups in a different order — silently reattaches
 every item to the wrong feed and re-labels everything past a medium boundary.
 Nothing else in the format recovers the association, and nothing looks wrong on
 screen. **The parsed model is therefore an ordered node list** (`ParsedList.nodes`,
-each a `FeedGroup` or a `LooseEntry`), the merge is an *edit* of that list, and
-`tagsFromList` walks it in place.
+each a `FeedGroup`, an `ItemEntry` or a `LooseEntry`), the merge is an *edit* of
+that list, and `tagsFromList` walks it in place. An `ItemEntry` depends on
+nothing above it — that is the point of the three-element form — but `medium` is
+still a running value, so the ordered walk is still the right shape.
 
 This is the predecessor format's mistake one level up. That design carried a
 feed URL, a parent guid and a medium at positions 2–4 *inside* each `i` tag, and
@@ -500,7 +542,7 @@ Two emission rules exist only to keep that array stable:
   `output === input`. A vector written the naive way fails correctly and gets
   "fixed" wrongly.
 
-`k` is ignored on read and the kind comes from the identifier's prefix via a
+`k` is ignored on read and the kind comes from the entry's last identifier via a
 known-kinds **table**, never string-scanning: item guids are routinely permalink
 URLs, so "everything before the last colon" on
 `podcast:item:guid:https://example.com/ep/42` yields `podcast:item:guid:https`, a
@@ -508,6 +550,41 @@ tag no relay filter matches, breaking discovery with nothing visibly wrong. An
 earlier revision of the spec paired a `k` with every `i`; **a reader must accept
 both layouts**, and one that walks `i`/`k` in pairs reads a current-form list as
 an empty library rather than as an error.
+
+### Publish only when the bytes change — and reframe both sides first
+
+Rule 5 says compare the merged tag array against the array you read and publish
+nothing if they match. Read literally, that is a churn loop: **two conforming
+events differ byte for byte.** A reader must accept a `k` beside every `i`; a
+writer must emit one `k` per distinct kind at the end. Both layouts are legal and
+mean the same list, and the position of `alt`, the position of `visibility` and
+the order of the `k` tags are free the same way. Compare the read as it arrived
+and a list nobody touched reports a change on every load — and if the other app
+compares raw too, neither of you ever stops.
+
+So both sides go through `frameForCompare` first, which regenerates `alt`,
+restates `visibility` and rebuilds the trailing `k` tags from the entries
+actually present. It is narrow on purpose: `medium` is positional and stays
+exactly where it is, and an entry we cannot parse passes through untouched, so a
+genuine difference still shows up as one. This app's own reordering
+(unknown-medium first, same-medium contiguous) still publishes once and settles.
+
+Two things it is easy to get wrong in the same direction:
+
+- **Frame the read with the visibility IT states, never with ours.** Ours would
+  make a list that predates the tag differ from itself forever, republishing on
+  every load. A list that genuinely lacks the tag differs once, and that publish
+  is the migration.
+- **`'unchanged'` is gated on the event EXISTING.** It is a claim that the relay
+  already holds these bytes, and an absent event holds none. Framing an empty
+  read yields our `alt` tag, so without the gate a signed-in user with no
+  favorites matches their own empty merge and gets `'unchanged'` — which is
+  `'nothing-to-create'`'s case wearing a name that tells `syncFavorites` to
+  record a baseline for an event nobody wrote.
+
+The same framing runs on the private half's comparison, with no `visibility` on
+either side: it is a tag array with the same free slots, and each spurious
+difference there costs a signer round trip to re-encrypt a list nothing changed.
 
 ### A feed group is not always a favorite
 
@@ -520,7 +597,11 @@ matters and it has held — roughly three-quarters of the groups are there to
 place a track, not because anyone favorited the album.)
 
 **Only an *itemless* group reads back as a feed favorite** (`partitionList`
-reports `itemless`). Treating every `podcast:guid:` as one manufactures albums
+reports `itemless`), and that stays true while legacy items are still on the
+list. It stops being needed at stage 3: once every item names its own feed,
+nothing is on the list for structural reasons and a feed entry IS a favorite. An
+`ItemEntry` already yields no `ListFeed` at all, so another app's three-element
+entry never manufactures an album favorite here. Treating every `podcast:guid:` as one manufactures albums
 the user never made, on every page load — the reference implementation read its
 own output back and would have created 114 of them. Inventing a favorite is
 worse than missing one, and the missing case self-corrects as soon as the feed is

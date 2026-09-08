@@ -175,7 +175,24 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // bullet and the dev-server paragraph were each cut to the shortest form that
 // still names every fact, which is what paid for it. The ~10 words left are the
 // rows' raise and nothing else.
-const BUDGET = 14870
+//
+// 14,870 → 14,960, and this one is a WIRE FORMAT rather than a table row. The
+// spec moved an item's feed guid onto the item's own `i` tag (PC20-Nostr#34), so
+// the event now carries four `i` shapes instead of two and a reader that branches
+// on position 1 alone reads a saved episode as a followed show. Two things had to
+// reach a session before it opens the file: the shapes themselves, folded into
+// the existing tag-order clause rather than given a bullet, and the STAGE — this
+// app reads the new form and may not write it until the other app reads it, or
+// every item favorite that app holds is silently converted. The stage is the
+// expensive half: it is invisible from the code, it expires, and getting it wrong
+// destroys another app's data on someone else's device.
+//
+// Prose was cut first, as the precedent requires — four bullets in the favorites
+// block were reduced to the shortest form still naming every fact — but it only
+// paid 9 words, because that block had already been through this twice. The ~90
+// left are the shapes and the stage. When the migration finishes, the stage
+// paragraph goes and this raise should come back out with it.
+const BUDGET = 14960
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')
