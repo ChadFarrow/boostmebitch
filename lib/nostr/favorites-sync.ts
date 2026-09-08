@@ -99,9 +99,10 @@ export function setFavoritesMode(npub: string, mode: FavoritesPrivacy): boolean 
  *
  * Runs only on a TRUSTWORTHY read, and only when nothing is recorded yet. The
  * rule itself is `seedModeFromWire` in the import-free leaf, so `check:favsync`
- * can hold it — this half only supplies the two booleans and persists the
+ * can hold it — this half only supplies the three booleans and persists the
  * answer. Null means the wire could not say, and a null mode publishes nothing
- * at all, so the safe state is also the default one.
+ * at all, so the safe state is also the default one. A wire with NOTHING on it
+ * says 'public' rather than nothing, per PC20-Nostr#47.
  */
 export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesPrivacy | null {
   const existing = favoritesMode(npub);
@@ -140,9 +141,15 @@ export function seedFavoritesMode(npub: string, read: FavoritesRead): FavoritesP
   // Ungated, for the reason on `favoritesMode`: seeding follows the data, never
   // the build flag.
   const hasPrivate = read.privateUnreadable || read.privateTags.some((t) => t[0] === 'i');
-  // Again the tag first: emptiness answers for a list that HOLDS entries and
-  // cannot answer for one that holds none, which is where every user starts.
-  const seeded = read.list.visibility ?? seedModeFromWire(hasPublic, hasPrivate);
+  // The third answer is about BYTES, not entries: `content` this writer could
+  // not open is somebody's encrypted list, and `hasPrivate` above already reads
+  // it that way, so this only has to keep the empty-list default off a `content`
+  // that opens onto nothing. Pass the raw string, never a re-derived emptiness.
+  const hasContent = read.content !== '';
+  // Again the tag first. Emptiness answers for a list that HOLDS entries, and
+  // now for one that holds none either — an empty list is public, per
+  // PC20-Nostr#47, which is where every user starts.
+  const seeded = read.list.visibility ?? seedModeFromWire(hasPublic, hasPrivate, hasContent);
   if (seeded) setFavoritesMode(npub, seeded);
   return seeded;
 }

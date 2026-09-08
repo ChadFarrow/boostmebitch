@@ -2,8 +2,9 @@
 //
 //   npm run check:conformance
 //
-// `../PC20-Nostr/conformance/vectors.test.mjs` is the spec's 24 vectors as
-// code, driven through the small contract in `conformance/adapter.d.ts`. This
+// `../PC20-Nostr/conformance/vectors.test.mjs` is the spec's 31 vectors as
+// code, driven through the small contract in `conformance/adapter.d.ts` and
+// stated in prose in `conformance/vectors.md`. This
 // file is the shim: it maps that contract onto the real `favorites-list.ts`
 // under plain Node, the same way `check-favsync.mjs` loads it — so a failure
 // here is this app's merge disagreeing with the document it implements, never
@@ -316,17 +317,26 @@ export function plan({ read, local = [], baseline, mode = null, canReadPrivate =
   }
   const hasPublic = readTags.some((t) => t[0] === 'i');
   const hasPrivate = readPrivateTags.some((t) => t[0] === 'i');
+  // `seedFavoritesMode` folds an OPAQUE `content` in here — bytes it cannot open
+  // are still evidence of a private list — and this adapter did not, which left
+  // the two disagreeing about the one state the empty-list default must not
+  // reach. Mirror it, and keep `privateIsEmpty` below on the readable-only
+  // form, which is what `syncFavorites` passes.
+  const hasPrivateOrOpaque = privateUnreadable || hasPrivate;
 
   // The hydrator's part: a device nobody has answered on follows the list —
-  // the tag first, then emptiness — and asks when neither can say. A recorded
+  // the tag first, then emptiness — and asks when neither can say. Emptiness
+  // now answers for a list that holds nothing at all, so `hasContent` is what
+  // stops that default landing on somebody else's ciphertext. A recorded
   // 'public' over a wire with no public entries is corrected before a cycle
   // runs on it (`correctedModeFromWire`); a choice is never corrected.
   let stored = mode;
   if (stored === null) {
-    stored = list.visibility ?? seedModeFromWire(hasPublic, hasPrivate);
+    stored = list.visibility
+      ?? seedModeFromWire(hasPublic, hasPrivateOrOpaque, readContent !== '');
     if (stored === null) return unchanged;
   } else if (!userChose) {
-    stored = correctedModeFromWire(stored, hasPublic, hasPrivate) ?? stored;
+    stored = correctedModeFromWire(stored, hasPublic, hasPrivateOrOpaque) ?? stored;
   }
 
   // From here on this is `syncFavorites`, line for line.
@@ -362,15 +372,37 @@ export function plan({ read, local = [], baseline, mode = null, canReadPrivate =
     && (list.visibility === 'public' || (stating === 'public' && !!userChose));
   const movingWholePublic = licensedPublic && privateMerged.nodes.length > 0;
 
+  // The move re-merges the EMPTYING half against the real local state with
+  // `append: false`, and folds that into the receiving half's READ — see the
+  // long note in `lib/nostr/favorites.ts`. Splitting `local` by the mode takes
+  // the `held` set away from the emptying half's removal test, which loses its
+  // wire order. Spec vectors 29 and 30.
+  const moving = movingWholeList || movingWholePublic
+    ? mergeFavoritesList({
+      read: movingWholeList ? list : privateList,
+      local: all,
+      baseline: baselineHalf(b, movingWholeList ? 'public' : 'private'),
+      append: false,
+    })
+    : null;
+
   const activeMerged = movingWholeList
-    ? foldHalves(privateMerged, merged)
+    ? mergeFavoritesList({
+      read: foldHalves(privateList, moving),
+      local: all,
+      baseline: baselineHalf(b, 'private'),
+    })
     : movingWholePublic
       ? EMPTY_PARSED
       : privateMerged;
   const publicMerged = movingWholeList
     ? EMPTY_PARSED
     : movingWholePublic
-      ? foldHalves(merged, privateMerged)
+      ? mergeFavoritesList({
+        read: foldHalves(list, moving),
+        local: all,
+        baseline: baselineHalf(b, 'public'),
+      })
       : merged;
 
   const p = planFavoritesPublish({
@@ -385,6 +417,7 @@ export function plan({ read, local = [], baseline, mode = null, canReadPrivate =
     readContent,
     privateUnreadable,
     privateLocal,
+    held: all,
     previousBaseline: b,
     stating,
   });

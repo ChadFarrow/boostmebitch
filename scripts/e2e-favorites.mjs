@@ -34,6 +34,27 @@
 //      per encryption, so a ciphertext comparison here would republish forever
 //      — the first thing the spec says a private half breaks.
 //   4. The library still renders, decrypted, with no "nothing saved yet".
+//
+// SIX ASSERTIONS ARE RED AND NOT YET DIAGNOSED, AND THEY ARE NOT SANCTIONED —
+// they are a debt, recorded here so the next reader starts from the measurement
+// rather than from scratch. This harness had been driving `[aria-label="Where
+// your favorites are stored"]`, a segmented button row the mode control stopped
+// being when it became a `<SelectMenu>`, so every click was a no-op and the run
+// died on the first assertion. With the selectors repaired it reaches the end,
+// and these are what it finds:
+//
+//   2   the `?`-bearing track guid does not survive the move into `content`
+//   2b  the partial-acceptance notice is not on screen, and does not name the
+//       relay that refused — the panel reads empty
+//   5   a second origin renders BOTH entries where this file expects only the
+//       item, so the expectation may simply predate the feed-guid revision,
+//       under which an item names its own feed and a feed entry on the wire is
+//       a favorite in its own right
+//
+// MEASURED ON BOTH SIDES: identical, assertion for assertion, at `7503ac5` and
+// on the branch that adopted PC20-Nostr#47. So none of them is that change, and
+// each is either an app defect or an expectation this file never updated. Do
+// not mark one green without finding out which.
 
 import { createRelay } from './local-relay.mjs';
 import { spawn } from 'node:child_process';
@@ -205,12 +226,24 @@ async function chooseMode(label) {
   // [role=dialog]" then means whichever the DOM happens to hold first.
   await js(`(() => { document.querySelectorAll('[role="dialog"]').forEach(d => { const c=[...d.querySelectorAll('button')].find(b=>b.textContent.trim()==='Cancel'); if(c) c.click(); }); return 1; })()`);
   await wait(600);
-  await js(`(() => { const b=[...document.querySelectorAll('[aria-label="Where your favorites are stored"] button')].find(x=>x.textContent.trim()===${JSON.stringify(label)}); if (b && !b.disabled) b.click(); return 1; })()`);
+  // The mode control is a `<SelectMenu>`, so this is two clicks: open the
+  // trigger, then pick the `role="menuitemradio"`. It was a segmented row of
+  // buttons under `aria-label="Where your favorites are stored"` when this
+  // harness was written, and that selector had silently matched nothing since —
+  // every click a no-op, every scenario after the first driving an app in a
+  // state it had not been put into.
+  await js(`(() => { const t=document.querySelector('button[aria-haspopup="menu"][aria-label^="Favorites are"]'); if (t) t.click(); return 1; })()`);
+  await wait(400);
+  await js(`(() => { const b=[...document.querySelectorAll('[role="menuitemradio"]')].find(x=>x.textContent.trim()===${JSON.stringify(label)}); if (b && !b.disabled) b.click(); return 1; })()`);
   await wait(1200);
   const heading = await js(`(() => { const d=document.querySelector('[role="dialog"]'); return d ? d.querySelector('h3')?.textContent.trim() : null; })()`);
   check(`the dialog is about ${label}`, heading, `Switch to ${label}?`);
   await js(`(() => { const d=document.querySelector('[role="dialog"]'); const b=[...d.querySelectorAll('button')].find(x=>['Switch','Save'].includes(x.textContent.trim())); b.click(); return 1; })()`);
 }
+// What the mode control says WITHOUT being opened — the trigger's own
+// `aria-label`, which is `${label}: ${triggerText}` and reads "Favorites are:
+// Not set" for an account that has not chosen.
+const modeControlSays = () => js(`(() => { const t=document.querySelector('button[aria-haspopup="menu"][aria-label^="Favorites are"]'); return t ? t.getAttribute('aria-label') : null; })()`);
 const check = (l, a, b) => { const ok = JSON.stringify(a) === JSON.stringify(b); console.log(`  ${ok ? 'ok   ' : 'FAIL '} ${l}`); if (!ok) { fails++; console.log('        expected', JSON.stringify(b), '\n        actual  ', JSON.stringify(a)); } };
 
 // Is the private-half control on screen, and what does its panel say?
@@ -247,13 +280,28 @@ await js(`(() => { localStorage.clear();
   return 1; })()`);
 
 console.log(`\n  throwaway npub ${npub.slice(0, 20)}…  relay ws://127.0.0.1:${PORT}\n`);
-console.log('--- 1. PUBLIC: the app publishes what this device holds ---');
+console.log('--- 1. PUBLIC: an empty list needs no choice, and this device publishes ---');
 await send('Page.navigate', { url: `${APP}/favorites` }); await wait(15000);
-await chooseMode('Public');
+
+// NOTHING IS ASKED HERE ANY MORE, AND THAT IS THE ASSERTION. PC20-Nostr#47:
+// an empty, untagged list is public. The relay holds no event, so there is no
+// mode to read off the wire and nothing anybody could be disclosing — which is
+// where every new user starts. `seedModeFromWire` answers 'public', the cycle
+// publishes into the tags, and it states no `visibility` tag, because a default
+// is the absence of a choice.
+//
+// This scenario used to call `chooseMode('Public')` and could not tell a seeded
+// mode from a chosen one. A dialog in front of a brand-new account's first ♡ is
+// now a REGRESSION, so it is checked for rather than driven.
+check('no dialog stands in front of the first favorite',
+  await js(`(() => !!document.querySelector('[role="dialog"]'))()`), false);
+check('and the control already shows Public', await modeControlSays(), 'Favorites are: Public');
 await wait(16000);
 
 let last = published[published.length - 1];
 check('a kind:10333 reached the relay', !!last, true);
+check('and it states no mode, because nobody chose one',
+  last?.tags.some((t) => t[0] === 'visibility'), false);
 check('the entries are PUBLIC tags', last?.tags.filter((t) => t[0] === 'i').length, 2);
 check('and `content` is empty', last?.content, '');
 
@@ -266,8 +314,7 @@ check('with no private half, the private-half control is hidden',
 console.log('\n--- 2. SWITCH TO PRIVATE: the entries move ---');
 const before = published.length;
 check('the control shows Public as chosen before the switch',
-  await js(`(() => { const b=[...document.querySelectorAll('[aria-label="Where your favorites are stored"] button')].find(x=>x.getAttribute('aria-pressed')==='true'); return b ? b.textContent.trim() : null; })()`),
-  'Public');
+  await modeControlSays(), 'Favorites are: Public');
 await chooseMode('Private');
 await wait(22000);
 const dlgErr = await js(`(() => { const d=document.querySelector('[role="dialog"]'); return d ? (d.querySelector('[role="alert"]')?.textContent ?? 'still open, no error shown') : null; })()`);

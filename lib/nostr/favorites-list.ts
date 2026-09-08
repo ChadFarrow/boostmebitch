@@ -547,16 +547,39 @@ export function baselineHalf(baseline: FavoritesBaseline, half: ListHalf): Favor
  * private half, would be moved INTO `content` — no disclosure, but a real edit
  * to a shared event that an app without NIP-44 then reads as an empty list.
  *
- * So each half answers only for itself, and BOTH answers together mean
+ * So each half answers only for itself, and BOTH halves holding entries means
  * "unknowable from here" — which is a question for the user, not a coin toss.
  * A null mode publishes nothing at all (`requestFavoritesSync`), so the safe
  * state is also the default one.
+ *
+ * A LIST WITH NOTHING IN IT ANSWERS 'public', AND IT IS THE ONE GUESS THE SPEC
+ * ASKS FOR. Nobody has chosen anything and there is nothing to disclose, which
+ * is where every new user starts; the alternative is a privacy dialog in front
+ * of a brand-new account's first ♡. It states NO `visibility` tag — a default
+ * is the absence of a choice, and a tag recording one the user never made
+ * outranks the choice they go on to make in another app.
+ *
+ * `hasContent` IS WHAT KEEPS THAT GUESS OFF SOMEBODY ELSE'S CIPHERTEXT, and it
+ * asks whether `content` holds bytes at all — never whether those bytes held
+ * entries. Bytes this writer could not open are an encrypted list somebody
+ * owns, and an empty tag list beside them is not an empty LIST: default there
+ * and the next publish sets plaintext `i` tags beside the ciphertext, splitting
+ * one list into two halves no reader can reconcile. Bytes that open onto an
+ * empty array are the same question from the other side — somebody chose
+ * private and then took everything back out — so the only shape that answers
+ * 'public' is all three empty.
+ *
+ * Spec: PC20-Nostr#47, "An empty, untagged list is public". Vector 16.
  */
-export function seedModeFromWire(hasPublic: boolean, hasPrivate: boolean): FavoritesPrivacy | null {
+export function seedModeFromWire(
+  hasPublic: boolean,
+  hasPrivate: boolean,
+  hasContent: boolean,
+): FavoritesPrivacy | null {
   if (hasPublic && hasPrivate) return null;
   if (hasPrivate) return 'private';
   if (hasPublic) return 'public';
-  return null;
+  return hasContent ? null : 'public';
 }
 
 /**
@@ -625,7 +648,8 @@ export function seedModeFromWire(hasPublic: boolean, hasPrivate: boolean): Favor
  *    blind to, and treating it as opaque would freeze every new account on
  *    such a signer at whatever the first writer guessed.
  *
- * Spec: PC20-Nostr, "The list is public or private, and the event says which".
+ * Spec: PC20-Nostr, "A list is public or private. It is never both, and never
+ * partly", and the `visibility` tag that states which.
  */
 export function effectiveListMode(input: {
   /** What this app has recorded, or null when the user has not been asked. */
@@ -668,8 +692,12 @@ export function effectiveListMode(input: {
  * own parser drops it. So the tag is added once, to the array that really is
  * the event's, and never to the other one.
  *
- * Inserted after `alt` so the head of the event is stable across republishes;
- * position is not semantic for either tag.
+ * Inserted immediately after `alt`, which PC20-Nostr#49 made the prescribed
+ * place for it: the mode is marked at the top, so a reader knows it before
+ * parsing a single entry. That is a rule for WRITERS only — `statedVisibility`
+ * and the parser accept it anywhere, because an older list carries it
+ * elsewhere and rule 5's reframed comparison is what stops the difference
+ * costing a republish.
  */
 export function withVisibility(
   tags: string[][],
@@ -1401,6 +1429,30 @@ export interface MergeInput {
   local: LocalList;
   /** What this device last agreed with the relay on. */
   baseline: FavoritesBaseline;
+  /**
+   * Pass 2 off: keep everything the removal tests keep, ADD nothing.
+   *
+   * This is for the whole-list move only, on the half it is EMPTYING. That
+   * merge still has to run the removal tests — an entry we claim there and no
+   * longer hold is an unfavorite the user made, and carrying it across the move
+   * is permanent, because the baseline written beside the move cannot claim
+   * what this device does not hold, so no later cycle can drop it. Spec vector
+   * 29.
+   *
+   * What it must NOT do is append. The entries this device holds are appended
+   * once, by the merge that owns the half they are moving INTO; appending them
+   * here too opens a second `medium` run for them and the list never reaches a
+   * fixed point.
+   *
+   * **Handing this merge `EMPTY_LOCAL` looks like the same thing and is not.**
+   * That turns pass 2 off by taking the `local` state away, and the removal
+   * tests need it: without it every entry reads as unheld, so the whole half is
+   * dropped and re-appended by the receiving merge in LOCAL order, losing the
+   * wire order that is the data. Spec vector 30.
+   *
+   * `append` decides what is ADDED, never what is kept.
+   */
+  append?: boolean;
 }
 
 /**
@@ -1540,7 +1592,7 @@ export function foldHalves(here: ParsedList, moving: ParsedList): ParsedList {
  *  5. Loose entries exist at all, so an identifier kind or tag position we
  *     don't understand survives us.
  */
-export function mergeFavoritesList({ read, local, baseline }: MergeInput): ParsedList {
+export function mergeFavoritesList({ read, local, baseline, append = true }: MergeInput): ParsedList {
   const localByGuid = new Map(local.groups.map((g) => [g.feedGuid, g]));
   const publishedFeeds = new Set(baseline.feeds);
   const publishedItems = new Set(baseline.items);
@@ -1675,7 +1727,11 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
     }
 
     localFed++;
-    for (const g of mine.itemGuids) {
+    // `append` gates the ADD, not the `localFed++` above it: that one counts a
+    // node kept because we hold it, which is what the wholesale-delete guard
+    // reads. Gate it and every whole-list move reports `localFed === 0` on both
+    // halves and is refused as a wipe.
+    for (const g of append ? mine.itemGuids : []) {
       if (kept.includes(g)) continue;
       // Local items the read didn't carry are either NEW here, or ones we
       // published that another writer has since removed. Only the first may go
@@ -1720,7 +1776,7 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
     });
   }
 
-  for (const group of local.groups) {
+  for (const group of append ? local.groups : []) {
     if (taken.has(group.feedGuid)) continue;
 
     // Absent from the read entirely. Anything we already published and the relay
@@ -1755,7 +1811,7 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
     nodes.push({ t: 'group', group: { ...group, itemGuids: [] } });
   }
 
-  for (const loose of local.loose) {
+  for (const loose of append ? local.loose : []) {
     const id = loose.tag[1];
     if (!id) continue;
     if (read.nodes.some((n) => n.t === 'loose' && n.loose.tag[1] === id)) continue;
@@ -1855,6 +1911,20 @@ export interface FavoritesPlanInput {
   privateUnreadable?: boolean;
   /** This device's favorites destined for the private half. Vestigial, as `local`. */
   privateLocal?: LocalList;
+  /**
+   * EVERYTHING THIS DEVICE HOLDS, both halves' worth, before the mode split.
+   *
+   * `local` and `privateLocal` are one list split by the mode, so on any given
+   * cycle one of them is empty — which makes neither of them the answer to
+   * "do we still hold this?" about the half we are not writing into. That
+   * question decides whether a carried claim retires, and getting it wrong
+   * deletes another app's entry: see `carriedClaims`.
+   *
+   * Defaults to `EMPTY_LOCAL`, which retires a claim on absence alone — the
+   * behaviour before this existed, and the conservative direction for a caller
+   * that has not been taught to pass it.
+   */
+  held?: LocalList;
   /**
    * What this device last agreed with the relay on, so the claims about a half
    * we could not read this cycle survive it. Without it an unreadable private
@@ -2022,12 +2092,11 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
   // ours-and-removed, and drops it — a cross-app deletion with no undo, driven
   // by an assertion that expired at the moment of the switch.
   //
-  // So an inactive half keeps only the claims whose entries are STILL THERE.
-  // This is never applied to an UNREADABLE half: absence from a half we could
-  // not open is not evidence of anything, and filtering on it would disown
-  // every private entry at once.
-  const stillPresent = (b: FavoritesBaseline, list: ParsedList | null | undefined): FavoritesBaseline => {
-    if (!list) return b;
+  // So an inactive half keeps only the claims that still have work to do, and
+  // there are TWO conditions, not one. This is never applied to an UNREADABLE
+  // half: absence from a half we could not open is not evidence of anything,
+  // and filtering on it would disown every private entry at once.
+  const keysOfList = (list: ParsedList): Set<string> => {
     const present = new Set<string>();
     for (const node of list.nodes) {
       if (node.t === 'loose') {
@@ -2049,7 +2118,84 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
         present.add(itemId(g));
       }
     }
-    return { feeds: b.feeds.filter((id) => present.has(id)), items: b.items.filter((id) => present.has(id)) };
+    return present;
+  };
+
+  /**
+   * What this device HOLDS, in the two claim forms a baseline may carry.
+   *
+   * Not `baselineFrom`, which emits the pair form alone: a baseline written
+   * before the pair existed carries bare item ids, and matching those against
+   * pairs only would retire every legacy claim on an entry we still hold —
+   * the same defect this exists to fix, narrowed to legacy claims.
+   *
+   * A group with `favorited === false` is a placement, not a held feed. It is
+   * on the list to name its items' parent and nothing else, so it may not keep
+   * a feed claim alive.
+   */
+  const keysOfLocal = (l: LocalList): Set<string> => {
+    const out = new Set<string>();
+    for (const g of l.groups) {
+      if (g.favorited !== false) out.add(showId(g.feedGuid));
+      for (const i of g.itemGuids) {
+        out.add(itemClaim(itemId(i), g.feedGuid));
+        out.add(itemId(i));
+      }
+    }
+    for (const e of l.loose) {
+      const id = e.tag[1];
+      if (id) out.add(id);
+    }
+    return out;
+  };
+
+  /**
+   * The claims we carry about the half we did NOT publish into.
+   *
+   * CARRYING A CLAIM IS NOT KEEPING IT ALIVE PAST ITS ENTRY. This writer edits
+   * the inactive half too — a whole-list move empties it outright — and a claim
+   * left behind by that can never be satisfied again. The one thing it can
+   * still do is fire `mergeFavoritesList`'s removal test, so the moment a
+   * second app writes that entry back into that half, we delete it: silently,
+   * on someone else's device, with no undo. Spec vector 31.
+   *
+   * TWO CONDITIONS, AND EACH IS LOAD-BEARING IN A DIFFERENT DIRECTION.
+   *
+   *  - **Not claimed in the ACTIVE half.** An entry the move carried across is
+   *    claimed where it now lives; a second copy of that claim on the half it
+   *    left is the stale claim above, and leaving it there is how emptying a
+   *    half deletes the next writer's entry.
+   *  - **Still in that half, OR still held here.** Presence alone is not the
+   *    test. An entry we still HOLD keeps its claim wherever it sits, because
+   *    there the claim is the resurrection guard: `mergeFavoritesList` re-adds
+   *    what we hold, and the baseline is the only thing that stops it. Retire
+   *    it and an entry another app removed comes back on the next cycle, for
+   *    good.
+   *
+   * Neither true means we removed the entry and already published the removal,
+   * so the claim is spent. Retiring only ever REMOVES claims, so it can never
+   * claim another writer's entry — which is the whole thing the carry rule
+   * protects.
+   */
+  const carriedClaims = (
+    b: FavoritesBaseline,
+    inactive: ParsedList | null | undefined,
+    active: FavoritesBaseline,
+    heldList: LocalList,
+  ): FavoritesBaseline => {
+    // A half we could not read is a half we did not edit. Verbatim, filter and
+    // all — and the active-claims half is skipped too, deliberately further
+    // from the spec's reference than the rest of this. `baselineOfList` claims
+    // what this app RENDERS, another writer's entries included, so applying it
+    // blind to bytes we cannot open would retire a private claim because a
+    // stranger's public entry happens to share the identifier. That removal
+    // cannot be redone.
+    if (!inactive) return b;
+    const still = keysOfList(inactive);
+    const claimed = new Set([...active.feeds, ...active.items]);
+    const held = keysOfLocal(heldList);
+    const keep = (id: string) => !claimed.has(id) && (still.has(id) || held.has(id));
+    return { feeds: b.feeds.filter(keep), items: b.items.filter(keep) };
   };
 
   // `withLoose` restores what `baselineOfList` deliberately cannot see. It reads
@@ -2066,27 +2212,36 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
     for (const id of loose) items.add(id);
     return { ...b, items: [...items] };
   };
-  const pub = input.withdraw
+  // ACTIVE FIRST, THEN INACTIVE, because the inactive half now READS the active
+  // one: a claim that moved across is claimed where it landed, and carrying a
+  // second copy on the half it left is what deletes the next writer's entry.
+  const activeIsPrivate = mode === 'private';
+  const held = input.held ?? EMPTY_LOCAL;
+
+  // A half we could not read goes back verbatim: what we asserted about it is
+  // still the best answer we have, and recomputing it from nothing would
+  // silently disown every private entry.
+  const active: FavoritesBaseline = input.withdraw
     ? { feeds: [], items: [] }
-    // Inactive public half (private mode), same rule as the private one below.
-    : mode === 'private'
-      ? stillPresent(carried('public'), input.merged)
+    : activeIsPrivate
+      ? (privateUnreadable
+        ? carried('private')
+        : withLoose(baselineOfList(input.privateMerged), input.privateMerged, input.privateLocal ?? EMPTY_LOCAL))
       : withLoose(baselineOfList(input.merged), input.merged, input.local);
-  // A half we could not read is carried for the same reason and one of its own:
-  // it goes back verbatim, so what we asserted about it is still true, and
-  // recomputing it from nothing would silently disown every private entry.
-  const priv = input.withdraw
+
+  const inactive: FavoritesBaseline = input.withdraw
     ? { feeds: [], items: [] }
-    // Unreadable: verbatim, always. We cannot see what is in there, so what we
-    // asserted about it is still the best answer we have, and recomputing it
-    // from nothing would silently disown every private entry.
-    : privateUnreadable
-      ? carried('private')
-      // Inactive but readable — the post-switch case. Carry, minus what the
-      // switch just moved out.
-      : mode !== 'private'
-        ? stillPresent(carried('private'), input.privateMerged)
-        : withLoose(baselineOfList(input.privateMerged), input.privateMerged, input.privateLocal ?? EMPTY_LOCAL);
+    : activeIsPrivate
+      // Inactive public half. Same rule as the private one below.
+      ? carriedClaims(carried('public'), input.merged, active, held)
+      : (privateUnreadable
+        ? carried('private')
+        // Inactive but readable — the post-switch case. Carry, minus what the
+        // switch just moved out and minus what we no longer hold.
+        : carriedClaims(carried('private'), input.privateMerged, active, held));
+
+  const pub = activeIsPrivate ? inactive : active;
+  const priv = activeIsPrivate ? active : inactive;
   const baseline: FavoritesBaseline = {
     feeds: pub.feeds, items: pub.items, privateFeeds: priv.feeds, privateItems: priv.items,
   };
