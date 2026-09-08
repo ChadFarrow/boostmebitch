@@ -173,10 +173,15 @@ export function FavoritesPage() {
     [itemRows, tab, query, view.sort],
   );
 
-  // ONE hook for the whole page — see the note on useCollapsedGroups. Two
-  // sections, two keys, and they are deliberately NOT the old 'show:<medium>' /
-  // 'ep:<medium>' keys: those meant "this medium's group is folded", a
-  // statement this page can no longer make. The stale ones sit inertly in
+  // ONE hook for the whole page — see the note on useCollapsedGroups. A medium
+  // tab folds by HALF under `favpage:feeds` / `favpage:items`, because the fold
+  // there is a statement about albums or about tracks and not about music. The
+  // mixed tab folds by (medium, half) under its own `favpage:all:` prefix, and
+  // that is a DIFFERENT statement rather than the same one keyed twice.
+  //
+  // Neither reuses the old 'show:<medium>' / 'ep:<medium>' keys. Those named a
+  // stacked medium heading this page no longer has, and a key that survives a
+  // redesign folds a section its author never saw. They sit inertly in
   // `bmb:fav_collapsed` and need no migration; the read is a membership test.
   const [collapsed, toggleCollapsed] = useCollapsedGroups();
   const feedsListId = useId();
@@ -263,18 +268,15 @@ export function FavoritesPage() {
     if (loaded.episode) openEpisode(loaded.episode);
   }
 
-  // Nouns follow the tab, because that is the only place this page knows a
-  // medium from. Under All it has a mixed list and has to pick a generic word,
-  // which is the trade MEDIUM_ORDER's own note describes.
+  // The "show N more …" nouns follow the SECTION's medium, not the tab. Under
+  // `all` the tab knows no medium and had to say "favorites"; a section does
+  // know one, so the control under ALBUMS now offers more albums. `~unknown`
+  // still resolves to the generic word, and that is not a fallback — the whole
+  // reason that bucket is separate is that nobody declared what those entries
+  // are, so "show"/"episode" there would assert what it exists to refuse.
   //
-  // Passed as FUNCTIONS: <PagedList> labels a "show N more …" control and the
-  // only number that word is read against is what remains, which the page does
-  // not know. `feedNoun`/`itemNoun` own the whole vocabulary now, including the
-  // two keys that name no medium — 'all' and '~unknown' both resolve to the
-  // generic word rather than asserting "show"/"episode" over a bucket that
-  // exists precisely because nobody told us.
-  const feedWord = (n: number) => feedNoun(tab, n);
-  const itemWord = (n: number) => itemNoun(tab, n);
+  // Passed as FUNCTIONS at each call site: <PagedList> reads the word against
+  // what REMAINS, which the page does not know.
 
   // The split chips and the two section headings share ONE pair of words. They
   // sit one row apart, so a chip reading ALBUMS above a heading reading
@@ -328,6 +330,12 @@ export function FavoritesPage() {
             ? (['feeds', 'items'] as const).map((k) => ({
                 id: `${t.key}|${k}`,
                 label: crossSplitLabel(t.key, t.label, k),
+                // The half entries carried no count while the medium above
+                // them did, so the menu read `MUSIC 421` over two blank rows —
+                // and the one number it withheld is the one that says how the
+                // 421 divides. It is the same number the section heading below
+                // states, and the two must not be able to disagree.
+                count: k === 'feeds' ? t.feedCount : t.itemCount,
                 // The trigger says which medium's half. "albums" alone does
                 // not, and the trigger is the only thing on screen naming the
                 // filter once the menu is shut.
@@ -343,6 +351,43 @@ export function FavoritesPage() {
 
   const showFeeds = split !== 'items';
   const showItems = split !== 'feeds';
+
+  // Per-medium unfiltered counts, for the `ofTotal` a narrowed section states.
+  // Off `tabs`, which already counts each half per medium for the menu — so the
+  // heading and the menu entry beside it cannot report different numbers.
+  const halfTotals = useMemo(
+    () => ({
+      feeds: new Map(tabs.map((t) => [t.key, t.feedCount])),
+      items: new Map(tabs.map((t) => [t.key, t.itemCount])),
+    }),
+    [tabs],
+  );
+
+  // A tab that names a medium keeps the two sections it had, under the two
+  // words `splitLabels` gives it, folded by HALF — the fold there is a
+  // statement about albums or about tracks, not about music. `all` splits each
+  // half by medium instead; see `mediumSections`.
+  //
+  // `~unknown` is the exception, and it is the one `splitLabels` cannot answer.
+  // It gives that key the compound, which under `all` is now unreachable for a
+  // heading — so the same rows would read MEDIUM UNKNOWN FEEDS in the mixed
+  // view and ALBUMS & SHOWS under their own tab. One of those names a bucket
+  // that exists because nobody declared a medium; the other asserts two.
+  const headingFor = (kind: 'feeds' | 'items') =>
+    tab === '~unknown'
+      ? crossSplitLabel(tab, activeTab?.label ?? 'medium unknown', kind)
+      : half[kind];
+
+  const feedSections = showFeeds
+    ? tab === 'all'
+      ? mediumSections(feeds, 'feeds', halfTotals.feeds, !!query)
+      : [{ fold: 'favpage:feeds', mediumKey: tab, heading: headingFor('feeds'), rows: feeds, ofTotal: feedRows.length }]
+    : [];
+  const itemSections = showItems
+    ? tab === 'all'
+      ? mediumSections(items, 'items', halfTotals.items, !!query)
+      : [{ fold: 'favpage:items', mediumKey: tab, heading: headingFor('items'), rows: items, ofTotal: itemRows.length }]
+    : [];
 
   return (
     <div className="flex flex-col gap-3">
@@ -484,44 +529,51 @@ export function FavoritesPage() {
             </p>
           ) : (
             <>
-              {showFeeds && (
+              {/* Every feed section, then every item section — the order the
+                  two halves already had, with each half opened out by medium
+                  under `all`. The list id is derived per section rather than
+                  from a second `useId`, because the count is data-driven and a
+                  hook cannot be. */}
+              {feedSections.map((sec) => (
                 <Section
-                  listId={feedsListId}
-                  heading={half.feeds}
-                  shown={feeds.length}
-                  ofTotal={query || tab !== 'all' ? feedRows.length : null}
-                  collapsed={collapsed.has('favpage:feeds')}
-                  onToggle={() => toggleCollapsed('favpage:feeds')}
+                  key={sec.fold}
+                  listId={`${feedsListId}${sec.mediumKey}`}
+                  heading={sec.heading}
+                  shown={sec.rows.length}
+                  ofTotal={sec.ofTotal}
+                  collapsed={collapsed.has(sec.fold)}
+                  onToggle={() => toggleCollapsed(sec.fold)}
                 >
                   <FavoriteFeedRows
-                    id={feedsListId}
-                    rows={feeds}
+                    id={`${feedsListId}${sec.mediumKey}`}
+                    rows={sec.rows}
                     resetKey={resetKey}
-                    hidden={collapsed.has('favpage:feeds')}
-                    noun={feedWord}
+                    hidden={collapsed.has(sec.fold)}
+                    noun={(n) => feedNoun(sec.mediumKey, n)}
                     onSelect={openFeed}
                   />
                 </Section>
-              )}
-              {showItems && (
+              ))}
+              {itemSections.map((sec) => (
                 <Section
-                  listId={itemsListId}
-                  heading={half.items}
-                  shown={items.length}
-                  ofTotal={query || tab !== 'all' ? itemRows.length : null}
-                  collapsed={collapsed.has('favpage:items')}
-                  onToggle={() => toggleCollapsed('favpage:items')}
+                  key={sec.fold}
+                  listId={`${itemsListId}${sec.mediumKey}`}
+                  heading={sec.heading}
+                  shown={sec.rows.length}
+                  ofTotal={sec.ofTotal}
+                  collapsed={collapsed.has(sec.fold)}
+                  onToggle={() => toggleCollapsed(sec.fold)}
                 >
                   <FavoriteItemRows
-                    id={itemsListId}
-                    rows={items}
+                    id={`${itemsListId}${sec.mediumKey}`}
+                    rows={sec.rows}
                     resetKey={resetKey}
-                    hidden={collapsed.has('favpage:items')}
-                    noun={itemWord}
+                    hidden={collapsed.has(sec.fold)}
+                    noun={(n) => itemNoun(sec.mediumKey, n)}
                     onOpen={openItem}
                   />
                 </Section>
-              )}
+              ))}
             </>
           )}
         </>
@@ -1325,6 +1377,44 @@ function itemHay(r: FavoriteEpisode): string {
 }
 function matches(hay: string, query: string): boolean {
   return !query || hay.includes(query);
+}
+
+/**
+ * The mixed tab's sections: one per (medium, half) pair, in MEDIUM_ORDER.
+ *
+ * `splitLabels` cannot name these. Under `all` it has to answer with a compound
+ * — "albums & shows" — and a compound heading carries a compound COUNT, which
+ * answers neither of the two questions it is made of. It read `ALBUMS & SHOWS —
+ * 217` directly under a menu that had already divided the same library into
+ * `MUSIC 421` and `PODCAST 23`.
+ *
+ * `crossSplitLabel` is the same call that menu labels its own entries with, so
+ * a heading and the option that filters to it read alike — and it is what keeps
+ * an audiobook feed from rendering a second section called SHOWS.
+ *
+ * BUILT FROM THE ROWS THE FILTER LEFT, so a medium it emptied emits no section.
+ * The alternative is a column of `— 0 of 194` headings, one per medium, which
+ * is the compound heading's own problem with more of it. `ofTotal` still comes
+ * from the unfiltered per-medium count, because that is the number `Section`
+ * below is honest about.
+ */
+function mediumSections<T extends { medium?: string }>(
+  rows: T[],
+  kind: 'feeds' | 'items',
+  totals: Map<string, number>,
+  narrowed: boolean,
+) {
+  return groupByMedium(rows, (r) => r.medium).map((g) => ({
+    // Its OWN namespace, not the `show:<medium>` / `ep:<medium>` keys an older
+    // build of this page wrote. Those said "this medium's group is folded" about
+    // a group that no longer exists, and a fold under `all` is a different
+    // statement from the same fold under a medium tab.
+    fold: `favpage:all:${g.key}:${kind}`,
+    mediumKey: g.key,
+    heading: crossSplitLabel(g.key, g.label, kind),
+    rows: g.rows,
+    ofTotal: narrowed ? totals.get(g.key) ?? g.rows.length : null,
+  }));
 }
 
 /**
