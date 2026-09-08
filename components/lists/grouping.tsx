@@ -118,10 +118,17 @@ export function feedNoun(mediumKey: string, n: number): string {
  * the list does not know. Picking `shows`/`episodes` for it is the same wrong
  * claim `groupByMedium` keeps that bucket separate to refuse.
  *
- * The page uses these for the SECTION HEADINGS too. A chip reading ALBUMS above
- * a heading reading "albums & shows" is the same confusion one row down, and it
- * is the reason this returns both words from one call instead of leaving each
- * surface to build its own.
+ * The page uses these for the SECTION HEADINGS on a medium tab too. A chip
+ * reading ALBUMS above a heading reading "albums & shows" is the same confusion
+ * one row down, and it is the reason this returns both words from one call
+ * instead of leaving each surface to build its own.
+ *
+ * **The mixed tab no longer asks this**, and neither does `~unknown`. Both take
+ * `crossSplitLabel` below, because a section carries a COUNT and a compound
+ * count answers neither of the two questions it is made of — `ALBUMS & SHOWS —
+ * 217` over a library the filter one row above had already divided into MUSIC
+ * 421 and PODCAST 23. So the compound survives here only where it labels a
+ * filter, where the number beside it is the whole of what the filter selects.
  */
 export function splitLabels(mediumKey: string): { feeds: string; items: string } {
   if (isMediumless(mediumKey)) return { feeds: 'albums & shows', items: 'tracks & episodes' };
@@ -129,12 +136,17 @@ export function splitLabels(mediumKey: string): { feeds: string; items: string }
 }
 
 /**
- * One chip on the MIXED tab, where a chip names a medium AND a half at once.
+ * One (medium, half) pair named in one word — the mixed tab's filter entries,
+ * and the section headings under them.
  *
  * `splitLabels` above answers "what are the two halves called under this tab".
  * This answers a different question the mixed tab asks: with no medium chosen,
- * one chip per half can only be a compound, so the row offers one chip per
- * (medium, half) pair instead and each has to name both.
+ * one label per half can only be a compound, so the tab works in (medium, half)
+ * pairs instead and each one has to name both.
+ *
+ * The favorites page uses it for BOTH surfaces on purpose. The filter entry and
+ * the heading of the section it selects have to be the same word, or the page
+ * offers ALBUMS and then heads the result with something else.
  *
  * **Only `music` and `podcast` get the bare noun.** `feedNoun` collapses every
  * other medium to `show` and `itemNoun` to `episode`, which is the right call
