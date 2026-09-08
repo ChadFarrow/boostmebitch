@@ -176,23 +176,29 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // still names every fact, which is what paid for it. The ~10 words left are the
 // rows' raise and nothing else.
 //
-// 14,870 → 14,960, and this one is a WIRE FORMAT rather than a table row. The
-// spec moved an item's feed guid onto the item's own `i` tag (PC20-Nostr#34), so
-// the event now carries four `i` shapes instead of two and a reader that branches
-// on position 1 alone reads a saved episode as a followed show. Two things had to
-// reach a session before it opens the file: the shapes themselves, folded into
-// the existing tag-order clause rather than given a bullet, and the STAGE — this
-// app reads the new form and may not write it until the other app reads it, or
-// every item favorite that app holds is silently converted. The stage is the
-// expensive half: it is invisible from the code, it expires, and getting it wrong
-// destroys another app's data on someone else's device.
+// 14,870 → 15,010, and this one is a WIRE FORMAT rather than a table row. The
+// spec moved an item's feed guid onto the item's own `i` tag (PC20-Nostr#34) and
+// prescribed a band order for each `medium` run, so the event now carries four
+// `i` shapes instead of two. Four rules had to reach a session before it opens
+// the file, and each one destroys another app's data if broken: an entry is told
+// apart by LENGTH, not by position 1, and its kind is its LAST identifier; the
+// whole tag is carried, never rebuilt; a baseline claim on an item is the PAIR,
+// and a paired claim OPENS with `podcast:guid:`, so anything sorting claims by
+// prefix files every item claim under feeds; and a run is emitted in band order,
+// with band 0 keeping an orphan above every feed entry.
 //
-// Prose was cut first, as the precedent requires — four bullets in the favorites
-// block were reduced to the shortest form still naming every fact — but it only
-// paid 9 words, because that block had already been through this twice. The ~90
-// left are the shapes and the stage. When the migration finishes, the stage
-// paragraph goes and this raise should come back out with it.
-const BUDGET = 14960
+// The fifth is the expensive one because it is invisible from the code and it
+// expires: this app now WRITES the new form, so a StableKraft still on stage 0
+// converts every saved episode it reads into a followed show. That is a
+// deploy-order dependency, and a session that does not know it will merge in the
+// wrong order.
+//
+// Prose was cut first, as the precedent requires — five bullets in the favorites
+// block reduced to the shortest form still naming every fact — but that block
+// had already been through this twice and it only paid ~20 words. When the
+// migration finishes, the deploy-order paragraph goes and this raise should come
+// back out with it.
+const BUDGET = 15010
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')

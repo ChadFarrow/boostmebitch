@@ -486,13 +486,17 @@ but `podcast:item:guid:` is defined there today, so an entry carrying something
 else belongs to a writer newer than us. Carry the whole tag; reading it as a
 two-element feed entry turns their entry into a followed show.
 
-**This app is at stage 1 of the migration and that is deliberate.** It reads the
-three-element form and carries it; it still writes its own items in the legacy
-two-element form under a feed group. Writing the new form is stage 2 and may not
-land until StableKraft reads it — a reader on stage 0 converts every item entry
-it sees into a feed favorite. `scripts/conformance.mjs` lists which vectors are
-red on that schedule; see `pc20-favorites-feed-guid-migration.md` in the spec
-repo for the four stages.
+**This app ships stages 2 and 4 of the migration; stage 3 is deliberately not
+done.** It reads and writes the three-element form, rewrites a legacy item once,
+claims the (feed, item) pair, and bands each run. A placement feed entry already
+on the wire is still carried rather than retracted — that is stage 3, and the
+spec says to hold it back longest. It stops writing NEW ones, because an item
+names its own feed and needs no group above it to place it.
+
+**A reader still on stage 0 misreads every item entry we write**, taking
+`podcast:guid:F` at position 1 and showing a followed show where one saved
+episode was meant. That is a deploy-order dependency on StableKraft rather than a
+code one. `scripts/conformance.mjs` records which vectors are red and why.
 
 **Carry the whole tag, never rebuild it from the model.** A `FeedGroup` records
 the `i` tags it was read from (`feedTag`, `itemTags`) and an `ItemEntry` records
@@ -507,6 +511,32 @@ full of two-element item tags, and dropping it does not lose a label, it makes
 every item favorite already published unresolvable by anybody. An item guid is
 unique only inside its feed — Podcast Index refuses `/episodes/byguid` without a
 `feedid`, `feedurl` or `podcastguid` beside it.
+
+**A legacy tag is rewritten once, and the identifier MOVES.** The whole tag is
+replaced: position 1 becomes the feed's identifier, taken from the group the item
+was read under, and the item's goes to position 2. It is not a third element
+appended. The rewrite must be idempotent — reading the result back changes
+nothing — or every load republishes, forever. An item whose feed nobody knows is
+the exception: it goes back exactly as it arrived, because a placeholder guid is
+an invented one and a wrong feed resolves to the wrong thing.
+
+**A baseline claim on an item is the PAIR** (`itemClaim`), never the item guid.
+The same item guid under two feeds is two different favorites, so a claim keyed
+on the guid alone takes both back at once. The encoding puts the feed first — a
+feed guid is a UUID and holds no separator, an item guid is routinely a permalink
+URL — and `claimedItem` accepts the bare legacy form too, so a baseline written
+before this reads correctly and is rewritten by the next publish. **A paired
+claim OPENS with `podcast:guid:`**, so anything that sorts claims by prefix must
+ask `isItemClaim` first or it files every item claim under feeds.
+
+**Tag order inside a run is now PRESCRIBED**, in four bands: items naming no
+feed, artists, feeds, then items grouped by the feed they name. Within a band the
+read order stands and a new entry lands at the end of its band. Preserving only
+converges if every writer preserves; prescribing converges even against a writer
+that does not sort. **Band 0 is not cosmetic** — an orphan takes its feed from
+the entry above it, so putting it after the feeds hands it whichever album ended
+up last. **A run holding a tag we cannot classify is emitted as read**, because a
+tag with no kind has no band.
 
 So a client that parses entries into structs and rebuilds the array from them —
 sorting, deduping, or emitting groups in a different order — silently reattaches
@@ -533,14 +563,11 @@ Two emission rules exist only to keep that array stable:
   inventing anything. **Never default a missing medium to `podcast`** — the list
   carries podcasts and music at once by design, so a default is wrong for
   exactly the half the hint exists to separate.
-- **Where preserving read order and keeping same-medium groups contiguous
-  conflict, contiguity wins.** Reordering groups within a medium block reattaches
-  nothing, since an item always travels directly beneath its own feed entry,
-  whereas a broken block silently re-labels every entry after the boundary. This
-  means our first publish after an interleaved read legitimately differs from
-  what we read — so **idempotence is `merge(parse(output)) === output`**, not
-  `output === input`. A vector written the naive way fails correctly and gets
-  "fixed" wrongly.
+- **Band order decides where inside a run an entry sits**, and same-medium
+  entries stay contiguous. This means our first publish after an interleaved or
+  legacy read legitimately differs from what we read — so **idempotence is
+  `merge(parse(output)) === output`**, not `output === input`. A vector written
+  the naive way fails correctly and gets "fixed" wrongly.
 
 `k` is ignored on read and the kind comes from the entry's last identifier via a
 known-kinds **table**, never string-scanning: item guids are routinely permalink

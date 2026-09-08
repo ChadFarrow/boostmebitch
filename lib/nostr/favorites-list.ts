@@ -50,13 +50,27 @@
 // address — and position 3 is undefined, which is exactly where a writer newer
 // than us will put the next thing.
 //
-// THIS APP IS AT STAGE 1 OF THE MIGRATION and that is deliberate. It READS the
-// three-element form and carries it; it still WRITES its own items in the
-// legacy two-element form under a feed group. Writing the new form is stage 2
-// and may not land until the other writer of this list reads it — a reader on
-// stage 0 sees `podcast:guid:F` at position 1 and silently converts a saved
-// episode into a followed show. See `pc20-favorites-feed-guid-migration.md` in
-// the spec repo.
+// TAG ORDER INSIDE A `medium` RUN IS PRESCRIBED, NOT PRESERVED. Four bands:
+// items naming no feed, artists, feeds, then items grouped by the feed they
+// name. Within a band the read order stands and a new entry lands at the END of
+// its band. Preserving only converges if EVERY writer preserves; a prescribed
+// order converges even against a writer that does not sort, which is what ended
+// three weeks of two apps rewriting this event at each other in production.
+// Sorting is safe at all only because an entry names its own feed.
+//
+// THIS APP IS AT STAGE 2 + 4 OF THE MIGRATION. It reads and writes the
+// three-element form, rewrites a legacy item once (the identifier MOVES to
+// position 2; reading the result back changes nothing), claims the (feed, item)
+// PAIR in its baseline, and bands each run. **Stage 3 is deliberately not
+// done**: a placement feed entry already on the wire is still carried, so a feed
+// entry this device wrote before the migration is not retracted. It stops
+// writing NEW ones, because an item now names its own feed and needs no group
+// above it.
+//
+// A READER STILL ON STAGE 0 MISREADS EVERY ITEM ENTRY WE WRITE — it takes
+// `podcast:guid:F` at position 1 and shows a followed show where one saved
+// episode was meant. That is a deploy-order dependency, not a code one. See
+// `pc20-favorites-feed-guid-migration.md` in the spec repo.
 // ---------------------------------------------------------------------------
 
 export const FAVORITES_KIND = 10333;
@@ -180,6 +194,60 @@ export function identifierKind(id: string): string | null {
   }
   return null;
 }
+
+/**
+ * The baseline claim for ONE item favorite: the pair, never the item guid.
+ *
+ * An item guid is unique only INSIDE its feed — `<podcast:guid>` is a UUIDv5
+ * over the feed URL and globally unique, an item's `<guid>` is neither, which is
+ * why Podcast Index refuses `/episodes/byguid` without a feed beside it. So a
+ * baseline keyed on the item guid alone cannot tell two items in two feeds
+ * apart: take one back and the merge reads the other as ours-and-removed and
+ * deletes it, silently, and no other app will restate it.
+ *
+ * THE FEED COMES FIRST, and that is what makes the encoding safe to split. A
+ * feed guid is a UUID and holds no `|`; an item guid is routinely a permalink
+ * URL and may hold anything. Read it by splitting on the FIRST separator, never
+ * the last.
+ *
+ * A claim written before this shipped is a bare `podcast:item:guid:…` with no
+ * separator in it. {@link claimedItem} accepts both, so an existing baseline
+ * keeps working and is rewritten in the paired form by the next publish. That
+ * legacy form matches the item under ANY feed, which is exactly the imprecision
+ * it always had — it is not made worse by being carried.
+ */
+const CLAIM_SEP = '|';
+
+export const itemClaim = (itemIdentifier: string, feedGuid: string): string =>
+  `${showId(feedGuid)}${CLAIM_SEP}${itemIdentifier}`;
+
+/**
+ * Is this claim about an ITEM?
+ *
+ * A paired claim OPENS with the feed's identifier, so `startsWith('podcast:guid:')`
+ * answers "feed" for it and any caller that sorts claims by prefix files every
+ * item claim under feeds. `FavoritesBaseline` keeps the two in separate arrays
+ * and never has to ask — but anything that flattens the two into one list does,
+ * and the conformance contract is exactly that shape.
+ */
+export const isItemClaim = (claim: string): boolean =>
+  claim.includes(CLAIM_SEP) || claim.startsWith(ITEM_PREFIX);
+
+/**
+ * Does this set of claims name this (feed, item)?
+ *
+ * Takes the ITEM'S FULL IDENTIFIER and the BARE feed guid, matching
+ * {@link itemClaim} — the two are the same question asked in two directions, so
+ * they take the same arguments. Either claim form counts, which is what carries
+ * a baseline written before the pair existed.
+ */
+export const claimedItem = (
+  claims: Set<string>,
+  itemIdentifier: string,
+  feedGuid: string | undefined,
+): boolean =>
+  (feedGuid !== undefined && claims.has(itemClaim(itemIdentifier, feedGuid)))
+  || claims.has(itemIdentifier);
 
 /**
  * The kind an ENTRY declares, which is not always the kind at position 1.
@@ -727,7 +795,7 @@ export function baselineOfList(list: ParsedList | null | undefined): FavoritesBa
   const items: string[] = [];
   for (const node of list.nodes) {
     if (node.t === 'item') {
-      const id = itemId(node.item.itemGuid);
+      const id = itemClaim(itemId(node.item.itemGuid), node.item.feedGuid);
       if (!items.includes(id)) items.push(id);
       continue;
     }
@@ -738,7 +806,7 @@ export function baselineOfList(list: ParsedList | null | undefined): FavoritesBa
     const feed = showId(node.group.feedGuid);
     if (!feeds.includes(feed)) feeds.push(feed);
     for (const guid of node.group.itemGuids) {
-      const id = itemId(guid);
+      const id = itemClaim(itemId(guid), node.group.feedGuid);
       if (!items.includes(id)) items.push(id);
     }
   }
@@ -1152,10 +1220,109 @@ export function groupLocalFavorites(entries: FavoriteEntry[]): LocalList {
  * always travels directly beneath its own feed entry, whereas a broken block
  * silently re-labels every entry after the boundary.
  */
-export function tagsFromList(list: ParsedList): string[][] {
-  const tags: string[][] = [['alt', LIST_ALT]];
+/**
+ * Which of the four bands an `i` tag belongs to, or null when we cannot say.
+ *
+ *   0  an item that names NO feed
+ *   1  artists
+ *   2  albums and podcasts
+ *   3  items, grouped by the feed they name
+ *
+ * BAND 0 IS NOT COSMETIC. A legacy `['i','podcast:item:guid:X']` takes its feed
+ * from the most recent feed entry above it. Put every feed entry above every
+ * item and such an entry resolves to the LAST album in band 2 — a wrong feed,
+ * which is worse than the nothing it had, and the emitted tag is byte-identical
+ * either way so nothing else catches it. Ahead of band 2 there is no feed entry
+ * to mistake for its parent, and an artist is never a feed, so band 1 beside it
+ * is harmless.
+ *
+ * A resolvable legacy item never reaches band 0: the same publish rewrites it,
+ * so it arrives in band 3 already naming its feed.
+ */
+function bandOf(tag: string[]): number | null {
+  if (tag[0] !== 'i' || !tag[1]) return null;
+  const kind = entryKind(tag);
+  if (kind === PUBLISHER_KIND) return 1;
+  if (kind === ITEM_KIND) return tag[2] !== undefined ? 3 : 0;
+  if (kind === SHOW_KIND) return 2;
+  return null;
+}
 
-  for (const tag of list.foreignTags) tags.push(tag.slice());
+/**
+ * Put each `medium` run in band order.
+ *
+ * Applied ONCE, over the whole emitted body, rather than threaded through the
+ * two merge passes — that is what makes an entry land in the same place whether
+ * it came off the wire or out of local state.
+ *
+ * **Prescribing the order is what makes it converge; preserving it never did.**
+ * The rule used to be "keep what you read, append yours", and its failure needs
+ * two apps imposing DIFFERENT orders: they rewrote the event at each other in
+ * production for three weeks. One order in the document ends that, because a
+ * writer that does not sort still keeps what it read.
+ *
+ * This is available at all only because an entry names its own feed. Under the
+ * previous revision, moving a track away from the album above it destroyed the
+ * association outright.
+ *
+ * WITHIN a band the read order stands and a new entry lands at the end, so no
+ * existing list is reshuffled. Band 3 groups by feed, groups in order of first
+ * appearance, so an album's tracks stay together.
+ *
+ * A RUN HOLDING A TAG WE CANNOT CLASSIFY IS EMITTED AS READ. Rule 4 carries an
+ * unparseable `i` or an unknown tag type untouched, and a tag with no kind has
+ * no band. Inventing a place for a carried tag is how it ends up somewhere that
+ * changes what it means, so the whole run keeps wire order instead.
+ */
+function orderRuns(body: string[][]): string[][] {
+  const runs: { header: string[] | null; tags: string[][] }[] = [];
+  let current: { header: string[] | null; tags: string[][] } = { header: null, tags: [] };
+  for (const tag of body) {
+    if (tag[0] === 'medium') {
+      runs.push(current);
+      current = { header: tag, tags: [] };
+      continue;
+    }
+    current.tags.push(tag);
+  }
+  runs.push(current);
+
+  const out: string[][] = [];
+  for (const run of runs) {
+    if (run.header) out.push(run.header);
+    if (run.tags.length === 0) continue;
+
+    const bands = run.tags.map(bandOf);
+    if (bands.some((b) => b === null)) {
+      for (const tag of run.tags) out.push(tag);
+      continue;
+    }
+
+    const banded: string[][][] = [[], [], [], []];
+    run.tags.forEach((tag, i) => banded[bands[i] as number].push(tag));
+
+    // Band 3 groups by the feed each item NAMES — position 1 of its own tag,
+    // never the entry above it — groups in order of first appearance.
+    const byFeed = new Map<string, string[][]>();
+    for (const tag of banded[3]) {
+      const feed = tag[1];
+      if (!byFeed.has(feed)) byFeed.set(feed, []);
+      (byFeed.get(feed) as string[][]).push(tag);
+    }
+    banded[3] = [...byFeed.values()].flat();
+
+    for (const band of banded) for (const tag of band) out.push(tag);
+  }
+  return out;
+}
+
+export function tagsFromList(list: ParsedList): string[][] {
+  // The BODY only: entries and their `medium` headers. `alt` goes on the front
+  // and the `k` tags on the back once this is banded, because neither takes part
+  // in a run.
+  const body: string[][] = [];
+
+  for (const tag of list.foreignTags) body.push(tag.slice());
 
   // THE TAG WE READ, NEVER ONE REBUILT FROM THE MODEL. A rebuild type-checks,
   // renders correctly, and drops every element past the one this version knows
@@ -1164,17 +1331,28 @@ export function tagsFromList(list: ParsedList): string[][] {
   // ORIGINATED has nothing to carry, and it is the only one built from the model.
   const emit = (node: ListNode) => {
     if (node.t === 'loose') {
-      tags.push(node.loose.tag.slice());
+      body.push(node.loose.tag.slice());
       return;
     }
     if (node.t === 'item') {
-      tags.push(node.item.tag.slice());
+      body.push(node.item.tag.slice());
       return;
     }
-    tags.push(node.group.feedTag ? node.group.feedTag.slice() : ['i', showId(node.group.feedGuid)]);
+    body.push(node.group.feedTag ? node.group.feedTag.slice() : ['i', showId(node.group.feedGuid)]);
     for (const guid of node.group.itemGuids) {
       const read = node.group.itemTags?.[guid];
-      tags.push(read ? read.slice() : ['i', itemId(guid)]);
+      // THE MIGRATION, and it happens once per list. A LEGACY tag — two
+      // elements, the item at position 1 — is replaced WHOLE: the identifier
+      // moves to position 2 and position 1 becomes the feed's, taken from the
+      // group this item was read under. It is not an appended third element.
+      //
+      // Anything longer than two elements already names its feed and is carried
+      // untouched, which is what keeps a position we have no meaning for alive.
+      // Reading our own output back turns these into `item` nodes, so the second
+      // pass emits the same bytes and the upgrade does not repeat forever.
+      body.push(read && read.length > 2
+        ? read.slice()
+        : ['i', showId(node.group.feedGuid), itemId(guid)]);
     }
   };
 
@@ -1186,14 +1364,17 @@ export function tagsFromList(list: ParsedList): string[][] {
     if (m && !mediums.includes(m)) mediums.push(m);
   }
   for (const medium of mediums) {
-    tags.push(['medium', medium]);
+    body.push(['medium', medium]);
     for (const node of list.nodes) if (mediumOfNode(node) === medium) emit(node);
   }
+
+  const ordered = orderRuns(body);
+  const out: string[][] = [['alt', LIST_ALT], ...ordered];
 
   // Derived from what we actually emitted, in emission order — never from the
   // model, so a `k` can't name a kind that isn't on the list.
   const kinds: string[] = [];
-  for (const tag of tags) {
+  for (const tag of out) {
     if (tag[0] !== 'i' || !tag[1]) continue;
     // `entryKind`, never `identifierKind(tag[1])`: an item entry's kind lives at
     // position 2 and reading position 1 alone keeps `podcast:item:guid` off the
@@ -1201,12 +1382,12 @@ export function tagsFromList(list: ParsedList): string[][] {
     const kind = entryKind(tag);
     if (kind && !kinds.includes(kind)) kinds.push(kind);
   }
-  for (const kind of kinds) tags.push(['k', kind]);
+  for (const kind of kinds) out.push(['k', kind]);
   for (const kind of list.foreignKinds) {
-    if (!kinds.includes(kind)) tags.push(['k', kind]);
+    if (!kinds.includes(kind)) out.push(['k', kind]);
   }
 
-  return tags;
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1363,11 +1544,17 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
   const localByGuid = new Map(local.groups.map((g) => [g.feedGuid, g]));
   const publishedFeeds = new Set(baseline.feeds);
   const publishedItems = new Set(baseline.items);
-  const localItems = new Set(local.groups.flatMap((g) => g.itemGuids));
+  // KEYED ON THE PAIR, every one of them. Two feeds may hold one item guid, and
+  // they are two different favorites — a set keyed on the item guid alone folds
+  // them into one, so taking back one removes the other.
+  const localItems = new Set(
+    local.groups.flatMap((g) => g.itemGuids.map((i) => itemClaim(itemId(i), g.feedGuid))),
+  );
 
   /** Ours, and we no longer hold it ⇒ the user removed it here. */
-  const weRemovedItem = (guid: string) =>
-    publishedItems.has(itemId(guid)) && !localItems.has(guid);
+  const weRemovedItem = (guid: string, feedGuid: string) =>
+    claimedItem(publishedItems, itemId(guid), feedGuid)
+    && !localItems.has(itemClaim(itemId(guid), feedGuid));
 
   const localLooseIds = new Set(local.loose.map((l) => l.tag[1]).filter(Boolean));
 
@@ -1385,11 +1572,26 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
   const carriedItems = new Set<string>();
   for (const node of read.nodes) {
     if (node.t !== 'item') continue;
-    if (weRemovedItem(node.item.itemGuid)) continue;
-    carriedItems.add(node.item.itemGuid);
+    if (weRemovedItem(node.item.itemGuid, node.item.feedGuid)) continue;
+    carriedItems.add(itemClaim(itemId(node.item.itemGuid), node.item.feedGuid));
   }
 
   const nodes: ListNode[] = [];
+  // Items THIS DEVICE adds this cycle. They are appended as their own nodes
+  // rather than folded into a group, because under the current format an item is
+  // an independent entry that names its own feed — nothing above it places it.
+  // Folding them in also put them AHEAD of the items already on the wire, since
+  // a group sits above the entries that follow it, and the rule is that a new
+  // entry goes at the END of its band.
+  const newItems: ItemEntry[] = [];
+  const addNewItem = (feedGuid: string, guid: string, medium?: string) => {
+    newItems.push({
+      feedGuid,
+      itemGuid: guid,
+      medium,
+      tag: ['i', showId(feedGuid), itemId(guid)],
+    });
+  };
   const taken = new Set<string>();
   // Where each feed's group sits in `nodes`, and how many of its items came
   // off the wire, so a second group for the same feed can fold into it AFTER
@@ -1424,14 +1626,14 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
       // asserted it and local state no longer holds it — this app adopts what it
       // renders, so a carried entry the user unfavorites here has to go — and
       // otherwise carried, tag and all.
-      if (weRemovedItem(node.item.itemGuid)) continue;
-      if (localItems.has(node.item.itemGuid)) localFed++;
+      if (weRemovedItem(node.item.itemGuid, node.item.feedGuid)) continue;
+      if (localItems.has(itemClaim(itemId(node.item.itemGuid), node.item.feedGuid))) localFed++;
       nodes.push({ t: 'item', item: { ...node.item, tag: node.item.tag.slice() } });
       continue;
     }
 
     const group = node.group;
-    const kept = group.itemGuids.filter((guid) => !weRemovedItem(guid));
+    const kept = group.itemGuids.filter((guid) => !weRemovedItem(guid, group.feedGuid));
 
     // THE SAME FEED TWICE ON THE WIRE. Well-formed — a reader attaches each
     // item to the group most recently opened above it, and both name this
@@ -1473,6 +1675,16 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
     }
 
     localFed++;
+    for (const g of mine.itemGuids) {
+      if (kept.includes(g)) continue;
+      // Local items the read didn't carry are either NEW here, or ones we
+      // published that another writer has since removed. Only the first may go
+      // up: re-adding the second is the resurrection loop.
+      if (claimedItem(publishedItems, itemId(g), group.feedGuid)) continue;
+      // Already on the wire naming its own feed. Carried there, once.
+      if (carriedItems.has(itemClaim(itemId(g), group.feedGuid))) continue;
+      addNewItem(group.feedGuid, g, group.medium ?? mine.medium);
+    }
     groupAt.set(group.feedGuid, { at: nodes.length, wireItems: kept.length });
     nodes.push({
       t: 'group',
@@ -1499,15 +1711,11 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
         // which is invisible from the device doing the removing. The baseline
         // is the discriminator — absence from the read alone would suppress a
         // favorite the user just made.
-        itemGuids: [
-          ...kept,
-          ...mine.itemGuids.filter(
-            (g) => !kept.includes(g)
-              && !publishedItems.has(itemId(g))
-              // Already on the wire naming its own feed. Carried there, once.
-              && !carriedItems.has(g),
-          ),
-        ],
+        // WIRE ITEMS ONLY. These are legacy two-element tags that depend on
+        // this group to name their feed; `tagsFromList` rewrites them so they
+        // stop depending on it. Anything this device adds goes below, as its
+        // own node.
+        itemGuids: kept,
       },
     });
   }
@@ -1519,27 +1727,32 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
     // no longer has was removed by another writer, and re-adding it is the
     // resurrection loop — so only genuinely NEW entries go up.
     const fresh = group.itemGuids.filter(
-      (guid) => !publishedItems.has(itemId(guid)) && !carriedItems.has(guid),
+      (guid) => !claimedItem(publishedItems, itemId(guid), group.feedGuid)
+        && !carriedItems.has(itemClaim(itemId(guid), group.feedGuid)),
     );
 
-    // The group itself is ours-and-removed only if we published it. Skipping on
-    // that alone would be wrong: a track the user has just favorited under an
-    // album another app removed still has to be published, and it needs its
-    // parent group reopened to say which album it came from. Skip only when
-    // there is nothing new to carry.
-    //
-    // A GROUP THE USER NEVER FAVORITED IS NOT AN ENTRY. With nothing left to
-    // place — every item under it already on the wire naming its own feed — the
-    // old condition emitted a bare feed entry for it, and a bare feed entry now
-    // says the user favorited that feed. `favorited === false` and not
-    // `!favorited`, so a group built anywhere but `groupLocalFavorites` keeps
-    // its previous behaviour.
-    if (fresh.length === 0
-      && (publishedFeeds.has(showId(group.feedGuid)) || group.favorited === false)) continue;
+    // The items go up on their own, whether or not the feed does. They name
+    // their own feed, so they no longer need a group reopened above them to say
+    // which album they came from — which is what used to force a feed the user
+    // had never favorited onto the list.
+    for (const guid of fresh) addNewItem(group.feedGuid, guid, group.medium);
 
+    // THE FEED ENTRY IS NOW A SEPARATE QUESTION, and both halves of it matter.
+    //
+    // `favorited === false` means the user never favorited this feed — the group
+    // exists only because an item named it as a parent. A bare feed entry says
+    // the user favorited the feed, so writing one here invents a favorite. That
+    // used to be unavoidable and is the case this revision of the format exists
+    // to fix: on the first real list, 114 of 196 feed entries were placement.
+    //
+    // `publishedFeeds` is the resurrection guard, unchanged: we published this
+    // feed, the read no longer holds it, so another writer removed it.
     taken.add(group.feedGuid);
+    localFed += fresh.length;
+    if (group.favorited === false) continue;
+    if (publishedFeeds.has(showId(group.feedGuid))) continue;
     localFed++;
-    nodes.push({ t: 'group', group: { ...group, itemGuids: fresh } });
+    nodes.push({ t: 'group', group: { ...group, itemGuids: [] } });
   }
 
   for (const loose of local.loose) {
@@ -1550,6 +1763,12 @@ export function mergeFavoritesList({ read, local, baseline }: MergeInput): Parse
     localFed++;
     nodes.push({ t: 'loose', loose: { tag: loose.tag.slice(), medium: loose.medium } });
   }
+
+  // A NEW ENTRY GOES AT THE END. Band order sorts these into their run and
+  // groups them under the feed they name, so this position decides only where
+  // they land WITHIN their band — after everything read off the wire, which is
+  // the rule.
+  for (const item of newItems) nodes.push({ t: 'item', item });
 
   // Carried from the read. `mergeFavoritesList` folds ONE half; the mode is a
   // property of the whole list and is not this function's to decide.
@@ -1574,7 +1793,8 @@ export function baselineFrom(local: LocalList): FavoritesBaseline {
   return {
     feeds: local.groups.map((g) => showId(g.feedGuid)),
     items: [
-      ...local.groups.flatMap((g) => g.itemGuids.map((i) => itemId(i))),
+      // THE PAIR. See `itemClaim`: an item guid is unique only inside its feed.
+      ...local.groups.flatMap((g) => g.itemGuids.map((i) => itemClaim(itemId(i), g.feedGuid))),
       // Loose entries this device asserted (a favorite whose parent we never
       // learned) are recorded too — an identifier we published and cannot later
       // retract is a favorite the user can never remove.
@@ -1815,12 +2035,19 @@ export function planFavoritesPublish(input: FavoritesPlanInput): FavoritesPlan {
         if (id) present.add(id);
         continue;
       }
+      // BOTH FORMS, because the baseline being filtered may hold either: a
+      // paired claim this version wrote, or a bare one written before the pair
+      // existed. Adding only the pair would disown every legacy claim at once.
       if (node.t === 'item') {
+        present.add(itemClaim(itemId(node.item.itemGuid), node.item.feedGuid));
         present.add(itemId(node.item.itemGuid));
         continue;
       }
       present.add(showId(node.group.feedGuid));
-      for (const g of node.group.itemGuids) present.add(itemId(g));
+      for (const g of node.group.itemGuids) {
+        present.add(itemClaim(itemId(g), node.group.feedGuid));
+        present.add(itemId(g));
+      }
     }
     return { feeds: b.feeds.filter((id) => present.has(id)), items: b.items.filter((id) => present.has(id)) };
   };
@@ -2165,7 +2392,7 @@ export function claimedByBaseline(
   const itemSet = new Set(claimed.items);
   return {
     feeds: part.feeds.filter((f) => feedSet.has(showId(f.feedGuid))),
-    items: part.items.filter((i) => itemSet.has(itemId(i.itemGuid))),
+    items: part.items.filter((i) => claimedItem(itemSet, itemId(i.itemGuid), i.feedGuid)),
     loose: [],
     malformed: [],
   };

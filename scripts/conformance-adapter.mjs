@@ -40,8 +40,10 @@ import {
   encodePrivateFavorites,
   entryKind,
   foldHalves,
+  itemClaim,
   groupLocalFavorites,
   identifierKind,
+  isItemClaim,
   itemId,
   mergeFavoritesList,
   parseFavoritesList,
@@ -81,17 +83,14 @@ export function decodePrivate(content) {
 export const kindOf = (id) => (typeof id === 'string' ? identifierKind(id) : null);
 
 /**
- * A baseline claim on one item favorite.
+ * A baseline claim on one item favorite: the real one, from the shipping module.
  *
- * **STAGE-1 ANSWER, and knowingly short of the contract.** The spec asks for the
- * PAIR, because an item guid is unique only inside its feed. This app's baseline
- * is a flat list of NIP-73 identifiers (`FavoritesBaseline.items`), so the claim
- * it can honour today is the item identifier alone — which collides for one item
- * guid under two feeds. Pairing it is stage 2, alongside writing the new form;
- * vector 25 is the assertion that fails until then, and it is failing about the
- * real shipping shape rather than about this shim.
+ * The contract only requires that one pair always produce the same string and
+ * two pairs never collide. This app encodes it as the feed identifier, a
+ * separator, then the item identifier — feed first, because a feed guid is a
+ * UUID and an item guid is routinely a permalink URL.
  */
-export const itemClaim = (id) => id;
+export { itemClaim };
 
 const MANAGED = new Set(['alt', 'medium', 'i', 'k', 'visibility']);
 
@@ -203,7 +202,13 @@ export function parseTags(tags) {
 
 // --- shapes -----------------------------------------------------------------
 
+// A PAIRED ITEM CLAIM OPENS WITH THE FEED'S IDENTIFIER, so asking
+// `identifierKind` first files every one of them under feeds — and the merge
+// then never sees the claim that licenses a removal. `isItemClaim` is asked
+// first, and it comes from the shipping module rather than being a `|` written
+// down a second time here.
 const isFeedId = (id) => {
+  if (isItemClaim(id)) return false;
   const k = identifierKind(id);
   return k === SHOW_KIND || k === PUBLISHER_KIND;
 };
