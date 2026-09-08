@@ -362,15 +362,37 @@ export function plan({ read, local = [], baseline, mode = null, canReadPrivate =
     && (list.visibility === 'public' || (stating === 'public' && !!userChose));
   const movingWholePublic = licensedPublic && privateMerged.nodes.length > 0;
 
+  // The move re-merges the EMPTYING half against the real local state with
+  // `append: false`, and folds that into the receiving half's READ — see the
+  // long note in `lib/nostr/favorites.ts`. Splitting `local` by the mode takes
+  // the `held` set away from the emptying half's removal test, which loses its
+  // wire order. Spec vectors 29 and 30.
+  const moving = movingWholeList || movingWholePublic
+    ? mergeFavoritesList({
+      read: movingWholeList ? list : privateList,
+      local: all,
+      baseline: baselineHalf(b, movingWholeList ? 'public' : 'private'),
+      append: false,
+    })
+    : null;
+
   const activeMerged = movingWholeList
-    ? foldHalves(privateMerged, merged)
+    ? mergeFavoritesList({
+      read: foldHalves(privateList, moving),
+      local: all,
+      baseline: baselineHalf(b, 'private'),
+    })
     : movingWholePublic
       ? EMPTY_PARSED
       : privateMerged;
   const publicMerged = movingWholeList
     ? EMPTY_PARSED
     : movingWholePublic
-      ? foldHalves(merged, privateMerged)
+      ? mergeFavoritesList({
+        read: foldHalves(list, moving),
+        local: all,
+        baseline: baselineHalf(b, 'public'),
+      })
       : merged;
 
   const p = planFavoritesPublish({
@@ -385,6 +407,7 @@ export function plan({ read, local = [], baseline, mode = null, canReadPrivate =
     readContent,
     privateUnreadable,
     privateLocal,
+    held: all,
     previousBaseline: b,
     stating,
   });

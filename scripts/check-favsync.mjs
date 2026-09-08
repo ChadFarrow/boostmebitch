@@ -67,6 +67,7 @@ import {
   plaintextBytes,
   entriesFromList,
   entryKind,
+  foldHalves,
   frameForCompare,
   groupLocalFavorites,
   identifierKind,
@@ -1718,6 +1719,10 @@ section('The private half — TWO CYCLES, because one cycle cannot see this');
       readContent: privateWire.length > 0 ? 'nip44:…' : '',
       privateUnreadable: false,
       privateLocal,
+      // The device's whole holdings, not the mode-split half. `syncFavorites`
+      // passes this, so a cycle helper that leaves it out is not the shape the
+      // real pipeline builds — and tells the next reader it is optional.
+      held: all,
       previousBaseline: baseline,
     });
     // What the relay holds afterwards.
@@ -2741,6 +2746,223 @@ section('Spec vector 18 — each run comes out in band order');
         ['i', 'something:else:entirely'],
         ['i', showId(F_MUSIC), itemId(I_A)]]),
     false);
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 30 — a whole-list move merges the emptying half against LOCAL state');
+// ---------------------------------------------------------------------------
+{
+  // `syncFavorites` splits ONE local list by the mode, so the half it is not in
+  // gets EMPTY_LOCAL. On an ordinary cycle that is right. On a MOVE it is two
+  // things at once and only one of them is wanted: it turns the append pass off
+  // by taking the local state away, and the removal test needs that state.
+  // Without it every entry in the emptying half reads as unheld, the whole half
+  // is dropped, and the receiving merge re-adds what we hold from local state —
+  // in LOCAL order. Tag order is the data, and it was gone before the fold ever
+  // ran.
+  const pubWire = [
+    ['alt', LIST_ALT], ['medium', 'music'],
+    ['i', showId(F_MUSIC2)], ['i', showId(F_MUSIC)],
+    ['k', 'podcast:guid'],
+  ];
+  // DELIBERATELY THE OPPOSITE ORDER TO THE WIRE. That is the whole fixture:
+  // only one of the two orders can be the one a move preserves, so an assertion
+  // built where they agree cannot fail.
+  const mine = groupLocalFavorites([
+    { id: showId(F_MUSIC), medium: 'music' },
+    { id: showId(F_MUSIC2), medium: 'music' },
+  ]);
+  const claimsBoth = { feeds: [showId(F_MUSIC), showId(F_MUSIC2)], items: [] };
+  const ids = (list) => tagsFromList(list).filter((t) => t[0] === 'i').map(idOf);
+
+  const moving = mergeFavoritesList({
+    read: parseFavoritesList(pubWire), local: mine, baseline: claimsBoth, append: false,
+  });
+  const active = mergeFavoritesList({
+    read: foldHalves(EMPTY_PARSED, moving), local: mine, baseline: EMPTY_BASELINE,
+  });
+  check("the emptying half's WIRE order is what the receiving half gets",
+    ids(active), [showId(F_MUSIC2), showId(F_MUSIC)]);
+
+  // (naive) THE SHAPE THAT SHIPPED: EMPTY_LOCAL on the moving merge, and the
+  // fold applied to the two merged halves rather than to the receiving read.
+  const naiveMoving = mergeFavoritesList({
+    read: parseFavoritesList(pubWire), local: EMPTY_LOCAL, baseline: claimsBoth,
+  });
+  const naiveActive = foldHalves(
+    mergeFavoritesList({ read: EMPTY_PARSED, local: mine, baseline: EMPTY_BASELINE }),
+    naiveMoving,
+  );
+  check('(naive) splitting local by mode loses the wire order and re-adds in LOCAL order',
+    ids(naiveActive), [showId(F_MUSIC), showId(F_MUSIC2)]);
+  check('(naive) ...so the two writers reorder the event at each other, forever',
+    JSON.stringify(ids(naiveActive)) === JSON.stringify(ids(active)), false);
+
+  // AND THE WHOLESALE-DELETE GUARD READS `localFed`, so the provenance has to
+  // survive the restructure. The entries now arrive as wire nodes the merge
+  // KEEPS because we hold them, which is why the `localFed++` on that path is
+  // outside the `append` gate: gate it and every move reports zero on both
+  // halves and is refused as a wipe.
+  check("the moving half's survivors are still counted as locally fed", moving.localFed > 0, true);
+  check('(naive) EMPTY_LOCAL makes the same move read as a wipe', naiveMoving.localFed, 0);
+
+  // `append` IS PASS 2, AND ONLY PASS 2. It decides what is ADDED, never what
+  // is kept, and both halves of that need proving.
+  const foreign = [['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_UNKNOWN)], ['k', 'podcast:guid']];
+  check('append:false adds nothing this half\'s wire lacks',
+    mergeFavoritesList({
+      read: parseFavoritesList(foreign), local: mine, baseline: EMPTY_BASELINE, append: false,
+    }).nodes.length, 1);
+  check('(naive) append:true opens a second copy of what the receiving merge owns',
+    mergeFavoritesList({
+      read: parseFavoritesList(foreign), local: mine, baseline: EMPTY_BASELINE,
+    }).nodes.length, 3);
+
+  // MUST STILL WORK: all three rows of the removal test keep running.
+  const ours = [['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC)], ['k', 'podcast:guid']];
+  check('append:false still removes an entry we claim and no longer hold',
+    mergeFavoritesList({
+      read: parseFavoritesList(ours), local: EMPTY_LOCAL,
+      baseline: { feeds: [showId(F_MUSIC)], items: [] }, append: false,
+    }).nodes.length, 0);
+  check('append:false still carries an entry nobody here claims',
+    mergeFavoritesList({
+      read: parseFavoritesList(foreign), local: EMPTY_LOCAL,
+      baseline: EMPTY_BASELINE, append: false,
+    }).nodes.length, 1);
+  // (naive) the `adoptAll` exemption the spec's reference deleted — a merge
+  // that does not consult the baseline at all, so the removal row never fires
+  // and an unfavorite made here rides the move across. There is no second
+  // chance at it: the baseline written beside the move cannot claim what this
+  // device does not hold. Spec vector 29.
+  check('(naive) a merge that suppresses the removal row carries the unfavorite across',
+    mergeFavoritesList({
+      read: parseFavoritesList(ours), local: EMPTY_LOCAL,
+      baseline: EMPTY_BASELINE, append: false,
+    }).nodes.length, 1);
+
+  // THE OTHER DIRECTION, and its emission order changes with it: entries
+  // arriving from the emptied half take the wire positions and anything this
+  // device adds is appended after them. That is the order the spec's reference
+  // emits, and the suite's vector 17 asserts MEMBERSHIP there — so this is
+  // pinned here rather than left to chance.
+  const back = mergeFavoritesList({
+    read: parseFavoritesList(foreign), local: mine, baseline: EMPTY_BASELINE, append: false,
+  });
+  const disclosed = mergeFavoritesList({
+    read: foldHalves(parseFavoritesList([['alt', LIST_ALT]]), back),
+    local: mine, baseline: EMPTY_BASELINE,
+  });
+  check('the disclosed half emits the moved entries ahead of newly appended local ones',
+    ids(disclosed), [showId(F_UNKNOWN), showId(F_MUSIC), showId(F_MUSIC2)]);
+}
+
+// ---------------------------------------------------------------------------
+section('Spec vector 31 — a carried claim retires with its entry, and not before it');
+// ---------------------------------------------------------------------------
+{
+  // Rule 2 says the inactive half's claims are CARRIED, never recomputed, and
+  // that is what stops a writer claiming another app's entries. It does not
+  // mean a claim outlives the entry it names. This writer edits the inactive
+  // half too — a whole-list move empties it — and a claim left behind can never
+  // be satisfied again. The one thing it can still do is fire the removal test,
+  // so the next app to write that entry back into that half has it deleted.
+  //
+  // TWO CONDITIONS, and each is what stops the other from being wrong.
+  const mine = groupLocalFavorites([{ id: showId(F_MUSIC), medium: 'music' }]);
+  const feedsOf = (list) => {
+    const out = new Set();
+    for (const n of list.nodes) if (n.t === 'group') out.add(showId(n.group.feedGuid));
+    return out;
+  };
+
+  // 1. WE STILL HOLD IT. Another app has removed F_MUSIC from the public half
+  // and the private half is empty, so the claim is absent from both — but the
+  // claim is also the resurrection guard, and retiring it is how what another
+  // app removed comes back.
+  const otherWire = [['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC2)], ['k', 'podcast:guid']];
+  const bothClaims = {
+    feeds: [showId(F_MUSIC)], items: [],
+    privateFeeds: [showId(F_MUSIC)], privateItems: [],
+  };
+  const guarded = planFavoritesPublish({
+    merged: mergeFavoritesList({
+      read: parseFavoritesList(otherWire), local: mine, baseline: baselineHalf(bothClaims, 'public'),
+    }),
+    readTags: otherWire, exists: true, trustworthy: true, local: mine, mode: 'public',
+    privateMerged: EMPTY_PARSED,
+    readPrivateTags: [], readContent: '', privateLocal: EMPTY_LOCAL,
+    held: mine,
+    previousBaseline: bothClaims,
+  });
+  check('a claim on an entry we STILL HOLD outlives its absence from that half',
+    guarded.baseline.privateFeeds, [showId(F_MUSIC)]);
+
+  // (naive) presence alone — the shape that shipped.
+  const naivePresence = (idsIn, list) => idsIn.filter((id) => feedsOf(list).has(id));
+  check('(naive) presence alone retires it',
+    naivePresence(bothClaims.privateFeeds, EMPTY_PARSED), []);
+  check('(naive) ...so the next private-mode cycle re-adds what another app removed',
+    mergeFavoritesList({ read: EMPTY_PARSED, local: mine, baseline: { feeds: [], items: [] } })
+      .nodes.length, 1);
+  check('retained, the removal sticks',
+    mergeFavoritesList({
+      read: EMPTY_PARSED, local: mine, baseline: baselineHalf(guarded.baseline, 'private'),
+    }).nodes.length, 0);
+
+  // 2. AND IT MUST NOT BE CLAIMED IN THE ACTIVE HALF. A whole-list move empties
+  // the half it leaves, so the entry is absent from it — and it is claimed
+  // where it LANDED. A second copy of that claim on the half it left is the
+  // stale claim, and "still held" alone would leave it there.
+  const moved = planFavoritesPublish({
+    merged: EMPTY_PARSED,
+    readTags: [['alt', LIST_ALT]], exists: true, trustworthy: true,
+    local: EMPTY_LOCAL, mode: 'private',
+    privateMerged: mergeFavoritesList({ read: EMPTY_PARSED, local: mine, baseline: EMPTY_BASELINE }),
+    readPrivateTags: [], readContent: '', privateLocal: mine,
+    held: mine,
+    previousBaseline: { feeds: [showId(F_MUSIC), showId(F_MUSIC2)], items: [] },
+  });
+  check('a claim the move carried into the OTHER half does not stay behind in this one',
+    moved.baseline.feeds, []);
+
+  // (naive) held-is-enough — the one-conjunct version, which is what makes the
+  // fix above wrong on its own.
+  const naiveHeldWins = (idsIn, list, held) => idsIn.filter((id) => feedsOf(list).has(id) || held.has(id));
+  check('(naive) held-is-enough leaves a duplicate claim on the emptied half',
+    naiveHeldWins([showId(F_MUSIC), showId(F_MUSIC2)], EMPTY_PARSED, new Set([showId(F_MUSIC)])),
+    [showId(F_MUSIC)]);
+  const writtenBack = [['alt', LIST_ALT], ['medium', 'music'], ['i', showId(F_MUSIC)], ['k', 'podcast:guid']];
+  check('(naive) ...which deletes the second app\'s entry the moment it writes it back',
+    mergeFavoritesList({
+      read: parseFavoritesList(writtenBack), local: EMPTY_LOCAL,
+      baseline: { feeds: [showId(F_MUSIC)], items: [] },
+    }).nodes.length, 0);
+  check('retired, that entry survives',
+    mergeFavoritesList({
+      read: parseFavoritesList(writtenBack), local: EMPTY_LOCAL,
+      baseline: baselineHalf(moved.baseline, 'public'),
+    }).nodes.length, 1);
+
+  // MUST STILL WORK, and this one is a DELIBERATE divergence from the spec's
+  // reference. A half we could not read is a half we did not edit, so its
+  // claims are carried verbatim — the active-claims test included. This app's
+  // active baseline claims what it RENDERS, another writer's entries included,
+  // so applying that test to bytes we cannot open would retire a private claim
+  // because a stranger's public entry happens to share the identifier. That
+  // removal can never be redone.
+  const opaque = planFavoritesPublish({
+    merged: mergeFavoritesList({
+      read: parseFavoritesList(writtenBack), local: mine, baseline: EMPTY_BASELINE,
+    }),
+    readTags: writtenBack, exists: true, trustworthy: true, local: mine, mode: 'public',
+    privateMerged: null, privateUnreadable: true,
+    readPrivateTags: [], readContent: 'nip44:…', privateLocal: EMPTY_LOCAL,
+    held: mine,
+    previousBaseline: { feeds: [], items: [], privateFeeds: [showId(F_MUSIC)], privateItems: [] },
+  });
+  check('an unreadable half keeps a claim the ACTIVE half also names',
+    opaque.baseline.privateFeeds, [showId(F_MUSIC)]);
 }
 
 // ---------------------------------------------------------------------------

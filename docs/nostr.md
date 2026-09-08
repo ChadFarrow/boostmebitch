@@ -496,7 +496,7 @@ names its own feed and needs no group above it to place it.
 **A reader still on stage 0 misreads every item entry we write**, taking
 `podcast:guid:F` at position 1 and showing a followed show where one saved
 episode was meant. That is a deploy-order dependency on StableKraft rather than a
-code one. `scripts/conformance.mjs` records which vectors are red and why.
+code one. `scripts/conformance.mjs` records which vectors are red and why — 28 of 31 green, and the three reds are old ones, not this migration's.
 
 **Carry the whole tag, never rebuild it from the model.** A `FeedGroup` records
 the `i` tags it was read from (`feedTag`, `itemTags`) and an `ItemEntry` records
@@ -740,6 +740,56 @@ Setting it therefore needs two things the obvious version does not ask for: the
 cache write **landed**, and the store **covered** what the baseline claims
 before the removal. Retiring it stays unconditional — a non-empty store is proof
 the user did not clear everything, whatever they did a moment ago.
+
+#### A carried claim retires with the entry it names, and not before it
+
+The baseline describes BOTH halves every cycle: the ACTIVE one derived from the
+merge, the inactive one CARRIED from what this device last asserted. Recompute
+the inactive one and you claim every entry in that half, another writer's
+included; nothing backs the claim next cycle, so the removal test deletes the
+whole half at once. Two cycles to appear, so every single-cycle test passes over
+it.
+
+**Carrying a claim is not the same as keeping it alive past its entry**, which
+is the half of that rule this app got wrong until PC20-Nostr#40 (spec vector 31).
+This writer edits the inactive half too — the claim-back takes entries out of it,
+a whole-list move empties it outright — and a claim left behind by either can
+never be satisfied again. The one thing it can still do is fire the removal test,
+so the moment a second app writes that entry back into that half, we delete it:
+silently, on someone else's device, with no undo. Exactly the failure the carry
+rule exists to prevent, arriving from the other side.
+
+`carriedClaims` therefore keeps a claim on **two** conditions, and each is what
+stops the other from being wrong:
+
+- **Not already claimed in the ACTIVE half.** An entry the move carried across
+  is claimed where it landed. A second copy of that claim, on the half it left,
+  is the stale claim above.
+- **Still in that half, OR still held here.** Presence alone is not the test —
+  that was the shipped bug. An entry we still HOLD keeps its claim wherever it
+  sits, because there the claim is the resurrection guard: the merge re-adds
+  what we hold and the baseline is the only thing that stops it. Retire it and
+  what another app removed comes back on the next cycle, for good.
+
+Neither true means the entry is gone and the removal is already published, so
+the claim is spent. **Retiring only ever REMOVES claims**, so it can never claim
+another writer's entry — which is the whole thing the carry rule protects, and
+the reason "which half counts as active" turned out not to need an answer here.
+
+**`planFavoritesPublish` cannot work this out from `local` and `privateLocal`.**
+Those are one list split by the mode, so on any cycle one of them is empty, and
+neither answers *do we still hold this* about the other half. The device's whole
+holdings arrive as `held`, and **every** caller passes it — including
+`runHydrate`, which is not optional: it records `plan.baseline` on `unchanged`
+and `nothing-to-create`, so a hydrator that leaves `held` out retires a held
+claim on every page load, through the door the publish path does not watch.
+
+**One deliberate divergence from the spec's reference: an UNREADABLE half is
+carried verbatim, the active-claims test included.** A half we could not read is
+a half we did not edit. And this app's active baseline claims what it RENDERS,
+another writer's entries included, so applying that test to bytes we cannot open
+would retire a private claim because a stranger's public entry happens to share
+the identifier — a removal that can never be redone.
 
 #### The count is `localFed`, never `nodes.length`
 
@@ -2019,7 +2069,7 @@ Measured on a real account: **287 entries in the encrypted half, rendered as non
 
 **`carried` is set or CLEARED on every cycle, never left from last time.** An entry stops being carried the moment this device claims it, and a stale `true` would silently drop it from the next publish. An entry present in the ACTIVE half is never carried, whatever the inactive half says — a feed can be in both, and `joinPartitions` keeps only the first copy.
 
-### The whole-list move (`WHOLE_LIST_PRIVACY_MOVE`, currently OFF)
+### The whole-list move (`WHOLE_LIST_PRIVACY_MOVE`, ON since 2026-09-02)
 
 Spec vector 13: going private takes the whole list, ours and theirs. Without it a user gets *"97% private"* — a choice honoured for most of their list with nothing naming the part it did not reach. `syncFavorites` implements it, folding the public half into the private one with `foldHalves`.
 
@@ -2027,9 +2077,21 @@ Spec vector 13: going private takes the whole list, ours and theirs. Without it 
 
 **Moved entries are deliberately NOT claimed in the baseline.** Nothing local backs them, so a claim would read as our own removal on the next cycle and delete them.
 
-**The flag is OFF, and the prerequisite is on this app.** The spec's sequencing is explicit: an app must be able to read AND render the other half before anything moves entries into it on that app's behalf, or the move is indistinguishable from a deletion on that app's screen. StableKraft turned its own move on in August citing this app's rendering — a citation that was true of the code and false of the behaviour until `carried` existed. Ship the rendering, confirm on a real account that a moved entry appears, then turn this on.
+**The flag is ON, and the prerequisite was on this app.** The spec's sequencing is explicit: an app must be able to read AND render the other half before anything moves entries into it on that app's behalf, or the move is indistinguishable from a deletion on that app's screen. StableKraft turned its own move on in August citing this app's rendering — a citation that was true of the code and false of the behaviour until `carried` existed. Ship the rendering, confirm on a real account that a moved entry appears, then turn this on.
 
 **The asymmetry does not depend on the flag and must survive its removal.** public → private may move another app's entries; private → public may not.
+
+**A MOVE BETWEEN HALVES IS A MERGE, NOT A COPY, AND IT FOLDS ON THE READ SIDE.** Spec vectors 29 and 30, added by PC20-Nostr#38 and #40 on 2026-09-08. Two rules in one, and the second is the one that looks like a detail.
+
+*Rule 3 runs on both halves.* An entry this device claims in the half being emptied and no longer holds is an unfavorite the user made here, and it must be dropped rather than ride the move across. There is no second chance at it: the baseline written beside the move cannot claim what the device does not hold, so no later cycle can remove it. One cycle showed a stale entry; two showed it was permanent.
+
+*And the emptying half is merged against the REAL local state, with `append: false`.* `syncFavorites` splits one local list by the mode, which hands the inactive half `EMPTY_LOCAL`. That is right on an ordinary cycle and wrong here, because it does two things at once and only one of them is wanted. It turns the append pass off — wanted, since the receiving merge appends what we hold, once, and appending it here too opens a second `medium` run and the list never reaches a fixed point. But it takes the `held` set with it, and the removal test needs that set: without it every entry reads as unheld, the whole half is dropped, and the receiving merge re-adds what we hold from local state, **in local order**. Tag order is the data, and it was gone before `foldHalves` ever ran.
+
+So `MergeInput.append` exists, and it gates pass 2 and only pass 2 — **`append` decides what is ADDED, never what is kept**. The spec's reference had an `adoptAll` flag here first and deleted it: row 2 of the merge already carries an entry this device neither holds nor claims, so the flag's only real effect was to suppress the removal row, on both move branches, silently.
+
+**Two things that look gateable and are not.** The `localFed++` on a keep path stays outside the `append` gate — those count nodes kept because we hold them, which is what the `wholesale-delete` guard reads, and gating them makes every whole-list move report zero on both halves and get refused as a wipe. And `merged` / `privateMerged` are still computed the ordinary way, because `movingWholePublic` reads `privateMerged.nodes.length` and that count is the one that answers *is there anything left in there to disclose*.
+
+**The emission order changes in the private → public direction too**, and the suite does not catch it: entries arriving from the emptied half take the wire positions and anything this device adds is appended after them. Vector 17 asserts membership there, so `check:favsync` pins the order instead.
 
 
 ## An nevent relay hint must go through `withExtraRelays`, not into the shared pool

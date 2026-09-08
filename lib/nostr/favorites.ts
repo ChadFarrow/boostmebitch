@@ -503,15 +503,58 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     && (read.list.visibility === 'public' || (stating === 'public' && !!opts.userChose));
   const movingWholePublic = licensedPublic && privateMerged!.nodes.length > 0;
 
+  // A MOVE BETWEEN HALVES IS A MERGE, NOT A COPY, AND IT FOLDS ON THE READ SIDE.
+  //
+  // Both halves above were merged against a local list split by the mode, which
+  // hands the half we are NOT in `EMPTY_LOCAL`. That is right for an ordinary
+  // cycle and wrong for a move, in two ways at once. It turns the append pass
+  // off — wanted, since the receiving merge appends what we hold, once — but it
+  // takes the `held` set with it, and the removal test needs that set: without
+  // it every entry in the emptying half reads as unheld, so the whole half is
+  // dropped and re-appended by the receiving merge in LOCAL order. The wire
+  // order is the data, and it was gone before the fold ever ran. Spec vector 30.
+  //
+  // So the emptying half is re-merged against the REAL local state with
+  // `append: false`, and the result is folded into the receiving half's READ,
+  // before that half's append pass rather than after it. The entries this
+  // device holds are then already present and are appended once, where they
+  // belong. `foldHalves`, never a concatenation — see its own note, and vector 15.
+  //
+  // The removal tests run on both merges, which is the point: an entry we claim
+  // in the emptying half and no longer hold is an unfavorite the user made
+  // here, and carrying it across is permanent — the baseline written beside the
+  // move cannot claim what this device does not hold, so no later cycle can
+  // drop it. Spec vector 29.
+  //
+  // `merged` and `privateMerged` stay exactly as they are: `movingWholePublic`
+  // reads `privateMerged.nodes.length`, and that count is the one that answers
+  // "is there anything in there to disclose" after removals.
+  const moving = movingWholeList || movingWholePublic
+    ? mergeFavoritesList({
+      read: movingWholeList ? read.list : (read.privateList ?? EMPTY_PARSED),
+      local: all,
+      baseline: baselineHalf(baseline, movingWholeList ? 'public' : 'private'),
+      append: false,
+    })
+    : null;
+
   const activeMerged = movingWholeList
-    ? foldHalves(privateMerged!, merged)
+    ? mergeFavoritesList({
+      read: foldHalves(read.privateList ?? EMPTY_PARSED, moving!),
+      local: all,
+      baseline: baselineHalf(baseline, 'private'),
+    })
     : movingWholePublic
       ? EMPTY_PARSED
       : privateMerged;
   const publicMerged = movingWholeList
     ? EMPTY_PARSED
     : movingWholePublic
-      ? foldHalves(merged, privateMerged!)
+      ? mergeFavoritesList({
+        read: foldHalves(read.list, moving!),
+        local: all,
+        baseline: baselineHalf(baseline, 'public'),
+      })
       : merged;
 
   const plan = planFavoritesPublish({
@@ -526,6 +569,10 @@ export async function syncFavorites(opts: SyncOptions): Promise<PublishedNote | 
     readContent: read.content,
     privateUnreadable: read.privateUnreadable,
     privateLocal,
+    // What this device HOLDS, before the mode split. `local` and `privateLocal`
+    // are that same list split, so neither answers the question the inactive
+    // half's claims turn on. Empty on a withdrawal, which claims nothing.
+    held: opts.withdraw ? EMPTY_LOCAL : all,
     // Both provenances of an emptiness a person asked for: the withdrawal
     // dialog, and unfavoriting the whole list. See `emptyIsIntentional`.
     emptyIsIntentional: opts.withdraw || opts.localCleared,

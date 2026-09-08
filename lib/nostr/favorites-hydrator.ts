@@ -342,6 +342,12 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
     readContent: read.content,
     privateUnreadable: read.privateUnreadable,
     privateLocal,
+    // What this device HOLDS, before the mode split, and NOT optional here.
+    // This path records `plan.baseline` on 'unchanged' and 'nothing-to-create',
+    // so without it a claim on an entry we still hold retires on every page
+    // load — the same defect the publish path guards, arriving through the door
+    // nothing watches. Spec vector 31.
+    held: all,
     // A reload lands here with the removal still unpublished, so the hydrator
     // has to honour the same intent the publish path does — otherwise it
     // re-adopts everything off the relay and the user's delete is undone

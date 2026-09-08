@@ -14,7 +14,15 @@
 // and prescribed a band order for each `medium` run. This app ships stages 2 and
 // 4 of `pc20-favorites-feed-guid-migration.md`: it reads and writes the
 // three-element form, rewrites a legacy item once, claims the (feed, item) pair,
-// and bands each run. 25 of 28 pass. The three that do not:
+// and bands each run.
+//
+// It also ships what PC20-Nostr#38 and #40 added on 2026-09-08 — a move between
+// halves is a merge and not a copy (29), an emptied half encodes to nothing
+// (30), and a carried claim retires with the entry it names (31). Those three
+// are GREEN and are not on the list below; a red one is a regression, not a
+// known divergence.
+//
+// 28 of 31 pass. The three that do not:
 //
 //   25  Its LAST assertion only. The pair claim itself works — the merge removes
 //       exactly the claimed copy and keeps the one under the other feed, pinned
@@ -39,7 +47,7 @@
 //       name as that model, and vector 14 asserts the opposite direction. A
 //       question for the spec repo, not a defect here.
 //
-// So 25 pass / 3 fail is this branch's expected result. A NEW red is a
+// So 28 pass / 3 fail is this branch's expected result. A NEW red is a
 // regression; these three are not.
 
 import { existsSync } from 'node:fs';
