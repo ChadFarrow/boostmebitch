@@ -262,12 +262,13 @@ Three scripts close it:
   real state and worth testing, but it is the EASY one; the states that have
   cost this repo data need a list with history in it — another app's entries, a
   group that exists only to place a track, a non-UUID item guid.
-- **`npm run check:conformance`** — the spec's own 24 test vectors
-  (`PC20-Nostr/conformance/vectors.test.mjs`) run against THIS merge, through
+- **`npm run check:conformance`** — the spec's own 31 test vectors
+  (`PC20-Nostr/conformance/vectors.test.mjs`, stated in prose beside it in
+  `conformance/vectors.md`) run against THIS merge, through
   the thin shim in `scripts/conformance-adapter.mjs`. The suite lives in the
   spec's repo on purpose — a copy here would drift from the document the way a
   reimplemented check drifts from shipping code — so it needs
-  `~/Vibe/PC20-Nostr` beside this checkout, or `PC20_NOSTR_DIR`. Its first run
+  `../PC20-Nostr` beside this checkout, or `PC20_NOSTR_DIR`. Its first run
   found the duplicate-group drop (spec vector 19) and four vectors the
   document had wrong. When it disagrees with `check:favsync`, the spec is the
   authority: fix the code, or change the spec by PR at PC20-Nostr first.
@@ -285,8 +286,10 @@ which is where this feature kept breaking.
 ### Where a favorite goes — public, private, or nowhere
 
 **The EVENT says which half it lives in, and that outranks anything this device
-holds.** `["visibility","public"|"private"]`, per PC20-Nostr's *"The list is
-public or private, and the event says which"*. Multi-letter on purpose: relays
+holds.** `["visibility","public"|"private"]`, per PC20-Nostr's *"A list is
+public or private. It is never both, and never partly"*. It goes **second,
+immediately after `alt`** (#49), so the list says what it is before it says
+what is on it; a reader must still accept it anywhere. Multi-letter on purpose: relays
 index single-letter tags, so a `["v", …]` would let a `#v=private` filter
 enumerate the pubkeys that keep a private list.
 

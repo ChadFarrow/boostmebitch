@@ -18,9 +18,25 @@
 //
 // It also ships what PC20-Nostr#38 and #40 added on 2026-09-08 — a move between
 // halves is a merge and not a copy (29), an emptied half encodes to nothing
-// (30), and a carried claim retires with the entry it names (31). Those three
-// are GREEN and are not on the list below; a red one is a regression, not a
-// known divergence.
+// (30), and a carried claim retires with the entry it names (31) — and #47's
+// answer to the one question emptiness used to refuse: an empty, untagged list
+// is PUBLIC (16). Those four are GREEN and are not on the list below; a red one
+// is a regression, not a known divergence.
+//
+// 16 IS THE ONE THAT CHANGED THIS APP'S BEHAVIOUR RATHER THAN ITS CODE PATHS.
+// `seedModeFromWire` used to refuse a wire with nothing on it, on the reasoning
+// that emptiness cannot tell a new account from one somebody emptied — so a
+// brand-new account's first ♡ raised the privacy dialog. The spec answered it:
+// nobody has chosen anything and nothing can be disclosed. It publishes into the
+// tags and states no mode, and the function's third argument is what keeps that
+// answer off a `content` this writer cannot account for. Every ambiguous wire
+// still asks.
+//
+// MEASURED AGAINST PC20-Nostr@de7a5ce (2026-09-08). Nothing here pins a spec
+// revision — the suite is found by directory — so this count is a claim about a
+// moving target. A different score against a different SHA is the spec moving,
+// which is a PR there and then a commit here; a different score against THIS
+// one is a regression.
 //
 // 28 of 31 pass. The three that do not:
 //
@@ -49,8 +65,9 @@
 //       the adapter's `holds` names every entry the baseline claims.
 //       `conformance/adapter.d.ts` documents this app by name as that model and
 //       says an adopted entry is "claimed in the baseline", so the contract file
-//       and the vector disagree with each other. Filed as PC20-Nostr#44. A
-//       question for the spec repo, not a defect here.
+//       and the vector disagree with each other. Filed as PC20-Nostr#44, still
+//       OPEN as of 2026-09-08, with three resolutions proposed and none picked.
+//       A question for the spec repo, not a defect here.
 //
 //       An earlier revision of this note also said vector 14 asserted the
 //       opposite direction. It does not: in that fixture the entry is already

@@ -1197,7 +1197,7 @@ section('The private half — an ADOPTED list must enter the baseline');
 }
 
 // ---------------------------------------------------------------------------
-section('The private half — an ambiguous wire is a QUESTION, never a guess');
+section('The private half — an ambiguous wire is a QUESTION; an EMPTY one is not');
 // ---------------------------------------------------------------------------
 {
   // Found by a security review of this branch. `seedFavoritesMode` decides
@@ -1211,17 +1211,44 @@ section('The private half — an ambiguous wire is a QUESTION, never a guess');
   // and the next publish emits every one of them as a plaintext `i` tag —
   // relay-indexed, reverse-searchable by `#i`, on a replaceable event that
   // keeps no history. No retraction, nothing on screen.
-  check('only a private half ⇒ private', seedModeFromWire(false, true), 'private');
-  check('only a public half ⇒ public', seedModeFromWire(true, false), 'public');
-  check('nothing at all ⇒ ask', seedModeFromWire(false, false), null);
-  check('BOTH ⇒ ask, never guess', seedModeFromWire(true, true), null);
+  check('only a private half ⇒ private', seedModeFromWire(false, true, true), 'private');
+  check('only a public half ⇒ public', seedModeFromWire(true, false, false), 'public');
+  check('BOTH ⇒ ask, never guess', seedModeFromWire(true, true, true), null);
+
+  // AND A LIST WITH NOTHING IN IT ANSWERS 'public' — PC20-Nostr#47, vector 16.
+  // This used to be a fourth refusal, on the reasoning that emptiness cannot
+  // tell a new account from one somebody emptied. The spec answered it: nobody
+  // has chosen anything and nothing can be disclosed, and the alternative is a
+  // privacy dialog in front of a brand-new account's first ♡. The third
+  // argument is what keeps that answer narrow.
+  check('nothing at all ⇒ public', seedModeFromWire(false, false, false), 'public');
+  check('...but bytes in `content` ⇒ ask', seedModeFromWire(false, false, true), null);
+
+  // The third argument asks about BYTES, never about entries, and these two
+  // are why. An opaque `content` reaches here as `hasPrivate` (that is what
+  // `seedFavoritesMode` folds in), and a readable one that opens onto an empty
+  // array reaches it as neither — somebody chose private and then took
+  // everything back out, which is a choice, not an empty list.
+  check('opaque `content` is a private half, not an empty list',
+    seedModeFromWire(false, true, true), 'private');
+  check('`content` that opens onto nothing still ⇒ ask',
+    seedModeFromWire(false, false, true), null);
 
   // (naive) the ordering that shipped, and the one a reader will reach for
   // again because it looks like a harmless preference for the common case.
   const naivePublicFirst = (pub, priv) => (pub ? 'public' : priv ? 'private' : null);
   check('(naive) public-first hands a private account to plaintext',
     naivePublicFirst(true, true), 'public');
-  check('...where the real rule refuses to answer', seedModeFromWire(true, true), null);
+  check('...where the real rule refuses to answer', seedModeFromWire(true, true, true), null);
+
+  // (naive) AND THE OTHER WAY THE DEFAULT GOES WRONG: reading the third
+  // argument as "did `content` hold entries" rather than "are there bytes".
+  // Both of these are shapes the empty-list default must not reach, and this
+  // control answers 'public' for both.
+  const naiveEntriesNotBytes = (pub, priv) => (pub ? 'public' : priv ? 'private' : 'public');
+  check('(naive) defaults to public over ciphertext it could not open',
+    naiveEntriesNotBytes(false, false), 'public');
+  check('...where the real rule asks', seedModeFromWire(false, false, true), null);
 
   // AND NOT SIMPLY REVERSED. Private-first is safe against disclosure and
   // unsafe against a different thing: an account that is genuinely public,
@@ -1237,12 +1264,14 @@ section('The private half — an ambiguous wire is a QUESTION, never a guess');
 section('`visibility` — the mode as a fact, not a guess from emptiness');
 // ---------------------------------------------------------------------------
 {
-  // Emptiness answers for every list that HOLDS entries and cannot answer for
-  // one that holds none — a new account, or one whose last favorite was just
-  // removed. There is no safe default there: guessing 'public' publishes the
-  // next favorite as a relay-indexed `i` tag for someone who chose Private in
-  // another app. So the event says. Spec: PC20-Nostr, "The list is public or
-  // private, and the event says which".
+  // Emptiness answers for every list that HOLDS entries, and for one that holds
+  // nothing at all it answers 'public' — nobody has chosen, and nothing can be
+  // disclosed. What it cannot do is tell that apart from a list somebody
+  // emptied, or from one whose owner chose Private in another app before
+  // favoriting anything. So the event says, and the tag outranks the default in
+  // both directions. Spec: PC20-Nostr, "A list is public or private. It is
+  // never both, and never partly", and #47's "An empty, untagged list is
+  // public".
   //
   // Recorded as CALLS so the replay below is total — a vector cannot be added
   // here without being proved against `naive()`.
@@ -1337,10 +1366,14 @@ section('`visibility` — the mode as a fact, not a guess from emptiness');
   check('statedVisibility reads a raw array', statedVisibility(evTags), 'private');
   check('and answers null for a list that never said', statedVisibility([['alt', LIST_ALT]]), null);
 
-  // An EMPTY list still has a mode, and this is the only thing that can say so.
+  // An EMPTY list still has a mode, and the tag is the only thing that can say
+  // it is PRIVATE. Emptiness answers 'public' there (PC20-Nostr#47) and that is
+  // exactly the answer the tag has to be able to outrank — a user who chose
+  // Private in another app and has not favorited anything yet.
   const emptyPriv = parseFavoritesList([['alt', LIST_ALT], [VISIBILITY_TAG, 'private']]);
   check('an empty list carries a mode', emptyPriv.visibility, 'private');
-  check('...which emptiness cannot supply', seedModeFromWire(false, false), null);
+  check('...which emptiness alone would answer as public',
+    seedModeFromWire(false, false, false), 'public');
 
   // OMITTING `stating` CARRIES WHAT THE READ SAID, and this is not a
   // convenience default. `tagsFromList` rebuilds the array from the model and

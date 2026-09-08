@@ -547,16 +547,39 @@ export function baselineHalf(baseline: FavoritesBaseline, half: ListHalf): Favor
  * private half, would be moved INTO `content` — no disclosure, but a real edit
  * to a shared event that an app without NIP-44 then reads as an empty list.
  *
- * So each half answers only for itself, and BOTH answers together mean
+ * So each half answers only for itself, and BOTH halves holding entries means
  * "unknowable from here" — which is a question for the user, not a coin toss.
  * A null mode publishes nothing at all (`requestFavoritesSync`), so the safe
  * state is also the default one.
+ *
+ * A LIST WITH NOTHING IN IT ANSWERS 'public', AND IT IS THE ONE GUESS THE SPEC
+ * ASKS FOR. Nobody has chosen anything and there is nothing to disclose, which
+ * is where every new user starts; the alternative is a privacy dialog in front
+ * of a brand-new account's first ♡. It states NO `visibility` tag — a default
+ * is the absence of a choice, and a tag recording one the user never made
+ * outranks the choice they go on to make in another app.
+ *
+ * `hasContent` IS WHAT KEEPS THAT GUESS OFF SOMEBODY ELSE'S CIPHERTEXT, and it
+ * asks whether `content` holds bytes at all — never whether those bytes held
+ * entries. Bytes this writer could not open are an encrypted list somebody
+ * owns, and an empty tag list beside them is not an empty LIST: default there
+ * and the next publish sets plaintext `i` tags beside the ciphertext, splitting
+ * one list into two halves no reader can reconcile. Bytes that open onto an
+ * empty array are the same question from the other side — somebody chose
+ * private and then took everything back out — so the only shape that answers
+ * 'public' is all three empty.
+ *
+ * Spec: PC20-Nostr#47, "An empty, untagged list is public". Vector 16.
  */
-export function seedModeFromWire(hasPublic: boolean, hasPrivate: boolean): FavoritesPrivacy | null {
+export function seedModeFromWire(
+  hasPublic: boolean,
+  hasPrivate: boolean,
+  hasContent: boolean,
+): FavoritesPrivacy | null {
   if (hasPublic && hasPrivate) return null;
   if (hasPrivate) return 'private';
   if (hasPublic) return 'public';
-  return null;
+  return hasContent ? null : 'public';
 }
 
 /**
@@ -625,7 +648,8 @@ export function seedModeFromWire(hasPublic: boolean, hasPrivate: boolean): Favor
  *    blind to, and treating it as opaque would freeze every new account on
  *    such a signer at whatever the first writer guessed.
  *
- * Spec: PC20-Nostr, "The list is public or private, and the event says which".
+ * Spec: PC20-Nostr, "A list is public or private. It is never both, and never
+ * partly", and the `visibility` tag that states which.
  */
 export function effectiveListMode(input: {
   /** What this app has recorded, or null when the user has not been asked. */
@@ -668,8 +692,12 @@ export function effectiveListMode(input: {
  * own parser drops it. So the tag is added once, to the array that really is
  * the event's, and never to the other one.
  *
- * Inserted after `alt` so the head of the event is stable across republishes;
- * position is not semantic for either tag.
+ * Inserted immediately after `alt`, which PC20-Nostr#49 made the prescribed
+ * place for it: the mode is marked at the top, so a reader knows it before
+ * parsing a single entry. That is a rule for WRITERS only — `statedVisibility`
+ * and the parser accept it anywhere, because an older list carries it
+ * elsewhere and rule 5's reframed comparison is what stops the difference
+ * costing a republish.
  */
 export function withVisibility(
   tags: string[][],

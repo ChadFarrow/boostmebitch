@@ -267,7 +267,10 @@ async function runHydrate(identity: NostrIdentity, purpose: DecryptPurpose = 'un
   // An account that already HAS a list is never asked which half it wants — the
   // wire already says. Seeding here, off the one trustworthy read of the cycle,
   // is what keeps the first-favorite prompt aimed at people whose first
-  // favorite it really is. Both halves empty leaves it unrecorded on purpose.
+  // favorite it really is. A wire with nothing on it at all now records
+  // 'public' rather than nothing (PC20-Nostr#47) — so a brand-new account gets
+  // no prompt either, and the prompt is left to the states that genuinely
+  // cannot be answered from the bytes.
   //
   // **`?? 'public'` is a FALLBACK, not an answer, and it withholds.** A null
   // from `seedFavoritesMode` on a wire holding both halves is deliberate — the
