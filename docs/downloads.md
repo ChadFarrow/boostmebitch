@@ -291,6 +291,67 @@ no `artwork` beside it: `artCandidates` puts every proxied URL ahead of every ra
 one and a `blob:` is not proxyable, so passing both would order the network copy
 first and leave the local bytes as its fallback.
 
+## The service worker is network-first, which is not precaching
+
+`public/sw.js` used to be a deliberate passthrough, and its comment gave the
+reason: Next emits hashed bundle URLs that change every build, so a stale cache
+would silently break the app for installed users. **That argument is against
+precaching.** Three rules make the failure it describes impossible:
+
+1. **A document is network-first.** Fetch it; on success serve it and keep a
+   copy; use the cache **only when the fetch rejects**. A reader with a
+   connection is never served a stale document, so a stale document can never
+   reference dead chunk hashes while online.
+2. **`/_next/static/*` is cache-first, and that is safe by construction.** Those
+   URLs are content-hashed — a given URL's bytes never change — so a cached copy
+   cannot go stale. This is what makes rule 1 work offline: the last document's
+   chunks are still there.
+3. **The cache names carry the build id** (`bmb-sw-static-<id>`,
+   `bmb-sw-pages-<id>`), and `activate` deletes every `bmb-sw-*` cache that is
+   not the current build's.
+
+That prefix is narrow **on purpose**: the download buckets are `bmb-downloads-*`
+and are the user's own files. A sweep that took them would delete a library
+somebody saved deliberately, on a deploy they never asked for.
+
+Four things never enter a cache, and each would be a real bug: anything under
+`/api/*` (a cached `/api/feed` serves a stale episode list; `/api/live-status`
+would report a finished show as live), any non-GET, any cross-origin request
+(enclosure audio and relay traffic are not ours to hold), and any response that
+is not `ok` (a cached 404 outlives the outage that produced it).
+
+### It is served from a route, and `public/sw.js` had to go
+
+A file in `public/` is static bytes and cannot know which build it belongs to, so
+it could never clean up after an older deploy. `app/sw.js/route.ts` interpolates
+`BUILD_ID`; the path stays `/sw.js` because that is what every installed device
+already has registered, and a worker's scope is its own directory, so `/sw.js`
+scopes to `/` with no `Service-Worker-Allowed` header. **`public/sw.js` was
+deleted rather than left alongside** — a file in `public/` wins over a route at
+the same path, so leaving it would have made the route dead code that looked
+live.
+
+`BUILD_ID` must never be a runtime value. A per-request id would make every
+request a different cache name, so the caches would grow without bound and
+`activate` would delete the set it had just written.
+
+### The check that matters is the deploy, not the airplane
+
+Measured 2026-09-09 across a real rebuild, one Chrome profile kept between the
+two halves so the worker and its caches persisted as an installed app's would:
+the build id changed, **every cache from the old build was gone, the new one was
+present, React still mounted and nothing threw.** That is the regression the old
+comment warned about, and it is the check to repeat — an offline launch that
+works proves nothing about whether a deploy is taken.
+
+**One honest limitation.** Immediately after a deploy the static cache is empty:
+the old worker was still controlling while the page's chunks were fetched, and
+`activate` then deleted its caches. So a listener who goes offline between the
+deploy and their next load gets the document but not its chunks. It fills on the
+following load and needs no intervention — but it is why the offline launch is
+"reliable once you have opened the app since the last deploy" rather than
+unconditional.
+
 ## Running the e2e: kill the last browser first
 
 `npm run e2e:downloads` refuses to start if anything already holds its debug

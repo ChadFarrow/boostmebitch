@@ -504,6 +504,106 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
   }
 }
 
+// ---------------------------------------------------------------------------
+section('11. The service worker: offline launch, and cleanup that spares downloads');
+// ---------------------------------------------------------------------------
+{
+  await send('Emulation.clearDeviceMetricsOverride', {});
+  await send('Page.navigate', { url: `${APP}/` });
+  await wait(8000);
+
+  // The worker is served from a route so it can carry a build id. Without one
+  // it could never clean up after an older deploy.
+  const control = await js(`
+    (async () => {
+      const reg = await navigator.serviceWorker.ready;
+      const src = await (await fetch('/sw.js')).text();
+      const version = (src.match(/const VERSION = "([^"]+)"/) || [])[1] ?? null;
+      return { controlled: !!navigator.serviceWorker.controller, scope: new URL(reg.scope).pathname, version };
+    })()
+  `);
+  check('it controls the page, at scope /, with a build id',
+    { controlled: control.controlled, scope: control.scope, hasVersion: !!control.version },
+    { controlled: true, scope: '/', hasVersion: true });
+
+  // What it did and did NOT keep. `/api/*` is the one that would be a real bug:
+  // a cached /api/feed serves a stale episode list and /api/live-status would
+  // report a finished show as live.
+  const held = await js(`
+    (async () => {
+      await fetch('/api/live-status?ids=none').catch(() => {});
+      await new Promise(r => setTimeout(r, 1500));
+      const out = { static: 0, pages: 0, api: 0, crossOrigin: 0 };
+      for (const n of await caches.keys()) {
+        if (!n.startsWith('bmb-sw-')) continue;
+        for (const req of await (await caches.open(n)).keys()) {
+          const u = new URL(req.url);
+          if (u.origin !== location.origin) out.crossOrigin++;
+          else if (u.pathname.startsWith('/api/')) out.api++;
+          else if (u.pathname.startsWith('/_next/static/')) out.static++;
+          else out.pages++;
+        }
+      }
+      return out;
+    })()
+  `);
+  check('static and page entries kept; nothing from /api/ and nothing cross-origin',
+    { hasStatic: held.static > 0, hasPages: held.pages > 0, api: held.api, crossOrigin: held.crossOrigin },
+    { hasStatic: true, hasPages: true, api: 0, crossOrigin: 0 });
+
+  // THE POINT OF THE WHOLE PHASE. A cold load with no network — which is what
+  // launching the installed app on a plane is — must still produce a document.
+  await send('Network.enable');
+  await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+  await send('Page.navigate', { url: `${APP}/` });
+  await wait(8000);
+  const offlineLaunch = await js(`
+    (() => ({
+      title: document.title.slice(0, 30),
+      hasDock: !!document.querySelector('nav[aria-label="Main"]'),
+      reactMounted: !!document.querySelector('nav[aria-label="Main"] a[href="/downloads"]'),
+    }))()
+  `);
+  check('the app still boots with the network cut, dock and all',
+    { hasDock: offlineLaunch.hasDock, reactMounted: offlineLaunch.reactMounted },
+    { hasDock: true, reactMounted: true });
+  await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+
+  // A deploy's cleanup, without needing a second deploy: plant a cache named
+  // like an older build plus one of the DOWNLOAD buckets, then make the worker
+  // install again. `activate` must take the first and leave the second — the
+  // prefix test is narrow on purpose, because those are the user's own files.
+  await send('Page.navigate', { url: `${APP}/` });
+  await wait(6000);
+  await js(`
+    (async () => {
+      const stale = await caches.open('bmb-sw-static-anolderbuild');
+      await stale.put('/planted', new Response('x'));
+      const mine = await caches.open('bmb-downloads-v1');
+      await mine.put('https://example.invalid/keep.mp3', new Response('keep'));
+      for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+      return true;
+    })()
+  `);
+  await send('Page.navigate', { url: `${APP}/` });
+  await wait(9000);
+  const swept = await js(`
+    (async () => {
+      await navigator.serviceWorker.ready;
+      await new Promise(r => setTimeout(r, 2000));
+      const names = await caches.keys();
+      const downloads = await caches.open('bmb-downloads-v1');
+      return {
+        staleGone: !names.includes('bmb-sw-static-anolderbuild'),
+        currentKept: names.some(n => n.startsWith('bmb-sw-static-')),
+        downloadsUntouched: !!(await downloads.match('https://example.invalid/keep.mp3')),
+      };
+    })()
+  `);
+  check('the older build is swept, the current one kept, downloads untouched',
+    swept, { staleGone: true, currentKept: true, downloadsUntouched: true });
+}
+
 check('no uncaught exceptions overall', exceptions, []);
 console.log(fails ? `\nDOWNLOADS E2E FAILED (${fails})` : '\nDOWNLOADS E2E OK');
 chrome.kill();
