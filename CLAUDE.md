@@ -44,6 +44,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/security.md`](docs/security.md) | `lib/safe-fetch.ts`, `safe-url-attr.ts`, `sanitizeShowNotes`, `app/api/transcript`, `app/api/nostr/site-sign`, `next.config.mjs`, and **any input that accepts a Nostr identifier** (`lib/nostr/npub-input.ts` — `looksLikeSecretKey`) |
 | [`docs/ops.md`](docs/ops.md) | Google Cloud console, DNS, OAuth consent screen, Vercel env vars |
 | [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, **both** `android/twa-manifest*.json` and `zapstore*.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest*.json` |
+| [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, and `<Player>`'s local-source branch — five hosts send CORS, so this app has **no audio proxy** |
 
 ## Names
 
@@ -68,7 +69,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9 flat config in `eslint.config.mjs` — `next/core-web-vitals` + `next/typescript`, `no-explicit-any` off for PI's untyped JSON), and `next build`. Path alias `@/*` → repo root.
 
-**Thirty-six `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
+**Thirty-seven `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
@@ -106,15 +107,16 @@ npm run dev / build / start / lint
 | `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening: feeds hang, publishes reach nobody |
 | `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show, or an ended one never leaves |
 | `check:liveover` | `liveBroadcastIsOver` — a `live` flag nobody cleared | a LIVE badge over silence, for days |
+| `check:downloads` | `downloadKey` (idempotence), `isDownloadable`, `roomVerdict` | a download nothing can find; a full origin that fails every settings write |
 | `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser walks a document with | 1 MB of `<!--` pins a lambda for a minute |
 | `check:cappedbody` | `lib/capped-body.ts` — the capped readers, server AND browser | an uncapped `arrayBuffer` fills the heap from one feed |
 | `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a background cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch, looked correct in review, and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 
-**`services/nostr-index` has its own checks and this repo's `check:*` do not run them** — `cd services/nostr-index && npm run typecheck && DATABASE_URL=... npm run verify`. → [`docs/nostr-index.md`](docs/nostr-index.md)
+**`services/nostr-index` has its own checks and this repo's `check:*` do not run them.** → [`docs/nostr-index.md`](docs/nostr-index.md)
 
-**The import-free arrangement is enforced, not just documented.** `favorites-list.ts`, `read-trust.ts`, `lease.ts`, `assetlinks.ts`, `amber-callback-url.ts`, `amber-safe-text.ts`, `gif-first-frame.ts`, `chapters-json.ts`, `value-playback-summary.ts`, `mute-state.ts`, `brand.ts`, `bounded-cache.ts` and `capped-body.ts` must have no imports at all, and `nwc-errors.ts` and `favorites-export.ts` only bare npm ones, because that is what lets a check script load the shipping module under plain Node. `scripts/import-free.mjs` scans for it and each of those fifteen scripts calls it. **`mute-state.ts` is why the rule shapes the code, not just the check**: `MuteCipher` and `classifyMuteContent` live beside `MuteListState` rather than in a leaf of their own, because a second leaf would need an `import type` the scan rejects. **The scan rejects type-only relative imports too** — `import type` is erased by type-stripping, so it passes every other check while leaving the module one `type` deletion from breaking.
+**The import-free arrangement is enforced, not just documented.** `favorites-list.ts`, `read-trust.ts`, `lease.ts`, `assetlinks.ts`, `amber-callback-url.ts`, `amber-safe-text.ts`, `gif-first-frame.ts`, `chapters-json.ts`, `value-playback-summary.ts`, `mute-state.ts`, `brand.ts`, `bounded-cache.ts`, `capped-body.ts` and `downloads/download-rules.ts` must have no imports at all, and `nwc-errors.ts` and `favorites-export.ts` only bare npm ones, because that is what lets a check script load the shipping module under plain Node. `scripts/import-free.mjs` scans for it and each of those sixteen scripts calls it. **`mute-state.ts` is why the rule shapes the code, not just the check**: `MuteCipher` and `classifyMuteContent` live beside `MuteListState` rather than in a leaf of their own, because a second leaf would need an `import type` the scan rejects. **The scan rejects type-only relative imports too** — `import type` is erased by type-stripping, so it passes every other check while leaving the module one `type` deletion from breaking.
 
 Each **imports the real module** via `node --experimental-strip-types`: a copy passes green while shipping code drifts. Each carries a *must-still-work* half: over-blocking is a regression too. **Vectors were generated by the shipping code; if one fails, fix the code — never edit the vector to match.**
 
@@ -153,9 +155,9 @@ Podcast Index credentials must never reach the browser. Enforced by file convent
 
 **Isomorphic:** `lib/types.ts` (pure types), `lib/v4v/boost.ts` (orchestration).
 
-**A THIRD place exists and it is not part of this app: `services/nostr-index/`.** A separate deployable on Railway with its own `package.json` and dependencies — it holds relay WebSockets open continuously, which a serverless function cannot. It is excluded from this repo's `tsconfig.json` and `eslint.config.mjs`, so **`npm run typecheck` and `npm run lint` do not cover it**. It must never import from `lib/` and `lib/` never from it — the relay lists and NIP-73 prefixes are deliberately duplicated. The app reaches it only through `lib/nostr-index-server.ts`, server-side.
+**A THIRD place exists and it is not part of this app: `services/nostr-index/`.** A separate Railway deployable, excluded from this repo's `tsconfig.json` and `eslint.config.mjs`, so **`npm run typecheck` and `npm run lint` do not cover it**. It must never import from `lib/` and `lib/` never from it — the relay lists and NIP-73 prefixes are deliberately duplicated. The app reaches it only through `lib/nostr-index-server.ts`, server-side.
 
-**It does NOT deploy when you merge.** The Railway service is CLI-uploaded, so merging to `main` deploys the Vercel app and leaves the index running whatever was uploaded last — invisible from the diff, and it cost a session. `railway up` from `services/nostr-index`, **then read the build log for the package name**: it must say `boostmebitch-nostr-index`, never `boostmebitch`. → [`docs/nostr-index.md`](docs/nostr-index.md)
+**It does NOT deploy when you merge.** It is CLI-uploaded, so `main` ships the Vercel app and leaves the index running whatever was uploaded last — invisible from the diff, and it cost a session. `railway up` from `services/nostr-index`, then check the build log names `boostmebitch-nostr-index`. → [`docs/nostr-index.md`](docs/nostr-index.md)
 
 Components fetch via local API routes (`fetch('/api/feed?id=…')`) — never call PI directly.
 
