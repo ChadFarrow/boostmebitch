@@ -516,7 +516,7 @@ export function FullscreenPlayer({
             in this row — which is `overflow-y-auto`, so it shows up as a
             scrollbar down the whole page. `h-full` resolves against the row's own
             definite height, so the panes fit exactly whatever the header does. */}
-        <div className={`flex flex-col items-center justify-center gap-4 p-4 sm:p-6 lg:p-10 flex-shrink-0 ${mediaPane} sm:sticky sm:top-0 sm:self-start sm:h-full`}>
+        <div className={`flex flex-col items-center justify-center gap-4 px-4 pt-2 pb-2 sm:p-6 lg:p-10 flex-shrink-0 ${mediaPane} sm:sticky sm:top-0 sm:self-start sm:h-full`}>
           {isVideo ? (
             // The width cap is bounded by the AVAILABLE HEIGHT, not by a max-h:
             // the box is aspect-video, so height derives from width, and clamping
@@ -607,12 +607,34 @@ export function FullscreenPlayer({
             // 859 against 840. Only the WORD line of each tile was cut, which
             // reads as a broken layout rather than as something to scroll to.
             //
-            // 28rem is what the screen spends around the art below sm:: the
-            // player's own header (59px), this pane's `p-4` top (16px), and
-            // the 367px of title, ● LIVE stamp or seek bar, transport, BOOST
-            // and the tile row beneath it — measured on a live item and on an
-            // ordinary episode, which differ by 4px. Rounded UP, so the tiles
-            // clear the edge instead of sitting on it.
+            // 30rem is what the screen spends around the art below sm:: the
+            // player's own header (59px), both panes' padding, and the title,
+            // seek bar or ● LIVE stamp, transport, BOOST and the tile row
+            // beneath it. Rounded UP, so the tiles clear the edge instead of
+            // sitting on it.
+            //
+            // IT WAS 28rem, AND AN ORDINARY EPISODE STILL DID NOT FIT — 46px
+            // of the tile row was under the fold at 393x852, while the live
+            // item it was measured against cleared by 10px. The two are not
+            // 4px apart: `isLive` replaces the seek bar, its times row AND the
+            // active-chapter label with one stamp, which is 52px on a show
+            // that publishes chapters. Measure the EPISODE, not the live item
+            // — it is the taller of the two, and it is the one that was
+            // reported.
+            //
+            // THE 42px THAT PAID FOR PART OF THIS CAME OFF THE PADDING AND THE
+            // GAPS, not off the reserve: both panes' `p-4` and the cluster's
+            // `gap-5` are phone-only now (see the note above that cluster), so
+            // the same controls need 42px less room. Without them this would
+            // be 32.5rem and the cover 42px smaller again. Re-measure the
+            // number when you add a control under BOOST — CSS cannot measure a
+            // sibling, so nothing will tell you the reserve went stale except
+            // the tile row on a phone.
+            //
+            // Measured with the reserve at 30rem, ordinary episode / live item,
+            // clearance under the tile row: 375x667 -60 / -4 (the floor below
+            // wins there and nothing fits), 390x844 +22 / +78, 393x852 +22 /
+            // +78, 402x874 +22 / +78, 430x932 +52 / +78.
             //
             // `min(28rem,…)` because 28rem is also the `max-w-md` this
             // replaces, and two `max-w-*` classes on one element resolve by
@@ -621,7 +643,7 @@ export function FullscreenPlayer({
             // fit and a vanishing cover helps no one. From sm: up
             // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
             // info column, so its height is not the constraint.
-            <div className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_28rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
+            <div className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_30rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
               {/* Whatever is playing at this second, via `nowPlayingArt`: the
                   LIVE BLOCK's art first — on a Split Kit show that's the cover
                   of the record actually playing, and it's the one thing on
@@ -716,10 +738,20 @@ export function FullscreenPlayer({
             </div>
           </div>
         ) : (
-        <div className={`${infoPane} p-4 sm:p-6 lg:p-10 flex flex-col gap-5 min-w-0 sm:h-full`}>
+        <div className={`${infoPane} px-4 pt-2 pb-4 sm:p-6 lg:p-10 flex flex-col gap-5 min-w-0 sm:h-full`}>
           {/* Fixed header: title, seek + transport controls stay put; only the
               About/Chapters body below scrolls (on desktop). */}
-          <div className="flex-shrink-0 flex flex-col gap-5">
+          {/* BELOW sm: A GAP IS THE COVER'S SIZE, not whitespace. The cover is
+              capped by what is left under it (see its `max-w`), so every pixel
+              taken out of this `gap`, out of both panes' padding and out of the
+              boundary between them is a pixel the cover gets back — 42px at
+              393x852, which took a 311px cover to 353px. The boundary was the
+              worst of the three: the media pane's `p-4` bottom met this pane's
+              `p-4` top and read as one 32px gap between the art and the title.
+              `sm:` RESTORES ALL THREE, here and on both panes. From sm: up the
+              panes sit side by side with their own heights, the cover competes
+              with nothing, and the open layout is what the width is for. */}
+          <div className="flex-shrink-0 flex flex-col gap-3.5 sm:gap-5">
             <div>
               <h1 className="font-display text-2xl lg:text-3xl leading-tight">{episode.title}</h1>
               <p className="text-sm text-muted mt-1.5">{podcast.title}</p>
