@@ -49,7 +49,10 @@
 // default: a legitimate input the wrong implementation also handles is a
 // property of that input, not a hole in the suite.
 
-import { artWidth, artCandidates, artTypeVerdict, ART_WIDTHS, DEFAULT_ART_WIDTH } from '../lib/util.ts';
+import {
+  artWidth, artCandidates, artTypeVerdict, ART_WIDTHS, DEFAULT_ART_WIDTH,
+  playableAhead, artGateOpen,
+} from '../lib/util.ts';
 
 let failures = 0;
 
@@ -83,6 +86,26 @@ function checkCandidates(label, image, artwork, width, expected, { alsoNaive = f
 function checkType(label, input, expected, { alsoNaive = false } = {}) {
   compare(label, artTypeVerdict(input), expected);
   vectors.push({ label, kind: 'type', args: [input], alsoNaive });
+}
+
+/** A playableAhead vector. `ranges` is [[start, end], ...] in seconds. */
+function checkAhead(label, ranges, positionSec, expected, { alsoNaive = false } = {}) {
+  compare(label, playableAhead(timeRanges(ranges), positionSec), expected);
+  vectors.push({ label, kind: 'ahead', args: [ranges, positionSec], alsoNaive });
+}
+
+/** An artGateOpen vector. */
+function checkGate(label, open, ahead, timeLeft, expected, { alsoNaive = false } = {}) {
+  compare(label, artGateOpen(open, ahead, timeLeft), expected);
+  vectors.push({ label, kind: 'gate', args: [open, ahead, timeLeft], alsoNaive });
+}
+
+/** A stand-in for `HTMLMediaElement.buffered`, which is a DOM TimeRanges and
+ *  cannot be constructed under plain Node. Structurally identical, which is
+ *  the whole reason `playableAhead` takes an interface rather than the DOM
+ *  type: the shipping function is the one under test here. */
+function timeRanges(pairs) {
+  return { length: pairs.length, start: (i) => pairs[i][0], end: (i) => pairs[i][1] };
 }
 
 function section(name) {
@@ -246,6 +269,79 @@ section('ART_WIDTHS is what the route and the component share');
 }
 
 // ---------------------------------------------------------------------------
+section('playableAhead — the audio in front of the PLAY HEAD, not the last byte held');
+// ---------------------------------------------------------------------------
+
+// The ordinary case, and the one a wrong implementation also gets right: one
+// range, the play head inside it.
+checkAhead('one range, play head inside it', [[6883, 8900]], 6890, 2010, { alsoNaive: true });
+
+// Two ranges are what a seek leaves behind, and this is the whole point. The
+// element can play 50 more seconds; the last byte it holds is 8,850 seconds
+// away and belongs to a stretch the listener is not in. Measuring to the last
+// range's end reports 8850 and keeps the art gate open over a play head that
+// is about to run dry.
+checkAhead('a seek left an island ahead — measure the range we are IN', [[0, 100], [6880, 8900]], 50, 50);
+checkAhead('the play head is in the LATER range', [[0, 100], [6880, 8900]], 6900, 2000, { alsoNaive: true });
+
+// The play head is in the gap between two ranges: nothing can be played from
+// here at all. `null` is not 0 — it says "there is no range covering this
+// second", which is the honest answer after a forward seek into unbuffered
+// audio.
+checkAhead('the play head is in a GAP — nothing is playable', [[0, 100], [6880, 8900]], 500, null);
+checkAhead('the play head is past everything buffered', [[0, 100]], 200, null);
+checkAhead('no ranges at all', [], 10, null, { alsoNaive: true });
+
+// A media element reports `currentTime` a hair outside the range it is playing
+// from, so the front edge carries a tolerance. Without it an ordinary resume
+// reads as a gap and shuts the gate.
+checkAhead('a hair before the range start still counts', [[6880, 8900], [9500, 9600]], 6879.5, 2020.5);
+checkAhead('a full second before the range start does not', [[6880, 8900]], 6879, null);
+
+// Exhausted, but still inside the range: zero headroom, not `null`. Both shut
+// the gate, and they say different things — this one means "the buffer ran
+// out", the null means "we are not where the buffer is".
+checkAhead('sitting exactly on the end of the range', [[6880, 8900], [9500, 9600]], 8900, 0);
+
+// ---------------------------------------------------------------------------
+section('artGateOpen — hysteresis, and what a `stalled` event is worth');
+// ---------------------------------------------------------------------------
+
+// The hysteresis IS the design: a single threshold oscillates, because dropping
+// the art frees the pipe, the buffer recovers, the art reloads and the buffer
+// starves again. Open at 20 s, and do not close until 5 s.
+checkGate('open stays open at 8 s of headroom', true, 8, 4000, true);
+checkGate('open closes below 5 s', true, 4, 4000, false, { alsoNaive: true });
+checkGate('closed does NOT reopen at 8 s', false, 8, 4000, false, { alsoNaive: true });
+checkGate('closed reopens at 20 s', false, 20, 4000, true, { alsoNaive: true });
+
+// This is the vector the bug was found on. WebKit fires `stalled` — a claim
+// about the FETCH, not about the buffer — with readyState 4 and 2,001 seconds
+// of audio buffered ahead of the play head. Measured in Safari on 2026-09-09
+// against Bowl After Bowl 456. Treating that event as starvation dropped the
+// fullscreen cover from the chapter art to the episode art, minutes apart, over
+// sound that never broke.
+checkGate('a stall with 2,001 s buffered leaves the gate OPEN', true, 2001, 9800, true, { alsoNaive: true });
+
+// Nothing playable from here — after a forward seek, or a genuinely wedged
+// element. The art yields, which is what cancels the in-flight chapter image.
+checkGate('null headroom shuts the gate', true, null, 4000, false, { alsoNaive: true });
+checkGate('null headroom keeps a shut gate shut', false, null, 4000, false, { alsoNaive: true });
+
+// The tail of a file has less audio LEFT than the threshold asks for, so a bare
+// 20 is unreachable however complete the download is. Without this the gate is
+// shut for the last 20 s of every episode — on a music show, exactly where the
+// closing song's art lives.
+checkGate('3 s left and 3 s buffered reopens the gate', false, 3, 3, true);
+checkGate('4 s left and 4 s buffered keeps an open gate open', true, 4, 4, true);
+
+// A live stream has no end, so the plain thresholds apply. Taking the
+// subtraction anyway would put NaN on both sides of the comparison and shut the
+// gate for good.
+checkGate('a non-finite time left uses the plain thresholds', false, 25, Infinity, true, { alsoNaive: true });
+checkGate('NaN time left does not poison the comparison', false, 25, NaN, true, { alsoNaive: true });
+
+// ---------------------------------------------------------------------------
 section('every vector replayed against the wrong implementations');
 // ---------------------------------------------------------------------------
 {
@@ -259,6 +355,17 @@ section('every vector replayed against the wrong implementations');
     const t = (ct ?? '').split(';')[0].trim().toLowerCase();
     return t.startsWith('image/') ? 'decode' : 'refuse';
   };
+
+  /** What this shipped as: the end of the LAST buffered range, whatever the
+   *  play head is doing. Right whenever there is one range, and wrong in every
+   *  case a seek produced two. */
+  const naiveAhead = (ranges, positionSec) =>
+    ranges.length ? ranges[ranges.length - 1][1] - positionSec : null;
+
+  /** One threshold and no hysteresis — the version whose oscillation is the
+   *  reason the real one carries two numbers. It also has no answer for "the
+   *  play head is not in any range", and no answer for the tail of a file. */
+  const naiveGate = (open, ahead, _timeLeft) => (ahead ?? 0) >= 20;
 
   /** Proxies everything and forgets the raw fallbacks — the total-failure shape. */
   const naiveCandidates = (image, artwork, width) => {
@@ -282,6 +389,13 @@ section('every vector replayed against the wrong implementations');
       }
       if (v.kind === 'type') {
         return repr(which === 'real' ? artTypeVerdict(...v.args) : naiveType(...v.args));
+      }
+      if (v.kind === 'ahead') {
+        const [ranges, pos] = v.args;
+        return repr(which === 'real' ? playableAhead(timeRanges(ranges), pos) : naiveAhead(ranges, pos));
+      }
+      if (v.kind === 'gate') {
+        return repr(which === 'real' ? artGateOpen(...v.args) : naiveGate(...v.args));
       }
       return repr(which === 'real' ? artCandidates(...v.args) : naiveCandidates(...v.args));
     } catch (e) {

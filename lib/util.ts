@@ -2134,6 +2134,87 @@ export function artTypeVerdict(contentType: string | null | undefined): 'decode'
   return 'refuse';
 }
 
+// ---------------------------------------------------------------------------
+// The art gate — whether the buffer can afford heavy third-party artwork.
+//
+// <Player> owns the flag; these two decide it. They live here for the same
+// reason the proxy helpers above do: lib/util.ts loads under plain Node, so
+// `npm run check:art` pins the SHIPPING functions rather than a copy. The
+// reasoning for the gate itself is in docs/ui.md, "Artwork must never outrank
+// the audio".
+// ---------------------------------------------------------------------------
+
+/**
+ * The shape of `HTMLMediaElement.buffered`, named structurally.
+ *
+ * A `TimeRanges` cannot be constructed outside a browser, so taking the DOM
+ * type here would leave the decision untestable and the check script pinning a
+ * hand-written copy instead.
+ */
+export interface TimeRangeList {
+  readonly length: number;
+  start(index: number): number;
+  end(index: number): number;
+}
+
+/** How far outside a range the play head may sit and still count as inside it.
+ *  Media elements report `currentTime` a hair ahead of the range they are
+ *  playing from, and without this an ordinary resume reads as a gap. */
+const RANGE_EDGE_TOLERANCE_S = 0.5;
+
+/**
+ * Seconds of audio the element can play from where it is, without another byte
+ * — or `null` when it cannot play from here at all.
+ *
+ * **The range CONTAINING the play head, never the last range held.** Those are
+ * the same number only while there is one range, and a seek is what makes a
+ * second one: an element at 0:50 holding `[0–100]` and `[6880–8900]` can play
+ * for 50 more seconds, while the end of its last range is 8,850 seconds away.
+ * Measuring to the last byte held reports the gate as comfortable over a play
+ * head that is about to run dry — the exact failure the gate exists to prevent,
+ * arrived at from the other side.
+ *
+ * `null` is not `0`. Zero says the buffer ran out under the play head; `null`
+ * says the play head is not where the buffer is, which is what a forward seek
+ * into undownloaded audio leaves behind. Both shut the gate; only one of them
+ * means the element is stuck.
+ */
+export function playableAhead(buffered: TimeRangeList, positionSec: number): number | null {
+  for (let i = 0; i < buffered.length; i++) {
+    const start = buffered.start(i);
+    const end = buffered.end(i);
+    if (positionSec >= start - RANGE_EDGE_TOLERANCE_S && positionSec <= end) {
+      return Math.max(0, end - positionSec);
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether the players may show feed artwork, given the headroom they have.
+ *
+ * **Hysteresis is the design, not a refinement.** A single threshold
+ * oscillates: dropping the art frees the pipe, the buffer recovers, the art
+ * reloads, the buffer starves. So the gate opens at 20 s of headroom and does
+ * not close until 5 s.
+ *
+ * **`timeLeft` is what keeps the tail of a file reachable.** In the last
+ * seconds of an episode there is less audio remaining than the threshold asks
+ * for, so a bare 20 is unreachable however complete the download is — and an
+ * element with nothing left to fetch has nothing left to starve. A non-finite
+ * or NaN value means "no end in sight" and takes the plain thresholds;
+ * subtracting anyway would put NaN on both sides of the comparison and shut the
+ * gate for good.
+ *
+ * **`ahead: null` shuts it.** Nothing is playable from this second, so there is
+ * no headroom to spend on a picture.
+ */
+export function artGateOpen(open: boolean, ahead: number | null, timeLeft: number): boolean {
+  if (ahead === null) return false;
+  const left = Number.isFinite(timeLeft) ? Math.max(0, timeLeft) : Infinity;
+  return open ? ahead >= Math.min(5, left) : ahead >= Math.min(20, left);
+}
+
 /**
  * The per-connection NWC spending budget, in whole sats.
  *
