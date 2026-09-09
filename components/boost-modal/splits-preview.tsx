@@ -1,6 +1,6 @@
 'use client';
 import type { ValueRecipient, BoostResult } from '@/lib/types';
-import { recipientAddress, recipientOrder } from '@/lib/util';
+import { feeNote, recipientAddress, recipientOrder } from '@/lib/util';
 
 // Format a weight as a percentage of the total weight. Integer when it rounds
 // cleanly (50%, 90%, 1%), one decimal otherwise (33.3%, 16.7%) — most value
@@ -30,6 +30,9 @@ export function SplitsPreview({
   title?: string;
 }) {
   const totalWeight = recipients.reduce((sum, r) => sum + (r.split ?? 0), 0);
+  // Why the shares below can carry a decimal and not add to 100: a fee's weight
+  // is in that total like any other. See `feeNote`.
+  const note = feeNote(recipients);
   return (
     <div className="card p-3">
       <div className="text-[11px] uppercase tracking-widest text-muted mb-2">{title}</div>
@@ -97,6 +100,11 @@ export function SplitsPreview({
           );
         })}
       </ul>
+      {/* OUTSIDE the <ul>, which is `aria-live="polite"` so legs are announced
+          as they settle — static copy inside it is re-announced on every settle.
+          Outside the `max-h-48` scroll box too, so it stays on screen under a
+          long value block instead of scrolling away. */}
+      {note && <p className="mt-2 text-[11px] text-muted leading-snug">{note}</p>}
     </div>
   );
 }

@@ -27,6 +27,26 @@ A Podcasting 2.0 PLAYLIST is that case. Its rows are `<podcast:remoteItem>` refe
 
 Where a playlist row's real block comes from is the other half, and it is server-side: see *Whose value block pays a playlist row* in [`feeds.md`](feeds.md).
 
+## A `fee` is inside the split, not on top of it — and why 45 renders as 44.6%
+
+Reported as a bug: a boost modal read `ChadF 44.6%`, `ChadF test node 44.6%`, `boostr 9.9%`, `fee Podcastindex.org 1%`. The decimals look like a rounding fault in our arithmetic. They are a fact about the feed.
+
+**`split` is a WEIGHT and a fee recipient's weight is in the denominator with everyone else's.** A publisher who writes 45 / 45 / 10 and adds a `fee="true"` recipient at 1 has authored a total of **101**, not 100 — they read the fee as sitting outside the split. So 45/101 = 44.554% and the artist is paid 100/101 of the share the publisher meant to give them. On a 100-sat boost the legs come out 45 / 44 / 10 / 1: two rows with identical weights are paid a sat apart, because `splitSats`' largest-remainder pass has three leftover sats to hand out and hands them to whoever was floored furthest (the fee at 0.990, then boostr at 0.901, then one of the two tied 44.554s).
+
+**This is the spec.** From the `podcast:value` specification v1.4 (Dave Jones with Gigi, Evan Feenstra & Paul Itoi, September 2021), `docs/examples/value/value.md` in `Podcastindex-org/podcast-namespace`:
+
+> The `fee` attribute tells apps whether this split should be treated as a "fee", or a normal split. If this attribute is true, then this split should be calculated as a fee, meaning its percentage (as calculated from the shares) should be taken off the top of the entire transaction amount.
+
+**Cite v1.4, because the tag reference no longer defines the attribute.** `docs/tags/value-recipient.md` — the page rendered at podcasting2.org, and the one anybody looks it up on — now carries only *"`fee` (optional) If this attribute is not specified, it is assumed to be false."* The defining clause was lost when the per-tag prose was split out of `docs/1.0.md`. So someone who checks the live docs finds `fee` undefined, concludes the denominator is our bug, and "fixes" `splitSats` — which is a money change, against boost invariant 4.
+
+**What the spec does NOT say is whether the fee weight belongs in the denominator.** Its payment formula has no fee carve-out and no worked example uses a fee recipient. "Off the top" fixes the direction of the money; the arithmetic is left open, and what this app does is one defensible reading of it. Two hints point opposite ways: *"as calculated from the shares"* puts the fee inside the share total, while the spec's own production example pairs non-fee shares summing to exactly 100 with a `split="1" fee="true"` narrated as "effectively 1%". 1/101 is 0.99%, which also rounds to "effectively 1%", so the example does not discriminate.
+
+**Grossing the boost up was considered and rejected.** Paying the artists a full 100 and adding the fee as a 101st sat on top means the wallet spends more than the number on the button. It would also have to be threaded through the streaming ledger, which debits *before* it pays — a fee spent outside the ledger is neither refundable nor logged — and through `<BoostAllModal>`'s `N x sats` headline, which knows nothing about any block's recipients. The amount typed is the amount that leaves the wallet.
+
+**What shipped is a sentence, not arithmetic.** `feeNote` (`lib/util.ts`) returns *"Podcastindex.org's fee comes out of your boost, not on top of it."*, or null when the block has no fee recipient — so it is silent on every ordinary feed. It is rendered by both splits surfaces: `<SplitsPreview>` (`components/boost-modal/splits-preview.tsx`, under the list and **outside** the `aria-live` `<ul>`, or it is re-announced every time a leg settles) and `<ValueSplitRows>`. Those two components are deliberately not one — see the note in `value-split-rows.tsx` — so the string is the only thing they share, and it lives in `lib/util.ts` for the same reason `targetWord` does.
+
+**It is derived per SPLITS LIST, never per modal.** A boost inside a `<podcast:valueTimeSplit>` window renders two `<SplitsPreview>` cards with two different recipient sets, and `payableSplit` may have trimmed the host card's list — see the comment at `components/boost-modal/index.tsx:93-97`, which is the same reason the percentages are per-card.
+
 ## Boost-all tracks (valueTimeSplits)
 
 Music podcasts tag each track in their RSS with a `<podcast:valueTimeSplit>` — a startTime/duration window plus a `<podcast:remoteItem feedGuid itemGuid>` pointing at the track's own album feed. **PI surfaces these as `e.timesplits[]`** — a flat top-level array on the episode, NOT nested under `e.value.valueTimeSplits` despite the field name. Each entry carries `feedGuid`/`itemGuid`/`medium` directly; `parseRawValueTimeSplits` maps that to the consumer-facing nested `ValueTimeSplit.remoteItem`.

@@ -1077,7 +1077,11 @@ shows up on a screen nobody was looking at.
   over that, and the dependency got "simplified" away once.
 - **`<ValueSplitRows>`** — three copies, and `lists.tsx` inlined its own address
   elision, so the same pubkey rendered differently per screen. `<SplitsPreview>`
-  is deliberately NOT merged into it: it carries live per-leg status.
+  is deliberately NOT merged into it: it carries live per-leg status. The one
+  thing the two DO share is `feeNote` (`lib/util.ts`), and it is shared as a
+  string rather than as markup — which is what keeps that separation true. Why
+  the sentence exists at all is in
+  [`money-boosts.md`](money-boosts.md) ("A `fee` is inside the split").
 - **`<CopyLinkButton>`** — it owns the flash timing and the `clearTimeout` on
   unmount that neither hand-rolled copy had. **There was a THIRD copy on the
   episode page**, carrying both faults the merge had already fixed elsewhere —
