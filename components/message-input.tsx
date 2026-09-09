@@ -33,6 +33,22 @@ const LIST_GUTTER = 8;
  */
 const BOOSTAGRAM_MAX = 200;
 
+/**
+ * Tallest the box may grow before it starts to scroll.
+ *
+ * The height is driven by the CONTENT, not by `textareaRows`, because a fixed
+ * two-row box showed a 200-character boostagram two lines at a time: the
+ * sender could not read back what they were about to pay for. `textareaRows`
+ * survives as the MINIMUM — `height: auto` on a textarea resolves to the
+ * `rows` height, and `scrollHeight` is never less than that — so an empty box
+ * still looks the way each caller asked for.
+ *
+ * The cap is here rather than left open because `maxLength` is a per-caller
+ * number: the boostagram's is 200, and `<NoteCard>`'s reply composer passes
+ * 2000, which uncapped would push its own send button off the screen.
+ */
+const MAX_TEXTAREA_H = 240;
+
 /** The `@…` immediately before the caret, if the caret is inside one. */
 function activeMention(value: string, caret: number): { q: string; start: number } | null {
   const upto = value.slice(0, caret);
@@ -210,6 +226,30 @@ export function MessageInput({
   }, []);
 
   /**
+   * Grow the box to fit the message.
+   *
+   * `height: auto` first, so a DELETION shrinks it back — `scrollHeight` is
+   * measured against the height the element currently has, so measuring
+   * without the reset only ever ratchets upward.
+   *
+   * `offsetHeight - clientHeight` is the border, which `scrollHeight` leaves
+   * out while `box-sizing: border-box` counts it. Omitting it makes the box one
+   * border short of its own content, so every line typed leaves a scrollbar in
+   * a box that looks like it has room.
+   *
+   * `useEffect`, not `useLayoutEffect`: this is a client component that Next
+   * still renders on the server, and the value is empty on the mount that
+   * matters, so there is nothing to flash.
+   */
+  useEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    const border = el.offsetHeight - el.clientHeight;
+    el.style.height = `${Math.min(el.scrollHeight + border, MAX_TEXTAREA_H)}px`;
+  }, [value]);
+
+  /**
    * Attach somebody, and put their NAME in the text — not their npub.
    *
    * A bech32 npub is 63 characters against this field's 200, and the same
@@ -329,7 +369,10 @@ export function MessageInput({
       vv?.removeEventListener('scroll', measure);
       window.removeEventListener('resize', measure);
     };
-  }, [open, rows.length]);
+    // `value` because the box GROWS as it is typed into: the rect this measured
+    // against moves down a line at a time, and a stale `listMaxH` is a list
+    // that runs off the bottom of the visual viewport it was sized to fit.
+  }, [open, rows.length, value]);
 
   return (
     <div>
@@ -340,8 +383,9 @@ export function MessageInput({
         <textarea
           id={id}
           ref={areaRef}
-          className="input mt-1.5 resize-none"
+          className="input mt-1.5 resize-none overflow-y-auto"
           rows={textareaRows}
+          style={{ maxHeight: MAX_TEXTAREA_H }}
           maxLength={maxLength}
           value={value}
           onChange={(e) => {
