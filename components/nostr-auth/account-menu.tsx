@@ -33,12 +33,14 @@ function LocalKeyEphemeralBanner() {
   );
 }
 
-function BunkerHealthBanner() {
-  const [stale, setStale] = useState(false);
+// `stale` is a PROP rather than this component's own subscription, because the
+// trigger button carries a marker for the same flag — see <AccountMenu>. Two
+// subscriptions to one observable would be two things to keep in step, and the
+// failure mode is the one that makes this whole area hard: a dot with no banner
+// behind it, or a banner nothing points at.
+function BunkerHealthBanner({ stale }: { stale: boolean }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-
-  useEffect(() => subscribeBunkerHealth(setStale), []);
 
   if (!stale) return null;
 
@@ -133,12 +135,29 @@ export function AccountMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [signerStale, setSignerStale] = useState(false);
   const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const close = useCallback(() => setOpen(false), []);
   useMenuKeys({ open, menuRef, triggerRef, close });
+
+  // BOTH SIGNER SIGNALS LIVE INSIDE THE CLOSED MENU, AND THAT IS WHY NEITHER
+  // ARRIVED. The page-load bunker restore is the one handshake nobody is
+  // watching: it runs on its own on every cold load, and until it settles the
+  // account button is the only thing on screen that knows anything about it.
+  // Reported for Clave on the iOS PWA — a new deploy is a cold load, so each
+  // one ran this, and the user met the result as an app that had quietly
+  // stopped being able to sign.
+  //
+  // The two signals get different treatment on purpose. The approval wait is
+  // TRANSIENT and it is asking for an act in another app, so it is rendered in
+  // full below the button where it can say so. Staleness is a STATE with no
+  // natural end, so it gets a dot and not a box: an undismissable panel under
+  // the header for a socket the OS suspends whenever the user backgrounds the
+  // app would be on screen more often than not.
+  useEffect(() => subscribeBunkerHealth(setSignerStale), []);
 
   // Dismiss on click-outside / Escape so the menu doesn't trap focus.
   useEffect(() => {
@@ -173,19 +192,39 @@ export function AccountMenu({
         // The visible name is `hidden` below `sm:` — display:none is out of
         // the accessibility tree — so on a phone this button had NO name: an
         // `alt=""` avatar and a ▾. The label is the same text at every width.
-        aria-label={`Account: ${name || shortNpub(identity.npub, 6)}`}
+        aria-label={
+          `Account: ${name || shortNpub(identity.npub, 6)}` +
+          // The dot below is the only thing that says this, and a dot has no
+          // accessible name of its own. It reads as part of the button's name
+          // rather than as a `title`, because a hover tooltip is not reachable
+          // on the phone this whole path exists for.
+          (signerStale ? ' — signer disconnected' : '')
+        }
       >
-        {pic ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={pic}
-            alt=""
-            className="w-5 h-5 rounded-full object-cover border border-nostr/40 flex-shrink-0"
-            onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
-          />
-        ) : (
-          <span className="text-nostr">◆</span>
-        )}
+        {/* THE MARKER IS AN OVERLAY, NEVER ITS OWN COLUMN. This row has no width
+            to give: at 390px the wordmark already needs 142px of a 141.6px box,
+            so a 6px dot plus the flex gap would come out of the one measurement
+            <AppHeader> is pinned against. Positioned over the avatar it costs
+            zero layout, at any width. */}
+        <span className="relative inline-flex flex-shrink-0">
+          {pic ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={pic}
+              alt=""
+              className="w-5 h-5 rounded-full object-cover border border-nostr/40"
+              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+            />
+          ) : (
+            <span className="text-nostr">◆</span>
+          )}
+          {signerStale && (
+            <span
+              aria-hidden
+              className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-nostr animate-bolt"
+            />
+          )}
+        </span>
         <span className="hidden sm:inline truncate max-w-[160px] lg:max-w-[280px]">
           {name || shortNpub(identity.npub, 6)}
         </span>
@@ -193,6 +232,20 @@ export function AccountMenu({
           {open ? '▴' : '▾'}
         </span>
       </button>
+
+      {/* The approval wait, where someone who has not opened the menu can read
+          it. Same anchor and same width as the menu itself, so the two never
+          disagree about where this belongs, and `!open` because the menu
+          renders its own copy — one signal, never two boxes.
+
+          It contributes NO layout: the wrapper is absolute, and
+          <BunkerApprovalNotice> renders null unless a wait is live, which
+          leaves a zero-height box nothing can be clicked through. */}
+      {!open && (
+        <div className="absolute right-0 top-full mt-2 w-[min(360px,calc(100vw-2rem))] z-30">
+          <BunkerApprovalNotice />
+        </div>
+      )}
 
       {open && (
         <div
@@ -229,7 +282,7 @@ export function AccountMenu({
               yet". The one that matters here is the "Stop waiting" control,
               which is otherwise only reachable from the boost modal. */}
           <BunkerApprovalNotice className="mb-3" />
-          <BunkerHealthBanner />
+          <BunkerHealthBanner stale={signerStale} />
           <LocalKeyEphemeralBanner />
 
           <MutedAccountsSection />

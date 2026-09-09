@@ -558,8 +558,10 @@ would risk missing the string this exists for; it is that the wait is visible
 and one tap from over: `subscribeBunkerApproval` drives
 `<BunkerApprovalNotice>`, which carries **Stop waiting**
 (`cancelBunkerApprovalWait`). Rendered in the boost modal's `publishing` state,
-where the wait actually bites, and in `<AccountMenu>` so the control exists
-outside that one surface.
+where the wait actually bites, in `<AccountMenu>` so the control exists outside
+that one surface, and — see the next section — anchored under the account button
+while the menu is CLOSED, which is the only one of the three a page-load restore
+can reach.
 
 **No `check:*` can pin the re-issue itself** — `bunker.ts` imports
 `nostr-tools` and touches browser globals. `scripts/e2e-mutes.mjs` scenarios
@@ -570,6 +572,75 @@ asserts one request and a fast failure. Its `signEnabled` flag is off by
 default because scenarios 1-5c were written against a stub that answered
 `sign_event` with "unsupported", and teaching it to sign underneath them would
 be editing the fixture to fit.
+
+### `connect` is a method the signer can queue too, and nobody was watching the one handshake that runs itself
+
+Two halves of one report: *"with Clave, when I release a new build I have to
+reconnect it"*. A new build is a **cold load** of the iOS PWA — nothing else
+about a deploy touches signer state, since `bmb:bunker` is `localStorage` and
+`public/sw.js` caches nothing. So the report is about `restoreBunkerFromStorage`,
+which is the only handshake in this app that **runs unprompted**, with no modal
+in front of it and nobody waiting on a screen.
+
+**First half: the approval wait was on `get_public_key` and not on `connect`.**
+The section above establishes that a queueing signer answers `permission denied`
+immediately and delivers the real result after the tap. That is a property of the
+signer, not of the method — and `connect` is the FIRST method of every session,
+so on such a signer the handshake never reaches the call the wait protects. Both
+`attempt()` bodies (`connectBunkerFromUri` and `restoreBunkerFromStorage`) now
+read `withApprovalWait(() => withTimeout(s.connect(), timeoutMs, …), …)`. This is
+the **same omission this file has made twice**: the handshake's `get_public_key`
+was excluded on the reasoning that the connect paths own their own timeouts, and
+a field report put it back. `connect` was never revisited at that point.
+
+The cost of getting it wrong is worse here than at sign-in, because of what the
+caller does with the failure. `restoreBunkerSigner` maps a throw to
+`'unreachable'` and the banner then says *"No answer from your signer"* — about a
+signer that **did** answer, promptly, asking for a tap. Both halves of the
+sentence the user reads are false.
+
+**Second half: both signer signals lived inside the closed account menu.** The
+approval wait and `<BunkerHealthBanner>` were rendered only in `<AccountMenu>`'s
+open panel, so a restore that queued said nothing for up to 90 s, and one that
+failed said nothing at all. On a cold load the account button is the only thing
+on screen that knows the handshake is happening. This is CLAUDE.md's *"a guard
+that silently withholds must say so"* reached from the signer side, and the
+release that made a failed restore survivable is exactly the one that makes it
+matter: the user is no longer signed out by it, so **nothing else tells them.**
+
+**The two signals get different treatment, and the difference is their shape,
+not their importance.**
+
+| Signal | Rendered as | Why not the other one |
+|---|---|---|
+| Approval wait | The full notice, anchored under the button when the menu is closed | It is transient, it asks for an act in another app, and it carries **Stop waiting** — none of which a dot can say |
+| Staleness | A dot on the account button | It is a state with no natural end. iOS suspends that socket whenever the app is backgrounded, so an undismissable box under the header would be on screen more often than not |
+
+Three things about the markup are load-bearing:
+
+- **The dot is an OVERLAY on the avatar, never its own column.** The header row
+  has no width to give — at 390px the wordmark needs 142px of a 141.6px box —
+  and `--app-header-h` is a hard-coded 71px that `<EpisodeList>` pins a sticky
+  offset against on another route. Absolutely positioned over the avatar it
+  costs zero layout at every width.
+- **It is named in the button's `aria-label`, not a `title`.** A dot has no
+  accessible name, and a hover tooltip does not exist on the phone this path is
+  for.
+- **The anchored notice renders only while the menu is CLOSED**, on the menu's
+  own anchor and width. The open panel already draws it; two boxes saying one
+  thing is how a reader learns to distrust both.
+
+`stale` moved from `<BunkerHealthBanner>`'s own `useState` to a prop, because the
+dot and the banner must not be able to disagree — a dot with no banner behind it
+sends the user hunting through a menu for something that is not there.
+
+**Both signals reach every route that can restore, and that is worth checking
+rather than assuming.** `<AppHeader>` renders on `/`, `/live`, `/favorites` and
+`/playlists` only — but it is not the only thing that mounts `<NostrAuth>`, which
+is what owns the restore effect *and* draws `<AccountMenu>`. `/npub/[npub]`,
+`/live/[npub]`, `/stream/[naddr]` and `/amber-callback` each mount it directly,
+for exactly this reason. `/privacy` is the one page that mounts neither, and it
+runs no restore either, so there is nothing there to report.
 
 ### Never make Amber render something the user did not ask to see
 
