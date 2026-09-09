@@ -588,7 +588,7 @@ function NoteCardImpl({
             </div>
             {/* The same picker the boost modals use, which is why it moved out
                 of `boost-modal/`. A reply is a kind:1 like any other, so it
-                passes its OWN maxLength — 200 is the boostagram's Lightning
+                passes its OWN maxLength — 250 is the boostagram's Lightning
                 budget and has nothing to say about a Nostr reply. */}
             <MessageInput
               value={composerDraft}

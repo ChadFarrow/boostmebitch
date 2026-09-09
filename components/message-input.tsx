@@ -30,21 +30,40 @@ const LIST_GUTTER = 8;
  * modals were this component's only callers first. It is a LIGHTNING limit —
  * the keysend TLV and the LNURL comment both carry the message — so any caller
  * that is not sending sats should pass its own.
+ *
+ * **The binding constraint is the KEYSEND rail, not LNURL, and the obvious
+ * reading has it backwards.** An LNURL leg parks the whole untruncated message
+ * in BoostBox (`buildPayload`, `lib/v4v/boostbox.ts`) and the LUD-21 comment
+ * carries an `rss::payment` URL pointing at that record — so the prose inside
+ * the comment is a SECOND copy, and `buildLnurlComment` clipping it against a
+ * tight `commentAllowed` is not a data loss. A keysend leg has no such record:
+ * TLV 7629169 is the only copy, and it rides in the BOLT 4 onion, whose
+ * 1300-byte hop-payload region is shared by every hop on the route.
+ *
+ * Measured against a realistic boostagram — the fixed fields alone are 646
+ * bytes, because `sender_id` is 64 hex chars and the three guids are 36 each —
+ * 200 characters serialize to 846 bytes and 250 to 896. The extra 50 cost
+ * roughly one hop of routing headroom. That is what puts this at 250 and not at
+ * the 639 BoostBox budgets against, or the 500 a generous `commentAllowed`
+ * would take: those are LNURL numbers and the keysend rail never sees them.
+ *
+ * 250 is also what StableKraft, ITDV-Lightning and TRM-Lightning use. That is
+ * the tie-break between two affordable numbers, not the reason for either.
  */
-const BOOSTAGRAM_MAX = 200;
+const BOOSTAGRAM_MAX = 250;
 
 /**
  * Tallest the box may grow before it starts to scroll.
  *
  * The height is driven by the CONTENT, not by `textareaRows`, because a fixed
- * two-row box showed a 200-character boostagram two lines at a time: the
+ * two-row box showed a 250-character boostagram two lines at a time: the
  * sender could not read back what they were about to pay for. `textareaRows`
  * survives as the MINIMUM — `height: auto` on a textarea resolves to the
  * `rows` height, and `scrollHeight` is never less than that — so an empty box
  * still looks the way each caller asked for.
  *
  * The cap is here rather than left open because `maxLength` is a per-caller
- * number: the boostagram's is 200, and `<NoteCard>`'s reply composer passes
+ * number: the boostagram's is 250, and `<NoteCard>`'s reply composer passes
  * 2000, which uncapped would push its own send button off the screen.
  */
 const MAX_TEXTAREA_H = 240;
@@ -91,7 +110,7 @@ export function MessageInput({
    * The four presentation props, defaulted to what the boost modals had
    * inline, so this file's move out of `boost-modal/` changed nothing for them.
    *
-   * `maxLength` IS NOT COSMETIC and is the reason it is a prop at all. 200 is
+   * `maxLength` IS NOT COSMETIC and is the reason it is a prop at all. 250 is
    * the boostagram's budget — a keysend TLV and an LNURL comment both have to
    * carry it — and it has nothing to say about a Nostr reply, which is a
    * kind:1 like any other. A reply inheriting it would truncate people's
@@ -252,7 +271,7 @@ export function MessageInput({
   /**
    * Attach somebody, and put their NAME in the text — not their npub.
    *
-   * A bech32 npub is 63 characters against this field's 200, and the same
+   * A bech32 npub is 63 characters against this field's 250, and the same
    * string becomes the boostagram TLV message and the LNURL comment, where
    * `buildLnurlComment` truncates it against the recipient's `commentAllowed`
    * with nothing reporting that it did. A `nostr:npub…` clipped mid-string is a
