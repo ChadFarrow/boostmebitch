@@ -47,7 +47,7 @@
 // invent: the double redirect, the `.wav`, the query string that is part of the
 // signature.
 
-import { downloadKey, isDownloadable, roomVerdict } from '../lib/downloads/download-rules.ts';
+import { chaptersRequestUrl, downloadKey, isDownloadable, roomVerdict, transcriptRequestUrl } from '../lib/downloads/download-rules.ts';
 import { isHlsUrl } from '../lib/util.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -74,6 +74,12 @@ function checkKey(label, input, expected, { alsoNaive = false } = {}) {
 function checkDl(label, args, expected, { alsoNaive = false } = {}) {
   compare(label, isDownloadable(...args), expected);
   vectors.push({ label, kind: 'dl', args, alsoNaive });
+}
+
+/** A doc-URL vector. `kind` picks which builder. */
+function checkDoc(label, kind, args, expected, { alsoNaive = false } = {}) {
+  compare(label, (kind === 'chapters' ? chaptersRequestUrl : transcriptRequestUrl)(...args), expected);
+  vectors.push({ label, kind, args, alsoNaive });
 }
 
 /** A roomVerdict vector. */
@@ -275,6 +281,38 @@ section('...and leaves headroom, because a full origin breaks more than download
 }
 
 // ---------------------------------------------------------------------------
+section('The document request URLs are built ONCE, because the key IS the string');
+// ---------------------------------------------------------------------------
+{
+  // `useChapters` builds this URL to FETCH and the download builds it to CACHE,
+  // and the cache is keyed by the URL — so the two agreeing character for
+  // character is the whole feature. A copy on each side is the shape that broke
+  // StableKraft's downloads: its proxy-first and direct-first domain lists were
+  // hand-mirrored and drifted to 16 entries against 14, and the symptom was
+  // "streams fine, won't download". Here the symptom would be quieter still —
+  // every download silently re-fetching its chapters.
+  const DOC = 'https://feed.homegrownhits.xyz/assets/chapters/149.json';
+  checkDoc('a chapters document', 'chapters', [DOC], `/api/chapters?url=${encodeURIComponent(DOC)}`);
+  checkDoc('no chapters url', 'chapters', [undefined], null);
+  checkDoc('an empty chapters url', 'chapters', [''], null);
+
+  const T = 'https://feed.homegrownhits.xyz/assets/transcripts/149.srt';
+  // The TYPE is part of the request, so it is part of the key. Dropping it here
+  // would write one cache entry and read another.
+  checkDoc('a transcript with a type', 'transcript', [T, 'application/x-subrip'],
+    `/api/transcript?url=${encodeURIComponent(T)}&type=${encodeURIComponent('application/x-subrip')}`);
+  checkDoc('a transcript with no type', 'transcript', [T], `/api/transcript?url=${encodeURIComponent(T)}`);
+  checkDoc('no transcript url', 'transcript', [undefined], null);
+
+  // A real document URL carries its own query string, and appending to it
+  // rather than encoding it would change the UPSTREAM request instead of ours —
+  // the same trap `artProxyUrl` documents.
+  const Q = 'https://ex.com/ch.json?token=a&b=c';
+  checkDoc('a document url with its own query string is encoded whole', 'chapters', [Q],
+    `/api/chapters?url=${encodeURIComponent(Q)}`);
+}
+
+// ---------------------------------------------------------------------------
 section("The HLS refusal AGREES with lib/util.ts, which is the app's one answer");
 // ---------------------------------------------------------------------------
 {
@@ -325,6 +363,12 @@ section('Every vector above is replayed against the obvious wrong version');
   const naiveRoom = (est, bytes) =>
     est && est.quota && est.usage + bytes <= est.quota ? 'yes' : 'no';
 
+  // What someone writes inline at one of the two call sites: concatenate, don't
+  // encode, and don't handle an absent URL. It differs on the query-string case
+  // and returns the string "undefined" for a missing document.
+  const naiveDoc = (url, type) =>
+    type ? `/api/transcript?url=${url}&type=${type}` : `/api/chapters?url=${url}`;
+
   const call = (impl, v) => {
     try {
       const real = impl === 'real';
@@ -332,6 +376,8 @@ section('Every vector above is replayed against the obvious wrong version');
         case 'key': return JSON.stringify(real ? downloadKey(...v.args) : naiveKey(...v.args));
         case 'dl': return JSON.stringify(real ? isDownloadable(...v.args) : naiveDl(...v.args));
         case 'room': return JSON.stringify(real ? roomVerdict(...v.args) : naiveRoom(...v.args));
+        case 'chapters': return JSON.stringify(real ? chaptersRequestUrl(...v.args) : naiveDoc(...v.args));
+        case 'transcript': return JSON.stringify(real ? transcriptRequestUrl(...v.args) : naiveDoc(...v.args));
         case 'idem': {
           // The property, not the value: does re-deriving change the answer?
           const f = real ? downloadKey : naiveKey;

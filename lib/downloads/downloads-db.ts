@@ -69,10 +69,23 @@ export interface DownloadRecord {
   value?: ValueBlock | null;
   valueTimeSplits?: ValueTimeSplit[];
 
-  // --- phase 5, and small enough to sit in the record ------------------------
-  chaptersJson?: string;
-  transcriptText?: string;
+  // The document URLs, so an episode rebuilt from this record asks for the same
+  // things the original did — which is what makes the cached copies below hit.
+  chaptersUrl?: string;
+  transcriptUrl?: string;
   transcriptType?: string;
+
+  /**
+   * The app's OWN request URLs whose responses were cached alongside the audio
+   * — `/api/chapters?url=…`, `/api/transcript?url=…`.
+   *
+   * Stored as keys rather than as parsed content because that is what lets the
+   * loaders stay ignorant of downloads: `useChapters` and `useTranscript` take a
+   * URL, not an episode, so they can ask the cache for the exact request they
+   * were about to make. Putting the parsed documents in this record instead
+   * would mean handing both hooks an episode they have no other use for.
+   */
+  docKeys?: string[];
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -176,6 +189,9 @@ export function dbRowToEpisode(r: DownloadRecord): Episode {
     podcastGuid: r.feedGuid,
     value: r.value,
     valueTimeSplits: r.valueTimeSplits,
+    chaptersUrl: r.chaptersUrl,
+    transcriptUrl: r.transcriptUrl,
+    transcriptType: r.transcriptType,
   };
 }
 

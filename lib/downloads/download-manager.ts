@@ -1,6 +1,6 @@
 import { artCandidates } from '../util';
 import type { Episode, Podcast } from '../types';
-import { downloadKey, isDownloadable } from './download-rules';
+import { chaptersRequestUrl, downloadKey, isDownloadable, transcriptRequestUrl } from './download-rules';
 import * as cache from './downloads-cache';
 import * as db from './downloads-db';
 import type { DownloadRecord } from './downloads-db';
@@ -50,7 +50,10 @@ export interface DownloadsBackend {
   getObjectUrl: typeof cache.getObjectUrl;
   clearAllBytes: typeof cache.clearAllBytes;
   downloadImage: typeof cache.downloadImage;
+  getImageObjectUrl: typeof cache.getImageObjectUrl;
   deleteImage: typeof cache.deleteImage;
+  cacheDoc: typeof cache.cacheDoc;
+  deleteDocs: typeof cache.deleteDocs;
   requestPersistence: typeof cache.requestPersistence;
   putRecord: typeof db.putRecord;
   getAllRecords: typeof db.getAllRecords;
@@ -64,7 +67,10 @@ const realBackend: DownloadsBackend = {
   getObjectUrl: cache.getObjectUrl,
   clearAllBytes: cache.clearAllBytes,
   downloadImage: cache.downloadImage,
+  getImageObjectUrl: cache.getImageObjectUrl,
   deleteImage: cache.deleteImage,
+  cacheDoc: cache.cacheDoc,
+  deleteDocs: cache.deleteDocs,
   requestPersistence: cache.requestPersistence,
   putRecord: db.putRecord,
   getAllRecords: db.getAllRecords,
@@ -167,6 +173,17 @@ export class DownloadManager {
     return [...this.records.values()].sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /**
+   * A blob URL for a download's stored cover, or `null`.
+   *
+   * **The caller owns revoking it**, same as `objectUrlFor`. Used by
+   * `/downloads`, which is the one surface that has to render art with no
+   * network — every other cover in the app goes through `/api/art`.
+   */
+  async coverUrlFor(key: string): Promise<string | null> {
+    return this.backend.getImageObjectUrl(key);
+  }
+
   /** What is actually stored for this key, or `null` if nothing is. */
   recordSize(key: string): number | null {
     return this.records.get(key)?.sizeBytes ?? null;
@@ -249,11 +266,31 @@ export class DownloadManager {
       enclosureLength: episode.enclosureLength,
       value: episode.value,
       valueTimeSplits: episode.valueTimeSplits,
+      chaptersUrl: episode.chaptersUrl,
+      transcriptUrl: episode.transcriptUrl,
+      transcriptType: episode.transcriptType,
     };
 
     await this.backend.putRecord(record);
     this.remember(record);
     this.setState(key, null);
+
+    // Chapters, the transcript and the cover are EXTRAS: each is fetched after
+    // the audio is already stored and the record already written, so a failure
+    // here cannot turn a successful download into a failed one. They are also
+    // small — kilobytes against a hundred-odd megabytes — which is why they are
+    // taken unconditionally rather than behind a setting.
+    const docs = await Promise.all(
+      [chaptersRequestUrl(episode.chaptersUrl), transcriptRequestUrl(episode.transcriptUrl, episode.transcriptType)]
+        .filter((u): u is string => !!u)
+        .map((u) => this.backend.cacheDoc(u)),
+    );
+    const docKeys = docs.filter((u): u is string => !!u);
+    if (docKeys.length) {
+      record.docKeys = docKeys;
+      await this.backend.putRecord(record).catch(() => {});
+      this.remember(record);
+    }
 
     // Art is a nicety and never blocks the download reporting success.
     //
@@ -262,9 +299,13 @@ export class DownloadManager {
     // blob URL — it would store bytes that read back empty. `artCandidates`
     // puts the proxied URLs first and the raw ones behind them, so the raw tail
     // is skipped here rather than cached uselessly.
+    // EVERY proxied candidate, in order, not just the first. `artCandidates`
+    // puts the proxied URLs ahead of the raw ones; the raw tail is dropped here
+    // because a cross-origin image fetch is opaque and would store bytes that
+    // read back empty.
     const proxied = artCandidates(record.image, record.feedImage, 640)
-      .find((u) => u.startsWith('/api/art'));
-    if (proxied) void this.backend.downloadImage(key, proxied);
+      .filter((u) => u.startsWith('/api/art'));
+    if (proxied.length) void this.backend.downloadImage(key, proxied);
 
     // Asked once, lazily, after something is actually worth persisting.
     if (!this.persistenceAsked) {
@@ -279,12 +320,19 @@ export class DownloadManager {
 
   async remove(key: string): Promise<void> {
     this.controllers.get(key)?.abort();
+    // Read BEFORE forgetting — `forget` is what drops the record holding them.
+    const docKeys = this.records.get(key)?.docKeys ?? [];
     this.forget(key);
     this.setState(key, null);
     await Promise.all([
       this.backend.deleteRecord(key).catch(() => {}),
       this.backend.deleteBytes(key).catch(() => {}),
       this.backend.deleteImage(key).catch(() => {}),
+      // Not ref-counted. Two episodes sharing a chapters URL is not a thing
+      // feeds do, and the cost of being wrong is one re-fetch of a few
+      // kilobytes — where ref-counting would be a second bookkeeping structure
+      // to keep in step with the first.
+      this.backend.deleteDocs(docKeys).catch(() => {}),
     ]);
     this.bump();
   }

@@ -55,6 +55,32 @@ export interface StorageEstimateLike {
 }
 
 /**
+ * The request URL for an episode's chapters document.
+ *
+ * A BUILDER RATHER THAN TWO STRING LITERALS, and that is the whole reason it is
+ * here. `useChapters` builds this URL to fetch, and the download builds it to
+ * cache; the cache is keyed by the URL, so the two agreeing character for
+ * character IS the feature. StableKraft's equivalent pair — the proxy-first and
+ * direct-first domain lists — was hand-mirrored and drifted to 16 entries
+ * against 14, and the symptom was "streams fine, won't download".
+ *
+ * Returns `null` when there is no document to ask for.
+ */
+export function chaptersRequestUrl(url: string | undefined | null): string | null {
+  if (!url) return null;
+  return `/api/chapters?url=${encodeURIComponent(url)}`;
+}
+
+/** The same, for a transcript. `type` is part of the key because it is part of the request. */
+export function transcriptRequestUrl(
+  url: string | undefined | null,
+  type?: string | null,
+): string | null {
+  if (!url) return null;
+  return `/api/transcript?url=${encodeURIComponent(url)}${type ? `&type=${encodeURIComponent(type)}` : ''}`;
+}
+
+/**
  * The canonical key for an enclosure: the Cache API key the bytes are stored
  * under, and the key playback re-derives when it goes looking for them.
  *

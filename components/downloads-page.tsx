@@ -48,6 +48,42 @@ export function DownloadsPage() {
 
   const [confirmClear, setConfirmClear] = useState(false);
 
+  /**
+   * Covers rendered from the bytes stored with each download.
+   *
+   * `/downloads` is the ONE surface that has to paint art with no network —
+   * everywhere else a cover goes through `/api/art`, which is a request. The
+   * blob URLs are revoked when the set changes and on unmount; a leaked one pins
+   * its image for the life of the document.
+   *
+   * A miss just leaves `<PodcastCover>` to its normal ladder, which is right:
+   * with a connection it fetches, and without one it falls through to the
+   * generated placeholder rather than a broken image.
+   */
+  const [covers, setCovers] = useState<Record<string, string>>({});
+  const keys = rows.map((r) => r.key).join('\u0000');
+  useEffect(() => {
+    let cancelled = false;
+    const made: string[] = [];
+    void Promise.all(
+      keys.split('\u0000').filter(Boolean).map(async (k) => {
+        const url = await downloadManager.coverUrlFor(k);
+        if (url) made.push(url);
+        return [k, url] as const;
+      }),
+    ).then((pairs) => {
+      if (cancelled) {
+        made.forEach((u) => URL.revokeObjectURL(u));
+        return;
+      }
+      setCovers(Object.fromEntries(pairs.filter((p): p is readonly [string, string] => !!p[1])));
+    });
+    return () => {
+      cancelled = true;
+      made.forEach((u) => URL.revokeObjectURL(u));
+    };
+  }, [keys]);
+
   function openShow(r: DownloadRecord) {
     selectPodcast(dbRowToPodcast(r));
     // AFTER selectPodcast — that action clears `showOrigin`, so setting it first
@@ -121,7 +157,22 @@ export function DownloadsPage() {
               >
                 {/* Both sources, always — PI's `image` and `artwork` often
                     disagree and <PodcastCover>'s onError ladder needs the pair. */}
-                <PodcastCover image={r.image} artwork={r.feedImage} title={r.title} seed={r.key} className="w-12 h-12 flex-shrink-0" w={160} />
+                {/* THE STORED COVER IS PASSED ALONE, with no `artwork` beside
+                    it. `artCandidates` puts every PROXIED url ahead of every raw
+                    one, and a `blob:` is not proxyable — so passing both would
+                    order the network copy of the artwork FIRST and leave the
+                    local bytes as its fallback, which is backwards on the one
+                    surface that has to paint with no connection. With no
+                    download the normal pair is passed and the normal ladder
+                    applies. */}
+                <PodcastCover
+                  image={covers[r.key] ?? r.image}
+                  artwork={covers[r.key] ? undefined : r.feedImage}
+                  title={r.title}
+                  seed={r.key}
+                  className="w-12 h-12 flex-shrink-0"
+                  w={160}
+                />
                 <span className="min-w-0">
                   <span className="block truncate text-sm">{r.title}</span>
                   <span className="block truncate font-mono text-[11px] text-muted">
