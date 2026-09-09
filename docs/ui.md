@@ -457,6 +457,26 @@ max-w-[min(28rem,max(11rem,calc(100dvh - env(safe-area-inset-top) - env(safe-are
 - **`max(11rem, …)` is a floor.** On a screen short enough that nothing fits, a vanishing cover helps no one.
 - **It binds only where it must.** With no insets at 390×844 the cover is unchanged at 350px; the cap only comes below the pane's own width on a notched phone, and from `sm:` up `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the info column, so height is not the constraint there.
 
+**The first reserve was measured on the wrong surface, and an ordinary episode still did not fit.** 28rem cleared the tile row on a live item by 10px and left **46px of it under the fold on a normal episode** at 393×852. The two are not the 4px apart the first pass recorded: `isLive` replaces the seek bar, its times row *and* the active-chapter label with one `● LIVE` stamp, which is **52px** on a show that publishes chapters. **Measure the episode.** It is the taller of the two, it is what a listener opens, and it is what was reported.
+
+**Below `sm:`, padding and gaps are the cover's size — not whitespace.** The cover is capped by what is left under it, so a pixel taken out of either pane's padding or out of the cluster's `gap` is a pixel the cover gets back. Three are phone-only now, worth **42px** together: the media pane's `p-4` → `px-4 pt-2 pb-2`, the info pane's → `px-4 pt-2 pb-4`, and the cluster's `gap-5` → `gap-3.5`. The boundary between the panes was the worst of them — a `p-4` bottom met a `p-4` top and read as one 32px gap between the art and the title. Without those 42px the reserve would be 32.5rem and the cover 42px smaller again. **All three restore at `sm:`**, where the panes sit side by side with their own heights and the cover competes with nothing.
+
+Measured at a 30rem reserve, clearance under the tile row, ordinary episode / live item:
+
+| Viewport | Cover | Episode | Live item |
+| --- | --- | --- | --- |
+| 375×667 | 176px (floor) | −60 | −4 |
+| 390×844 | 271px | +22 | +78 |
+| 393×852 | 279px | +22 | +78 |
+| 402×874 | 301px | +22 | +78 |
+| 430×932 | 359px | +52 | +78 |
+
+**A fitting cover is smaller than the one that was cutting the row, and that is the trade.** 28rem drew a 311px cover at 393×852 with the row 46px under the fold; 30rem draws 279px with 22px to spare. The 42px above is what keeps it from being 237px.
+
+**`Emulation.setSafeAreaInsetsOverride({ insets: { top: 59, bottom: 34 } })` is the whole test.** Without it every viewport here reads as fitting. A CSS override of the overlay's padding stands the insets up too, but it does not reach `env()` inside the `calc()` — so the cover comes out at its uncapped width and the run quietly measures nothing.
+
+**A Podcasting 2.0 live item is this layout, and a Nostr live stream is not.** `liveStreamId` renders the video + `<LiveChat>` pane, whose `flex-1 min-h-0` chat gives up its own height first; it never overflowed at 375×667 or 393×852. To drive a live item when no show is on air, intercept `/api/feed` with CDP `Fetch` and set `liveStatus` on its episodes — one field of one response, everything downstream shipping code.
+
 ### Auto-advance: which feeds, and which rows (#279)
 
 **A track ending is the one moment the app chooses what to play with nobody watching, and both halves of that choice shipped wrong.**
