@@ -432,6 +432,31 @@ Two surfaces share one `<audio>` and the store's playback state: the always-moun
 
 - **Transport controls are shared.** `<TransportControls size="sm"|"lg">` renders ⏮ / play-pause / ⏭ as a **fragment** (drops into each parent's flex row) and owns the queue math: `idx = episodeQueue.findIndex(...)`, then `nextPlayableIndex` in each direction. Backed by `playPrev`/`playNext` (mirror images — walk `episodeQueue`, reset `positionSec`) and `togglePlay`. Don't re-inline these buttons.
 
+### The cover is capped by the height left under it, not by the pane's width
+
+The fullscreen player's mobile column is one scrolling flex column: a `flex-shrink-0` media pane, then the title, transport, BOOST and the five-tile action row. The cover is `w-full … aspect-square`, so its height is its width, and its width is the phone's — **it has no relationship whatever to the space left underneath it.** The tile row is the last thing in that block, so it is what falls off the bottom.
+
+**The 93px you cannot see.** The installed app is `viewportFit: 'cover'`, so `100dvh` spans the safe areas and the overlay pads them back off — 59px at the top and 34px at the bottom on a notched iPhone. A desktop browser spends neither, and neither does Chrome under `Emulation.setDeviceMetricsOverride` alone. The layout therefore looks correct in every place you would normally check it. Measured with `Emulation.setSafeAreaInsetsOverride({ top: 59, bottom: 34 })`, which is the only way to see it:
+
+| Viewport | Cover | Tile row bottom | Visible bottom | Result |
+| --- | --- | --- | --- | --- |
+| 390×844 | 350px | 847 | 810 | 37px cut |
+| 402×874 | 362px | 859 | 840 | 19px cut |
+| 430×932 | 390px | 887 | 898 | fits |
+
+Only the WORD line of each tile (`SHOW`, `EPISODE`, `STREAM`) was cut, which is the worst version of it: the row still reads as a row, so it looks like a broken layout rather than like something below the fold. The row does scroll — 940px of content in a 692px box — so nothing was unreachable; it just sat on the edge.
+
+**The cap is on the WIDTH, and that is not a workaround.** The box is `aspect-square`, so a `max-h` would leave `w-full` holding the width and break the square — and the square is what keeps the rows below from moving when the art changes shape mid-episode (chapter art, a live block's cover, a `valueTimeSplit`'s track). The video stage directly above already caps its width against `100dvh` for the same reason. So:
+
+```
+max-w-[min(28rem,max(11rem,calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 28rem)))]
+```
+
+- **The 28rem reserve is measured, not estimated**: the player's own header (59px), the pane's `p-4` top (16px), and 367px of title, `● LIVE` stamp or seek bar, transport, BOOST and the tile row. A live item and an ordinary episode differ by 4px. Rounded UP, so the tiles clear the edge rather than sit on it.
+- **`min(28rem, …)` because 28rem is also the `max-w-md` it replaces.** Two `max-w-*` classes on one element resolve by stylesheet order, not by which is smaller — writing both would have been a coin flip.
+- **`max(11rem, …)` is a floor.** On a screen short enough that nothing fits, a vanishing cover helps no one.
+- **It binds only where it must.** With no insets at 390×844 the cover is unchanged at 350px; the cap only comes below the pane's own width on a notched phone, and from `sm:` up `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the info column, so height is not the constraint there.
+
 ### Auto-advance: which feeds, and which rows (#279)
 
 **A track ending is the one moment the app chooses what to play with nobody watching, and both halves of that choice shipped wrong.**

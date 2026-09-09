@@ -587,7 +587,41 @@ export function FullscreenPlayer({
               </div>
             </div>
           ) : (
-            <div className="w-full max-w-md sm:max-w-lg lg:max-w-xl aspect-square">
+            // THE WIDTH CAP IS BOUNDED BY THE AVAILABLE HEIGHT below sm:,
+            // exactly as the video stage above is and for the same reason: the
+            // box is `aspect-square`, so its height derives from its width. A
+            // `max-h` would leave `w-full` holding the width and break the
+            // square, and the square is what keeps everything below from
+            // moving when the art changes shape mid-episode.
+            //
+            // WHY IT NEEDS ONE AT ALL. This pane is `flex-shrink-0`, so a
+            // full-width square has no relationship to the space left under
+            // it, and the action tiles — ♡ SHOW / ♡ EPISODE / SHARE / SHARE /
+            // ≋ STREAM — fell off the bottom of the screen. The installed app
+            // is `viewport-fit: cover`, so `100dvh` spans the safe areas and
+            // the overlay pads them back off; that is 93px on a notched
+            // iPhone (59 top, 34 bottom) which a desktop browser never
+            // spends, so this is invisible unless you emulate the insets.
+            // Measured under CDP with them: at 390x844 the tile row's bottom
+            // landed at 847 against a visible bottom of 810, and at 402x874 at
+            // 859 against 840. Only the WORD line of each tile was cut, which
+            // reads as a broken layout rather than as something to scroll to.
+            //
+            // 28rem is what the screen spends around the art below sm:: the
+            // player's own header (59px), this pane's `p-4` top (16px), and
+            // the 367px of title, ● LIVE stamp or seek bar, transport, BOOST
+            // and the tile row beneath it — measured on a live item and on an
+            // ordinary episode, which differ by 4px. Rounded UP, so the tiles
+            // clear the edge instead of sitting on it.
+            //
+            // `min(28rem,…)` because 28rem is also the `max-w-md` this
+            // replaces, and two `max-w-*` classes on one element resolve by
+            // stylesheet order rather than by which is smaller. `max(11rem,…)`
+            // is a floor for a short screen, where nothing makes everything
+            // fit and a vanishing cover helps no one. From sm: up
+            // `sm:max-w-lg` takes over — that pane is `sm:h-full` beside the
+            // info column, so its height is not the constraint.
+            <div className="w-full max-w-[min(28rem,max(11rem,calc(100dvh_-_env(safe-area-inset-top)_-_env(safe-area-inset-bottom)_-_28rem)))] sm:max-w-lg lg:max-w-xl aspect-square">
               {/* Whatever is playing at this second, via `nowPlayingArt`: the
                   LIVE BLOCK's art first — on a Split Kit show that's the cover
                   of the record actually playing, and it's the one thing on
