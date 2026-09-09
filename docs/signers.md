@@ -130,6 +130,66 @@ rests on the exact `2.19.4` pin above. If that ever moves, re-read `nip46.js` by
 hand: a version that wraps `o.error` in an `Error` reverts this silently rather
 than breaking loudly.
 
+### A failed RESTORE is not a sign-out — and the sign-out took the wallet with it
+
+Reported after an iOS PWA relaunch, in two halves that sounded like two bugs:
+*"I was logged out of Nostr and the wallet disconnected."* They are one cause.
+
+`abandonRestoredSession` (`components/nostr-auth/index.tsx`) is the only thing
+the page-load restore could reach on failure, and it clears `bmb:npub`,
+`bmb:signer`, the NWC URI, the Spark connection **and** `storage.bunker`. That
+last one is the part with no way back. `<BunkerHealthBanner>`'s Reconnect button
+calls `restoreBunkerSigner()`, which reads the pointer that was just deleted —
+so the recovery path the app already ships was dead by the time the user could
+press it, and the only route back was pairing Clave from scratch. Worse,
+`clearBunkerSigner()` runs there without `revoke` (correctly — see below), so the
+signer keeps its half of the pairing. **Clave caps a user at five connections.**
+Every dropped WebSocket burned one.
+
+The bug was that `restoreBunkerSigner` returned a `boolean`, and `false` meant
+two incompatible things:
+
+| What happened | Right answer |
+| --- | --- |
+| Nothing persisted, or the pointer does not parse | Sign out. The session is not recoverable. |
+| The pointer is intact and the signer did not answer | Keep everything. Say so. Offer the retry. |
+
+For a remote signer on a phone the second is the **ordinary** case, not an
+error: Clave, Amber-as-bunker and nsec.app's mobile mode all lose their relay
+socket when the OS suspends them, and `BUNKER_CONNECT_TIMEOUT_MS` is 90 s of
+waiting before the app concludes anything. A network drop during a PWA relaunch
+is enough. `restoreBunkerSigner` now returns `BunkerRestoreResult` — `'ok'`,
+`'no-session'` or `'unreachable'` — and only `'no-session'` may sign the user out.
+
+**The discriminator is `restoreBunkerFromStorage`'s own two exits**, and it is
+safe to lean on for a reason worth writing down: it returns `null` for the
+storage fact and THROWS for the transport one, and a stored pointer is always
+`bunker://` (`bunkerUriForRestore` converts a `nostrconnect://` one before
+persisting). nostr-tools' `parseBunkerInput` matches that form with
+`BUNKER_REGEX` and returns without a network call — only a NIP-05 input reaches
+`queryBunkerProfile`. So an offline device **cannot** manufacture a
+`'no-session'`, which is the property the whole split rests on. A future change
+that persists a NIP-05 pointer breaks it silently.
+
+`markBunkerStale()` is called inside `restoreBunkerSigner`, not at the call site,
+so the page-load restore and the account menu's button cannot drift. That flag is
+what renders the banner, and the banner is load-bearing rather than a courtesy:
+`abandonRestoredSession`'s own header says it exists because *"the user looks
+signed in while window.nostr is undefined, and the next thing that signs dies
+with a generic error."* That objection is correct. Keeping the session without
+the banner would trade a brutal failure for a silent one — CLAUDE.md's rule that
+a guard which withholds must say so. The banner names the state and offers the
+retry, and its two error strings are now different because the two failures need
+different acts from the user: `'unreachable'` says open your signer and try
+again, `'no-session'` says sign out and back in. Telling the first user to sign
+out costs them a pairing for nothing.
+
+This is the same rule `clearBunkerSigner` already stated one function away —
+*"A FAILED RESTORE is the opposite case: the socket was suspended or a relay did
+not answer, the user asked for nothing"* — applied for the pairing and not for
+the session or the wallet. **No `check:*` pins it**, for the same reason as the
+section above: `bunker.ts` will not load under `node --experimental-strip-types`.
+
 ### A pairing the page loses is one the signer thinks succeeded
 
 Reported from an iPhone on Brave, and it is the failure that matters most

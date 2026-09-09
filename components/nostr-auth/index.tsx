@@ -440,10 +440,29 @@ export function NostrAuth() {
     } else if (signerKindStored === 'bunker') {
       // Bunker reconnect is async (NIP-46 transport handshake). Kick it off
       // in the background; signing operations that race ahead of it will
-      // throw, but nothing signs unprompted right after page load. If the
-      // reconnect fails, fall all the way back to signed out.
-      restoreBunkerSigner().then((ok) => {
-        if (!ok) abandonIfNotSuperseded();
+      // throw, but nothing signs unprompted right after page load.
+      //
+      // ONLY `no-session` may sign the user out, and the split is the whole
+      // point of `BunkerRestoreResult`. A remote signer on a phone — Clave,
+      // Amber-as-bunker, nsec.app's mobile mode — loses its relay socket
+      // whenever the OS suspends it, so a failed reconnect is the ORDINARY
+      // case, not evidence the pairing is gone. Treating it as the same fact
+      // as "nothing was ever stored" ran abandonRestoredSession(), which signs
+      // out, clears the NWC URI and deletes `storage.bunker` — so the user
+      // came back to the app signed out, with their wallet disconnected, and
+      // with the Reconnect button unable to help because the pointer it needs
+      // had just been thrown away. Reported after an iOS PWA relaunch: two
+      // symptoms, one cause.
+      //
+      // `unreachable` therefore keeps the identity, the wallet and the
+      // pointer. restoreBunkerSigner has already marked the transport stale,
+      // which is what renders <BunkerHealthBanner> — so the session that is
+      // now missing its signer SAYS SO on screen and offers the retry, rather
+      // than looking signed in and failing at the next thing that signs. That
+      // banner is the answer to the state abandonRestoredSession was written
+      // against; without it this change would just hide the fault.
+      restoreBunkerSigner().then((r) => {
+        if (r === 'no-session') abandonIfNotSuperseded();
       }).catch(abandonIfNotSuperseded);
     } else if (signerKindStored === 'local') {
       // Async like the bunker path, not synchronous like Amber: the key has to

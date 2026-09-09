@@ -42,11 +42,23 @@ function BunkerHealthBanner() {
 
   if (!stale) return null;
 
+  // The two failures need different words, because they need different acts
+  // from the user. `unreachable` means the pointer is intact and the signer did
+  // not answer — waking the signer app and pressing this again is the fix, and
+  // telling that user to sign out is advice that costs them a Clave pairing for
+  // nothing. `no-session` means the pointer is gone, and only a fresh sign-in
+  // brings it back. The banner is now reachable on page load (see the restore
+  // effect in ./index.tsx), so this is the first release where a user reads
+  // these sentences with a suspended socket rather than a dead one.
   async function reconnect() {
     setBusy(true); setErr(null);
     try {
-      const ok = await restoreBunkerSigner();
-      if (!ok) setErr('Reconnect failed. Try signing out and back in.');
+      const r = await restoreBunkerSigner();
+      if (r === 'unreachable') {
+        setErr('No answer from your signer. Open it, then try again.');
+      } else if (r === 'no-session') {
+        setErr('Reconnect failed. Try signing out and back in.');
+      }
     } catch (e) {
       setErr(getErrorMessage(e, 'reconnect failed'));
     } finally {
