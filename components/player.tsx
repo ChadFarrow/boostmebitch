@@ -11,7 +11,7 @@ import { useApp } from '@/lib/store';
 import { useMediaSession } from './player/use-media-session';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
-import { hasValueRecipients, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playsAsTracks, togglePip } from '@/lib/util';
+import { artGateOpen, hasValueRecipients, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
@@ -242,6 +242,12 @@ export function Player() {
    * Sampled from the existing 1 Hz `timeupdate` tick and written only on a
    * crossing, so it costs no extra renders.
    *
+   * **Every input to it is a MEASUREMENT, and no event is taken as evidence on
+   * its own.** `waiting`/`stalled` are wired here because they are the only
+   * signals a wedged element still emits, but they arrive on healthy elements
+   * too, and reading either as "we are starved" is what made this flicker on
+   * iOS — see `noteStarvation`.
+   *
    * **Closing it is cheap and reopening it is not, so every way back has to be
    * wired or the gate is one-way.** It shipped sampled from `timeupdate` alone,
    * which fires only while audio is advancing — so a `waiting`/`stalled` (which
@@ -254,24 +260,55 @@ export function Player() {
    * playing — see `artUsable` below.
    */
   const [artOk, setArtOk] = useState(true);
+  /** Seconds of item left. Non-finite — Infinity on a live stream, NaN before
+   *  metadata arrives — means "no end in sight"; `artGateOpen` handles both. */
+  function timeLeftOf(el: HTMLMediaElement): number {
+    return Number.isFinite(el.duration) ? Math.max(0, el.duration - el.currentTime) : Infinity;
+  }
   function sampleHeadroom(el: HTMLMediaElement) {
-    const b = el.buffered;
     // No ranges yet (fresh source / mid-seek) says nothing either way — leave
-    // the gate where it is rather than flapping it shut on every seek.
-    if (!b.length) return;
-    const ahead = b.end(b.length - 1) - el.currentTime;
-    // Measure against what's LEFT, never a bare 20 s. In the tail of a file
-    // there is less audio remaining than the threshold asks for, so a fixed
-    // number is unreachable however complete the download is — and a fully
-    // buffered element has nothing left to starve. Without this the gate is
-    // permanently shut for the last 20 s of every episode, which on a music
-    // show is precisely where the closing song's art lives. A non-finite
-    // `duration` — Infinity on a live stream, NaN before metadata arrives —
-    // means "no end in sight", so the plain thresholds apply; taking the
-    // subtraction anyway would put NaN on both sides of the comparison and shut
-    // the gate for good.
-    const left = Number.isFinite(el.duration) ? Math.max(0, el.duration - el.currentTime) : Infinity;
-    setArtOk((prev) => (prev ? ahead >= Math.min(5, left) : ahead >= Math.min(20, left)));
+    // the gate where it is rather than flapping it shut on every seek. The
+    // EVENT path below deliberately does not take this exit: an element that
+    // reports no buffered audio while it is trying to play is starved, and that
+    // is the one thing this gate exists to answer.
+    if (!el.buffered.length) return;
+    setArtOk((prev) => artGateOpen(prev, playableAhead(el.buffered, el.currentTime), timeLeftOf(el)));
+  }
+  /**
+   * A `waiting` or `stalled` arrived — MEASURE the buffer, never assume it.
+   * Returns whether the element is genuinely out of audio.
+   *
+   * **`stalled` is a claim about the FETCH, and this code used to read it as a
+   * claim about the BUFFER.** The spec fires it when no media data has arrived
+   * for three seconds, whatever the element holds; AVFoundation pulls a huge
+   * chunk and then goes quiet, so WebKit raises it on a perfectly healthy
+   * element. Measured in Safari on 2026-09-09 against Bowl After Bowl 456:
+   * `stalled` twice inside eleven seconds, `readyState` 4, **2,001 seconds of
+   * audio buffered ahead of the play head**, sound never interrupted. Both
+   * handlers slammed the gate shut on that, which dropped the fullscreen cover
+   * from the chapter art to the episode art and back, minutes apart, on the
+   * iPhone only — Chromium never fires it here.
+   *
+   * Measuring keeps the reason the events are wired at all. `sampleHeadroom`
+   * rides on `timeupdate`, which a wedged element stops firing, so these two
+   * are the only signals still arriving once playback has run dry — and a
+   * wedged element has no playable audio in front of the play head, so the gate
+   * still shuts, still cancels the in-flight chapter image, and the yielding
+   * behaviour docs/ui.md measured is unchanged.
+   *
+   * The buffering line and the "press play to retry" resume path hang off the
+   * same claim, so they move with it: saying "buffering" over sound that is
+   * running is the same error on a second surface.
+   */
+  function noteStarvation(el: HTMLMediaElement): boolean {
+    const ahead = playableAhead(el.buffered, el.currentTime);
+    setArtOk((prev) => artGateOpen(prev, ahead, timeLeftOf(el)));
+    // `null` is "the play head is not where the buffer is" and 0 is "the buffer
+    // ran out under it". Either way there is nothing left to play from here,
+    // which is what every consumer of this flag means by starved.
+    const starved = ahead === null || ahead <= 0;
+    if (starved) setStalled(true);
+    return starved;
   }
   // Created lazily on the client only — createHtmlPortalNode() touches
   // document, which would crash Next's server render. Player renders null until
@@ -920,8 +957,8 @@ export function Player() {
             // a reconnect that is actually armed has a sentence parked in
             // `reconnectMsg`, so a normal buffer dip still says nothing about
             // the stream being unreachable.
-            onWaiting={() => { setStalled(true); setArtOk(false); noteLiveGap(); }}
-            onStalled={() => { setStalled(true); setArtOk(false); noteLiveGap(); }}
+            onWaiting={(e) => { if (noteStarvation(e.currentTarget)) noteLiveGap(); }}
+            onStalled={(e) => { if (noteStarvation(e.currentTarget)) noteLiveGap(); }}
             onProgress={(e) => sampleHeadroom(e.currentTarget)}
             onPlaying={(e) => { setStalled(false); sampleHeadroom(e.currentTarget); }}
             onError={(e) => onMediaError(e.currentTarget.error?.code)}
@@ -1000,14 +1037,16 @@ export function Player() {
           // pauses anything — they only make the starved state SAYABLE, and arm
           // the resume path so pressing play re-sources instead of doing nothing.
           // `playing` is the all-clear, which is why recovery needs no timer.
-          // These also SLAM THE ART GATE SHUT, and that is not belt-and-braces:
-          // `sampleHeadroom` rides on `timeupdate`, which a wedged element stops
-          // firing — so a gate that only closed from there would stay open in
-          // precisely the case it exists for. `waiting`/`stalled` are the only
-          // signals still arriving once playback has run dry. Reopening is left
-          // to the headroom sample, which needs a real buffer to see.
-          onWaiting={() => { if (!isVideoRef.current) { setStalled(true); setArtOk(false); } }}
-          onStalled={() => { if (!isVideoRef.current) { setStalled(true); setArtOk(false); } }}
+          //
+          // They are also the only signals still arriving once playback has run
+          // dry — `sampleHeadroom` rides on `timeupdate`, which a wedged element
+          // stops firing — which is why the art gate is wired to them at all.
+          // But NEITHER EVENT IS EVIDENCE ON ITS OWN: `stalled` describes the
+          // fetch, not the buffer, and WebKit raises it with readyState 4 and
+          // half an hour of audio in hand. `noteStarvation` measures instead of
+          // assuming; see its own note.
+          onWaiting={(e) => { if (!isVideoRef.current) noteStarvation(e.currentTarget); }}
+          onStalled={(e) => { if (!isVideoRef.current) noteStarvation(e.currentTarget); }}
           // The two ways back in that don't need audio to be advancing.
           // `progress` fires as bytes land, including while paused — it is the
           // only sample a stopped-but-downloading element produces at all.
