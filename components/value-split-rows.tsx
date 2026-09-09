@@ -1,6 +1,6 @@
 'use client';
 import type { ValueBlock } from '@/lib/types';
-import { recipientAddress, recipientOrder } from '@/lib/util';
+import { feeNote, recipientAddress, recipientOrder } from '@/lib/util';
 
 /**
  * The read-only "who gets paid" list, shared by every surface that shows one.
@@ -19,6 +19,13 @@ import { recipientAddress, recipientOrder } from '@/lib/util';
  *
  * Order is `recipientOrder`: biggest share first, because feed order is
  * authoring order and buries the recipient the listener actually cares about.
+ *
+ * The fee sentence is the ONE thing this shares with `<SplitsPreview>`, and it
+ * is shared as a string (`feeNote`) rather than as markup, which is what keeps
+ * the paragraph above true. This list prints the authored weight rather than a
+ * percentage, so it has no decimal to explain — but the `fee` stamp beside a
+ * recipient says no more about which side of the boost that fee lands on here
+ * than it did in the modal, and this is where most readers meet it first.
  */
 export function ValueSplitRows({
   value,
@@ -27,7 +34,9 @@ export function ValueSplitRows({
   value: ValueBlock;
   className?: string;
 }) {
+  const note = feeNote(value.recipients);
   return (
+    <>
     <ul className={className}>
       {recipientOrder(value.recipients).map((i) => {
         const r = value.recipients[i];
@@ -51,5 +60,10 @@ export function ValueSplitRows({
         );
       })}
     </ul>
+    {/* `className` stays on the <ul> — it is the list's own spacing and every
+        caller passes it as such (`space-y-2 pb-3` in the fullscreen player), so
+        the note must sit outside it rather than inherit it. */}
+    {note && <p className="mt-2 text-[11px] text-muted leading-snug">{note}</p>}
+    </>
   );
 }

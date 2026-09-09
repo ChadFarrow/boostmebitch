@@ -1379,6 +1379,41 @@ export function targetWord(kind: 'feed' | 'item', podcast?: Podcast | null): str
 }
 
 /**
+ * The sentence a splits list shows when the value block carries a `fee="true"`
+ * recipient. Null when it does not, so a caller renders nothing.
+ *
+ * WHY THIS SENTENCE EXISTS, given that nothing about the money is wrong. A
+ * `split` is a WEIGHT, and a fee recipient's weight sits in the denominator
+ * with everyone else's — so a block written as 45/45/10 "plus a 1% fee" really
+ * totals 101, and every artist is paid 100/101 of the share the publisher
+ * meant to give them. That is the spec: `podcast:value` v1.4 says a fee's
+ * percentage is "taken off the top of the entire transaction amount". But it is
+ * invisible, and what it surfaces as is percentages that carry a decimal and do
+ * not add up to 100 — which reads as a rounding bug in this app rather than as
+ * a fact about the feed. It was reported as one.
+ *
+ * NAMED WHEN THERE IS ONE FEE PAYEE, unnamed when there are several.
+ * "Podcastindex.org" is the thing the reader can go and look up; a list of
+ * three is longer than the fact is worth.
+ *
+ * It lives here rather than in either component for the `targetWord` reason
+ * above: two splits surfaces render this — the boost modal's `<SplitsPreview>`
+ * and the read-only `<ValueSplitRows>` — and they are deliberately NOT one
+ * component (see the note in `value-split-rows.tsx`), so the only thing they
+ * can share is the string.
+ */
+export function feeNote(
+  recipients: readonly Pick<ValueRecipient, 'name' | 'fee'>[],
+): string | null {
+  const fees = recipients.filter((r) => r.fee);
+  if (!fees.length) return null;
+  const name = fees.length === 1 ? fees[0].name?.trim() : '';
+  return name
+    ? `${name}’s fee comes out of your boost, not on top of it.`
+    : 'Fees come out of your boost, not on top of it.';
+}
+
+/**
  * Canonical deep link to a show, to one episode of it, or to one MOMENT in
  * that episode: the site ROOT with `?podcast=<guid>`, plus `&episode=<itemGuid>`
  * when one is given, plus `&t=<seconds>` when a start position is given. Null
