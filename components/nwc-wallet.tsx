@@ -1,10 +1,18 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
+// Lazy-loaded, matching <SparkWallet>: this card is itself reached only
+// through the wallet modal, but qrcode.react has no business in the chunk a
+// user pays boosts from.
+const QRCodeSVG = dynamic(() => import('qrcode.react').then((m) => m.QRCodeSVG), { ssr: false });
 import {
   hasNwc, saveNwcUri, clearNwcUri, loadNwcUri, nwcValidate,
-  nwcFetchCapabilities, nwcGetMethods, nwcGetBudget, type NwcBudget,
+  nwcFetchCapabilities, nwcGetMethods, nwcGetBudget, nwcMakeInvoice,
+  subscribeNwcNotifications, type NwcBudget, type NwcInvoice,
 } from '@/lib/v4v/nwc';
+import { BRAND } from '@/lib/brand';
+import { getErrorMessage } from '@/lib/util';
 import { markNwcRestored, wasNwcRestored, clearNwcRestored } from '@/lib/v4v/nwc-state';
 import {
   publishEncryptedNwc, deleteEncryptedNwc, fetchEncryptedNwc, fetchEncryptedNwcDetailed,
@@ -43,6 +51,176 @@ function BudgetLine({ budget, knowsBudgets }: { budget: NwcBudget | null; knowsB
   return (
     <div className="text-[11px] text-muted">
       No spending limit on this connection — the balance shown is your whole wallet.
+    </div>
+  );
+}
+
+/**
+ * Top up: a BOLT11 the CONNECTED wallet receives, paid from anywhere else.
+ *
+ * Module-scope for the same reason `<BackupToggle>` is — a nested component
+ * remounts its `<input>` on every parent render, and this one holds a
+ * half-typed amount.
+ *
+ * Three things here are deliberate:
+ *
+ *  - **It stays mounted when collapsed**, and the invoice survives a collapse.
+ *    The notification subscription below hangs off the invoice, so unmounting
+ *    on "Hide" would silently drop the only confirmation this card can give.
+ *  - **The amount is required.** `nwcMakeInvoice` says why: NIP-47 has no
+ *    zero-amount invoice, so the Spark card's optional field is not copyable
+ *    here.
+ *  - **It never claims to be watching.** `subscribeNwcNotifications` returns a
+ *    no-op unsub on failure and never rejects, so "am I subscribed?" is a
+ *    question this component cannot answer. It therefore states only the
+ *    neutral fact until a receipt actually lands, and never a promise about
+ *    push support it has not read.
+ */
+function ReceivePanel() {
+  const [open, setOpen] = useState(false);
+  const [amount, setAmount] = useState('');
+  const [generating, setGenerating] = useState(false);
+  const [inv, setInv] = useState<NwcInvoice | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [paidSats, setPaidSats] = useState<number | null>(null);
+
+  const hash = inv?.paymentHash;
+
+  // Hold a notification lease for the life of the invoice on screen. The NWC
+  // card prints no balance, so a paid top up otherwise has NOTHING on screen
+  // to point at — the same gap `note` exists to fill for the Nostr backup.
+  useEffect(() => {
+    if (!hash) return;
+    let cancelled = false;
+    let unsub: (() => void) | null = null;
+    subscribeNwcNotifications((e) => {
+      if (cancelled || e.notification_type !== 'payment_received') return;
+      // Match the payment hash. A wallet receives payments that have nothing
+      // to do with the invoice on this screen, and calling one of those "your
+      // top up arrived" is a statement about someone's money we did not read.
+      if (e.notification.payment_hash !== hash) return;
+      setPaidSats(Math.floor((e.notification.amount ?? 0) / 1000));
+      setInv(null);
+      setAmount('');
+    }).then((fn) => {
+      if (cancelled) { fn(); return; }
+      unsub = fn;
+    }).catch(() => { /* no push support — the neutral text already covers it */ });
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, [hash]);
+
+  async function generate() {
+    setGenerating(true);
+    setErr(null);
+    setPaidSats(null);
+    setCopied(false);
+    try {
+      const res = await nwcMakeInvoice({
+        amountSats: Number(amount),
+        description: `${BRAND.wireName} top up`,
+      });
+      setInv(res);
+    } catch (e) {
+      setErr(getErrorMessage(e, 'failed to create an invoice'));
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function copy() {
+    if (!inv) return;
+    try {
+      await navigator.clipboard.writeText(inv.invoice);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div className="space-y-2 text-[11px]">
+      <div className="flex gap-3">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="text-[11px] text-muted hover:text-bolt min-h-6"
+        >
+          {open ? 'Hide top up' : '↓ Top up'}
+        </button>
+        {inv && !open && <span className="text-muted min-h-6">invoice waiting</span>}
+      </div>
+
+      {paidSats !== null && (
+        <div className="text-[11px] text-bolt border border-bolt/40 bg-bolt/10 px-2 py-1.5">
+          ✓ Received {paidSats.toLocaleString()} sats
+        </div>
+      )}
+
+      {open && (
+        <>
+          {!inv && (
+            <div className="space-y-2">
+              <div className="text-muted">
+                Pay this invoice from any other Lightning wallet to add sats to
+                the wallet this connection points at.
+              </div>
+              <div className="flex gap-2">
+                <input
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  placeholder="amount in sats"
+                  aria-label="Amount in sats"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                />
+                <button
+                  onClick={generate}
+                  disabled={generating || !amount.trim()}
+                  className="btn-bolt disabled:opacity-30"
+                >
+                  {generating ? 'Generating…' : 'Generate'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {inv && (
+            <div className="space-y-2">
+              <div className="text-muted">
+                Scan with another Lightning wallet, or copy the BOLT11 below.
+                Your balance updates when the invoice is paid.
+              </div>
+              <div className="flex justify-center bg-bone p-3">
+                <QRCodeSVG
+                  value={`lightning:${inv.invoice}`}
+                  size={200}
+                  level="M"
+                  fgColor="#0a0a08"
+                  bgColor="#f5f1e8"
+                />
+              </div>
+              {/* `break-all` for the same reason the host line above has it:
+                  a BOLT11 has no space to wrap at, and without it the modal's
+                  scroll pane grows and the whole sheet scrolls sideways. */}
+              <code className="block card p-2 text-[10px] leading-snug break-all select-all">
+                {inv.invoice}
+              </code>
+              <div className="flex gap-3">
+                <button onClick={copy} className="btn-ghost">{copied ? 'Copied' : 'Copy'}</button>
+                <button
+                  onClick={() => { setInv(null); setAmount(''); setCopied(false); }}
+                  className="text-[11px] text-muted hover:text-nostr min-h-6"
+                >
+                  New amount
+                </button>
+              </div>
+            </div>
+          )}
+
+          {err && <div className="text-[11px] text-nostr/80 break-words">{err}</div>}
+        </>
+      )}
     </div>
   );
 }
@@ -178,7 +356,12 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
   useEffect(() => {
     if (mode !== 'card' || !hasNwc()) return;
     if (nwcGetMethods() !== null) return; // already fetched this session
-    nwcFetchCapabilities().catch(() => {});
+    // The result is READ DURING RENDER (`nwcGetMethods()` below), so the fetch
+    // has to force a repaint of its own. It used to drop the answer, and the
+    // card repainted only because `nwcGetBudget` happens to set state a moment
+    // later — incidental, and not something the receive button below can rest
+    // on, since it is hidden until the method list names `make_invoice`.
+    nwcFetchCapabilities().then(bump).catch(() => {});
   }, [mode]);
 
   // The connection's spending budget, read once per card open. This is the
@@ -377,6 +560,11 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
     const methods = nwcGetMethods();
     const canPayInvoice = methods === null || methods.includes('pay_invoice');
     const canKeysend = methods === null || methods.includes('pay_keysend');
+    // Same optimistic-when-unknown shape as the two above: an unread method
+    // list offers the control, a read one that omits `make_invoice` hides it.
+    // Hiding rather than disabling is the point — a pay-only connection is a
+    // normal thing to hold, and a dead button reads as a broken app.
+    const canMakeInvoice = methods === null || methods.includes('make_invoice');
 
     return (
       <div className="space-y-2">
@@ -418,6 +606,7 @@ export function NwcWallet({ mode, onConnected, onDisconnected }: Props) {
         />
         {note && <div className="text-[11px] text-bolt break-words">{note}</div>}
         {err && <div className="text-[11px] text-nostr/80 break-words">{err}</div>}
+        {canMakeInvoice && <ReceivePanel />}
         <div className="flex gap-3">
           <button
             onClick={disconnect}

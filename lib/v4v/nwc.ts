@@ -432,6 +432,87 @@ export async function nwcKeysend(args: {
   }
 }
 
+/** A BOLT11 this connection's wallet will receive, plus its payment hash. */
+export interface NwcInvoice {
+  invoice: string;
+  paymentHash: string;
+}
+
+/**
+ * Ask the wallet for a BOLT11 to be paid INTO it — the "top up" direction.
+ *
+ * Two things here are deliberately unlike every other request in this file.
+ *
+ * **The amount is required, in sats, and multiplied here.** NIP-47 types
+ * `make_invoice`'s `amount` as a required msat field, so there is no
+ * zero-amount invoice to offer: a blank amount is wallet-dependent and fails
+ * on most. `<NwcWallet>`'s receive panel therefore requires one, where the
+ * Spark card's panel leaves it optional — Spark's SDK genuinely supports both.
+ *
+ * **The errors are NOT mapped through `mapNwcError`, and that is the point.**
+ * Every message that function returns describes a payment going OUT: its
+ * NOT_IMPLEMENTED text reads "may not support this payment type", and its
+ * timeout text reads "this payment may still have been sent". On this path
+ * nothing was ever sent, so reusing them would tell a user who asked for an
+ * invoice that their sats might have left — the one claim about someone's
+ * money that is worse than saying nothing. A reply timeout is also not
+ * indeterminate here: an invoice we never received is an invoice nobody can
+ * pay, so it is an ordinary failure and `NwcIndeterminateError` must not be
+ * raised for it.
+ *
+ * No `retry`. A second invoice would be harmless — an unpaid BOLT11 simply
+ * expires — but it is also useless: the user is holding the first one, and a
+ * suspect socket is discarded either way so their next attempt dials fresh.
+ */
+export async function nwcMakeInvoice(args: {
+  amountSats: number;
+  description?: string;
+}): Promise<NwcInvoice> {
+  const sats = Math.floor(args.amountSats);
+  if (!Number.isFinite(sats) || sats < 1) {
+    throw new Error('Enter an amount of at least 1 sat.');
+  }
+  try {
+    const res = await withNwcClient((c) => c.makeInvoice({
+      amount: sats * 1000,
+      description: args.description,
+    }));
+    if (!res.invoice) throw new Error('Wallet returned no invoice.');
+    return { invoice: res.invoice, paymentHash: res.payment_hash };
+  } catch (e) {
+    throw makeInvoiceError(e);
+  }
+}
+
+/**
+ * The receive-side wording for the same wallet answers `mapNwcError` handles
+ * for the send side. Kept next to its one caller rather than in
+ * `nwc-errors.ts`, because that module is pinned by `npm run check:nwcerror`
+ * for what a failure licenses a PAYMENT to do — a question this path never
+ * asks, since it moves nothing.
+ */
+function makeInvoiceError(e: unknown): unknown {
+  if (e instanceof nwc.Nip47WalletError) {
+    if (e.code === 'NOT_IMPLEMENTED') {
+      return new NwcMethodUnsupportedError(
+        'This wallet cannot create invoices over NWC. Top up from the wallet’s own app instead.',
+      );
+    }
+    if (e.code === 'UNAUTHORIZED' || e.code === 'RESTRICTED') {
+      return new NwcNotAttemptedError(
+        `Wallet returned ${e.code} — this NWC connection is not permitted to create invoices.`,
+        e.code,
+      );
+    }
+  }
+  if (e instanceof nwc.Nip47ReplyTimeoutError) {
+    // An ordinary failure, NOT NwcIndeterminateError: no sats were at stake,
+    // and an invoice that never arrived is one nobody can pay.
+    return new Error('Wallet did not answer in time — no invoice was created.');
+  }
+  return e;
+}
+
 // The two things a URI change needs from THIS half, handed to the state half
 // now that it is loaded: drop the shared client (and the per-wallet budget
 // verdict), and prefetch the wallet's capabilities. See nwc-state.ts.
