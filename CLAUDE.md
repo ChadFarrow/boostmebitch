@@ -44,7 +44,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/security.md`](docs/security.md) | `lib/safe-fetch.ts`, `safe-url-attr.ts`, `sanitizeShowNotes`, `app/api/transcript`, `app/api/nostr/site-sign`, `next.config.mjs`, and **any input that accepts a Nostr identifier** (`lib/nostr/npub-input.ts` — `looksLikeSecretKey`) |
 | [`docs/ops.md`](docs/ops.md) | Google Cloud console, DNS, OAuth consent screen, Vercel env vars |
 | [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, **both** `android/twa-manifest*.json` and `zapstore*.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest*.json` |
-| [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, and `<Player>`'s local-source branch — five hosts send CORS, so this app has **no audio proxy** |
+| [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, **`app/sw.js/`**, and `<Player>`'s local-source branch — the worker is network-first, which is NOT precaching |
 
 ## Names
 
@@ -107,10 +107,10 @@ npm run dev / build / start / lint
 | `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening: feeds hang, publishes reach nobody |
 | `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show, or an ended one never leaves |
 | `check:liveover` | `liveBroadcastIsOver` — a `live` flag nobody cleared | a LIVE badge over silence, for days |
-| `check:downloads` | `downloadKey` (idempotence), `isDownloadable`, `roomVerdict` | a download nothing can find; a full origin that fails every settings write |
 | `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser walks a document with | 1 MB of `<!--` pins a lambda for a minute |
 | `check:cappedbody` | `lib/capped-body.ts` — the capped readers, server AND browser | an uncapped `arrayBuffer` fills the heap from one feed |
 | `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |
+| `check:downloads` | `downloadKey` (idempotence), `isDownloadable`, `roomVerdict` | a download nothing can find; a full origin that fails every settings write |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a background cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch, looked correct in review, and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 
