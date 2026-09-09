@@ -185,6 +185,18 @@ export interface Episode {
   link?: string;          // Episode web page (RSS <link> / PI `link`) — full notes live here
   enclosureUrl: string;
   enclosureType?: string;
+  /**
+   * Byte length from RSS's `<enclosure length>`, mirrored by PI as
+   * `enclosureLength`. Absent, 0 or plainly wrong on plenty of feeds, so it is
+   * a HINT and never a fact: treat it as "roughly how big" and let the response
+   * `Content-Length` be the number anything depends on.
+   *
+   * It exists because the download button spends the listener's bandwidth on a
+   * feature that exists precisely because bandwidth is scarce — measured
+   * 2026-09-09, Homegrown Hits episodes run 160–190 MB each. Saying so before
+   * the press is the whole point; being a few percent out does not matter.
+   */
+  enclosureLength?: number;
   /** Podcasting 2.0 <podcast:alternateEnclosure> renditions (e.g. a video
    *  version). Parsed from RSS — PI doesn't index the tag. */
   alternateEnclosures?: AlternateEnclosure[];

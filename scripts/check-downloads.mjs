@@ -91,6 +91,11 @@ const SIMPLECAST = 'https://dts.podtrac.com/redirect.mp3/pdst.fm/e/pfx.vpixl.com
 // 53,523,520 bytes for ONE track. The size warning exists because of this URL.
 const WAV = 'https://feeds.fountain.fm/1N6xa5VJEYtIiIpn2DLp/items/hjqw6AqpkDudvX3HxFks/files/AUDIO---DEFAULT---10d80388-6230-4d0e-a244-53394c4ab58a.wav';
 
+// The endless icecast stream that Homegrown Hits episode 150 pointed at while
+// its <podcast:liveItem> was `pending`. It ends in `.mp3` and answers 200, so
+// nothing about the URL says "not a file" — only the liveStatus does.
+const LIVE_STREAM = 'https://stream.bowlafterbowl.com/listen/bowlafterbowl/stream.mp3';
+
 const MB = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
@@ -194,13 +199,26 @@ section('...and refuses what cannot be a file');
   checkDl('an HLS manifest with a query', ['https://ex.com/live/stream.m3u8?token=x'], false);
   checkDl('an HLS manifest with a fragment', ['https://ex.com/live/stream.m3u8#x'], false);
   checkDl('an uppercase HLS manifest', ['https://ex.com/live/STREAM.M3U8'], false);
-  // A live item's enclosure is an open-ended stream: it has no end to reach.
+  // EVERY `<podcast:liveItem>`, whatever its status. Measured 2026-09-09:
+  // Homegrown Hits episode 150 sat at `pending` pointing at
+  // stream.bowlafterbowl.com/listen/bowlafterbowl/stream.mp3 — an ENDLESS
+  // icecast stream. Refusing only 'live' let the download button offer it, and
+  // an endless source sends no Content-Length, so nothing downstream could size
+  // it either. This is the vector that bug produced.
   checkDl('a live item', [HGH, 'live'], false);
-  // 'ended' and 'pending' are the other two <podcast:liveItem> states. An ended
-  // one is an ordinary file again.
-  checkDl('an ended live item', [HGH, 'ended'], true, { alsoNaive: true });
+  checkDl('a PENDING live item', [HGH, 'pending'], false);
+  // 'ended' is refused too, and that is the deliberate direction to be wrong in:
+  // refusing one costs a single episode, allowing one costs a download that
+  // never finishes. A publisher who keeps the recording republishes it as an
+  // ordinary <item>, which has no liveStatus and is accepted above.
+  checkDl('an ENDED live item', [HGH, 'ended'], false);
+  checkDl('an unknown live status', [HGH, 'whatever'], false);
   // Exempt: a null check is precisely what the naive version IS, so it cannot
   // get this wrong. "No URL, no button" is still a requirement worth stating.
+  // The URL alone cannot save you: it ends in .mp3 and it is a real 200. The
+  // status is the only signal, which is why the status test has to be total.
+  checkDl('an endless stream URL with no status looks downloadable', [LIVE_STREAM], true, { alsoNaive: true });
+  checkDl('...and is refused once its live status is known', [LIVE_STREAM, 'pending'], false);
   checkDl('nothing at all', [undefined], false, { alsoNaive: true });
   checkDl('a relative path', ['/ep.mp3'], false);
 }

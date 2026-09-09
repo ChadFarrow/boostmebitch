@@ -131,6 +131,21 @@ async function pi<T>(path: string, maxBytes?: number): Promise<T> {
 }
 
 // PI's value object → our ValueBlock
+/**
+ * A positive finite number, or `undefined`.
+ *
+ * Both sources of `enclosureLength` lie in the same two ways: RSS gives a string
+ * attribute (`length="161886720"`), routinely `"0"` or absent, and Podcast Index
+ * mirrors whatever the feed said including the zero. `Number('')` is 0 and
+ * `Number(undefined)` is NaN, so a bare `Number()` turns both into a size, and a
+ * size of 0 would be shown to the listener as "0 MB" beside a 160 MB file.
+ */
+function numOrUndef(v: unknown): number | undefined {
+  if (v === null || v === undefined || v === '') return undefined;
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
 function normalizeValue(v: any): ValueBlock | null {
   // Already in OUR shape — pass it through rather than answering null.
   //
@@ -509,6 +524,7 @@ function buildEpisode(e: any): Episode {
     link: typeof e.link === 'string' && e.link ? e.link : undefined,
     enclosureUrl: e.enclosureUrl,
     enclosureType: e.enclosureType,
+    enclosureLength: numOrUndef(e.enclosureLength),
     duration: e.duration,
     datePublished: e.datePublished,
     image: e.image || e.feedImage || undefined,   // see buildPodcast: PI sends "", not absent
@@ -1568,6 +1584,7 @@ export async function getFeedFromRss(
       link: extractText(inner, 'link') || undefined,
       enclosureUrl: enclosureUrl ?? '',
       enclosureType: enc ? readAttr(enc.attrs, 'type') : undefined,
+      enclosureLength: numOrUndef(enc ? readAttr(enc.attrs, 'length') : undefined),
       alternateEnclosures,
       duration: parseItunesDuration(extractText(inner, 'itunes:duration')),
       datePublished: parsePubDate(extractText(inner, 'pubDate')),

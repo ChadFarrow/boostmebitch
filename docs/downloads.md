@@ -117,6 +117,53 @@ under, for the same reason.
 
 ---
 
+## A live item is never downloadable, whatever its status
+
+`isDownloadable` refuses **every** `<podcast:liveItem>`, not just `status="live"`,
+and this rule was written against a real feed rather than a hypothesis.
+
+Measured 2026-09-09: Homegrown Hits episode 150 sat at `status="pending"` with
+the enclosure `https://stream.bowlafterbowl.com/listen/bowlafterbowl/stream.mp3`
+— an **endless icecast stream**. It ends in `.mp3` and answers 200, so nothing
+about the URL says "not a file". Refusing only `'live'` let the download button
+offer it, and the browser test happily started pulling it.
+
+The consequence is worse than a wasted download. An endless source sends no
+`Content-Length`, so neither the feed hint nor the response header can size it,
+and `downloadBytes` accumulates chunks in an **in-memory array** until it can
+write them — so it takes the tab down rather than merely filling the disk.
+`MAX_DOWNLOAD_BYTES` (600 MB, enforced on bytes **received**, never on bytes
+declared) is the backstop; refusing the item is the fix. Same rule as
+`lib/capped-body.ts`, pointed at audio.
+
+`'ended'` is refused too, and that is the deliberate direction to be wrong in. A
+publisher who keeps the recording republishes it as an ordinary `<item>`, which
+carries no `liveStatus` and is accepted; an ended `liveItem` usually still names
+the dead stream. Refusing one costs a single episode. Allowing one costs a
+download that never finishes, on the connection this feature exists to spare.
+
+## Say the size before the press, and never say "0 MB"
+
+Episodes are big — 160–190 MB each on Homegrown Hits, and one Fountain music
+track measured 53 MB as a `.wav`. Somebody deciding whether to spend that needs
+the number *before* they press, so `Episode.enclosureLength` is parsed from RSS's
+`<enclosure length>` and from Podcast Index's mirror of it, and the button puts it
+in its accessible name at every size.
+
+Both sources lie in the same two ways: the attribute is routinely absent or
+`"0"`, and PI mirrors the zero. `numOrUndef` (`lib/pi.ts`) and `fmtBytes`
+(`lib/format.tsx`) both answer *nothing* rather than a number in that case —
+"0 MB" beside a 160 MB file is worse than silence. It is a **hint**, never a
+fact: the response `Content-Length` is what the second room check uses.
+
+The visible size shares ONE FIXED-WIDTH SLOT with the download percentage, and
+that is a layout rule rather than a space saving. `<FavHeart>` documents why: this
+control is the last item in a right-aligned cluster, so anything that changes
+width shoves BOOST and the heart sideways. "162 MB" and "47%" are both about six
+characters, so reserving the width once means no state change can move anything.
+`.tile` is excluded — 52 px cannot hold a third line — and keeps the size in its
+accessible name only.
+
 ## `roomVerdict` has a blast radius outside this feature
 
 The obvious version — `usage + bytes <= quota` — is wrong twice, and both are

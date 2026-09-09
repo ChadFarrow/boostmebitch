@@ -1,4 +1,4 @@
-import { roomVerdict } from './download-rules';
+import { MAX_DOWNLOAD_BYTES, roomVerdict } from './download-rules';
 
 /**
  * The bytes half of a download.
@@ -151,6 +151,14 @@ export async function downloadBytes(
       if (!value) continue;
       chunks.push(value);
       receivedBytes += value.byteLength;
+      // THE CAP IS ENFORCED ON WHAT ARRIVED, NOT ON WHAT WAS DECLARED. An
+      // endless source sends no `Content-Length` at all, so every check above
+      // this line passes it; these chunks are held in memory until the download
+      // completes, so an unbounded one takes the tab down rather than filling
+      // the disk. Same rule as lib/capped-body.ts, pointed at audio.
+      if (receivedBytes > MAX_DOWNLOAD_BYTES) {
+        throw new DownloadRefused('This file is too large to download — it may be a live stream rather than an episode.');
+      }
       const fraction = totalBytes ? Math.min(1, receivedBytes / totalBytes) : null;
       const bucket = fraction === null ? -1 : Math.floor(fraction * 20);
       if (onProgress && bucket !== lastBucket) {
