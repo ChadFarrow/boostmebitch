@@ -16,6 +16,7 @@ export {
   clearLocalSigner,
   shortNpub,
   coerceProfileMetadata,
+  type BunkerRestoreResult,
   type NostrIdentity,
   type ProfileMetadata,
 } from './auth';

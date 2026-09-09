@@ -130,6 +130,66 @@ rests on the exact `2.19.4` pin above. If that ever moves, re-read `nip46.js` by
 hand: a version that wraps `o.error` in an `Error` reverts this silently rather
 than breaking loudly.
 
+### A failed RESTORE is not a sign-out — and the sign-out took the wallet with it
+
+Reported after an iOS PWA relaunch, in two halves that sounded like two bugs:
+*"I was logged out of Nostr and the wallet disconnected."* They are one cause.
+
+`abandonRestoredSession` (`components/nostr-auth/index.tsx`) is the only thing
+the page-load restore could reach on failure, and it clears `bmb:npub`,
+`bmb:signer`, the NWC URI, the Spark connection **and** `storage.bunker`. That
+last one is the part with no way back. `<BunkerHealthBanner>`'s Reconnect button
+calls `restoreBunkerSigner()`, which reads the pointer that was just deleted —
+so the recovery path the app already ships was dead by the time the user could
+press it, and the only route back was pairing Clave from scratch. Worse,
+`clearBunkerSigner()` runs there without `revoke` (correctly — see below), so the
+signer keeps its half of the pairing. **Clave caps a user at five connections.**
+Every dropped WebSocket burned one.
+
+The bug was that `restoreBunkerSigner` returned a `boolean`, and `false` meant
+two incompatible things:
+
+| What happened | Right answer |
+| --- | --- |
+| Nothing persisted, or the pointer does not parse | Sign out. The session is not recoverable. |
+| The pointer is intact and the signer did not answer | Keep everything. Say so. Offer the retry. |
+
+For a remote signer on a phone the second is the **ordinary** case, not an
+error: Clave, Amber-as-bunker and nsec.app's mobile mode all lose their relay
+socket when the OS suspends them, and `BUNKER_CONNECT_TIMEOUT_MS` is 90 s of
+waiting before the app concludes anything. A network drop during a PWA relaunch
+is enough. `restoreBunkerSigner` now returns `BunkerRestoreResult` — `'ok'`,
+`'no-session'` or `'unreachable'` — and only `'no-session'` may sign the user out.
+
+**The discriminator is `restoreBunkerFromStorage`'s own two exits**, and it is
+safe to lean on for a reason worth writing down: it returns `null` for the
+storage fact and THROWS for the transport one, and a stored pointer is always
+`bunker://` (`bunkerUriForRestore` converts a `nostrconnect://` one before
+persisting). nostr-tools' `parseBunkerInput` matches that form with
+`BUNKER_REGEX` and returns without a network call — only a NIP-05 input reaches
+`queryBunkerProfile`. So an offline device **cannot** manufacture a
+`'no-session'`, which is the property the whole split rests on. A future change
+that persists a NIP-05 pointer breaks it silently.
+
+`markBunkerStale()` is called inside `restoreBunkerSigner`, not at the call site,
+so the page-load restore and the account menu's button cannot drift. That flag is
+what renders the banner, and the banner is load-bearing rather than a courtesy:
+`abandonRestoredSession`'s own header says it exists because *"the user looks
+signed in while window.nostr is undefined, and the next thing that signs dies
+with a generic error."* That objection is correct. Keeping the session without
+the banner would trade a brutal failure for a silent one — CLAUDE.md's rule that
+a guard which withholds must say so. The banner names the state and offers the
+retry, and its two error strings are now different because the two failures need
+different acts from the user: `'unreachable'` says open your signer and try
+again, `'no-session'` says sign out and back in. Telling the first user to sign
+out costs them a pairing for nothing.
+
+This is the same rule `clearBunkerSigner` already stated one function away —
+*"A FAILED RESTORE is the opposite case: the socket was suspended or a relay did
+not answer, the user asked for nothing"* — applied for the pairing and not for
+the session or the wallet. **No `check:*` pins it**, for the same reason as the
+section above: `bunker.ts` will not load under `node --experimental-strip-types`.
+
 ### A pairing the page loses is one the signer thinks succeeded
 
 Reported from an iPhone on Brave, and it is the failure that matters most
@@ -498,8 +558,10 @@ would risk missing the string this exists for; it is that the wait is visible
 and one tap from over: `subscribeBunkerApproval` drives
 `<BunkerApprovalNotice>`, which carries **Stop waiting**
 (`cancelBunkerApprovalWait`). Rendered in the boost modal's `publishing` state,
-where the wait actually bites, and in `<AccountMenu>` so the control exists
-outside that one surface.
+where the wait actually bites, in `<AccountMenu>` so the control exists outside
+that one surface, and — see the next section — anchored under the account button
+while the menu is CLOSED, which is the only one of the three a page-load restore
+can reach.
 
 **No `check:*` can pin the re-issue itself** — `bunker.ts` imports
 `nostr-tools` and touches browser globals. `scripts/e2e-mutes.mjs` scenarios
@@ -510,6 +572,75 @@ asserts one request and a fast failure. Its `signEnabled` flag is off by
 default because scenarios 1-5c were written against a stub that answered
 `sign_event` with "unsupported", and teaching it to sign underneath them would
 be editing the fixture to fit.
+
+### `connect` is a method the signer can queue too, and nobody was watching the one handshake that runs itself
+
+Two halves of one report: *"with Clave, when I release a new build I have to
+reconnect it"*. A new build is a **cold load** of the iOS PWA — nothing else
+about a deploy touches signer state, since `bmb:bunker` is `localStorage` and
+`public/sw.js` caches nothing. So the report is about `restoreBunkerFromStorage`,
+which is the only handshake in this app that **runs unprompted**, with no modal
+in front of it and nobody waiting on a screen.
+
+**First half: the approval wait was on `get_public_key` and not on `connect`.**
+The section above establishes that a queueing signer answers `permission denied`
+immediately and delivers the real result after the tap. That is a property of the
+signer, not of the method — and `connect` is the FIRST method of every session,
+so on such a signer the handshake never reaches the call the wait protects. Both
+`attempt()` bodies (`connectBunkerFromUri` and `restoreBunkerFromStorage`) now
+read `withApprovalWait(() => withTimeout(s.connect(), timeoutMs, …), …)`. This is
+the **same omission this file has made twice**: the handshake's `get_public_key`
+was excluded on the reasoning that the connect paths own their own timeouts, and
+a field report put it back. `connect` was never revisited at that point.
+
+The cost of getting it wrong is worse here than at sign-in, because of what the
+caller does with the failure. `restoreBunkerSigner` maps a throw to
+`'unreachable'` and the banner then says *"No answer from your signer"* — about a
+signer that **did** answer, promptly, asking for a tap. Both halves of the
+sentence the user reads are false.
+
+**Second half: both signer signals lived inside the closed account menu.** The
+approval wait and `<BunkerHealthBanner>` were rendered only in `<AccountMenu>`'s
+open panel, so a restore that queued said nothing for up to 90 s, and one that
+failed said nothing at all. On a cold load the account button is the only thing
+on screen that knows the handshake is happening. This is CLAUDE.md's *"a guard
+that silently withholds must say so"* reached from the signer side, and the
+release that made a failed restore survivable is exactly the one that makes it
+matter: the user is no longer signed out by it, so **nothing else tells them.**
+
+**The two signals get different treatment, and the difference is their shape,
+not their importance.**
+
+| Signal | Rendered as | Why not the other one |
+|---|---|---|
+| Approval wait | The full notice, anchored under the button when the menu is closed | It is transient, it asks for an act in another app, and it carries **Stop waiting** — none of which a dot can say |
+| Staleness | A dot on the account button | It is a state with no natural end. iOS suspends that socket whenever the app is backgrounded, so an undismissable box under the header would be on screen more often than not |
+
+Three things about the markup are load-bearing:
+
+- **The dot is an OVERLAY on the avatar, never its own column.** The header row
+  has no width to give — at 390px the wordmark needs 142px of a 141.6px box —
+  and `--app-header-h` is a hard-coded 71px that `<EpisodeList>` pins a sticky
+  offset against on another route. Absolutely positioned over the avatar it
+  costs zero layout at every width.
+- **It is named in the button's `aria-label`, not a `title`.** A dot has no
+  accessible name, and a hover tooltip does not exist on the phone this path is
+  for.
+- **The anchored notice renders only while the menu is CLOSED**, on the menu's
+  own anchor and width. The open panel already draws it; two boxes saying one
+  thing is how a reader learns to distrust both.
+
+`stale` moved from `<BunkerHealthBanner>`'s own `useState` to a prop, because the
+dot and the banner must not be able to disagree — a dot with no banner behind it
+sends the user hunting through a menu for something that is not there.
+
+**Both signals reach every route that can restore, and that is worth checking
+rather than assuming.** `<AppHeader>` renders on `/`, `/live`, `/favorites` and
+`/playlists` only — but it is not the only thing that mounts `<NostrAuth>`, which
+is what owns the restore effect *and* draws `<AccountMenu>`. `/npub/[npub]`,
+`/live/[npub]`, `/stream/[naddr]` and `/amber-callback` each mount it directly,
+for exactly this reason. `/privacy` is the one page that mounts neither, and it
+runs no restore either, so there is nothing there to report.
 
 ### Never make Amber render something the user did not ask to see
 

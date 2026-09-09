@@ -738,7 +738,16 @@ export async function connectBunkerFromUri(
     const pool = newPool();
     const s = BunkerSigner.fromBunker(sk, bp, { onauth: onAuthUrl, pool });
     try {
-      await withTimeout(s.connect(), timeoutMs, 'connect');
+      // `connect` GOES THROUGH THE APPROVAL WAIT TOO, and leaving it out is the
+      // same omission this file has now made twice — see the `get_public_key`
+      // line below, which was excluded on the same reasoning and had to be put
+      // back after a field report. A signer that queues answers EVERY method it
+      // wants a tap for with an immediate `permission denied`, and `connect` is
+      // the first method of the session, so on that signer the handshake never
+      // reaches the call the wait protects. `isApprovalPending` fails closed on
+      // anything that is not a bare string off the wire, so a timeout or a dead
+      // transport still propagates on the first answer.
+      await withApprovalWait(() => withTimeout(s.connect(), timeoutMs, 'connect'), 'connect');
       const pk = await withApprovalWait(() => s.getPublicKey(), 'get_public_key');
       return { inner: s, pubkey: pk, pool };
     } catch (e) {
@@ -1113,7 +1122,13 @@ export async function restoreBunkerFromStorage(): Promise<BunkerAdapter | null> 
     const pool = newPool();
     const s = BunkerSigner.fromBunker(clientSk, bp, { pool });
     try {
-      await withTimeout(s.connect(), timeoutMs, 'reconnect');
+      // Same wrap as `connectBunkerFromUri`'s attempt, and this is the site it
+      // matters most on: this one runs UNPROMPTED on every page load, so the
+      // user is not standing in front of a sign-in modal waiting for it. On a
+      // signer that queues, a bare `connect` turns an approval the user has not
+      // been asked for yet into `'unreachable'` — the app then says "no answer
+      // from your signer" about a signer that answered.
+      await withApprovalWait(() => withTimeout(s.connect(), timeoutMs, 'reconnect'), 'reconnect');
       const pk = await withApprovalWait(() => s.getPublicKey(), 'get_public_key');
       return { inner: s, pubkey: pk, pool };
     } catch (e) {

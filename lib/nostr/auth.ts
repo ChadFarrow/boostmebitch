@@ -24,6 +24,7 @@ import {
   bunkerUriForRestore,
   clearBunkerStale,
   connectBunkerFromUri,
+  markBunkerStale,
   restoreBunkerFromStorage,
   startNostrConnect,
   type BunkerAdapter,
@@ -171,26 +172,57 @@ function finalizeBunkerLogin(adapter: BunkerAdapter): NostrIdentity {
 }
 
 /**
- * Restore the bunker signer on page load when `storage.signer` is
- * `'bunker'`. Async — has to reconnect the NIP-46 transport. The fast-
- * path useEffect kicks this off in the background; signing operations
- * that arrive before it resolves will throw, but nothing signs unprompted
- * right after page load so this is fine in practice.
+ * The three outcomes of a bunker restore, and **they are three because the
+ * caller has to act differently on each.** This used to be a `boolean`, and
+ * collapsing the last two is what made a dropped network connection sign the
+ * user out of Nostr *and* disconnect their wallet.
  *
- * Returns true on success, false if no session was persisted or the
- * reconnect failed (in which case the caller should drop the bunker
- * signer-kind sentinel so the UI shows the sign-in button again).
+ * `no-session` is a fact about storage: nothing was persisted, or the pointer
+ * does not parse. `unreachable` is a fact about the transport: the pointer is
+ * intact and the signer did not answer within `BUNKER_CONNECT_TIMEOUT_MS`.
+ * A phone that suspends a WebSocket produces the second one every time, and
+ * `abandonRestoredSession` — the only thing the old `false` could lead to —
+ * clears `bmb:npub`, `bmb:signer`, the NWC URI *and* `storage.bunker`. Losing
+ * the pointer is the part that has no way back: the account menu's Reconnect
+ * button calls this function, and it needs the pointer that was just deleted,
+ * so the user has to pair Clave from scratch. `clearBunkerSigner` is called
+ * without `revoke` there, so the signer keeps its half of the dead pairing —
+ * and Clave caps a user at five. Every network drop burned a slot.
+ *
+ * The two cannot be told apart downstream, which is why the discrimination is
+ * here: `restoreBunkerFromStorage` returns `null` for the storage fact and
+ * THROWS for the transport one. That is safe to lean on because a stored
+ * pointer is always `bunker://` (`bunkerUriForRestore`), and nostr-tools'
+ * `parseBunkerInput` parses that form with a regex and no network — so an
+ * offline device cannot manufacture a `no-session`.
+ *
+ * Marking the transport case stale here rather than at the call site keeps the
+ * two reconnect paths (page load, and the account menu's button) in step, and
+ * satisfies CLAUDE.md's rule that a guard which withholds must say so: the flag
+ * is what renders `<BunkerHealthBanner>`.
+ *
+ * Async — it has to reconnect the NIP-46 transport. The fast-path useEffect
+ * kicks it off in the background; signing operations that arrive before it
+ * resolves will throw, but nothing signs unprompted right after page load.
  */
-export async function restoreBunkerSigner(): Promise<boolean> {
+export type BunkerRestoreResult = 'ok' | 'no-session' | 'unreachable';
+
+export async function restoreBunkerSigner(): Promise<BunkerRestoreResult> {
+  let adapter: BunkerAdapter | null;
   try {
-    const adapter = await restoreBunkerFromStorage();
-    if (!adapter) return false;
-    activateBunkerSigner(adapter);
-    clearBunkerStale();
-    return true;
+    adapter = await restoreBunkerFromStorage();
   } catch {
-    return false;
+    // The relay did not answer. The user asked for nothing and decided
+    // nothing, so nothing they own is torn down — see `clearBunkerSigner`,
+    // which already states this rule for the pairing and was not being
+    // followed here.
+    markBunkerStale();
+    return 'unreachable';
   }
+  if (!adapter) return 'no-session';
+  activateBunkerSigner(adapter);
+  clearBunkerStale();
+  return 'ok';
 }
 
 /**
