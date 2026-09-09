@@ -33,6 +33,21 @@
 const HEADROOM_BYTES = 64 * 1024 * 1024;
 const HEADROOM_FRACTION = 0.05;
 
+/**
+ * A hard ceiling on one download, enforced while the bytes stream in.
+ *
+ * `Content-Length` is a claim, and an endless source does not send one at all —
+ * so a cap derived from it is no cap. `downloadBytes` accumulates chunks in an
+ * in-memory array before it can write them, which means an unbounded source
+ * takes the tab down rather than merely filling the disk. Same reasoning as
+ * `lib/capped-body.ts`: a timeout bounds how LONG a fetch runs, never how many
+ * bytes it returns.
+ *
+ * 600 MB is comfortably above a real episode — the largest measured on
+ * 2026-09-09 was 193 MB — and far below anything that could be called a file.
+ */
+export const MAX_DOWNLOAD_BYTES = 600 * 1024 * 1024;
+
 /** What `navigator.storage.estimate()` returns, as much of it as we read. */
 export interface StorageEstimateLike {
   usage?: number;
@@ -102,9 +117,22 @@ export function downloadKey(rawUrl: string | undefined | null): string | null {
  *   one stores a few hundred bytes of playlist and reports success — a green
  *   tick over nothing. (See the class comment on why this test is duplicated
  *   here rather than calling `isHlsUrl`.)
- * - **A live item.** `<podcast:liveItem>` with `status="live"` is an open-ended
- *   stream; there is no end to download to. `ended` is an ordinary file again,
- *   and `pending` has not started, so neither is refused here.
+ * - **A live item — ANY `<podcast:liveItem>`, whatever its status.** Its
+ *   enclosure is a stream URL, not a file: measured 2026-09-09, Homegrown Hits
+ *   episode 150 sat at `status="pending"` pointing at
+ *   `stream.bowlafterbowl.com/listen/bowlafterbowl/stream.mp3`, an endless
+ *   icecast stream. Refusing only `'live'` let the button offer it, and an
+ *   endless source has no `Content-Length`, so nothing downstream could size it
+ *   either — `downloadBytes` accumulates chunks in memory, so it would have
+ *   grown until the tab died. `MAX_DOWNLOAD_BYTES` is the backstop for that;
+ *   this is the fix.
+ *
+ *   `'ended'` is refused too, and that is the deliberate direction to be wrong
+ *   in. A publisher who keeps the recording republishes it as an ordinary
+ *   `<item>`; an ended `liveItem` usually still names the dead stream. The cost
+ *   of refusing one is that a single episode cannot be downloaded. The cost of
+ *   allowing one is a download that never finishes, on the connection this
+ *   feature exists to spare.
  */
 export function isDownloadable(
   rawUrl: string | undefined | null,
@@ -112,7 +140,7 @@ export function isDownloadable(
 ): boolean {
   const key = downloadKey(rawUrl);
   if (!key) return false;
-  if (liveStatus === 'live') return false;
+  if (liveStatus) return false;
   // Must agree with `isHlsUrl` in lib/util.ts — pinned by check:downloads.
   if (/\.m3u8(\?|#|$)/i.test(key)) return false;
   return true;

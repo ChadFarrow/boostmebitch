@@ -31,7 +31,10 @@ export interface DownloadRecord {
   /** The URL the bytes came from, kept so a row can fall back to streaming. */
   enclosureUrl: string;
   enclosureType?: string;
+  /** What was actually stored, measured. This is the number `/downloads` totals. */
   sizeBytes: number;
+  /** What the FEED claimed, kept only so a re-download can pre-check the quota. */
+  enclosureLength?: number;
   createdAt: number;
 
   // --- enough to rebuild an Episode + Podcast and play it -------------------

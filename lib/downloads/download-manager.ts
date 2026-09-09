@@ -167,6 +167,11 @@ export class DownloadManager {
     return [...this.records.values()].sort((a, b) => b.createdAt - a.createdAt);
   }
 
+  /** What is actually stored for this key, or `null` if nothing is. */
+  recordSize(key: string): number | null {
+    return this.records.get(key)?.sizeBytes ?? null;
+  }
+
   totalBytes(): number {
     let total = 0;
     for (const r of this.records.values()) total += r.sizeBytes || 0;
@@ -217,12 +222,11 @@ export class DownloadManager {
   ): Promise<void> {
     const sizeBytes = await this.backend.downloadBytes(key, {
       sourceUrl: episode.enclosureUrl,
-      // `Episode` carries no byte length — RSS's `<enclosure length>` is not
-      // parsed into it. So the size is not known until the response HEADERS
-      // arrive, which is still before any of the body, and `downloadBytes`
-      // re-runs the room check there. Passing a length here becomes possible if
-      // the parser ever keeps one.
-      expectedBytes: null,
+      // The feed's own `<enclosure length>`, which is a HINT: absent or plainly
+      // wrong on plenty of feeds. It buys a room check BEFORE the request goes
+      // out; `downloadBytes` re-runs it against the real `Content-Length` when
+      // the headers arrive, which is still ahead of any of the body.
+      expectedBytes: episode.enclosureLength ?? null,
       signal,
       onProgress: (p) => this.setState(key, { status: 'downloading', fraction: p.fraction }),
     });
@@ -242,6 +246,7 @@ export class DownloadManager {
       feedImage: episode.feedImage ?? podcast?.image ?? podcast?.artwork,
       duration: episode.duration,
       datePublished: episode.datePublished,
+      enclosureLength: episode.enclosureLength,
       value: episode.value,
       valueTimeSplits: episode.valueTimeSplits,
     };

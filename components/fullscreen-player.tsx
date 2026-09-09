@@ -34,6 +34,7 @@ import { LinkedText } from './linked-text';
 import { UnderlineTabs } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
+import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
@@ -857,6 +858,7 @@ export function FullscreenPlayer({
               <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
                 <FavHeart podcast={podcast} size="tile" nameTarget />
                 <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
+                <DownloadButton episode={episode} podcast={podcast} size="tile" />
                 <ShareTargets podcast={podcast} episode={episode} />
                 {/* The meter below says what streaming is DOING; this is the
                     only place in the player you can change it. Without it the
