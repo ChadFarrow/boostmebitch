@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { isMusicMedium, httpUrl } from './util';
+import { chaptersRequestUrl } from './downloads/download-rules';
+import { matchDoc } from './downloads/downloads-cache';
 import type { ChapterEntry, Episode, Podcast } from './types';
 
 // Defined in `lib/types.ts` (see the note there — `lib/util.ts` needs to name it
@@ -24,7 +26,13 @@ export function useChapters(url: string): { chapters: ChapterEntry[] | null; loa
     setChapters(null);
     // Proxy through our own route: many chapter hosts (e.g. Fountain) serve the
     // JSON without CORS headers, so a direct browser fetch is blocked.
-    fetch(`/api/chapters?url=${encodeURIComponent(url)}`)
+    // CACHE FIRST, and it costs nothing when there is no download: `matchDoc`
+    // answers null for a miss, for a browser with no Cache API, and on any
+    // error. `q` is built by the shared builder so this key and the one the
+    // download wrote are the same string by construction.
+    const q = chaptersRequestUrl(url) ?? '';
+    matchDoc(q)
+      .then((hit) => hit ?? fetch(q))
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled) return;

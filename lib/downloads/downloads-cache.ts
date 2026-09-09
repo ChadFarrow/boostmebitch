@@ -15,6 +15,18 @@ import { MAX_DOWNLOAD_BYTES, roomVerdict } from './download-rules';
  */
 const AUDIO_CACHE = 'bmb-downloads-v1';
 const ART_CACHE = 'bmb-downloads-art-v1';
+/**
+ * Chapters and transcripts, keyed by THIS APP'S OWN request URL
+ * (`/api/chapters?url=…`), not by the third-party document URL.
+ *
+ * That choice is what keeps `useChapters` and `useTranscript` ignorant of
+ * downloads. Both take a URL and no episode, so keying by the request they were
+ * about to make lets them ask "is this already here?" without being handed an
+ * episode they have no other use for. It also means the cached bytes are
+ * same-origin and therefore readable — a cross-origin fetch of the raw document
+ * would be opaque.
+ */
+const DOC_CACHE = 'bmb-downloads-doc-v1';
 
 export interface DownloadProgress {
   receivedBytes: number;
@@ -226,31 +238,93 @@ export async function clearAllBytes(): Promise<void> {
   try {
     await caches.delete(AUDIO_CACHE);
     await caches.delete(ART_CACHE);
+    await caches.delete(DOC_CACHE);
   } catch {
     // As above.
   }
 }
 
 /**
- * Store an episode's cover art.
+ * Fetch one of this app's own API routes and keep the response.
  *
- * **It must be fetched through `/api/art`, which is same-origin.** A bare
- * cross-origin image fetch yields an opaque response, and an opaque response can
- * never become a blob URL — it would store bytes that read back empty. The
- * caller passes the already-proxied URL from `artProxyUrl`.
- *
- * Failure is swallowed: art is a nicety and a download without it still plays.
+ * Returns the request URL when it stored something, `null` otherwise. Failure is
+ * swallowed: chapters and a transcript are extras, and a download without them
+ * still plays. A non-ok response is deliberately NOT cached — a 404 or a 502
+ * outlives the outage that produced it, and the loader would then show an empty
+ * transcript as though the feed had none.
  */
-export async function downloadImage(key: string, proxiedUrl: string): Promise<void> {
-  if (!cachesAvailable()) return;
+export async function cacheDoc(requestUrl: string): Promise<string | null> {
+  if (!cachesAvailable()) return null;
   try {
-    const res = await fetch(proxiedUrl);
-    if (!res.ok) return;
-    const cache = await caches.open(ART_CACHE);
-    await cache.put(key, res);
+    const res = await fetch(requestUrl);
+    if (!res.ok) return null;
+    const cache = await caches.open(DOC_CACHE);
+    await cache.put(requestUrl, res);
+    return requestUrl;
   } catch {
-    // See above.
+    return null;
   }
+}
+
+/**
+ * The stored response for one of this app's own request URLs, or `null`.
+ *
+ * Called on the way IN to every chapters and transcript fetch, downloaded or
+ * not, so it must be cheap and must never throw — a browser with no Cache API
+ * answers `null` and the caller goes to the network exactly as before.
+ */
+export async function matchDoc(requestUrl: string): Promise<Response | null> {
+  if (!cachesAvailable()) return null;
+  try {
+    const cache = await caches.open(DOC_CACHE);
+    return (await cache.match(requestUrl)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export async function deleteDocs(requestUrls: string[]): Promise<void> {
+  if (!cachesAvailable() || !requestUrls.length) return;
+  try {
+    const cache = await caches.open(DOC_CACHE);
+    await Promise.all(requestUrls.map((u) => cache.delete(u)));
+  } catch {
+    // As above.
+  }
+}
+
+/**
+ * Store an episode's cover art, trying each candidate in order.
+ *
+ * **Every candidate must be an `/api/art` URL, which is same-origin.** A bare
+ * cross-origin image fetch yields an opaque response, and an opaque response can
+ * never become a blob URL — it would store bytes that read back empty.
+ *
+ * A LADDER, NOT ONE URL, for the reason `<PodcastCover>` already has a four-deep
+ * `onError` chain: Podcast Index's `image` and `artwork` routinely disagree and
+ * either can be broken. Measured 2026-09-09 on Homegrown Hits, the episode's own
+ * cover is a 19 MB GIF that `/api/art` answers 502 for — so taking only the
+ * first candidate meant no art at all, when the feed-level PNG was sitting right
+ * behind it.
+ *
+ * Failure is swallowed at every rung: art is an extra, and a download without it
+ * still plays. That is the same rule the artwork proxy is under everywhere else —
+ * a failing route costs appearance and nothing more.
+ */
+export async function downloadImage(key: string, proxiedUrls: string[]): Promise<boolean> {
+  if (!cachesAvailable()) return false;
+  for (const url of proxiedUrls) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const cache = await caches.open(ART_CACHE);
+      await cache.put(key, res);
+      return true;
+    } catch {
+      // Try the next rung.
+    }
+  }
+  return false;
 }
 
 export async function getImageObjectUrl(key: string): Promise<string | null> {

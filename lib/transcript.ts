@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { isMusicMedium } from './util';
+import { transcriptRequestUrl } from './downloads/download-rules';
+import { matchDoc } from './downloads/downloads-cache';
 import type { Episode, Podcast } from './types';
 
 // One line of a parsed transcript. `endTime`/`speaker` are optional — SRT/VTT
@@ -141,8 +143,10 @@ export function useTranscript(url: string, type?: string): { cues: TranscriptCue
     let cancelled = false;
     setLoading(true);
     setCues(null);
-    const q = `/api/transcript?url=${encodeURIComponent(url)}${type ? `&type=${encodeURIComponent(type)}` : ''}`;
-    fetch(q)
+    // Cache first — see the note on the same line in lib/chapters.ts.
+    const q = transcriptRequestUrl(url, type) ?? '';
+    matchDoc(q)
+      .then((hit) => hit ?? fetch(q))
       .then((r) => (r.ok ? r.text() : null))
       .then((text) => {
         if (cancelled) return;

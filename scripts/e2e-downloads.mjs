@@ -43,6 +43,20 @@ if (!appUp) {
   process.exit(1);
 }
 
+// REFUSE TO RUN IF SOMETHING ALREADY HOLDS THE DEBUG PORT, and this guard is
+// here because its absence cost a long debugging session. A Chrome left over
+// from an earlier run keeps both the port and the profile, so the new one exits
+// on the locked profile and `fetch(/json/list)` quietly attaches to the OLD
+// browser instead. Everything then runs against storage that the assertions
+// were never told about, and the failure reads as "the app stored a record but
+// no bytes" — a shipping bug that is not there. Fail loudly instead.
+const portBusy = await fetch(`http://127.0.0.1:${CDP}/json/version`).then(() => true).catch(() => false);
+if (portBusy) {
+  console.error(`Something is already listening on ${CDP} — almost certainly a Chrome left over from an earlier run.`);
+  console.error(`Close it first:  pkill -f 'remote-debugging-port=${CDP}'`);
+  process.exit(1);
+}
+
 const profile = `${tmpdir()}/bmb-e2e-downloads`;
 rmSync(profile, { recursive: true, force: true });
 const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
@@ -165,10 +179,12 @@ section('4. Both cache buckets exist under their exact names');
   const buckets = await js(`
     (async () => {
       await caches.open('bmb-downloads-art-v1');
+      await caches.open('bmb-downloads-doc-v1');
       return (await caches.keys()).filter(k => k.startsWith('bmb-downloads')).sort();
     })()
   `);
-  check('bmb-downloads-v1 and bmb-downloads-art-v1', buckets, ['bmb-downloads-art-v1', 'bmb-downloads-v1']);
+  check('all three buckets, under their exact names', buckets,
+    ['bmb-downloads-art-v1', 'bmb-downloads-doc-v1', 'bmb-downloads-v1']);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +239,12 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
         });
         const r = recs[0];
         return {
-          keyIsEnclosureUrl: !!r && r.key === keys[0],
+          // Reported, not just compared: a storage assertion that fails without
+          // saying WHAT it saw sends the next reader guessing at whether the
+          // record, the bytes or the key was the missing half.
+          cacheKeys: keys.length,
+          records: recs.length,
+          keyIsEnclosureUrl: !!r && keys.includes(r.key),
           bytesMatchRecord: !!blob && !!r && blob.size === r.sizeBytes,
           type: blob?.type ?? null,
           hasValue: !!r?.value,
@@ -235,6 +256,7 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     // stores none — so a track played from its downloads page has no recipients
     // and cannot be boosted correctly.
     check('stored under its enclosure URL, bytes match, value block kept', record, {
+      cacheKeys: 1, records: 1,
       keyIsEnclosureUrl: true, bytesMatchRecord: true, type: 'audio/mpeg', hasValue: true, hasFeedGuid: true,
     });
   }
@@ -373,6 +395,112 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     await wait(2500);
     check('...and the second press empties the library',
       await js(`document.querySelectorAll('ul li').length`), 0);
+  }
+
+  section('10. Chapters and the cover come with it, and survive going OFFLINE');
+  {
+    const GUID = 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f';
+    await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
+    await wait(14000);
+    await js(`document.querySelector('button[aria-label^="Download"]').click(); true`);
+    let done = false;
+    for (let i = 0; i < 120 && !done; i++) {
+      await wait(2000);
+      done = await js(`!!document.querySelector('button[aria-label^="Remove the download"]')`);
+    }
+    // The extras are fetched AFTER the record is written, so the button turning
+    // green is not proof they landed. Give them their own moment.
+    await wait(4000);
+
+    const cached = await js(`
+      (async () => {
+        const doc = await caches.open('bmb-downloads-doc-v1');
+        const art = await caches.open('bmb-downloads-art-v1');
+        const docKeys = (await doc.keys()).map(r => new URL(r.url).pathname + new URL(r.url).search.slice(0, 22));
+        const artHit = (await art.keys()).length;
+        const rec = await new Promise((resolve) => {
+          const req = indexedDB.open('BmbDownloadsDB');
+          req.onsuccess = () => { const g = req.result.transaction('downloads','readonly').objectStore('downloads').getAll(); g.onsuccess = () => resolve(g.result[0] ?? null); };
+          req.onerror = () => resolve(null);
+        });
+        return {
+          cachedChapters: docKeys.some(k => k.startsWith('/api/chapters')),
+          // Art is NOT asserted, and that is deliberate — see the check below.
+          artEntries: artHit,
+          // The record must NAME what it cached, or nothing can delete it later.
+          recordNamesDocs: Array.isArray(rec?.docKeys) && rec.docKeys.length > 0,
+          recordKeepsChaptersUrl: !!rec?.chaptersUrl,
+          // The audio is the download; everything else is an extra hanging off it.
+          audioStored: !!rec && rec.sizeBytes > 1000,
+        };
+      })()
+    `);
+    // ART IS BEST-EFFORT AND IS DELIBERATELY NOT ASSERTED. Measured 2026-09-09:
+    // Homegrown Hits' episode cover is a 19 MB GIF that `/api/art` answers 502
+    // for, and the feed-level PNG failed the same way from this machine. That is
+    // the artwork proxy's own behaviour, and the rule it is under everywhere in
+    // this app is that a failing route costs appearance and nothing else. So the
+    // invariant worth pinning is the one below: a cover that could not be
+    // fetched leaves the download, its record and its documents intact.
+    check('a failing cover costs the download nothing', {
+      cachedChapters: cached.cachedChapters,
+      recordNamesDocs: cached.recordNamesDocs,
+      recordKeepsChaptersUrl: cached.recordKeepsChaptersUrl,
+      audioStored: cached.audioStored,
+    }, { cachedChapters: true, recordNamesDocs: true, recordKeepsChaptersUrl: true, audioStored: true });
+    console.log(`        (art entries cached: ${cached.artEntries} — informational, see above)`);
+
+    // THE ACTUAL CLAIM. Everything above proves bytes were stored; only this
+    // proves they are reachable when the network is not. `Network.emulate` is
+    // used rather than DevTools' Offline toggle because that leaves already-open
+    // sockets alive, which has produced a false pass in this repo before.
+    await send('Network.enable');
+    await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+    await js(`document.querySelector('ul li button, li h3')?.click(); true`);
+    await wait(2000);
+    await js(`
+      (() => {
+        const rows = [...document.querySelectorAll('li')];
+        const row = rows.find(li => li.querySelector('button[aria-label^="Remove the download"]'));
+        (row?.querySelector('h3, button, a') || row)?.click();
+        return true;
+      })()
+    `);
+    await wait(8000);
+    const offline = await js(`
+      (() => {
+        const a = document.querySelector('audio');
+        return {
+          isBlob: a ? a.src.startsWith('blob:') : null,
+          decoded: a ? (a.readyState >= 1 && a.duration > 60) : null,
+        };
+      })()
+    `);
+    check('it still plays, from local bytes, with the network cut at the browser',
+      offline, { isBlob: true, decoded: true });
+
+    const chaptersOffline = await js(`
+      (async () => {
+        const doc = await caches.open('bmb-downloads-doc-v1');
+        const key = (await doc.keys()).map(r => r.url).find(u => u.includes('/api/chapters'));
+        if (!key) return { hit: false };
+        // Exactly the request useChapters makes, answered from the cache while
+        // the network is down. A live fetch of the same URL would reject.
+        const hit = await doc.match(key);
+        const body = hit ? await hit.json() : null;
+        // cache:reload FORCES the network. Without it the browser's own
+        // HTTP cache answers happily while offline, and the probe proves
+        // nothing about whether the network is really down — which is exactly
+        // what it did on the first run of this section.
+        let liveFailed = false;
+        try { await fetch(key, { cache: 'reload' }); } catch { liveFailed = true; }
+        return { hit: !!hit, chapters: Array.isArray(body?.chapters) && body.chapters.length > 0, liveFailed };
+      })()
+    `);
+    check('the chapters document answers from cache while a live fetch cannot',
+      chaptersOffline, { hit: true, chapters: true, liveFailed: true });
+
+    await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   }
 }
 

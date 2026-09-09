@@ -241,6 +241,66 @@ The dock is now five tabs. Measured at 390 px under CDP device emulation: 78 × 
 each, so height is still the binding dimension at 56 > 44. `<TabBar>`'s own comment
 gives the number to check against — the floor is not threatened until **seven**.
 
+## Chapters and the transcript are cached by THIS APP'S request URL
+
+Not by the third-party document URL, and not as parsed content inside the
+record. `useChapters` and `useTranscript` take a **URL and no episode**, so
+keying the cache by the exact request they were about to make lets them try it
+first without being handed an episode they have no other use for. It also means
+the stored bytes are same-origin and therefore readable — a cross-origin fetch of
+the raw document would be opaque.
+
+`chaptersRequestUrl` and `transcriptRequestUrl` live in the import-free leaf and
+are pinned, because **the key IS the string**: the loader builds this URL to
+fetch and the download builds it to cache, so the two agreeing character for
+character is the whole feature. A copy on each side is the shape that broke
+StableKraft's downloads — its proxy-first and direct-first domain lists were
+hand-mirrored and drifted to 16 entries against 14. Here the symptom would be
+quieter still: every download silently re-fetching its chapters. The transcript's
+`type` is part of the key because it is part of the request.
+
+A **non-ok response is never cached.** A 404 or a 502 outlives the outage that
+produced it, and the loader would then render an empty transcript as though the
+feed had none.
+
+The documents are fetched **after** the audio is stored and the record written,
+so a failure there cannot turn a successful download into a failed one. The
+record names what it cached in `docKeys`, which is what lets `remove()` delete
+them; that is deliberately **not** ref-counted, because two episodes sharing a
+chapters URL is not a thing feeds do and the cost of being wrong is one re-fetch
+of a few kilobytes.
+
+## Cover art is a ladder, and it is allowed to fail
+
+`downloadImage` tries **every** proxied `/api/art` candidate in order, for the
+same reason `<PodcastCover>` has a four-deep `onError` chain: Podcast Index's
+`image` and `artwork` routinely disagree and either can be broken. Measured
+2026-09-09 on Homegrown Hits, the episode's own cover is a **19 MB GIF** that
+`/api/art` answers 502 for — so taking only the first candidate meant no art at
+all, with the feed-level PNG sitting right behind it.
+
+It is still allowed to fail, and `check`ing that it succeeded would be wrong. The
+invariant the e2e pins is the honest one: **a cover that could not be fetched
+leaves the download, its record and its documents intact.** That is the rule the
+artwork proxy is under everywhere in this app — a failing route costs appearance
+and nothing else.
+
+`/downloads` is the one surface that renders those stored bytes, because it is
+the one that has to paint with no connection. It passes the blob **alone**, with
+no `artwork` beside it: `artCandidates` puts every proxied URL ahead of every raw
+one and a `blob:` is not proxyable, so passing both would order the network copy
+first and leave the local bytes as its fallback.
+
+## Running the e2e: kill the last browser first
+
+`npm run e2e:downloads` refuses to start if anything already holds its debug
+port, and that guard exists because its absence cost a long session. A Chrome
+left over from an earlier run keeps both the port and the profile, so the new one
+exits on the locked profile and the harness quietly attaches to the **old**
+browser. Every assertion then runs against storage it was never told about, and
+the failure reads as *"the app wrote a record but no bytes"* — a shipping bug
+that is not there.
+
 ## Failure is a sentence, not a ✗
 
 Every refusal is rendered in words. A guard that silently withholds is
