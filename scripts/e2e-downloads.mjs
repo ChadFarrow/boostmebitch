@@ -283,6 +283,99 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
   console.log('\n(sections 5-7 skipped — set E2E_DOWNLOADS_FULL=1 to download a real ~160 MB episode)');
 }
 
+// ---------------------------------------------------------------------------
+section('8. /downloads and the dock, at a real phone viewport');
+// ---------------------------------------------------------------------------
+{
+  // A REAL phone viewport, via CDP device emulation. `--window-size` does not
+  // give one: Chrome lays the page out at its default width and crops the
+  // screenshot, which reads as a broken layout and has produced a wrong
+  // conclusion in this repo before.
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 3, mobile: true });
+  await send('Page.navigate', { url: `${APP}/downloads` });
+  await wait(5000);
+  const page = await js(`
+    (() => {
+      const nav = document.querySelector('nav[aria-label="Main"]');
+      const items = nav ? [...nav.querySelectorAll('a,button')] : [];
+      const doc = document.documentElement;
+      return {
+        heading: document.querySelector('h1')?.textContent ?? null,
+        tabs: items.length,
+        // WCAG 2.5.8 is 24x24. The dock's own comment says the floor is not
+        // threatened until SEVEN tabs; this is the measurement behind that.
+        smallestTab: items.length ? Math.min(...items.map(e => Math.round(Math.min(e.getBoundingClientRect().width, e.getBoundingClientRect().height)))) : 0,
+        current: nav?.querySelector('[aria-current="page"]')?.textContent?.trim() ?? null,
+        overflow: doc.scrollWidth - doc.clientWidth,
+      };
+    })()
+  `);
+  check('five tabs, all clearing 24px, Downloads current, no overflow at 390px', page,
+    { heading: 'Downloads', tabs: 5, smallestTab: 56, current: 'Downloads', overflow: 0 });
+
+  // "Nothing downloaded yet" is a CLAIM about the listener's library, and it may
+  // only be made once the read has answered — see `downloadManager.ready()`.
+  const empty = await js(`document.querySelector('h1')?.nextElementSibling?.textContent?.trim() ?? null`);
+  check('an empty library says so only after the read landed', empty, 'Nothing downloaded yet');
+}
+
+if (process.env.E2E_DOWNLOADS_FULL === '1') {
+  section('9. A downloaded episode is listed, plays IN PLACE, and can be deleted');
+  {
+    const GUID = 'ac746d09-7c3b-5bcd-b28a-f12d6456ca8f';
+    await send('Page.navigate', { url: `${APP}/?podcast=${GUID}` });
+    await wait(14000);
+    await js(`document.querySelector('button[aria-label^="Download"]').click(); true`);
+    let done = false;
+    for (let i = 0; i < 120 && !done; i++) {
+      await wait(2000);
+      done = await js(`!!document.querySelector('button[aria-label^="Remove the download"]')`);
+    }
+    await send('Page.navigate', { url: `${APP}/downloads` });
+    await wait(5000);
+    const listed = await js(`
+      (() => {
+        const li = document.querySelector('ul li');
+        const doc = document.documentElement;
+        return {
+          rows: document.querySelectorAll('ul li').length,
+          saysSize: /[0-9]+ (MB|GB)/.test(document.querySelector('h1')?.nextElementSibling?.textContent ?? ''),
+          saysDevice: [...document.querySelectorAll('p')].some(p => /used on this device/.test(p.textContent)),
+          // Eviction is expected on iOS rather than exceptional, so the page
+          // says so before it happens.
+          saysEviction: [...document.querySelectorAll('p')].some(p => /remove downloads to free space/.test(p.textContent)),
+          overflow: doc.scrollWidth - doc.clientWidth,
+          rowOverflow: li ? li.scrollWidth - li.clientWidth : null,
+        };
+      })()
+    `);
+    check('one row, a size, the device figure, the iOS notice, no overflow', listed,
+      { rows: 1, saysSize: true, saysDevice: true, saysEviction: true, overflow: 0, rowOverflow: 0 });
+
+    await js(`document.querySelector('ul li button[aria-label^="Play"]').click(); true`);
+    await wait(6000);
+    const inPlace = await js(`
+      (() => { const a = document.querySelector('audio');
+        return { path: location.pathname, isBlob: a ? a.src.startsWith('blob:') : null, decoded: a ? (a.readyState >= 1 && a.duration > 60) : null }; })()
+    `);
+    // Playing must NOT navigate: <Player> is in the root layout, so the audio
+    // starts here and the mini-player appears over this list.
+    check('plays from local bytes without leaving /downloads', inPlace,
+      { path: '/downloads', isBlob: true, decoded: true });
+
+    // Two presses, not window.confirm — a native dialog in the installed PWA is
+    // a system sheet over the app.
+    await js(`[...document.querySelectorAll('button')].find(x => /DELETE ALL/.test(x.textContent||''))?.click(); true`);
+    await wait(400);
+    const armed = await js(`[...document.querySelectorAll('button')].some(b => /REALLY DELETE ALL/.test(b.textContent||''))`);
+    check('DELETE ALL arms rather than deleting', armed, true);
+    await js(`[...document.querySelectorAll('button')].find(x => /REALLY DELETE ALL/.test(x.textContent||''))?.click(); true`);
+    await wait(2500);
+    check('...and the second press empties the library',
+      await js(`document.querySelectorAll('ul li').length`), 0);
+  }
+}
+
 check('no uncaught exceptions overall', exceptions, []);
 console.log(fails ? `\nDOWNLOADS E2E FAILED (${fails})` : '\nDOWNLOADS E2E OK');
 chrome.kill();

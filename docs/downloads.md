@@ -209,6 +209,38 @@ page has no recipients and cannot be boosted correctly. This app stores `value` 
 
 ---
 
+## The `/downloads` page, and the two handoffs it must get right
+
+**Playing a row does not navigate.** `<Player>` is mounted in the root layout, so
+`play()` from here starts the audio in place and the mini-player appears over the
+list. Verified: `location.pathname` stays `/downloads` while `audio.src` is a
+`blob:` URL the decoder has read.
+
+**Opening the SHOW is the one thing that needs a handoff**, and it is the one
+`<FavoritesPage>` documents: set the store, then `router.push('/')` — never
+`router.push('/?podcast=…')`. `<HomePage>`'s restore effect early-returns whenever
+a selection is already set, and the store is module-level, so a visitor who opened
+any show earlier in the session would have their param silently ignored and land
+back on that show. `setShowOrigin` goes **after** `selectPodcast`, which clears it.
+And the page's own `<Link href="/">` calls `clearShowSelection()`, because the
+handoff works precisely *because* the store outlives the route change.
+
+**Delete is by key.** A download whose feed moved its enclosure URL and which
+carries no item guid is genuinely orphaned — nothing can match it to an episode
+any more — so a row's DELETE is the only way those bytes ever come back.
+
+**The empty state is a claim.** "Nothing downloaded yet" may only be shown once
+`downloadManager.ready()` is true. `<FavoritesPage>` shipped saying "Nothing saved
+yet." over a full library because it had no in-flight state, and it self-corrected
+a moment later, which is what made it worse.
+
+**DELETE ALL is a two-press confirm, not `window.confirm`.** In the installed PWA a
+native dialog is a system sheet over the app.
+
+The dock is now five tabs. Measured at 390 px under CDP device emulation: 78 × 56
+each, so height is still the binding dimension at 56 > 44. `<TabBar>`'s own comment
+gives the number to check against — the floor is not threatened until **seven**.
+
 ## Failure is a sentence, not a ✗
 
 Every refusal is rendered in words. A guard that silently withholds is
