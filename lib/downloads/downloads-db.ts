@@ -85,16 +85,18 @@ function openDb(): Promise<IDBDatabase> {
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
-        const store = db.createObjectStore(STORE, { keyPath: 'key' });
+        db.createObjectStore(STORE, { keyPath: 'key' });
         /**
-         * The second-chance lookup. `<Player>`'s src effect documents the case:
-         * an episode object can be ENRICHED IN PLACE and arrive with a new
-         * `enclosureUrl` on the same id — a feed moving CDN, or gaining an
-         * analytics wrapper. A key derived from the URL alone orphans the
-         * download at that moment, so playback asks this index next.
+         * NO INDEXES, DELIBERATELY. The manager reads every record into memory
+         * once (`hydrate`) and answers both lookups — by key and by item guid —
+         * from Maps, because the by-guid one sits in front of `el.src = …` and
+         * an IndexedDB round trip there would delay the start of every episode.
+         *
+         * An index would be a second mechanism answering a question already
+         * answered. If the library ever grows past what is sensible to hold in
+         * memory, add one here with a `DB_VERSION` bump — additively, never by
+         * recreating the store.
          */
-        store.createIndex('itemGuid', 'itemGuid', { unique: false });
-        store.createIndex('createdAt', 'createdAt', { unique: false });
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -131,14 +133,6 @@ export async function putRecord(record: DownloadRecord): Promise<void> {
 
 export async function getRecord(key: string): Promise<DownloadRecord | null> {
   return (await withStore<DownloadRecord | undefined>('readonly', (s) => s.get(key))) ?? null;
-}
-
-/** The second-chance lookup — see the `itemGuid` index note above. */
-export async function getRecordByItemGuid(itemGuid: string): Promise<DownloadRecord | null> {
-  const db = await openDb();
-  const tx = db.transaction(STORE, 'readonly');
-  const index = tx.objectStore(STORE).index('itemGuid');
-  return (await promisify<DownloadRecord | undefined>(index.get(itemGuid))) ?? null;
 }
 
 export async function getAllRecords(): Promise<DownloadRecord[]> {

@@ -53,7 +53,6 @@ export interface DownloadsBackend {
   deleteImage: typeof cache.deleteImage;
   requestPersistence: typeof cache.requestPersistence;
   putRecord: typeof db.putRecord;
-  getRecordByItemGuid: typeof db.getRecordByItemGuid;
   getAllRecords: typeof db.getAllRecords;
   deleteRecord: typeof db.deleteRecord;
   clearAllRecords: typeof db.clearAllRecords;
@@ -68,7 +67,6 @@ const realBackend: DownloadsBackend = {
   deleteImage: cache.deleteImage,
   requestPersistence: cache.requestPersistence,
   putRecord: db.putRecord,
-  getRecordByItemGuid: db.getRecordByItemGuid,
   getAllRecords: db.getAllRecords,
   deleteRecord: db.deleteRecord,
   clearAllRecords: db.clearAllRecords,
@@ -77,6 +75,12 @@ const realBackend: DownloadsBackend = {
 export class DownloadManager {
   private backend: DownloadsBackend;
   private records = new Map<string, DownloadRecord>();
+  /**
+   * itemGuid -> key. The second-chance lookup, held in memory because it sits
+   * in front of `el.src = …` and an IndexedDB round trip there would delay the
+   * start of every episode, downloaded or not.
+   */
+  private byItemGuid = new Map<string, string>();
   private states = new Map<string, DownloadState>();
   private controllers = new Map<string, AbortController>();
   private listeners = new Set<() => void>();
@@ -124,7 +128,7 @@ export class DownloadManager {
     if (this.hydrating) return this.hydrating;
     this.hydrating = (async () => {
       try {
-        for (const r of await this.backend.getAllRecords()) this.records.set(r.key, r);
+        for (const r of await this.backend.getAllRecords()) this.remember(r);
       } catch {
         // No IndexedDB, or a blocked upgrade. An empty library is the honest
         // answer; `ready()` still flips so no surface hangs on "loading".
@@ -243,7 +247,7 @@ export class DownloadManager {
     };
 
     await this.backend.putRecord(record);
-    this.records.set(key, record);
+    this.remember(record);
     this.setState(key, null);
 
     // Art is a nicety and never blocks the download reporting success.
@@ -270,7 +274,7 @@ export class DownloadManager {
 
   async remove(key: string): Promise<void> {
     this.controllers.get(key)?.abort();
-    this.records.delete(key);
+    this.forget(key);
     this.setState(key, null);
     await Promise.all([
       this.backend.deleteRecord(key).catch(() => {}),
@@ -283,6 +287,7 @@ export class DownloadManager {
   async clearAll(): Promise<void> {
     for (const c of this.controllers.values()) c.abort();
     this.records.clear();
+    this.byItemGuid.clear();
     this.states.clear();
     await Promise.all([
       this.backend.clearAllRecords().catch(() => {}),
@@ -297,46 +302,83 @@ export class DownloadManager {
    * bug. Forget it and let the caller stream.
    */
   async forgetEvicted(key: string): Promise<void> {
-    this.records.delete(key);
+    this.forget(key);
     this.states.delete(key);
     await this.backend.deleteRecord(key).catch(() => {});
     this.bump();
   }
 
   /**
-   * The blob URL for this episode's local bytes, or `null`.
+   * Which stored record, if any, holds this episode's bytes. Synchronous, once
+   * hydrated.
    *
-   * Two lookups, and the second is why `downloads-db.ts` carries an `itemGuid`
-   * index: an episode object can be enriched in place and arrive with a NEW
-   * `enclosureUrl` on the same id — a feed moving CDN, or gaining an analytics
-   * wrapper — which a URL-derived key alone would read as a different episode.
+   * TWO LOOKUPS, and the second is the one that is easy to leave out.
+   * `<Player>`'s src effect documents the case in its own comment: an episode
+   * object can be **enriched in place** and arrive with a NEW `enclosureUrl` on
+   * the same id — a feed moving CDN, or gaining an analytics wrapper. A
+   * URL-derived key alone reads that as a different episode and streams over a
+   * download the listener already has.
+   */
+  private recordFor(episode: Episode): DownloadRecord | null {
+    const key = this.keyFor(episode);
+    if (key) {
+      const byKey = this.records.get(key);
+      if (byKey) return byKey;
+    }
+    if (!episode.guid) return null;
+    const viaGuid = this.byItemGuid.get(episode.guid);
+    return (viaGuid && this.records.get(viaGuid)) || null;
+  }
+
+  /**
+   * Is there a download for this episode? Answered **synchronously**, so the
+   * player can keep its source assignment on the same tick as the tap.
+   *
+   * Three values, and the third is the point:
+   * - a `string` — the record key. Local bytes exist; resolving them is async.
+   * - `null` — definitely not downloaded.
+   * - `undefined` — **not known yet**, because hydration has not landed. The
+   *   caller must not read this as "no", which is the same mistake
+   *   `<FavoritesPage>` made about an empty library.
+   *
+   * WHY THIS EXISTS RATHER THAN JUST AWAITING `resolveSource`. iOS ties
+   * `play()` to the user gesture, and an `await` over real I/O can lose it, so
+   * an episode with no download must reach `el.src = …` without one. Keeping
+   * that path synchronous means this feature cannot regress ordinary playback
+   * for someone who has never pressed download.
+   */
+  localKeyFor(episode: Episode | null | undefined): string | null | undefined {
+    if (!episode) return null;
+    if (!this.hydrated) return undefined;
+    return this.recordFor(episode)?.key ?? null;
+  }
+
+  /**
+   * The blob URL for a stored download, or `null` if its bytes are gone.
+   *
+   * Takes the KEY rather than the episode, because the caller has already
+   * decided there is something to fetch — see {@link localKeyFor}.
    *
    * **The caller owns revoking the URL.**
+   */
+  async objectUrlFor(key: string): Promise<string | null> {
+    const url = await this.backend.getObjectUrl(key);
+    if (url) return url;
+    // The bytes are gone but the record is not: iOS evicted them. Forget it and
+    // let the caller stream, which is what they had before pressing download.
+    await this.forgetEvicted(key);
+    return null;
+  }
+
+  /**
+   * The blob URL for this episode's local bytes, or `null` — awaiting hydration
+   * first. For a caller that is not on the playback critical path.
    */
   async resolveSource(episode: Episode | null | undefined): Promise<string | null> {
     if (!episode) return null;
     await this.hydrate();
-
-    const key = this.keyFor(episode);
-    if (key && this.records.has(key)) {
-      const url = await this.backend.getObjectUrl(key);
-      if (url) return url;
-      await this.forgetEvicted(key);
-      return null;
-    }
-
-    if (!episode.guid) return null;
-    let byGuid: DownloadRecord | null = null;
-    try {
-      byGuid = await this.backend.getRecordByItemGuid(episode.guid);
-    } catch {
-      return null;
-    }
-    if (!byGuid) return null;
-    const url = await this.backend.getObjectUrl(byGuid.key);
-    if (url) return url;
-    await this.forgetEvicted(byGuid.key);
-    return null;
+    const record = this.recordFor(episode);
+    return record ? this.objectUrlFor(record.key) : null;
   }
 
   // --- the one-at-a-time queue ----------------------------------------------
@@ -353,6 +395,28 @@ export class DownloadManager {
     const next = this.queue.shift();
     if (next) next();
     else this.busy = false;
+  }
+
+  /**
+   * The ONE place a record enters memory, so `records` and `byItemGuid` cannot
+   * drift. A guid map built anywhere else is a lookup that answers correctly
+   * until the day something is removed.
+   */
+  private remember(r: DownloadRecord) {
+    this.records.set(r.key, r);
+    if (r.itemGuid) this.byItemGuid.set(r.itemGuid, r.key);
+  }
+
+  /** ...and the one place it leaves. */
+  private forget(key: string) {
+    const r = this.records.get(key);
+    // Only drop the guid entry if it still points HERE. Two records can share an
+    // item guid when a feed's enclosure URL moved and both copies were kept;
+    // deleting the older must not unhook the newer.
+    if (r?.itemGuid && this.byItemGuid.get(r.itemGuid) === key) {
+      this.byItemGuid.delete(r.itemGuid);
+    }
+    this.records.delete(key);
   }
 
   private setState(key: string, state: DownloadState | null) {
