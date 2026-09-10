@@ -150,6 +150,17 @@ const BUNKER_CONNECT_TIMEOUT_MS = 90_000;
 // rather than leaving the user staring at "Connecting…" for 15+ seconds.
 const BUNKER_RECONNECT_TIMEOUT_MS = 3_000;
 
+// How long the reconnect's liveness probe waits for a `pong` before giving up
+// on the transport it already has. See `pingBunkerAdapter`.
+//
+// SHORTER THAN BUNKER_CALL_TIMEOUT_MS ON PURPOSE, and the direction is the
+// argument. Failing the probe costs one rebuild — the behaviour the reconnect
+// had before it existed — while waiting it out delays the rebuild by the whole
+// window on a transport that is genuinely gone. 10 s clears an APNs round trip
+// to a closed Clave (proxy -> push -> Notification Service Extension -> publish,
+// measured in low single-digit seconds) with room to spare.
+const BUNKER_PING_TIMEOUT_MS = 10_000;
+
 // How long we keep re-issuing a request the signer has QUEUED for the user,
 // and how long we wait between attempts. See withApprovalWait below.
 //
@@ -213,6 +224,10 @@ const pendingClientSks = new Map<string, Uint8Array>();
 // reconnect. The account-menu reconnect banner subscribes via
 // subscribeBunkerHealth.
 let bunkerStale = false;
+// WHY THE SIGNER CANNOT SERVE THIS SESSION, in the signer's own words, when
+// there is such an answer — see `markBunkerStale`. Null for the ordinary case,
+// where nothing answered and there is nothing to quote.
+let bunkerStaleReason: string | null = null;
 const healthListeners = new Set<(stale: boolean) => void>();
 
 function setBunkerStale(stale: boolean) {
@@ -227,12 +242,39 @@ export function isBunkerStale(): boolean {
   return bunkerStale;
 }
 
-export function markBunkerStale(): void {
+/**
+ * "This session's signer cannot serve it — say so and offer the way back."
+ *
+ * `reason` is the signer's OWN words, for the case where it answered and the
+ * answer was no: Clave's *"Pairing limit reached"* and *"Client not paired"*
+ * are the ones this app has seen. It defaults to null rather than being left
+ * alone, so a later failure that has nothing to quote cannot leave an older
+ * refusal on screen describing it.
+ *
+ * A REFUSAL SETS THIS FLAG EVEN THOUGH THE TRANSPORT IS ALIVE, and that is the
+ * one place this flag is not about the link. `trackBunkerCall` is right to
+ * CLEAR it when the signer answers mid-session — an answer proves the link and
+ * that session is still usable. A refusal on the RESTORE is the opposite: the
+ * link is fine and the session is over. This flag is the only thing that keeps
+ * `<BunkerHealthBanner>` and its dot on screen, so leaving it down there would
+ * have hidden the fault completely — CLAUDE.md's rule that a guard which
+ * withholds must say so, failed in the quietest possible way.
+ */
+export function markBunkerStale(reason?: string): void {
+  bunkerStaleReason = reason ?? null;
   setBunkerStale(true);
 }
 
 export function clearBunkerStale(): void {
+  bunkerStaleReason = null;
   setBunkerStale(false);
+}
+
+/** The signer's own last refusal, or null when nothing answered. Read by
+ *  `<BunkerHealthBanner>` so a refusal from the PAGE-LOAD restore is still on
+ *  screen when the user opens the account menu, not only after a button press. */
+export function bunkerRefusal(): string | null {
+  return bunkerStaleReason;
 }
 
 export function subscribeBunkerHealth(fn: (stale: boolean) => void): () => void {
@@ -348,8 +390,46 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
  * in an `Error`, this silently reverts to the old behaviour rather than
  * breaking loudly.
  */
-function isRemoteSignerError(e: unknown): boolean {
+export function isRemoteSignerError(e: unknown): boolean {
   return !(e instanceof Error);
+}
+
+/**
+ * ASK THE LIVE TRANSPORT WHETHER IT IS STILL THERE, before building a second one.
+ *
+ * `ping` is the one NIP-46 method whose answer is a fact about the link and
+ * nothing else: Clave auto-allows it (`LightSigner.swift` lists it beside
+ * `connect` and `get_public_key`, never prompting) and answers the literal
+ * `"pong"`, and the proxy pushes the wake at `interruption-level: passive`, so
+ * a probe costs the user no banner and no tap.
+ *
+ * WHY THE RECONNECT ASKS IT FIRST. Two reasons, and they are independent.
+ *
+ * A pong PROVES BOTH DIRECTIONS of the link, which is the one thing
+ * `bunkerStale` cannot: the flag is set by any local throw, including a
+ * `BUNKER_CALL_TIMEOUT_MS` timeout on a request the signer is holding open for
+ * the user (see docs/signers.md, "Clave stopped answering at prompt-time"). A
+ * transport marked stale by that is working, and rebuilding it is the wrong
+ * act — so is telling the user their signer did not answer.
+ *
+ * And on iOS the rebuild is not free: a second socket to a host the suspended
+ * transport still holds may never open at all (WebKit 302561 — see
+ * NOSTRCONNECT_RELAYS in ./clave.ts, which is the same hazard reached from the
+ * pairing side). Probing costs nothing the live transport was not already
+ * holding; the rebuild opens a competitor to it.
+ *
+ * NEVER THROWS, and never touches `bunkerStale` through `trackBunkerCall`. A
+ * failed probe is the ordinary case here — it is what says "go ahead and
+ * rebuild" — and letting it clear or set the health flag would mean the
+ * diagnosis moved the state it is diagnosing.
+ */
+export async function pingBunkerAdapter(adapter: BunkerAdapter): Promise<boolean> {
+  try {
+    await withTimeout(adapter.inner.ping(), BUNKER_PING_TIMEOUT_MS, 'ping');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -389,13 +469,15 @@ function isSubscriptionClosed(e: unknown): boolean {
 async function trackBunkerCall<T>(issue: () => Promise<T>, label: string): Promise<T> {
   try {
     const v = await withTimeout(issue(), BUNKER_CALL_TIMEOUT_MS, label);
-    if (bunkerStale) setBunkerStale(false);
+    if (bunkerStale) clearBunkerStale();
     return v;
   } catch (e) {
     if (isRemoteSignerError(e)) {
-      if (bunkerStale) setBunkerStale(false);
+      if (bunkerStale) clearBunkerStale();
     } else {
-      setBunkerStale(true);
+      // No reason: nothing answered, so there is nothing to quote — and passing
+      // none is what drops a refusal an earlier failure had recorded.
+      markBunkerStale();
     }
     throw e;
   }

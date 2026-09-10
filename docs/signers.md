@@ -158,8 +158,10 @@ For a remote signer on a phone the second is the **ordinary** case, not an
 error: Clave, Amber-as-bunker and nsec.app's mobile mode all lose their relay
 socket when the OS suspends them, and `BUNKER_CONNECT_TIMEOUT_MS` is 90 s of
 waiting before the app concludes anything. A network drop during a PWA relaunch
-is enough. `restoreBunkerSigner` now returns `BunkerRestoreResult` — `'ok'`,
-`'no-session'` or `'unreachable'` — and only `'no-session'` may sign the user out.
+is enough. `restoreBunkerSigner` now returns `BunkerRestoreResult`, and only `'no-session'`
+may sign the user out. (It has since grown a fourth outcome, `'refused'` — see
+*"The reconnect said 'no answer' about a signer that answered"* below — which
+does not sign the user out either.)
 
 **The discriminator is `restoreBunkerFromStorage`'s own two exits**, and it is
 safe to lean on for a reason worth writing down: it returns `null` for the
@@ -179,10 +181,11 @@ signed in while window.nostr is undefined, and the next thing that signs dies
 with a generic error."* That objection is correct. Keeping the session without
 the banner would trade a brutal failure for a silent one — CLAUDE.md's rule that
 a guard which withholds must say so. The banner names the state and offers the
-retry, and its two error strings are now different because the two failures need
-different acts from the user: `'unreachable'` says open your signer and try
-again, `'no-session'` says sign out and back in. Telling the first user to sign
-out costs them a pairing for nothing.
+retry, and its error strings are different per outcome because each failure needs
+a different act from the user: `'unreachable'` says open your signer and try
+again, `'no-session'` says sign out and back in, `'refused'` quotes the signer
+and says pair again. Telling the first user to sign out costs them a pairing for
+nothing.
 
 This is the same rule `clearBunkerSigner` already stated one function away —
 *"A FAILED RESTORE is the opposite case: the socket was suspended or a relay did
@@ -641,6 +644,129 @@ is what owns the restore effect *and* draws `<AccountMenu>`. `/npub/[npub]`,
 `/live/[npub]`, `/stream/[naddr]` and `/amber-callback` each mount it directly,
 for exactly this reason. `/privacy` is the one page that mounts neither, and it
 runs no restore either, so there is nothing there to report.
+
+### The reconnect said "no answer" about a signer that answered, and rebuilt links that were not broken
+
+Reported from an iPhone: the account menu showed *"Signer disconnected — your
+iPhone may have suspended the relay link."*, RECONNECT was pressed, and it came
+back with *"No answer from your signer. Open it, then try again."* Both halves
+of that sentence can be false, and the act it asks for cannot fix either case.
+
+**`restoreBunkerSigner` (`lib/nostr/auth.ts`) had a bare `catch` over two
+different facts.** `restoreBunkerFromStorage` throws for a dead transport AND
+for the signer refusing, and the second one is an answer that arrived over a
+link that demonstrably works. Clave has three refusals on `connect` alone
+(`Shared/LightSigner.swift`, DocNR/clave):
+
+| Clave's answer | What it means | What the user has to do |
+|---|---|---|
+| `Invalid or missing bunker secret` | Its side of the pairing is gone, and the secret we replay is the spent `nostrconnect` one | Pair again |
+| `Client not paired — send connect with valid bunker secret first` | Same, seen on `get_public_key` when `connect` was never accepted | Pair again |
+| `Pairing limit reached. Unpair an existing client in Clave settings.` | Clave's cap of five connections | Free a slot in Clave, then pair again |
+
+None of them is approval-pending, so each propagates on the first answer, and
+each arrived at the user as *"No answer from your signer."* — advice that sends
+them to open an app that had just replied. `markBunkerStale()` then pointed the
+reconnect banner at a link that was never down. This is the *"a bunker that
+answers with an error is not a bunker that is gone"* section above, reached one
+level up: `trackBunkerCall` gets it right and CLEARS the flag on a signer's
+answer, and this function set it again on the way out. Same discriminator
+(`isRemoteSignerError`, now exported), same coupling to the exact `2.19.4` pin.
+
+`BunkerRestoreResult` is therefore FOUR outcomes and an object rather than a
+string union, because `refused` carries the signer's own words. They are QUOTED,
+not paraphrased: *"Pairing limit reached"* and *"Client not paired"* want
+different next moves and only the reader can pick between them. A refusal does
+**not** sign the user out either — the pointer is dead, but it is the only thing
+left that can say why, and `abandonRestoredSession` would replace that sentence
+with a blank sign-in screen.
+
+**A refusal DOES set `bunkerStale`, and getting that backwards nearly hid the
+whole fault.** The flag is documented as "the transport looks dead", so the
+first cut of this left it alone on a refusal — correct about the transport, and
+catastrophic on screen: `trackBunkerCall` had already CLEARED it on the signer's
+answer, so `<BunkerHealthBanner>` returned null and the message unmounted as it
+was written. That flag is the only thing keeping the banner and its dot on
+screen, and a refusal is exactly as unusable as a dead link. `trackBunkerCall`
+is still right to clear it mid-session — an answer proves the link and that
+session keeps working — and the restore is the one place where the link is fine
+and the session is over. `markBunkerStale(reason?)` carries the words, and
+`bunkerRefusal()` is what the banner seeds from, so a refusal that happened
+during the PAGE-LOAD restore is already on screen the first time the menu opens
+rather than needing a press against a signer that has already answered. Every
+mutation of the flag goes through `markBunkerStale`/`clearBunkerStale` now, so a
+later failure with nothing to quote cannot leave an older refusal describing it.
+
+The banner's headline varies with it. Naming the iPhone and a suspended relay
+link at someone whose signer just answered sends them to fix the one thing that
+is working.
+
+**The second half: the reconnect asked for nothing before rebuilding.** It went
+straight to a fresh `SimplePool` and a fresh `BunkerSigner`, which is wrong in
+both directions on a phone.
+
+- **`bunkerStale` is not evidence the link is dead.** It is set by any local
+  throw, including a `BUNKER_CALL_TIMEOUT_MS` timeout on a request the signer is
+  holding open for its user — see the next section. A transport marked stale
+  that way is working, and rebuilding it is the wrong act.
+- **On iOS the rebuild competes with the corpse.** The suspended transport still
+  owns its sockets, and a second socket to a host that already has one may never
+  open at all (WebKit 302561 — the same hazard `NOSTRCONNECT_RELAYS` is sized
+  against, reached from the other side, and the reason
+  `NostrConnectAttempt.abandon` exists for the pairing path). The reconnect had
+  no equivalent.
+
+So it PINGS first (`pingBunkerAdapter`). `ping` is the one NIP-46 method whose
+answer is a fact about the link and nothing else: Clave auto-allows it beside
+`connect` and `get_public_key`, answers the literal `"pong"`, and the proxy
+pushes the wake at `interruption-level: passive`, so the probe costs no banner
+and no tap. A pong proves BOTH directions, clears the flag and returns `ok`
+without opening anything. Only a failed probe rebuilds — and then
+`closeStaleBunkerTransport()` hands the dead transport's sockets back FIRST, so
+the replacement is not the second socket to its own host.
+
+`closeStaleBunkerTransport` deliberately leaves `bunkerInstance` installed.
+Clearing it would restore the extension's `window.nostr` mid-reconnect — and on
+a phone there is no extension, so the app would read as signed out for the
+length of the handshake. The closed adapter answers nostr-tools' "this signer is
+not open anymore", an `Error`, which is the honest answer for a transport a
+failed ping has just proved dead.
+
+The probe's own budget is `BUNKER_PING_TIMEOUT_MS` (10 s), shorter than
+`BUNKER_CALL_TIMEOUT_MS` on purpose: failing it costs one rebuild — the
+behaviour the reconnect had before the probe existed — while waiting it out
+delays the rebuild by the whole window on a transport that is genuinely gone.
+
+### OPEN: Clave stopped answering at prompt-time, and `withApprovalWait` is built around the answer it stopped sending
+
+**Not fixed. Recorded so the next session does not re-derive it from a field
+report.**
+
+The section above — *"A permission error from Clave is a queue receipt, not a
+refusal"* — describes Clave answering `permission denied` immediately and
+delivering the real result later on the same id. Clave changed that in
+`dc59364`, *"fix(nip46): hold low-trust sign requests open instead of erroring
+at prompt-time"* (2026-06-14, build 75-ish), and the commit's own comment says
+why: a populated `error` field is TERMINAL under NIP-46, so every compliant
+client stops listening the instant it arrives. Clave now queues the request and
+sends **nothing** until the user acts.
+
+What that does to this app, on a current Clave build:
+
+- `trackBunkerCall` bounds the call at `BUNKER_CALL_TIMEOUT_MS` (30 s) and the
+  timeout is an `Error`, so `isApprovalPending` is false and the call fails.
+- The user then has thirty seconds to find the notification and tap Approve. Past
+  that the publish reports failure, `bunkerStale` is set, and the reconnect
+  banner appears over a signer that is fine — which is how the screenshot that
+  started the section above came to exist at all.
+- The original request is still live on nostr-tools' side (no response means no
+  `delete listeners[id]`), so the fix is NOT the re-issue `withApprovalWait`
+  performs. Re-issuing on a new id queues a SECOND approval at the signer. The
+  right move is to keep waiting on the request already in flight, gated on a
+  `ping` that says the signer is still there.
+
+`APPROVAL_PENDING_PATTERNS` must stay regardless: older Clave builds, and other
+signers, still answer that way, and `check:nip46error` pins it.
 
 ### Never make Amber render something the user did not ask to see
 

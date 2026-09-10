@@ -223,6 +223,30 @@ function closeBunkerTransport() {
   try { bunkerInstance.pool.destroy(); } catch { /* ignore */ }
 }
 
+/**
+ * Tear down the transport a proven-dead bunker session is still holding, and
+ * keep the adapter installed.
+ *
+ * FOR THE RECONNECT PATH ONLY, and only AFTER a `ping` has failed — see
+ * `pingBunkerAdapter` in ./bunker.ts. On iOS the transport a suspended PWA
+ * leaves behind still owns its sockets, and a second socket to the same host
+ * may never open (WebKit 302561), so the replacement the reconnect is about to
+ * build is competing with a corpse. Closing first hands it the slot.
+ *
+ * IT DELIBERATELY DOES NOT CLEAR `bunkerInstance`, and that is not an
+ * oversight. Clearing it would restore the extension's `window.nostr` mid-
+ * reconnect, so a call landing in that window would be signed by a DIFFERENT
+ * key — and on a phone there is no extension to fall back to, so the app would
+ * read as signed out for as long as the handshake takes. The adapter stays
+ * installed and answers every call with nostr-tools' "this signer is not open
+ * anymore", which is an `Error`, which is exactly the honest answer for a
+ * transport we have just proved dead. `activateBunkerSigner` replaces it on
+ * success; on failure the reconnect banner is already on screen.
+ */
+export function closeStaleBunkerTransport() {
+  closeBunkerTransport();
+}
+
 export function activateBunkerSigner(adapter: BunkerAdapter) {
   if (typeof window === 'undefined') {
     throw new Error('Bunker signer requires a browser environment');

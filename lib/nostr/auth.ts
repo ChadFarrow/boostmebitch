@@ -18,13 +18,17 @@ import {
   revokeBunkerSession,
   deactivateLocalSigner,
   extensionNostr,
+  getActiveBunker,
+  closeStaleBunkerTransport,
 } from './signer';
 import { clearKey, getKey, putKey } from './local-key-store';
 import {
   bunkerUriForRestore,
   clearBunkerStale,
   connectBunkerFromUri,
+  isRemoteSignerError,
   markBunkerStale,
+  pingBunkerAdapter,
   restoreBunkerFromStorage,
   startNostrConnect,
   type BunkerAdapter,
@@ -205,24 +209,91 @@ function finalizeBunkerLogin(adapter: BunkerAdapter): NostrIdentity {
  * kicks it off in the background; signing operations that arrive before it
  * resolves will throw, but nothing signs unprompted right after page load.
  */
-export type BunkerRestoreResult = 'ok' | 'no-session' | 'unreachable';
+export type BunkerRestoreResult =
+  | { kind: 'ok' }
+  | { kind: 'no-session' }
+  | { kind: 'unreachable' }
+  /** The signer ANSWERED and the answer was no. `message` is its own words. */
+  | { kind: 'refused'; message: string };
 
+/**
+ * A REFUSAL IS NOT AN ABSENCE, and this function used to report one as the
+ * other.
+ *
+ * `restoreBunkerFromStorage` throws for two completely different facts and this
+ * caught both with a bare `catch`. One is a dead transport. The other is the
+ * signer answering, over a link that demonstrably works, that it will not take
+ * this client — and Clave has three of those on `connect` alone
+ * (`Shared/LightSigner.swift`): *"Invalid or missing bunker secret"* and
+ * *"Client not paired — send connect with valid bunker secret first"* when the
+ * pairing is gone from its side, and *"Pairing limit reached"* at its cap of
+ * five. None of them is approval-pending, so each propagates on the first
+ * answer.
+ *
+ * Reported from an iPhone: RECONNECT rendered *"No answer from your signer.
+ * Open it, then try again."* — both halves false, and the retry it asks for
+ * cannot work, because the fix is to PAIR AGAIN (or free a slot in Clave), not
+ * to open the app. `markBunkerStale()` compounded it by pointing the reconnect
+ * banner at a link that was never down.
+ *
+ * This is CLAUDE.md's *"a bunker that answers with an error is not a bunker
+ * that is gone"* reached one level up: `trackBunkerCall` already gets this
+ * right and CLEARS the flag on a signer's answer, and this function then set it
+ * again on the way out. `isRemoteSignerError` is the same discriminator, with
+ * the same coupling to the exact `nostr-tools` 2.19.4 pin — the library rejects
+ * with the signer's error STRING, unwrapped, and every other rejection on that
+ * path is an `Error`.
+ *
+ * THE PROBE IS THE OTHER HALF, and it runs before anything is built. See
+ * `pingBunkerAdapter`: a pong proves the link this session already holds is
+ * alive, which the `bunkerStale` flag cannot — that flag is set by any local
+ * throw, a timeout on a request the signer is holding open for the user
+ * included. Without it the reconnect rebuilds a working transport, and on iOS
+ * the rebuild competes with the sockets the old one still holds.
+ */
 export async function restoreBunkerSigner(): Promise<BunkerRestoreResult> {
+  // The transport this session already has, if any. Null on a page-load
+  // restore, which is the path with nothing to probe and nothing to close.
+  const live = getActiveBunker();
+  if (live && await pingBunkerAdapter(live)) {
+    clearBunkerStale();
+    return { kind: 'ok' };
+  }
+  // Proven dead: hand its sockets back BEFORE opening their replacement.
+  if (live) closeStaleBunkerTransport();
+
   let adapter: BunkerAdapter | null;
   try {
     adapter = await restoreBunkerFromStorage();
-  } catch {
+  } catch (e) {
+    // The signer answered. The link works, the pairing does not — say so in the
+    // signer's own words. It still marks the session stale, because that flag
+    // is the only thing keeping <BunkerHealthBanner> and its dot on screen and
+    // a refusal is exactly as unusable as a dead link; `markBunkerStale` says
+    // why at more length.
+    //
+    // A NON-EMPTY STRING, not merely "not an Error". `isRemoteSignerError` is
+    // the repo's discriminator for "this came off the wire" and it is right —
+    // but the branch below shows the value to a human, and a signer that put an
+    // object in `error` would render as "[object Object]". Same guard
+    // `isApprovalPending` applies for the same reason. Anything else falls
+    // through to `unreachable`, which asks for a retry that costs nothing.
+    if (isRemoteSignerError(e) && typeof e === 'string' && e.trim()) {
+      const message = e.trim();
+      markBunkerStale(message);
+      return { kind: 'refused', message };
+    }
     // The relay did not answer. The user asked for nothing and decided
     // nothing, so nothing they own is torn down — see `clearBunkerSigner`,
     // which already states this rule for the pairing and was not being
     // followed here.
     markBunkerStale();
-    return 'unreachable';
+    return { kind: 'unreachable' };
   }
-  if (!adapter) return 'no-session';
+  if (!adapter) return { kind: 'no-session' };
   activateBunkerSigner(adapter);
   clearBunkerStale();
-  return 'ok';
+  return { kind: 'ok' };
 }
 
 /**
