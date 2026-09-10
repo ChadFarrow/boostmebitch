@@ -105,7 +105,7 @@ npm run dev / build / start / lint
 | `check:favbackup` | `lib/favorites-export.ts` — what a backup file must prove before we republish it | a tampered file republishes a list nobody signed |
 | `check:relaysocket` | `reclaimSocket` — the socket the pinned nostr-tools drops on a failed connect | sockets stop opening: feeds hang, publishes reach nobody |
 | `check:livemerge` | `mergeLiveOverPi` — when an RSS read may DELETE a live row | an unreadable feed ends a live show, or an ended one never leaves |
-| `check:liveover` | `liveBroadcastIsOver` — a `live` flag nobody cleared | a LIVE badge over silence, for days |
+| `check:liveover` | `liveBroadcastIsOver` — stale `live` flags, and overruns | a badge over silence, or none |
 | `check:feedscan` | `findBlocks`/`findTags` — the linear scanner every feed parser walks a document with | 1 MB of `<!--` pins a lambda for a minute |
 | `check:cappedbody` | `lib/capped-body.ts` — the capped readers, server AND browser | an uncapped `arrayBuffer` fills the heap from one feed |
 | `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |

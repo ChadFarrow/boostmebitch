@@ -601,6 +601,12 @@ export async function getGlobalLiveItems(): Promise<Episode[]> {
     // by anything. PI is not observed to send `end`, so in practice this is the
     // 24 h ceiling — which is exactly the shape of the failure: a show that
     // ended days ago and still says `live`.
+    //
+    // This is the BACKSTOP, not the ordinary exit. Normally the publisher ends
+    // the broadcast, podping carries that here within seconds, and the row
+    // simply stops being returned as `live` — which is why an item that runs
+    // past its declared `end` is kept rather than cut off. See
+    // `liveBroadcastIsOver`.
     if (liveBroadcastIsOver({ status, startTime, endTime }, Math.floor(Date.now() / 1000))) continue;
     out.push({
       ...buildEpisode(e),
@@ -825,11 +831,14 @@ function parseRssLiveItems(xml: string): RawLiveItem[] {
     const endStr = readAttr(attrs, 'end');
     const endMs = endStr ? Date.parse(endStr) : NaN;
     const endTime = Number.isFinite(endMs) ? Math.floor(endMs / 1000) : undefined;
-    // `status="live"` is a flag a human flips, and humans forget. The feed's
-    // own `end` contradicts it here, so drop the broadcast rather than render a
-    // pulsing badge and a working PLAY button over silence. Dropped rather than
+    // `status="live"` is a flag a human flips, and humans forget — so a stale
+    // flag must not render a pulsing badge and a working PLAY button over
+    // silence. But `end` is a SCHEDULE and hosts run long, so an on-air show
+    // keeps its row for `LIVE_OVERRUN_GRACE_SECS` past that time and leaves on
+    // the publisher's own signal instead. Both halves are in
+    // `liveBroadcastIsOver`; a broadcast this drops is dropped rather than
     // demoted to 'ended' because `ended` is already dropped two lines above —
-    // one shape for "this is over", not two. See `liveBroadcastIsOver`.
+    // one shape for "this is over", not two.
     if (liveBroadcastIsOver({ status: rawStatus, startTime, endTime }, Math.floor(Date.now() / 1000))) continue;
     const enc = firstTag(inner, 'enclosure');
     const itunesImg = firstTag(inner, 'itunes:image');
