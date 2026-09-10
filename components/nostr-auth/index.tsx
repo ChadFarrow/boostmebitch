@@ -461,8 +461,14 @@ export function NostrAuth() {
       // than looking signed in and failing at the next thing that signs. That
       // banner is the answer to the state abandonRestoredSession was written
       // against; without it this change would just hide the fault.
+      //
+      // `refused` keeps them too, and for a reason that is not obvious: the
+      // signer has said this client is not paired any more, so the pointer is
+      // dead — but it is the ONLY thing that can tell the user WHY, and
+      // signing out here would replace that sentence with a blank sign-in
+      // screen. <BunkerHealthBanner> renders the signer's own words instead.
       restoreBunkerSigner().then((r) => {
-        if (r === 'no-session') abandonIfNotSuperseded();
+        if (r.kind === 'no-session') abandonIfNotSuperseded();
       }).catch(abandonIfNotSuperseded);
     } else if (signerKindStored === 'local') {
       // Async like the bunker path, not synchronous like Amber: the key has to

@@ -30,6 +30,7 @@ export { isGoogleAuthConfigured } from './google-auth';
 export { isLikelyAndroid, isLikelyIOS, normalizeAmberPubkey } from './amber';
 export {
   isBunkerStale,
+  bunkerRefusal,
   subscribeBunkerHealth,
   subscribeBunkerApproval,
   cancelBunkerApprovalWait,

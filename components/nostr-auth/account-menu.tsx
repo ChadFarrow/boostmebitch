@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useMenuKeys } from '../use-menu-keys';
 import { useRouter } from 'next/navigation';
-import { subscribeBunkerHealth, restoreBunkerSigner, isKeyEphemeral, shortNpub, type NostrIdentity } from '@/lib/nostr';
+import { subscribeBunkerHealth, bunkerRefusal, restoreBunkerSigner, isKeyEphemeral, shortNpub, type NostrIdentity } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { MutedAccountsSection } from './muted-accounts';
@@ -41,24 +41,44 @@ function LocalKeyEphemeralBanner() {
 function BunkerHealthBanner({ stale }: { stale: boolean }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The signer's OWN last refusal, when the fault is a refusal rather than a
+  // dead link. Seeded from the module rather than only set by the button below,
+  // so a refusal that happened during the PAGE-LOAD restore is already on
+  // screen the first time the user opens this menu — the press that would
+  // otherwise be needed to learn it is a press against a signer that has
+  // already given its answer.
+  const [refusal, setRefusal] = useState<string | null>(null);
+  useEffect(() => { setRefusal(bunkerRefusal()); }, [stale]);
 
   if (!stale) return null;
 
-  // The two failures need different words, because they need different acts
-  // from the user. `unreachable` means the pointer is intact and the signer did
-  // not answer — waking the signer app and pressing this again is the fix, and
-  // telling that user to sign out is advice that costs them a Clave pairing for
-  // nothing. `no-session` means the pointer is gone, and only a fresh sign-in
-  // brings it back. The banner is now reachable on page load (see the restore
-  // effect in ./index.tsx), so this is the first release where a user reads
-  // these sentences with a suspended socket rather than a dead one.
+  // THE THREE FAILURES NEED THREE SENTENCES, because they need three different
+  // acts from the user, and two of them used to share one.
+  //
+  // `unreachable` means the pointer is intact and nothing answered — waking the
+  // signer app and pressing this again is the fix, and telling that user to
+  // sign out is advice that costs them a Clave pairing for nothing.
+  //
+  // `refused` means the signer ANSWERED and said no: the link works, the
+  // pairing does not. Clave sends this when its side of the pairing is gone, or
+  // at its cap of five connections. It used to be reported as `unreachable`, so
+  // the banner told an iPhone user *"No answer from your signer. Open it, then
+  // try again."* about a signer that had just answered — and the retry it asked
+  // for could never work, because the fix is to pair again. The signer's own
+  // words are QUOTED rather than paraphrased: "Pairing limit reached" and
+  // "Client not paired" want different next moves and only the reader can pick
+  // between them.
+  //
+  // `no-session` means the pointer is gone, and only a fresh sign-in brings it
+  // back.
   async function reconnect() {
     setBusy(true); setErr(null);
     try {
       const r = await restoreBunkerSigner();
-      if (r === 'unreachable') {
+      setRefusal(r.kind === 'refused' ? r.message : null);
+      if (r.kind === 'unreachable') {
         setErr('No answer from your signer. Open it, then try again.');
-      } else if (r === 'no-session') {
+      } else if (r.kind === 'no-session') {
         setErr('Reconnect failed. Try signing out and back in.');
       }
     } catch (e) {
@@ -70,9 +90,20 @@ function BunkerHealthBanner({ stale }: { stale: boolean }) {
 
   return (
     <div className="border border-nostr/40 bg-nostr/10 p-2 mb-3 flex flex-col gap-1">
-      <span className="text-[11px] text-bone">
-        Signer disconnected — your iPhone may have suspended the relay link.
+      {/* The headline states the FAULT, and a refusal is a different fault from
+          a suspended socket. Naming the iPhone at someone whose signer just
+          answered sends them to fix the one thing that is working. */}
+      <span className="text-[11px] text-bone leading-snug">
+        {refusal
+          ? <>Your signer refused this connection: “{refusal}”</>
+          : <>Signer disconnected — your iPhone may have suspended the relay link.</>}
       </span>
+      {refusal && (
+        <span className="text-[10px] text-muted leading-snug">
+          Sign out and pair it again. If it says the limit is reached, remove this
+          site in your signer first.
+        </span>
+      )}
       <div className="flex items-center gap-2">
         <button
           onClick={reconnect}
@@ -81,8 +112,11 @@ function BunkerHealthBanner({ stale }: { stale: boolean }) {
         >
           {busy ? 'Reconnecting…' : 'Reconnect'}
         </button>
-        {err && <span className="text-[10px] text-nostr/80">{err}</span>}
       </div>
+      {/* Its OWN row, not the button's. Beside the button the inline slot was
+          sized for three words and squeezed "Reconnect" to a character a line
+          at 390px. */}
+      {err && <span className="text-[10px] text-nostr/80 leading-snug">{err}</span>}
     </div>
   );
 }
