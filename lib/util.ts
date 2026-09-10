@@ -384,65 +384,90 @@ export function liveShowToPodcast(s: LiveShow): Podcast {
 /**
  * A live broadcast that is over, whatever its `status` attribute still says.
  *
- * THE FAILURE. `<podcast:liveItem status="live">` is a flag a human flips, and
- * humans forget. Measured 2026-09-06: Behind the Sch3m3s was publishing
- * `status="live"` for `S02E49: It's Alive!!` with `end="2026-09-01T05:30:00Z"`
- * — the show declared its own finish FIVE DAYS earlier and the status never
- * moved. Rendered faithfully, that puts a pulsing `● LIVE` badge and a working
- * PLAY button on a broadcast nobody is running, on `/live` and on the show page
- * both.
+ * THE FIRST FAILURE. `<podcast:liveItem status="live">` is a flag a human
+ * flips, and humans forget. Measured 2026-09-06: Behind the Sch3m3s was
+ * publishing `status="live"` for `S02E49: It's Alive!!` with
+ * `end="2026-09-01T05:30:00Z"` — the show declared its own finish FIVE DAYS
+ * earlier and the status never moved. Rendered faithfully, that puts a pulsing
+ * `● LIVE` badge and a working PLAY button on a broadcast nobody is running,
+ * on `/live` and on the show page both.
  *
  * This repo already solved the same problem once, on the other protocol.
  * `LIVE_FRESH_SECS` in `lib/nostr/live-streams.ts` drops a kind:30311 event not
  * updated within 2 h because "most clients never publish the `ended` status —
  * they just stop updating". RSS had no equivalent.
  *
- * TWO RULES, AND THE FIRST IS NOT A GUESS. `end` is the publisher's own
- * declaration of when the broadcast finishes, so an `end` in the past is
- * authoritative and needs no heuristic — it is the same feed contradicting
- * itself, and the specific field wins over the stale flag. Observed on every
- * live feed checked (Behind the Sch3m3s, Satellite Skirmish, Homegrown Hits),
- * so this covers the common case on its own.
+ * THE SECOND FAILURE IS THE OPPOSITE ONE, AND IT IS WHY `end` NO LONGER ENDS A
+ * BROADCAST BY ITSELF. This first shipped as "`end` in the past is
+ * authoritative", on the reasoning that the feed is contradicting itself and
+ * the specific field beats the stale flag. That reads a SCHEDULE as a RECORD.
+ * Reported 2026-09-10 on Chad and Reed's Podcast: the liveItem declared
+ * `end` at 10:00 pm, the show was still on air at 10:39 pm, and a listener who
+ * tuned in then found no live row anywhere in the app. Nothing was stale — the
+ * hosts simply ran long, which is the ordinary case for a live show.
  *
- * The second is a fallback for feeds that publish no `end` at all, and it IS a
- * guess, which is why it is deliberately generous. A podcast broadcast runs for
- * hours where a Nostr stream runs for minutes — Satellite Skirmish's own items
- * are 3.5 h — so 2 h would be far too tight here. `MAX_UNBOUNDED_LIVE_SECS` is
- * a day: long enough that no real broadcast is cut off, short enough that a
- * forgotten flag does not sit on the page for a week. A continuously-live item
- * with no declared end is the one shape this gets wrong, and it is rare enough
- * to be worth the trade.
+ * **A live show ends when it is ANNOUNCED, not when it is timetabled.** The
+ * announcement is the publisher flipping `status`, which podping carries to
+ * Podcast Index within seconds and `/api/live-status` re-reads off the feed
+ * every 45 s. So a `status="live"` item outlives its own `end`, and the two
+ * ordinary paths off the page are both the publisher's own signal:
+ * `getGlobalLiveItems` drops a PI row once PI stops calling it live, and
+ * `applyLiveStatuses` ends an item that leaves the RSS.
  *
- * **IT IGNORES `status`, AND THAT IS THE SECOND THING MEASUREMENT CHANGED.**
- * This first shipped as "`pending` is never over", on the reasoning that a
- * scheduled item's end is in the future by definition and an item whose start
- * has passed is a host running late. Both are true for hours and false for
- * months. Before The Sch3m3s was serving
+ * `LIVE_OVERRUN_GRACE_SECS` is the backstop for the flag nobody flips, and 6 h
+ * is chosen against both failures at once: longer than any real overrun (the
+ * longest broadcasts measured here are Satellite Skirmish's 3.5 h items, so an
+ * overrun of six hours is a show that ran nearly three times its length), and
+ * short enough that the Sch3m3s item is gone the same night rather than five
+ * days later. It is measured from `end`, never from `start`, so the length of
+ * the broadcast does not spend the grace.
+ *
+ * The ceiling is the fallback for feeds that publish no `end` at all, and it IS
+ * a guess, which is why it is deliberately generous. A podcast broadcast runs
+ * for hours where a Nostr stream runs for minutes, so 2 h would be far too
+ * tight here. `MAX_UNBOUNDED_LIVE_SECS` is a day: long enough that no real
+ * broadcast is cut off, short enough that a forgotten flag does not sit on the
+ * page for a week. A continuously-live item with no declared end is the one
+ * shape this gets wrong, and it is rare enough to be worth the trade.
+ *
+ * **THE GRACE IS FOR `live` ONLY, AND THAT ASYMMETRY IS MEASURED TOO.** A
+ * `pending` item is a schedule and nothing more, so its `end` stays
+ * authoritative the moment it passes: Before The Sch3m3s was serving
  * `status="pending" end="2025-03-10T04:30:00.000Z"` on 2026-09-06 — a broadcast
  * scheduled EIGHTEEN MONTHS earlier that never aired and was never cleared, and
- * it sat at the top of Upcoming under a start date in the past.
- *
- * So the window is what matters and the flag is what does not, whichever flag
- * it is: a declared `end` that has passed means this did not happen or is no
- * longer happening, and neither reading belongs on a page about what is on now.
- * A host running late is still covered, because lateness is measured against
- * `end` where one exists and against a whole day where one does not.
+ * it sat at the top of Upcoming under a start date in the past. Nothing about a
+ * `pending` item claims anybody is on air, so there is no overrun to protect. A
+ * host running late still shows, because lateness is measured against `end`,
+ * and a host who actually starts is `live` by then.
  */
 export const MAX_UNBOUNDED_LIVE_SECS = 24 * 60 * 60;
+
+/** How long a `status="live"` broadcast stays on air past its declared `end`.
+ *  See `liveBroadcastIsOver` — an overrun is ordinary, a forgotten flag is not,
+ *  and this is the line between them. */
+export const LIVE_OVERRUN_GRACE_SECS = 6 * 60 * 60;
 
 export function liveBroadcastIsOver(
   item: { status?: string; startTime?: number; endTime?: number },
   nowSec: number,
 ): boolean {
-  // The publisher's own end time is the authoritative half, and it outranks
-  // both the status flag beside it and the ceiling below it.
-  if (typeof item.endTime === 'number' && Number.isFinite(item.endTime)) {
-    return item.endTime < nowSec;
+  const finite = (v: number | undefined) =>
+    typeof v === 'number' && Number.isFinite(v) ? v : undefined;
+  const startTime = finite(item.startTime);
+  const endTime = finite(item.endTime);
+  const onAir = item.status?.toLowerCase() === 'live';
+
+  if (endTime !== undefined) {
+    // A broadcast that says it is ON AIR outlives its own timetable: hosts run
+    // long, and the end of a live show is announced rather than scheduled. Only
+    // the grace bounds it, so a flag nobody flips still leaves the same night.
+    // A `pending` item claims nobody is on air, so its `end` is final.
+    return onAir ? nowSec - endTime > LIVE_OVERRUN_GRACE_SECS : endTime < nowSec;
   }
   // No declared end: fall back to a generous ceiling on how long a broadcast
   // nobody has ended — or a schedule nobody has updated — stays believable.
-  if (typeof item.startTime === 'number' && Number.isFinite(item.startTime)) {
-    return nowSec - item.startTime > MAX_UNBOUNDED_LIVE_SECS;
+  if (startTime !== undefined) {
+    return nowSec - startTime > MAX_UNBOUNDED_LIVE_SECS;
   }
   // No end and no start is not evidence of anything.
   return false;
