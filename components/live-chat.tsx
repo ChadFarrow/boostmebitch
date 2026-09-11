@@ -10,8 +10,22 @@ import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
 import { fmtClock, mentionedPubkeys, renderNostrText } from '@/lib/format';
 import { Avatar } from './avatar';
+import { MessageInput } from './message-input';
+import type { MentionNpub } from '@/lib/nostr/mention-tags';
 
 const MAX_MESSAGES = 200;
+
+/**
+ * Longest message the composer accepts.
+ *
+ * A kind:1311 has no protocol limit and this is not a boostagram — no TLV and
+ * no LNURL comment carries it — so the number is ours: a chat panel is narrow
+ * and a wall of text buries the room. It caps what the sender TYPES. The
+ * published body can exceed it, because each `@name` becomes a 63-character
+ * `nostr:npub…` at publish time, and truncating a mention would put a mangled
+ * identifier on the wire.
+ */
+const CHAT_MAX = 500;
 
 type Profiles = Record<string, ProfileMetadata | null>;
 
@@ -88,11 +102,22 @@ export function LiveChat({ streamId }: { streamId: string }) {
   const [messages, setMessages] = useState<Event[]>([]);
   const [profiles, setProfiles] = useState<Profiles>({});
   const [draft, setDraft] = useState('');
+  const [mentions, setMentions] = useState<MentionNpub[]>([]);
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const nearBottomRef = useRef(true);
+  /**
+   * The live draft, mirrored so `send`'s catch can read it.
+   *
+   * The failure path restores the text only when the sender has not started a
+   * new message, and `draft` inside that closure is the value from the render
+   * the send began in — always the text we just cleared. A functional
+   * `setDraft` can see the current value but cannot decide for `mentions` at
+   * the same time, and those two have to restore together (see `send`).
+   */
+  const draftRef = useRef('');
   const attempted = useRef<Set<string>>(new Set());
 
   // Subscribe to live chat for this stream. New streamId → fresh subscription
@@ -162,21 +187,40 @@ export function LiveChat({ streamId }: { streamId: string }) {
     nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
 
+  function onDraftChange(v: string) {
+    setDraft(v);
+    draftRef.current = v;
+  }
+
   async function send() {
     const content = draft.trim();
     if (!content || sending) return;
+    const sent = mentions;
     setSending(true);
     setErr(null);
     setDraft(''); // clear immediately — the publish round-trip can take a beat
+    draftRef.current = '';
+    setMentions([]);
     nearBottomRef.current = true;
     try {
-      const { event } = await publishLiveChat(streamId, content);
+      const { event } = await publishLiveChat(streamId, content, sent);
       setMessages((prev) => mergeMessage(prev, event));
     } catch (e) {
       setErr(getErrorMessage(e, 'failed to send'));
       // Restore the text so it isn't lost — but not over a new draft they've
       // already started typing.
-      setDraft((d) => d || content);
+      //
+      // TEXT AND MENTIONS COME BACK TOGETHER OR NOT AT ALL, and that is a
+      // notification rule rather than tidiness. A mention whose `@name` is
+      // absent from the body is APPENDED as a trailing `nostr:npub…` and still
+      // gets its `p` tag, so restoring these people over a message the sender
+      // has since retyped would ring the phones of people that message never
+      // names.
+      if (!draftRef.current) {
+        setDraft(content);
+        draftRef.current = content;
+        setMentions(sent);
+      }
     } finally {
       setSending(false);
     }
@@ -268,22 +312,27 @@ export function LiveChat({ streamId }: { streamId: string }) {
       <div className="flex-shrink-0 pt-3 mt-2 border-t border-bone/10">
         {identity ? (
           <div className="flex flex-col gap-1.5">
-            <div className="flex gap-2">
-              <input
-                type="text"
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    send();
-                  }
-                }}
-                placeholder="Send a message…"
-                aria-label="Send a message"
-                maxLength={500}
-                className="input flex-1 text-sm py-1.5"
-              />
+            <div className="flex gap-2 items-end">
+              {/* `min-w-0`: the picker's list is absolutely positioned inside
+                  this box, but the textarea itself is a flex item, and without
+                  this a long unbroken word sets a min-content width that pushes
+                  the Send button off a narrow panel. */}
+              <div className="flex-1 min-w-0">
+                <MessageInput
+                  value={draft}
+                  onChange={onDraftChange}
+                  mentions={mentions}
+                  onMentionsChange={setMentions}
+                  label="Send a message"
+                  labelHidden
+                  placeholder="Send a message…"
+                  maxLength={CHAT_MAX}
+                  textareaRows={1}
+                  // Enter sends, unless the candidate list is open — then it
+                  // picks. `<MessageInput>` owns that decision; see `onEnter`.
+                  onEnter={send}
+                />
+              </div>
               <button
                 type="button"
                 onClick={send}

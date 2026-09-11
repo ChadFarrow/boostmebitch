@@ -107,6 +107,7 @@ const relay = createRelay({ port: PORT, log: null, onEvent: (e) => received.push
 const { publishBoostNote, publishBoostNoteViaSite } =
   await import('../lib/nostr/boost-notes.ts');
 const { publishReply } = await import('../lib/nostr/interactions.ts');
+const { publishLiveChat, streamChatAddr } = await import('../lib/nostr/live-chat.ts');
 const { BRAND } = await import('../lib/brand.ts');
 
 let fails = 0;
@@ -309,6 +310,52 @@ console.log('\n--- 4b. A REPLY carries the sender\'s mentions too ---');
   const clientTag = e?.tags.find((t) => t[0] === 'client');
   check('the reply is attributed to this client', !!clientTag, true);
   check('...by the brand wire name, not a literal', clientTag?.[1], BRAND.wireName);
+}
+
+// ===========================================================================
+console.log('\n--- 4c. A LIVE CHAT message carries the sender\'s mentions too ---');
+// ===========================================================================
+// THE THIRD SURFACE. A kind:1311 is the one place a mention can look completely
+// correct and still reach nobody: every client renders a `nostr:npub…` in the
+// body as @name, so the sender sees the feature work while the person they
+// named is never notified. The `p` tag is the only half that notifies, and it
+// is invisible from the screen — which is why it is asserted here on the wire.
+//
+// `selfSigned` is hardcoded `true` in publishLiveChat, and this holds that
+// claim: the event must be signed by the USER's key, and the sender's picks
+// must survive as tags. There is no site-signed path for kind:1311 today.
+{
+  const streamId = `${pk}:e2e-mentions-stream`;
+  const namedMention = { ...mentionA, name: 'fiatjaf' };
+  // A pasted npub, with no profile and so no name to match in the text. It
+  // cannot be inlined and must fall through to the trailing run.
+  const namelessMention = { npub: feedA.npub, pubkey: feedA.pubkey };
+  const note = await publishLiveChat(
+    streamId,
+    'nice set @fiatjaf',
+    [namedMention, namelessMention],
+    [RELAY],
+  );
+  await wait(400);
+  const e = received.find((x) => x.id === note.id);
+  check('the chat message reached the relay', !!e, true);
+  check('it is a kind:1311', e?.kind, 1311);
+  check('it is signed by the USER', e?.pubkey, pk);
+  // The NIP-53 address, still first, still marked root — that tag is how every
+  // other client in the room finds the message at all.
+  const aTag = e?.tags[0];
+  check('the `a` root tag is still the FIRST tag', aTag?.[0], 'a');
+  check('...addressing the stream', aTag?.[1], streamChatAddr(streamId));
+  check('...still marked root', aTag?.[3], 'root');
+  // THE WIRING ASSERTION: publishLiveChat actually reaches mentionParts.
+  check('the sender mention is p-tagged', pTags(e).includes(mentionA.pubkey), true);
+  check('...substituted where the sender typed it',
+    bodyNpubs(e).includes(mentionA.npub), true);
+  check('...with the typed @name consumed, not left beside the URI',
+    e?.content.includes('@fiatjaf'), false);
+  check('a NAMELESS mention still reaches the body, via the trailing run',
+    bodyNpubs(e).includes(feedA.npub), true);
+  check('...and is p-tagged like the rest', pTags(e).includes(feedA.pubkey), true);
 }
 
 // ===========================================================================
