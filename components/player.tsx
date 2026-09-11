@@ -444,11 +444,23 @@ export function Player() {
           // mismatch" / "discontinuity sequence mismatch"). A broadcaster that
           // restarts its encoder, an origin that rolls its live window across
           // backends, a stream stitched from more than one source — all of them
-          // trip it while the media stays perfectly playable. Every zap.stream
-          // broadcast is SINGLE-RENDITION, and that is what makes it fatal
-          // rather than a warning: `error-controller` answers a parsing error
-          // by switching level, there is no other level, so it escalates and
-          // calls `stopLoad()`.
+          // trip it while the media stays perfectly playable. What makes it
+          // fatal rather than a warning is that `error-controller` answers a
+          // parsing error by switching LEVEL, and a level switch cannot fix a
+          // fault that belongs to the origin rather than to one rendition.
+          //
+          // DO NOT RE-DERIVE THAT FROM THE RENDITION COUNT. This comment used
+          // to assert that every zap.stream broadcast is single-rendition, so
+          // there was no other level to switch to and it escalated at once.
+          // The premise is false: measured 2026-09-11 on a live zap.stream
+          // broadcast, the master playlist carried 720p and 480p video plus a
+          // separate `EXT-X-MEDIA` audio group. A multi-rendition broadcast
+          // only delays the escalation by the number of renditions — every one
+          // of them is packaged by the same origin and re-merges against the
+          // same rolling window, so each mismatches for the same reason and
+          // `error-controller` runs out of levels and calls `stopLoad()`
+          // anyway. Single-rendition is the fast version of the same ending,
+          // not a separate case, and the flag is what prevents both.
           //
           // RECONNECTING CANNOT FIX IT, which is why the handler below is not
           // the answer: `stream-controller` stores the new snapshot even on the
