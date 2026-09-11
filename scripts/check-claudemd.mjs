@@ -198,7 +198,42 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // had already been through this twice and it only paid ~20 words. When the
 // migration finishes, the deploy-order paragraph goes and this raise should come
 // back out with it.
-const BUDGET = 15010
+//
+// 15,010 -> 15,150, and the accounting is the point rather than the number.
+// The file sat at 15,009 before this edit — ONE word of headroom, which the
+// third raise's note above already called not-headroom, so anything true that
+// landed after the last CLAUDE.md commit had nowhere to go.
+//
+// What it buys, and both pay the (a)/(c) test the file states:
+//
+// 1. The live-stream payee can now be DEGRADED, which it could not be before
+//    (#382). `resolveStreamV4V` returned a bare `ValueBlock | null`, so "this
+//    host publishes no Lightning address" and "no relay answered" were the same
+//    value — and the no-address arm pays the event AUTHOR, which on a
+//    platform-published broadcast is the platform's bot key (measured against a
+//    zap.stream event authored by zap.stream itself). A boost aimed at an artist
+//    we merely failed to reach could be routed to the platform. That is a money
+//    rule, so it belongs beside the other boost invariants rather than only
+//    behind a pointer.
+// 2. The NIP-89 `client` tag has FOUR publishers now that live chat is one
+//    (#383), a single definition in `clientTag` (`lib/brand.ts`), and one
+//    deliberate abstainer: `sendZap`'s kind:9734, which the recipient's LNURL
+//    server reads before any relay does. The failure mode of a second copy is a
+//    MISSING tag rather than a wrong one — no type and no review catches it —
+//    and the next publisher is written in a file nobody has opened yet.
+//
+// Prose was cut first, as every raise above requires, and it paid 67 of the 152
+// words: the `lib/util.ts` type-only clause in the v4v section (stated twice more
+// in that same section), two Read-before-you-edit parentheticals that have their
+// own entries under Conventions (`lists.tsx` is a barrel, `--app-header-h`), the
+// `.png`-in-the-path argument (verbatim in docs/nostr.md, and the prohibition it
+// argues for stays), and both new rules written twice and reduced to the shortest
+// form carrying every fact. Nothing was cut on judgement: every token removed is
+// still in this repo, in the file that owns the reasoning.
+//
+// The ~56 words left over are headroom, NOT a budget for the next rule. That one
+// displaces something.
+const BUDGET = 15150
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')
