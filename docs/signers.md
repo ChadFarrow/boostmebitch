@@ -737,6 +737,115 @@ The probe's own budget is `BUNKER_PING_TIMEOUT_MS` (10 s), shorter than
 behaviour the reconnect had before the probe existed — while waiting it out
 delays the rebuild by the whole window on a transport that is genuinely gone.
 
+### The 90 s before the guard decides, and the second press that made it worse
+
+The section above gives the restore four honest outcomes. This one is about the
+interval before it has any outcome at all.
+
+`<BunkerHealthBanner>` renders off `bunkerStale`, and `restoreBunkerSigner` sets
+that flag only once the attempt **settles**. The two ways it can fail are
+nothing like each other in length:
+
+| Failure | Time to the banner |
+|---|---|
+| No network at all (Airplane Mode, radio down) | Milliseconds. `s.connect()` publishes over `Promise.any(pool.publish(...))`, every socket fails, the aggregate rejects. |
+| A relay that **connects and then answers nothing** | The full `BUNKER_CONNECT_TIMEOUT_MS` — 90 s. |
+
+The second one is the fault. For up to 90 s the app looks signed in,
+`window.nostr` is not installed, anything the user touches that signs fails with
+a generic error, and the banner that would have explained it has not rendered
+yet. This is CLAUDE.md's *"a guard that withholds must say so"* one step earlier
+than the rule is usually read: not a guard that decided quietly, a guard that has
+not decided.
+
+**The answer is a progress state, not a smaller number.** The 90 s is not
+padding — the sections above record what it was measured against: a queueing
+signer answers `permission denied` first, on an id `nip46.js` drops, and the
+round trip includes an APNs wake of a closed app. Shortening it would fail the
+case it exists for.
+
+**`BunkerRestoreStage` is a fourth observable, for the same reason
+`BunkerApprovalStage` is a third one.** The four say different things and a
+surface that confuses two of them sends the user to the wrong act:
+
+| Observable | Claim | Set when |
+|---|---|---|
+| `bunkerStale` | The transport looks dead, or the signer refused this session | The attempt settled badly |
+| `BunkerApprovalStage` | The signer has the request and is waiting for a human | The signer answered `permission denied` |
+| `BunkerRestoreStage` | We are asking, and we do not know yet | A restore is on the wire |
+| — (none) | Everything is fine | — |
+
+Reusing `bunkerStale` here would put *"Signer disconnected"* on screen about a
+link whose state is still unknown, and the answer arriving a moment later would
+contradict it.
+
+**`phase` is carried because the two halves differ in what the user can still
+do.** During `'probing'` the session's own adapter is still installed and still
+signs — `pingBunkerAdapter` only asks it a question. `'connecting'` begins after
+`closeStaleBunkerTransport`, so from there a signature has nothing to reach, and
+*"anything that needs your signature will fail until this finishes"* is the
+sentence the notice can then honestly say. One setter,
+`setBunkerRestorePhase(phase | null)`, so `restoring` cannot disagree with
+`phase`.
+
+**`startedAt` is a timestamp, not a tick count, and that is what makes the
+notice right on a surface that appears part way through.** Opening the account
+menu unmounts the anchored copy and mounts the panel's, and a component-local
+clock there would restart the count at zero — re-arming the quiet period below
+at the exact moment the user went looking for the wait.
+
+**`<BunkerRestoreNotice>` holds itself back for five seconds, and renders
+nothing while an approval wait is live.** A healthy handshake is a couple of
+relay round trips and settles well inside five seconds, so a box on every cold
+load would spend the user's attention on nothing and teach them to ignore the one
+case it is for. The approval notice wins the overlap — both can be live at once,
+since `withApprovalWait` wraps the restore's own `connect` — because it says
+strictly more: the signer has answered, it names the act, and it carries **Stop
+waiting**. Two boxes about one wait is how a reader learns to distrust both.
+
+**It gets a box where staleness gets a dot, and the difference is the same one
+the table in the section above draws.** Staleness is a state with no natural end,
+so an undismissable panel would be on screen more often than not. A restore ends
+on its own, inside a bounded window, while the user can do nothing else that
+signs — which is exactly the shape that earns a box. It renders at the account
+button's anchor while the menu is CLOSED, on the menu's own anchor and width, and
+inside the panel when it is open: on a cold load nobody opens a menu to watch a
+handshake they have not been told about.
+
+**It carries no escape hatch, and that is a decision rather than an omission.**
+There is nothing useful to cancel: abandoning the connect leaves the session with
+no signer and nothing that retries, which is strictly worse than the wait.
+
+**The second press was making it worse, so `restoreBunkerSigner` now coalesces.**
+Both entry points call it — the page-load effect in `<NostrAuth>`, and the
+account menu's RECONNECT — and a user who pressed the button during the 90 s
+window started a SECOND handshake, with its own pool and its own sockets, against
+the relays the first one was still holding. On iOS that is WebKit 302561 again:
+the second socket to a host may never open at all, so the press could lengthen
+the wait rather than shorten it. A restore already in flight is now returned
+instead, and the button reports its answer.
+
+**Keyed on the stored pointer, never on "a restore is running".** An attempt
+still in flight for a pairing the user has since replaced is about a different
+signer, and joining it would report the old pairing's answer about the new one.
+Only the owning attempt clears the progress state on its way out, so a superseded
+one cannot take down the live one's notice. RECONNECT is disabled while any
+restore is on the wire, including one the user did not start — a control that
+silently does nothing is worse than one that says it is already happening.
+
+**No `check:*` pins any of this**, for the reason the rest of this file gives:
+`lib/nostr/bunker.ts` imports `nostr-tools` and touches browser globals, so it
+will not load under `node --experimental-strip-types`. The fault is a SILENCE
+besides, and nothing pure can observe "nothing rendered for ninety seconds".
+`npm run e2e:bunkerrestore` drives the real app against a stub signer that
+**subscribes and says nothing** — the exact shape, and not the same as an
+unreachable relay, which rejects in milliseconds. It asserts the notice appears
+with the menu CLOSED, that its count moves, that RECONNECT stays disabled across
+a menu close while its restore is still on the wire, that the settled answer
+takes the notice away and puts the banner up — and, as the must-still-work half,
+that a HEALTHY restore raises none of it. Run against a version with the notice
+stubbed out, four of those fail and the rest stay green.
+
 ### OPEN: Clave stopped answering at prompt-time, and `withApprovalWait` is built around the answer it stopped sending
 
 **Not fixed. Recorded so the next session does not re-derive it from a field
