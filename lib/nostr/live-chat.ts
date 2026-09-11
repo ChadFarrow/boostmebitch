@@ -3,6 +3,7 @@ import { LIVE_STREAM_RELAYS } from './live-streams';
 import { FEED_QUERY_MAX_WAIT_MS, newPool, QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish, type PublishedNote } from './publish';
 import { mentionParts, type MentionNpub } from './mention-tags';
+import { clientTag } from '../brand';
 
 // NIP-53 live chat. Messages are kind:1311 events tagged with the stream's
 // NIP-33 address: `a` = `30311:<pubkey>:<dTag>`. A NostrLiveStream's `id` is
@@ -112,8 +113,16 @@ export function subscribeLiveChat(
  * question differently on the day it is added.**
  *
  * The `a` root tag stays FIRST. NIP-53 addresses the message to the stream with
- * it, and appending the `p` tags after it leaves that shape untouched for every
- * other client reading the room.
+ * it, and appending the `p` tags and the `client` tag after it leaves that shape
+ * untouched for every other client reading the room.
+ *
+ * The NIP-89 `client` tag is the same one a reply, a quote and a boost note
+ * carry, from `clientTag` (`lib/brand.ts`) and never a literal. A chat message
+ * is user-authored public prose like any of those, and this is the one
+ * publisher of it that went without: a reader printing "via …" under the boost
+ * note and nothing under the message the same person typed into the room is the
+ * drift that rule exists to stop. What any particular client renders is its own
+ * business and is not asserted here — an ignored tag costs nothing.
  *
  * `relays` defaults to `LIVE_STREAM_RELAYS` and no app caller passes it. It
  * exists so `e2e:mentions` can drive this function against the local relay: a
@@ -133,7 +142,7 @@ export async function publishLiveChat(
   const template: EventTemplate = {
     kind: 1311,
     created_at: Math.floor(Date.now() / 1000),
-    tags: [['a', streamChatAddr(streamId), '', 'root'], ...pTags],
+    tags: [['a', streamChatAddr(streamId), '', 'root'], ...pTags, clientTag()],
     content: body,
   };
   return signAndPublish(template, relays);

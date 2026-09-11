@@ -207,3 +207,26 @@ export const DEFAULT_SENDER_NAME = BRAND.senderName;
 export function resolveSenderName(typed: string, anonymous: boolean): string {
   return (anonymous ? '' : typed.trim()) || DEFAULT_SENDER_NAME;
 }
+
+/**
+ * The NIP-89 `client` tag, in wire form.
+ *
+ * ONE DEFINITION, because there are now four publishers of it and the failure
+ * mode of a second copy is not a wrong tag — it is a MISSING one. Replies,
+ * quote reposts and live chat messages all carry `BRAND.wireName`, and a boost
+ * note carries the boostagram's `app_name` when it has one. Every reader,
+ * including this app's own `discover.ts`, prints it as "via …", so a publisher
+ * left out is how that line comes to mean *"…except when it was a chat
+ * message"*.
+ *
+ * `BRAND.wireName` and NEVER a literal: one repo builds two deploys, and a
+ * hard-coded name here is the other brand's word appearing under a message on
+ * the family-friendly site — in a signed event that cannot be edited.
+ *
+ * `appName` defaults rather than being `??`-ed by each caller, which is the same
+ * behaviour: a default parameter applies to `undefined` only, so a boostagram
+ * that deliberately carries an empty `app_name` still gets an empty tag.
+ */
+export function clientTag(appName: string = BRAND.wireName): string[] {
+  return ['client', appName];
+}

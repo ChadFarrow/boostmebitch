@@ -356,6 +356,13 @@ console.log('\n--- 4c. A LIVE CHAT message carries the sender\'s mentions too --
   check('a NAMELESS mention still reaches the body, via the trailing run',
     bodyNpubs(e).includes(feedA.npub), true);
   check('...and is p-tagged like the rest', pTags(e).includes(feedA.pubkey), true);
+  // NIP-89 attribution, the same tag the reply above carries. Asserted on the
+  // wire and against BRAND.wireName because it is per-BRAND: a literal here
+  // would be the other deploy's word under a message in the room, in a signed
+  // event nobody can edit.
+  const chatClient = e?.tags.find((t) => t[0] === 'client');
+  check('the chat message is attributed to this client', !!chatClient, true);
+  check('...by the brand wire name, not a literal', chatClient?.[1], BRAND.wireName);
 }
 
 // ===========================================================================

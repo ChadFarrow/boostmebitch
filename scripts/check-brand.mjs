@@ -41,7 +41,7 @@ if (problems.length) {
   process.exit(1);
 }
 
-const { BRANDS, BRAND, brandIdFrom, siteTitle, DEFAULT_SENDER_NAME, resolveSenderName } =
+const { BRANDS, BRAND, brandIdFrom, siteTitle, DEFAULT_SENDER_NAME, resolveSenderName, clientTag } =
   await import('../lib/brand.ts');
 
 let failures = 0;
@@ -375,6 +375,23 @@ eq('DEFAULT_SENDER_NAME is the active brand\'s literal',
 eq('siteTitle() names the active brand', siteTitle(), `${BRAND.displayName} — Podcast Boost Station`);
 eq('siteTitle(brand) names the brand it is given', siteTitle(BRANDS.buddy),
   `${BRANDS.buddy.displayName} — Podcast Boost Station`);
+
+// clientTag: the NIP-89 tag four publishers share — boost notes, replies, quote
+// reposts and live chat messages. The LITERAL rather than BRAND.wireName, for
+// the reason DEFAULT_SENDER_NAME above uses one: comparing a value to its own
+// definition is `x === x` and cannot fail. Stringified because `eq` is `===`.
+eq('clientTag() carries the active brand\'s wire name',
+  JSON.stringify(clientTag()), JSON.stringify(['client', LITERALS[BRAND.id].wireName]));
+// A boostagram may name the app that built it, and that name wins — the tag
+// says which client published the note, and for a boost that is what the
+// boostagram already declares.
+eq('clientTag(name) defers to a boostagram app_name',
+  JSON.stringify(clientTag('Fountain')), JSON.stringify(['client', 'Fountain']));
+// A DEFAULT PARAMETER APPLIES TO `undefined` ONLY, which is what makes this
+// identical to the `?? BRAND.wireName` it replaced. An empty `app_name` is a
+// deliberate empty tag, not a missing one, and must not be defaulted away.
+eq('an EMPTY app_name is carried, never defaulted',
+  JSON.stringify(clientTag('')), JSON.stringify(['client', '']));
 
 // resolveSenderName: anonymity covers the PAYMENT, not just the note, so the
 // typed name is discarded outright rather than trimmed.

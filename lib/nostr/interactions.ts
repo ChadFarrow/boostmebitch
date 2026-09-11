@@ -1,23 +1,21 @@
 import { nip19, type Event, type EventTemplate } from 'nostr-tools';
 import { signAndPublish, type PublishedNote } from './publish';
 import { mentionParts, type MentionNpub } from './mention-tags';
-import { BRAND } from '../brand';
+import { clientTag } from '../brand';
 
 /**
- * NIP-89 attribution, the same tag a boost note carries.
+ * NIP-89 attribution, the same tag a boost note and a live chat message carry.
  *
- * `BRAND.wireName` and never a literal: one repo builds two deploys, and this
- * string is what a reader — ours and every other client — prints as "via …".
- * A hard-coded name here is the other brand's word appearing under a reply on
- * the family-friendly site. `boost-notes.ts` lets a boostagram override it with
- * its own `app_name`; a reply has no boostagram, so there is nothing to defer
- * to.
+ * Built by `clientTag` (`lib/brand.ts`) rather than written here, so the four
+ * publishers of it cannot drift: the cost of a second copy is not a wrong tag,
+ * it is a publisher quietly left without one. A reply has no boostagram, so
+ * there is nothing to defer to and the brand's own wire name is the answer.
  *
  * Worth knowing it is READ BACK: `discover.ts` pulls `client` off an event to
  * render that line, so a reply gains the attribution in this app's own feed as
  * well as in other clients.
  */
-const CLIENT_TAG: string[] = ['client', BRAND.wireName];
+const CLIENT_TAG: string[] = clientTag();
 
 /**
  * `selfSigned` IS TRUE AT BOTH CALL SITES BELOW, and that is a fact about this
