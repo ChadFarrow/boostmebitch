@@ -5,7 +5,7 @@
 
 import { bolt11AmountMsat } from './bolt11';
 import { lnurlFetch } from './lnurl-fetch';
-import { buildLnurlComment } from '@/lib/util';
+import { buildLnurlComment, lnurlCommentRetry, lnurlErrorReason } from '@/lib/util';
 
 interface LnurlPayParams {
   callback: string;
@@ -51,10 +51,13 @@ export async function fetchLnInvoice(args: {
       `Amount out of range (${params.minSendable}-${params.maxSendable} msat)`,
     );
   }
-  const url = new URL(params.callback);
-  url.searchParams.set('amount', String(args.amount_msat));
   const comment = buildLnurlComment(args, params.commentAllowed);
-  if (comment) url.searchParams.set('comment', comment);
+  const ask = (c: string | undefined) => {
+    const url = new URL(params.callback);
+    url.searchParams.set('amount', String(args.amount_msat));
+    if (c) url.searchParams.set('comment', c);
+    return lnurlFetch(url.toString());
+  };
   // An LNURL leg carries NO TLV boostagram — no sender_id, no podcast/episode,
   // no remote_feed_guid — so this one comment is the entire metadata channel,
   // and until now nothing on the path logged at all. "I don't see any payment
@@ -76,8 +79,40 @@ export async function fetchLnInvoice(args: {
         : `NO COMMENT (recipient allows ${params.commentAllowed ?? 0})`
     }`,
   );
-  const cb = await lnurlFetch(url.toString());
-  if (!cb.ok) throw new Error(`LNURL callback failed: ${cb.status}`);
+  let cb = await ask(comment);
+  // A SERVICE UNDER-ENFORCES ITS OWN `commentAllowed`, AND FAILING THE LEG
+  // THERE SENDS NOTHING AT ALL. Measured 2026-09-11: an Alby address
+  // advertised `commentAllowed: 255` and refused 105 characters with "length
+  // 105 exceeds limit 90". `buildLnurlComment` had budgeted against the 255 it
+  // was told, correctly, and the leg died with the sats still in the wallet.
+  //
+  // The retry is safe for one narrow reason and it does not generalise: the
+  // service refused before it minted an invoice, so nothing moved. It is
+  // licence to ask for an INVOICE again, never to re-attempt a payment.
+  //
+  // `lnurlCommentRetry` decides whether this refusal was about length at all,
+  // and hands back a SHORTER comment that keeps the descriptor whole — the
+  // prose beside it is a second copy of a message already parked in the
+  // BoostBox record the descriptor points at.
+  if (!cb.ok && comment) {
+    const retry = lnurlCommentRetry(args, lnurlErrorReason(cb.text), comment);
+    if (retry) {
+      console.info(
+        `[lnurl] ${args.address} → comment of ${comment.length} refused; retrying at ${
+          retry.comment.length
+        } (${retry.comment.startsWith('rss::payment') ? 'descriptor kept' : 'no descriptor'})`,
+      );
+      cb = await ask(retry.comment);
+    }
+  }
+  if (!cb.ok) {
+    // The service usually says why. Reporting only the status turned a
+    // comment-length refusal into an unexplained failed leg.
+    const why = lnurlErrorReason(cb.text);
+    throw new Error(
+      why ? `LNURL callback failed (${cb.status}): ${why}` : `LNURL callback failed: ${cb.status}`,
+    );
+  }
   let data: { pr?: string };
   try {
     data = JSON.parse(cb.text);

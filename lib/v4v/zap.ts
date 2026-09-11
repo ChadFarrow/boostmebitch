@@ -13,7 +13,7 @@
 import { bech32 } from '@scure/base';
 import type { EventTemplate } from 'nostr-tools';
 import type { Boostagram, ValueRecipient } from '../types';
-import { buildLnurlComment } from '../util';
+import { buildLnurlComment, lnurlCommentRetry, lnurlErrorReason } from '../util';
 import { sparkPayInvoice } from './spark';
 import { weblnPayInvoice } from './webln';
 import { pickRail, type Rail } from './boost';
@@ -170,35 +170,55 @@ export async function sendZap(args: {
       })
     : null;
 
-  const cbUrl = new URL(meta.callback);
-  cbUrl.searchParams.set('amount', String(amountMsat));
-  cbUrl.searchParams.set('nostr', JSON.stringify(signed));
-  cbUrl.searchParams.set('lnurl', lnurl);
-  const comment = buildLnurlComment(
-    { desc: stored?.desc, message: args.comment },
-    meta.commentAllowed,
-  );
-  if (comment) cbUrl.searchParams.set('comment', comment);
+  const commentArgs = { desc: stored?.desc, message: args.comment };
+  const comment = buildLnurlComment(commentArgs, meta.commentAllowed);
 
-  const cb = await lnurlFetch(cbUrl.toString());
-  const cbText = cb.text;
-  let cbData: Record<string, unknown> | null = null;
-  try { cbData = JSON.parse(cbText); } catch { /* non-JSON body */ }
   // LUD-06 error shape is { status: 'ERROR', reason }; some non-compliant
-  // services use `message`, `error`, or just return a plain-text body. Try
-  // them all so the user sees the actual reason instead of "no invoice".
-  const reason =
-    (cbData?.reason as string | undefined) ??
-    (cbData?.message as string | undefined) ??
-    (cbData?.error as string | undefined) ??
-    (!cbData && cbText.trim() ? cbText.trim().slice(0, 200) : undefined);
-  if (!cb.ok) {
-    throw new Error(reason ? `LNURL service: ${reason}` : `LNURL callback failed (${cb.status})`);
+  // services use `message`, `error`, or just return a plain-text body, and a
+  // refusal arrives as a 200 as often as a 4xx. `lnurlErrorReason` tries them
+  // all so the user sees the actual reason instead of "no invoice".
+  const ask = async (c: string | undefined) => {
+    const u = new URL(meta.callback);
+    u.searchParams.set('amount', String(amountMsat));
+    u.searchParams.set('nostr', JSON.stringify(signed));
+    u.searchParams.set('lnurl', lnurl);
+    if (c) u.searchParams.set('comment', c);
+    const res = await lnurlFetch(u.toString());
+    let data: Record<string, unknown> | null = null;
+    try { data = JSON.parse(res.text); } catch { /* non-JSON body */ }
+    const why = lnurlErrorReason(res.text);
+    return { res, data, why, failed: !res.ok || data?.status === 'ERROR' || (!!why && !data?.pr) };
+  };
+
+  let out = await ask(comment);
+  // Same refusal and same answer as `fetchLnInvoice` — see the long note
+  // there. A service that under-enforces its advertised `commentAllowed`
+  // otherwise kills the leg with the sats still in the wallet, and nothing
+  // moved before the refusal, so asking again for an invoice is safe.
+  //
+  // ON THIS PATH THE PROSE IS ALREADY SAFE, which is what makes the retry
+  // clearly worth taking: a zap carries the typed message in the kind:9734
+  // `content` as well, and that is the copy every Nostr client renders. What
+  // the comment alone carries is the descriptor — the URL pointing at the
+  // BoostBox record — so dropping the comment orphans that record while
+  // dropping the prose inside it costs the reader nothing.
+  if (out.failed && comment) {
+    const retry = lnurlCommentRetry(commentArgs, out.why, comment);
+    if (retry) {
+      console.info(
+        `[zap] comment of ${comment.length} refused; retrying at ${retry.comment.length} (${
+          retry.comment.startsWith('rss::payment') ? 'descriptor kept' : 'no descriptor'
+        })`,
+      );
+      out = await ask(retry.comment);
+    }
   }
-  if (cbData?.status === 'ERROR' || (reason && !cbData?.pr)) {
-    throw new Error(`LNURL service: ${reason ?? 'unknown error'}`);
+  if (out.failed) {
+    throw new Error(
+      out.why ? `LNURL service: ${out.why}` : `LNURL callback failed (${out.res.status})`,
+    );
   }
-  const invoice = cbData?.pr;
+  const invoice = out.data?.pr;
   if (typeof invoice !== 'string' || !invoice) {
     throw new Error('LNURL callback returned no invoice');
   }

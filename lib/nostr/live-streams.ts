@@ -2,7 +2,7 @@ import { nip19, type Event } from 'nostr-tools';
 import { withPool, FEED_QUERY_MAX_WAIT_MS, FEED_QUIET_MS } from './pool';
 import { collectEventsByAuthors } from './event-queries';
 import { DEFAULT_RELAYS, sanitizeRelays } from './relays';
-import { fetchProfile } from './profile';
+import { fetchProfileDetailed } from './profile';
 import { storage } from '../storage';
 import { fnvHash, isHlsUrl } from '../util';
 import type { Episode, Podcast, ValueBlock, ValueRecipient } from '../types';
@@ -412,6 +412,24 @@ export async function fetchLatestStreamByPubkey(
 }
 
 /**
+ * What a V4V read of a live stream concluded.
+ *
+ * `value: null` alone is two different facts, and they need different words on
+ * screen: this host takes no boosts, versus we could not find out. The second
+ * one rendered as the first — BOOST disabled under "Stream has no value block"
+ * — is a claim the app had not earned, about money, on a show that was in fact
+ * payable.
+ */
+export interface StreamV4V {
+  /** The block to pay, or null for no payee AND for no answer — read
+   *  `trustworthy` to tell which. */
+  value: ValueBlock | null;
+  /** True when `value` may be stated as fact. False when at least one
+   *  recipient's kind:0 read was too degraded to believe a missing address. */
+  trustworthy: boolean;
+}
+
+/**
  * Resolve a ValueBlock for V4V boosts against a Nostr live stream.
  *
  * Two paths:
@@ -427,10 +445,13 @@ export async function fetchLatestStreamByPubkey(
  */
 export async function resolveStreamV4V(
   stream: NostrLiveStream,
-): Promise<ValueBlock | null> {
+): Promise<StreamV4V> {
   async function resolveRecipients(
     candidates: Array<{ pubkey: string; relay?: string; weight: number }>,
-  ): Promise<ValueRecipient[]> {
+  ): Promise<{ recipients: ValueRecipient[]; trustworthy: boolean }> {
+    // Starts true and only ever goes false: one candidate we could not read
+    // makes the whole answer unsafe to state, whatever the others said.
+    let trustworthy = true;
     const results = await Promise.all(
       candidates.map(async ({ pubkey, relay, weight }) => {
         const cached = storage.profile.get(pubkey);
@@ -443,8 +464,13 @@ export async function resolveStreamV4V(
         // re-queries hosts that genuinely have no Lightning address in a hot loop.
         if (profile === undefined || profile === null) {
           const relays = sanitizeRelays([...(relay ? [relay] : []), ...LIVE_STREAM_RELAYS]);
-          const fetched = await fetchProfile(pubkey, relays);
-          if (fetched) profile = fetched;
+          const read = await fetchProfileDetailed(pubkey, relays);
+          if (read.profile) profile = read.profile;
+          // The ONE case where a missing address is not an answer. A read that
+          // found a kind:0 without an lud16, or that trustworthily found none
+          // at all, has told us what we asked; a degraded one has not, and the
+          // two are the same `null` without this flag.
+          else if (!read.trustworthy) trustworthy = false;
         }
         const address = profile?.lud16 ?? profile?.lud06;
         if (!address) return null;
@@ -457,25 +483,76 @@ export async function resolveStreamV4V(
         return recipient;
       }),
     );
-    return results.filter((r): r is ValueRecipient => r !== null);
+    return { recipients: results.filter((r): r is ValueRecipient => r !== null), trustworthy };
   }
+
+  const block = (recipients: ValueRecipient[]): ValueBlock | null =>
+    recipients.length ? { type: 'lightning', method: 'lnaddress', recipients } : null;
 
   // Explicit zap splits win (dropping any the host opted out with weight <= 0).
   const splitCandidates = stream.zapWeights.filter((z) => z.weight > 0);
   if (splitCandidates.length) {
-    const recipients = await resolveRecipients(splitCandidates);
-    return recipients.length ? { type: 'lightning', method: 'lnaddress', recipients } : null;
+    const read = await resolveRecipients(splitCandidates);
+    return { value: block(read.recipients), trustworthy: read.trustworthy };
   }
 
   // No splits: host first, event author as the fallback (they're the same key
   // on self-published streams, so the second attempt only runs for
   // platform-published events whose host profile has no LN address).
   const host = streamHostPubkey(stream);
-  let recipients = await resolveRecipients([{ pubkey: host, weight: 1 }]);
-  if (!recipients.length && host !== stream.pubkey) {
-    recipients = await resolveRecipients([{ pubkey: stream.pubkey, weight: 1 }]);
+  const hostRead = await resolveRecipients([{ pubkey: host, weight: 1 }]);
+  if (hostRead.recipients.length) {
+    return { value: block(hostRead.recipients), trustworthy: hostRead.trustworthy };
   }
-  return recipients.length ? { type: 'lightning', method: 'lnaddress', recipients } : null;
+
+  // THE FALLBACK NEEDS `hostRead.trustworthy`, AND IT IS NOT BELT-AND-BRACES.
+  // On a platform-published broadcast the author IS the platform's bot key —
+  // measured: a zap.stream event whose author profile is `zap.stream` itself —
+  // so this arm pays the platform rather than the artist. That is only the
+  // right answer when the host has genuinely published no Lightning address.
+  // A degraded host read is not that answer, and spending it as one routes a
+  // listener's boost to the platform over a host who has an address we merely
+  // failed to reach. Fail closed: report that we could not tell.
+  if (!hostRead.trustworthy) return { value: null, trustworthy: false };
+  if (host === stream.pubkey) return { value: null, trustworthy: true };
+
+  const authorRead = await resolveRecipients([{ pubkey: stream.pubkey, weight: 1 }]);
+  return { value: block(authorRead.recipients), trustworthy: authorRead.trustworthy };
+}
+
+/**
+ * `resolveStreamV4V`, retried while the read cannot tell.
+ *
+ * The standalone stream pages already retry the kind:30311 fetch three times,
+ * for a reason written down there: a cold browser has no warm DNS/TLS/socket
+ * to a slow relay like fountain.fm, and the first query times out before it
+ * answers. The V4V read goes to THE SAME RELAYS, over a host whose kind:0 may
+ * live on only one or two of them — measured 2026-09-11, a live host's profile
+ * was on `nos.lol` and `relay.fountain.fm` and absent from `relay.damus.io`,
+ * `relay.primal.net` and `relay.zap.stream` — and it had one attempt, swallowed
+ * by a `.catch(() => null)`, with nothing to re-run it afterwards.
+ *
+ * The retry is cheap BECAUSE it is gated on trust rather than on emptiness: a
+ * host who genuinely has no Lightning address answers on the first attempt and
+ * returns immediately. Only a read that could not tell pays for another one.
+ */
+export async function resolveStreamV4VRetrying(
+  stream: NostrLiveStream,
+  opts: { attempts?: number; delayMs?: number; cancelled?: () => boolean } = {},
+): Promise<StreamV4V> {
+  const attempts = opts.attempts ?? 3;
+  const delayMs = opts.delayMs ?? 800;
+  // A throw is indistinguishable from a degraded read, so it reports as one.
+  const unread: StreamV4V = { value: null, trustworthy: false };
+  let last = unread;
+  for (let i = 0; i < attempts; i++) {
+    if (opts.cancelled?.()) return last;
+    if (i > 0) await new Promise((r) => setTimeout(r, delayMs));
+    last = await resolveStreamV4V(stream).catch(() => unread);
+    // Stop on an ANSWER: a block, or a trustworthy "this host has no address".
+    if (last.value || last.trustworthy) return last;
+  }
+  return last;
 }
 
 /**
@@ -485,7 +562,11 @@ export async function resolveStreamV4V(
  */
 export function streamToEpisode(
   stream: NostrLiveStream,
-  value?: ValueBlock | null,
+  // The whole READ, not a bare block. A caller that holds the block holds the
+  // reason it is null too, so it cannot paint "no value block" over a read
+  // that never answered — the way a third boolean parameter would let it, by
+  // simply not being passed.
+  v4v?: StreamV4V | null,
 ): Episode {
   return {
     id: fnvHash(stream.id),
@@ -498,7 +579,8 @@ export function streamToEpisode(
     liveStatus: stream.status === 'planned' ? 'pending' : stream.status,
     liveStartTime: stream.startsAt,
     liveHostPubkey: streamHostPubkey(stream),
-    value: value ?? null,
+    value: v4v?.value ?? null,
+    liveValueState: !v4v ? 'pending' : v4v.value || v4v.trustworthy ? undefined : 'unread',
   };
 }
 

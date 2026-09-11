@@ -10,13 +10,14 @@ import {
   streamToPodcast,
   streamNaddr,
   type NostrLiveStream,
+  type StreamV4V,
 } from '@/lib/nostr/live-streams';
 import { fetchProfilesFor, indexedLiveStreams, LIVE_STREAM_RELAYS } from '@/lib/nostr';
 import type { Event } from 'nostr-tools';
 import { hasValueRecipients } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
-import type { Episode, Podcast, ValueBlock } from '@/lib/types';
+import type { Episode, Podcast } from '@/lib/types';
 import { BoostModal } from './boost-modal';
 import { LiveCard, LIVE_GRID } from './live-card';
 import { fmtLiveTime } from '@/lib/format';
@@ -25,7 +26,10 @@ import type { ProfileMetadata } from '@/lib/nostr/auth';
 interface ResolvedStream {
   stream: NostrLiveStream;
   profile: ProfileMetadata | null;
-  value: ValueBlock | null;
+  /** The whole V4V read, not a bare block — see `StreamV4V`. A row that holds
+   *  only the block cannot tell "this host takes no boosts" from "we could not
+   *  reach the host's kind:0", and both hide BOOST here. */
+  v4v: StreamV4V | null;
 }
 
 type StreamFilter = 'live' | 'radio' | 'upcoming';
@@ -62,7 +66,7 @@ export function NostrLiveStreams() {
   // relay round trip per zap-split recipient, so re-running it on every commit
   // would pay the whole bill again — and the early paint below would blank a
   // boost button that was working a moment ago.
-  const valueRef = useRef<Map<string, ValueBlock | null>>(new Map());
+  const valueRef = useRef<Map<string, StreamV4V | null>>(new Map());
   // Which group the single row shows. Falls back to the first non-empty group
   // (see `active` below) when the selected one has nothing.
   const [filter, setFilter] = useState<StreamFilter>('live');
@@ -112,11 +116,11 @@ export function NostrLiveStreams() {
     // round trips. Resolving before painting spent the index's entire advantage
     // and then some — measured at 7.3s to first row against a 56ms index
     // response. A card renders from the event itself; the profile is a nicer
-    // name and avatar, and `value` only gates the BOOST button.
+    // name and avatar, and `v4v` only gates the BOOST button.
     const paint = () => merged.map((stream) => ({
       stream,
       profile: storage.profile.get(stream.pubkey) ?? null,
-      value: valueRef.current.get(streamAddrOf(stream.rawEvent)) ?? null,
+      v4v: valueRef.current.get(streamAddrOf(stream.rawEvent)) ?? null,
     }));
     setResolved(paint());
     // `loading` means "nothing to show yet", not "a fetch is running" — the
@@ -243,13 +247,13 @@ export function NostrLiveStreams() {
   const radio = resolved.filter((r) => r.stream.status === 'live' && is247(r.stream));
   const upcoming = resolved.filter((r) => r.stream.status === 'planned');
 
-  const renderCard = ({ stream, profile, value }: ResolvedStream) => {
+  const renderCard = ({ stream, profile, v4v }: ResolvedStream) => {
     // Play instantly (the card already has the resolved data); a card click
     // (expand) also navigates to the dedicated /stream/<naddr> page so the URL
     // reflects it and a refresh restores the stream. The PLAY button stays in
     // the mini-bar (no navigation).
     const start = (expand: boolean) => {
-      play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
+      play(streamToEpisode(stream, v4v), streamToPodcast(stream, profile));
       if (expand) router.push(`/stream/${streamNaddr(stream.pubkey, stream.dTag)}`);
     };
     return (
@@ -257,13 +261,13 @@ export function NostrLiveStreams() {
         key={stream.id}
         stream={stream}
         profile={profile}
-        value={value}
+        v4v={v4v}
         onPlay={() => start(false)}
         onOpen={() => start(true)}
         onBoost={() => {
           const podcast = streamToPodcast(stream, profile);
-          podcast.value = value;
-          setBoostTarget({ episode: streamToEpisode(stream, value), podcast });
+          podcast.value = v4v?.value ?? null;
+          setBoostTarget({ episode: streamToEpisode(stream, v4v), podcast });
         }}
       />
     );
@@ -347,14 +351,14 @@ export function NostrLiveStreams() {
 function StreamCard({
   stream,
   profile,
-  value,
+  v4v,
   onPlay,
   onOpen,
   onBoost,
 }: {
   stream: NostrLiveStream;
   profile: ProfileMetadata | null;
-  value: ValueBlock | null;
+  v4v: StreamV4V | null;
   onPlay: () => void;
   onOpen: () => void;
   onBoost: () => void;
@@ -493,7 +497,7 @@ function StreamCard({
           {/* hasValueRecipients, not a bare truthiness check: resolveStreamV4V can
               return a block with an empty `recipients` array, which opened the
               boost modal with nobody to pay. */}
-          {hasValueRecipients(value) && (
+          {hasValueRecipients(v4v?.value) && (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); onBoost(); }}

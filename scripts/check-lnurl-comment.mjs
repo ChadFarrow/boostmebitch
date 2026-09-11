@@ -34,7 +34,7 @@
 // allowImportingTsExtensions. lib/util.ts has type-only imports, so it loads.
 // Keep it that way.
 
-import { buildLnurlComment } from '../lib/util.ts';
+import { buildLnurlComment, lnurlCommentRetry, lnurlErrorReason } from '../lib/util.ts';
 
 let failures = 0;
 
@@ -272,6 +272,122 @@ console.log('\n(naive) the join-then-slice this replaced');
   check(
     '(naive) agrees when everything fits',
     buildLnurlComment({ desc: DESC, message: MSG }, 255) === naive(DESC, MSG, 255),
+    true,
+  );
+}
+
+console.log('\nthe reason a service gave, out of four body shapes');
+{
+  // Every one of these is a body shape observed in the wild or specified.
+  // `lnurlErrorReason` exists because reading only LUD-06's `reason` reported
+  // "no invoice" over a service that had said exactly what was wrong.
+  check(
+    'LUD-06 `reason`',
+    lnurlErrorReason('{"status":"ERROR","reason":"comment too long"}'),
+    'comment too long',
+  );
+  // VERBATIM from getalby.com, 2026-09-11. Note `error` is a BOOLEAN here: a
+  // reader that takes `error` before checking its type reports the reason
+  // "true", which is how this shape defeats the obvious implementation.
+  check(
+    'Alby `{ error: true, message }`',
+    lnurlErrorReason('{"error":true,"message":"length 105 exceeds limit 90"}'),
+    'length 105 exceeds limit 90',
+  );
+  check(
+    '`error` as the string itself',
+    lnurlErrorReason('{"error":"comment exceeds maximum length"}'),
+    'comment exceeds maximum length',
+  );
+  check('a plain-text body', lnurlErrorReason('Comment is too long'), 'Comment is too long');
+  check('a success body yields nothing', lnurlErrorReason('{"pr":"lnbc10n1..."}'), undefined);
+  check('an empty body yields nothing', lnurlErrorReason(''), undefined);
+  check('a JSON body with nothing to say', lnurlErrorReason('{"status":"OK"}'), undefined);
+}
+
+console.log('\nwhich refusals earn a retry, and with what');
+{
+  // The measured case. Alby advertised commentAllowed 255, so the comment was
+  // built at 105 — correctly — and the service enforced 90. Failing there
+  // sends no sats at all; the retry keeps the descriptor and drops the prose.
+  const SENT = buildLnurlComment({ desc: DESC, message: MSG }, 255);
+  // 108 with this fixture's message; the measured incident sent 105. What the
+  // vector pins is the extraction, not the arithmetic of one particular prose.
+  check('the sent comment is over the limit Alby enforced', SENT.length > 90, true);
+  const r = lnurlCommentRetry(
+    { desc: DESC, message: MSG },
+    'length 105 exceeds limit 90',
+    SENT,
+  );
+  check('it retries', !!r, true);
+  check('...inside the limit the service stated', r.comment.length <= 90, true);
+  check('...keeping the descriptor WHOLE', r.comment.startsWith(DESC), true);
+
+  // The limit is read by arithmetic, not by phrasing: a limit is smaller than
+  // the length that exceeded it, so 105 can never be mistaken for the budget.
+  check('...and never mistakes the exceeded length for the limit', r.comment.length < 105, true);
+
+  // No stated limit at all — fall back to the descriptor alone.
+  const bare = lnurlCommentRetry({ desc: DESC, message: MSG }, 'Comment is too long', SENT);
+  check('an unnumbered refusal still retries', !!bare, true);
+  check('...with the descriptor and nothing else', bare.comment, DESC);
+
+  // MUST-STILL-WORK: a refusal about anything else is not a comment problem,
+  // and retrying it is a wasted round trip on every leg of a wallet that is
+  // simply down.
+  for (const why of [
+    'insufficient balance',
+    'no route to destination',
+    'Recipient wallet error. Please contact the recipient.',
+    'invalid amount 1000',
+  ]) {
+    check(`no retry for "${why}"`, lnurlCommentRetry({ desc: DESC, message: MSG }, why, SENT), null);
+  }
+  check(
+    'no retry without a reason at all',
+    lnurlCommentRetry({ desc: DESC, message: MSG }, undefined, SENT),
+    null,
+  );
+  check(
+    'no retry when nothing was sent',
+    lnurlCommentRetry({ desc: DESC, message: MSG }, 'comment too long', ''),
+    null,
+  );
+
+  // Nothing left to send is NOT a retry. With no descriptor to preserve, a
+  // retry would drop the user's own prose in silence on a rail where the
+  // comment is the only copy — and failing already says that.
+  check(
+    'no retry when there is no descriptor to keep',
+    lnurlCommentRetry({ message: MSG }, 'comment too long', 'a'.repeat(105)),
+    null,
+  );
+
+  // THE LOOP GUARD. A retry that is not SHORTER than the rejected comment is a
+  // guaranteed second refusal.
+  const SHORT = 'rss::payment::boost https://x.co/b/1';
+  check(
+    'no retry when the descriptor alone is not shorter',
+    lnurlCommentRetry({ desc: SHORT }, 'comment too long', SHORT),
+    null,
+  );
+}
+
+console.log('\n(naive) the leg that simply failed');
+{
+  // The shipping behaviour this replaces: a comment-length refusal threw, so
+  // the sats never left. There is no prior function to run these against —
+  // the old code had no retry at all — so `naive` is that absence.
+  const naive = () => null;
+  const SENT = buildLnurlComment({ desc: DESC, message: MSG }, 255);
+  check(
+    '(naive) sent nothing where we now send the descriptor',
+    naive() !== lnurlCommentRetry({ desc: DESC, message: MSG }, 'length 105 exceeds limit 90', SENT),
+    true,
+  );
+  check(
+    '(naive) agrees on a refusal that is not about length',
+    naive() === lnurlCommentRetry({ desc: DESC, message: MSG }, 'insufficient balance', SENT),
     true,
   );
 }

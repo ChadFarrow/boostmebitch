@@ -415,6 +415,21 @@ export function FullscreenPlayer({
   // (through useStreamPanel above) the unattended streaming payer.
   const value = payableValue(episode, podcast);
   const hasValue = hasValueRecipients(value);
+  // "no value block" IS A CLAIM, and a disabled BOOST button is the same
+  // control in three different situations. A Nostr live stream reaches it
+  // before its host's kind:0 has answered at all, and again when that read was
+  // too degraded to believe — and "Stream has no value block" over either one
+  // tells the listener a payable show cannot be paid. The button stays
+  // disabled in all three; only the sentence moves. See Episode.liveValueState,
+  // which is the only thing that can tell them apart, because `value` is null
+  // in every one of them. Null here, so each surface keeps its own noun below.
+  const boostTitle = hasValue
+    ? 'Send a boost'
+    : episode.liveValueState === 'pending'
+      ? 'Checking for a value block…'
+      : episode.liveValueState === 'unread'
+        ? 'Could not read the value block for this stream — reload to try again'
+        : null;
   const description = episode.description ? stripHtml(episode.description) : '';
   const { index: activeIdx, chapter: activeChapter, end: activeChapterEnd } = chapterState(
     chapters,
@@ -722,7 +737,7 @@ export function FullscreenPlayer({
                   onClick={onBoost}
                   disabled={!hasValue}
                   className="btn-bolt flex-1 min-w-[7rem] disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={hasValue ? 'Send a boost' : 'Stream has no value block'}
+                  title={boostTitle ?? 'Stream has no value block'}
                 >
                   <BoltIcon /> BOOST
                 </button>
@@ -825,7 +840,7 @@ export function FullscreenPlayer({
                   onClick={onBoost}
                   disabled={!hasValue}
                   className="btn-bolt basis-full sm:basis-auto sm:flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={hasValue ? 'Send a boost' : 'Episode has no value block'}
+                  title={boostTitle ?? 'Episode has no value block'}
                 >
                   <BoltIcon /> BOOST
                 </button>
