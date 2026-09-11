@@ -2,6 +2,8 @@ import { type Event, type EventTemplate } from 'nostr-tools';
 import { LIVE_STREAM_RELAYS } from './live-streams';
 import { FEED_QUERY_MAX_WAIT_MS, newPool, QUERY_MAX_WAIT_MS } from './pool';
 import { signAndPublish, type PublishedNote } from './publish';
+import { mentionParts, type MentionNpub } from './mention-tags';
+import { clientTag } from '../brand';
 
 // NIP-53 live chat. Messages are kind:1311 events tagged with the stream's
 // NIP-33 address: `a` = `30311:<pubkey>:<dTag>`. A NostrLiveStream's `id` is
@@ -95,16 +97,53 @@ export function subscribeLiveChat(
  * Publish a kind:1311 live chat message to the stream. Interoperates with
  * zap.stream and other NIP-53 clients. Returns the signed event so the caller
  * can append it optimistically (publish relays may not echo it back quickly).
+ *
+ * `mentions` are the people the sender picked with `@` in `<MessageInput>`.
+ * They reach the event two ways and both are needed: `nostr:npub…` in the body
+ * where the sender typed the name, which is what every client renders, and a
+ * `p` tag, which is the only thing that puts the message in the mentioned
+ * person's notifications. A body reference with no `p` tag reads correctly to
+ * everybody except the one person it names.
+ *
+ * `selfSigned` is TRUE here, and it is a fact about this function rather than
+ * an assumption: `signAndPublish` reads `activeNostr()` and throws without a
+ * signer, and there is no site-signed path for kind:1311 — `<LiveChat>` renders
+ * the composer only when `identity` is set, and the boost modal's chat fallback
+ * is gated on the same. **A site-signed chat message would have to answer that
+ * question differently on the day it is added.**
+ *
+ * The `a` root tag stays FIRST. NIP-53 addresses the message to the stream with
+ * it, and appending the `p` tags and the `client` tag after it leaves that shape
+ * untouched for every other client reading the room.
+ *
+ * The NIP-89 `client` tag is the same one a reply, a quote and a boost note
+ * carry, from `clientTag` (`lib/brand.ts`) and never a literal. A chat message
+ * is user-authored public prose like any of those, and this is the one
+ * publisher of it that went without: a reader printing "via …" under the boost
+ * note and nothing under the message the same person typed into the room is the
+ * drift that rule exists to stop. What any particular client renders is its own
+ * business and is not asserted here — an ignored tag costs nothing.
+ *
+ * `relays` defaults to `LIVE_STREAM_RELAYS` and no app caller passes it. It
+ * exists so `e2e:mentions` can drive this function against the local relay: a
+ * publisher that takes no `relays` argument cannot be exercised without putting
+ * test events on the public set permanently, which is why that script already
+ * SKIPS the one section whose publisher has none. A default rather than a
+ * required argument, so no caller can quietly publish a chat message somewhere
+ * the room is not reading.
  */
 export async function publishLiveChat(
   streamId: string,
   content: string,
+  mentions?: readonly MentionNpub[],
+  relays: string[] = LIVE_STREAM_RELAYS,
 ): Promise<PublishedNote> {
+  const { content: body, pTags } = mentionParts(content, mentions, true);
   const template: EventTemplate = {
     kind: 1311,
     created_at: Math.floor(Date.now() / 1000),
-    tags: [['a', streamChatAddr(streamId), '', 'root']],
-    content,
+    tags: [['a', streamChatAddr(streamId), '', 'root'], ...pTags, clientTag()],
+    content: body,
   };
-  return signAndPublish(template, LIVE_STREAM_RELAYS);
+  return signAndPublish(template, relays);
 }

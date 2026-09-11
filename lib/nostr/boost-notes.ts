@@ -1,7 +1,7 @@
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
 import { httpUrl } from '../util';
-import { BRAND } from '../brand';
+import { BRAND, clientTag } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
 import { noteMentionTags, type MentionNpub, inlineMentions, withMentionRun } from './mention-tags';
@@ -308,7 +308,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     tags.push(['imeta', `url ${banner}`, 'm image/png', 'dim 1200x300']);
   }
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
-  tags.push(['client', boostagram.app_name ?? BRAND.wireName]);
+  tags.push(clientTag(boostagram.app_name));
   tags.push(['t', 'boostagram']);
   tags.push(['t', 'value4value']);
 

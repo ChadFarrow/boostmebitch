@@ -1,60 +1,37 @@
 import { nip19, type Event, type EventTemplate } from 'nostr-tools';
 import { signAndPublish, type PublishedNote } from './publish';
-import { inlineMentions, noteMentionTags, withMentionRun, type MentionNpub } from './mention-tags';
-import { BRAND } from '../brand';
+import { mentionParts, type MentionNpub } from './mention-tags';
+import { clientTag } from '../brand';
 
 /**
- * NIP-89 attribution, the same tag a boost note carries.
+ * NIP-89 attribution, the same tag a boost note and a live chat message carry.
  *
- * `BRAND.wireName` and never a literal: one repo builds two deploys, and this
- * string is what a reader — ours and every other client — prints as "via …".
- * A hard-coded name here is the other brand's word appearing under a reply on
- * the family-friendly site. `boost-notes.ts` lets a boostagram override it with
- * its own `app_name`; a reply has no boostagram, so there is nothing to defer
- * to.
+ * Built by `clientTag` (`lib/brand.ts`) rather than written here, so the four
+ * publishers of it cannot drift: the cost of a second copy is not a wrong tag,
+ * it is a publisher quietly left without one. A reply has no boostagram, so
+ * there is nothing to defer to and the brand's own wire name is the answer.
  *
  * Worth knowing it is READ BACK: `discover.ts` pulls `client` off an event to
  * render that line, so a reply gains the attribution in this app's own feed as
  * well as in other clients.
  */
-const CLIENT_TAG: string[] = ['client', BRAND.wireName];
+const CLIENT_TAG: string[] = clientTag();
 
 /**
- * Turn the sender's picked mentions into `p` tags and inline `nostr:` refs.
- *
- * **`selfSigned` IS HARDCODED TRUE HERE, and that is a fact about this file
- * rather than an assumption.** `noteMentionTags`' gate exists because a boost
+ * `selfSigned` IS TRUE AT BOTH CALL SITES BELOW, and that is a fact about this
+ * file rather than an assumption. `mentionParts`' gate exists because a boost
  * note has two signing paths: the user's key, or the site's key through the
  * UNAUTHENTICATED `/api/nostr/site-sign`, where a sender-chosen `p` tag is a
  * mention-spam blast at strangers from a NIP-05-verified identity. Replies and
  * quotes have no such path — both functions below go through `signAndPublish`,
  * which reads `activeNostr()` and throws without a signer, so the note is
  * always signed by the person who typed it. **If a site-signed reply is ever
- * added, this must become a parameter on the same day.**
+ * added, this file answers that question differently on the same day.**
  *
- * The parent's own pubkey is passed in as `already` so replying to someone you
- * also @mentioned does not emit two `p` tags for them — a duplicate is not
- * harmful, but it is the kind of thing a relay or client dedupes differently
- * and it makes the event's tag list a poor record of what the sender chose.
+ * The helper itself lives in the import-free leaf `mention-tags.ts`, with the
+ * `p`-tag half and the body half composed there, because dropping the body half
+ * is a bug that shipped once and `check:mentions` now pins the pair.
  */
-function mentionParts(
-  content: string,
-  mentions: readonly MentionNpub[] | undefined,
-  already: string,
-): { content: string; pTags: string[][] } {
-  const { tagged, inBody } = noteMentionTags(null, mentions, true);
-  // BOTH HALVES, and dropping the second is the bug the mentions e2e caught.
-  // `inlineMentions` can only place a mention that has a display name to match
-  // on — a pasted npub has none — so it hands back what it could not place, and
-  // `withMentionRun` appends those. Taking only `content` gave those people a
-  // `p` tag and no trace in the body: named in the event, invisible in the note.
-  const { content: inlined, remaining } = inlineMentions(content, inBody);
-  const body = withMentionRun(inlined, remaining);
-  const pTags = tagged
-    .filter((m) => m.pubkey !== already)
-    .map((m) => ['p', m.pubkey]);
-  return { content: body, pTags };
-}
 
 // Carry NIP-73 `i`/`k` pairs forward so derived events (replies, quotes) stay
 // discoverable inside the same per-podcast filter we use for the global feed.
@@ -82,7 +59,7 @@ export async function publishReply(args: {
 }): Promise<PublishedNote> {
   const { parent, content, relays, mentions } = args;
   const relayHint = relays[0] ?? '';
-  const { content: body, pTags } = mentionParts(content, mentions, parent.pubkey);
+  const { content: body, pTags } = mentionParts(content, mentions, true, parent.pubkey);
 
   const tags: string[][] = [
     ['e', parent.id, relayHint, 'reply'],
@@ -123,7 +100,7 @@ export async function publishQuoteRepost(args: {
     author: parent.pubkey,
   });
 
-  const { content: commentBody, pTags } = mentionParts(comment, mentions, parent.pubkey);
+  const { content: commentBody, pTags } = mentionParts(comment, mentions, true, parent.pubkey);
 
   const tags: string[][] = [
     ['q', parent.id, relayHint, parent.pubkey],

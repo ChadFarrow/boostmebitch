@@ -68,6 +68,24 @@ const BOOSTAGRAM_MAX = 250;
  */
 const MAX_TEXTAREA_H = 240;
 
+/**
+ * The default for `feedNpubs`, hoisted out of the destructure because a default
+ * written there is a NEW ARRAY ON EVERY RENDER.
+ *
+ * `feedNpubs` is a dependency of the local-tier effect below, so a fresh
+ * identity re-runs that effect on every render — and its idle branch calls
+ * `setRows([])`, which is also a new array, so React never bails out of the
+ * update. Render → effect → setState → render, until React gives up with
+ * "Maximum update depth exceeded" and the tab spins.
+ *
+ * It is invisible to the two boost modals, which pass a `useMemo`'d list. It
+ * was NOT invisible to `<NoteCard>`'s reply composer, which passes none: 847
+ * loop errors were measured on one page load with a composer open. Nothing on
+ * screen says so — the composer renders and types normally — which is why it
+ * sat there. `<LiveChat>` passes none either.
+ */
+const NO_FEED_NPUBS: readonly MentionNpub[] = [];
+
 /** The `@…` immediately before the caret, if the caret is inside one. */
 function activeMention(value: string, caret: number): { q: string; start: number } | null {
   const upto = value.slice(0, caret);
@@ -86,12 +104,14 @@ export function MessageInput({
   onChange,
   mentions = [],
   onMentionsChange,
-  feedNpubs = [],
+  feedNpubs = NO_FEED_NPUBS,
   willNotify = true,
   label = 'Boostagram',
+  labelHidden = false,
   placeholder = 'optional message…',
   maxLength = BOOSTAGRAM_MAX,
   textareaRows = 2,
+  onEnter,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -117,10 +137,33 @@ export function MessageInput({
    * sentences for a limit that does not apply to them.
    */
   label?: string;
+  /**
+   * Keep the label for a screen reader and take its space back.
+   *
+   * For a composer sitting in a column with a scrolling list above it — the
+   * live chat — a visible caption costs a line of the messages it is a caption
+   * for. The label element stays, because the box still needs an accessible
+   * name and `aria-label` on a `combobox` is the weaker way to give it one.
+   */
+  labelHidden?: boolean;
   placeholder?: string;
   maxLength?: number;
   /** Named to avoid the `rows` candidate list below. */
   textareaRows?: number;
+  /**
+   * Enter submits, and the picker gets first refusal on the key.
+   *
+   * Enter-to-send belongs to the caller and the candidate list belongs here,
+   * and they want the same key: while the list is open Enter picks the
+   * highlighted person, and only a closed list lets Enter send. A caller cannot
+   * make that call — `open` is this component's state and nothing publishes it
+   * — so a caller that handled the key itself would send a half-typed message
+   * the moment the sender chose somebody. Shift+Enter is always a newline.
+   *
+   * Omit it and Enter keeps inserting a newline, which is what the boost modals
+   * and `<NoteCard>`'s reply composer already do.
+   */
+  onEnter?: () => void;
 }) {
   const id = useId();
   const listId = useId();
@@ -214,7 +257,11 @@ export function MessageInput({
   // Local tier: synchronous, every keystroke, no network.
   useEffect(() => {
     if (!pickable || dismissed || secretHit || full || q.length < MIN_MENTION_QUERY) {
-      setRows([]);
+      // `prev` when it is already empty, never a fresh `[]`. The stable default
+      // above stops this effect re-running on every render, and this stops the
+      // loop reforming if a future caller passes an inline array literal —
+      // which is the natural thing to write and costs nothing to survive.
+      setRows((prev) => (prev.length ? [] : prev));
       setIndexState('idle');
       return;
     }
@@ -324,7 +371,11 @@ export function MessageInput({
     (rows.length > 0 || !!pastedNpub || indexState !== 'idle');
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (!open) return;
+    if (!open) {
+      // The list is closed, so Enter is the caller's. See `onEnter`.
+      if (onEnter && e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onEnter(); }
+      return;
+    }
     if (e.key === 'ArrowDown') { e.preventDefault(); setActive((i) => (i + 1) % Math.max(rows.length, 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActive((i) => (i - 1 + rows.length) % Math.max(rows.length, 1)); }
     else if (e.key === 'Enter' && rows[active]) { e.preventDefault(); pick(rows[active]); }
@@ -395,7 +446,10 @@ export function MessageInput({
 
   return (
     <div>
-      <label htmlFor={id} className="text-[11px] uppercase tracking-widest text-muted">
+      <label
+        htmlFor={id}
+        className={labelHidden ? 'sr-only' : 'text-[11px] uppercase tracking-widest text-muted'}
+      >
         {label}
       </label>
       <div className="relative">

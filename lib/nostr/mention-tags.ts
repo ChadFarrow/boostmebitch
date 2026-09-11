@@ -208,3 +208,44 @@ export function withMentionRun(content: string, npubs: MentionNpub[]): string {
   if (!npubs.length) return content;
   return `${content}\n\n${npubs.map((n) => `nostr:${n.npub}`).join('\n')}`;
 }
+
+/**
+ * The two halves of a mention, composed: the body the sender's text becomes,
+ * and the `p` tags that notify.
+ *
+ * WHY BOTH HALVES LIVE IN ONE FUNCTION. `inlineMentions` returns what it could
+ * NOT place, and `withMentionRun` appends those. Taking only its `content` gave
+ * a nameless mention — a pasted npub, which has no display name to match on —
+ * a `p` tag and no trace in the body: named in the event, invisible in the
+ * note. That shipped for one commit and no review caught it. A caller that
+ * calls the two by hand can drop the second again, so callers call this.
+ *
+ * `selfSigned` IS REQUIRED, and the required-ness is the point. It is the
+ * security gate `noteMentionTags` documents: a note signed by the site's key
+ * through the UNAUTHENTICATED `/api/nostr/site-sign` must carry no
+ * sender-chosen `p` tag, because that is one unauthed POST notifying strangers
+ * from a NIP-05-verified identity. Only the layer that knows which key will
+ * sign can answer it, so this function refuses to guess — the same reason
+ * `decryptWithTimeout` makes its `purpose` a parameter. A default of `true`
+ * here would let a future site-signed surface acquire the amplifier by saying
+ * nothing.
+ *
+ * `already` is a pubkey the caller tags for its own reasons — a reply's parent
+ * author — so @mentioning the person you are replying to emits one `p` tag and
+ * not two. A duplicate is not harmful, but relays and clients dedupe it
+ * differently and it makes the tag list a poor record of what the sender chose.
+ */
+export function mentionParts(
+  content: string,
+  mentions: readonly MentionNpub[] | null | undefined,
+  selfSigned: boolean,
+  already?: string,
+): { content: string; pTags: string[][] } {
+  const { tagged, inBody } = noteMentionTags(null, mentions, selfSigned);
+  const { content: inlined, remaining } = inlineMentions(content, inBody);
+  const body = withMentionRun(inlined, remaining);
+  const pTags = tagged
+    .filter((m) => m.pubkey !== already)
+    .map((m) => ['p', m.pubkey]);
+  return { content: body, pTags };
+}
