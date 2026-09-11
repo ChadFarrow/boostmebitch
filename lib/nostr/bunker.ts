@@ -284,6 +284,79 @@ export function subscribeBunkerHealth(fn: (stale: boolean) => void): () => void 
 }
 
 /**
+ * "We are reconnecting to your signer, and we do not know yet whether it is
+ * there."
+ *
+ * A FOURTH observable, and the case for it is the interval the other three
+ * cannot describe. `bunkerStale` is set only once the restore SETTLES, and
+ * `BunkerApprovalStage` fires only when the signer has answered. Between the
+ * two sits the window this exists for: a relay that CONNECTS and then answers
+ * nothing costs the full `BUNKER_CONNECT_TIMEOUT_MS` — 90 s in which the app
+ * looks signed in, `window.nostr` is not installed, anything the user touches
+ * that signs fails with a generic error, and the banner that would have
+ * explained it has not rendered yet. A signer that is simply unreachable
+ * (Airplane Mode) fails in milliseconds and never needs this; the silent relay
+ * is the one that does.
+ *
+ * NOT A THIRD MEANING FOR `bunkerStale`, for the reason `BunkerApprovalStage`
+ * is not a second one: stale claims the transport looks dead, and this claims
+ * nothing at all except that we are asking. A surface that showed the reconnect
+ * banner here would send the user to repair a link whose state is still
+ * unknown, and the answer arriving a moment later would contradict it.
+ *
+ * `phase` is carried because the two halves differ in what the user can still
+ * do. During `'probing'` the session's own adapter is still installed and still
+ * signs — `pingBunkerAdapter` only asks it a question. `'connecting'` begins
+ * after `closeStaleBunkerTransport`, so from there nothing can be signed until
+ * this finishes, which is the sentence a surface needs to be able to say.
+ *
+ * `startedAt` is the progress half, and it is a timestamp rather than a tick
+ * count so the value survives a re-subscribe: a surface that mounts 30 s into a
+ * restore must be able to say how long it has been waiting, not start its own
+ * clock at zero. It is also what lets a surface hold the notice back for the
+ * ordinary sub-second restore — see `<BunkerRestoreNotice>`.
+ */
+export type BunkerRestorePhase = 'probing' | 'connecting';
+
+export type BunkerRestoreStage = {
+  restoring: boolean;
+  /** Which half of the restore is on the wire. Null when idle. */
+  phase: BunkerRestorePhase | null;
+  /** `Date.now()` when THIS restore began. Null when idle. */
+  startedAt: number | null;
+};
+
+let restoreStage: BunkerRestoreStage = { restoring: false, phase: null, startedAt: null };
+const restoreListeners = new Set<(s: BunkerRestoreStage) => void>();
+
+/**
+ * ONE SETTER FOR BOTH TRANSITIONS, so `restoring` cannot disagree with `phase`.
+ * A phase begins or continues a restore; `null` ends it.
+ *
+ * `startedAt` is kept across a phase change rather than restamped — probing and
+ * connecting are two halves of one wait, and restarting the clock at the
+ * handover would hide the 10 s the probe is allowed to take from the count the
+ * user is reading.
+ */
+export function setBunkerRestorePhase(phase: BunkerRestorePhase | null): void {
+  const next: BunkerRestoreStage = phase === null
+    ? { restoring: false, phase: null, startedAt: null }
+    : { restoring: true, phase, startedAt: restoreStage.startedAt ?? Date.now() };
+  if (restoreStage.restoring === next.restoring
+    && restoreStage.phase === next.phase
+    && restoreStage.startedAt === next.startedAt) return;
+  restoreStage = next;
+  for (const fn of restoreListeners) { try { fn(next); } catch { /* a listener must not break the restore */ } }
+}
+
+export function subscribeBunkerRestore(fn: (s: BunkerRestoreStage) => void): () => void {
+  restoreListeners.add(fn);
+  fn(restoreStage);
+  return () => { restoreListeners.delete(fn); };
+}
+
+
+/**
  * "Your signer has the request and is waiting for you to approve it."
  *
  * A THIRD observable rather than a second meaning for bunkerStale, because the

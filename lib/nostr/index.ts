@@ -34,11 +34,14 @@ export {
   subscribeBunkerHealth,
   subscribeBunkerApproval,
   cancelBunkerApprovalWait,
+  subscribeBunkerRestore,
   clearPendingBunkerAttempts,
   looksLikeBunkerInput,
   nostrConnectUri,
   hasPendingNostrConnect,
   type BunkerApprovalStage,
+  type BunkerRestoreStage,
+  type BunkerRestorePhase,
 } from './bunker';
 export {
   claveOpenLink,

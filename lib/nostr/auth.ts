@@ -30,6 +30,7 @@ import {
   markBunkerStale,
   pingBunkerAdapter,
   restoreBunkerFromStorage,
+  setBunkerRestorePhase,
   startNostrConnect,
   type BunkerAdapter,
 } from './bunker';
@@ -216,6 +217,11 @@ export type BunkerRestoreResult =
   /** The signer ANSWERED and the answer was no. `message` is its own words. */
   | { kind: 'refused'; message: string };
 
+// The restore currently on the wire, and the pointer it is for. See
+// `restoreBunkerSigner` — a second press must join this one, not race it.
+let restoreInFlight: Promise<BunkerRestoreResult> | null = null;
+let restoreInFlightUri: string | null = null;
+
 /**
  * A REFUSAL IS NOT AN ABSENCE, and this function used to report one as the
  * other.
@@ -250,17 +256,72 @@ export type BunkerRestoreResult =
  * throw, a timeout on a request the signer is holding open for the user
  * included. Without it the reconnect rebuilds a working transport, and on iOS
  * the rebuild competes with the sockets the old one still holds.
+ *
+ * IT SAYS SO WHILE IT RUNS, and the window it covers is the reason this stopped
+ * being an implementation detail. `bunkerStale` is only set once this SETTLES,
+ * so the interval before that showed nothing at all — and the two ways it can
+ * fail are nothing like each other in length. No network at all rejects in
+ * milliseconds: `s.connect()` publishes over `Promise.any(pool.publish(...))`
+ * and every socket fails at once. A relay that CONNECTS and then answers
+ * nothing costs the whole `BUNKER_CONNECT_TIMEOUT_MS` — 90 s during which the
+ * app looks signed in, `window.nostr` is not installed, and anything the user
+ * touches that signs fails with a generic error. `setBunkerRestorePhase`
+ * publishes the progress state that `<BunkerRestoreNotice>` renders; see its
+ * header in ./bunker.ts for why it is a fourth observable rather than a second
+ * meaning for an existing one.
+ *
+ * CONCURRENT RESTORES ARE COALESCED, and that is a transport fact rather than a
+ * tidy-up. Both entry points call this — the page-load effect in
+ * <NostrAuth> and the account menu's RECONNECT button — and a user who presses
+ * the button during the 90 s window used to start a SECOND handshake, with its
+ * own pool and its own sockets, against the same relays the first one is still
+ * holding. On iOS that is the WebKit 302561 hazard this file already documents
+ * from the pairing side: the second socket to a host may never open at all, so
+ * the press could make the wait worse rather than shorter. Joining the attempt
+ * already running gives that press the honest answer instead — the same one the
+ * page-load restore is about to get.
  */
-export async function restoreBunkerSigner(): Promise<BunkerRestoreResult> {
+export function restoreBunkerSigner(): Promise<BunkerRestoreResult> {
+  // Keyed on the stored pointer, never on "a restore is running". A restore
+  // still in flight for a pairing the user has since replaced is about a
+  // different signer, and joining it would report the OLD pairing's answer
+  // about the new one. `null` never shares: there is nothing stored to be the
+  // same as, and that path returns `no-session` immediately anyway.
+  const uri = storage.bunker.get()?.uri ?? null;
+  if (restoreInFlight && uri !== null && uri === restoreInFlightUri) return restoreInFlight;
+  const p = runBunkerRestore(uri).finally(() => {
+    // Only the OWNER clears. A restore superseded by one for a different
+    // pointer must not take down the live one's progress state on its way out.
+    if (restoreInFlight !== p) return;
+    restoreInFlight = null;
+    restoreInFlightUri = null;
+    setBunkerRestorePhase(null);
+  });
+  restoreInFlight = p;
+  restoreInFlightUri = uri;
+  return p;
+}
+
+async function runBunkerRestore(storedUri: string | null): Promise<BunkerRestoreResult> {
   // The transport this session already has, if any. Null on a page-load
   // restore, which is the path with nothing to probe and nothing to close.
   const live = getActiveBunker();
-  if (live && await pingBunkerAdapter(live)) {
-    clearBunkerStale();
-    return { kind: 'ok' };
+  if (live) {
+    // Still signable: the adapter stays installed while the probe runs, so a
+    // surface reading this phase must not claim otherwise.
+    setBunkerRestorePhase('probing');
+    if (await pingBunkerAdapter(live)) {
+      clearBunkerStale();
+      return { kind: 'ok' };
+    }
+    // Proven dead: hand its sockets back BEFORE opening their replacement.
+    closeStaleBunkerTransport();
   }
-  // Proven dead: hand its sockets back BEFORE opening their replacement.
-  if (live) closeStaleBunkerTransport();
+
+  // Announced only when there is something to connect TO. Without the guard a
+  // signed-out load would raise and drop the progress state inside one tick,
+  // and a surface that renders it would flicker for no wait at all.
+  if (storedUri !== null) setBunkerRestorePhase('connecting');
 
   let adapter: BunkerAdapter | null;
   try {
