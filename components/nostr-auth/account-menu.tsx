@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { useMenuKeys } from '../use-menu-keys';
 import { useRouter } from 'next/navigation';
-import { subscribeBunkerHealth, bunkerRefusal, restoreBunkerSigner, isKeyEphemeral, shortNpub, type NostrIdentity } from '@/lib/nostr';
+import { subscribeBunkerHealth, subscribeBunkerRestore, bunkerRefusal, restoreBunkerSigner, isKeyEphemeral, shortNpub, type NostrIdentity } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { getErrorMessage } from '@/lib/util';
 import { MutedAccountsSection } from './muted-accounts';
@@ -10,6 +10,7 @@ import { ExportKeySection } from './export-key';
 import { ProfileEditor } from '../profile-editor';
 import { ThemeMenuLink } from '../theme-toggle';
 import { BunkerApprovalNotice } from '../bunker-approval-notice';
+import { BunkerRestoreNotice } from '../bunker-restore-notice';
 
 // Surfaced inside AccountMenu when the NIP-46 bunker subscription has
 // gone stale (typically because iOS suspended the PWA's WebSocket while
@@ -38,7 +39,7 @@ function LocalKeyEphemeralBanner() {
 // subscriptions to one observable would be two things to keep in step, and the
 // failure mode is the one that makes this whole area hard: a dot with no banner
 // behind it, or a banner nothing points at.
-function BunkerHealthBanner({ stale }: { stale: boolean }) {
+function BunkerHealthBanner({ stale, restoring }: { stale: boolean; restoring: boolean }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // The signer's OWN last refusal, when the fault is a refusal rather than a
@@ -105,12 +106,24 @@ function BunkerHealthBanner({ stale }: { stale: boolean }) {
         </span>
       )}
       <div className="flex items-center gap-2">
+        {/* DISABLED BY THE MODULE'S RESTORE FLAG, not only by `busy`, and the
+            case that needs it is a menu that was CLOSED. `busy` is this
+            component's own state and this component only exists while the panel
+            is open — so pressing Reconnect, closing the menu and opening it
+            again showed a fresh, pressable RECONNECT with a restore still on the
+            wire, for up to 90 s if a relay connected and then went quiet. The
+            module flag outlives the panel, so the control says what is actually
+            happening. `restoreBunkerSigner` coalesces, so a press there joins
+            the attempt rather than opening a competing transport — but a control
+            that silently does nothing is still worse than one that says it is
+            already running. <BunkerRestoreNotice> above carries the elapsed
+            count; this is the control's own state. */}
         <button
           onClick={reconnect}
-          disabled={busy}
+          disabled={busy || restoring}
           className="btn-ghost text-[10px] py-1 px-2 disabled:opacity-30"
         >
-          {busy ? 'Reconnecting…' : 'Reconnect'}
+          {busy || restoring ? 'Reconnecting…' : 'Reconnect'}
         </button>
       </div>
       {/* Its OWN row, not the button's. Beside the button the inline slot was
@@ -170,6 +183,11 @@ export function AccountMenu({
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
   const [signerStale, setSignerStale] = useState(false);
+  // Subscribed ONCE here and passed down, like `signerStale` and for the same
+  // reason: the banner's disabled Reconnect and the notice's sentence are two
+  // readings of one module flag, and two subscriptions would be two things to
+  // keep in step.
+  const [restoring, setRestoring] = useState(false);
   const router = useRouter();
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -192,6 +210,7 @@ export function AccountMenu({
   // the header for a socket the OS suspends whenever the user backgrounds the
   // app would be on screen more often than not.
   useEffect(() => subscribeBunkerHealth(setSignerStale), []);
+  useEffect(() => subscribeBunkerRestore((r) => setRestoring(r.restoring)), []);
 
   // Dismiss on click-outside / Escape so the menu doesn't trap focus.
   useEffect(() => {
@@ -276,8 +295,16 @@ export function AccountMenu({
           <BunkerApprovalNotice> renders null unless a wait is live, which
           leaves a zero-height box nothing can be clicked through. */}
       {!open && (
-        <div className="absolute right-0 top-full mt-2 w-[min(360px,calc(100vw-2rem))] z-30">
+        <div className="absolute right-0 top-full mt-2 w-[min(360px,calc(100vw-2rem))] z-30 flex flex-col gap-2">
           <BunkerApprovalNotice />
+          {/* The restore's own window, which the two signals above cannot
+              describe: the approval notice needs the signer to have ANSWERED,
+              and the dot needs the attempt to have SETTLED. On a cold load this
+              anchor is the only place it can appear at all — the restore runs
+              unprompted, and nobody opens a menu to watch a handshake they have
+              not been told about. It renders null while the approval notice is
+              up, so this stack is never two boxes about one wait. */}
+          <BunkerRestoreNotice />
         </div>
       )}
 
@@ -316,7 +343,13 @@ export function AccountMenu({
               yet". The one that matters here is the "Stop waiting" control,
               which is otherwise only reachable from the boost modal. */}
           <BunkerApprovalNotice className="mb-3" />
-          <BunkerHealthBanner stale={signerStale} />
+          {/* Repeated inside the panel because opening the menu unmounts the
+              anchored copy above, and a user who opens it MID-RESTORE is the one
+              most likely to be looking for exactly this. It counts from the
+              module's own timestamp, so it opens at the real elapsed figure
+              rather than restarting at zero. */}
+          <BunkerRestoreNotice className="mb-3" />
+          <BunkerHealthBanner stale={signerStale} restoring={restoring} />
           <LocalKeyEphemeralBanner />
 
           <MutedAccountsSection />
