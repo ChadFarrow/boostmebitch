@@ -68,6 +68,22 @@ const BOOSTAGRAM_MAX = 250;
  */
 const MAX_TEXTAREA_H = 240;
 
+/**
+ * The default for `feedNpubs`, hoisted out of the destructure because a default
+ * written there is a NEW ARRAY ON EVERY RENDER.
+ *
+ * `feedNpubs` is a dependency of the local-tier effect below, so a fresh
+ * identity re-runs that effect on every render — and its idle branch calls
+ * `setRows([])`, which is also a new array, so React never bails out of the
+ * update. Render → effect → setState → render, until React gives up with
+ * "Maximum update depth exceeded" and the tab spins.
+ *
+ * It is invisible to the two boost modals, which pass a `useMemo`'d list. It
+ * was NOT invisible to `<NoteCard>`'s reply composer, which passes none: 847
+ * loop errors were measured on one page load with a composer open.
+ */
+const NO_FEED_NPUBS: readonly MentionNpub[] = [];
+
 /** The `@…` immediately before the caret, if the caret is inside one. */
 function activeMention(value: string, caret: number): { q: string; start: number } | null {
   const upto = value.slice(0, caret);
@@ -86,7 +102,7 @@ export function MessageInput({
   onChange,
   mentions = [],
   onMentionsChange,
-  feedNpubs = [],
+  feedNpubs = NO_FEED_NPUBS,
   willNotify = true,
   label = 'Boostagram',
   placeholder = 'optional message…',
@@ -214,7 +230,11 @@ export function MessageInput({
   // Local tier: synchronous, every keystroke, no network.
   useEffect(() => {
     if (!pickable || dismissed || secretHit || full || q.length < MIN_MENTION_QUERY) {
-      setRows([]);
+      // `prev` when it is already empty, never a fresh `[]`. The stable default
+      // above stops this effect re-running on every render, and this stops the
+      // loop reforming if a future caller passes an inline array literal —
+      // which is the natural thing to write and costs nothing to survive.
+      setRows((prev) => (prev.length ? [] : prev));
       setIndexState('idle');
       return;
     }
