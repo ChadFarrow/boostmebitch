@@ -44,6 +44,7 @@ import {
   MAX_FEED_NOTE_NPUBS,
   MAX_MENTION_NPUBS,
   inlineMentions,
+  mentionParts,
 } from '../lib/nostr/mention-tags.ts';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
 
@@ -387,6 +388,108 @@ console.log('\ninlineMentions puts the identifier where the sender typed the nam
     console.error(`  FAIL  "${v.label}" passes against naive() too — the vector proves nothing.`);
   }
   console.log(`  ${iVectors.length} vector(s) replayed, ${iExempt} exempt as must-still-work`);
+}
+
+// ---------------------------------------------------------------------------
+console.log('\nmentionParts composes BOTH halves, and asks who is signing');
+// ---------------------------------------------------------------------------
+{
+  // The one function every publisher calls — replies, quote reposts and NIP-53
+  // live chat. It exists because the two halves have to be taken together, and
+  // `naive()` below is precisely the version that shipped for one commit: keep
+  // `inlineMentions`' content, throw away what it could not place, and tag
+  // everybody the sender picked. That gave a pasted npub a `p` tag and no trace
+  // in the body — named in the event, invisible in the note — and it tagged
+  // strangers from a site-signed note, which is the amplifier the `selfSigned`
+  // gate exists to close.
+  const mVectors = [];
+  const mcheck = (label, content, mentions, selfSigned, already, expected, { alsoNaive = false } = {}) => {
+    compare(label, mentionParts(content, mentions, selfSigned, already), expected);
+    mVectors.push({ label, args: [content, mentions, selfSigned, already], alsoNaive });
+  };
+
+  const REED = { npub: 'npub1reed', pubkey: 'aa'.repeat(32), name: 'Reed' };
+  const NONAME = { npub: 'npub1noname', pubkey: 'dd'.repeat(32) };
+  const BAD = { npub: 'npub1bad', pubkey: 'not-hex', name: 'Bad' };
+
+  // Must-still-work: the ordinary case. One name in the text becomes the URI in
+  // place, and the person is tagged. naive() agrees, and has to keep agreeing.
+  mcheck('a placed mention is inlined and tagged',
+    'hi @Reed', [REED], true, undefined,
+    { content: 'hi nostr:npub1reed', pTags: [['p', 'aa'.repeat(32)]] }, { alsoNaive: true });
+
+  // THE BUG THAT SHIPPED. A pasted npub has no display name to match on, so
+  // `inlineMentions` cannot place it and hands it back — and it must still be
+  // appended. Dropping the second half tags a person the note never names.
+  mcheck('a mention that could not be placed is appended, not dropped',
+    'hello', [NONAME], true, undefined,
+    { content: 'hello\n\nnostr:npub1noname', pTags: [['p', 'dd'.repeat(32)]] });
+
+  // THE AMPLIFIER. A site-signed note goes out through the unauthenticated
+  // /api/nostr/site-sign under a NIP-05-verified identity, so a sender-chosen
+  // `p` tag there is one unauthed POST notifying a stranger. The body keeps the
+  // mention — it costs nobody a notification and the sender typed it.
+  mcheck('a site-signed note names the person in the body and tags nobody',
+    'hi @Reed', [REED], false, undefined,
+    { content: 'hi nostr:npub1reed', pTags: [] });
+
+  // Replying to someone you also @mentioned emits ONE `p` tag for them.
+  mcheck('the pubkey the caller already tags is not tagged again',
+    'hi @Reed', [REED], true, 'aa'.repeat(32),
+    { content: 'hi nostr:npub1reed', pTags: [] });
+
+  // `already` filters the TAG and leaves the body alone: the sender still
+  // named them, and the reader still sees the name.
+  mcheck('a deduped tag does not remove the name from the body',
+    'thanks @Reed', [REED], true, 'aa'.repeat(32),
+    { content: 'thanks nostr:npub1reed', pTags: [] });
+
+  // The last function before the tag array re-checks both fields. A pubkey
+  // that is not 64 lowercase hex reaches neither the tags nor the body.
+  mcheck('an unusable mention reaches neither the tags nor the body',
+    'hi @Bad', [BAD], true, undefined,
+    { content: 'hi @Bad', pTags: [] });
+
+  // The cap truncates, and the ones past it are not tagged. Five picked, four
+  // tagged — MAX_MENTION_NPUBS is what keeps a template inside the site-sign
+  // route's own MAX_P_TAGS bound.
+  const FIVE = [0, 1, 2, 3, 4].map((i) => ({
+    npub: `npub1p${i}`,
+    pubkey: String(i).repeat(2).padStart(2, '0').repeat(32),
+    name: `P${i}`,
+  }));
+  mcheck('the cap holds — the fifth pick is neither tagged nor in the body',
+    'hi', FIVE, true, undefined,
+    {
+      content: `hi\n\n${FIVE.slice(0, MAX_MENTION_NPUBS).map((m) => `nostr:${m.npub}`).join('\n')}`,
+      pTags: FIVE.slice(0, MAX_MENTION_NPUBS).map((m) => ['p', m.pubkey]),
+    });
+
+  // Must-still-work: no mentions leaves the body byte-identical and the tag
+  // list empty. Every publisher spreads `pTags` into its template.
+  mcheck('no mentions leaves the body byte-identical and the tags empty',
+    '\u26a1 Boost \u26a1\n\nhi', [], true, undefined,
+    { content: '\u26a1 Boost \u26a1\n\nhi', pTags: [] }, { alsoNaive: true });
+
+  // Keep only `inlineMentions`' content, and tag whoever was picked.
+  const mNaive = (content, mentions) => {
+    const { content: inlined } = inlineMentions(content, [...(mentions ?? [])]);
+    return { content: inlined, pTags: (mentions ?? []).map((m) => ['p', m.pubkey]) };
+  };
+  const mcall = (impl, v) => {
+    try {
+      return JSON.stringify(impl === 'real' ? mentionParts(...v.args) : mNaive(...v.args));
+    } catch (e) { return `threw ${(e && e.message) || e}`; }
+  };
+  let mExempt = 0;
+  for (const v of mVectors) {
+    const differs = mcall('real', v) !== mcall('naive', v);
+    if (v.alsoNaive) { mExempt += 1; console.log(`  ok    "${v.label}" is must-still-work — naive() may get it right`); continue; }
+    if (differs) { console.log(`  ok    naive() gets "${v.label}" wrong`); continue; }
+    failures += 1;
+    console.error(`  FAIL  "${v.label}" passes against naive() too — the vector proves nothing.`);
+  }
+  console.log(`  ${mVectors.length} vector(s) replayed, ${mExempt} exempt as must-still-work`);
 }
 
 // ---------------------------------------------------------------------------
