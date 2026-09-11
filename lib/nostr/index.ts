@@ -204,6 +204,7 @@ export {
   fetchLatestStreamByPubkey,
   streamNaddr,
   resolveStreamV4V,
+  resolveStreamV4VRetrying,
   streamToEpisode,
   streamToPodcast,
   streamIdOf,
@@ -211,6 +212,7 @@ export {
   isLiveStreamId,
   LIVE_STREAM_RELAYS,
   type NostrLiveStream,
+  type StreamV4V,
 } from './live-streams';
 
 export { subscribeLiveChat, publishLiveChat, streamChatAddr } from './live-chat';

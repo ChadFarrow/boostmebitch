@@ -280,6 +280,19 @@ export interface Episode {
    *  `/live/<npub>` share link must be built from this, not from the stream
    *  id's author half. */
   liveHostPubkey?: string;
+  /** Why a Nostr live stream's `value` is null, when it is not simply "this
+   *  host takes no boosts". Absent means `value` is authoritative.
+   *
+   *  'pending' — the host's kind:0 has not answered yet. The first paint of a
+   *              stream happens before the read starts, so this is the state
+   *              every broadcast passes through.
+   *  'unread'  — the read was too degraded to believe a missing address.
+   *
+   *  BOOST is disabled in all three cases; only the SENTENCE differs, and that
+   *  is the whole point. "Stream has no value block" over a stream we merely
+   *  failed to read is a claim about somebody's money that we had not earned.
+   *  Set by `streamToEpisode` from the `StreamV4V` it is handed. */
+  liveValueState?: 'pending' | 'unread';
   /** <podcast:txt purpose="nostr"> published inside this <item> — the track's
    *  or episode's own artist, distinct from the channel-level show npub. Both
    *  are tagged on a boost note; see lib/nostr/boost-notes.ts. */

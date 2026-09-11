@@ -4,7 +4,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { nip19 } from 'nostr-tools';
 import {
   fetchLiveStreamByAddr,
-  resolveStreamV4V,
+  resolveStreamV4VRetrying,
   streamToEpisode,
   streamToPodcast,
   fetchProfile,
@@ -63,12 +63,23 @@ export default function StreamPage() {
       play(streamToEpisode(stream, null), streamToPodcast(stream, null));
       setPlayerExpanded(true);
       setStatus('open');
-      const [profile, value] = await Promise.all([
-        fetchProfile(stream.pubkey).catch(() => null),
-        resolveStreamV4V(stream).catch(() => null),
+      // The two reads are INDEPENDENT and must not be awaited together. The
+      // V4V half retries while it cannot tell (see resolveStreamV4VRetrying),
+      // so a degraded relay set can hold it for seconds — and the host's name
+      // has no reason to wait behind a boost question. Painting twice is what
+      // this effect already does; `episode.id` is stable, so neither repaint
+      // restarts the video or the hls.js attachment.
+      const [profile, v4v] = await Promise.all([
+        fetchProfile(stream.pubkey).catch(() => null).then((p) => {
+          if (!cancelled && useApp.getState().current?.episode.guid === stream.id) {
+            play(streamToEpisode(stream, null), streamToPodcast(stream, p));
+          }
+          return p;
+        }),
+        resolveStreamV4VRetrying(stream, { cancelled: () => cancelled }),
       ]);
       if (!cancelled && useApp.getState().current?.episode.guid === stream.id) {
-        play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
+        play(streamToEpisode(stream, v4v), streamToPodcast(stream, profile));
       }
     })();
     return () => { cancelled = true; };

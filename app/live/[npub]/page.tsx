@@ -4,7 +4,7 @@ import { useParams, useRouter } from 'next/navigation';
 import { nip19 } from 'nostr-tools';
 import {
   fetchLatestStreamByPubkey,
-  resolveStreamV4V,
+  resolveStreamV4VRetrying,
   streamToEpisode,
   streamToPodcast,
   fetchProfile,
@@ -77,9 +77,15 @@ export default function LivePage() {
         setStatus('open');
         // Enrich boost value in the background — episode.id is stable so the
         // video/hls don't restart.
-        const value = await resolveStreamV4V(stream).catch(() => null);
-        if (!cancelled && value && useApp.getState().current?.episode.guid === stream.id) {
-          play(streamToEpisode(stream, value), streamToPodcast(stream, profile));
+        //
+        // REPAINT ON EVERY ANSWER, not only on a block. The old guard was
+        // `if (value && …)`, so a read that found no payee left the episode in
+        // its first-paint state — which now means `liveValueState: 'pending'`,
+        // and BOOST would sit under "Checking for a value block…" for the rest
+        // of the broadcast. A settled read is worth painting whatever it says.
+        const v4v = await resolveStreamV4VRetrying(stream, { cancelled: () => cancelled });
+        if (!cancelled && useApp.getState().current?.episode.guid === stream.id) {
+          play(streamToEpisode(stream, v4v), streamToPodcast(stream, profile));
         }
       } else {
         setStatus('offline');

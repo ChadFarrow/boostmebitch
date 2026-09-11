@@ -9,15 +9,32 @@ import {
 import { fetchLatestEventDetailed } from './event-queries';
 import { signAndPublish, type PublishedNote } from './publish';
 
-// Fetch the user's kind:0 metadata event from the given relays (defaults to
-// our standard set unioned with the profile-outbox relays). Returns null if
-// no event is found or parsing fails. The result (hit or miss) is mirrored
-// into `storage.profile` so the next page load can paint name + avatar from
-// cache before any relay round-trip.
-export async function fetchProfile(
+/** A kind:0 read for RENDERING, plus whether a null may be believed. */
+export interface ProfileRead {
+  /** The whitelisted profile, or null for "no event" / unparseable content. */
+  profile: ProfileMetadata | null;
+  /** False when the relay set was too degraded for `profile: null` to mean
+   *  "this person published no kind:0". */
+  trustworthy: boolean;
+}
+
+/**
+ * `fetchProfile`, with the flag it otherwise throws away.
+ *
+ * `fetchProfile` already read `trustworthy` — it has to, or it would negative-
+ * cache an outage — but it kept the answer to itself and returned a bare null.
+ * That is fine for a name and an avatar, where a missing profile and an
+ * unreachable relay both just mean "no name yet". It is NOT fine for a caller
+ * that turns the same null into a claim on screen or a routing decision, which
+ * is what `resolveStreamV4V` does: an absent `lud16` is the only thing gating
+ * BOOST, and it also decides whether the platform's key is paid instead of the
+ * host's. Same rule as `fetchRawProfile` states for the write path — "no
+ * event" and "no answer" are the same null without this flag.
+ */
+export async function fetchProfileDetailed(
   pubkey: string,
   relays?: string[],
-): Promise<ProfileMetadata | null> {
+): Promise<ProfileRead> {
   const base = relays ?? DEFAULT_RELAYS;
   const useRelays = Array.from(new Set([...base, ...PROFILE_RELAYS]));
   const { event: newest, trustworthy } = await fetchLatestEventDetailed(useRelays, {
@@ -33,17 +50,32 @@ export async function fetchProfile(
     // refusing connections, for a kind:0 that was live on five relays.
     // A degraded query now simply doesn't cache, so the next call retries.
     if (trustworthy) storage.profile.setMiss(pubkey);
-    return null;
+    return { profile: null, trustworthy };
   }
   const profile = parseProfileContent(newest.content);
   if (!profile) {
     // We DID get an event; it's just unparseable. That's a real, cacheable
-    // miss regardless of relay health.
+    // miss regardless of relay health — and a real ANSWER, so it reports
+    // trustworthy even though the query that found it may have been degraded.
     storage.profile.setMiss(pubkey);
-    return null;
+    return { profile: null, trustworthy: true };
   }
   storage.profile.set(pubkey, profile);
-  return profile;
+  return { profile, trustworthy: true };
+}
+
+// Fetch the user's kind:0 metadata event from the given relays (defaults to
+// our standard set unioned with the profile-outbox relays). Returns null if
+// no event is found or parsing fails. The result (hit or miss) is mirrored
+// into `storage.profile` so the next page load can paint name + avatar from
+// cache before any relay round-trip.
+//
+// Use `fetchProfileDetailed` instead wherever a null becomes a statement.
+export async function fetchProfile(
+  pubkey: string,
+  relays?: string[],
+): Promise<ProfileMetadata | null> {
+  return (await fetchProfileDetailed(pubkey, relays)).profile;
 }
 
 /** The newest kind:0's content exactly as its author wrote it, plus whether the
