@@ -880,6 +880,117 @@ export function buildLnurlComment(
   return `${desc}${sep}${message.slice(0, room)}`;
 }
 
+/**
+ * The reason an LNURL service gave for refusing, read out of a callback body.
+ *
+ * LUD-06 specifies `{ status: 'ERROR', reason }`. Real services do not all
+ * follow it: Alby answers `{ error: true, message }`, others use `error` as the
+ * string itself, and some return plain text with no JSON at all. A caller that
+ * reads only `reason` reports "no invoice" over a service that said exactly
+ * what was wrong — which is how a comment-length refusal reached a user as an
+ * unexplained failed leg.
+ *
+ * `error` is read only when it holds a STRING. Alby's `error: true` is a flag,
+ * not a message, and stringifying it produces the reason "true".
+ */
+export function lnurlErrorReason(body: string): string | undefined {
+  let data: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      data = parsed as Record<string, unknown>;
+    }
+  } catch { /* plain-text body */ }
+  const pick = (k: string): string | undefined =>
+    typeof data?.[k] === 'string' ? (data[k] as string) : undefined;
+  return (
+    pick('reason') ??
+    pick('message') ??
+    pick('error') ??
+    (!data && body.trim() ? body.trim().slice(0, 200) : undefined)
+  );
+}
+
+/**
+ * A refusal that was about COMMENT LENGTH, and the shorter comment to retry on.
+ *
+ * Returns null for "do not retry" — including for every refusal that is about
+ * anything else.
+ *
+ * WHY A RETRY IS SAFE HERE, AND WHY THAT DOES NOT GENERALISE. The service
+ * refused before it minted anything, so no sats moved; asking again mints a
+ * BOLT11 that expires unpaid. That is the same narrow licence `lnurlFetch`
+ * already relies on, and it is licence to re-ask for an INVOICE — never to
+ * re-attempt a payment. Nothing downstream of this inherits it.
+ *
+ * WHY THE DESCRIPTOR IS WHAT SURVIVES. `commentAllowed` is a service's own
+ * advertisement and services under-enforce it: measured 2026-09-11, an Alby
+ * address advertised `commentAllowed: 255` and refused 105 characters with
+ * "length 105 exceeds limit 90". Failing the leg there sends nothing at all.
+ * Retrying with the prose dropped sends the sats AND keeps the machine-readable
+ * half, because the prose is a SECOND copy — the full untruncated message is
+ * already parked in the BoostBox record, and the descriptor is the URL that
+ * points at it. Drop the descriptor instead and that record is orphaned: the
+ * bytes exist and nothing reaches them.
+ */
+export function lnurlCommentRetry(
+  args: { desc?: string; message?: string },
+  reason: string | undefined,
+  sentComment: string,
+): { comment: string } | null {
+  if (!sentComment || !reason) return null;
+  const r = reason.toLowerCase();
+  // Narrow on purpose. The retry costs a round trip, and a refusal this does
+  // not understand ends in the same failure either way — so a loose predicate
+  // would double every leg of a wallet that is simply down.
+  const aboutLength =
+    /\blength\s+\d+\s+exceeds\s+limit\s+\d+/.test(r) ||
+    (r.includes('comment') &&
+      (r.includes('too long') ||
+        r.includes('exceeds') ||
+        r.includes('length') ||
+        r.includes('max')));
+  if (!aboutLength) return null;
+
+  // Services state the limit they enforced, and they word it however they like.
+  // Read it by ARITHMETIC rather than by phrasing, on two rules that between
+  // them need no knowledge of any service's sentence.
+  //
+  // SMALLEST, not largest. A message that names two numbers names what you
+  // sent and what it allows, and what it allows is the smaller — "length 105
+  // exceeds limit 90" is 90. Taking the smallest can only under-fill, and an
+  // under-filled comment still carries the descriptor whole; taking the
+  // largest picks the length that was just refused and earns a second refusal.
+  //
+  // And a floor, because not every number in a sentence is a limit. Real
+  // `commentAllowed` values run 32, 64, 140, 150, 200, 255, 500; anything
+  // under 20 is an error code or an ordinal that would otherwise shrink the
+  // comment to nothing. Below the floor we prefer the descriptor alone.
+  const MIN_PLAUSIBLE_LIMIT = 20;
+  let budget = 0;
+  for (const m of r.matchAll(/\d+/g)) {
+    const n = Number(m[0]);
+    if (n >= MIN_PLAUSIBLE_LIMIT && n < sentComment.length && (budget === 0 || n < budget)) {
+      budget = n;
+    }
+  }
+
+  const comment = budget > 0
+    ? buildLnurlComment(args, budget)
+    : descriptorOnly(args.desc?.trim() || undefined);
+
+  // Two refusals, and neither is a corner case.
+  //
+  // Nothing left to send is NOT a retry. A leg carrying no metadata at all is
+  // what a failure already communicates, and on a rail where the comment is
+  // the only copy it would drop the user's own prose in silence.
+  //
+  // And a comment that is not SHORTER than the rejected one is a guaranteed
+  // second refusal — the one way this turns into a loop.
+  if (!comment || comment.length >= sentComment.length) return null;
+  return { comment };
+}
+
 // A recipient's payment destination, shortened for display: an lnaddress verbatim
 // (it's already human-readable and the whole point is that you can read it), a
 // keysend node pubkey elided in the middle (66 hex chars never fits a modal row,
