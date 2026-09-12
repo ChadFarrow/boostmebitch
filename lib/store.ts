@@ -122,6 +122,18 @@ interface AppState {
   revealQueue: () => void;
   setListenQueue: (items: QueueItem[]) => void;
   /**
+   * Carry a signed-out queue onto an account that has none, at sign-in.
+   *
+   * It lives here rather than in `<NostrAuth>` because it is a WRITE, and every
+   * other queue write goes through `persistQueue` — the choke point whose own
+   * comment says "five writers is five places to forget". This was the sixth,
+   * it called `storage.listenQueue.set` directly, and it dropped the boolean.
+   * So an adopted queue could live in `safeSet`'s memory mirror alone while
+   * `listenQueueSaved` still reported it safe, which is the one thing that flag
+   * exists to say.
+   */
+  adoptListenQueue: (npub: string) => void;
+  /**
    * What `<Player>`'s `<audio onEnded>` asks FIRST, returning whether the
    * listen queue owned this ending. False changes nothing, leaving the medium
    * gate there to decide exactly as it did before.
@@ -750,6 +762,12 @@ export const useApp = create<AppState>((set, get) => ({
   // so a queue arriving from another account's cache does not get merged into
   // the one on screen.
   setListenQueue: (items) => set({ listenQueue: items }),
+
+  adoptListenQueue: (npub) => set((s) => (
+    s.listenQueue.length
+      ? { listenQueueSaved: storage.listenQueue.set(npub, s.listenQueue) }
+      : {}
+  )),
 
   handlePlaybackEnded: () => {
     const s = get();

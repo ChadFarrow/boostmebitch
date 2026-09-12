@@ -661,7 +661,13 @@ export function NostrAuth() {
     // nobody's current intent. The account's own key is left on disk
     // untouched, exactly like its favorites cache, so signing back in finds
     // the queue where it was.
+    //
+    // CLEARING MEMORY IS NOT ENOUGH, and that is what this used to do. The
+    // store seeds `listenQueue` from `storage.listenQueue.get(null)` at module
+    // scope, so the `:guest` bytes this comment says must not come back came
+    // back on the very next page load. The guest bucket is cleared on disk too.
     setListenQueue([]);
+    storage.listenQueue.set(null, []);
     // Same reason as the identity-switch path: useFollows resets this when
     // identity goes null, but not until a FollowButton's effect runs.
     resetFollows();
@@ -798,8 +804,10 @@ export function NostrAuth() {
     if (cachedQueue.length) {
       setListenQueue(cachedQueue);
     } else {
-      const adopted = useApp.getState().listenQueue;
-      if (adopted.length) storage.listenQueue.set(id.npub, adopted);
+      // Through the store, so the write goes past `persistQueue`'s choke point
+      // and `listenQueueSaved` learns whether the bytes reached disk. Calling
+      // `storage.listenQueue.set` here dropped that answer.
+      useApp.getState().adoptListenQueue(id.npub);
     }
 
     loadProfile(id);
