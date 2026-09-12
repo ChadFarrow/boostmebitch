@@ -175,8 +175,32 @@ const TABS: Tab[] = [
   },
 ];
 
+/**
+ * THE LABEL IS `font-display`, NOT THE MONO THE REST OF THE APP INHERITS, and
+ * the reason is arithmetic rather than taste.
+ *
+ * `html, body` set JetBrains Mono, so every label costs a FIXED advance per
+ * character: `Downloads` and `Favorites` are nine characters and measured 56px
+ * against `Home`'s 25px, inside cells that are all the same width. The gaps a
+ * reader actually sees are between label EDGES, so the dock read as evenly
+ * spaced on the left and crowded on the right — 49px between the first two
+ * labels and 22px between the last two at 390px, and only 8px at 320px.
+ *
+ * Measured against the real font files at 320 / 390 / 430px:
+ *
+ *   mono 10px + tracking-wide (was)   widest 56px   min gap  8px @320   22px @390
+ *   font-display 10px, no tracking    widest 52px   min gap 16px @320   30px @390
+ *
+ * `tracking-wide` goes with it: letter-spacing on a nine-character label is
+ * width spent where there is least of it.
+ *
+ * The gaps are still not EQUAL, and they cannot be while the cells are. That is
+ * deliberate — the tap area is the grid cell, and equal cells are what keeps
+ * every tab over the 44px floor. Proportional columns would even the gaps and
+ * put the narrowest tab under that floor at 320px.
+ */
 const itemClass = (current: boolean) =>
-  `flex flex-col items-center justify-center gap-1 text-[10px] tracking-wide transition ${
+  `flex flex-col items-center justify-center gap-1 font-display text-[10px] transition ${
     current ? 'text-bolt' : 'text-muted hover:text-bone'
   }`;
 
