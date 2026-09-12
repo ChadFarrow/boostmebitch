@@ -675,8 +675,14 @@ export function NostrAuth() {
     // store seeds `listenQueue` from `storage.listenQueue.get(null)` at module
     // scope, so the `:guest` bytes this comment says must not come back came
     // back on the very next page load. The guest bucket is cleared on disk too.
+    //
+    // `clear`, not `set(null, [])`. That went through `safeSet`, whose boolean
+    // was DROPPED here — so on a full or blocked store the `[]` landed in the
+    // memory mirror, the old bytes stayed on disk, and the guest queue came
+    // back on the next load. That is precisely the failure the paragraph above
+    // is about, reintroduced by the fix for it.
     setListenQueue([]);
-    storage.listenQueue.set(null, []);
+    storage.listenQueue.clear(null);
     // Same reason as the identity-switch path: useFollows resets this when
     // identity goes null, but not until a FollowButton's effect runs.
     resetFollows();

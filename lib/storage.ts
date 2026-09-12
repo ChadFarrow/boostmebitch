@@ -1702,6 +1702,19 @@ export const storage = {
         identityKey(KEYS.listenQueuePrefix, npub),
         JSON.stringify(v.slice(0, LISTEN_QUEUE_CAP)),
       ),
+    /**
+     * Emptying a bucket is a REMOVAL, not a write of `[]`.
+     *
+     * `set(npub, [])` goes through `safeSet`, which on a full or blocked store
+     * returns false and parks the value in the memory mirror — leaving the old
+     * bytes on disk to be read back on the next load. `get` returns `[]` for a
+     * missing key, so this is identical on a healthy store and correct on a sick
+     * one. The sign-out path in `<NostrAuth>` is the caller that needs it: its
+     * whole job there is that the `:guest` queue must not come back, and it was
+     * dropping `safeSet`'s answer.
+     */
+    clear: (npub: string | null | undefined) =>
+      safeRemove(identityKey(KEYS.listenQueuePrefix, npub)),
   },
 
   /**

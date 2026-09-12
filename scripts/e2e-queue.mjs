@@ -318,15 +318,29 @@ const signedOut = await js(`
   })()
 `);
 await wait(4000);
+// ABSENT OR EMPTY, and the distinction matters in one direction only.
+//
+// This used to assert `length === 0`, which required the key to still EXIST —
+// so it was quietly pinning the implementation (`set(null, [])`) rather than the
+// property. That implementation dropped `safeSet`'s boolean, so on a full or
+// blocked store the `[]` went to the memory mirror and the old bytes survived on
+// disk: the guest queue came back on the next load, which is the exact thing
+// this section exists to refuse. The fix removes the key instead, and an absent
+// key is STRICTLY STRONGER — `storage.listenQueue.get` returns `[]` for both, and
+// only one of them can fail to reach disk.
+//
+// What must still fail here is a non-empty queue, which is why this reads the
+// length rather than just asserting falsiness.
 const guestAfter = await js(`
   (() => {
     const raw = localStorage.getItem('bmb:listen_queue:guest');
-    return { raw, parsed: raw ? JSON.parse(raw).length : null };
+    return { raw, len: raw === null ? 'absent' : JSON.parse(raw).length };
   })()
 `);
 check('the account menu opened and sign out ran', { opened, signedOut }, { opened: true, signedOut: 'clicked' });
-check('the guest queue is EMPTY on disk, not merely in memory',
-  { len: guestAfter.parsed }, { len: 0 });
+check('the guest queue is gone from DISK, not merely from memory',
+  { gone: guestAfter.len === 'absent' || guestAfter.len === 0, saw: guestAfter.len },
+  { gone: true, saw: guestAfter.len });
 
 await send('Page.navigate', { url: `${APP}/queue` }); await wait(8000);
 const resurrect = await js(`document.querySelectorAll('li').length`);
