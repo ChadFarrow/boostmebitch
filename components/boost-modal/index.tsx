@@ -589,15 +589,25 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               this modal already re-picks its rail through `useWalletChange`, so
               connecting a wallet updates the picker underneath without losing
               the amount or the message the user has typed. */}
-          {!rail && (
-            <button
-              type="button"
-              onClick={() => setWalletOpen(true)}
-              className="btn-mini border-nostr/60 text-nostr hover:border-nostr hover:text-nostr w-full justify-center"
-            >
-              ⚡ NO WALLET — CONNECT ONE
-            </button>
-          )}
+          {/* RENDERED IN BOTH STATES, and the `!rail` gate it used to carry was
+              the bug. Once the Wallet tab left the dock this became the only
+              route to the wallet from <FullscreenPlayer> — which is `fixed
+              h-[100dvh] z-50` and covers <AppHeader> on every route — and from
+              /stream/<naddr>, /npub/<npub> and /live/<npub>, which render no
+              header at all. Gated on `!rail`, somebody who HAS a wallet and
+              wants to change or top up the one about to pay had nowhere to go
+              from the screen they were listening on. Only the wording moves. */}
+          <button
+            type="button"
+            onClick={() => setWalletOpen(true)}
+            className={`btn-mini w-full justify-center ${
+              rail
+                ? 'border-bone/25 text-muted hover:border-bone/50 hover:text-bone'
+                : 'border-nostr/60 text-nostr hover:border-nostr hover:text-nostr'
+            }`}
+          >
+            {rail ? '⚡ WALLET' : '⚡ NO WALLET — CONNECT ONE'}
+          </button>
           {/* Above the amount deliberately: which wallet pays is the decision
               the sticky-footer balance is reporting on, so it has to be
               answerable before the user reads that number. */}
