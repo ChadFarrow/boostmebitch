@@ -1,6 +1,6 @@
 'use client';
 import dynamic from 'next/dynamic';
-import { cloneElement, useCallback, useEffect, useRef, useState } from 'react';
+import { cloneElement, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useMenuKeys } from './use-menu-keys';
 import { createPortal } from 'react-dom';
 import { useApp } from '@/lib/store';
@@ -33,7 +33,7 @@ const BoostModal = dynamic(
 import { BoostAllModal } from './boost-all-modal';
 import { EpisodeNostrFeed } from './episode-nostr-feed';
 import { useStreamPanel } from './streaming-settings';
-import { UnderlineTabs } from './underline-tabs';
+import { UnderlineTabs, tabPanelProps } from './underline-tabs';
 import type { Episode, ValueBlock } from '@/lib/types';
 
 function ValueSplitSection({ value }: { value: ValueBlock }) {
@@ -175,6 +175,9 @@ export function EpisodeDetailView() {
     hasValueRecipients(payableValue(episode, podcast)),
   );
   const [infoTab, setInfoTab] = useState<InfoTab>('notes');
+  // `useId()`: this view and `<FullscreenPlayer>` can be mounted at the same
+  // time, and both strips would otherwise emit the same tab ids.
+  const infoTabsId = useId();
 
   // Lifted here (not in child components) so the tab strip below knows which
   // sections have content. Both hooks no-op on an empty url. Above the early
@@ -504,11 +507,15 @@ export function EpisodeDetailView() {
                 tabs={infoTabs.map((t) => ({ id: t, label: infoLabel(t) }))}
                 active={activeInfo}
                 onChange={setInfoTab}
+                idBase={infoTabsId}
               />
             ) : (
               <p className="text-[11px] uppercase tracking-widest text-muted mb-2">{infoLabel(activeInfo)}</p>
             )}
 
+            {/* THE PANEL the strip above points at — one element for all the
+                panes, because only one renders at a time. See `tabPanelProps`. */}
+            <div {...tabPanelProps(infoTabsId, activeInfo)}>
             {activeInfo === 'notes' && (
               <>
                 {/* `overflow-x-clip`, NOT `overflow-x-hidden` — the same rule
@@ -589,6 +596,7 @@ export function EpisodeDetailView() {
                 <EpisodeNostrFeed episodeGuid={episode.guid} episodeTitle={episode.title} />
               </div>
             )}
+            </div>
           </div>
         )}
       </section>
