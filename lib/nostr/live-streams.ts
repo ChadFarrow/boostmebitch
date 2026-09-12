@@ -74,6 +74,42 @@ export const LIVE_STREAM_RELAYS = sanitizeRelays([
 const LIVE_FRESH_SECS = 2 * 3600;
 
 /**
+ * One `streaming` value that is EXACTLY one URL written twice, repaired to the
+ * single URL. Any other value is returned untouched.
+ *
+ * Measured live on Bowl After Bowl's `Bowls With Buds ft. Sir Libre`, whose one
+ * `streaming` tag read
+ * `https://owncast.bowlafterbowl.com/hls/stream.m3u8https://owncast.bowlafterbowl.com/hls/stream.m3u8`
+ * — the host pasted the URL twice into whatever publishes the event, and the
+ * same host's previous 19 broadcasts all carried the single form. The doubled
+ * value still ENDS in `.m3u8`, so `isHlsUrl` accepts it and `pickStreamUrl`
+ * hands it over as the best candidate: the page opened, the badge said LIVE,
+ * and hls.js loaded a 301 into a 404. Nothing on screen could distinguish that
+ * from a host who was not broadcasting.
+ *
+ * The test is that the two halves are IDENTICAL, and that is the whole reason
+ * this is safe to do to somebody else's event. A URL legitimately carrying
+ * another URL — `https://cdn.example/play?src=https://origin.example/s.m3u8`,
+ * a shape every HLS proxy on the planet emits — splits into two halves that
+ * differ, so it is left alone. Never loosen this to "truncate at the second
+ * scheme": that reads as the same repair and silently breaks every proxied
+ * stream. A URL written three times fails the equality test too, and that is
+ * correct — this repairs the one mistake it can prove, not every mistake.
+ *
+ * Deliberately NOT a general sanitizer, and deliberately not applied anywhere
+ * a payee is chosen. It only decides which bytes the media element fetches.
+ */
+function undoubleStreamUrl(u: string): string {
+  const scheme = /^https?:\/\//i.exec(u);
+  if (!scheme) return u;
+  // Start the search PAST the first scheme, or it matches itself at index 0.
+  const at = u.slice(scheme[0].length).search(/https?:\/\//i);
+  if (at < 0) return u;
+  const cut = scheme[0].length + at;
+  return u.slice(0, cut) === u.slice(cut) ? u.slice(0, cut) : u;
+}
+
+/**
  * The `streaming` tag a BROWSER can actually play.
  *
  * NIP-53 permits several `streaming` tags on one kind:30311 and says nothing
@@ -94,7 +130,10 @@ const LIVE_FRESH_SECS = 2 * 3600;
 export function pickStreamUrl(tags: string[][]): string | undefined {
   const urls = tags
     .filter((t) => t[0] === 'streaming' && typeof t[1] === 'string' && t[1].trim() !== '')
-    .map((t) => t[1]);
+    // Repair BEFORE the tests below, not after: a doubled URL that does not end
+    // in `.m3u8` would otherwise lose the HLS classification its repaired form
+    // deserves, and the order below is the only thing choosing between tags.
+    .map((t) => undoubleStreamUrl(t[1]));
   if (!urls.length) return undefined;
   return (
     urls.find((u) => isHlsUrl(u)) ??
