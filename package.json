@@ -71,7 +71,8 @@
     "check:relaysocket": "node --experimental-strip-types scripts/check-relay-socket.mjs",
     "check:livemerge": "node --experimental-strip-types scripts/check-live-merge.mjs",
     "check:liveover": "node --experimental-strip-types scripts/check-live-over.mjs",
-    "check:downloads": "node --experimental-strip-types scripts/check-downloads.mjs"
+    "check:downloads": "node --experimental-strip-types scripts/check-downloads.mjs",
+    "check:queue": "node --experimental-strip-types scripts/check-queue.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",
