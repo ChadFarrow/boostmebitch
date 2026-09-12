@@ -1,11 +1,11 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { storage } from '@/lib/storage';
 import { loadEpisodeFromFeed } from '@/lib/podcast-meta';
 import {
-  advanceMarks, pruneMarks, selectNewEpisodes, sinceForBatch,
+  advanceMarks, epKey, pruneMarks, selectNewEpisodes, sinceForBatch,
 } from '@/lib/util';
 import { fmtDate, fmtDuration } from '@/lib/format';
 import { PodcastCover } from './podcast-cover';
@@ -40,8 +40,23 @@ import type { Episode, NewEpisodeMarks } from '@/lib/types';
  *  this survives a reload and is shared across tabs — a tab-switcher costs
  *  nothing. */
 const CHECK_MIN_MS = 15 * 60 * 1000;
-/** One request's worth of feeds; the route caps at the same number. */
+/** One request's worth of feeds; the route caps at the same number, so sending
+ *  more would be silently truncated there instead of here. A library larger than
+ *  this is covered over successive passes rather than partly for ever — see the
+ *  stalest-first order in `check`. */
 const MAX_FEEDS = 100;
+/**
+ * How long the ask set must hold still before the first check.
+ *
+ * `favorites` is replaced WHOLESALE on every mutation, and a cold hydration
+ * resolves each show's Podcast Index id one at a time — so the askable list goes
+ * 0, 1, 2, … 213 as a series of new objects. Without a settle window the first
+ * check ran against whichever prefix existed on the mount tick, stamped
+ * `checkedAt`, and every later pass was then refused by the throttle below: the
+ * user was told "Nothing new" about a library the app had asked about three
+ * shows of. It self-corrected fifteen minutes later, which is what made it worse.
+ */
+const SETTLE_MS = 1200;
 /** Rows revealed at a time. A BYTES cap, not a tidiness one: each row mounts a
  *  `<PodcastCover>` against third-party artwork, which is the same reason
  *  `useRevealed` exists on the page this sits in. */
@@ -56,6 +71,11 @@ export function FavoritesNewEpisodes() {
   const [phase, setPhase] = useState<Phase>('idle');
   const [rows, setRows] = useState<Episode[]>([]);
   const [uncovered, setUncovered] = useState(0);
+  /** Askable shows this pass deliberately did not ask about, because the library
+   *  is larger than `MAX_FEEDS`. A DIFFERENT claim from `uncovered`: nothing
+   *  failed, we just have not got to them. Counted before the throttle can
+   *  return, so a throttled pass cannot say "nothing new" over them either. */
+  const [deferred, setDeferred] = useState(0);
   const [record, setRecord] = useState<NewEpisodeMarks>({ checkedAt: 0, marks: {} });
   const [marksSaved, setMarksSaved] = useState(true);
   const [shown, setShown] = useState(PAGE);
@@ -69,18 +89,58 @@ export function FavoritesNewEpisodes() {
 
   const npub = identity?.npub ?? null;
 
+  /**
+   * A STABLE key over the ASK SET, never the `favorites` object.
+   *
+   * The store replaces `favorites` wholesale on every mutation
+   * (`{ ...s.favorites, [guid]: p }`), so a `check` that depended on the object
+   * was a new function on every heart toggle — and this section renders on
+   * `/favorites`, which is where hearts get toggled. The effect below then
+   * re-ran each time. Only the set of feed ids we would ask about can change
+   * the answer, so that is what the effect watches.
+   */
+  const askKey = useMemo(
+    () =>
+      Object.values(favorites)
+        // `id` is 0 until this device resolves one — the same filter
+        // `<LivePage>`'s `favIdList` makes, and for the same reason: a feed with
+        // no PI id cannot be asked about.
+        .filter((f) => f.id > 0)
+        .map((f) => f.id)
+        .sort((a, b) => a - b)
+        .join(','),
+    [favorites],
+  );
+
+  // Reads the live store rather than closing over `favorites`, so it is stable
+  // for a given account. `askKey` is what re-arms the effect below.
   const check = useCallback(async (force: boolean) => {
     if (running.current) return;
     const stored = storage.newEpisodeMarks.get(npub);
     setRecord(stored);
 
-    const feeds = Object.values(favorites)
-      // `id` is 0 until this device resolves one — the same filter
-      // `<LivePage>`'s `favIdList` makes, and for the same reason: a feed with
-      // no PI id cannot be asked about.
-      .filter((f) => f.id > 0)
-      .slice(0, MAX_FEEDS);
-    if (!feeds.length) { setPhase('done'); return; }
+    const favs = useApp.getState().favorites;
+    const askable = Object.values(favs).filter((f) => f.id > 0);
+    if (!askable.length) { setPhase('done'); return; }
+
+    /**
+     * STALEST MARK FIRST, then slice.
+     *
+     * The slice used to be over `Object.values` insertion order, so a library
+     * over `MAX_FEEDS` had the same arbitrary hundred checked on every pass and
+     * the rest were never asked about at all. Ordering by mark makes the
+     * truncation self-correcting: a feed just covered has the newest mark and
+     * goes to the back, so 227 favorites are fully covered in three passes and
+     * stay covered. A feed with NO mark sorts first, which is right — it is the
+     * one we know least about.
+     */
+    const ordered = [...askable].sort(
+      (a, b) => (stored.marks[a.podcastGuid] ?? 0) - (stored.marks[b.podcastGuid] ?? 0),
+    );
+    const feeds = ordered.slice(0, MAX_FEEDS);
+    // BEFORE the throttle can return, so a throttled pass cannot claim "nothing
+    // new" over a tail it never asked about. This number needs no request.
+    setDeferred(askable.length - feeds.length);
 
     if (!force && Date.now() - stored.checkedAt < CHECK_MIN_MS) {
       // Inside the throttle: say nothing new rather than re-asking. The marks
@@ -108,16 +168,35 @@ export function FavoritesNewEpisodes() {
       const truncated = !!data.truncated;
 
       setRows(selectNewEpisodes(episodes, stored.marks, guidByFeedId, Date.now()));
+      // Against the feeds ASKED ABOUT. The library's tail beyond `MAX_FEEDS` is
+      // `deferred`, counted above — folding the two together was how a
+      // 227-favorite library got told "Nothing new" about 127 shows no request
+      // was ever made for.
       setUncovered(feeds.length - covered.length);
 
       // The marks advance on EVIDENCE only — a feed that was not covered, a
       // covered feed with no rows, and a truncated pass all leave theirs
       // alone. That rule is `advanceMarks`, pinned by `check:favnew`.
       const coveredGuids = covered.map((id) => guidByFeedId[id]).filter(Boolean);
-      const nextMarks = pruneMarks(
-        advanceMarks(stored.marks, episodes, coveredGuids, guidByFeedId, truncated),
-        Object.keys(favorites),
-      );
+      let nextMarks = advanceMarks(stored.marks, episodes, coveredGuids, guidByFeedId, truncated);
+      /**
+       * PRUNING IS A DELETION, so it needs a favorites list worth deleting
+       * against. Before this gate it ran against whatever snapshot the pass
+       * happened to see, and the pre-hydration snapshot is the cached subset —
+       * so a mark for a show still favorited was dropped, and this key's own doc
+       * says what that costs: "it re-announces a week of episodes as new."
+       *
+       * 'idle' and 'loading' both mean a read may still widen the list. For a
+       * signed-OUT reader the local cache IS the whole truth and 'idle' is the
+       * resting state, so that one prunes. 'degraded' does not: a half this
+       * signer could not open is a shorter list for a reason that has nothing to
+       * do with what is favorited. Skipping the prune costs only dead weight,
+       * which `pruneMarks`' own cap already bounds.
+       */
+      const sync = useApp.getState().favoritesSync;
+      if (!npub || sync === 'ok' || sync === 'off') {
+        nextMarks = pruneMarks(nextMarks, Object.keys(favs));
+      }
       const next = { checkedAt: Date.now(), marks: nextMarks };
       // Do NOT drop `safeSet`'s answer. Marks held only in the memory mirror
       // work all session and are gone on the next load, so the same episodes
@@ -128,16 +207,33 @@ export function FavoritesNewEpisodes() {
       setPhase('done');
     } catch {
       // Keep whatever is painted. A failed check is not an empty library.
+      //
+      // STAMP `checkedAt` ANYWAY, with the marks untouched. The throttle reads
+      // that value, so leaving it alone meant a failed check armed nothing: with
+      // Podcast Index down, every heart toggle issued a fresh request — two
+      // chunks of fifty feed ids each, no backoff. Bulk-editing twenty
+      // favorites during an outage was twenty requests and forty upstream calls.
+      // `running` guards concurrent runs, never sequential ones.
+      //
+      // The marks do NOT advance here, so nothing is claimed as seen. The
+      // fifteen minutes buys a backoff, and "try again" below ignores it.
+      const next = { ...stored, checkedAt: Date.now() };
+      setMarksSaved(storage.newEpisodeMarks.set(npub, next));
+      setRecord(next);
       setPhase('failed');
     } finally {
       running.current = false;
     }
-  }, [favorites, npub]);
+  }, [npub]);
 
   useEffect(() => {
-    if (!mounted) return;
-    void check(false);
-  }, [mounted, check]);
+    if (!mounted || !askKey) return;
+    // A SETTLE WINDOW, not a plain call. Each change to the ask set restarts it,
+    // so a cold hydration's run of `favorites` replacements produces ONE check,
+    // against the settled library. See `SETTLE_MS`.
+    const t = setTimeout(() => void check(false), SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [mounted, askKey, check]);
 
   // NOT gated on being signed in. `identityKey` gives `:guest` for a null npub,
   // exactly as `bmb:favorites` and `bmb:listen_queue` do — so a signed-out
@@ -171,58 +267,98 @@ export function FavoritesNewEpisodes() {
         className="mb-2"
       />
 
-      {!isCollapsed && (
-        <div id="fav-new-list">
+      {/* The wrapper ALWAYS renders, and only its contents are dropped. An
+          `aria-controls` pointing at an unmounted element is a dangling IDREF in
+          exactly the collapsed state where `aria-expanded="false"` makes the
+          reference matter. `<Favorites>` keeps its `<ul>` `hidden` rather than
+          unrendered for this reason and `<FeedSection>` keeps the wrapper; this
+          was the one folding surface doing neither. Rows still unmount, which is
+          what the fold is for. */}
+      <div id="fav-new-list" hidden={isCollapsed}>
+        {!isCollapsed && (
+          <>
           {/* Every state is named, because the wrong one is a claim about
-              somebody's shows that the app had not earned. */}
-          {phase === 'checking' && rows.length === 0 && (
-            <p className="text-muted text-sm py-3">checking your shows for new episodes…</p>
-          )}
+                somebody's shows that the app had not earned. */}
+            {phase === 'checking' && rows.length === 0 && (
+              <p className="text-muted text-sm py-3">checking your shows for new episodes…</p>
+            )}
 
-          {phase === 'failed' && (
-            <p className="text-nostr text-sm py-3">
-              Could not check for new episodes.{' '}
-              <button type="button" onClick={() => void check(true)} className="underline">
-                try again
-              </button>
-            </p>
-          )}
-
-          {/* NOT "nothing new" — this names how many shows went unasked. The
-              two are different claims and only one of them is true here. */}
-          {phase === 'done' && uncovered > 0 && (
-            <p className="text-muted text-sm py-3">
-              Could not check {uncovered} of your shows.{' '}
-              <button type="button" onClick={() => void check(true)} className="underline">
-                try again
-              </button>
-            </p>
-          )}
-
-          {phase === 'done' && rows.length === 0 && uncovered === 0 && (
-            <p className="text-muted text-sm py-3">
-              Nothing new{when ? ` since ${when}` : ''}.{' '}
-              {stale && (
+            {phase === 'failed' && (
+              <p className="text-nostr text-sm py-3">
+                Could not check for new episodes.{' '}
                 <button type="button" onClick={() => void check(true)} className="underline">
-                  check again
+                  try again
                 </button>
-              )}
-            </p>
-          )}
+              </p>
+            )}
 
-          {!marksSaved && (
-            <p className="text-muted text-[11px] pb-2">
-              This device could not remember what it showed you — these may come back.
-            </p>
-          )}
+            {/* NOT "nothing new" — this names how many shows a request was made
+                for and did not come back. The two are different claims and only
+                one of them is true here. */}
+            {phase === 'done' && uncovered > 0 && (
+              <p className="text-muted text-sm py-3">
+                Could not check {uncovered} of your shows.{' '}
+                <button type="button" onClick={() => void check(true)} className="underline">
+                  try again
+                </button>
+              </p>
+            )}
 
-          {rows.length > 0 && (
-            <>
+            {/* A THIRD claim, and it is not a failure: the library is larger than
+                one request's worth, so these shows were not asked about at all.
+                Saying "could not check" would blame Podcast Index for a cap of
+                ours. The check-the-rest press makes real progress, because the
+                ask list is ordered stalest-mark-first — the hundred just covered
+                now sort last. */}
+            {phase === 'done' && deferred > 0 && (
+              <p className="text-muted text-sm py-3">
+                {deferred} more {deferred === 1 ? 'show has' : 'shows have'} not been checked yet.{' '}
+                <button type="button" onClick={() => void check(true)} className="underline">
+                  check the rest
+                </button>
+              </p>
+            )}
+
+            {/* Earned only when every askable show was asked about AND answered.
+                `deferred` belongs in this test as much as `uncovered` does. */}
+            {phase === 'done' && rows.length === 0 && uncovered === 0 && deferred === 0 && (
+              <p className="text-muted text-sm py-3">
+                Nothing new{when ? ` since ${when}` : ''}.{' '}
+                {stale && (
+                  <button type="button" onClick={() => void check(true)} className="underline">
+                    check again
+                  </button>
+                )}
+              </p>
+            )}
+
+            {!marksSaved && (
+              <p className="text-muted text-[11px] pb-2">
+                This device could not remember what it showed you — these may come back.
+              </p>
+            )}
+
+            {rows.length > 0 && (
               <ul className="space-y-2">
                 {rows.slice(0, shown).map((e) => (
-                  <li key={`${e.feedId}:${e.guid ?? e.id}`} className="card flex items-center gap-3 p-3">
+                  // `epKey`, NOT `guid ?? id`. A feed can publish `<guid></guid>`
+                  // and `extractText` returns `''` for it, which `??` keeps — so
+                  // every such episode of one feed shared the key `<feedId>:`.
+                  // That is a React duplicate key: wrong row reused, wrong row
+                  // dropped by SHOW MORE. `epKey` exists for this and three other
+                  // queue surfaces already import it.
+                  <li key={epKey(e)} className="card flex items-center gap-3 p-3">
+                    {/* BOTH SLOTS, never one `||` over the two. `<PodcastCover>`'s
+                        `onError` ladder is four rungs and it can only fall
+                        through to a source it was handed, so collapsing them
+                        threw the feed's art away the moment the episode carried
+                        an `image` at all — and an episode image that 404s is
+                        exactly when the feed's would have worked.
+                        `<EpisodeList>` pairs the same two fields on the same
+                        data shape. */}
                     <PodcastCover
-                      image={e.image || e.feedImage}
+                      image={e.image}
+                      artwork={e.feedImage}
                       title={e.feedTitle}
                       seed={String(e.feedId)}
                       className="w-12 h-12 flex-shrink-0"
@@ -245,31 +381,39 @@ export function FavoritesNewEpisodes() {
                         instead of to the artist, silently, days later, out of a
                         queue. So the press round-trips through
                         `loadEpisodeFromFeed` first, exactly as the note card's
-                        own queue control does. */}
-                    <NoteQueueButton
-                      episode={e}
-                      onQueue={async () => {
-                        const loaded = await loadEpisodeFromFeed(e.feedId, e.guid ?? '');
-                        if (!loaded?.episode) return false;
-                        return useApp.getState().enqueueEpisode(loaded.episode, loaded.podcast);
-                      }}
-                    />
+                        own queue control does.
+
+                        NO GUID, NO CONTROL. That round trip is a lookup BY guid,
+                        so a row without one can never succeed — it used to send
+                        `''` and land on RETRY for ever. `<FavEpisodeHeart>` makes
+                        the same refusal for the same reason: offering a control
+                        that cannot work is worse than not offering it. */}
+                    {e.guid ? (
+                      <NoteQueueButton
+                        episode={e}
+                        onQueue={async () => {
+                          const loaded = await loadEpisodeFromFeed(e.feedId, e.guid!);
+                          if (!loaded?.episode) return false;
+                          return useApp.getState().enqueueEpisode(loaded.episode, loaded.podcast);
+                        }}
+                      />
+                    ) : null}
                   </li>
                 ))}
               </ul>
-              {rows.length > shown && (
-                <button
-                  type="button"
-                  onClick={() => setShown((n) => n + PAGE)}
-                  className="btn-ghost w-full mt-2 text-xs"
-                >
-                  SHOW MORE ({rows.length - shown})
-                </button>
-              )}
-            </>
-          )}
-        </div>
-      )}
+            )}
+            {rows.length > shown && (
+              <button
+                type="button"
+                onClick={() => setShown((n) => n + PAGE)}
+                className="btn-ghost w-full mt-2 text-xs"
+              >
+                SHOW MORE ({rows.length - shown})
+              </button>
+            )}
+          </>
+        )}
+      </div>
     </section>
   );
 }

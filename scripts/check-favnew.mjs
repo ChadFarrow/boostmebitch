@@ -219,7 +219,7 @@ section('Every vector above is replayed against the obvious wrong version');
 
   // Trust the batch floor, and take a missing date as new. Both are the
   // shortcuts the real version exists to refuse.
-  const naiveSelect = (rows, marks, byId, nowMs) => {
+  const naiveSelect = (rows, marks, byId, _nowMs) => {
     const floor = naiveSince(marks, Object.values(byId));
     return rows
       .filter((e) => (e.datePublished ?? Infinity) > floor)
