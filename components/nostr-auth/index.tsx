@@ -498,8 +498,17 @@ export function NostrAuth() {
     // whatever the guest bucket left in the store produces an order nobody
     // chose. The store was seeded from `:guest` at module scope, so this is
     // the line that makes a signed-in reload show the right queue.
-    const cachedQueue = storage.listenQueue.get(stored);
-    if (cachedQueue.length) setListenQueue(cachedQueue);
+    // UNCONDITIONALLY, and the `if (cachedQueue.length)` guard that used to be
+    // here defeated the paragraph above it. The store is seeded from `:guest`
+    // at module scope, so skipping the write for an account whose own queue is
+    // EMPTY left that account looking at the guest bucket's queue — and the
+    // first press then persisted it under their npub. Switching accounts showed
+    // you the previous one's list. An empty account queue is an ANSWER, not a
+    // reason to keep whatever was in the store.
+    //
+    // This is why favorites and mutes above can guard on length and this cannot:
+    // those union, so an empty read adds nothing, while a queue REPLACES.
+    setListenQueue(storage.listenQueue.get(stored));
     loadProfile(bare);
     // loadProfile is re-created each render; the effect self-guards on
     // `identity` so listing it would only add no-op re-runs.
