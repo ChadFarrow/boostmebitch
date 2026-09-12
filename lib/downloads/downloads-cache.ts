@@ -267,11 +267,37 @@ export async function cacheDoc(requestUrl: string): Promise<string | null> {
 }
 
 /**
+ * Read one of this app's own document URLs, NETWORK FIRST.
+ *
+ * The same rule the service worker applies to documents, and for the same
+ * reason. Cache-first is the tempting shape — the bytes are already here — but
+ * a cached chapters or transcript document has no version key, no expiry, and
+ * is dropped only when the download is removed. So it is served forever: a
+ * publisher who corrects a chapter never reaches anyone who downloaded the
+ * episode, and since the chapter `url` became a live `href` that is a dead or
+ * wrong link with no way back.
+ *
+ * **The cache answers only when the fetch REJECTS**, which is the network being
+ * gone. A non-ok status is an ANSWER — our own route saying 404 or 502 — and
+ * the caller handles it exactly as it does for an episode nobody downloaded.
+ * Cheap and never throws: a browser with no Cache API, or nothing stored,
+ * re-raises the original network failure so the caller's own `.catch` runs.
+ */
+export async function fetchDoc(requestUrl: string): Promise<Response> {
+  try {
+    return await fetch(requestUrl);
+  } catch (networkError) {
+    const hit = await matchDoc(requestUrl);
+    if (hit) return hit;
+    throw networkError;
+  }
+}
+
+/**
  * The stored response for one of this app's own request URLs, or `null`.
  *
- * Called on the way IN to every chapters and transcript fetch, downloaded or
- * not, so it must be cheap and must never throw — a browser with no Cache API
- * answers `null` and the caller goes to the network exactly as before.
+ * Cheap and never throws — a browser with no Cache API answers `null`. Prefer
+ * `fetchDoc` at a read site; this is the raw lookup it is built on.
  */
 export async function matchDoc(requestUrl: string): Promise<Response | null> {
   if (!cachesAvailable()) return null;
