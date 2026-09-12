@@ -74,13 +74,16 @@ including the near-misses (`notes-about-m3u8-files.mp3`,
 `ep.mp3?next=stream.m3u8`). **If that section fails, `isHlsUrl` moved and this file
 follows it — never the other way round.**
 
-### Three names that may never be renamed
+### Four names that may never be renamed
 
 `BmbDownloadsDB` (+ its `downloads` store), `bmb-downloads-v1`,
-`bmb-downloads-art-v1`. These are on-disk identifiers. Renaming one migrates
-nothing: it points the app at storage nothing ever wrote, so every existing
-download reads back as never having existed while its bytes stay on disk,
-unreachable and uncountable. Guard comments sit at all three declaration sites.
+`bmb-downloads-art-v1` and `bmb-downloads-doc-v1`. These are on-disk
+identifiers. Renaming one migrates nothing: it points the app at storage nothing
+ever wrote, so every existing download reads back as never having existed while
+its bytes stay on disk, unreachable and uncountable. Guard comments sit at all
+four declaration sites. The doc bucket was the one this section forgot, and it
+is the easiest to forget: it arrived a phase later than the other two and it is
+the only one keyed by THIS app's own request URLs rather than by a download key.
 
 `DB_VERSION` may only be raised with an **additive** `onupgradeneeded`; never
 `deleteObjectStore`. Adding a field to `DownloadRecord` needs no bump at all,

@@ -9,7 +9,7 @@ import { MAX_DOWNLOAD_BYTES, roomVerdict } from './download-rules';
  * and clean up — which is the class of bug that would otherwise produce a green
  * tick over a truncated file.
  *
- * PERSISTENCE INVARIANT: both bucket names are on-disk identifiers. Renaming
+ * PERSISTENCE INVARIANT: all three bucket names are on-disk identifiers. Renaming
  * one does not migrate anything; it orphans every listener's library silently,
  * leaving the bytes on disk with nothing able to find, play or delete them.
  */
