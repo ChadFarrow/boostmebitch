@@ -42,6 +42,7 @@ import type { Episode, Podcast, Boostagram, BoostResult, ValueBlock, ValueTimeSp
 import { useApp } from '@/lib/store';
 import { storage, subscribeStreamRate as onStoredRateChange, type StreamMode } from '@/lib/storage';
 import { createObservable } from '@/lib/pubsub';
+import { createBoundedCache } from '@/lib/bounded-cache';
 // resolveSenderName lives in lib/brand.ts, NOT in the boost modal that owns the
 // "From" field — importing it from `components/` here would invert the v4v
 // swap-out boundary and pull a 'use client' React module into the engine.
@@ -183,7 +184,34 @@ type LiveEventIds = NonNullable<LiveTarget['event']>;
  * different feeds can collide. A collision here doesn't render wrong — it pays
  * ANOTHER SHOW'S ARTISTS. One extra field on a money path.
  */
-const splitCache = new Map<string, Map<string, ValueTimeSplit> | null>();
+/**
+ * BOUNDED, because a music playlist makes every TRACK an episode.
+ *
+ * This was a hand-rolled `Map` with no cap, no TTL and no eviction, on the
+ * playback path — so a 200-track listening session accumulated 200 entries, each
+ * holding a nested map of value blocks, for the life of the tab.
+ * `createBoundedCache` is what this repo uses instead, for the reason its own
+ * entry in CLAUDE.md's table gives: both RSS caches were keyed by feed-supplied
+ * data and grew forever, and past a TTL an entry stopped being SERVED without
+ * ever being DELETED.
+ *
+ * NO BYTE BUDGET, deliberately, and that is not the oversight `check:cache`
+ * exists to catch. The rule there is that an entry cap is not a memory bound
+ * WHEN THE VALUES ARE WHOLE RESPONSE BODIES; these are a handful of
+ * `ValueTimeSplit` records per episode, so the count genuinely bounds the memory.
+ * A `sizeOf` over a nested Map would be a fiction priced in invented units.
+ *
+ * The TTL is the one judgement here, and it is on a money path, so: an hour.
+ * Expiry costs ONE re-request of `/api/value-splits` and returns fresher splits,
+ * while holding a stale value block decides who gets paid. Both directions are
+ * cheap and only one of them is wrong, so it leans short. A `null` entry — "asked,
+ * nothing usable" — ages the same way, so a show without splits re-asks at most
+ * once an hour of continuous play.
+ */
+const splitCache = createBoundedCache<Map<string, ValueTimeSplit> | null>({
+  maxAgeMs: 60 * 60 * 1000,
+  maxEntries: 100,
+});
 
 function splitCacheKey(episode: Episode): string {
   return `${episode.feedId}:${episode.id}`;
@@ -202,10 +230,14 @@ function splitCacheKey(episode: Episode): string {
  */
 async function loadSplits(episode: Episode): Promise<Map<string, ValueTimeSplit>> {
   const cacheKey = splitCacheKey(episode);
-  const cached = splitCache.get(cacheKey);
-  if (cached !== undefined) return cached ?? new Map();
+  // `undefined` (absent or aged out) and a stored `null` ("asked, nothing
+  // usable") stay distinguishable — that distinction is what stops a show
+  // without splits re-asking on every start, and `BoundedCache.get` preserves it
+  // by wrapping the value rather than returning it bare.
+  const cached = splitCache.get(cacheKey, Date.now());
+  if (cached !== undefined) return cached.value ?? new Map();
   if (!episode.valueTimeSplits?.length) {
-    splitCache.set(cacheKey, null);
+    splitCache.set(cacheKey, null, Date.now());
     return new Map();
   }
   try {
@@ -215,7 +247,7 @@ async function loadSplits(episode: Episode): Promise<Map<string, ValueTimeSplit>
     for (const s of (data.splits as ValueTimeSplit[]) ?? []) {
       if (hasValueRecipients(s.value)) map.set(trackBucket(s), s);
     }
-    splitCache.set(cacheKey, map.size ? map : null);
+    splitCache.set(cacheKey, map.size ? map : null, Date.now());
     return map;
   } catch {
     // Not cached as a miss: a network blip must not pin the whole episode to
@@ -1412,7 +1444,7 @@ function tick() {
         // Populated asynchronously below. Until it lands, ticks accrue to the
         // host — correct rather than merely convenient: with no resolved
         // redirect, the show's own value block IS the target.
-        splits: splitCache.get(splitCacheKey(cur.episode)) ?? new Map(),
+        splits: splitCache.get(splitCacheKey(cur.episode), Date.now())?.value ?? new Map(),
       };
     }
   }

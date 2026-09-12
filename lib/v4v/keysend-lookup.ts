@@ -51,6 +51,45 @@ const FAILURE_TTL_MS = 6 * 60 * 60 * 1000;
 // probes it once, not twice per track.
 const cache = new Map<string, { value: KeysendTarget | null; expires: number }>();
 
+/**
+ * Entry ceiling for both maps below, and the reason they sweep by hand.
+ *
+ * Both are keyed by a LIGHTNING ADDRESS OUT OF A VALUE BLOCK — third-party data,
+ * one key per distinct payee a listener's feeds name — and neither had a cap or a
+ * sweep. An expired entry stopped being SERVED and was never DELETED, which is
+ * the exact fault CLAUDE.md records against the two RSS caches: "past TTL an
+ * entry stopped being *served*, never *deleted*."
+ *
+ * `createBoundedCache` is what that table says to use instead, and it is NOT
+ * importable here. This module has zero imports on purpose: `check:keysend` loads
+ * it with `node --experimental-strip-types`, which cannot resolve an
+ * extensionless relative import — the same constraint that keeps
+ * `lib/safe-fetch.ts` from re-exporting the capped readers. An import of
+ * `../bounded-cache` would turn this module's check script into a load error.
+ * So the bound is written here, deliberately, rather than the module losing its
+ * pin to gain a shared helper.
+ *
+ * 500 is far above any real listener: it is one entry per distinct payee across
+ * every feed they play, and a value block names a handful each.
+ */
+const MAX_CACHE_ENTRIES = 500;
+
+/**
+ * Drop what has lapsed, then cap what is left, oldest-first.
+ *
+ * Called on WRITE rather than on a timer, because a timer would keep a tab's
+ * event loop busy for a cache nobody is reading — and a cache that is not being
+ * written to is not growing either.
+ */
+function sweep<T>(map: Map<string, T>, lapsed: (v: T) => boolean): void {
+  for (const [k, v] of map) if (lapsed(v)) map.delete(k);
+  while (map.size > MAX_CACHE_ENTRIES) {
+    const oldest = map.keys().next();
+    if (oldest.done) break;
+    map.delete(oldest.value);
+  }
+}
+
 // Addresses whose keysend target has been TRIED and failed, with the time the
 // demotion lapses. Separate from `cache` on purpose: `cache` answers "does this
 // address publish a keysend target", which is a fact about the document, and
@@ -94,6 +133,7 @@ export function noteKeysendFailure(address: string): void {
   const key = addressKey(address);
   if (!key) return;
   failedTargets.set(key, Date.now() + FAILURE_TTL_MS);
+  sweep(failedTargets, (until) => until <= Date.now());
 }
 
 /** Whether a keysend to `address` failed recently enough to still skip it. */
@@ -235,6 +275,7 @@ async function fetchKeysendDocument(address: string): Promise<KeysendTarget | nu
   // Cache misses too, on a shorter TTL — an LNURL-only address shouldn't cost
   // a failed round trip on every leg of every boost.
   cache.set(key, { value, expires: Date.now() + (value ? HIT_TTL_MS : MISS_TTL_MS) });
+  sweep(cache, (v) => v.expires <= Date.now());
   return value;
 }
 
