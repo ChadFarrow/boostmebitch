@@ -164,8 +164,37 @@ export class DownloadManager {
     return this.records.has(key) ? { status: 'downloaded', fraction: 1 } : IDLE;
   }
 
+  /**
+   * The key this episode's download is actually FILED UNDER, which is not
+   * always the key its current `enclosureUrl` derives.
+   *
+   * Every episode-shaped question has to ask it this way. `recordFor` falls
+   * back to the item guid precisely because an episode object is enriched in
+   * place — `syncSelectedPodcast` and the `/api/feed` backfill both do it — so
+   * the same episode can arrive with a new URL and therefore a new derived key.
+   * `localKeyFor` already went through `recordFor`; `getEpisodeState` and
+   * `download` went through `keyFor` alone, and the two answers disagreed on
+   * exactly the case the fallback exists for: `<Player>` played the local bytes
+   * while the button rendered `idle`, and a press downloaded the same audio a
+   * second time under a second key. That is the failure `downloadKey`'s
+   * idempotence rule is written against — the listener pays for the file again,
+   * on the connection they downloaded it to avoid.
+   *
+   * Falls back to the derived key when nothing is stored, so a first download
+   * is filed under the URL it was actually fetched from.
+   *
+   * Public because a SURFACE needs it too, not only this class: a control that
+   * reads `getEpisodeState` and then acts on `keyFor` is holding a status and a
+   * key that can name two different records, so its ✓ removes nothing. The one
+   * answer feeds both.
+   */
+  storedKeyFor(episode: Episode | null | undefined): string | null {
+    if (!episode) return null;
+    return this.recordFor(episode)?.key ?? this.keyFor(episode);
+  }
+
   getEpisodeState(episode: Episode | null | undefined): DownloadState {
-    return this.getState(this.keyFor(episode));
+    return this.getState(this.storedKeyFor(episode));
   }
 
   /** Newest first — the order `/downloads` renders. */
@@ -198,7 +227,10 @@ export class DownloadManager {
   // --- writing ---------------------------------------------------------------
 
   async download(episode: Episode, podcast?: Podcast | null): Promise<boolean> {
-    const key = this.keyFor(episode);
+    // `storedKeyFor`, not `keyFor` — see the note on it. An episode whose
+    // enclosure URL moved is already downloaded under the old key, and asking
+    // the URL alone would fetch the whole file again.
+    const key = this.storedKeyFor(episode);
     if (!key || !this.canDownload(episode)) return false;
     if (this.records.has(key)) return true;
     const existing = this.states.get(key)?.status;

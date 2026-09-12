@@ -146,7 +146,7 @@ export function DownloadsPage() {
 
       <ul className="space-y-2">
         {rows.map((r) => {
-          const isCurrent = downloadManager.keyFor(currentEpisode) === r.key;
+          const isCurrent = downloadManager.storedKeyFor(currentEpisode) === r.key;
           return (
             <li key={r.key} className={`card flex items-center gap-3 p-3 ${isCurrent ? 'border-bolt/60' : ''}`}>
               <button

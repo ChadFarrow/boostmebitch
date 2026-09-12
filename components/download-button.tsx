@@ -44,8 +44,13 @@ export function DownloadButton({
   // manager, which is the source of truth for both memory and disk.
   useDownloadsVersion();
 
+  // `storedKeyFor`, never `keyFor`: this key is what CANCEL and REMOVE act on,
+  // and it has to name the same record `getEpisodeState` just read. An episode
+  // enriched in place with a new enclosure URL derives a different key from the
+  // one its download is filed under, so the two would disagree and ✓ would
+  // remove nothing.
   const state = downloadManager.getEpisodeState(episode);
-  const key = downloadManager.keyFor(episode);
+  const key = downloadManager.storedKeyFor(episode);
 
   const onClick = useCallback(
     (e: React.MouseEvent) => {
