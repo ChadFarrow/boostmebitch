@@ -33,29 +33,6 @@ export function fmt(t: number): string {
   return `${m}:${s}`;
 }
 
-/**
- * A file size, e.g. "162 MB". Returns `null` when there is no size to state.
- *
- * `null` rather than "0 MB" or "unknown", because both sources of a size lie:
- * RSS's `<enclosure length>` is routinely absent or `"0"`, and Podcast Index
- * mirrors the zero. A caller renders nothing for `null` — saying "0 MB" beside a
- * 160 MB file is worse than saying nothing, and the download button is a place
- * somebody decides whether to spend their data.
- *
- * MB not MiB, and 1000 not 1024: this number sits next to whatever a phone's
- * data allowance is measured in, and that is the decimal one.
- */
-export function fmtBytes(bytes: number | null | undefined): string | null {
-  if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) return null;
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let n = bytes;
-  let u = 0;
-  while (n >= 1000 && u < units.length - 1) { n /= 1000; u += 1; }
-  // One decimal below 10 so "1.4 GB" is not "1 GB"; none above, because the
-  // precision is fictional at that point.
-  return `${n < 10 && u > 0 ? n.toFixed(1) : Math.round(n)} ${units[u]}`;
-}
-
 /** Time-of-day clock, e.g. "3:45 PM". Accepts unix seconds. */
 export function fmtClock(unixSec: number): string {
   return new Date(unixSec * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });

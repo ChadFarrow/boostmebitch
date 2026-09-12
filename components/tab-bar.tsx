@@ -51,10 +51,10 @@ import { KbDebug } from './kb-debug';
  * can leave beats one you cannot. Do not add a hide list without a new
  * reason.
  *
- * TOUCH. Each item is the full `--tabbar-h` (56px) tall and a fifth (today) of
- * the width wide, so it clears the 44px floor without a min-h — the
+ * TOUCH. Each item is the full `--tabbar-h` (56px) tall and a quarter (today)
+ * of the width wide, so it clears the 44px floor without a min-h — the
  * icon-and-label stack is centred inside the tap area, not the tap area itself.
- * At 390px five columns are 78px each, and height is the binding dimension at
+ * At 390px four columns are 97.5px each, and height is the binding dimension at
  * 56 > 44. The floor is not threatened until SEVEN tabs (390/7 = 55.7px), which
  * is the number to check against rather than re-deriving it.
  *
@@ -86,7 +86,7 @@ import { KbDebug } from './kb-debug';
 
 type LinkTab = {
   kind: 'link';
-  href: '/' | '/live' | '/favorites' | '/downloads';
+  href: '/' | '/live' | '/favorites';
   label: string;
   icon: React.ReactNode;
   /** Whether `pathname` belongs to this tab. `/` is exact; the rest are prefixes. */
@@ -140,21 +140,6 @@ const TABS: Tab[] = [
     icon: (
       <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
         <path d="M12 21s-7-4.6-9.3-9A5.2 5.2 0 0 1 12 6.6 5.2 5.2 0 0 1 21.3 12C19 16.4 12 21 12 21z" />
-      </svg>
-    ),
-  },
-  {
-    kind: 'link',
-    href: '/downloads',
-    label: 'Downloads',
-    match: (p) => p.startsWith('/downloads'),
-    icon: (
-      // An arrow into a tray. Deliberately not a cloud: the whole point of this
-      // destination is that the bytes are HERE, not somewhere else.
-      <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
-        <path d="M12 3v10" />
-        <path d="M8 10.5 12 14.5l4-4" />
-        <path d="M4 16v3.5h16V16" />
       </svg>
     ),
   },

@@ -25,7 +25,6 @@ import { PodcastCover } from '../podcast-cover';
 import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
 import { FavEpisodeHeart, FavHeart } from '../fav-heart';
-import { DownloadButton } from '../download-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 
@@ -991,9 +990,6 @@ export function EpisodeList({
                   <span className="hidden sm:inline">BOOST</span>
                 </button>
               )}
-              <div className="self-center flex-shrink-0">
-                <DownloadButton episode={e} podcast={data.podcast} />
-              </div>
               <div className="self-center flex-shrink-0">
                 <FavEpisodeHeart episode={e} podcast={data.podcast} />
               </div>

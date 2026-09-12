@@ -34,7 +34,6 @@ import { LinkedText } from './linked-text';
 import { UnderlineTabs } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
 import { FavEpisodeHeart, FavHeart } from './fav-heart';
-import { DownloadButton } from './download-button';
 import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
@@ -324,10 +323,6 @@ export function FullscreenPlayer({
   // Per-field selectors (see the note in player.tsx) — a bare useApp() here
   // re-renders the whole fullscreen surface on every unrelated store write.
   const current = useApp((s) => s.current);
-  // Read from the store rather than threaded as a prop: <Player> is the only
-  // writer and owns revoking it, and a prop is what a future surface forgets
-  // to pass — the fault this whole change exists to fix.
-  const nowPlayingCover = useApp((s) => s.nowPlayingCover);
   const isPlaying = useApp((s) => s.isPlaying);
   const positionSec = useApp((s) => s.positionSec);
   const episodeQueue = useApp((s) => s.episodeQueue);
@@ -689,13 +684,6 @@ export function FullscreenPlayer({
                   }) || episode.image || podcast.image
                 }
                 artwork={podcast.artwork}
-                // The downloaded cover, and it is the LAST rung — see
-                // <PodcastCover>'s `localSrc` and `nowPlayingCover` in the
-                // store. Chapter and track art still win whenever the network
-                // answers; this is what stops an offline launch painting a
-                // coloured initial tile over an episode whose cover is sitting
-                // on the device.
-                localSrc={nowPlayingCover}
                 title={podcast.title}
                 seed={podcast.id?.toString()}
                 lowPriority
@@ -869,7 +857,6 @@ export function FullscreenPlayer({
               <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
                 <FavHeart podcast={podcast} size="tile" nameTarget />
                 <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
-                <DownloadButton episode={episode} podcast={podcast} size="tile" />
                 <ShareTargets podcast={podcast} episode={episode} />
                 {/* The meter below says what streaming is DOING; this is the
                     only place in the player you can change it. Without it the
