@@ -227,11 +227,19 @@ export class DownloadManager {
   // --- writing ---------------------------------------------------------------
 
   async download(episode: Episode, podcast?: Podcast | null): Promise<boolean> {
+    if (!this.canDownload(episode)) return false;
+    // Hydrate FIRST, and unlike the play path this one may wait. `subscribe`
+    // kicks hydration when the button mounts, but a press landing before that
+    // read returns sees an empty `records` and starts fetching a file already
+    // on disk. Nothing here is on a user-gesture deadline — `el.src` is what
+    // has to stay synchronous, and that is `localKeyFor`'s job, not this one.
+    await this.hydrate();
+
     // `storedKeyFor`, not `keyFor` — see the note on it. An episode whose
     // enclosure URL moved is already downloaded under the old key, and asking
     // the URL alone would fetch the whole file again.
     const key = this.storedKeyFor(episode);
-    if (!key || !this.canDownload(episode)) return false;
+    if (!key) return false;
     if (this.records.has(key)) return true;
     const existing = this.states.get(key)?.status;
     if (existing === 'queued' || existing === 'downloading') return true;
