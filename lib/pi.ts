@@ -552,6 +552,62 @@ function buildEpisode(e: any): Episode {
 export const PI_EPISODE_MAX = 1000;
 
 /**
+ * PI's own ceiling on a comma-separated feed-id list, and the reason it is a
+ * named constant rather than an inline slice.
+ *
+ * **PI truncates at exactly 200 and says nothing.** Measured 2026-09-12 three
+ * ways: a known-good feed at position 200 is answered, the same feed at
+ * position 201 is not, and moving it to position 1 of that same 201-id list
+ * brings it back. The response is a 200 OK either way. That is the failure
+ * class `probeThenBatch`'s comment already records — "shipping only the first
+ * is what made a 231-track list resolve four" — except here nothing errors, so
+ * the only defence is never to send more than this.
+ */
+export const PI_FEED_IDS_MAX = 200;
+
+/**
+ * What came out on these feeds since `since` — one call, many feeds.
+ *
+ * `/episodes/byfeedid` takes a comma-separated id list, which is the primitive
+ * the "new episodes from your favorites" section is built on: it collapses
+ * "did anything change" and "what changed" into one question, so there is no
+ * freshness field to keep warm and no seven-day cache to read it through.
+ *
+ * **`since` is EXCLUSIVE** (measured): an item whose `datePublished` equals it
+ * is omitted. So the caller stores the exact `datePublished` of the newest row
+ * it showed, with no off-by-one.
+ *
+ * **`max` is GLOBAL, not per feed**, and applied after a newest-first sort — so
+ * hitting it drops the OLDEST rows across every feed at once. The caller has to
+ * know when that happened, because the rows it did not see lie between its mark
+ * and the ones it did; `truncated` is that signal, and `advanceMarks` refuses
+ * to move any mark in a truncated batch.
+ *
+ * **No `fulltext`.** This list is a set of headlines, not reading material, and
+ * `fulltext` scales the body with the ask — the trap `getEpisodes` documents
+ * one function down.
+ */
+export async function getEpisodesSinceForFeeds(
+  feedIds: readonly number[],
+  since: number,
+  max = 200,
+): Promise<{ episodes: Episode[]; truncated: boolean }> {
+  const ids = Array.from(new Set(feedIds.filter((n) => Number.isInteger(n) && n > 0)))
+    .slice(0, PI_FEED_IDS_MAX);
+  if (!ids.length) return { episodes: [], truncated: false };
+  const data = await pi<any>(
+    `/episodes/byfeedid?id=${ids.join(',')}&since=${Math.floor(since)}&max=${max}`,
+  );
+  const rows: any[] = Array.isArray(data?.items) ? data.items : [];
+  return {
+    episodes: rows.map(buildEpisode),
+    // `max` is the only lever PI gives here, so a full answer is
+    // indistinguishable from a truncated one except by counting.
+    truncated: rows.length >= max,
+  };
+}
+
+/**
  * Ceiling on how many `<item>` blocks one RSS document is walked for.
  *
  * The walk is linear now (`findBlocks`), so this bounds the work AFTER the
