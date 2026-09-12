@@ -122,7 +122,12 @@ export function isPlayableRow(e: Pick<Episode, 'enclosureUrl' | 'unresolved'>): 
  * keys is the drift this repo keeps paying for.
  */
 export function epKey(e: Pick<Episode, 'guid' | 'feedId' | 'id'>): string {
-  return e.guid ?? `${e.feedId}:${e.id}`;
+  // `||`, NOT `??`. A feed can publish `<guid></guid>`, and `extractText`
+  // returns `''` for it rather than undefined — only a MISSING or self-closing
+  // tag is undefined. `??` keeps that empty string, so every such episode shares
+  // the key `''`: the queue then removes, dedupes and jumps to the wrong one,
+  // silently, on feeds this app already parses.
+  return e.guid || `${e.feedId}:${e.id}`;
 }
 
 /**
