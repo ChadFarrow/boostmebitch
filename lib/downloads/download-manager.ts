@@ -280,6 +280,7 @@ export class DownloadManager {
       onProgress: (p) => this.setState(key, { status: 'downloading', fraction: p.fraction }),
     });
 
+    const { feedGuid, containerIsParent } = parentFeed(episode, podcast);
     const record: DownloadRecord = {
       key,
       enclosureUrl: episode.enclosureUrl,
@@ -287,12 +288,15 @@ export class DownloadManager {
       sizeBytes,
       createdAt: Date.now(),
       itemGuid: episode.guid,
-      feedGuid: parentFeedGuid(episode, podcast),
+      feedGuid,
       feedId: episode.feedId,
       title: episode.title,
-      feedTitle: episode.feedTitle ?? podcast?.title,
+      // The container's title and art are withheld unless it really is the
+      // parent — see `parentFeed`. `episode.*` first either way.
+      feedTitle: episode.feedTitle ?? (containerIsParent ? podcast?.title : undefined),
       image: episode.image,
-      feedImage: episode.feedImage ?? podcast?.image ?? podcast?.artwork,
+      feedImage: episode.feedImage
+        ?? (containerIsParent ? podcast?.image ?? podcast?.artwork : undefined),
       duration: episode.duration,
       datePublished: episode.datePublished,
       enclosureLength: episode.enclosureLength,
@@ -512,7 +516,8 @@ export class DownloadManager {
 }
 
 /**
- * The item's OWN parent feed, never the guid of whatever feed listed it.
+ * The item's OWN parent feed, never the guid of whatever feed listed it — and
+ * whether the feed we were handed is that parent at all.
  *
  * A `musicL` playlist lists tracks that live in hundreds of other feeds, so the
  * container's guid is a fact about the playlist and not about the track — and
@@ -520,10 +525,25 @@ export class DownloadManager {
  * discriminator is the item's own `podcastGuid`, and it refuses NARROWLY: both
  * guids must be present and disagree before the container's is withheld. Same
  * rule and same reasoning as `<FavEpisodeHeart>`.
+ *
+ * **THE GUID WAS NEVER THE WHOLE RULE.** The title and the art are facts about
+ * the parent feed too, and this returned only the guid — so a track downloaded
+ * from a playlist kept its own `feedGuid` while recording the PLAYLIST's title
+ * and cover as its show's. `dbRowToPodcast` hands that object to
+ * `selectPodcast`, so the mixed-provenance feed is what `/` then renders. The
+ * comment here already claimed the withholding; only the guid ever did it.
+ * `<FavEpisodeHeart>` is the reference (`components/fav-heart.tsx`), and it
+ * withholds `url`, `title`, `image` and `medium` on the same test.
  */
-function parentFeedGuid(episode: Episode, podcast: Podcast | null): string | undefined {
-  if (episode.podcastGuid) return episode.podcastGuid;
-  return podcast?.podcastGuid;
+function parentFeed(
+  episode: Episode,
+  podcast: Podcast | null,
+): { feedGuid: string | undefined; containerIsParent: boolean } {
+  const feedGuid = episode.podcastGuid ?? podcast?.podcastGuid;
+  return {
+    feedGuid,
+    containerIsParent: !!podcast?.podcastGuid && podcast.podcastGuid === feedGuid,
+  };
 }
 
 function abortError(): DOMException {
