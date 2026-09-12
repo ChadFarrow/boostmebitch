@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { artCandidates, DEFAULT_ART_WIDTH, type ArtWidth } from '@/lib/util';
 
 // Renders the podcast's artwork with a deterministic colored-initial
@@ -14,7 +14,7 @@ import { artCandidates, DEFAULT_ART_WIDTH, type ArtWidth } from '@/lib/util';
 // Pass the same sizing/border classes you'd put on a bare <img>; this
 // component re-applies them to the fallback div so the layout stays stable
 // either way.
-export function PodcastCover({
+function PodcastCoverImpl({
   image,
   artwork,
   title,
@@ -170,3 +170,29 @@ export function PodcastCover({
     </div>
   );
 }
+
+/**
+ * MEMOIZED, and every prop is a primitive, which is what makes it work.
+ *
+ * This is mounted once per row on twelve surfaces — every episode row, every
+ * favorites row, every queue row — and it carries internal state: the `onError`
+ * ladder's position. `<EpisodeList>` reads seven store slices including
+ * `current` and `isPlaying`, and its rows are one long inline closure rather
+ * than components, so every `play()` and every pause re-renders every visible
+ * row. Without this, each of those re-renders reconciled a cover whose inputs
+ * had not changed.
+ *
+ * `image`, `artwork`, `localSrc`, `title`, `seed`, `className`, `w`, `fit` and
+ * `lowPriority` are all strings, numbers or booleans, so the default shallow
+ * comparison is exactly right here — there is no object or callback prop for a
+ * caller to hand over a fresh reference of by accident, which is the usual way a
+ * `memo` becomes decoration.
+ *
+ * Deliberately NOT a fix for the row itself. Extracting `<EpisodeList>`'s row
+ * into a memoized component would mean stabilising about fifteen props including
+ * callbacks, on a surface carrying the boost control, the hearts and the download
+ * button — and a memo whose props are not all stable does nothing while looking
+ * like it does. That is a change worth measuring first, not bundling into an
+ * audit.
+ */
+export const PodcastCover = memo(PodcastCoverImpl);
