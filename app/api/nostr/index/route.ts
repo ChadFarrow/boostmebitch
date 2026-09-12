@@ -115,6 +115,18 @@ export async function GET(req: Request) {
     if (data === null) return NextResponse.json({ error: 'index unavailable' }, { status: 503 });
     return NextResponse.json(data, {
       headers: match.sMaxAge
+        // NO `max-age`, and this is the one route where the audit that added it
+        // to `/api/search`, `/api/publisher`, `/api/remote-item` and
+        // `/api/keysend` decided against it on a behavioural argument rather
+        // than a staleness one.
+        //
+        // Every window here is 15-300 seconds, and these paths sit behind a
+        // refresh the user presses (`useNostrFeed`'s `refresh`). A private cache
+        // would serve that press out of the browser, so the control would do
+        // nothing, report nothing, and look exactly like a slow network — which
+        // is the failure mode CLAUDE.md names as indistinguishable from a broken
+        // one. The CDN win is already taken; the browser win is a few kB against
+        // a control that lies.
         ? { 'Cache-Control': `public, s-maxage=${match.sMaxAge}, stale-while-revalidate=300` }
         : { 'Cache-Control': 'no-store' },
     });

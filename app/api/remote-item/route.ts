@@ -43,7 +43,12 @@ export async function GET(req: Request) {
       parent,
       // A publisher chain does not change between broadcasts, so this is the
       // one part of a live show worth caching for longer than a poll.
-      { headers: { 'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400' } },
+      // `max-age` added on the rule in `/api/feed`. This one has no client-side
+      // cache at all — `lib/live-played.ts` and `<LivePlayedTracks>` ask per row,
+      // and a live show's played log re-asks for the same parent feed as tracks
+      // repeat — so the browser window is the only private cache there is. Ten
+      // minutes sits well inside the hour the CDN may already answer with.
+      { headers: { 'Cache-Control': 'public, max-age=600, s-maxage=3600, stale-while-revalidate=86400' } },
     );
   }, 'remote item lookup failed');
 }

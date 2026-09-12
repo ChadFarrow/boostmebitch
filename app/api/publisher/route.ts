@@ -9,7 +9,13 @@ import type { Podcast } from '@/lib/types';
 // Publisher feeds are effectively static — new albums appear rarely — and this
 // is by far the most expensive route here (one RSS fetch plus a PI call per
 // album). It was the only 200 in app/api without a cache header.
-const PUBLISHER_CACHE = { 'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600' };
+// `max-age`, per the rule in `/api/feed`: a private window shorter than the
+// shared one permits no staleness the CDN was not already permitted. This one is
+// worth having because a publisher's album list is what "back to the publisher"
+// re-renders, and the body carries every album's artwork and value block.
+// The NO_STORE answer below is untouched: an answer assembled without Podcast
+// Index is never cached at all, shared or private.
+const PUBLISHER_CACHE = { 'Cache-Control': 'public, max-age=60, s-maxage=300, stale-while-revalidate=600' };
 
 // An answer assembled without Podcast Index is never cached. It is a real answer
 // — the children are read from their own RSS, which is the authoritative
