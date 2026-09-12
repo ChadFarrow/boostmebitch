@@ -944,6 +944,51 @@ export function Player() {
     artOk: artUsable,
   });
 
+  /**
+   * The current item's DOWNLOADED cover, published for the surfaces that paint
+   * now-playing art.
+   *
+   * Every download already stores its cover, and until this existed only
+   * `/downloads` could read it: on a plane the episode played from local bytes
+   * under a coloured initial tile, which is not what "the cover comes too"
+   * promised. Reported from an iPhone in airplane mode.
+   *
+   * It is always a LAST rung — see <PodcastCover>'s `localSrc` and the mini
+   * bar's ladder below. Online, chapter and track art still win; this only
+   * catches when every network candidate fails, which offline they all do.
+   *
+   * This effect OWNS the blob URL. An unrevoked one pins the whole decoded
+   * image for the life of the document, and `<Player>` lives in the root
+   * layout, so nothing else would ever collect it.
+   */
+  const setNowPlayingCover = useApp((s) => s.setNowPlayingCover);
+  const nowPlayingCover = useApp((s) => s.nowPlayingCover);
+  useEffect(() => {
+    const ep = current?.episode;
+    let cancelled = false;
+    let mine: string | null = null;
+    if (ep) {
+      void (async () => {
+        // The cover is not on a user-gesture deadline the way `el.src` is, so
+        // this one may wait for the library rather than answering `undefined`.
+        await downloadManager.hydrate();
+        const key = cancelled ? null : downloadManager.storedKeyFor(ep);
+        const url = key ? await downloadManager.coverUrlFor(key) : null;
+        if (cancelled || !url) {
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
+        mine = url;
+        setNowPlayingCover(url);
+      })();
+    }
+    return () => {
+      cancelled = true;
+      if (mine) URL.revokeObjectURL(mine);
+      setNowPlayingCover(null);
+    };
+  }, [current?.episode.id, current?.episode.enclosureUrl, setNowPlayingCover]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Lock-screen / notification integration — transport handlers, play state,
   // scrub bar and metadata — lives in ./player/use-media-session. It is called
   // HERE, after `nowArt`, because the metadata effect consumes it.
@@ -1164,7 +1209,7 @@ export function Player() {
             <div className="w-12 h-12 flex-shrink-0 bg-black overflow-hidden border border-bone/20">
               {videoNode && !playerExpanded && <OutPortal node={videoNode} />}
             </div>
-          ) : (nowArt || episode.image) ? (
+          ) : (nowArt || episode.image || nowPlayingCover) ? (
             // `nowPlayingArt` picks the record a live Split Kit show is playing,
             // then the track a <podcast:valueTimeSplit> redirects to, then the
             // active chapter's artwork (Podcasting 2.0 chapters `img`), falling
@@ -1184,21 +1229,41 @@ export function Player() {
             // about it is worth a frame of audio.
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              key={nowArt || episode.image}
-              src={nowArt || episode.image}
+              // The cover is in the KEY, not just in the ladder. It resolves
+              // asynchronously, so the image routinely errors through every
+              // network rung BEFORE it arrives — and a raw <img> has no way to
+              // re-attempt after that. Naming it here replaces the element once
+              // the cover lands, which resets `data-rung` and re-walks the
+              // ladder. <PodcastCover> gets the same effect from the
+              // `setIdx(0)` effect on its own candidate list.
+              key={`${nowArt || episode.image || ''}|${nowPlayingCover ?? ''}`}
+              src={nowArt || episode.image || nowPlayingCover || undefined}
               alt=""
               fetchPriority="low"
               decoding="async"
               onError={(e) => {
-                // One attempt at the episode cover, tracked on the element
-                // rather than by comparing `src` against the fallback string:
-                // the `src` GETTER returns a RESOLVED absolute URL, so an
-                // untrimmed or relative feed URL never compares equal and the
-                // handler re-assigns the same failing URL forever.
+                // A TWO-rung ladder, and the rungs are counted on the element
+                // rather than by comparing `src` against a fallback string: the
+                // `src` GETTER returns a RESOLVED absolute URL, so an untrimmed
+                // or relative feed URL never compares equal and the handler
+                // re-assigns the same failing URL forever.
+                //
+                // The second rung is the downloaded cover, and it is last for
+                // the reason given on `nowPlayingCover` above. Without it this
+                // element simply STOPS on a broken-image glyph — which is what
+                // an offline launch showed, beside a row on /downloads that was
+                // rendering the very same bytes.
                 const el = e.currentTarget;
-                if (el.dataset.fellBack || !episode.image) return;
-                el.dataset.fellBack = '1';
-                el.src = episode.image;
+                // The same list `src` picked its first truthy entry from, so
+                // index 0 is what is on screen and the next rung is index+1.
+                const rungs = [...new Set(
+                  [nowArt, episode.image, nowPlayingCover].filter((u): u is string => !!u),
+                )];
+                const i = Number(el.dataset.rung || '0') + 1;
+                const next = rungs[i];
+                if (!next) return;
+                el.dataset.rung = String(i);
+                el.src = next;
               }}
               className="w-12 h-12 object-cover border border-bone/20 flex-shrink-0"
             />

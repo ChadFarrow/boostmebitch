@@ -450,11 +450,44 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     }, { cachedChapters: true, recordNamesDocs: true, recordKeepsChaptersUrl: true, audioStored: true });
     console.log(`        (art entries cached: ${cached.artEntries} — informational, see above)`);
 
+    // PLANT A COVER IF THE PROXY GAVE US NONE, because what the next check is
+    // about is the WIRING, not the proxy. `/api/art` answers 502 for both of
+    // this show's covers from some machines (see above), so asserting on a real
+    // one would make the check pass or fail for a reason that has nothing to do
+    // with the code under test. A 1x1 PNG is a real decodable image, which is
+    // what the <img> ladders need in order to stop on it.
+    await js(`
+      (async () => {
+        const art = await caches.open('bmb-downloads-art-v1');
+        if ((await art.keys()).length) return 'already had one';
+        const rec = await new Promise((resolve) => {
+          const req = indexedDB.open('BmbDownloadsDB');
+          req.onsuccess = () => { const g = req.result.transaction('downloads','readonly').objectStore('downloads').getAll(); g.onsuccess = () => resolve(g.result[0] ?? null); };
+          req.onerror = () => resolve(null);
+        });
+        if (!rec) return 'no record';
+        const b64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+        const bin = atob(b64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        await art.put(rec.key, new Response(bytes, { headers: { 'Content-Type': 'image/png' } }));
+        return 'planted';
+      })()
+    `);
+
     // THE ACTUAL CLAIM. Everything above proves bytes were stored; only this
     // proves they are reachable when the network is not. `Network.emulate` is
     // used rather than DevTools' Offline toggle because that leaves already-open
     // sockets alive, which has produced a false pass in this repo before.
     await send('Network.enable');
+    // CLEAR THE HTTP CACHE FIRST, or this section grades Chrome instead of the
+    // app. `Network.emulateNetworkConditions` stops the network; it does not
+    // stop the browser's own disk cache, which answers `/api/art` and the feed
+    // happily while "offline". That is a false pass by exactly the mechanism
+    // the note above warns about, and it hid a real fault: the downloaded cover
+    // was never wired to the player, and nobody saw it here because Chrome had
+    // the proxied PNG in cache. An iPhone launching cold has no such cache.
+    await send('Network.clearBrowserCache');
     await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
     await js(`document.querySelector('ul li button, li h3')?.click(); true`);
     await wait(2000);
@@ -499,6 +532,41 @@ if (process.env.E2E_DOWNLOADS_FULL === '1') {
     `);
     check('the chapters document answers from cache while a live fetch cannot',
       chaptersOffline, { hit: true, chapters: true, liveFailed: true });
+
+
+    // THE COVER REACHES THE PLAYER, not just /downloads. Every download stores
+    // its cover, and for a while only `coverUrlFor` on the downloads page could
+    // read it — so an offline launch played from local bytes under a coloured
+    // initial tile, beside a /downloads row rendering the very same bytes.
+    // Reported from an iPhone in airplane mode.
+    //
+    // IT HAS TO BE A COLD RENDER, and that is the whole reason this navigates.
+    // Cutting the network does not fail an <img> that already loaded: it stays
+    // `complete`, no `error` fires, and the onError ladder never advances. So
+    // asserting on the page that was already open grades nothing. `/downloads`
+    // is in the worker's PAGES cache from section 9, so it really is served
+    // offline and every image on it is fetched fresh.
+    //
+    // Counted OUTSIDE `li`, because the rows are the surface that always
+    // worked. What is under test is the mini bar and the (mounted) fullscreen
+    // hero — the two that paint now-playing art, where one being wired is not
+    // enough.
+    await send('Page.navigate', { url: `${APP}/downloads` });
+    await wait(8000);
+    await js(`document.querySelector('button[aria-label^="Play "]')?.click(); true`);
+    await wait(5000);
+    const covers = await js(`
+      (() => {
+        const outside = [...document.querySelectorAll('img')].filter((i) => !i.closest('li'));
+        return {
+          local: outside.filter((i) => i.src.startsWith('blob:')).length,
+          outside: outside.length,
+        };
+      })()
+    `);
+    check('the downloaded cover reaches the player, not just /downloads',
+      { anyLocal: covers.local > 0 }, { anyLocal: true });
+
 
     await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   }

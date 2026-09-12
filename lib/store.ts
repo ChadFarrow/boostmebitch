@@ -82,6 +82,23 @@ interface AppState {
   artOk: boolean;
   setArtOk: (b: boolean) => void;
 
+  // A `blob:` URL for the CURRENT item's downloaded cover, or null.
+  //
+  // Lifted for the same reason as `artOk` above, and it is the same shape of
+  // bug: the cover was stored with every download and only `/downloads` could
+  // read it, through `downloadManager.coverUrlFor`. So on a plane the episode
+  // played from local bytes under a coloured initial tile, and the phase that
+  // promised "the cover comes too" delivered it to one surface out of the
+  // three that paint now-playing art. Reported from an iPhone.
+  //
+  // It is a fallback RUNG, never a replacement: see <PodcastCover>'s
+  // `localSrc`. Chapter and track art still win whenever the network answers.
+  //
+  // <Player> is the only writer, and it owns revoking the previous URL — an
+  // unrevoked one pins the whole decoded image for the life of the document.
+  nowPlayingCover: string | null;
+  setNowPlayingCover: (u: string | null) => void;
+
   // Whether the Nostr sign-in modal is open. Lifted into the store so surfaces
   // other than the header (e.g. the fullscreen player / live chat) can open it
   // without leaving the page. <NostrAuth> owns the modal render.
@@ -506,6 +523,9 @@ export const useApp = create<AppState>((set, get) => ({
 
   artOk: true,
   setArtOk: (b) => set({ artOk: b }),
+
+  nowPlayingCover: null,
+  setNowPlayingCover: (u) => set({ nowPlayingCover: u }),
 
   signInOpen: false,
   signInIntent: 'default',

@@ -23,9 +23,28 @@ export function PodcastCover({
   w = DEFAULT_ART_WIDTH,
   fit = 'cover',
   lowPriority,
+  localSrc,
 }: {
   image?: string | null;
   artwork?: string | null;
+  /**
+   * A cover already on this device — a `blob:` URL from a download.
+   *
+   * It is the LAST rung, not the first, and that ordering is the whole design.
+   * Online, the network candidates are better: `nowPlayingArt` may be handing
+   * this component the art of the chapter or the track playing THIS SECOND,
+   * and a downloaded feed cover must never outrank it. Offline every network
+   * rung fails and this one catches, which is the case it exists for.
+   *
+   * It must not be proxied — `/api/art` cannot fetch a `blob:` URL, and the
+   * point of this rung is that it needs no network at all. So it is appended
+   * to `artCandidates`' output rather than passed into it, which also leaves
+   * that function, pinned by `check:art`, untouched.
+   *
+   * The CALLER owns revoking it. <Player> is the only writer; see
+   * `nowPlayingCover` in lib/store.ts.
+   */
+  localSrc?: string | null;
   title?: string | null;
   /** Optional seed for the fallback hue; defaults to the title. Use a guid
    *  or feed id when you want the color to follow identity, not display
@@ -91,13 +110,16 @@ export function PodcastCover({
   // every cover on all twelve surfaces that render this component. Ordering it
   // the other way round would leave the feature installed and inert. Both
   // shapes are pinned by `npm run check:art`.
-  const candidates = useMemo(() => artCandidates(image, artwork, w), [image, artwork, w]);
+  const candidates = useMemo(() => {
+    const net = artCandidates(image, artwork, w);
+    return localSrc ? [...net, localSrc] : net;
+  }, [image, artwork, w, localSrc]);
   const [idx, setIdx] = useState(0);
   // Re-attempt from the first candidate whenever the source URLs change. Without
   // this, a caller that swaps `image` over time (e.g. per-chapter artwork in the
   // player) would keep a stale failing-index: once a bad img advanced idx to the
   // artwork fallback, the next (valid) image would be skipped for artwork.
-  useEffect(() => { setIdx(0); }, [image, artwork, w]);
+  useEffect(() => { setIdx(0); }, [image, artwork, w, localSrc]);
   const current = candidates[idx];
   if (current) {
     return (

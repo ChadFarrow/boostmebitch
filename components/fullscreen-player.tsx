@@ -324,6 +324,10 @@ export function FullscreenPlayer({
   // Per-field selectors (see the note in player.tsx) — a bare useApp() here
   // re-renders the whole fullscreen surface on every unrelated store write.
   const current = useApp((s) => s.current);
+  // Read from the store rather than threaded as a prop: <Player> is the only
+  // writer and owns revoking it, and a prop is what a future surface forgets
+  // to pass — the fault this whole change exists to fix.
+  const nowPlayingCover = useApp((s) => s.nowPlayingCover);
   const isPlaying = useApp((s) => s.isPlaying);
   const positionSec = useApp((s) => s.positionSec);
   const episodeQueue = useApp((s) => s.episodeQueue);
@@ -685,6 +689,13 @@ export function FullscreenPlayer({
                   }) || episode.image || podcast.image
                 }
                 artwork={podcast.artwork}
+                // The downloaded cover, and it is the LAST rung — see
+                // <PodcastCover>'s `localSrc` and `nowPlayingCover` in the
+                // store. Chapter and track art still win whenever the network
+                // answers; this is what stops an offline launch painting a
+                // coloured initial tile over an episode whose cover is sitting
+                // on the device.
+                localSrc={nowPlayingCover}
                 title={podcast.title}
                 seed={podcast.id?.toString()}
                 lowPriority
