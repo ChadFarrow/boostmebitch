@@ -310,6 +310,35 @@ precaching.** Three rules make the failure it describes impossible:
    `bmb-sw-pages-<id>`), and `activate` deletes every `bmb-sw-*` cache that is
    not the current build's.
 
+**ONE document is precached, and the exception is what makes rule 1 usable.**
+`install` does `cache.add('/')`. Without it the worker had no offline shell at
+all after a fresh install: the FIRST document of a visit is fetched before the
+worker controls the page, so it never passes through the fetch handler and never
+enters `PAGES`. Somebody who installed the app and lost signal without loading a
+second time got nothing — measured on an iPhone, in airplane mode, and it did
+not degrade. It produced *"FetchEvent.respondWith received an error: TypeError:
+Load failed"*.
+
+It does not weaken network-first. `/` is still fetched fresh on every load that
+has a connection, and the precached copy is only ever reached when the fetch
+rejects. It cannot go stale across a deploy either, because `PAGES` carries the
+build id: a new worker precaches its own `/` and `activate` deletes the old one.
+
+**A NAVIGATION MAY NEVER REJECT INSIDE `respondWith`.** This is the rule that
+error screen taught, and it is worth stating separately from the fix. Rejecting
+does not hand the navigation back to the browser's own offline page — it
+REPLACES that page with a service-worker error, which is a worse screen than
+having no worker installed at all. So a navigation that misses its exact URL
+falls back to the shell, and then to a minimal inline document; it never throws.
+The app reads its own deep-link parameters off `window.location` on mount, so
+`/?podcast=…` served from the shell still lands where the reader meant.
+
+A **subresource** is the opposite and still rejects, deliberately: that is
+exactly what happens with no worker installed, and it is what the app's own
+`catch` blocks are written against. Synthesising a `Response` there would turn a
+network failure into a non-ok *answer*, and `fetchDoc` reads the difference — it
+falls back to a downloaded copy only on a rejection.
+
 That prefix is narrow **on purpose**: the download buckets are `bmb-downloads-*`
 and are the user's own files. A sweep that took them would delete a library
 somebody saved deliberately, on a deploy they never asked for.
@@ -426,5 +455,7 @@ something still waiting is honoured and never issues a fetch.
 - **Range requests and resume.** Resuming needs partial bytes kept somewhere, and a
   half-written entry is the class of bug the Cache API's atomic `put` avoids
   entirely.
-- **A precaching service worker.** See the phase 6 section when it lands: a
-  network-first worker is not precaching, and the distinction is the whole argument.
+- **A precaching service worker.** The section above is the argument: a
+  network-first worker is not precaching. The one exception is the shell at `/`,
+  which is precached because a first visit otherwise leaves nothing to open
+  offline with — and which is still only ever served when a fetch rejects.

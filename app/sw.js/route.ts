@@ -30,11 +30,40 @@ const STATIC = 'bmb-sw-static-' + VERSION;
 const PAGES = 'bmb-sw-pages-' + VERSION;
 const MINE = [STATIC, PAGES];
 
-self.addEventListener('install', () => {
-  // Nothing is precached. The caches fill from real traffic, which is what
-  // makes a stale entry impossible: anything in them was served to this
-  // document while it was current.
-  self.skipWaiting();
+// The last resort, and it should be unreachable: install precaches '/'. Kept
+// because the alternative at this point is rejecting, and a navigation that
+// rejects is the error screen this whole branch exists to avoid.
+const OFFLINE_HTML = '<!doctype html><meta charset=utf-8>'
+  + '<meta name=viewport content="width=device-width,initial-scale=1">'
+  + '<title>Offline</title>'
+  + '<body style="margin:0;display:grid;place-items:center;height:100vh;'
+  + 'font:16px system-ui;background:#0b0b0d;color:#f4efe6">'
+  + '<p>No connection, and this page was not saved.</p>';
+
+self.addEventListener('install', (event) => {
+  // ONE document is precached, and only one: the app shell at '/'.
+  //
+  // Everything else still fills from real traffic. This exists because the
+  // FIRST load of a page is fetched BEFORE this worker controls it, so it never
+  // passes through the fetch handler and never enters PAGES. A visitor who
+  // installs the app and then loses signal without loading a second time had no
+  // shell at all — measured on an iPhone, and it did not degrade, it produced
+  // "FetchEvent.respondWith received an error: TypeError: Load failed".
+  //
+  // It does not weaken network-first. '/' is still fetched fresh on every load
+  // that has a connection; this copy is only ever reached when the fetch
+  // rejects. And it cannot go stale across a deploy: PAGES carries the build id,
+  // so a new worker precaches its own '/' and activate() deletes the old one.
+  event.waitUntil((async () => {
+    try {
+      const cache = await caches.open(PAGES);
+      await cache.add('/');
+    } catch (e) {
+      // An install must never fail on this. Without it the app simply has no
+      // offline shell until the next load, which is where this started.
+    }
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', (event) => {
@@ -105,6 +134,29 @@ self.addEventListener('fetch', (event) => {
     } catch (err) {
       const hit = await caches.match(request);
       if (hit) return hit;
+
+      // A NAVIGATION MUST NEVER REJECT HERE. Rejecting inside respondWith does
+      // not fall back to the browser's own offline page — it replaces it with
+      // "FetchEvent.respondWith received an error: TypeError: Load failed",
+      // which is a worse screen than having no service worker at all. So a
+      // navigation that missed its exact URL falls back to the shell: the app
+      // reads its own deep-link parameters off window.location on mount, so
+      // '/?podcast=…' served the shell still lands where the reader meant.
+      if (request.mode === 'navigate') {
+        const shell = await caches.match('/');
+        if (shell) return shell;
+        return new Response(OFFLINE_HTML, {
+          status: 503,
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        });
+      }
+
+      // A SUBRESOURCE is the opposite: rejecting is exactly what would happen
+      // with no worker installed, and it is what the app's own catch blocks are
+      // written against. Synthesising a Response here would turn a network
+      // failure into a non-ok ANSWER, and lib/downloads/downloads-cache.ts's
+      // fetchDoc reads the difference — it falls back to a downloaded copy only
+      // on a rejection.
       throw err;
     }
   })());

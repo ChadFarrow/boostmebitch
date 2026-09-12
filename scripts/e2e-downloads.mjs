@@ -551,6 +551,79 @@ section('11. The service worker: offline launch, and cleanup that spares downloa
     { hasStatic: held.static > 0, hasPages: held.pages > 0, api: held.api, crossOrigin: held.crossOrigin },
     { hasStatic: true, hasPages: true, api: 0, crossOrigin: 0 });
 
+  // A COLD LAUNCH ON A WORKER THAT HAS ONLY EVER SEEN ONE LOAD.
+  //
+  // This is the shape that actually ships and the one this file used to miss.
+  // The assertion below it navigated to `/` on a profile that had already
+  // loaded it many times under an active worker, so PAGES held it and the
+  // no-cache branch was never reached. On a phone it is reached on the FIRST
+  // try: the document of a first visit is fetched before the worker controls
+  // the page, so it never enters PAGES, and the next launch in airplane mode
+  // got "FetchEvent.respondWith received an error: TypeError: Load failed" —
+  // a worse screen than no worker at all. Measured on an iPhone, not here.
+  //
+  // So: tear the worker and its caches down, load ONCE, then cut the network.
+  // The deep link is the second half — a navigation whose exact URL was never
+  // cached must fall back to the shell rather than reject.
+  await js(`
+    (async () => {
+      for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+      for (const n of await caches.keys()) if (n.startsWith('bmb-sw-')) await caches.delete(n);
+      return true;
+    })()
+  `);
+  await send('Page.navigate', { url: `${APP}/` });
+  await wait(8000);
+  const freshShell = await js(`
+    (async () => {
+      await navigator.serviceWorker.ready;
+      let shell = false;
+      for (const n of await caches.keys()) {
+        if (!n.startsWith('bmb-sw-pages-')) continue;
+        if (await (await caches.open(n)).match('/')) shell = true;
+      }
+      return { shell };
+    })()
+  `);
+  check('a first load leaves a shell behind, without a second one',
+    freshShell, { shell: true });
+
+  await send('Network.enable');
+  await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
+  await send('Page.navigate', { url: `${APP}/` });
+  await wait(8000);
+  const coldLaunch = await js(`
+    (() => ({
+      hasDock: !!document.querySelector('nav[aria-label="Main"]'),
+      reactMounted: !!document.querySelector('nav[aria-label="Main"] a[href="/downloads"]'),
+    }))()
+  `);
+  check('...and that shell boots the app with the network cut',
+    coldLaunch, { hasDock: true, reactMounted: true });
+
+  await send('Page.navigate', { url: `${APP}/?podcast=never-cached-guid` });
+  await wait(8000);
+  // ASSERT ON THE NAVIGATION ENTRY, NOT ON `location`. The shell boots the real
+  // app, which tries to restore `?podcast=` and cannot — it is offline — and
+  // <HomePage>'s URL mirror then strips the param with `replaceState`. So
+  // `location.search` is legitimately empty here and says nothing about the
+  // worker. `PerformanceNavigationTiming.name` is the URL that was actually
+  // REQUESTED, which `replaceState` does not rewrite.
+  const deepLink = await js(`
+    (() => {
+      const nav = performance.getEntriesByType('navigation')[0];
+      return {
+        hasDock: !!document.querySelector('nav[aria-label="Main"]'),
+        requested: nav ? new URL(nav.name).search : null,
+      };
+    })()
+  `);
+  check('a deep link nobody cached falls back to the shell, not an error page',
+    deepLink, { hasDock: true, requested: '?podcast=never-cached-guid' });
+  await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await send('Page.navigate', { url: `${APP}/` });
+  await wait(6000);
+
   // THE POINT OF THE WHOLE PHASE. A cold load with no network — which is what
   // launching the installed app on a plane is — must still produce a document.
   await send('Network.enable');
