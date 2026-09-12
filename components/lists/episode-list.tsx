@@ -1004,7 +1004,7 @@ export function EpisodeList({
                     flat 48px under sm:, which at 320px takes it from 90px to
                     **42px** — the "Vi…" / "Co…" collapse the BOOST button above
                     documents, on a row that already sheds that button's word for
-                    the same reason. From sm: up it costs 88px of a 269px title
+                    the same reason. From sm: up it costs 84px of a 265px title
                     and leaves 181px, which is fine.
 
                     A HIDE, NOT A DROP: the episode page carries QUEUE as a tile

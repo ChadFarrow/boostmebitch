@@ -14,6 +14,13 @@ import type { Episode, Podcast } from '@/lib/types';
 
 type Size = 'sm' | 'tile';
 
+// The `'sm'` branch keeps `min-h-[44px] min-w-[44px]` even though its only
+// consumer today — the episode row — wraps it in `hidden sm:inline-flex`, so
+// the mobile minimum never applies there. It is `<FavHeart>`'s `'sm'` shape
+// byte for byte, and the next surface to use this size may well be one that
+// shows below `sm:`. Removing it would leave that surface under the 44px floor
+// with nothing saying it ever had one.
+
 export function QueueButton({
   episode,
   podcast,

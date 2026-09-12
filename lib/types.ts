@@ -474,15 +474,6 @@ export interface FavoritePodcast {
 }
 
 /**
- * A favorited episode. Keyed by `itemGuid` (NIP-73 `podcast:item:guid:`), with
- * `feedGuid` carried alongside because PI's /episodes/byguid wants
- * `podcastguid` — an item guid on its own is not enough to resolve one.
- * Everything after those two is display cache, refreshed on hydration.
- *
- * Same rule as {@link FavoritePodcast}: the favorite is the guid. An entry
- * whose parent feed is unknown is unresolvable, not deletable.
- */
-/**
  * One entry in the "Up Next" listen queue: an episode AND the show it belongs
  * to.
  *
@@ -505,6 +496,15 @@ export interface QueueItem {
   podcast: Podcast;
 }
 
+/**
+ * A favorited episode. Keyed by `itemGuid` (NIP-73 `podcast:item:guid:`), with
+ * `feedGuid` carried alongside because PI's /episodes/byguid wants
+ * `podcastguid` — an item guid on its own is not enough to resolve one.
+ * Everything after those two is display cache, refreshed on hydration.
+ *
+ * Same rule as {@link FavoritePodcast}: the favorite is the guid. An entry
+ * whose parent feed is unknown is unresolvable, not deletable.
+ */
 export interface FavoriteEpisode {
   itemGuid: string;       // <guid> of the RSS item — the key
   /** Parent <podcast:guid>. Absent when the wire entry carried no position-3

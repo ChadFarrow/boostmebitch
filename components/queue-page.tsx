@@ -16,7 +16,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { useApp } from '@/lib/store';
+import { clearShowSelection, useApp } from '@/lib/store';
 import { QueueList } from './lists/queue-list';
 import { LISTEN_QUEUE_CAP } from '@/lib/util';
 
@@ -48,14 +48,18 @@ function EmptyQueue() {
     <div className="card p-6">
       <p className="font-display text-xl">Nothing queued.</p>
       <p className="text-muted text-sm mt-2">
-        Press <span className="text-bone">＋ QUEUE</span> on an episode to line it
-        up here. It plays after whatever is playing now, and each item keeps its
-        own show — so you can mix them.
+        Open an episode and press <span className="text-bone">＋ QUEUE</span> to
+        line it up here. It plays after whatever is playing now, and each item
+        keeps its own show — so you can mix them.
       </p>
       <p className="text-muted text-xs mt-3">
         The queue lives on this device only, and it is not part of your favorites.
       </p>
-      <Link href="/" className="btn-ghost btn-compact mt-4 inline-flex">
+      {/* `clearShowSelection`, like every other page's home link. The store is
+          module-level and outlives the route change, so without it somebody who
+          opened a show, emptied their queue and pressed this lands on `/`
+          re-opened to that show, with the URL mirror rewriting the bar. */}
+      <Link href="/" onClick={clearShowSelection} className="btn-ghost btn-compact mt-4 inline-flex">
         ← FIND SOMETHING TO PLAY
       </Link>
     </div>

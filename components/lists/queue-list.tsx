@@ -18,18 +18,12 @@
 // EMPTY, and it does that in <QueuePage> rather than here: a panel under other
 // content is right to render nothing, and a page somebody navigated to is not.
 //
-// THE HOME-PAGE MOUNT IS NOT BEHIND `!inDetailView`, and that is the whole
-// reason it works. The two optional sections around it are, because they are
-// relay-backed and a deep link should not pay for them. This one reads the
-// store and touches no network — and a show page is exactly where somebody
-// presses `+ queue`, so a panel that vanished at that moment would be useless
-// at the one moment it is used.
-//
 // THE PLAYER MOUNT IS WHERE THE DRAIN IS OBSERVABLE: you watch the row you
 // just finished leave. It is also why `revealQueue` exists — <Player> renders
 // nothing without a `current`, and `current` is in-memory while the queue is
 // not, so every reload would otherwise hide this panel from that surface.
 
+import { useState } from 'react';
 import { useApp } from '@/lib/store';
 import { epKey } from '@/lib/util';
 import { fmtDuration } from '@/lib/format';
@@ -45,6 +39,7 @@ export function QueueList() {
   const removeFromQueue = useApp((s) => s.removeFromQueue);
   const moveQueueItem = useApp((s) => s.moveQueueItem);
   const clearQueue = useApp((s) => s.clearQueue);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   // No empty state, deliberately: the panel does not render at all when the
   // queue is empty, so it can never make an emptiness claim over data that has
@@ -61,8 +56,20 @@ export function QueueList() {
         <p className="text-[11px] uppercase tracking-widest text-muted">
           Up Next · {queue.length}
         </p>
-        <button type="button" onClick={clearQueue} className="btn-mini" aria-label="Clear the queue">
-          CLEAR
+        {/* An inline two-press confirm, the same shape <DownloadsPage>'s DELETE
+            ALL uses and for the same reasons: this is the one control here that
+            destroys everything, up to fifty items with no undo, and a native
+            dialog in the installed PWA is a system sheet over the app. It also
+            settles `.btn-mini`, whose own note justifies being under 44px on
+            the grounds that these "carry confirmations behind them". */}
+        <button
+          type="button"
+          onClick={() => { if (confirmClear) { clearQueue(); setConfirmClear(false); } else setConfirmClear(true); }}
+          onBlur={() => setConfirmClear(false)}
+          className={`btn-mini ${confirmClear ? 'border-nostr/60 text-nostr' : ''}`}
+          aria-label={confirmClear ? 'Confirm clearing the queue' : 'Clear the queue'}
+        >
+          {confirmClear ? 'REALLY CLEAR?' : 'CLEAR'}
         </button>
       </div>
 
