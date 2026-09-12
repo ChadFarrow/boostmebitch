@@ -310,8 +310,8 @@ precaching.** Three rules make the failure it describes impossible:
    `bmb-sw-pages-<id>`), and `activate` deletes every `bmb-sw-*` cache that is
    not the current build's.
 
-**ONE document is precached, and the exception is what makes rule 1 usable.**
-`install` does `cache.add('/')`. Without it the worker had no offline shell at
+**TWO documents are precached, and the exception is what makes rule 1 usable.**
+`install` does `cache.add('/')` and `cache.add('/downloads')`. Without it the worker had no offline shell at
 all after a fresh install: the FIRST document of a visit is fetched before the
 worker controls the page, so it never passes through the fetch handler and never
 enters `PAGES`. Somebody who installed the app and lost signal without loading a
@@ -319,9 +319,21 @@ second time got nothing — measured on an iPhone, in airplane mode, and it did
 not degrade. It produced *"FetchEvent.respondWith received an error: TypeError:
 Load failed"*.
 
-It does not weaken network-first. `/` is still fetched fresh on every load that
-has a connection, and the precached copy is only ever reached when the fetch
-rejects. It cannot go stale across a deploy either, because `PAGES` carries the
+`/downloads` is the second for its own reason, not for symmetry: it is the one
+route whose entire purpose is to work without a network. A dock tab is a Next
+`<Link>`, so tapping it is a client-side route change that fetches an RSC
+payload rather than a document; when that fetch fails the router falls back to a
+real navigation, and that navigation has to land on the route's OWN document.
+Without this it landed on the shell, which is the home page's HTML under a
+`/downloads` URL. Reported from an iPhone — the tab did not open in airplane
+mode and was fine on wifi. **It does not reproduce in headless Chrome**, which
+prefetches every dock `<Link>` on the first load and so always has what the tap
+needs; that is recorded in the e2e beside the check rather than left for the
+next person to rediscover.
+
+It does not weaken network-first. Both are still fetched fresh on every load
+that has a connection, and the precached copy is only ever reached when the
+fetch rejects. It cannot go stale across a deploy either, because `PAGES` carries the
 build id: a new worker precaches its own `/` and `activate` deletes the old one.
 
 **A NAVIGATION MAY NEVER REJECT INSIDE `respondWith`.** This is the rule that

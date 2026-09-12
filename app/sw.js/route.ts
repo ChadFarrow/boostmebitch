@@ -41,7 +41,7 @@ const OFFLINE_HTML = '<!doctype html><meta charset=utf-8>'
   + '<p>No connection, and this page was not saved.</p>';
 
 self.addEventListener('install', (event) => {
-  // ONE document is precached, and only one: the app shell at '/'.
+  // TWO documents are precached, and no more.
   //
   // Everything else still fills from real traffic. This exists because the
   // FIRST load of a page is fetched BEFORE this worker controls it, so it never
@@ -55,12 +55,25 @@ self.addEventListener('install', (event) => {
   // rejects. And it cannot go stale across a deploy: PAGES carries the build id,
   // so a new worker precaches its own '/' and activate() deletes the old one.
   event.waitUntil((async () => {
-    try {
-      const cache = await caches.open(PAGES);
-      await cache.add('/');
-    } catch (e) {
-      // An install must never fail on this. Without it the app simply has no
-      // offline shell until the next load, which is where this started.
+    // '/downloads' is here for its own reason, not for symmetry: it is the one
+    // route whose entire PURPOSE is to work without a network, and a dock tab
+    // that does nothing is the worst way to find that out. A client-side route
+    // change fetches an RSC payload rather than a document, so when that fetch
+    // fails the router falls back to a real navigation — and that navigation
+    // has to land on the route's OWN document. Without this it landed on the
+    // shell, which is the home page's HTML under a /downloads URL.
+    //
+    // Reported from an iPhone: the tab did not open in airplane mode and was
+    // fine on wifi. It does not reproduce in headless Chrome, which prefetches
+    // every dock <Link> on the first load and so always has what the tap needs.
+    for (const path of ['/', '/downloads']) {
+      try {
+        const cache = await caches.open(PAGES);
+        await cache.add(path);
+      } catch (e) {
+        // An install must never fail on this. Without it the app simply has no
+        // offline shell until the next load, which is where this started.
+      }
     }
     await self.skipWaiting();
   })());

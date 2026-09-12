@@ -645,18 +645,28 @@ section('11. The service worker: offline launch, and cleanup that spares downloa
   const freshShell = await js(`
     (async () => {
       await navigator.serviceWorker.ready;
-      let shell = false;
+      let shell = false, downloads = false;
       for (const n of await caches.keys()) {
         if (!n.startsWith('bmb-sw-pages-')) continue;
-        if (await (await caches.open(n)).match('/')) shell = true;
+        const c = await caches.open(n);
+        if (await c.match('/')) shell = true;
+        if (await c.match('/downloads')) downloads = true;
       }
-      return { shell };
+      return { shell, downloads };
     })()
   `);
-  check('a first load leaves a shell behind, without a second one',
-    freshShell, { shell: true });
+  // Both, and `/downloads` for its own reason: it is the route whose purpose is
+  // to work without a network, and a client-side tab change that loses its RSC
+  // fetch falls back to a real navigation, which must land on that route's own
+  // document rather than on the shell.
+  check('a first load leaves both precached documents behind',
+    freshShell, { shell: true, downloads: true });
 
   await send('Network.enable');
+  // Empty the browser's own disk cache first, or this grades Chrome. Cutting
+  // the network does not stop it answering, and a phone launching the installed
+  // app cold has nothing equivalent. Section 10 carries the same note.
+  await send('Network.clearBrowserCache');
   await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: 0, uploadThroughput: 0 });
   await send('Page.navigate', { url: `${APP}/` });
   await wait(8000);
@@ -668,6 +678,55 @@ section('11. The service worker: offline launch, and cleanup that spares downloa
   `);
   check('...and that shell boots the app with the network cut',
     coldLaunch, { hasDock: true, reactMounted: true });
+
+  // TAPPING A DOCK TAB IS NOT THE SAME REQUEST AS OPENING ITS URL. The checks
+  // above use Page.navigate, which is a DOCUMENT request; the dock is a Next
+  // <Link>, and a client-side route change fetches an RSC payload instead.
+  //
+  // Prune PAGES down to what `install` precached before tapping. A warm profile
+  // has /downloads' prefetched RSC payload sitting in there and the tap works
+  // on that, which is why this passed while a phone could not open the tab.
+  // What must hold is that the DOCK still works with only the precache.
+  await js(`
+    (async () => {
+      for (const n of await caches.keys()) {
+        if (!n.startsWith('bmb-sw-pages-')) continue;
+        const c = await caches.open(n);
+        for (const req of await c.keys()) {
+          const u = new URL(req.url);
+          if (!(u.pathname === '/' && !u.search)) await c.delete(req);
+        }
+      }
+      // ...and drop the /downloads ROUTE CHUNK. Chrome prefetches every dock
+      // <Link> on the first load, so its chunk and payload are already in these
+      // caches and the tap works on them. A phone that never prefetched has
+      // neither, and then the tap needs a network nobody has.
+      for (const n of await caches.keys()) {
+        if (!n.startsWith('bmb-sw-static-')) continue;
+        const c = await caches.open(n);
+        for (const req of await c.keys()) {
+          if (req.url.includes('/downloads/')) await c.delete(req);
+        }
+      }
+      return true;
+    })()
+  `);
+  await js(`document.querySelector('nav[aria-label="Main"] a[href="/downloads"]')?.click(); true`);
+  await wait(5000);
+  const tabHop = await js(`
+    (() => ({
+      path: location.pathname,
+      heading: (document.querySelector('h1, h2')?.textContent || '').slice(0, 20),
+    }))()
+  `);
+  // NOTE: this cannot currently go red here. Chrome prefetches every dock
+  // <Link> on the first load, so the tap is served from the router's own cache
+  // however much of ours is pruned above — which is exactly why the iPhone
+  // report could not be reproduced on this machine. It is kept because the
+  // invariant is real and a future change that breaks it on a warm profile too
+  // should not pass silently.
+  check('the Downloads tab opens with the network cut',
+    tabHop, { path: '/downloads', heading: 'Downloads' });
 
   await send('Page.navigate', { url: `${APP}/?podcast=never-cached-guid` });
   await wait(8000);
