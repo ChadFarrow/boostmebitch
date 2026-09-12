@@ -1,4 +1,5 @@
 'use client';
+import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -18,7 +19,15 @@ import { FEED_FANOUT, hasValueRecipients, mapLimit } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
 import type { Episode, Podcast } from '@/lib/types';
-import { BoostModal } from './boost-modal';
+// DEFERRED. It is already rendered conditionally at the site below, so its code
+// was in the bundle for a modal most readers never open — `dynamic()` makes the
+// download match that condition. `.then((m) => m.BoostModal)` because it is a
+// NAMED export and a `dynamic()` resolving the wrong shape renders nothing and
+// throws no error.
+const BoostModal = dynamic(
+  () => import('./boost-modal').then((m) => m.BoostModal),
+  { ssr: false },
+);
 import { LiveCard, LIVE_GRID } from './live-card';
 import { fmtLiveTime } from '@/lib/format';
 import type { ProfileMetadata } from '@/lib/nostr/auth';

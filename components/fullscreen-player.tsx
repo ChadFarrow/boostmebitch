@@ -1,4 +1,5 @@
 'use client';
+import dynamic from 'next/dynamic';
 import { CopyLinkButton } from './copy-link-button';
 import { cloneElement, useEffect, useRef, useState, type RefObject } from 'react';
 import { OutPortal, type HtmlPortalNode } from 'react-reverse-portal';
@@ -9,9 +10,32 @@ import { nowPlayingArt } from '@/lib/track-art';
 import { lockScroll } from '@/lib/scroll-lock';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
 import type { TranscriptCue } from '@/lib/transcript';
-import { TranscriptPanel } from './transcript-ui';
-import { EpisodeContents } from './episode-contents';
-import { LivePlayedTracks } from './live-played-tracks';
+// DEFERRED, all five, and the mount gate below is what makes it safe.
+//
+// `<FullscreenPlayer>`'s subtree is already gated on `everOpened`, so none of
+// these RUNS until the player is opened — but a static import puts their code in
+// the first load of every route regardless, because `<Player>` imports this
+// component statically and `<Player>` is in the ROOT LAYOUT. `dynamic()` defers
+// the download to match the gate that already defers the execution.
+//
+// `.then((m) => m.X)` on every one: these are NAMED exports, and a `dynamic()`
+// that resolves the wrong shape renders nothing and throws no error. That is the
+// one failure mode worth re-reading this block for.
+//
+// `ssr: false` because `everOpened` is false on the server and on the first
+// client render, so there is nothing to server-render here in any case.
+const TranscriptPanel = dynamic(
+  () => import('./transcript-ui').then((m) => m.TranscriptPanel),
+  { ssr: false },
+);
+const EpisodeContents = dynamic(
+  () => import('./episode-contents').then((m) => m.EpisodeContents),
+  { ssr: false },
+);
+const LivePlayedTracks = dynamic(
+  () => import('./live-played-tracks').then((m) => m.LivePlayedTracks),
+  { ssr: false },
+);
 import type { Episode, Podcast, ValueTimeSplit } from '@/lib/types';
 import { parseStreamId, isLiveStreamId } from '@/lib/nostr';
 import { nip19 } from 'nostr-tools';
@@ -29,7 +53,14 @@ import {
   toggleFullscreen,
   exitFullscreen,
 } from '@/lib/util';
-import { EpisodeSocialThread } from './episode-social-thread';
+// The two heaviest panes, and the ones the mount-gate comment below singles out:
+// `<LiveChat>` opens a SECOND SimplePool (~7 WebSockets, a persistent
+// subscription and a 12s poll) and `<EpisodeSocialThread>` fires a BFS relay
+// query per episode.
+const EpisodeSocialThread = dynamic(
+  () => import('./episode-social-thread').then((m) => m.EpisodeSocialThread),
+  { ssr: false },
+);
 import { LinkedText } from './linked-text';
 import { UnderlineTabs } from './underline-tabs';
 import { PodcastCover } from './podcast-cover';
@@ -39,7 +70,7 @@ import { ValueSplitRows } from './value-split-rows';
 import { QueueList } from './lists/queue-list';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
-import { LiveChat } from './live-chat';
+const LiveChat = dynamic(() => import('./live-chat').then((m) => m.LiveChat), { ssr: false });
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 
