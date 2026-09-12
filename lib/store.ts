@@ -9,7 +9,8 @@ import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import {
-  epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy, trimForQueue,
+  epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
+  queueShowFor, trimForQueue,
 } from './util';
 
 /** Which view the sign-in modal opens on. See `signInIntent` below. */
@@ -705,7 +706,10 @@ export const useApp = create<AppState>((set, get) => ({
     const key = epKey(episode);
     if (s.listenQueue.some((i) => epKey(i.episode) === key)) return false;
 
-    const next = [...s.listenQueue, { episode: trimForQueue(episode), podcast }];
+    // `queueShowFor`, never the `podcast` we were handed — see its note. The
+    // gate is HERE rather than in <QueueButton> because there are two enqueue
+    // surfaces, and a rule applied at one of them is not applied.
+    const next = [...s.listenQueue, { episode: trimForQueue(episode), podcast: queueShowFor(episode, podcast) }];
     set({ listenQueue: next, listenQueueSaved: persistQueue(s.identity, next) });
     // **Adding while nothing plays SELECTS the queue's head, paused.** The
     // panel lives inside <FullscreenPlayer>, which does not mount without a

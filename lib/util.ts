@@ -167,6 +167,45 @@ export const LISTEN_QUEUE_CAP = 50;
  * behaves correctly until the page is reloaded — unreproducible in the session
  * that finds it.
  */
+/**
+ * The show to RECORD for a queued item, which is not always the feed you were
+ * looking at when you queued it.
+ *
+ * A `musicL` playlist lists tracks that live in hundreds of other feeds, so the
+ * container's title, art, url and medium are facts about the PLAYLIST and not
+ * about the track. `<FavEpisodeHeart>` has withheld them on this exact test
+ * since it was written, and `<QueueButton>` sits directly beside it on the same
+ * row — but the queue persisted the container whole, and that pair then drives
+ * the Up Next row's name and art, `current.podcast` for `showShareUrl`, and
+ * `showStorageKey(podcast)` for the per-show streaming rate and mode. A queued
+ * track's streaming override would key off the curator's feed.
+ *
+ * It refuses NARROWLY, the same way `payableValue` does: the item must declare
+ * its OWN `podcastGuid` and it must disagree. An item with no guid of its own
+ * keeps the container, because there is nothing better to say and nothing has
+ * been contradicted.
+ *
+ * `value` goes with the rest. `payableValue` already refuses a container's
+ * block for a track that names another feed, so dropping it changes no payment
+ * — it stops the record CLAIMING a block that would never be paid from it.
+ */
+export function queueShowFor(episode: Episode, podcast: Podcast): Podcast {
+  const feedGuid = episode.podcastGuid || podcast.podcastGuid;
+  const containerIsParent = !!podcast.podcastGuid && podcast.podcastGuid === feedGuid;
+  if (containerIsParent) return podcast;
+  return {
+    ...podcast,
+    id: episode.feedId ?? podcast.id,
+    podcastGuid: feedGuid,
+    title: episode.feedTitle ?? episode.title,
+    url: undefined,
+    image: episode.feedImage,
+    artwork: episode.feedImage,
+    medium: undefined,
+    value: undefined,
+  };
+}
+
 export function trimForQueue(e: Episode): Episode {
   // `description` and `contentEncoded` are the two large fields and the two
   // the queue never renders. Everything else — enclosure, art, duration,
