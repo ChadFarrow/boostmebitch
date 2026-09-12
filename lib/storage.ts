@@ -5,7 +5,7 @@
 // raw key strings live in exactly one file and SSR/quota guards aren't
 // duplicated across components.
 
-import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, QueueItem, StoredBoost } from './types';
+import type { Episode, FavFeedMark, FavNewRecord, FavoriteEpisode, FavoritePodcast, Podcast, QueueItem, StoredBoost } from './types';
 import type { DiscoveredNote, FavoritesBaseline, FavoritesPrivacy, MuteListState, ProfileMetadata } from './nostr';
 // Value import, so it must come from the import-free leaf rather than the
 // './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
@@ -68,6 +68,7 @@ const KEYS = {
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
+  favNewPrefix: 'bmb:fav_new',        // + ':<npub>' — what this device last observed about each favorited feed: { [podcastGuid]: { count, updated, newest } } plus a `checkedAt`. `count`/`updated` are Podcast Index's `episodeCount`/`lastUpdateTime` at the last look, so the next check knows what moved; `newest` is the datePublished of the newest episode already OFFERED, and it never moves backwards (lib/util.ts `markFromEpisodes`). A user-facing read marker, not a cache — nothing on the network can rebuild which episodes somebody has already been shown, so it is deliberately absent from EVICTABLE_PREFIXES, same class as bmb:listen_queue. Bounded by the favorites count; no cap of its own.
   listenQueuePrefix: 'bmb:listen_queue', // + ':<npub>' — the "Up Next" cross-show listen queue. An ORDERED ARRAY, never a keyed object: the order IS the data. A user DECISION, not a network-regenerable cache — deliberately absent from EVICTABLE_PREFIXES, same class as bmb:ep_order and bmb:list_unlock. Items are trimmed at ENQUEUE (lib/util.ts `trimForQueue`) and capped at LISTEN_QUEUE_CAP. No migration from any global key: there has never been one.
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
@@ -1666,6 +1667,45 @@ export const storage = {
         identityKey(KEYS.listenQueuePrefix, npub),
         JSON.stringify(v.slice(0, LISTEN_QUEUE_CAP)),
       ),
+  },
+
+  /**
+   * What this device has already been shown, per favorited feed.
+   *
+   * The read is TOLERANT and the write is not: a malformed or half-written
+   * record here costs at most a re-check, while refusing the whole map because
+   * one entry is wrong would re-offer every episode in every feed — the wall
+   * this feature exists to avoid. So each entry is validated on its own and a
+   * bad one is dropped rather than poisoning the rest.
+   *
+   * `checkedAt` rides in the same record rather than a second key, because the
+   * two are always written together and a throttle that can disagree with the
+   * marks it throttles is worse than no throttle.
+   */
+  favNew: {
+    get: (npub: string | null | undefined): FavNewRecord => {
+      const raw = safeGet(identityKey(KEYS.favNewPrefix, npub));
+      if (!raw) return { checkedAt: 0, marks: {} };
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return { checkedAt: 0, marks: {} };
+        const marks: Record<string, FavFeedMark> = {};
+        for (const [guid, m] of Object.entries(parsed.marks ?? {})) {
+          const v = m as Partial<FavFeedMark>;
+          if (typeof v?.count !== 'number' || typeof v?.updated !== 'number') continue;
+          if (typeof v?.newest !== 'number') continue;
+          marks[guid] = { count: v.count, updated: v.updated, newest: v.newest };
+        }
+        return { checkedAt: typeof parsed.checkedAt === 'number' ? parsed.checkedAt : 0, marks };
+      } catch {
+        return { checkedAt: 0, marks: {} };
+      }
+    },
+    /** Returns whether the value reached DISK. The caller must not drop that
+     *  answer: marks held only in `safeSet`'s memory mirror mean every episode
+     *  offered this session is offered again on the next load. */
+    set: (npub: string | null | undefined, v: FavNewRecord): boolean =>
+      safeSet(identityKey(KEYS.favNewPrefix, npub), JSON.stringify(v)),
   },
 
   /** Favorites are namespaced by npub; signed-out users use `:guest`. */

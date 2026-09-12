@@ -245,6 +245,169 @@ export function nextPlayableIndex(
 }
 
 /**
+ * "New episodes from your favorites" — the pure half, kept here so
+ * `check:favnew` can import the shipping functions rather than a copy.
+ *
+ * **THERE IS NO DETECTION STEP, and that is the design.** The obvious shape is
+ * to ask "did this feed change?" and then fetch the ones that did. Podcast
+ * Index makes that unnecessary: `/episodes/byfeedid` takes a COMMA-SEPARATED
+ * list of feed ids and a `since`, so one call answers "what came out on these
+ * shows since this moment" WITH the episode records. The comparison happens
+ * inside PI instead of against a cache of ours — which also sidesteps the two
+ * seven-day caches (`bmb:pmeta` and the read index's `pi_podcasts`) that any
+ * freshness field of ours would have had to be read through.
+ *
+ * Measured 2026-09-12 against the live API:
+ *   - `id=920666,41504&since=…` → rows from both feeds, 351 ms.
+ *   - `since` filters `datePublished` and is EXCLUSIVE, so storing the exact
+ *     `datePublished` of the newest row shown is the right mark, no off-by-one.
+ *   - **PI truncates the id list at exactly 200, silently, with a 200 OK.** A
+ *     feed at position 201 is absent; move it to position 1 of the same list
+ *     and it is answered. Nothing on the wire says so.
+ *   - `max` is GLOBAL across the batch, applied after a newest-first sort, so
+ *     truncation drops the oldest rows across every feed at once.
+ */
+
+/** How far back a feed with no mark looks. A first run shows something useful
+ *  rather than an empty box, and stops short of a year of back catalogue. */
+export const FAV_NEW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** The most rows the section will ever build, however many feeds moved. */
+export const FAV_NEW_CAP = 50;
+
+/**
+ * PI's own ceiling on a comma-separated feed-id list, and the reason this
+ * constant exists rather than being inlined.
+ *
+ * It TRUNCATES at 200 without a word — measured above. That is the same failure
+ * `probeThenBatch`'s comment records ("shipping only the first is what made a
+ * 231-track list resolve four"), except here the response is a 200 OK with a
+ * feed silently missing, so nothing downstream can notice. Anything building
+ * that list slices to this.
+ */
+export const PI_FEED_IDS_MAX = 200;
+
+/**
+ * The one `since` to ask a batch of feeds with.
+ *
+ * It is the MINIMUM mark across the batch, floored at the horizon. The floor is
+ * the load-bearing half: one never-checked feed would otherwise drag the whole
+ * batch back to the epoch, and because PI's `max` is global, the truncation
+ * would then eat the newest episodes of every OTHER feed in the same call.
+ *
+ * Per-feed accuracy is restored afterwards by `selectNewEpisodes`, which
+ * compares each row against its own feed's mark. This number only has to be
+ * early enough to miss nothing.
+ */
+export function sinceForBatch(
+  marks: Record<string, number>,
+  guids: readonly string[],
+  nowMs: number,
+): number {
+  const horizon = Math.floor((nowMs - FAV_NEW_WINDOW_MS) / 1000);
+  let min = Infinity;
+  for (const g of guids) {
+    const m = marks[g];
+    // A feed with no mark is the first run: the horizon is its mark.
+    min = Math.min(min, typeof m === 'number' ? m : horizon);
+  }
+  return Math.max(horizon, Number.isFinite(min) ? min : horizon);
+}
+
+/**
+ * The rows worth showing, newest first.
+ *
+ * **Each row is compared against ITS OWN feed's mark, never the batch's
+ * `since`.** Trusting the batch floor is the obvious shortcut and it re-shows
+ * everything back to the least-recently-checked feed's mark, for every feed,
+ * on every refresh — a list that grows instead of draining.
+ *
+ * An episode with no `datePublished` is DROPPED rather than treated as new:
+ * undated rows are routinely a feed's oldest, and defaulting them to new puts
+ * a decade of back catalogue at the top of the page on the first open. Rows
+ * that cannot be played, or that are live broadcasts, are dropped here too, so
+ * no surface has to re-derive that refusal.
+ */
+export function selectNewEpisodes(
+  rows: readonly Episode[],
+  marks: Record<string, number>,
+  guidByFeedId: Record<number, string>,
+  nowMs: number,
+): Episode[] {
+  const horizon = Math.floor((nowMs - FAV_NEW_WINDOW_MS) / 1000);
+  const seen = new Set<string>();
+  return rows
+    .filter((e) => {
+      const guid = guidByFeedId[e.feedId];
+      // A row for a feed we did not ask about is not ours to show.
+      if (!guid) return false;
+      if (typeof e.datePublished !== 'number') return false;
+      if (!isPlayableRow(e) || e.liveStatus) return false;
+      const floor = typeof marks[guid] === 'number' ? marks[guid] : horizon;
+      if (e.datePublished <= floor) return false;
+      const k = epKey(e);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    })
+    .sort((a, b) => (b.datePublished ?? 0) - (a.datePublished ?? 0))
+    .slice(0, FAV_NEW_CAP);
+}
+
+/**
+ * The marks to store after a pass, and the three states it has to tell apart.
+ *
+ * 1. A feed **not covered** — PI could not be asked about it — keeps its mark.
+ *    Advancing it would skip whatever it published while we were failing.
+ * 2. A covered feed with **no rows** keeps its mark. `since` is exclusive, so
+ *    there is nothing to advance TO, and stamping `now` would make a
+ *    back-dated item invisible for ever.
+ * 3. A **truncated** answer advances NOTHING. PI's `max` is global and drops
+ *    the oldest rows across the batch, so the rows we did not see are between
+ *    the mark and the ones we did — advancing past them loses the middle.
+ *
+ * A mark never moves backwards, for the same reason it never moves without
+ * evidence: a publisher unpublishing their latest, or a partial crawl, would
+ * otherwise re-offer everything between the two on the next pass.
+ */
+export function advanceMarks(
+  prev: Record<string, number>,
+  rows: readonly Episode[],
+  coveredGuids: readonly string[],
+  guidByFeedId: Record<number, string>,
+  truncated: boolean,
+): Record<string, number> {
+  if (truncated) return { ...prev };
+  const next = { ...prev };
+  const covered = new Set(coveredGuids);
+  for (const e of rows) {
+    const guid = guidByFeedId[e.feedId];
+    if (!guid || !covered.has(guid)) continue;
+    if (typeof e.datePublished !== 'number') continue;
+    if (e.datePublished > (next[guid] ?? 0)) next[guid] = e.datePublished;
+  }
+  return next;
+}
+
+/**
+ * Drop marks for shows that are no longer favorited, and bound the rest.
+ *
+ * An unfavorited show's mark is dead weight, and re-favoriting it should show
+ * its recent episodes again rather than silently resume from a mark set months
+ * ago. The cap is a backstop for a library far larger than the prune expects.
+ */
+export function pruneMarks(
+  marks: Record<string, number>,
+  liveGuids: readonly string[],
+  cap = 1000,
+): Record<string, number> {
+  const live = new Set(liveGuids);
+  const kept = Object.entries(marks).filter(([g]) => live.has(g));
+  if (kept.length <= cap) return Object.fromEntries(kept);
+  return Object.fromEntries(kept.sort((a, b) => b[1] - a[1]).slice(0, cap));
+}
+
+/**
  * The same walk, over a list whose rows are not episodes themselves.
  *
  * The listen queue holds `{episode, podcast}` pairs, and it has the same two

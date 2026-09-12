@@ -474,6 +474,45 @@ export interface FavoritePodcast {
 }
 
 /**
+ * What this device last observed about one favorited feed, for the "new
+ * episodes" section on /favorites.
+ *
+ * It lives HERE rather than in lib/util.ts for the same reason {@link QueueItem}
+ * does: lib/storage.ts types its accessor with it, and storage.ts sits UNDER
+ * the store. The pure rules that read and write it are in lib/util.ts —
+ * `feedWorthChecking`, `newEpisodesSince`, `markFromEpisodes` — pinned by
+ * `check:favnew`.
+ */
+export interface FavFeedMark {
+  /** Podcast Index `episodeCount` when we last looked. */
+  count: number;
+  /** Podcast Index `lastUpdateTime` when we last looked, in SECONDS (PI's unit). */
+  updated: number;
+  /** `datePublished` of the newest episode already OFFERED, in SECONDS. Never
+   *  moves backwards — see `markFromEpisodes`. */
+  newest: number;
+}
+
+/** What `/api/feed-freshness` reports for one feed. Same units as PI. */
+export interface FeedFreshness {
+  count: number;
+  updated: number;
+}
+
+/**
+ * The whole `bmb:fav_new:<npub>` value.
+ *
+ * `checkedAt` rides with the marks rather than in a second key, because the two
+ * are always written together and a throttle that can disagree with the marks
+ * it throttles is worse than no throttle.
+ */
+export interface FavNewRecord {
+  /** Unix ms of the last freshness check, 0 when there has never been one. */
+  checkedAt: number;
+  marks: Record<string, FavFeedMark>;
+}
+
+/**
  * One entry in the "Up Next" listen queue: an episode AND the show it belongs
  * to.
  *
