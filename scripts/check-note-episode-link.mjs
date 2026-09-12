@@ -62,6 +62,7 @@
  * a note tagging all three (a real shape, below) must not resolve to it.
  */
 import { episodeLinkInNote, landingLinksInNote } from '../lib/util.ts';
+import { replayVectors } from './replay-vectors.mjs';
 
 let failures = 0;
 
@@ -205,9 +206,19 @@ check(
 // `removeUrl` deletes the raw URL from the body, so what a reader would have
 // seen as a full magenta link becomes a small `host ↗` chip.
 //
-// alsoNaive because naive() refuses it for the wrong reason: it can only ever
-// return a URL containing 'fountain.fm', so it never had to make this choice.
-// The vector is here to pin the refusal, not to discriminate.
+// NOT `alsoNaive`, and the reason it used to be was WRONG ABOUT `naive()`.
+//
+// The old note read: "naive() refuses it for the wrong reason: it can only ever
+// return a URL containing 'fountain.fm', so it never had to make this choice."
+// That describes only naive()'s LAST line. Its first branch walks the `i` tags
+// and returns `t[2]` whenever that exact string appears in the body — and this
+// note, being hostile, writes both halves. So naive() does not refuse this at
+// all: it hands back `https://evil.example/phish`, which is the attacker's URL
+// under the real show's artwork, exactly what the paragraph above describes.
+//
+// This is the most discriminating vector in the file and it was asserted against
+// nothing. Found by making the shared replay test `differs` for an exempt vector
+// (`scripts/replay-vectors.mjs`).
 check(
   'a hint the note itself supplies is not a licence to link anywhere',
   [
@@ -216,7 +227,6 @@ check(
   ],
   'new episode out now https://evil.example/phish',
   null,
-  { alsoNaive: true },
 );
 
 // The returned token is the BODY's spelling, because the caller deletes exactly
@@ -266,8 +276,12 @@ check(
   // linking its own feed XML does not occur; this note, captured verbatim off
   // the relays, is that note. The host allowlist now excludes it by
   // construction rather than by luck.
+  //
+  // NOT `alsoNaive`, for the same reason as the phishing vector above: naive()'s
+  // tag branch finds this URL in the body and returns it, so it hands back a raw
+  // RSS document as the card's only outbound control. "The single most important
+  // vector in this file" was exempt, and therefore compared against nothing.
   null,
-  { alsoNaive: true },
 );
 
 check(
@@ -547,24 +561,10 @@ function naiveLanding(tags, body) {
     }
   };
 
-  let exempt = 0;
-  for (const v of vectors) {
-    const differs = call('real', v) !== call('naive', v);
-    if (v.alsoNaive) {
-      exempt += 1;
-      console.log(`  ok    "${v.label}" is must-still-work — naive() may get it right`);
-      continue;
-    }
-    if (differs) {
-      console.log(`  ok    naive() gets "${v.label}" wrong`);
-      continue;
-    }
-    failures += 1;
-    console.error(`  FAIL  "${v.label}" passes against naive() too — the vector proves nothing.`);
-    console.error('          Either it is a must-still-work input (mark it { alsoNaive: true })');
-    console.error('          or it does not exercise anything the real module adds.');
-  }
-  console.log(`  ${vectors.length} vector(s) replayed, ${exempt} exempt as must-still-work`);
+  // THE SHARED REPLAY. See `scripts/replay-vectors.mjs` — an
+  // `{ alsoNaive: true }` vector used to have its `differs` result discarded, so
+  // the exemption hid exactly what it was granted to protect.
+  replayVectors({ vectors, invoke: call, fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); } });
 }
 
 // lib/util.ts is deliberately NOT scanned by scripts/import-free.mjs — that
