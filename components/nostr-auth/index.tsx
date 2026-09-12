@@ -57,6 +57,7 @@ export function NostrAuth() {
   const [confirm, confirmEl] = useConfirm();
   const setFavorites = useApp((s) => s.setFavorites);
   const setFavoriteEpisodes = useApp((s) => s.setFavoriteEpisodes);
+  const setListenQueue = useApp((s) => s.setListenQueue);
   const resetFavoritesSync = useApp((s) => s.resetFavoritesSync);
   const setMutedPubkeys = useApp((s) => s.setMutedPubkeys);
   const setMutesSync = useApp((s) => s.setMutesSync);
@@ -491,10 +492,27 @@ export function NostrAuth() {
     if (cachedMutes.publicPubkeys.length || cachedMutes.privatePubkeys.length) {
       setMutedPubkeys(unionMutedPubkeys(cachedMutes));
     }
+    // REPLACES rather than unions, which is the mutes rule and not the
+    // favorites one. Favorites are a set and a union of two sets is still a
+    // set; a queue is an ordering, and interleaving this account's with
+    // whatever the guest bucket left in the store produces an order nobody
+    // chose. The store was seeded from `:guest` at module scope, so this is
+    // the line that makes a signed-in reload show the right queue.
+    // UNCONDITIONALLY, and the `if (cachedQueue.length)` guard that used to be
+    // here defeated the paragraph above it. The store is seeded from `:guest`
+    // at module scope, so skipping the write for an account whose own queue is
+    // EMPTY left that account looking at the guest bucket's queue — and the
+    // first press then persisted it under their npub. Switching accounts showed
+    // you the previous one's list. An empty account queue is an ANSWER, not a
+    // reason to keep whatever was in the store.
+    //
+    // This is why favorites and mutes above can guard on length and this cannot:
+    // those union, so an empty read adds nothing, while a queue REPLACES.
+    setListenQueue(storage.listenQueue.get(stored));
     loadProfile(bare);
     // loadProfile is re-created each render; the effect self-guards on
     // `identity` so listing it would only add no-op re-runs.
-  }, [identity, setIdentity, setFavorites, setFavoriteEpisodes, setMutedPubkeys]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [identity, setIdentity, setFavorites, setFavoriteEpisodes, setMutedPubkeys, setListenQueue]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Account-change detector for multi-identity NIP-07 extensions
   // (Alby and nos2x both let the user switch active accounts in their
@@ -597,6 +615,7 @@ export function NostrAuth() {
     resetFavoritesSync();
     setMutedPubkeys(new Set());
     setMutesSync('idle');
+    setListenQueue([]);
   }
 
   async function signout() {
@@ -646,6 +665,18 @@ export function NostrAuth() {
     resetFavoritesSync();
     setMutedPubkeys(new Set());
     setMutesSync('idle');
+    // EMPTY, not the `:guest` bucket. Reading that back would resurrect a
+    // queue from some earlier signed-out session on this device, which is
+    // nobody's current intent. The account's own key is left on disk
+    // untouched, exactly like its favorites cache, so signing back in finds
+    // the queue where it was.
+    //
+    // CLEARING MEMORY IS NOT ENOUGH, and that is what this used to do. The
+    // store seeds `listenQueue` from `storage.listenQueue.get(null)` at module
+    // scope, so the `:guest` bytes this comment says must not come back came
+    // back on the very next page load. The guest bucket is cleared on disk too.
+    setListenQueue([]);
+    storage.listenQueue.set(null, []);
     // Same reason as the identity-switch path: useFollows resets this when
     // identity goes null, but not until a FollowButton's effect runs.
     resetFollows();
@@ -703,6 +734,11 @@ export function NostrAuth() {
       // window before B's hydration lands.
       setFavorites({});
       setFavoriteEpisodes({});
+      // Same wipe, and the adoption below depends on it for the same reason:
+      // this block runs on a SWITCH only, so emptying here is what keeps
+      // "signed-out queue is adopted" from becoming "A's queue follows the
+      // user into B".
+      setListenQueue([]);
       // The relay-health flag is per-account too: without this, B inherits A's
       // "couldn't reach the relays" notice over B's own freshly-hydrated list.
       resetFavoritesSync();
@@ -764,6 +800,23 @@ export function NostrAuth() {
     const cachedMuteState = storage.muted.get(id.npub);
     if (cachedMuteState.publicPubkeys.length || cachedMuteState.privatePubkeys.length) {
       setMutedPubkeys(unionMutedPubkeys(cachedMuteState));
+    }
+    // This account's own queue wins. Otherwise, a queue built while signed
+    // OUT is ADOPTED — the same asymmetry favorites have two blocks up, and
+    // for the same reason: the user assembled it, and deleting it at the
+    // moment they sign in is a loss they did not ask for. The switch block
+    // above has already emptied the store when this is a switch, so A's queue
+    // can never reach B. Adoption here is cheaper than the favorites version
+    // too: it writes only to this device, since the queue has no shared event
+    // to publish to.
+    const cachedQueue = storage.listenQueue.get(id.npub);
+    if (cachedQueue.length) {
+      setListenQueue(cachedQueue);
+    } else {
+      // Through the store, so the write goes past `persistQueue`'s choke point
+      // and `listenQueueSaved` learns whether the bytes reached disk. Calling
+      // `storage.listenQueue.set` here dropped that answer.
+      useApp.getState().adoptListenQueue(id.npub);
     }
 
     loadProfile(id);

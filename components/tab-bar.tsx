@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { startKeyboardInsetSync } from '@/lib/keyboard-inset';
-import { clearShowSelection, useApp } from '@/lib/store';
+import { clearShowSelection } from '@/lib/store';
 import { KbDebug } from './kb-debug';
 
 /**
@@ -64,11 +64,11 @@ import { KbDebug } from './kb-debug';
  * last show the visitor had open, and the selection-to-URL mirror rewrites
  * the address bar to `?podcast=<old>`.
  *
- * WALLET IS A MODAL, NOT A ROUTE. It flips `walletOpen` in the store, the same
- * flag `<AuthControl>`'s balance chip flips, and `<WalletModalHost>` in the
- * root layout renders the modal — on every route, which is the whole point of
- * moving it there (see that file). Its "current" state is the modal being
- * open, so the tab lights while the sheet is up and goes quiet when it closes.
+ * WALLET IS NOT A TAB ANY MORE. It was the only `kind: 'modal'` entry, and the
+ * Queue tab took its place — so every tab is a link and the union type that
+ * carried both collapsed to one shape. The wallet is still reachable from
+ * `<AuthControl>` on every route that renders `<AppHeader>`, and from the boost
+ * modal's own control everywhere else, which is what had to land first.
  *
  * PLAYLISTS IS NOT A TAB, deliberately. Playlists are content: the search box
  * has a Playlists lane and `/playlists` stays a linkable page, but it is not a
@@ -84,26 +84,21 @@ import { KbDebug } from './kb-debug';
  * nothing lit there.
  */
 
-type LinkTab = {
-  kind: 'link';
-  href: '/' | '/live' | '/favorites' | '/downloads';
+// Every tab is a LINK. The Wallet tab was the only `kind: 'modal'` one and it
+// is gone — see the Queue entry below for why that swap needed the boost
+// modal's own connect control to land first.
+type Tab = {
+  href: '/' | '/queue' | '/live' | '/favorites' | '/downloads';
   label: string;
   icon: React.ReactNode;
   /** Whether `pathname` belongs to this tab. `/` is exact; the rest are prefixes. */
   match: (pathname: string) => boolean;
 };
-type ModalTab = {
-  kind: 'modal';
-  label: string;
-  icon: React.ReactNode;
-};
-type Tab = LinkTab | ModalTab;
 
 const stroke = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
 
 const TABS: Tab[] = [
   {
-    kind: 'link',
     href: '/',
     label: 'Home',
     match: (p) => p === '/',
@@ -115,7 +110,29 @@ const TABS: Tab[] = [
     ),
   },
   {
-    kind: 'link',
+    // REPLACED THE WALLET TAB, and the order of the two changes mattered.
+    // The wallet was reachable from the header on `/`, /live, /favorites,
+    // /playlists and /downloads — and NOWHERE ELSE, because those are the only
+    // routes that render <AppHeader>. This tab was the only way to reach a
+    // wallet from /stream/<naddr>, /npub/<npub> and /live/<npub>, which are
+    // exactly the routes a shared link lands on and where BOOST is the point —
+    // and from <FullscreenPlayer>, which covers the header on every route. So
+    // the boost modal grew its own wallet control FIRST; that message used to
+    // point at "top right", which on those surfaces is empty space.
+    href: '/queue',
+    label: 'Queue',
+    match: (p) => p.startsWith('/queue'),
+    icon: (
+      // A stack of rows with a play glyph at the head: a list that plays,
+      // rather than a bare list (which reads as another favorites) or a bare
+      // triangle (which reads as the transport).
+      <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
+        <path d="M4 7h10M4 12h10M4 17h6" />
+        <path d="M17 11.2v5.6l4.5-2.8z" fill="currentColor" stroke="none" />
+      </svg>
+    ),
+  },
+  {
     href: '/live',
     label: 'Live',
     match: (p) => p.startsWith('/live'),
@@ -133,7 +150,6 @@ const TABS: Tab[] = [
     ),
   },
   {
-    kind: 'link',
     href: '/favorites',
     label: 'Favorites',
     match: (p) => p.startsWith('/favorites'),
@@ -144,7 +160,6 @@ const TABS: Tab[] = [
     ),
   },
   {
-    kind: 'link',
     href: '/downloads',
     label: 'Downloads',
     match: (p) => p.startsWith('/downloads'),
@@ -158,16 +173,6 @@ const TABS: Tab[] = [
       </svg>
     ),
   },
-  {
-    kind: 'modal',
-    label: 'Wallet',
-    icon: (
-      <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
-        <rect x="3" y="6" width="18" height="13" />
-        <path d="M3 10h18M16 15h2" />
-      </svg>
-    ),
-  },
 ];
 
 const itemClass = (current: boolean) =>
@@ -177,9 +182,6 @@ const itemClass = (current: boolean) =>
 
 export function TabBar() {
   const pathname = usePathname() ?? '/';
-  const walletOpen = useApp((s) => s.walletOpen);
-  const setWalletOpen = useApp((s) => s.setWalletOpen);
-
   // Mounted here rather than in the layout because this is the component the
   // variable exists for, and it is on every route already.
   useEffect(() => startKeyboardInsetSync(), []);
@@ -199,20 +201,6 @@ export function TabBar() {
           style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}
         >
           {TABS.map((tab) => {
-            if (tab.kind === 'modal') {
-              return (
-                <button
-                  key={tab.label}
-                  type="button"
-                  onClick={() => setWalletOpen(true)}
-                  aria-pressed={walletOpen}
-                  className={itemClass(walletOpen)}
-                >
-                  {tab.icon}
-                  <span>{tab.label}</span>
-                </button>
-              );
-            }
             const current = tab.match(pathname);
             return (
               <Link

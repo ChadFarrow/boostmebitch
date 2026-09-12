@@ -26,6 +26,7 @@ import { LiveBadge } from '../live-badge';
 import { DeferredOnScroll } from '../deferred-on-scroll';
 import { FavEpisodeHeart, FavHeart } from '../fav-heart';
 import { DownloadButton } from '../download-button';
+import { QueueButton } from '../queue-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 
@@ -991,10 +992,29 @@ export function EpisodeList({
                   <span className="hidden sm:inline">BOOST</span>
                 </button>
               )}
+              {/* SIBLINGS of the row's tap targets, never children of them —
+                  a button may not contain a button. Every one is
+                  `flex-shrink-0` so none squashes the title column. */}
               <div className="self-center flex-shrink-0">
                 <DownloadButton episode={e} podcast={data.podcast} />
               </div>
-              <div className="self-center flex-shrink-0">
+              <div className="self-center flex-shrink-0 flex items-center gap-1">
+                {/* HIDDEN BELOW sm:, and the number is why. Measured A/B on this
+                    row against the same episode: the control costs the title a
+                    flat 48px under sm:, which at 320px takes it from 90px to
+                    **42px** — the "Vi…" / "Co…" collapse the BOOST button above
+                    documents, on a row that already sheds that button's word for
+                    the same reason. From sm: up it costs 84px of a 265px title
+                    and leaves 181px, which is fine.
+
+                    A HIDE, NOT A DROP: the episode page carries QUEUE as a tile
+                    at every width and is one tap away through this row's own
+                    handler — the same trade <VideoToggle> and
+                    `sidesOnDesktopOnly` already make. Below sm: this row is
+                    byte-identical to what it was before the queue existed. */}
+                <span className="hidden sm:inline-flex">
+                  <QueueButton episode={e} podcast={data.podcast} />
+                </span>
                 <FavEpisodeHeart episode={e} podcast={data.podcast} />
               </div>
               </div>

@@ -1,6 +1,6 @@
 'use client';
 import { create } from 'zustand';
-import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, ValueBlock } from './types';
+import type { Episode, Podcast, FavoriteEpisode, FavoritePodcast, QueueItem, ValueBlock } from './types';
 import type { NostrIdentity, PublishReason } from './nostr';
 
 /** Why `favoritesSync` is 'degraded' — see the field for the extra value. */
@@ -8,7 +8,10 @@ export type FavoritesSyncReason = PublishReason | 'private-withheld';
 import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
-import { nextPlayableIndex } from './util';
+import {
+  epKey, isPlayableRow, LISTEN_QUEUE_CAP, nextPlayableIndex, nextPlayableIndexBy,
+  queueShowFor, trimForQueue,
+} from './util';
 
 /** Which view the sign-in modal opens on. See `signInIntent` below. */
 export type SignInIntent = 'default' | 'google';
@@ -35,8 +38,14 @@ interface AppState {
 
   // Whether the current item is playing its video <podcast:alternateEnclosure>
   // rather than the audio enclosure. User-toggled via <VideoToggle>; reset to
-  // false whenever the current item changes (play/next/prev), so a new episode
-  // always starts on audio. <Player> reads it to route the shared <video>.
+  // false whenever the current item changes, so a new episode always starts on
+  // audio. <Player> reads it to route the shared <video>.
+  //
+  // "Whenever" is now FIVE places, not three: play, both branches of `stepTo`,
+  // `playFromQueue`, and `handlePlaybackEnded`. Miss one and the next item
+  // inherits the toggle — <Player>'s source effect (deps [episode.id,
+  // videoMode]) routes to the <video>, finds no alternate enclosure, and draws
+  // a black box with no audio and no error.
   videoMode: boolean;
   setVideoMode: (b: boolean) => void;
 
@@ -62,6 +71,75 @@ interface AppState {
    */
   playNext: () => boolean;
   playPrev: () => boolean;
+
+  /**
+   * The "Up Next" listen queue — a SECOND queue, and deliberately not a
+   * replacement for `episodeQueue`.
+   *
+   * `episodeQueue` is one feed's display order: written by `<EpisodeList>` on
+   * every mount, thrown away on the next, never chosen by anybody, and gone
+   * with the tab. This one the listener assembles by hand across different
+   * shows and it persists per npub. The two coexist, and the precedence is
+   * stated once, in `stepTo`.
+   *
+   * **With an empty listen queue every playback path behaves exactly as it did
+   * before this existed** — that is the property to protect when editing here,
+   * and `stepTo`'s `.length` short-circuit is what makes it cheap as well as
+   * true.
+   */
+  listenQueue: QueueItem[];
+  /**
+   * False when the last queue write did not reach DISK.
+   *
+   * `safeSet` parks a value it cannot persist in a memory mirror, so a full or
+   * blocked store loses the queue on the next load while behaving perfectly
+   * all session. That reads as "it forgot my queue", never as a storage fault,
+   * so `<QueueList>` says it out loud rather than letting it be silent.
+   */
+  listenQueueSaved: boolean;
+  /** Append, unless the row cannot be played, is already queued, is live, or
+   *  the queue is full. Returns whether it was added. */
+  enqueueEpisode: (episode: Episode, podcast: Podcast) => boolean;
+  removeFromQueue: (key: string) => void;
+  moveQueueItem: (index: number, dir: -1 | 1) => void;
+  clearQueue: () => void;
+  /** Jump to a queued item. **Removes nothing** — see the drain rules on
+   *  `stepTo`. */
+  playFromQueue: (index: number) => void;
+  /**
+   * Point the player at the queue's head **without playing it**, when nothing
+   * is playing and the queue is not empty.
+   *
+   * This is what makes a persisted queue REACHABLE. `<Player>` renders nothing
+   * without a `current`, and the Up Next panel lives inside it — so somebody
+   * who queued three episodes, closed the tab and came back had a queue on
+   * disk with no way to see it, and no way to start it. `current` is
+   * in-memory, so every reload lands in exactly that state.
+   *
+   * It must not start playback: an autoplay the listener did not ask for is
+   * the wrong answer, and a browser would block it anyway, leaving `isPlaying`
+   * true over an element that never started — the ❚❚-over-silence lie again.
+   */
+  revealQueue: () => void;
+  setListenQueue: (items: QueueItem[]) => void;
+  /**
+   * Carry a signed-out queue onto an account that has none, at sign-in.
+   *
+   * It lives here rather than in `<NostrAuth>` because it is a WRITE, and every
+   * other queue write goes through `persistQueue` — the choke point whose own
+   * comment says "five writers is five places to forget". This was the sixth,
+   * it called `storage.listenQueue.set` directly, and it dropped the boolean.
+   * So an adopted queue could live in `safeSet`'s memory mirror alone while
+   * `listenQueueSaved` still reported it safe, which is the one thing that flag
+   * exists to say.
+   */
+  adoptListenQueue: (npub: string) => void;
+  /**
+   * What `<Player>`'s `<audio onEnded>` asks FIRST, returning whether the
+   * listen queue owned this ending. False changes nothing, leaving the medium
+   * gate there to decide exactly as it did before.
+   */
+  handlePlaybackEnded: () => boolean;
 
   // Whether the fullscreen "Now Playing" player is expanded. Lifted into the
   // store so surfaces outside <Player> (e.g. a live-stream card) can open it.
@@ -455,6 +533,19 @@ function dropBaselineIfWriteFailed(landed: boolean, npub: string | undefined, wh
   );
 }
 
+/** Where `current` sits in the listen queue, or -1.
+ *
+ *  The `.length` short-circuit is not a micro-optimisation: it is what makes
+ *  "an empty listen queue costs nothing" literally true, down to not running
+ *  `epKey`. */
+function queueIndexOf(s: AppState): number {
+  if (!s.current || !s.listenQueue.length) return -1;
+  const key = epKey(s.current.episode);
+  return s.listenQueue.findIndex((i) => epKey(i.episode) === key);
+}
+
+const queuedEpisode = (i: QueueItem) => i.episode;
+
 /**
  * The state patch that moves playback one PLAYABLE row along `step`, or `null`
  * when there is nowhere to go.
@@ -463,11 +554,23 @@ function dropBaselineIfWriteFailed(landed: boolean, npub: string | undefined, wh
  * and the interesting half — which rows may be landed on — is `nextPlayableIndex`
  * in lib/util.ts, where it can be read by `<TransportControls>` too.
  *
- * `podcast` is carried from the current item rather than looked up: the queue is
- * one feed's display order, so every row in it belongs to the same show.
+ * **Two queues, and the listen queue wins.** It wins only when it holds what is
+ * playing, which is what keeps the whole feature additive: `queueIndexOf`
+ * answers -1 for anything that was never queued, and every line below that
+ * guard is the code that shipped before the queue existed, reached on exactly
+ * the states it was reached on before.
+ *
+ * In the `episodeQueue` branch `podcast` is carried from the current item
+ * rather than looked up, because that array is one feed's display order and
+ * every row in it belongs to the same show. **That is the sentence the listen
+ * queue breaks**, and why a queued item carries its own.
  */
 function stepTo(s: AppState, step: 1 | -1): Partial<AppState> | null {
   if (!s.current) return null;
+
+  const qIdx = queueIndexOf(s);
+  if (qIdx >= 0) return queueStepTo(s, qIdx, step);
+
   const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
   const to = nextPlayableIndex(s.episodeQueue, idx, step);
   if (to < 0) return null;
@@ -477,6 +580,75 @@ function stepTo(s: AppState, step: 1 | -1): Partial<AppState> | null {
     positionSec: 0,
     videoMode: false,
   };
+}
+
+/**
+ * One step inside the listen queue.
+ *
+ * **Forward DRAINS, back does not.** An item you skip past is one you are done
+ * with, so it leaves — otherwise the only way to empty a queue is to listen to
+ * all of it and a skipped item comes round forever. Going back is a
+ * correction, not a completion, so it moves and removes nothing. Tapping a row
+ * (`playFromQueue`) is the third motion and removes nothing either.
+ *
+ * **It returns `null` at the end rather than clearing and stopping**, which is
+ * where this departs from the design PR #132 shipped. `nextPlayableIndexBy`
+ * refusing a step is what `<TransportControls>` reads to disable the button,
+ * and the rule there runs both ways: a control may not be enabled to do
+ * something other than what it draws. A skip glyph that stops playback and
+ * empties the last row is drawn wrong. The last item still leaves — when it
+ * FINISHES, which is `handlePlaybackEnded`'s job.
+ */
+function queueStepTo(s: AppState, qIdx: number, step: 1 | -1): Partial<AppState> | null {
+  const to = nextPlayableIndexBy(s.listenQueue, qIdx, step, queuedEpisode);
+  if (to < 0) return null;
+  const item = s.listenQueue[to];
+  return {
+    // Filtering by INDEX off the pre-step array, never by key off the new one.
+    ...(step === 1 ? { listenQueue: s.listenQueue.filter((_, i) => i !== qIdx) } : null),
+    current: { episode: item.episode, podcast: item.podcast },
+    isPlaying: true,
+    positionSec: 0,
+    videoMode: false,
+  };
+}
+
+/**
+ * Write the queue through to disk, and do not drop `safeSet`'s answer.
+ *
+ * Same choke-point shape as `persistMuted` below, and the same reason: five
+ * writers is five places to forget.
+ */
+function persistQueue(identity: NostrIdentity | null, items: QueueItem[]): boolean {
+  const landed = storage.listenQueue.set(identity?.npub ?? null, items);
+  if (!landed) {
+    console.warn(
+      '[queue] Up Next did not reach disk — it holds for this session only. '
+      + 'The store is full or blocked.',
+    );
+  }
+  return landed;
+}
+
+/**
+ * Apply a step patch, persisting the queue when the step changed it.
+ *
+ * The boolean is "did playback MOVE", which is what `<Player>`'s `onEnded`
+ * asks. It is deliberately `!!patch.current` rather than `!!patch`: a drain can
+ * change state without moving, and answering true for one would leave
+ * `isPlaying` true over an element that has stopped — the ❚❚-over-silence bug
+ * the return value exists for.
+ */
+function applyStep(
+  patch: Partial<AppState> | null,
+  set: (p: Partial<AppState>) => void,
+  get: () => AppState,
+): boolean {
+  if (!patch) return false;
+  set(patch.listenQueue
+    ? { ...patch, listenQueueSaved: persistQueue(get().identity, patch.listenQueue) }
+    : patch);
+  return !!patch.current;
 }
 
 export const useApp = create<AppState>((set, get) => ({
@@ -515,8 +687,121 @@ export const useApp = create<AppState>((set, get) => ({
   // arithmetic hands the player a dead track, which reports as playing and is
   // silent. See `isPlayableRow`; `<TransportControls>` reads the same helper so
   // ⏮/⏭ cannot be enabled over a step these refuse to take.
-  playNext: () => { const patch = stepTo(get(), 1); if (patch) set(patch); return !!patch; },
-  playPrev: () => { const patch = stepTo(get(), -1); if (patch) set(patch); return !!patch; },
+  playNext: () => applyStep(stepTo(get(), 1), set, get),
+  playPrev: () => applyStep(stepTo(get(), -1), set, get),
+
+  listenQueue: storage.listenQueue.get(null),
+  listenQueueSaved: true,
+  enqueueEpisode: (episode, podcast) => {
+    const s = get();
+    // An unresolved row, or one with no enclosure, reports as playing and is
+    // silent — `isPlayableRow`'s whole subject. Refusing it at the door keeps
+    // the queue a list of things that will actually play, which is what the
+    // panel claims it is.
+    if (!isPlayableRow(episode)) return false;
+    // A broadcast is not a "later": `liveStatus: 'pending'` has no audio at
+    // all, and a live enclosure's relevance expires while it sits in a queue.
+    if (episode.liveStatus) return false;
+    if (s.listenQueue.length >= LISTEN_QUEUE_CAP) return false;
+    const key = epKey(episode);
+    if (s.listenQueue.some((i) => epKey(i.episode) === key)) return false;
+
+    // `queueShowFor`, never the `podcast` we were handed — see its note. The
+    // gate is HERE rather than in <QueueButton> because there are two enqueue
+    // surfaces, and a rule applied at one of them is not applied.
+    const next = [...s.listenQueue, { episode: trimForQueue(episode), podcast: queueShowFor(episode, podcast) }];
+    set({ listenQueue: next, listenQueueSaved: persistQueue(s.identity, next) });
+    // **Adding while nothing plays SELECTS the queue's head, paused.** The
+    // panel lives inside <FullscreenPlayer>, which does not mount without a
+    // `current`, so without this the queue is invisible and has no way in. It
+    // is the queue's HEAD rather than the item just added, because the head is
+    // what plays first — and it never starts playback, because the button says
+    // queue, not play.
+    get().revealQueue();
+    return true;
+  },
+  removeFromQueue: (key) =>
+    set((s) => {
+      const next = s.listenQueue.filter((i) => epKey(i.episode) !== key);
+      if (next.length === s.listenQueue.length) return {};
+      return { listenQueue: next, listenQueueSaved: persistQueue(s.identity, next) };
+    }),
+  moveQueueItem: (index, dir) =>
+    set((s) => {
+      const to = index + dir;
+      if (index < 0 || index >= s.listenQueue.length) return {};
+      if (to < 0 || to >= s.listenQueue.length) return {};
+      const next = s.listenQueue.slice();
+      [next[index], next[to]] = [next[to], next[index]];
+      return { listenQueue: next, listenQueueSaved: persistQueue(s.identity, next) };
+    }),
+  clearQueue: () =>
+    set((s) => {
+      if (!s.listenQueue.length) return {};
+      return { listenQueue: [], listenQueueSaved: persistQueue(s.identity, []) };
+    }),
+  playFromQueue: (index) =>
+    set((s) => {
+      const item = s.listenQueue[index];
+      if (!item || !isPlayableRow(item.episode)) return {};
+      return {
+        current: { episode: item.episode, podcast: item.podcast },
+        isPlaying: true,
+        positionSec: 0,
+        videoMode: false,
+      };
+    }),
+  revealQueue: () =>
+    set((s) => {
+      if (s.current || !s.listenQueue.length) return {};
+      const head = s.listenQueue[0];
+      if (!isPlayableRow(head.episode)) return {};
+      return {
+        current: { episode: head.episode, podcast: head.podcast },
+        positionSec: 0,
+        videoMode: false,
+      };
+    }),
+  // Replaces, never unions. An order nobody chose is worse than either order,
+  // so a queue arriving from another account's cache does not get merged into
+  // the one on screen.
+  setListenQueue: (items) => set({ listenQueue: items }),
+
+  adoptListenQueue: (npub) => set((s) => (
+    s.listenQueue.length
+      ? { listenQueueSaved: storage.listenQueue.set(npub, s.listenQueue) }
+      : {}
+  )),
+
+  handlePlaybackEnded: () => {
+    const s = get();
+    const qIdx = queueIndexOf(s);
+    if (qIdx < 0) return false;   // not ours — the caller's own rules apply
+
+    // `to` is computed against the PRE-removal array and `rest` is built from
+    // the same one by index. Compute the target after the filter and every
+    // drain skips an item.
+    const to = nextPlayableIndexBy(s.listenQueue, qIdx, 1, queuedEpisode);
+    const rest = s.listenQueue.filter((_, i) => i !== qIdx);
+    if (to < 0) {
+      // The last item finishes and leaves. Playback stops here rather than
+      // falling through to the medium gate, which would hand the listener
+      // whatever `episodeQueue` happens to hold — the episode list of a show
+      // they left two items ago.
+      set({ listenQueue: rest, listenQueueSaved: persistQueue(s.identity, rest), isPlaying: false });
+      return true;
+    }
+    const item = s.listenQueue[to];
+    set({
+      listenQueue: rest,
+      listenQueueSaved: persistQueue(s.identity, rest),
+      current: { episode: item.episode, podcast: item.podcast },
+      isPlaying: true,
+      positionSec: 0,
+      videoMode: false,
+    });
+    return true;
+  },
 
   playerExpanded: false,
   setPlayerExpanded: (b) => set({ playerExpanded: b }),
