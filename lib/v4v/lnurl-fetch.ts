@@ -32,6 +32,15 @@ function shape(status: number, text: string): LnurlResponse {
   return { ok: status >= 200 && status < 300, status, text };
 }
 
+/** The same test `app/api/lnurl/route.ts` makes before it calls `safeFetch`. */
+function isHttps(url: string): boolean {
+  try {
+    return new URL(url).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Fetch an LNURL-pay URL, falling back to this origin's proxy when the browser
  * cannot read the response.
@@ -66,6 +75,21 @@ function shape(status: number, text: string): LnurlResponse {
  * generalise this to anything downstream of that.
  */
 export async function lnurlFetch(url: string): Promise<LnurlResponse> {
+  // The same `https:`-only test the server twin makes before `safeFetch`
+  // (`app/api/lnurl/route.ts`). This is the one third-party URL the BROWSER
+  // dials directly — the `callback` the provider chose — so the SSRF rules,
+  // which are all written about server-side fetches, do not reach it either
+  // way. No exploit is claimed: mixed-content blocking and Private Network
+  // Access already stop the interesting targets from an https page, and the
+  // body is only read through `readCappedText` and surfaced as an error string.
+  // The point is that the two halves of one function should not disagree about
+  // which schemes they dial, and that the fallback below would refuse with a
+  // 400 anyway — so this fails in the same place for the same stated reason.
+  // It THROWS rather than returning a shaped answer, because this module's own
+  // rule two screens down is that a failure which is not the provider answering
+  // must not be shaped like one — a caller that printed `text` would be
+  // attributing our refusal to the LN service.
+  if (!isHttps(url)) throw new Error('lnurl url must be https');
   try {
     // No timeout, deliberately: there was none before this module existed, and
     // adding one here would fail a slow-but-working provider mid-boost to fix a

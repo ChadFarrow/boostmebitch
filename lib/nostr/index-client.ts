@@ -9,6 +9,7 @@
 // whole reason the proxy answers 503 rather than an empty body.
 
 import { verifyEvent, type Event } from 'nostr-tools';
+import { readCappedJson } from '../capped-body';
 
 export interface IndexBundle {
   notes: Event[];
@@ -19,6 +20,10 @@ export interface IndexBundle {
 }
 
 const REQUEST_TIMEOUT_MS = 8_000;
+
+/** Matches `MAX_INDEX_BYTES` in `lib/nostr-index-server.ts`, which is what the
+ *  proxy on the other side of this fetch enforces against the service. */
+const MAX_INDEX_BODY_BYTES = 8 * 1024 * 1024;
 
 // How many notes a bundle asks for. Lower than the relay path's 100 on purpose:
 // every event is signature-verified below at ~3ms each, so the bundle size is
@@ -54,7 +59,14 @@ async function ask<T>(path: string, params?: Record<string, string>): Promise<T 
       return null;
     }
     if (!res.ok) return null;
-    return (await res.json()) as T;
+    // `readCappedJson`, not `res.json()`. The upstream this reads is our own
+    // `/api/nostr/index`, which already caps at MAX_INDEX_BYTES server-side —
+    // so today the bound is inherited rather than asserted. The rule is that a
+    // drain site states its own ceiling, because inheriting one means a reader
+    // has to go and check what the proxy does, and a proxy that later streams
+    // or forwards would silently un-cap this. The 8 MB matches
+    // `lib/nostr-index-server.ts`'s own figure.
+    return (await readCappedJson(res, MAX_INDEX_BODY_BYTES)) as T;
   } catch {
     // Offline, aborted, timed out. Not an answer about anything — and NOT a
     // reason to switch the index off for the tab, which 503 alone means.

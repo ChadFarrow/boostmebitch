@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 // Pins the size of CLAUDE.md, the file loaded into every session in this repo.
 //
+// WHY IT IS MEASURED AT ALL: without the "does this belong here" test that file
+// states at the top, it grows back. It reached 26,000 words once. That history
+// lived in CLAUDE.md itself until the budget got tight enough that restating it
+// there cost more than it was worth — which is the rule working on itself.
+//
 // Usage:
 //   npm run check:claudemd
 //   CHECK_CLAUDEMD_VERBOSE=1 npm run check:claudemd   # per-section table always

@@ -3,8 +3,25 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * An id that changes once per deploy and not per request.
+ *
+ * Read by `lib/build-id.ts` and used for nothing but the service worker's cache
+ * names, whose `activate` deletes every cache that is not the current build's.
+ * `env` is inlined by Next at COMPILE time, so the value baked into the bundle
+ * is the one this build computed — which is what makes it stable across every
+ * request and every instance of one deploy.
+ *
+ * The Vercel commit SHA is preferred for exactly that reason: it is identical
+ * for every instance. The timestamp covers a local `next build`, where each
+ * build genuinely is a new one.
+ */
+const BUILD_ID =
+  process.env.VERCEL_GIT_COMMIT_SHA?.slice(0, 12) || `local-${Date.now().toString(36)}`;
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: { NEXT_PUBLIC_BUILD_ID: BUILD_ID },
   // Pin the workspace root so Next doesn't pick up an unrelated lockfile elsewhere
   // on disk (the parent dir has a bun.lock that's nothing to do with this app).
   outputFileTracingRoot: __dirname,

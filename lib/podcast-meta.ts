@@ -198,7 +198,36 @@ async function resolveVia(cacheKey: string, query: string): Promise<Podcast | nu
  * the ordinary per-entry path runs, so this can never make resolution worse.
  */
 export async function warmPodcastCache(guids: string[]): Promise<void> {
-  const wanted = Array.from(new Set(guids)).filter((g) => g && !podcastMem.has(g));
+  const wanted = Array.from(new Set(guids)).filter((g) => {
+    if (!g || podcastMem.has(g)) return false;
+    /**
+     * THE 7-DAY localStorage CACHE COUNTS AS WARM, and skipping it was the whole
+     * cost of this function on a return visit.
+     *
+     * `podcastMem` is module-level, so it is EMPTY on every page load — while
+     * `bmb:pmeta` still holds yesterday's answers. Filtering on memory alone
+     * meant a returning reader with 213 favorited shows and 232 favorited tracks
+     * issued six batch requests for records already in their own browser, and
+     * `resolveVia` below would then have found every one of them on disk anyway.
+     * The requests bought nothing at all.
+     *
+     * Promoting the hit rather than merely skipping it is the point: `resolveVia`
+     * does exactly this on its own localStorage hit, so the warm now leaves the
+     * memory map in the same state a resolve pass would have, and the resolvers
+     * that run afterwards issue no network call for these either.
+     *
+     * NO NEW STALENESS. `resolveVia` already trusts this cache at this TTL, so
+     * reading it here permits nothing that was not already permitted — it just
+     * stops asking a second time.
+     */
+    const cached = storage.podcastMeta.get(g);
+    if (cached) {
+      podcastMem.set(g, cached);
+      capMem(podcastMem);
+      return false;
+    }
+    return true;
+  });
   if (!wanted.length || !piMaybeUp()) return;
   for (const chunk of chunked(wanted, BATCH_SIZE)) {
     try {
@@ -235,6 +264,15 @@ export async function warmEpisodeCache(refs: { feedGuid: string; itemGuid: strin
     const key = `${r.feedGuid}:${r.itemGuid}`;
     if (seen.has(key) || episodeMem.has(key)) return false;
     seen.add(key);
+    // Same as the shows above: `bmb:epmeta` is warm across a page load and
+    // `episodeMem` is not, so this was re-asking for records already on disk.
+    // `resolveEpisodeByGuid` promotes a disk hit into memory; so does this.
+    const cached = storage.episodeMeta.get(key);
+    if (cached) {
+      episodeMem.set(key, cached);
+      capMem(episodeMem);
+      return false;
+    }
     return true;
   });
   if (!wanted.length || !piMaybeUp()) return;

@@ -85,7 +85,17 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: 'no keysend endpoint' }, { status: 404 });
     }
     return NextResponse.json(data, {
-      headers: { 'Cache-Control': 'public, s-maxage=21600, stale-while-revalidate=86400' },
+      // `max-age` added on the rule in `/api/feed`, and this is the starkest
+      // case: a six-hour SHARED window beside a zero-second private one, on a
+      // document that changes almost never.
+      //
+      // IT IS A MONEY PATH, so the reasoning is stated rather than assumed. This
+      // answer decides which of two rails an lnaddress leg leaves on, so a stale
+      // copy can keep a retry on the wrong rail. It adds no new exposure: the CDN
+      // has been allowed to answer with a six-hour-old copy since this was
+      // written, and a user's retry hits that same shared entry anyway. One hour
+      // is strictly inside it.
+      headers: { 'Cache-Control': 'public, max-age=3600, s-maxage=21600, stale-while-revalidate=86400' },
     });
   }, 'keysend lookup failed');
 }

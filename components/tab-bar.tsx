@@ -3,7 +3,7 @@ import { useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { startKeyboardInsetSync } from '@/lib/keyboard-inset';
-import { clearShowSelection, useApp } from '@/lib/store';
+import { clearShowSelection } from '@/lib/store';
 import { KbDebug } from './kb-debug';
 
 /**
@@ -51,10 +51,10 @@ import { KbDebug } from './kb-debug';
  * can leave beats one you cannot. Do not add a hide list without a new
  * reason.
  *
- * TOUCH. Each item is the full `--tabbar-h` (56px) tall and a quarter (today)
- * of the width wide, so it clears the 44px floor without a min-h — the
+ * TOUCH. Each item is the full `--tabbar-h` (56px) tall and a fifth (today) of
+ * the width wide, so it clears the 44px floor without a min-h — the
  * icon-and-label stack is centred inside the tap area, not the tap area itself.
- * At 390px four columns are 97.5px each, and height is the binding dimension at
+ * At 390px five columns are 78px each, and height is the binding dimension at
  * 56 > 44. The floor is not threatened until SEVEN tabs (390/7 = 55.7px), which
  * is the number to check against rather than re-deriving it.
  *
@@ -64,11 +64,11 @@ import { KbDebug } from './kb-debug';
  * last show the visitor had open, and the selection-to-URL mirror rewrites
  * the address bar to `?podcast=<old>`.
  *
- * WALLET IS A MODAL, NOT A ROUTE. It flips `walletOpen` in the store, the same
- * flag `<AuthControl>`'s balance chip flips, and `<WalletModalHost>` in the
- * root layout renders the modal — on every route, which is the whole point of
- * moving it there (see that file). Its "current" state is the modal being
- * open, so the tab lights while the sheet is up and goes quiet when it closes.
+ * WALLET IS NOT A TAB ANY MORE. It was the only `kind: 'modal'` entry, and the
+ * Queue tab took its place — so every tab is a link and the union type that
+ * carried both collapsed to one shape. The wallet is still reachable from
+ * `<AuthControl>` on every route that renders `<AppHeader>`, and from the boost
+ * modal's own control everywhere else, which is what had to land first.
  *
  * PLAYLISTS IS NOT A TAB, deliberately. Playlists are content: the search box
  * has a Playlists lane and `/playlists` stays a linkable page, but it is not a
@@ -84,26 +84,21 @@ import { KbDebug } from './kb-debug';
  * nothing lit there.
  */
 
-type LinkTab = {
-  kind: 'link';
-  href: '/' | '/live' | '/favorites';
+// Every tab is a LINK. The Wallet tab was the only `kind: 'modal'` one and it
+// is gone — see the Queue entry below for why that swap needed the boost
+// modal's own connect control to land first.
+type Tab = {
+  href: '/' | '/queue' | '/live' | '/favorites' | '/downloads';
   label: string;
   icon: React.ReactNode;
   /** Whether `pathname` belongs to this tab. `/` is exact; the rest are prefixes. */
   match: (pathname: string) => boolean;
 };
-type ModalTab = {
-  kind: 'modal';
-  label: string;
-  icon: React.ReactNode;
-};
-type Tab = LinkTab | ModalTab;
 
 const stroke = { fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' } as const;
 
 const TABS: Tab[] = [
   {
-    kind: 'link',
     href: '/',
     label: 'Home',
     match: (p) => p === '/',
@@ -115,7 +110,29 @@ const TABS: Tab[] = [
     ),
   },
   {
-    kind: 'link',
+    // REPLACED THE WALLET TAB, and the order of the two changes mattered.
+    // The wallet was reachable from the header on `/`, /live, /favorites,
+    // /playlists and /downloads — and NOWHERE ELSE, because those are the only
+    // routes that render <AppHeader>. This tab was the only way to reach a
+    // wallet from /stream/<naddr>, /npub/<npub> and /live/<npub>, which are
+    // exactly the routes a shared link lands on and where BOOST is the point —
+    // and from <FullscreenPlayer>, which covers the header on every route. So
+    // the boost modal grew its own wallet control FIRST; that message used to
+    // point at "top right", which on those surfaces is empty space.
+    href: '/queue',
+    label: 'Queue',
+    match: (p) => p.startsWith('/queue'),
+    icon: (
+      // A stack of rows with a play glyph at the head: a list that plays,
+      // rather than a bare list (which reads as another favorites) or a bare
+      // triangle (which reads as the transport).
+      <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
+        <path d="M4 7h10M4 12h10M4 17h6" />
+        <path d="M17 11.2v5.6l4.5-2.8z" fill="currentColor" stroke="none" />
+      </svg>
+    ),
+  },
+  {
     href: '/live',
     label: 'Live',
     match: (p) => p.startsWith('/live'),
@@ -133,7 +150,6 @@ const TABS: Tab[] = [
     ),
   },
   {
-    kind: 'link',
     href: '/favorites',
     label: 'Favorites',
     match: (p) => p.startsWith('/favorites'),
@@ -144,27 +160,52 @@ const TABS: Tab[] = [
     ),
   },
   {
-    kind: 'modal',
-    label: 'Wallet',
+    href: '/downloads',
+    label: 'Downloads',
+    match: (p) => p.startsWith('/downloads'),
     icon: (
+      // An arrow into a tray. Deliberately not a cloud: the whole point of this
+      // destination is that the bytes are HERE, not somewhere else.
       <svg viewBox="0 0 24 24" className="w-5 h-5" aria-hidden {...stroke}>
-        <rect x="3" y="6" width="18" height="13" />
-        <path d="M3 10h18M16 15h2" />
+        <path d="M12 3v10" />
+        <path d="M8 10.5 12 14.5l4-4" />
+        <path d="M4 16v3.5h16V16" />
       </svg>
     ),
   },
 ];
 
+/**
+ * THE LABEL IS `font-display`, NOT THE MONO THE REST OF THE APP INHERITS, and
+ * the reason is arithmetic rather than taste.
+ *
+ * `html, body` set JetBrains Mono, so every label costs a FIXED advance per
+ * character: `Downloads` and `Favorites` are nine characters and measured 56px
+ * against `Home`'s 25px, inside cells that are all the same width. The gaps a
+ * reader actually sees are between label EDGES, so the dock read as evenly
+ * spaced on the left and crowded on the right — 49px between the first two
+ * labels and 22px between the last two at 390px, and only 8px at 320px.
+ *
+ * Measured against the real font files at 320 / 390 / 430px:
+ *
+ *   mono 10px + tracking-wide (was)   widest 56px   min gap  8px @320   22px @390
+ *   font-display 10px, no tracking    widest 52px   min gap 16px @320   30px @390
+ *
+ * `tracking-wide` goes with it: letter-spacing on a nine-character label is
+ * width spent where there is least of it.
+ *
+ * The gaps are still not EQUAL, and they cannot be while the cells are. That is
+ * deliberate — the tap area is the grid cell, and equal cells are what keeps
+ * every tab over the 44px floor. Proportional columns would even the gaps and
+ * put the narrowest tab under that floor at 320px.
+ */
 const itemClass = (current: boolean) =>
-  `flex flex-col items-center justify-center gap-1 text-[10px] tracking-wide transition ${
+  `flex flex-col items-center justify-center gap-1 font-display text-[10px] transition ${
     current ? 'text-bolt' : 'text-muted hover:text-bone'
   }`;
 
 export function TabBar() {
   const pathname = usePathname() ?? '/';
-  const walletOpen = useApp((s) => s.walletOpen);
-  const setWalletOpen = useApp((s) => s.setWalletOpen);
-
   // Mounted here rather than in the layout because this is the component the
   // variable exists for, and it is on every route already.
   useEffect(() => startKeyboardInsetSync(), []);
@@ -184,20 +225,6 @@ export function TabBar() {
           style={{ gridTemplateColumns: `repeat(${TABS.length}, minmax(0, 1fr))` }}
         >
           {TABS.map((tab) => {
-            if (tab.kind === 'modal') {
-              return (
-                <button
-                  key={tab.label}
-                  type="button"
-                  onClick={() => setWalletOpen(true)}
-                  aria-pressed={walletOpen}
-                  className={itemClass(walletOpen)}
-                >
-                  {tab.icon}
-                  <span>{tab.label}</span>
-                </button>
-              );
-            }
             const current = tab.match(pathname);
             return (
               <Link

@@ -568,7 +568,10 @@ await new Promise((resolve, reject) => {
   w.addEventListener('open', () => w.send(JSON.stringify(['EVENT', placementOnly])));
   w.addEventListener('message', (m) => {
     const msg = JSON.parse(m.data);
-    if (msg[0] === 'OK') { w.close(); msg[2] ? resolve() : reject(new Error(`relay refused: ${msg[3]}`)); }
+    if (msg[0] !== 'OK') return;
+    w.close();
+    if (msg[2]) resolve();
+    else reject(new Error(`relay refused: ${msg[3]}`));
   });
   w.addEventListener('error', reject);
   setTimeout(() => reject(new Error('relay never answered the placement-only seed')), 8000);

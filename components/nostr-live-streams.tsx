@@ -1,4 +1,5 @@
 'use client';
+import dynamic from 'next/dynamic';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -14,11 +15,19 @@ import {
 } from '@/lib/nostr/live-streams';
 import { fetchProfilesFor, indexedLiveStreams, LIVE_STREAM_RELAYS } from '@/lib/nostr';
 import type { Event } from 'nostr-tools';
-import { hasValueRecipients } from '@/lib/util';
+import { FEED_FANOUT, hasValueRecipients, mapLimit } from '@/lib/util';
 import { storage } from '@/lib/storage';
 import { useApp } from '@/lib/store';
 import type { Episode, Podcast } from '@/lib/types';
-import { BoostModal } from './boost-modal';
+// DEFERRED. It is already rendered conditionally at the site below, so its code
+// was in the bundle for a modal most readers never open — `dynamic()` makes the
+// download match that condition. `.then((m) => m.BoostModal)` because it is a
+// NAMED export and a `dynamic()` resolving the wrong shape renders nothing and
+// throws no error.
+const BoostModal = dynamic(
+  () => import('./boost-modal').then((m) => m.BoostModal),
+  { ssr: false },
+);
 import { LiveCard, LIVE_GRID } from './live-card';
 import { fmtLiveTime } from '@/lib/format';
 import type { ProfileMetadata } from '@/lib/nostr/auth';
@@ -171,11 +180,21 @@ export function NostrLiveStreams() {
     )];
     if (zapRecipients.length) await fetchProfilesFor(zapRecipients, LIVE_STREAM_RELAYS);
 
-    await Promise.all(
-      pending.map(async (stream) => {
-        valueRef.current.set(streamAddrOf(stream.rawEvent), await resolveStreamV4V(stream));
-      }),
-    );
+    // BOUNDED, because `pending` is however many broadcasts the relays are
+    // carrying and this runs on a 60-second interval. The `fetchProfilesFor`
+    // call above removes the common case, but what is left — a recipient with
+    // its own relay hint, and a cached MISS that `resolveStreamV4V` retries on
+    // purpose because an lud16 gates the BOOST button — still opens relay
+    // subscriptions per call. Relays cap subscriptions per connection and drop
+    // the overflow SILENTLY, so an unbounded start is a row of streams whose
+    // splits never resolve, with nothing on screen saying so.
+    //
+    // `FEED_FANOUT`, not `PI_FANOUT`: nothing here touches Podcast Index. The
+    // two constants answer different questions and the one in play is the bound
+    // on our own connections.
+    await mapLimit(pending, FEED_FANOUT, async (stream) => {
+      valueRef.current.set(streamAddrOf(stream.rawEvent), await resolveStreamV4V(stream));
+    });
 
     if (!mountedRef.current) return;
     setResolved(paint());

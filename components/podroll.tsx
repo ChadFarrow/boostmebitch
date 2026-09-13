@@ -4,6 +4,7 @@ import { useApp } from '@/lib/store';
 import { resolvePodcastByGuid, resolvePodcastByFeedUrl, piMaybeUp, warmPodcastCache } from '@/lib/podcast-meta';
 import { useHorizontalWheelScroll } from '@/lib/use-horizontal-wheel';
 import type { Podcast, PodrollItem } from '@/lib/types';
+import { mapLimit, PI_FANOUT } from '@/lib/util';
 import { PodcastCover } from './podcast-cover';
 import { FavHeart } from './fav-heart';
 
@@ -69,7 +70,14 @@ export function Podroll({ items }: { items: PodrollItem[] }) {
           unique.slice(1).map((i) => i.feedGuid).filter((g): g is string => !!g),
         );
         if (gen !== genRef.current) return;
-        const rest = await Promise.all(unique.slice(1).map(resolveItem));
+        // BOUNDED, for the tail the warm above cannot cover. After a warm most
+        // of these are answered from memory with no request at all — but the two
+        // cases the comment above says are deliberately kept are not: a guid PI
+        // answered "not found" for falls back to the entry's `feedUrl` hint, and
+        // a guid the warm could not ask about is attempted again. Both go to the
+        // network, a podroll "routinely runs to dozens of shows", and this row
+        // renders under the episode list while the feed is still downloading.
+        const rest = await mapLimit(unique.slice(1), PI_FANOUT, resolveItem);
         for (const p of rest) if (p) resolved.push(p);
       }
     }

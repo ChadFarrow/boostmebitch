@@ -1,6 +1,8 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { isMusicMedium, httpUrl } from './util';
+import { chaptersRequestUrl } from './downloads/download-rules';
+import { fetchDoc } from './downloads/downloads-cache';
 import type { ChapterEntry, Episode, Podcast } from './types';
 
 // Defined in `lib/types.ts` (see the note there — `lib/util.ts` needs to name it
@@ -24,7 +26,15 @@ export function useChapters(url: string): { chapters: ChapterEntry[] | null; loa
     setChapters(null);
     // Proxy through our own route: many chapter hosts (e.g. Fountain) serve the
     // JSON without CORS headers, so a direct browser fetch is blocked.
-    fetch(`/api/chapters?url=${encodeURIComponent(url)}`)
+    // NETWORK FIRST, falling back to a downloaded copy only when the fetch
+    // REJECTS — see `fetchDoc`. A chapters document has no version key and is
+    // dropped only with its download, so cache-first served a corrected chapter
+    // never, on a row whose `url` is a live link. It costs nothing when there
+    // is no download: this is the same single fetch as before. `q` is built by
+    // the shared builder so this key and the one the download wrote are the
+    // same string by construction.
+    const q = chaptersRequestUrl(url) ?? '';
+    fetchDoc(q)
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled) return;

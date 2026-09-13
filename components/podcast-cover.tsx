@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { artCandidates, DEFAULT_ART_WIDTH, type ArtWidth } from '@/lib/util';
 
 // Renders the podcast's artwork with a deterministic colored-initial
@@ -14,7 +14,7 @@ import { artCandidates, DEFAULT_ART_WIDTH, type ArtWidth } from '@/lib/util';
 // Pass the same sizing/border classes you'd put on a bare <img>; this
 // component re-applies them to the fallback div so the layout stays stable
 // either way.
-export function PodcastCover({
+function PodcastCoverImpl({
   image,
   artwork,
   title,
@@ -23,9 +23,28 @@ export function PodcastCover({
   w = DEFAULT_ART_WIDTH,
   fit = 'cover',
   lowPriority,
+  localSrc,
 }: {
   image?: string | null;
   artwork?: string | null;
+  /**
+   * A cover already on this device — a `blob:` URL from a download.
+   *
+   * It is the LAST rung, not the first, and that ordering is the whole design.
+   * Online, the network candidates are better: `nowPlayingArt` may be handing
+   * this component the art of the chapter or the track playing THIS SECOND,
+   * and a downloaded feed cover must never outrank it. Offline every network
+   * rung fails and this one catches, which is the case it exists for.
+   *
+   * It must not be proxied — `/api/art` cannot fetch a `blob:` URL, and the
+   * point of this rung is that it needs no network at all. So it is appended
+   * to `artCandidates`' output rather than passed into it, which also leaves
+   * that function, pinned by `check:art`, untouched.
+   *
+   * The CALLER owns revoking it. <Player> is the only writer; see
+   * `nowPlayingCover` in lib/store.ts.
+   */
+  localSrc?: string | null;
   title?: string | null;
   /** Optional seed for the fallback hue; defaults to the title. Use a guid
    *  or feed id when you want the color to follow identity, not display
@@ -91,13 +110,16 @@ export function PodcastCover({
   // every cover on all twelve surfaces that render this component. Ordering it
   // the other way round would leave the feature installed and inert. Both
   // shapes are pinned by `npm run check:art`.
-  const candidates = useMemo(() => artCandidates(image, artwork, w), [image, artwork, w]);
+  const candidates = useMemo(() => {
+    const net = artCandidates(image, artwork, w);
+    return localSrc ? [...net, localSrc] : net;
+  }, [image, artwork, w, localSrc]);
   const [idx, setIdx] = useState(0);
   // Re-attempt from the first candidate whenever the source URLs change. Without
   // this, a caller that swaps `image` over time (e.g. per-chapter artwork in the
   // player) would keep a stale failing-index: once a bad img advanced idx to the
   // artwork fallback, the next (valid) image would be skipped for artwork.
-  useEffect(() => { setIdx(0); }, [image, artwork, w]);
+  useEffect(() => { setIdx(0); }, [image, artwork, w, localSrc]);
   const current = candidates[idx];
   if (current) {
     return (
@@ -148,3 +170,29 @@ export function PodcastCover({
     </div>
   );
 }
+
+/**
+ * MEMOIZED, and every prop is a primitive, which is what makes it work.
+ *
+ * This is mounted once per row on twelve surfaces — every episode row, every
+ * favorites row, every queue row — and it carries internal state: the `onError`
+ * ladder's position. `<EpisodeList>` reads seven store slices including
+ * `current` and `isPlaying`, and its rows are one long inline closure rather
+ * than components, so every `play()` and every pause re-renders every visible
+ * row. Without this, each of those re-renders reconciled a cover whose inputs
+ * had not changed.
+ *
+ * `image`, `artwork`, `localSrc`, `title`, `seed`, `className`, `w`, `fit` and
+ * `lowPriority` are all strings, numbers or booleans, so the default shallow
+ * comparison is exactly right here — there is no object or callback prop for a
+ * caller to hand over a fresh reference of by accident, which is the usual way a
+ * `memo` becomes decoration.
+ *
+ * Deliberately NOT a fix for the row itself. Extracting `<EpisodeList>`'s row
+ * into a memoized component would mean stabilising about fifteen props including
+ * callbacks, on a surface carrying the boost control, the hearts and the download
+ * button — and a memo whose props are not all stable does nothing while looking
+ * like it does. That is a change worth measuring first, not bundling into an
+ * audit.
+ */
+export const PodcastCover = memo(PodcastCoverImpl);

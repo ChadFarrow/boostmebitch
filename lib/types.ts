@@ -185,6 +185,18 @@ export interface Episode {
   link?: string;          // Episode web page (RSS <link> / PI `link`) — full notes live here
   enclosureUrl: string;
   enclosureType?: string;
+  /**
+   * Byte length from RSS's `<enclosure length>`, mirrored by PI as
+   * `enclosureLength`. Absent, 0 or plainly wrong on plenty of feeds, so it is
+   * a HINT and never a fact: treat it as "roughly how big" and let the response
+   * `Content-Length` be the number anything depends on.
+   *
+   * It exists because the download button spends the listener's bandwidth on a
+   * feature that exists precisely because bandwidth is scarce — measured
+   * 2026-09-09, Homegrown Hits episodes run 160–190 MB each. Saying so before
+   * the press is the whole point; being a few percent out does not matter.
+   */
+  enclosureLength?: number;
   /** Podcasting 2.0 <podcast:alternateEnclosure> renditions (e.g. a video
    *  version). Parsed from RSS — PI doesn't index the tag. */
   alternateEnclosures?: AlternateEnclosure[];
@@ -459,6 +471,52 @@ export interface FavoritePodcast {
    * the next cycle, which relays index and which cannot be taken back.
    */
   carried?: boolean;
+}
+
+/**
+ * What this device has already SHOWN you, per favorited show.
+ *
+ * `marks` is `podcastGuid -> datePublished` of the newest episode already
+ * offered, in unix SECONDS — byte-identical to what Podcast Index's `since`
+ * takes back, which is why it is seconds and not milliseconds. `checkedAt` is
+ * unix MILLISECONDS of the last completed check, and it rides here rather than
+ * in a second key because the two are always written together: a throttle that
+ * can disagree with the marks it throttles is worse than no throttle.
+ *
+ * It lives HERE rather than in lib/util.ts for the same reason {@link QueueItem}
+ * does: lib/storage.ts types its accessor with it, and storage.ts sits UNDER
+ * the store. The pure rules that read and write it — `sinceForBatch`,
+ * `selectNewEpisodes`, `advanceMarks`, `pruneMarks` — are in lib/util.ts,
+ * pinned by `check:favnew`.
+ */
+export interface NewEpisodeMarks {
+  /** Unix MS of the last completed check. 0 means there has never been one. */
+  checkedAt: number;
+  /** podcastGuid -> newest `datePublished` already shown, unix SECONDS. */
+  marks: Record<string, number>;
+}
+
+/**
+ * One entry in the "Up Next" listen queue: an episode AND the show it belongs
+ * to.
+ *
+ * **The pair is the point.** `stepTo` (lib/store.ts) can reuse
+ * `current.podcast` when it walks `episodeQueue`, because that array is one
+ * feed's display order and every row in it belongs to the same show. This
+ * queue mixes shows, so the next item is usually a different one: its artwork,
+ * its title and — the half that matters — its VALUE BLOCK have to travel with
+ * it. Carrying the previous podcast forward would point the BOOST button and
+ * the streaming engine at the artist who was playing a moment ago.
+ *
+ * It lives HERE rather than in lib/store.ts because lib/storage.ts types its
+ * accessor with it, and storage.ts sits UNDER the store: declaring it there
+ * would close a `storage -> store -> storage` import cycle, which does not
+ * fail the build — it surfaces as an export that plainly exists reading back
+ * as `undefined`.
+ */
+export interface QueueItem {
+  episode: Episode;
+  podcast: Podcast;
 }
 
 /**

@@ -1,4 +1,5 @@
 'use client';
+import dynamic from 'next/dynamic';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   createHtmlPortalNode,
@@ -16,10 +17,19 @@ import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
+import { downloadManager } from '@/lib/downloads/download-manager';
 import { useLiveBlockImage } from './live-now-playing';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
 import { ChapterTicks, ChapterLabel } from './chapter-ui';
-import { BoostModal } from './boost-modal';
+// DEFERRED. It is already rendered conditionally at the site below, so its code
+// was in the bundle for a modal most readers never open — `dynamic()` makes the
+// download match that condition. `.then((m) => m.BoostModal)` because it is a
+// NAMED export and a `dynamic()` resolving the wrong shape renders nothing and
+// throws no error.
+const BoostModal = dynamic(
+  () => import('./boost-modal').then((m) => m.BoostModal),
+  { ssr: false },
+);
 import { StreamPulse } from './streaming-settings';
 import { BoltIcon, PipIcon } from './icons';
 import { FullscreenPlayer } from './fullscreen-player';
@@ -116,6 +126,7 @@ export function Player() {
   const setPlaying = useApp((s) => s.setPlaying);
   const setPosition = useApp((s) => s.setPosition);
   const playNext = useApp((s) => s.playNext);
+  const handlePlaybackEnded = useApp((s) => s.handlePlaybackEnded);
   const setPlayerExpanded = useApp((s) => s.setPlayerExpanded);
   const audio = useRef<HTMLAudioElement | null>(null);
   const video = useRef<HTMLVideoElement | null>(null);
@@ -339,6 +350,34 @@ export function Player() {
   const resumeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
+
+  /**
+   * The blob URL of the downloaded file currently attached to `<audio>`, if any.
+   *
+   * A ref rather than state on purpose: it must NOT be a dependency of the
+   * source effect below, or a URL that resolves after playback has begun
+   * restarts the episode from zero. At most one is alive at a time.
+   */
+  const localSrcRef = useRef<string | null>(null);
+  const revokeLocalSrc = useCallback(() => {
+    if (!localSrcRef.current) return;
+    URL.revokeObjectURL(localSrcRef.current);
+    localSrcRef.current = null;
+  }, []);
+  // Revoke on unmount too. <Player> lives in the root layout so this is rare,
+  // but a Fast Refresh in dev remounts it on every edit.
+  useEffect(() => revokeLocalSrc, [revokeLocalSrc]);
+
+  /**
+   * Read the download library into memory now, not on the first tap.
+   *
+   * `downloadManager.localKeyFor` can only answer synchronously once this has
+   * landed, and a synchronous answer is what keeps `el.src = …` on the same
+   * tick as the user's gesture — see the source effect below. Doing it at mount
+   * instead means the IndexedDB read happens while somebody is still choosing
+   * an episode, rather than in front of the one they chose.
+   */
+  useEffect(() => { void downloadManager.hydrate(); }, []);
 
   // Source the active media element when the current item changes. Audio and
   // video are mutually exclusive (one `current`), so the inactive element is
@@ -575,10 +614,10 @@ export function Player() {
       };
     }
 
-    // Audio path (unchanged behaviour).
+    // Audio path.
     if (!audio.current || !current) return;
     const el = audio.current;
-    el.src = current.episode.enclosureUrl;
+    const episode = current.episode;
     // Start position: play(episode, podcast, startSec) sets positionSec before
     // this effect runs, so an episode launched from a transcript line / chapter
     // begins there. Applied once metadata is ready (currentTime isn't settable
@@ -586,12 +625,61 @@ export function Player() {
     // the same reason as the video branch above.
     const startAt = isLiveMedia ? 0 : useApp.getState().positionSec;
     const seekOnLoad = () => { el.currentTime = startAt; };
-    if (startAt > 0) {
-      el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
-    }
-    if (isPlaying) {
-      primePlaybackAudioSession();
-      el.play().catch(() => setPlaying(false));
+
+    let cancelled = false;
+
+    const attach = (src: string) => {
+      revokeLocalSrc();
+      if (src.startsWith('blob:')) localSrcRef.current = src;
+      el.src = src;
+      if (startAt > 0) el.addEventListener('loadedmetadata', seekOnLoad, { once: true });
+      if (isPlayingRef.current) {
+        primePlaybackAudioSession();
+        el.play().catch(() => setPlaying(false));
+      }
+    };
+
+    /**
+     * A downloaded episode plays from local bytes.
+     *
+     * **THE NO-DOWNLOAD PATH STAYS SYNCHRONOUS, AND THAT IS THE WHOLE POINT OF
+     * `localKeyFor`.** iOS ties `play()` to the user gesture and an `await` over
+     * real I/O can lose it, so an episode nobody downloaded must reach `el.src`
+     * on the same tick as before. Written the obvious way — always `await
+     * resolveSource()` — this feature would put an IndexedDB read in front of
+     * every play, downloaded or not, and the failure would be a play button
+     * that needs pressing twice, on the one platform this app is mostly
+     * listened on.
+     *
+     * `undefined` means hydration has not landed. It is NOT "no": reading it
+     * that way streams over a file the listener already has. `<Player>` mounts
+     * in the root layout and hydrates below, so by the first tap this is
+     * normally already decided; the async branch is the honest answer when it
+     * is not.
+     *
+     * **The resolved URL is never state.** This effect's deps are
+     * `[id, enclosureUrl, videoMode, reloadNonce]`, so a blob URL arriving in a
+     * `useState` AFTER playback began would re-run the effect, repoint `el.src`
+     * and restart the episode from zero.
+     */
+    const localKey = downloadManager.localKeyFor(episode);
+    if (localKey === null) {
+      attach(episode.enclosureUrl);
+    } else {
+      void (localKey === undefined
+        ? downloadManager.resolveSource(episode)
+        : downloadManager.objectUrlFor(localKey)
+      ).then((localSrc) => {
+        // The episode changed while the read was in flight. Revoke immediately —
+        // nothing else holds this URL, so skipping it leaks the whole file.
+        if (cancelled || audio.current !== el) {
+          if (localSrc) URL.revokeObjectURL(localSrc);
+          return;
+        }
+        // `null` here is an evicted download, which the manager has already
+        // forgotten. Streaming is what the listener had before they pressed it.
+        attach(localSrc ?? episode.enclosureUrl);
+      });
     }
     // `{ once: true }` removes the listener when it FIRES, which is not the same
     // as removing it when this effect is torn down — and the audio element is a
@@ -608,7 +696,16 @@ export function Player() {
     //
     // The video branch above already removes its copy in cleanup. This is the
     // same line; the two branches had simply drifted.
-    return () => { el.removeEventListener('loadedmetadata', seekOnLoad); };
+    //
+    // `cancelled` covers the resolve still being in flight; `revokeLocalSrc`
+    // covers it having landed. A blob URL that is never revoked pins the whole
+    // downloaded file in memory for the life of the document — tens of
+    // megabytes per episode switch, on a phone.
+    return () => {
+      cancelled = true;
+      el.removeEventListener('loadedmetadata', seekOnLoad);
+      revokeLocalSrc();
+    };
   // `enclosureUrl` is a dep as well as `id`: an episode object can be enriched
   // in place (`syncSelectedPodcast`, the /api/feed backfill) and a NEW url on
   // the same id must re-attach the source; an identical url never re-runs.
@@ -857,6 +954,51 @@ export function Player() {
     artOk: artUsable,
   });
 
+  /**
+   * The current item's DOWNLOADED cover, published for the surfaces that paint
+   * now-playing art.
+   *
+   * Every download already stores its cover, and until this existed only
+   * `/downloads` could read it: on a plane the episode played from local bytes
+   * under a coloured initial tile, which is not what "the cover comes too"
+   * promised. Reported from an iPhone in airplane mode.
+   *
+   * It is always a LAST rung — see <PodcastCover>'s `localSrc` and the mini
+   * bar's ladder below. Online, chapter and track art still win; this only
+   * catches when every network candidate fails, which offline they all do.
+   *
+   * This effect OWNS the blob URL. An unrevoked one pins the whole decoded
+   * image for the life of the document, and `<Player>` lives in the root
+   * layout, so nothing else would ever collect it.
+   */
+  const setNowPlayingCover = useApp((s) => s.setNowPlayingCover);
+  const nowPlayingCover = useApp((s) => s.nowPlayingCover);
+  useEffect(() => {
+    const ep = current?.episode;
+    let cancelled = false;
+    let mine: string | null = null;
+    if (ep) {
+      void (async () => {
+        // The cover is not on a user-gesture deadline the way `el.src` is, so
+        // this one may wait for the library rather than answering `undefined`.
+        await downloadManager.hydrate();
+        const key = cancelled ? null : downloadManager.storedKeyFor(ep);
+        const url = key ? await downloadManager.coverUrlFor(key) : null;
+        if (cancelled || !url) {
+          if (url) URL.revokeObjectURL(url);
+          return;
+        }
+        mine = url;
+        setNowPlayingCover(url);
+      })();
+    }
+    return () => {
+      cancelled = true;
+      if (mine) URL.revokeObjectURL(mine);
+      setNowPlayingCover(null);
+    };
+  }, [current?.episode.id, current?.episode.enclosureUrl, setNowPlayingCover]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Lock-screen / notification integration — transport handlers, play state,
   // scrub bar and metadata — lives in ./player/use-media-session. It is called
   // HERE, after `nowArt`, because the metadata effect consumes it.
@@ -865,6 +1007,15 @@ export function Player() {
     audio, video, isVideoRef, lastTick,
     setPosition, setPlaying, skipBy,
   });
+
+  // **A queue that survived a reload has to be reachable.** `current` is
+  // in-memory and the queue is not, so every page load lands with items on disk
+  // and nothing playing — and the two lines below then render nothing at all,
+  // taking Up Next with them. Effects still run for a component that returns
+  // null, which is what lets this sit above that return; doing it in the store
+  // initializer instead would paint a mini-bar on the client that the server
+  // did not, which is a hydration mismatch.
+  useEffect(() => { useApp.getState().revealQueue(); }, []);
 
   if (!current) return null;
   const { episode, podcast } = current;
@@ -1040,7 +1191,17 @@ export function Player() {
           // the queue, so `isPlaying` stayed true over an element that had
           // stopped and the transport drew ❚❚ over silence — true of albums
           // since before playlists existed. Ask whether it moved.
+          //
+          // **The listen queue is asked FIRST**, because it is an explicit
+          // decision and outranks both the medium test and a show's display
+          // order. It answers false — changing nothing — unless the item that
+          // just ended is in it, which is what leaves the two lines below on
+          // exactly the states they ran on before. It is also what makes a
+          // queued TALK show advance, which `playsAsTracks` would refuse: that
+          // gate decides whether a FEED plays as tracks, and a queue is not a
+          // feed.
           onEnded={() => {
+            if (handlePlaybackEnded()) return;
             if (current && playsAsTracks(current.podcast) && playNext()) return;
             setPlaying(false);
           }}
@@ -1077,7 +1238,7 @@ export function Player() {
             <div className="w-12 h-12 flex-shrink-0 bg-black overflow-hidden border border-bone/20">
               {videoNode && !playerExpanded && <OutPortal node={videoNode} />}
             </div>
-          ) : (nowArt || episode.image) ? (
+          ) : (nowArt || episode.image || nowPlayingCover) ? (
             // `nowPlayingArt` picks the record a live Split Kit show is playing,
             // then the track a <podcast:valueTimeSplit> redirects to, then the
             // active chapter's artwork (Podcasting 2.0 chapters `img`), falling
@@ -1097,21 +1258,41 @@ export function Player() {
             // about it is worth a frame of audio.
             // eslint-disable-next-line @next/next/no-img-element
             <img
-              key={nowArt || episode.image}
-              src={nowArt || episode.image}
+              // The cover is in the KEY, not just in the ladder. It resolves
+              // asynchronously, so the image routinely errors through every
+              // network rung BEFORE it arrives — and a raw <img> has no way to
+              // re-attempt after that. Naming it here replaces the element once
+              // the cover lands, which resets `data-rung` and re-walks the
+              // ladder. <PodcastCover> gets the same effect from the
+              // `setIdx(0)` effect on its own candidate list.
+              key={`${nowArt || episode.image || ''}|${nowPlayingCover ?? ''}`}
+              src={nowArt || episode.image || nowPlayingCover || undefined}
               alt=""
               fetchPriority="low"
               decoding="async"
               onError={(e) => {
-                // One attempt at the episode cover, tracked on the element
-                // rather than by comparing `src` against the fallback string:
-                // the `src` GETTER returns a RESOLVED absolute URL, so an
-                // untrimmed or relative feed URL never compares equal and the
-                // handler re-assigns the same failing URL forever.
+                // A TWO-rung ladder, and the rungs are counted on the element
+                // rather than by comparing `src` against a fallback string: the
+                // `src` GETTER returns a RESOLVED absolute URL, so an untrimmed
+                // or relative feed URL never compares equal and the handler
+                // re-assigns the same failing URL forever.
+                //
+                // The second rung is the downloaded cover, and it is last for
+                // the reason given on `nowPlayingCover` above. Without it this
+                // element simply STOPS on a broken-image glyph — which is what
+                // an offline launch showed, beside a row on /downloads that was
+                // rendering the very same bytes.
                 const el = e.currentTarget;
-                if (el.dataset.fellBack || !episode.image) return;
-                el.dataset.fellBack = '1';
-                el.src = episode.image;
+                // The same list `src` picked its first truthy entry from, so
+                // index 0 is what is on screen and the next rung is index+1.
+                const rungs = [...new Set(
+                  [nowArt, episode.image, nowPlayingCover].filter((u): u is string => !!u),
+                )];
+                const i = Number(el.dataset.rung || '0') + 1;
+                const next = rungs[i];
+                if (!next) return;
+                el.dataset.rung = String(i);
+                el.src = next;
               }}
               className="w-12 h-12 object-cover border border-bone/20 flex-shrink-0"
             />

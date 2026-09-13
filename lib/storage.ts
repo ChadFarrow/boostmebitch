@@ -5,12 +5,17 @@
 // raw key strings live in exactly one file and SSR/quota guards aren't
 // duplicated across components.
 
-import type { Episode, FavoriteEpisode, FavoritePodcast, Podcast, StoredBoost } from './types';
+import type { Episode, NewEpisodeMarks, FavoriteEpisode, FavoritePodcast, Podcast, QueueItem, StoredBoost } from './types';
 import type { DiscoveredNote, FavoritesBaseline, FavoritesPrivacy, MuteListState, ProfileMetadata } from './nostr';
 // Value import, so it must come from the import-free leaf rather than the
 // './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
 // and unlike the type-only line above a value import does NOT erase.
 import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
+// `lib/util.ts` imports nothing at runtime (its one import line is type-only,
+// which is what lets the check scripts load it under plain Node), so taking a
+// value import from it here cannot close a cycle.
+import { httpUrl, LISTEN_QUEUE_CAP } from './util';
+
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -63,6 +68,8 @@ const KEYS = {
   favCollapsed: 'bmb:fav_collapsed',  // string[] of COLLAPSED favorites group headings ('show:<medium>' / 'ep:<medium>'). A device SETTING, not a cache — deliberately absent from EVICTABLE_PREFIXES.
   sectionCollapsed: 'bmb:sect_collapsed', // string[] of COLLAPSED <FeedSection> keys ('npub:sent' / 'npub:recv'). Same sense and same reasoning as favCollapsed below — a section this device has never seen must default to VISIBLE. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES.
   favView: 'bmb:fav_view',            // JSON {tab,sort,split} — the /favorites control row. A device SETTING, not a cache: deliberately absent from EVICTABLE_PREFIXES. (Replaced 'bmb:fav_panel_open', which described a home-page panel that no longer exists; stale values there are inert.)
+  newMarksPrefix: 'bmb:newmarks',     // + ':<npub>' — `{ checkedAt, marks: { [podcastGuid]: datePublished } }`: what this device has already SHOWN you in the "new episodes" section on /favorites. Seconds, because that is the unit Podcast Index's `since` takes back. A user-facing READ MARKER, not a cache — nothing on any wire records what this device showed somebody — so deliberately absent from EVICTABLE_PREFIXES, same class as bmb:listen_queue and bmb:ep_order. Evicting it does not cost a refetch, it re-announces a week of episodes as new. Pruned to the current favorites on every write (lib/util.ts `pruneMarks`).
+  listenQueuePrefix: 'bmb:listen_queue', // + ':<npub>' — the "Up Next" cross-show listen queue. An ORDERED ARRAY, never a keyed object: the order IS the data. A user DECISION, not a network-regenerable cache — deliberately absent from EVICTABLE_PREFIXES, same class as bmb:ep_order and bmb:list_unlock. Items are trimmed at ENQUEUE (lib/util.ts `trimForQueue`) and capped at LISTEN_QUEUE_CAP. No migration from any global key: there has never been one.
   favoritesPrefix: 'bmb:favorites',
   favoriteEpisodesPrefix: 'bmb:favepisodes', // + ':<npub>' — favorited episodes, keyed by item guid
   favClearedPrefix: 'bmb:fav_cleared', // + ':<npub>' — '1' while this device is DELIBERATELY holding no favorites. The one thing that tells "the user unfavorited everything" from "the store has not hydrated yet", which are otherwise the same bytes: an empty store beside a baseline that claims ids. Set only by a removal that empties the list; cleared by any add and by the publish that carries the removal.
@@ -227,6 +234,40 @@ const DEFAULT_FAV_VIEW: FavView = { tab: 'all', sort: 'recent', split: 'all' };
 
 const BOOSTS_CAP = 200;
 const STREAMED_CAP = 100;
+
+/**
+ * Re-validate a stored boost's ONE href-bearing field on the way back off disk.
+ *
+ * `lib/v4v/boostbox.ts` runs BoostBox's `url` through `httpUrl` when it arrives,
+ * and that is the right place for it — but this log is persisted and capped by
+ * COUNT, never by age, so an entry written before that guard existed survives
+ * until 200 newer boosts push it out. For most people that is indefinitely.
+ * `<BoostCard>` renders the field as a live `href`, and React does not block a
+ * `javascript:` href — it only warns in dev — in the origin that holds the NWC
+ * spending credential, the bunker `clientSk` and, since Google onboarding, the
+ * local nsec. One press of "📦 boostbox" in the user's own boost history is the
+ * whole exploit, and it needs no new response from the service.
+ *
+ * So the disk is treated as a SECOND parse boundary, exactly as
+ * `storage.profile.get` treats its cell — a value already on disk from an older
+ * build must not become safe merely because the writer was later fixed.
+ *
+ * Narrow on purpose: `boostboxUrl` is the only field here that becomes an
+ * `href`. `message` goes through `linkify`, whose pattern is anchored to
+ * `https?://`, and `podcastImage` is an image source, which cannot execute.
+ * A rejected url is dropped rather than rendered inert, because the link is
+ * decoration over the descriptor and a missing one costs nothing.
+ */
+function coerceStoredBoost(b: StoredBoost): StoredBoost {
+  if (!b || !Array.isArray(b.legs)) return b;
+  if (!b.legs.some((l) => l?.boostboxUrl)) return b;
+  return {
+    ...b,
+    legs: b.legs.map((l) =>
+      l?.boostboxUrl ? { ...l, boostboxUrl: httpUrl(l.boostboxUrl) ?? undefined } : l,
+    ),
+  };
+}
 
 const isBrowser = () => typeof window !== 'undefined';
 
@@ -1192,7 +1233,8 @@ export const storage = {
       if (!raw) return [];
       try {
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as StoredBoost[]) : [];
+        if (!Array.isArray(parsed)) return [];
+        return (parsed as StoredBoost[]).map(coerceStoredBoost);
       } catch {
         return [];
       }
@@ -1613,6 +1655,106 @@ export const storage = {
         JSON.stringify([entry, ...list].slice(0, STREAMED_CAP)),
       );
     },
+  },
+
+  /**
+   * The "Up Next" listen queue, per npub (`:guest` signed out).
+   *
+   * **An ARRAY, not a `Record`, because the order is the data.** Every other
+   * per-npub user value here is keyed by guid; this one is a list the listener
+   * reorders by hand, and a keyed object would leave that order to whatever
+   * `Object.keys` returns.
+   *
+   * **A user decision, not a cache**, so deliberately absent from
+   * `EVICTABLE_PREFIXES`. Nothing on the network can rebuild a queue somebody
+   * assembled, which is the whole membership test for that list. The
+   * consequence runs the other way too and is worth knowing: because it is not
+   * evictable, a queue write on a full store will evict `bmb:social:*` /
+   * `bmb:feed:*` to fit. That is the correct precedence — a cache never
+   * displaces a setting — and it is why the cap in `lib/util.ts` matters.
+   *
+   * The read REFUSES a row with no audio or no show. An older schema or a
+   * hand-edited value would otherwise put a dead track in the player, which
+   * reports as playing and is silent — the same refusal `isPlayableRow` makes
+   * one level up, kept here as well because this is the one input that does not
+   * come from the app.
+   */
+  listenQueue: {
+    get: (npub: string | null | undefined): QueueItem[] => {
+      const raw = safeGet(identityKey(KEYS.listenQueuePrefix, npub));
+      if (!raw) return [];
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return [];
+        return (parsed as QueueItem[])
+          .filter((i) => !!i?.episode?.enclosureUrl && typeof i?.podcast?.id === 'number')
+          .slice(0, LISTEN_QUEUE_CAP);
+      } catch {
+        return [];
+      }
+    },
+    /** Returns whether the value reached DISK. `persistQueue` in lib/store.ts
+     *  must not drop that answer: a queue held only in `safeSet`'s memory
+     *  mirror works all session and is gone on the next load, which presents as
+     *  "it forgot my queue", never as a storage fault. */
+    set: (npub: string | null | undefined, v: QueueItem[]): boolean =>
+      safeSet(
+        identityKey(KEYS.listenQueuePrefix, npub),
+        JSON.stringify(v.slice(0, LISTEN_QUEUE_CAP)),
+      ),
+    /**
+     * Emptying a bucket is a REMOVAL, not a write of `[]`.
+     *
+     * `set(npub, [])` goes through `safeSet`, which on a full or blocked store
+     * returns false and parks the value in the memory mirror — leaving the old
+     * bytes on disk to be read back on the next load. `get` returns `[]` for a
+     * missing key, so this is identical on a healthy store and correct on a sick
+     * one. The sign-out path in `<NostrAuth>` is the caller that needs it: its
+     * whole job there is that the `:guest` queue must not come back, and it was
+     * dropping `safeSet`'s answer.
+     */
+    clear: (npub: string | null | undefined) =>
+      safeRemove(identityKey(KEYS.listenQueuePrefix, npub)),
+  },
+
+  /**
+   * What this device has already shown you, per favorited show.
+   *
+   * The read is TOLERANT per entry and the write is not: a malformed or
+   * half-written mark is dropped and the rest survive, because refusing the
+   * whole map because one entry is wrong would re-announce every episode of
+   * every show — the wall this feature exists to avoid.
+   *
+   * Not `getTimed`/`setTimed`. Those expire the whole cell on a TTL, and an
+   * EXPIRED mark set is worse than no mark set: it re-offers a week of
+   * episodes the reader already dismissed.
+   */
+  newEpisodeMarks: {
+    get: (npub: string | null | undefined): NewEpisodeMarks => {
+      const raw = safeGet(identityKey(KEYS.newMarksPrefix, npub));
+      if (!raw) return { checkedAt: 0, marks: {} };
+      try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return { checkedAt: 0, marks: {} };
+        const marks: Record<string, number> = {};
+        for (const [guid, v] of Object.entries(parsed.marks ?? {})) {
+          if (typeof v === 'number' && Number.isFinite(v) && v > 0) marks[guid] = v;
+        }
+        return {
+          checkedAt: typeof parsed.checkedAt === 'number' ? parsed.checkedAt : 0,
+          marks,
+        };
+      } catch {
+        return { checkedAt: 0, marks: {} };
+      }
+    },
+    /** Returns whether the value reached DISK, and the caller must not drop
+     *  that answer: marks held only in `safeSet`'s memory mirror work all
+     *  session and are gone on the next load, so the same episodes come back
+     *  announced as new. That presents as the feature being broken, never as a
+     *  storage fault — the same contract `favorites` and `listenQueue` carry. */
+    set: (npub: string | null | undefined, v: NewEpisodeMarks): boolean =>
+      safeSet(identityKey(KEYS.newMarksPrefix, npub), JSON.stringify(v)),
   },
 
   /** Favorites are namespaced by npub; signed-out users use `:guest`. */
