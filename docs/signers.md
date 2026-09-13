@@ -846,10 +846,15 @@ takes the notice away and puts the banner up — and, as the must-still-work hal
 that a HEALTHY restore raises none of it. Run against a version with the notice
 stubbed out, four of those fail and the rest stay green.
 
-### OPEN: Clave stopped answering at prompt-time, and `withApprovalWait` is built around the answer it stopped sending
+### Clave stopped answering at prompt-time, and `withApprovalWait` is built around the answer it stopped sending
 
-**Not fixed. Recorded so the next session does not re-derive it from a field
-report.**
+**FIXED 2026-09-13 for the banner and the wait; the decrypt half is still open —
+see the end of this section.** Confirmed from a second field report first: an
+iPhone on a `nostrconnect://` (auto-Clave) pairing, signed in fine, showed
+*"Signer disconnected"*, reconnected successfully, and was thrown back to the
+banner by the next action. That pairing shares `adaptToWindowNostr` with
+`bunker://` — `startNostrConnect` ends at the same adapter — so the flow the user
+paired with does not change any of what follows.
 
 The section above — *"A permission error from Clave is a queue receipt, not a
 refusal"* — describes Clave answering `permission denied` immediately and
@@ -876,6 +881,40 @@ What that does to this app, on a current Clave build:
 
 `APPROVAL_PENDING_PATTERNS` must stay regardless: older Clave builds, and other
 signers, still answer that way, and `check:nip46error` pins it.
+
+**What was done.** Both halves live in `trackBunkerCall`, and both are gated on a
+`probe` the adapter supplies — a `ping`, which Clave auto-allows, so it costs no
+banner and no tap.
+
+1. **A timeout asks before it accuses.** `withTimeout` now throws a tagged
+   `BunkerTimeoutError` rather than a bare `Error`, because the message string
+   was the only thing telling our own clock from any other failure and nothing
+   may depend on a sentence. On that timeout the adapter pings: a pong proves
+   both directions, so `bunkerStale` stays clear and the banner never appears.
+   Only silence marks it stale. **This can only make the banner rarer, never more
+   common** — with no `probe` (every handshake path) the old behaviour runs
+   unchanged.
+2. **It keeps waiting on the request already in flight.** `inFlight` is issued
+   ONCE and awaited again each slice, so no second request reaches the signer and
+   the user is never asked twice for one action. Each slice is still at most
+   `BUNKER_CALL_TIMEOUT_MS`, so a genuinely dead link is noticed on the same
+   schedule as before.
+
+**The two budgets share one deadline.** `withApprovalWait` passes
+`started + BUNKER_APPROVAL_BUDGET_MS` down, because the inner wait and the outer
+re-issue answer the same question for different signer eras: an old Clave that
+ANSWERS pending re-issues, a current one that says nothing waits. Giving the
+inner wait its own budget would stack them — 90 s of re-issues then a further
+90 s on the last attempt — doubling the 120 s ceiling recorded above.
+
+**STILL OPEN: the two decrypts.** They get the probe, so a capped decrypt no
+longer accuses a live signer — which is what made the banner appear on its own,
+with nobody touching anything, for a user whose private favorites half and mute
+list are decrypted on every load. But they still FAIL at ten seconds on a signer
+that queues, because `decryptWithTimeout` / `withDecryptTimeout` in `signer.ts`
+races above them and this module cannot see it. Closing that still means teaching
+`withDecryptTimeout` about the bunker case first, exactly as the block comment in
+`adaptToWindowNostr` says.
 
 ### Never make Amber render something the user did not ask to see
 
