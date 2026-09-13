@@ -38,6 +38,7 @@
 // UUID-gated item parser would look correct forever against synthetic vectors.
 import { parsePlaylistRemoteItems, channelSlice, MAX_PLAYLIST_REFS } from '../lib/feed-xml.ts';
 import { isPlaylistMedium, playsAsTracks, filterPlaylistsByQuery, rankPlaylistsFirst, piRecordIsBlank, mergeRssOverPi, payableValue, PLAYLIST_MEDIUMS, SEARCH_TYPES, parseSearchType, matchesSearchType, mergeSearchLanes } from '../lib/util.ts';
+import { replayVectors } from './replay-vectors.mjs';
 
 let failures = 0;
 const fail = (msg) => { console.error('  ✗ ' + msg); failures++; };
@@ -100,11 +101,17 @@ vec(
   [{ feedGuid: G4, itemGuid: I4 }],
   { alsoNaive: true },
 );
+// NOT `alsoNaive`, and it used to be — wrongly. It sits in this must-read group
+// because it is an ordinary playlist, and it was given the group's exemption by
+// proximity. But `naive()`'s attribute reader is `/feedGuid="([^"]*)"/`,
+// double-quote only, so a single-quoted attribute returns NOTHING there while the
+// real parser reads it. The vector discriminates, and marking it exempt asserted
+// it against nothing. Found by making the shared replay test `differs` for an
+// exempt vector (`scripts/replay-vectors.mjs`).
 vec(
   'single quotes and a paired (non self-closing) tag still read',
   wrap(`    <podcast:remoteItem feedGuid='${G1}' itemGuid='${I1}'></podcast:remoteItem>`),
   [{ feedGuid: G1, itemGuid: I1 }],
-  { alsoNaive: true },
 );
 vec(
   'attributes in the other order, with newlines between them',
@@ -448,22 +455,10 @@ console.log('\nEvery vector is proved against naive()');
     }
   };
 
-  let exempt = 0;
-  for (const v of vectors) {
-    if (v.alsoNaive) {
-      exempt += 1;
-      console.log(`  ok    "${v.label}" is must-still-work — naive() may get it right`);
-      continue;
-    }
-    if (call('real', v) !== call('naive', v)) {
-      console.log(`  ok    naive() gets "${v.label}" wrong`);
-      continue;
-    }
-    fail(`"${v.label}" passes against naive() too — the vector proves nothing.\n`
-      + '          Either it is a must-still-work input (mark it { alsoNaive: true })\n'
-      + '          or it does not exercise anything the real parser adds.');
-  }
-  console.log(`  ${vectors.length} vector(s) replayed, ${exempt} exempt as must-still-work`);
+  // THE SHARED REPLAY. See `scripts/replay-vectors.mjs` — an
+  // `{ alsoNaive: true }` vector used to have its `differs` result discarded, so
+  // the exemption hid exactly what it was granted to protect.
+  replayVectors({ vectors, invoke: call, fail: fail });
 }
 
 // ---------------------------------------------------------------------------

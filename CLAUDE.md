@@ -112,7 +112,7 @@ npm run dev / build / start / lint
 | `check:brand` | `brandIdFrom`, the `BRANDS` table incl. `siteNpub`, `siteTitle`, `DEFAULT_SENDER_NAME`, `resolveSenderName`, `clientTag`, **and the buddy brand's FILES + the two Android package ids** | the other brand's word on the family-friendly deploy, permanently |
 | `check:downloads` | `downloadKey` (idempotence), `isDownloadable`, `roomVerdict` | a download nothing can find; a full origin that fails every settings write |
 | `check:queue` | `epKey`, `trimForQueue`, `queueShowFor`, `nextPlayableIndexBy` | the queue removes the wrong episode, or credits the curator for a track |
-| `check:favnew` | `feedWorthChecking`, `newEpisodesSince`, `markFromEpisodes` | a new episode nobody sees, or a year of back catalogue |
+| `check:favnew` | `sinceForBatch`, `selectNewEpisodes`, `advanceMarks`, `pruneMarks` | a new episode nobody sees, or a year of back catalogue |
 
 **They are PURE-FUNCTION pins, and the wiring BETWEEN them is where this repo's bugs live.** A `check:*` sees one function; neither it nor a DOM assertion sees a background cycle that never decrypts, a planner answering "nothing changed" about a half it could not read, or a hydrator recording a baseline for a publish it refused. All three shipped on one branch, looked correct in review, and were found only by driving the real app against a real signer and relay — `npm run e2e:favorites`. Reach for it when a change spans modules.
 

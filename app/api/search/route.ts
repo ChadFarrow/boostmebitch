@@ -8,7 +8,13 @@ import type { SearchType } from '@/lib/util';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
-const SEARCH_CACHE = { 'Cache-Control': 'public, s-maxage=60, stale-while-revalidate=300' };
+// `max-age` is the half that was missing, on the same argument `/api/feed`
+// records: `s-maxage` alone lets the CDN hold this document while the reader's
+// browser re-downloads it every time. A private window SHORTER than the shared
+// one introduces no staleness class that was not already permitted — a shared
+// cache has been allowed to answer with a 60-second-old copy since this was
+// written. Thirty seconds makes searching the same term twice free.
+const SEARCH_CACHE = { 'Cache-Control': 'public, max-age=30, s-maxage=60, stale-while-revalidate=300' };
 
 /**
  * How many playlist-lane hits may be prepended to a search.

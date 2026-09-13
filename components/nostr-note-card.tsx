@@ -90,7 +90,28 @@ function NoteCardImpl({
   depth?: number;
 }) {
   const identity = useApp((s) => s.identity);
-  const mutedPubkeys = useApp((s) => s.mutedPubkeys);
+  // BOOLEANS, not the Set. This card is `memo`'d and a feed renders hundreds of
+  // them, but selecting `mutedPubkeys` itself handed every card a new reference
+  // on every hydrate and every mute toggle — so the memo was defeated by the one
+  // value that changes least often and matters to the fewest cards. The store
+  // subscription bypasses `memo` by design (CLAUDE.md: store-driven values stay
+  // read via `useApp` selectors INSIDE the component), which is exactly why the
+  // selector has to narrow.
+  //
+  // `<FavHeart>` is the reference for this: it selects booleans at all five
+  // variants for the same reason.
+  const isMuted = useApp((s) => s.mutedPubkeys.has(note.pubkey));
+  // The replies need per-reply answers, so this narrows to a stable STRING —
+  // which of this note's replies are muted — rather than to the whole Set. A
+  // mute of somebody who is not in this thread leaves it byte-identical, so
+  // Zustand's `===` comparison stops the re-render at the selector.
+  const mutedReplyKey = useApp((s) =>
+    (note.replies ?? [])
+      .filter((r) => s.mutedPubkeys.has(r.pubkey))
+      .map((r) => r.pubkey)
+      .sort()
+      .join(','),
+  );
   const mutePubkey = useApp((s) => s.mutePubkey);
   const selectPodcast = useApp((s) => s.selectPodcast);
   const openEpisode = useApp((s) => s.openEpisode);
@@ -101,10 +122,11 @@ function NoteCardImpl({
     shortNpub(note.npub);
   // Memoised: this card is `memo`'d, but `mutedPubkeys` changes identity on
   // every hydrate and there is one of these per note in a feed.
-  const visibleReplies = useMemo(
-    () => (note.replies ?? []).filter((r) => !mutedPubkeys.has(r.pubkey)),
-    [note.replies, mutedPubkeys],
-  );
+  const visibleReplies = useMemo(() => {
+    if (!mutedReplyKey) return note.replies ?? [];
+    const muted = new Set(mutedReplyKey.split(','));
+    return (note.replies ?? []).filter((r) => !muted.has(r.pubkey));
+  }, [note.replies, mutedReplyKey]);
   const sats =
     note.amountMsat && note.amountMsat > 0
       ? Math.round(note.amountMsat / 1000)
@@ -361,7 +383,7 @@ function NoteCardImpl({
   // consistent across mute toggles. Returning null here is safe because every
   // hook above is already executed; the parent (feed surface or another
   // NoteCard's reply list) also filters so we usually don't even reach this.
-  if (mutedPubkeys.has(note.pubkey)) return null;
+  if (isMuted) return null;
 
   // Hoisted out of the JSX so the guid narrowing survives into the click
   // handler's closure — TS drops property narrowing on a parameter inside a

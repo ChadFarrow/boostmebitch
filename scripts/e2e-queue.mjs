@@ -318,15 +318,29 @@ const signedOut = await js(`
   })()
 `);
 await wait(4000);
+// ABSENT OR EMPTY, and the distinction matters in one direction only.
+//
+// This used to assert `length === 0`, which required the key to still EXIST —
+// so it was quietly pinning the implementation (`set(null, [])`) rather than the
+// property. That implementation dropped `safeSet`'s boolean, so on a full or
+// blocked store the `[]` went to the memory mirror and the old bytes survived on
+// disk: the guest queue came back on the next load, which is the exact thing
+// this section exists to refuse. The fix removes the key instead, and an absent
+// key is STRICTLY STRONGER — `storage.listenQueue.get` returns `[]` for both, and
+// only one of them can fail to reach disk.
+//
+// What must still fail here is a non-empty queue, which is why this reads the
+// length rather than just asserting falsiness.
 const guestAfter = await js(`
   (() => {
     const raw = localStorage.getItem('bmb:listen_queue:guest');
-    return { raw, parsed: raw ? JSON.parse(raw).length : null };
+    return { raw, len: raw === null ? 'absent' : JSON.parse(raw).length };
   })()
 `);
 check('the account menu opened and sign out ran', { opened, signedOut }, { opened: true, signedOut: 'clicked' });
-check('the guest queue is EMPTY on disk, not merely in memory',
-  { len: guestAfter.parsed }, { len: 0 });
+check('the guest queue is gone from DISK, not merely from memory',
+  { gone: guestAfter.len === 'absent' || guestAfter.len === 0, saw: guestAfter.len },
+  { gone: true, saw: guestAfter.len });
 
 await send('Page.navigate', { url: `${APP}/queue` }); await wait(8000);
 const resurrect = await js(`document.querySelectorAll('li').length`);
@@ -353,3 +367,14 @@ if (failures) {
   process.exit(1);
 }
 console.log('\nQUEUE E2E OK');
+// EXIT EXPLICITLY, and this is not tidiness. `createRelay` opens a
+// WebSocketServer that is never closed, so it holds the event loop open for ever:
+// without this the suite PASSES and then hangs, which is indistinguishable from a
+// hang that failed. It cost 47 minutes of one session — the run was piped through
+// `tail`, so the completed output sat unflushed in the pipe and the process looked
+// stuck mid-suite, on a build that was fine. Worse, it stalls anything CHAINED
+// behind it: a sweep of `e2e:queue && e2e:favorites && e2e:downloads` never
+// reaches the second suite. The failure path above already exits; the success path
+// did not, which is the shape that hides it. `e2e-favorites.mjs` and
+// `e2e-downloads.mjs` both end with `process.exit`.
+process.exit(0);

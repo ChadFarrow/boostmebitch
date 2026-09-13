@@ -18,7 +18,15 @@ import { Chip } from '@/components/chip';
 import { applyLiveStatuses } from '@/lib/live-status';
 import { loadFeed, loadPlaylistPage } from '@/lib/podcast-meta';
 import { useLiveStatusPoll } from '@/lib/use-live-status-poll';
-import { BoostModal } from '../boost-modal';
+// DEFERRED. It is already rendered conditionally at the site below, so its code
+// was in the bundle for a modal most readers never open — `dynamic()` makes the
+// download match that condition. `.then((m) => m.BoostModal)` because it is a
+// NAMED export and a `dynamic()` resolving the wrong shape renders nothing and
+// throws no error.
+const BoostModal = dynamic(
+  () => import('../boost-modal').then((m) => m.BoostModal),
+  { ssr: false },
+);
 import { BoltIcon, CoinIcon } from '../icons';
 import { CopyLinkButton } from '../copy-link-button';
 import { PodcastCover } from '../podcast-cover';

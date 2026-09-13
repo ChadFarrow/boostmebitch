@@ -59,6 +59,7 @@ import {
   selectNewEpisodes,
   sinceForBatch,
 } from '../lib/util.ts';
+import { replayVectors } from './replay-vectors.mjs';
 
 let failures = 0;
 const vectors = [];
@@ -219,7 +220,7 @@ section('Every vector above is replayed against the obvious wrong version');
 
   // Trust the batch floor, and take a missing date as new. Both are the
   // shortcuts the real version exists to refuse.
-  const naiveSelect = (rows, marks, byId, nowMs) => {
+  const naiveSelect = (rows, marks, byId, _nowMs) => {
     const floor = naiveSince(marks, Object.values(byId));
     return rows
       .filter((e) => (e.datePublished ?? Infinity) > floor)
@@ -257,21 +258,10 @@ section('Every vector above is replayed against the obvious wrong version');
     }
   };
 
-  let exempt = 0;
-  for (const v of vectors) {
-    const differs = call('real', v) !== call('naive', v);
-    if (v.alsoNaive) {
-      exempt += 1;
-      console.log(`  ok    "${v.label}" is must-still-work — naive() may get it right`);
-      continue;
-    }
-    if (differs) { console.log(`  ok    naive() gets "${v.label}" wrong`); continue; }
-    failures += 1;
-    console.error(`  FAIL  "${v.label}" passes against naive() too — the vector proves nothing.`);
-    console.error('          Either it is a must-still-work input (mark it { alsoNaive: true })');
-    console.error('          or it does not exercise anything the real module adds.');
-  }
-  console.log(`  ${vectors.length} vector(s) replayed, ${exempt} exempt as must-still-work`);
+  // THE SHARED REPLAY. See `scripts/replay-vectors.mjs` — an
+  // `{ alsoNaive: true }` vector used to have its `differs` result discarded, so
+  // the exemption hid exactly what it was granted to protect.
+  replayVectors({ vectors, invoke: call, fail: (msg) => { failures += 1; console.error(`  FAIL  ${msg}`); } });
 }
 
 if (failures) {

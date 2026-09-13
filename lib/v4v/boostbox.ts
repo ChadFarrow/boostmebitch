@@ -23,6 +23,7 @@
 import { nip19 } from 'nostr-tools';
 import type { Boostagram, ValueRecipient } from '@/lib/types';
 import { httpUrl } from '@/lib/util';
+import { readCappedJson } from '@/lib/capped-body';
 
 /**
  * How long a leg will wait for BoostBox before paying without a `desc`.
@@ -40,6 +41,9 @@ import { httpUrl } from '@/lib/util';
  * already non-fatal: the leg falls back to the plain user message.
  */
 const BOOSTBOX_TIMEOUT_MS = 6000;
+/** Matches the ceiling `app/api/lightning/boostbox/route.ts` puts on the real
+ *  upstream, which is what sits on the far side of this fetch. */
+const MAX_BOOSTBOX_BYTES = 64 * 1024;
 
 interface BoostBoxResponse {
   id: string;
@@ -138,7 +142,12 @@ export async function storeBoostMetadata(args: {
       signal: AbortSignal.timeout(BOOSTBOX_TIMEOUT_MS),
     });
     if (!res.ok) return noDesc(args.recipient.address, `proxy returned ${res.status}`);
-    const data = (await res.json()) as Partial<BoostBoxResponse>;
+    // `readCappedJson`, not `res.json()`. Our own `/api/lightning/boostbox`
+    // proxy caps the upstream at the same 64 KB, so today this bound is
+    // inherited — the rule is that a drain site states its own, because
+    // inheriting one means the next reader has to go and confirm what the proxy
+    // does before they can trust this line.
+    const data = (await readCappedJson(res, MAX_BOOSTBOX_BYTES)) as Partial<BoostBoxResponse>;
     if (!data?.desc || !data?.url) return noDesc(args.recipient.address, 'no desc in response');
     // The url is rendered as an `href` by <BoostCard> AND persisted into
     // `StoredBoost.legs`, so an unchecked value outlives the request that

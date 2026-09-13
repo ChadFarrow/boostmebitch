@@ -191,6 +191,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: 'invalid JSON' }, { status: 400 });
     }
     let template: EventTemplate;
+    // THE ONLY `e.message` REFLECTION IN THIS APP, and it is safe only because
+    // of what this `try` contains: exactly one call, whose every throw is a
+    // string literal written in `validateBoostTemplate` below. `httpUrl`
+    // returns `null` rather than throwing, so nothing in there reaches a
+    // library error either.
+    //
+    // KEEP IT THAT WAY. `lib/api-handler.ts`'s rule is that an unhandled 500
+    // returns its `fallback`, never `e.message`, because `PiHttpError` carries
+    // Podcast Index's raw body and `assertSafeFetchUrl` names the host it
+    // refused — reflecting either turns the SSRF guard into an oracle, on an
+    // UNAUTHENTICATED route at 30/min. A validator that grows a parse, a
+    // decode, or any call that can throw something the author did not write
+    // silently converts this line into that oracle. Add such a call and this
+    // must go back to a fixed string.
     try {
       template = validateBoostTemplate(body);
     } catch (e) {
