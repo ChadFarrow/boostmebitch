@@ -41,6 +41,10 @@
 import {
   APPROVAL_PENDING_PATTERNS,
   isApprovalPending,
+  isRequestTooLarge,
+  nip46RequestBytes,
+  nip46RequestFits,
+  NIP46_MAX_REQUEST_BYTES,
 } from '../lib/nostr/nip46-errors.ts';
 import { readFileSync } from 'node:fs';
 import { importFreeProblems, explainImportFree } from './import-free.mjs';
@@ -174,6 +178,141 @@ section('The naive text-only matcher is replayed over EVERY vector');
     naive(new Error('permission denied')) === true
       && isApprovalPending(new Error('permission denied')) === false,
     true);
+}
+
+// ---------------------------------------------------------------------------
+section('How big a NIP-46 request may be, and what it costs to measure it wrong');
+// ---------------------------------------------------------------------------
+//
+// THE FAULT THIS PINS. NIP-44 v2 caps one plaintext at 65535 bytes, so a
+// NIP-46 request past that is refused by nostr-tools before any relay is
+// contacted — a local `Error`, which `bunker.ts` used to read as a dead
+// transport and answer with "Signer disconnected — your iPhone may have
+// suspended the relay link." Only ONE thing this app signs gets near it: a
+// NIP-02 kind:3, the user's entire follow list in one event, at 77
+// request-bytes per pubkey. Reported from an iPhone on Clave AND on Primal for
+// the same tap, which is the tell — the throw is on this side of the wire.
+//
+// BOTH DIRECTIONS COST SOMETHING REAL, which is why the must-still-work half
+// below is half of it:
+//
+//   under-measure   a request that cannot be sent is sent anyway, throws inside
+//                   the library, and the user is told their signer is gone.
+//   OVER-measure    a follow list that WOULD have signed is refused, and the
+//                   refusal names a limit the user has not reached. There is no
+//                   retry past it, so this is the expensive direction.
+{
+  const hex = (i) => i.toString(16).padStart(64, '0');
+  // Built as the WIRE, not as a struct: this is exactly what nostr-tools'
+  // `sendRequest('sign_event', [JSON.stringify(event)])` puts on the wire, so
+  // the vectors carry the double-JSON escaping that is the whole subtlety.
+  const kind3 = (n, content = '') => JSON.stringify({
+    kind: 3,
+    created_at: 1789000000,
+    tags: Array.from({ length: n }, (_, i) => ['p', hex(i)]),
+    content,
+  });
+
+  const sizeVectors = [];
+  function sizeVec(label, call, expected, opts = {}) {
+    sizeVectors.push({ label, call, expected, ...opts });
+    check(label, nip46RequestFits(call.method, call.params), expected);
+  }
+
+  check('the ceiling is NIP-44 v2\'s u16 plaintext length', NIP46_MAX_REQUEST_BYTES, 65535);
+
+  // THE BOUNDARY, MEASURED RATHER THAN ASSUMED. 849 is what a real
+  // `nip44.encrypt` accepts and 850 is what it throws on — verified against
+  // nostr-tools 2.19.4 itself, then written down here. If a version bump moves
+  // the padding scheme these two numbers are where it shows.
+  sizeVec('849 follows fits', { method: 'sign_event', params: [kind3(849)] }, true, { alsoNaive: true });
+  sizeVec('850 follows does not', { method: 'sign_event', params: [kind3(850)] }, false);
+  // The same list with a legacy relay-list `content`, which kind:3 carries and
+  // this app preserves byte for byte. It costs follows.
+  sizeVec('836 follows + a 1 KB content fits',
+    { method: 'sign_event', params: [kind3(836, 'x'.repeat(1000))] }, true, { alsoNaive: true });
+  sizeVec('837 follows + a 1 KB content does not',
+    { method: 'sign_event', params: [kind3(837, 'x'.repeat(1000))] }, false);
+
+  // MUST STILL WORK: everything else this app signs is nowhere near it, and a
+  // guard that refused any of these would be worse than the bug it replaced.
+  sizeVec('a boost note', { method: 'sign_event', params: [JSON.stringify({
+    kind: 1, created_at: 1789000000, tags: [['t', 'v4v']], content: 'boosted 100 sats',
+  })] }, true, { alsoNaive: true });
+  sizeVec('a 200-entry favourites list', { method: 'sign_event', params: [JSON.stringify({
+    kind: 10333, created_at: 1789000000, content: '',
+    tags: Array.from({ length: 200 }, (_, i) => ['i', `podcast:guid:${hex(i)}`]),
+  })] }, true, { alsoNaive: true });
+  sizeVec('a 62-entry mute list', { method: 'sign_event', params: [JSON.stringify({
+    kind: 10000, created_at: 1789000000, content: '',
+    tags: Array.from({ length: 62 }, (_, i) => ['p', hex(i)]),
+  })] }, true, { alsoNaive: true });
+  sizeVec('an ordinary nip44 encrypt', { method: 'nip44_encrypt', params: [hex(1), 'hello'] }, true, { alsoNaive: true });
+
+  // BYTES, NEVER `.length`. One emoji is one UTF-16 unit pair and four UTF-8
+  // bytes, so a payload can be half the cap by `.length` and over it on the
+  // wire. Nothing in this app writes 20k emoji, but the profile editor and the
+  // boost note both hand user text to a signer, and the failure would land as
+  // "your signer is gone" exactly like the kind:3 one did.
+  sizeVec('20,000 emoji: under the cap by .length, over it in bytes',
+    { method: 'nip44_encrypt', params: [hex(1), '\u{1F680}'.repeat(20000)] }, false);
+
+  // The unit the guard actually reports, so a message quoting it cannot drift
+  // from what it measured.
+  check('a request is measured including its envelope',
+    nip46RequestBytes('sign_event', [kind3(849)]) > 65000
+      && nip46RequestBytes('sign_event', [kind3(849)]) <= 65535, true);
+
+  // -------------------------------------------------------------------------
+  // The naive version: measure the EVENT, and measure it in `.length`. It is
+  // what you write from the method name alone, without reading that NIP-46
+  // nests the event as a STRING — so every `"` is re-escaped and the real
+  // request is ~5.6% bigger than the document you measured.
+  function naiveSize(call) {
+    return call.params.join('').length <= NIP46_MAX_REQUEST_BYTES;
+  }
+  let disagreements = 0;
+  let exempted = 0;
+  for (const v of sizeVectors) {
+    const n = naiveSize(v.call);
+    if (n === v.expected) { if (v.alsoNaive) exempted += 1; continue; }
+    disagreements += 1;
+  }
+  check('every size vector was replayed', sizeVectors.length, 9);
+  check('the naive measure agrees on the six it is exempted for', exempted, 6);
+  check('...and is caught by at least one must-still-work vector', disagreements > 0, true);
+  check('specifically: it waves through 850 follows, which nostr-tools throws on',
+    naiveSize({ method: 'sign_event', params: [kind3(850)] }) === true
+      && nip46RequestFits('sign_event', [kind3(850)]) === false, true);
+}
+
+// ---------------------------------------------------------------------------
+section('MUST STILL WORK: only the encrypt-side refusal counts as "too large"');
+// ---------------------------------------------------------------------------
+{
+  // The one message nostr-tools 2.19.4 raises, verbatim from `writeU16BE`.
+  check('nostr-tools refusing to encrypt the request',
+    isRequestTooLarge(new Error('invalid plaintext size: must be between 1 and 65535 bytes')), true);
+
+  // OVER-MATCHING IS THE EXPENSIVE DIRECTION HERE TOO, and it is expensive in a
+  // way the approval list is not: anything this predicate claims is NOT allowed
+  // to mark the transport stale, so a real disconnect wearing one of these
+  // words would leave the reconnect banner down and the user with no way back.
+  check('an oversized payload arriving the OTHER way',
+    isRequestTooLarge(new Error('invalid padding')), false);
+  check('a relay refusing a large event',
+    isRequestTooLarge(new AggregateError([new Error('invalid: event too large')], 'All promises were rejected')), false);
+  check('our own timeout',
+    isRequestTooLarge(new Error('Bunker sign_event timed out after 30000ms')), false);
+  check('a closed transport',
+    isRequestTooLarge(new Error('this signer is not open anymore')), false);
+  // The type test, same as everywhere else in this file: a bare string is the
+  // SIGNER talking, and a signer quoting our sentence back is not this fault.
+  check('the same sentence as a bare string off the wire',
+    isRequestTooLarge('invalid plaintext size: must be between 1 and 65535 bytes'), false);
+  check('null', isRequestTooLarge(null), false);
+  check('an object with a message field',
+    isRequestTooLarge({ message: 'invalid plaintext size' }), false);
 }
 
 // ---------------------------------------------------------------------------

@@ -90,7 +90,7 @@ npm run dev / build / start / lint
 | `check:assetlinks` | `lib/assetlinks.ts` — the Digital Asset Links statement | delegates the origin holding the NWC credential and the nsec |
 | `check:amber` | `lib/nostr/amber-callback-url.ts` — the `nostrsigner:` bytes and the returned fragment | signing breaks on Android — failed twice in production |
 | `check:ambersafe` | `lib/nostr/amber-safe-text.ts` — getting an NWC string past Amber | every NWC backup from Android fails, silently |
-| `check:nip46error` | `isApprovalPending` — refusal vs approval pending | Clave signs nothing; another signer's "no" hangs |
+| `check:nip46error` | `isApprovalPending` — refusal vs approval pending — **and `nip46RequestFits`, the 65535-byte NIP-44 ceiling one NIP-46 request may carry** | Clave signs nothing; another signer's "no" hangs; **a follow list over 849 is reported as a dead signer** |
 | `check:vpsummary` | `lib/nostr/value-playback-summary.ts` — the kind:33369 arithmetic and its publish predicate | two writers at ONE address rewrite each other forever |
 | `check:nwcbudget` | `parseNwcBudget`, `spendableSats` — a NIP-47 `get_budget` answer, and which number is spendable | advertises sats the budget will refuse, or blanks a wallet that can pay |
 | `check:musicl` | `parsePlaylistRemoteItems`, `isPlaylistMedium`, `playsAsTracks`, **`payableValue`** | a playlist publishes no `<item>`, so a mis-parse pays the CURATOR |
