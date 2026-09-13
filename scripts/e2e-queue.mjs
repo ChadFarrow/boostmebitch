@@ -367,3 +367,14 @@ if (failures) {
   process.exit(1);
 }
 console.log('\nQUEUE E2E OK');
+// EXIT EXPLICITLY, and this is not tidiness. `createRelay` opens a
+// WebSocketServer that is never closed, so it holds the event loop open for ever:
+// without this the suite PASSES and then hangs, which is indistinguishable from a
+// hang that failed. It cost 47 minutes of one session — the run was piped through
+// `tail`, so the completed output sat unflushed in the pipe and the process looked
+// stuck mid-suite, on a build that was fine. Worse, it stalls anything CHAINED
+// behind it: a sweep of `e2e:queue && e2e:favorites && e2e:downloads` never
+// reaches the second suite. The failure path above already exits; the success path
+// did not, which is the shape that hides it. `e2e-favorites.mjs` and
+// `e2e-downloads.mjs` both end with `process.exit`.
+process.exit(0);
