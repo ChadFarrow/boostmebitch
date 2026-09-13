@@ -41,7 +41,12 @@ import { newPool } from './pool';
 import { storage } from '../storage';
 import { BRAND } from '../brand';
 import { CLAVE_RELAY } from './clave';
-import { isApprovalPending } from './nip46-errors';
+import {
+  isApprovalPending,
+  isRequestTooLarge,
+  nip46RequestBytes,
+  NIP46_MAX_REQUEST_BYTES,
+} from './nip46-errors';
 
 // Relays for the GENERATE flow's nostrconnect:// URI — TWO, and the count is a
 // decision rather than what was left over.
@@ -438,6 +443,48 @@ export function cancelBunkerApprovalWait(): void {
  */
 class BunkerTimeoutError extends Error {}
 
+/**
+ * THE REQUEST NEVER LEFT THE BROWSER, so it says nothing about the signer.
+ *
+ * NIP-44 v2 caps one plaintext at 65535 bytes and nostr-tools enforces it
+ * before publishing anything, so an over-sized request rejects with a local
+ * `Error` and no relay is ever contacted. `trackBunkerCall` used to read that
+ * as "a local throw we did not author" and mark the transport stale, which put
+ * *"Signer disconnected — your iPhone may have suspended the relay link."* in
+ * front of a user whose link was untouched. Reported on Clave AND on Primal for
+ * the same action, which is the tell: the throw is on this side of the wire.
+ *
+ * IT IS FOLLOWING THAT HITS IT, and only following. A NIP-02 kind:3 carries the
+ * user's whole follow list in one event at 77 request-bytes per pubkey, so
+ * **849 follows** is the ceiling (836 with a 1 KB legacy relay list in
+ * `content`); every other event this app signs is orders of magnitude smaller.
+ * Past that, no remote signer can sign a kind:3 for that user at all — there is
+ * no retry, no reconnect and no re-pairing that helps — so the only thing worth
+ * doing is saying which limit was hit, in a form a surface can render.
+ * See lib/nostr/nip46-errors.ts.
+ */
+export class BunkerRequestTooLargeError extends Error {
+  constructor(readonly bytes: number, readonly limit: number, label: string) {
+    super(`Bunker ${label}: request is ${bytes} bytes, and NIP-46 allows at most ${limit}`);
+    this.name = 'BunkerRequestTooLargeError';
+  }
+}
+
+/**
+ * Was this failure the request being too big to send?
+ *
+ * TWO SOURCES, ONE ANSWER, and that is deliberate: `adaptToWindowNostr`
+ * measures first and rejects with the class above, and `nip46RequestBytes`
+ * measures the `id` as empty so a request inside that 8-20 byte margin still
+ * reaches nostr-tools and throws there instead. Both mean the same thing to
+ * every caller, so both must answer the same question the same way — a surface
+ * that only knew about one of them would be right most of the time, which is
+ * the worst way to be wrong.
+ */
+export function bunkerRequestTooLarge(e: unknown): boolean {
+  return e instanceof BunkerRequestTooLargeError || isRequestTooLarge(e);
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new BunkerTimeoutError(`Bunker ${label} timed out after ${ms}ms`)), ms);
@@ -632,9 +679,25 @@ async function trackBunkerCall<T>(
         throw e;
       }
       if (!(e instanceof BunkerTimeoutError)) {
-        // A local throw we did not author. Fails toward offering the reconnect,
-        // which is the right direction for a genuine disconnect.
-        markBunkerStale();
+        // A LOCAL THROW, AND THEY ARE NOT ALL ABOUT THE TRANSPORT. This branch
+        // used to mark the session stale outright, on the argument that failing
+        // toward the reconnect is the right direction for a genuine
+        // disconnect. It is — for the throws that are evidence of one.
+        if (bunkerRequestTooLarge(e)) {
+          // Nothing was published, no relay was contacted and the signer was
+          // never told anything: this is the app asking for something NIP-44
+          // cannot carry. The flag is left exactly as it was — setting it
+          // accuses a working link, and clearing it would erase a real fault
+          // some earlier call recorded. See BunkerRequestTooLargeError.
+          throw e;
+        }
+        // Everything else still fails toward the reconnect, but ASKS FIRST, on
+        // the same rule the timeout below follows: a pong proves both
+        // directions of a link this failure only guessed about. A dead
+        // transport answers nothing here either, so the banner appears on the
+        // same schedule it always did — this can only make it rarer.
+        const answered = probe ? await probe() : false;
+        if (answered) { if (bunkerStale) clearBunkerStale(); } else markBunkerStale();
         throw e;
       }
       const alive = probe ? await probe() : false;
@@ -929,13 +992,41 @@ function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> 
       return false;
     }
   };
+  /**
+   * MEASURE BEFORE SENDING, so the failure names itself.
+   *
+   * `sizedBy` reproduces the plaintext nostr-tools is about to encrypt — the
+   * `params` a NIP-46 request carries, which for `sign_event` is the template
+   * re-escaped as a JSON STRING inside another JSON document. Over the NIP-44
+   * ceiling it rejects here, where the request has cost nothing and the error
+   * can say which limit was hit, instead of inside the library, where the same
+   * fault arrives as a bare `Error` indistinguishable from a dead socket.
+   *
+   * IT IS A GUARD, NOT A GATE: under the limit it does not change a single
+   * call. And it deliberately does NOT try to shrink anything — a kind:3 is the
+   * user's whole follow list and dropping entries from it to fit would publish
+   * a list they never asked for, which CLAUDE.md forbids for reasons that
+   * outlast this one.
+   */
+  const sizedBy = <T>(method: string, params: string[], run: () => Promise<T>): Promise<T> => {
+    const bytes = nip46RequestBytes(method, params);
+    if (bytes > NIP46_MAX_REQUEST_BYTES) {
+      return Promise.reject(new BunkerRequestTooLargeError(bytes, NIP46_MAX_REQUEST_BYTES, method));
+    }
+    return run();
+  };
   return {
     getPublicKey: () => withApprovalWait(() => signer.getPublicKey(), 'get_public_key', { probe }),
+    // The params are the ones nostr-tools itself builds for this method —
+    // `sendRequest('sign_event', [JSON.stringify(event)])` — so the measurement
+    // is of the real payload rather than of a shape that resembles it.
     signEvent: (template: EventTemplate): Promise<Event> =>
-      withApprovalWait(() => signer.signEvent(template), 'sign_event', { probe }) as Promise<Event>,
+      sizedBy('sign_event', [JSON.stringify(template)], () =>
+        withApprovalWait(() => signer.signEvent(template), 'sign_event', { probe })) as Promise<Event>,
     nip04: {
       encrypt: (peerPubkey, plaintext) =>
-        withApprovalWait(() => signer.nip04Encrypt(peerPubkey, plaintext), 'nip04_encrypt', { probe }),
+        sizedBy('nip04_encrypt', [peerPubkey, plaintext], () =>
+          withApprovalWait(() => signer.nip04Encrypt(peerPubkey, plaintext), 'nip04_encrypt', { probe })),
       // No approval wait — capped at 10 s by withDecryptTimeout above this. See
       // the block comment.
       //
@@ -953,7 +1044,8 @@ function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> 
     },
     nip44: {
       encrypt: (peerPubkey, plaintext) =>
-        withApprovalWait(() => signer.nip44Encrypt(peerPubkey, plaintext), 'nip44_encrypt', { probe }),
+        sizedBy('nip44_encrypt', [peerPubkey, plaintext], () =>
+          withApprovalWait(() => signer.nip44Encrypt(peerPubkey, plaintext), 'nip44_encrypt', { probe })),
       // No approval wait — capped at 10 s by decryptWithTimeout above this, and
       // the probe for the same reason as the NIP-04 half above.
       decrypt: (peerPubkey, ciphertext) =>

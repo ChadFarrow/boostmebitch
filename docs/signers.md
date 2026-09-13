@@ -916,6 +916,84 @@ races above them and this module cannot see it. Closing that still means teachin
 `withDecryptTimeout` about the bunker case first, exactly as the block comment in
 `adaptToWindowNostr` says.
 
+### A follow list past 849 accounts cannot be signed by ANY remote signer
+
+**FIXED 2026-09-13 for the misdiagnosis and the message; the limit itself is
+NIP-44's and cannot be fixed here.** Reported from an iPhone: tapping **Follow**
+put *"Signer disconnected — your iPhone may have suspended the relay link."* in
+the account menu, **on Clave and on Primal**, on both pairing flows. Two
+different signers giving one symptom for one action is the tell — the fault is
+on this side of the wire, and no signer can change it.
+
+**What actually happens.** nostr-tools 2.19.4 `sendRequest` builds the plaintext
+`JSON.stringify({ id, method, params })` and hands it to NIP-44 `encrypt`. NIP-44
+v2 writes the unpadded length as a big-endian **u16**, so 65535 bytes is the
+largest plaintext that can be expressed at all, and `writeU16BE` throws
+`Error("invalid plaintext size: must be between 1 and 65535 bytes")` above it —
+**synchronously, inside `sendRequest`'s own `try`**, which rejects the call with
+that `Error`. No kind:24133 is published. No relay is contacted. The signer is
+never told anything.
+
+`trackBunkerCall` then read that `Error` as "a local throw we did not author",
+called `markBunkerStale()`, and `<BunkerHealthBanner>` accused a link that had
+not been used. RECONNECT succeeded, because there was nothing wrong with it, and
+the next tap put the banner straight back.
+
+**Why only following.** Every other event this app signs is small — a boost note,
+a favourites list, a mute list, a profile. A NIP-02 kind:3 is the user's *entire*
+follow list in one event, and each followed pubkey costs **77 request-bytes**:
+`["p","<64 hex>"]` is 74, and NIP-46 nests the event as a JSON **string** inside
+the request, so every `"` is re-escaped as `\"`. Measured against the real
+`nip44.encrypt`:
+
+| follows | `content` | request bytes | `encrypt` |
+|---:|---|---:|---|
+| 849 | empty | 65,492 | ok |
+| 850 | empty | 65,569 | **throws** |
+| 836 | 1 KB legacy relay list | 65,491 | ok |
+| 837 | 1 KB legacy relay list | 65,568 | **throws** |
+
+So the ceiling is **849 follows**, less whatever `content` the user's kind:3
+carries. Under it, following works. Over it, a remote signer cannot sign a kind:3
+for that user **at all** — there is no retry, no reconnect and no re-pairing that
+helps, and the reply would hit the same cap coming back even if the request did
+not.
+
+**What was done, and what deliberately was not.**
+
+1. **`nip46RequestBytes` / `nip46RequestFits` measure the request before it is
+   sent** (`lib/nostr/nip46-errors.ts`, pinned by `check:nip46error`). The
+   adapter's three send paths — `sign_event`, `nip04_encrypt`, `nip44_encrypt` —
+   go through `sizedBy`, which rejects with `BunkerRequestTooLargeError` naming
+   both numbers. **Measure the REQUEST, never the event**: the double-JSON
+   escaping makes the request ~5.6% larger than the document you would measure
+   instead (62,033 → 65,484 at 849 follows), which is a real band of follow
+   counts that looks fine and throws. `naiveSize` in the check script is exactly
+   that mistake, replayed over every vector. **Bytes, never `.length`** — the cap
+   is on encoded UTF-8.
+2. **The `id` is measured as empty**, so the guard under-estimates by the 8-20
+   bytes of `${idPrefix}-${serial}`. That direction is the safe one: the guard
+   must never refuse a request that would have gone through, and anything inside
+   the margin still reaches the library, throws, and is recognised post-hoc by
+   `isRequestTooLarge`. Both paths end at the same error, so the margin is free.
+3. **`trackBunkerCall` no longer accuses on a local throw without asking.** A
+   too-large request leaves `bunkerStale` exactly as it was — setting it blames a
+   working link, clearing it would erase a fault an earlier call recorded. Every
+   other local throw now takes the same `probe` the timeout branch takes: a pong
+   proves both directions, and only silence marks it stale. This can make the
+   banner rarer, never more common.
+4. **Nothing is trimmed to fit.** A kind:3 is the user's whole follow list;
+   dropping entries to get under the cap would publish a list they never asked
+   for, to a replaceable event with no history, on every device they own.
+5. **`<FollowButton>` says so on screen**, with the count, and stops offering
+   `↻ retry` for the one failure a retry cannot clear. A `title` carried it
+   before and a hover tooltip is not reachable on the phone the report came from.
+
+**The limit is the spec's, so the remedy is not in this app.** Other clients that
+can change a list that size either hold the key themselves or speak something
+other than NIP-46. Chunking is not available to us: NIP-46 has no continuation
+and a kind:3 has no partial update.
+
 ### Never make Amber render something the user did not ask to see
 
 **Launching the app on a Pixel 6 put twelve BIP-39 words full-screen and unmasked, before the user had touched anything.** Found 2026-08-21 by opening the installed TWA and reading the Amber sheet that came up on its own; fixed in `778f3c7`.

@@ -89,3 +89,93 @@ export function isApprovalPending(e: unknown): boolean {
   if (!s) return false;
   return APPROVAL_PENDING_PATTERNS.some((re) => re.test(s));
 }
+
+// ── How BIG a NIP-46 request may be ────────────────────────────────────────
+//
+// A SECOND FAULT THAT WEARS THE FIRST ONE'S FACE. Everything above tells a
+// signer's answer from a local throw. This tells one local throw from every
+// other one, and it exists because the account menu accused the signer of being
+// gone over a request that never left the browser.
+//
+// WHAT HAPPENS. nostr-tools 2.19.4 `sendRequest` builds the plaintext
+// `JSON.stringify({ id, method, params })` and hands it to NIP-44 `encrypt`.
+// NIP-44 v2 caps a plaintext at 65535 bytes and nostr-tools enforces it in
+// `writeU16BE`: over that it throws `Error("invalid plaintext size: must be
+// between 1 and 65535 bytes")`, synchronously, inside `sendRequest`'s own
+// `try`, which rejects the call with that `Error`. No kind:24133 is published,
+// no relay is contacted and the signer is never told anything.
+//
+// `trackBunkerCall` in ./bunker.ts then read that `Error` as "a local throw we
+// did not author", marked the transport stale, and the account menu said
+// *"Signer disconnected — your iPhone may have suspended the relay link."* over
+// a link that had not been used. Reported from an iPhone, on Clave AND on
+// Primal — which is the tell, because the throw is on THIS side of the wire and
+// no signer can change it.
+//
+// WHY ONLY FOLLOWING HITS IT. Every other event this app signs is small: a
+// boost note, a favourites list, a mute list, a profile. A NIP-02 kind:3 is the
+// user's whole follow list in one event, at 77 request-bytes per followed
+// pubkey, so the ceiling is **849 follows** with an empty `content` (836 with a
+// 1 KB legacy relay list in it). Under that, following works; over it, no
+// remote signer can sign a kind:3 for that user at all, and the app's job is to
+// say so rather than to blame the phone.
+
+/**
+ * NIP-44 v2's plaintext ceiling, which is what bounds a NIP-46 request.
+ *
+ * Not a nostr-tools number and not ours: NIP-44 encodes the unpadded length as
+ * a big-endian **u16**, so 65535 is the largest value that can be written at
+ * all. A signer speaking the same spec has the identical limit on its reply.
+ */
+export const NIP46_MAX_REQUEST_BYTES = 65535;
+
+/**
+ * The exact plaintext `sendRequest` will encrypt, in BYTES.
+ *
+ * THE PARAMS ARE ALREADY STRINGS, and that is the whole subtlety. NIP-46 passes
+ * a signing template as `params: [JSON.stringify(template)]` — a JSON document
+ * nested inside another as a STRING — so every `"` in the event is re-escaped
+ * as `\"` on the way in. Measuring the event instead of the request understates
+ * it by ~5.6% on a kind:3 (62,033 → 65,484 bytes at 849 follows), which is a
+ * real band of follow counts that looks fine and throws. `naiveSize` in
+ * `scripts/check-nip46-errors.mjs` is exactly that mistake, replayed.
+ *
+ * BYTES, NEVER `.length`. The cap is on encoded UTF-8, so one emoji in a
+ * profile's `content` is four of these and one of those.
+ *
+ * THE `id` IS MEASURED AS EMPTY ON PURPOSE, so this UNDER-estimates by the 8-20
+ * bytes of `${idPrefix}-${serial}` that nostr-tools adds. That direction is the
+ * safe one: this predicate must never refuse a request that would have gone
+ * through, and anything inside that margin is still caught — it reaches the
+ * library, throws, and `isRequestTooLarge` below recognises it. The two paths
+ * end at the same error, so the margin costs nothing.
+ */
+export function nip46RequestBytes(method: string, params: readonly string[]): number {
+  const plaintext = JSON.stringify({ id: '', method, params });
+  return new TextEncoder().encode(plaintext).length;
+}
+
+/** Can this request be sent at all? See {@link nip46RequestBytes}. */
+export function nip46RequestFits(method: string, params: readonly string[]): boolean {
+  return nip46RequestBytes(method, params) <= NIP46_MAX_REQUEST_BYTES;
+}
+
+/**
+ * Is this rejection nostr-tools refusing to ENCRYPT what we asked it to send?
+ *
+ * The backstop for the margin `nip46RequestBytes` leaves, and for any other
+ * caller that reaches the library without being measured first.
+ *
+ * AN `Error`, NEVER A BARE STRING, on the same discriminator the rest of this
+ * file rests on: this throw is raised in our own process, so a matching string
+ * off the wire is a signer quoting a sentence at us, not this fault.
+ *
+ * ANCHORED ON THE WHOLE PHRASE. `unpad` throws `"invalid padding"` for an
+ * oversized payload arriving the other way, which is a different fault with a
+ * different fix, and a relay refusing a large event answers in its own words —
+ * that one IS about the transport and must keep marking it stale. Never widen
+ * this to `/size/`, `/too large/` or `/invalid/`.
+ */
+export function isRequestTooLarge(e: unknown): boolean {
+  return e instanceof Error && /invalid plaintext size/i.test(e.message);
+}
