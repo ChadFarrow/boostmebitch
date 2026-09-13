@@ -14,7 +14,7 @@ import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
 // `lib/util.ts` imports nothing at runtime (its one import line is type-only,
 // which is what lets the check scripts load it under plain Node), so taking a
 // value import from it here cannot close a cycle.
-import { LISTEN_QUEUE_CAP } from './util';
+import { httpUrl, LISTEN_QUEUE_CAP } from './util';
 
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
@@ -234,6 +234,40 @@ const DEFAULT_FAV_VIEW: FavView = { tab: 'all', sort: 'recent', split: 'all' };
 
 const BOOSTS_CAP = 200;
 const STREAMED_CAP = 100;
+
+/**
+ * Re-validate a stored boost's ONE href-bearing field on the way back off disk.
+ *
+ * `lib/v4v/boostbox.ts` runs BoostBox's `url` through `httpUrl` when it arrives,
+ * and that is the right place for it — but this log is persisted and capped by
+ * COUNT, never by age, so an entry written before that guard existed survives
+ * until 200 newer boosts push it out. For most people that is indefinitely.
+ * `<BoostCard>` renders the field as a live `href`, and React does not block a
+ * `javascript:` href — it only warns in dev — in the origin that holds the NWC
+ * spending credential, the bunker `clientSk` and, since Google onboarding, the
+ * local nsec. One press of "📦 boostbox" in the user's own boost history is the
+ * whole exploit, and it needs no new response from the service.
+ *
+ * So the disk is treated as a SECOND parse boundary, exactly as
+ * `storage.profile.get` treats its cell — a value already on disk from an older
+ * build must not become safe merely because the writer was later fixed.
+ *
+ * Narrow on purpose: `boostboxUrl` is the only field here that becomes an
+ * `href`. `message` goes through `linkify`, whose pattern is anchored to
+ * `https?://`, and `podcastImage` is an image source, which cannot execute.
+ * A rejected url is dropped rather than rendered inert, because the link is
+ * decoration over the descriptor and a missing one costs nothing.
+ */
+function coerceStoredBoost(b: StoredBoost): StoredBoost {
+  if (!b || !Array.isArray(b.legs)) return b;
+  if (!b.legs.some((l) => l?.boostboxUrl)) return b;
+  return {
+    ...b,
+    legs: b.legs.map((l) =>
+      l?.boostboxUrl ? { ...l, boostboxUrl: httpUrl(l.boostboxUrl) ?? undefined } : l,
+    ),
+  };
+}
 
 const isBrowser = () => typeof window !== 'undefined';
 
@@ -1199,7 +1233,8 @@ export const storage = {
       if (!raw) return [];
       try {
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as StoredBoost[]) : [];
+        if (!Array.isArray(parsed)) return [];
+        return (parsed as StoredBoost[]).map(coerceStoredBoost);
       } catch {
         return [];
       }
@@ -1667,6 +1702,19 @@ export const storage = {
         identityKey(KEYS.listenQueuePrefix, npub),
         JSON.stringify(v.slice(0, LISTEN_QUEUE_CAP)),
       ),
+    /**
+     * Emptying a bucket is a REMOVAL, not a write of `[]`.
+     *
+     * `set(npub, [])` goes through `safeSet`, which on a full or blocked store
+     * returns false and parks the value in the memory mirror — leaving the old
+     * bytes on disk to be read back on the next load. `get` returns `[]` for a
+     * missing key, so this is identical on a healthy store and correct on a sick
+     * one. The sign-out path in `<NostrAuth>` is the caller that needs it: its
+     * whole job there is that the `:guest` queue must not come back, and it was
+     * dropping `safeSet`'s answer.
+     */
+    clear: (npub: string | null | undefined) =>
+      safeRemove(identityKey(KEYS.listenQueuePrefix, npub)),
   },
 
   /**
