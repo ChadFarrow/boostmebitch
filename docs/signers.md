@@ -916,6 +916,41 @@ races above them and this module cannot see it. Closing that still means teachin
 `withDecryptTimeout` about the bunker case first, exactly as the block comment in
 `adaptToWindowNostr` says.
 
+### A large kind:3 follow list cannot be signed by ANY remote signer, and that is not ours to fix
+
+**Reported and confirmed from an iPhone on 2026-09-13, with 877 follows.** The
+signer answered — Clave's own words, surfaced verbatim by the app:
+
+> Your follow list (877 accounts) is too large for a remote signer to sign — one
+> NIP-46 request holds at most 64 KB. Change who you follow in an app that holds
+> your key itself.
+
+**The arithmetic, so nobody re-derives it hopefully.** A contact tag is
+`["p","<64 hex chars>"]` — about 73 bytes once its separator is counted — so 877
+of them is roughly 64,000 bytes of tags alone, *before* the event envelope,
+*before* NIP-44 encryption and *before* the base64 that encryption implies. The
+ceiling is reached at somewhere near 850 follows and every account past that is
+further over it.
+
+**There is no partial update to fall back on.** NIP-02 kind:3 is a REPLACEABLE
+FULL LIST: following one more account republishes all 877 entries, so the request
+cannot be made smaller by sending less of it. Nor can it be trimmed — the numbers
+above are for bare `["p", pubkey]` pairs with no relay hint and no petname, so
+dropping those buys nothing. **Do not "fix" this by trimming tag contents;** the
+floor is already over the cap.
+
+**What the app must keep doing** is exactly what it did here: render the signer's
+own answer. That is `isRemoteSignerError` working as intended — an error RESPONSE
+proves the round trip, so `bunkerStale` stays clear, no reconnect banner appears,
+and the user reads the real reason instead of *"Signer disconnected"*. A
+size-refusal that got reported as a dead transport would send someone to
+reconnect a working signer forever.
+
+The user's options are all outside this app: follow and unfollow in a client that
+holds the key directly (a local key here, or Amber on Android), or bring the list
+back under the cap. **The reporter has accepted this limit** — it is recorded as a
+known boundary of remote signing, not as an open bug.
+
 ### Never make Amber render something the user did not ask to see
 
 **Launching the app on a Pixel 6 put twelve BIP-39 words full-screen and unmasked, before the user had touched anything.** Found 2026-08-21 by opening the installed TWA and reading the Amber sheet that came up on its own; fixed in `778f3c7`.
