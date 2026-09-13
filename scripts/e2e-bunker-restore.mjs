@@ -94,6 +94,19 @@ const clientPk = getPublicKey(clientSk);
 const rpcKey = nip44.v2.utils.getConversationKey(bunkerSk, clientPk);
 
 let answer = false;
+/**
+ * CLAVE'S CURRENT BEHAVIOUR, and the whole point of scenario 4.
+ *
+ * Clave `dc59364` (2026-06-14) stopped answering `permission denied` at
+ * prompt-time — a populated `error` is TERMINAL under NIP-46, so every compliant
+ * client stops listening — and now HOLDS the request, sending nothing until the
+ * user taps approve. It keeps answering `ping` throughout, which it auto-allows.
+ * So: everything replies, `sign_event` does not.
+ */
+let holdSign = false;
+/** Requests read but deliberately left unanswered, so a later flip can settle
+ *  the one already in flight rather than a re-issued copy. */
+const held = [];
 const seen = [];
 const relayWs = new WebSocket(`ws://127.0.0.1:${PORT}`);
 await new Promise((r) => relayWs.addEventListener('open', r));
@@ -105,18 +118,30 @@ relayWs.addEventListener('message', (m) => {
   try { req = JSON.parse(nip44.v2.decrypt(msg[2].content, rpcKey)); } catch { return; }
   seen.push(req.method);
   if (!answer) return; // the silence under test
-  let reply;
-  if (req.method === 'connect') reply = { id: req.id, result: 'ack' };
-  else if (req.method === 'get_public_key') reply = { id: req.id, result: pk };
-  else if (req.method === 'ping') reply = { id: req.id, result: 'pong' };
-  else reply = { id: req.id, error: `unsupported: ${req.method}` };
+  if (holdSign && req.method === 'sign_event') { held.push(req); return; }
+  send46(replyFor(req));
+});
+
+function replyFor(req) {
+  if (req.method === 'connect') return { id: req.id, result: 'ack' };
+  if (req.method === 'get_public_key') return { id: req.id, result: pk };
+  if (req.method === 'ping') return { id: req.id, result: 'pong' };
+  if (req.method === 'sign_event') {
+    // A real signature, so the app's own verification is exercised rather than
+    // bypassed — `signEvent`'s caller treats an unverifiable event as a failure.
+    return { id: req.id, result: JSON.stringify(finalizeEvent(JSON.parse(req.params[0]), sk)) };
+  }
+  return { id: req.id, error: `unsupported: ${req.method}` };
+}
+
+function send46(reply) {
   relayWs.send(JSON.stringify(['EVENT', finalizeEvent({
     kind: 24133,
     created_at: Math.floor(Date.now() / 1000),
     tags: [['p', clientPk]],
     content: nip44.v2.encrypt(JSON.stringify(reply), rpcKey),
   }, bunkerSk)]));
-});
+}
 
 // ---- CDP -------------------------------------------------------------------
 const list = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
@@ -255,6 +280,65 @@ await wait(8000);
 check('no notice on a cold load that connected', await restoreNotice(), null);
 check('no stale banner either', await staleBanner(), false);
 check('the bunker really connected', seen.includes('connect'), true);
+
+// ---- 4. the signer that QUEUES the signature -------------------------------
+//
+// THE FIELD BUG, driven end to end. Reported from an iPhone on an auto-Clave
+// (`nostrconnect://`) pairing: sign-in works, the account menu says "Signer
+// disconnected", RECONNECT succeeds, and the next action puts the banner back.
+//
+// Before the fix this failed at the first assertion below. `trackBunkerCall`
+// bounded the call at BUNKER_CALL_TIMEOUT_MS (30 s), the expiry is an `Error`,
+// so `isRemoteSignerError` was false and `markBunkerStale()` ran — the reconnect
+// banner over a signer that was answering `ping` the whole time.
+//
+// The signature is requested through `window.nostr` rather than by driving a
+// control, because that IS the adapter under test: the app publishes the
+// signer's `nostrApi` there and reaches it the same way. It keeps the scenario
+// about the transport instead of about whichever button happens to sign today.
+console.log('\n4. a signer that answers ping but QUEUES the signature');
+answer = true;
+holdSign = true;
+held.length = 0;
+await send('Page.navigate', { url: APP }); await wait(2000);
+await js(bootstrap());
+seen.length = 0;
+await send('Page.navigate', { url: APP });
+await wait(8000);
+check('the session connected before anything is signed', seen.includes('connect'), true);
+
+await js(`(() => {
+  window.__signed = null;
+  window.nostr.signEvent({ kind: 1, created_at: Math.floor(Date.now() / 1000), tags: [], content: 'queued-approval probe' })
+    .then((e) => { window.__signed = { ok: true, id: e.id }; })
+    .catch((e) => { window.__signed = { ok: false, err: String(e && e.message ? e.message : e) }; });
+  return 1;
+})()`);
+// PAST THE 30 s BOUND ON PURPOSE. That is the whole point: the old code gave up
+// here, and the user has not tapped approve yet.
+await wait(38000);
+
+check('the signature is still outstanding, not failed', await js(`window.__signed`), null);
+// THE MENU MUST BE OPEN to read the banner: <BunkerHealthBanner> renders inside
+// <AccountMenu>, so `document.body.innerText` does not contain it while the menu
+// is closed and the assertion would pass whatever the flag said. Scenario 2
+// opens it for the same reason; this one nearly shipped without it, and a
+// trivially-passing assertion is worse than none.
+await openAccountMenu();
+check('...and the banner does NOT claim the signer is disconnected', await staleBanner(), false);
+// The probe is what earns that: a pong proves both directions of a link a bare
+// timeout can only guess about.
+check('...because it pinged the signer instead of accusing it', seen.includes('ping'), true);
+check('...and it did NOT re-issue, which would queue a second approval',
+  seen.filter((m) => m === 'sign_event').length, 1);
+
+// The user taps approve. The request already in flight is the one that settles.
+for (const req of held.splice(0)) send46(replyFor(req));
+await wait(4000);
+const signed = await js(`window.__signed`);
+check('a late approval completes the signature that was waiting', signed?.ok, true);
+check('...and the banner never went up', await staleBanner(), false);
+await closeAccountMenu();
 
 console.log(failures === 0 ? '\nAll bunker-restore checks passed.\n' : `\n${failures} FAILED\n`);
 process.exit(failures === 0 ? 0 : 1);
