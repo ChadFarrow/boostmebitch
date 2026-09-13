@@ -41,7 +41,12 @@ import { newPool } from './pool';
 import { storage } from '../storage';
 import { BRAND } from '../brand';
 import { CLAVE_RELAY } from './clave';
-import { isApprovalPending } from './nip46-errors';
+import {
+  isApprovalPending,
+  isRequestTooLarge,
+  nip46RequestBytes,
+  NIP46_MAX_REQUEST_BYTES,
+} from './nip46-errors';
 
 // Relays for the GENERATE flow's nostrconnect:// URI — TWO, and the count is a
 // decision rather than what was left over.
@@ -427,9 +432,62 @@ export function cancelBunkerApprovalWait(): void {
   setApprovalStage({ waiting: false, label: null, attempt: 0 });
 }
 
+/**
+ * OUR OWN clock running out, told apart from every other `Error`.
+ *
+ * `isRemoteSignerError` answers "did the signer reply"; this answers "did WE
+ * give up". They are different questions and the second one has no other
+ * discriminator — the message string was the only marker, and nothing may
+ * depend on a sentence. A `BunkerTimeoutError` is still an `Error`, so
+ * `isRemoteSignerError` is unchanged by this.
+ */
+class BunkerTimeoutError extends Error {}
+
+/**
+ * THE REQUEST NEVER LEFT THE BROWSER, so it says nothing about the signer.
+ *
+ * NIP-44 v2 caps one plaintext at 65535 bytes and nostr-tools enforces it
+ * before publishing anything, so an over-sized request rejects with a local
+ * `Error` and no relay is ever contacted. `trackBunkerCall` used to read that
+ * as "a local throw we did not author" and mark the transport stale, which put
+ * *"Signer disconnected — your iPhone may have suspended the relay link."* in
+ * front of a user whose link was untouched. Reported on Clave AND on Primal for
+ * the same action, which is the tell: the throw is on this side of the wire.
+ *
+ * IT IS FOLLOWING THAT HITS IT, and only following. A NIP-02 kind:3 carries the
+ * user's whole follow list in one event at 77 request-bytes per pubkey, so
+ * **849 follows** is the ceiling (836 with a 1 KB legacy relay list in
+ * `content`); every other event this app signs is orders of magnitude smaller.
+ * Past that, no remote signer can sign a kind:3 for that user at all — there is
+ * no retry, no reconnect and no re-pairing that helps — so the only thing worth
+ * doing is saying which limit was hit, in a form a surface can render.
+ * See lib/nostr/nip46-errors.ts.
+ */
+export class BunkerRequestTooLargeError extends Error {
+  constructor(readonly bytes: number, readonly limit: number, label: string) {
+    super(`Bunker ${label}: request is ${bytes} bytes, and NIP-46 allows at most ${limit}`);
+    this.name = 'BunkerRequestTooLargeError';
+  }
+}
+
+/**
+ * Was this failure the request being too big to send?
+ *
+ * TWO SOURCES, ONE ANSWER, and that is deliberate: `adaptToWindowNostr`
+ * measures first and rejects with the class above, and `nip46RequestBytes`
+ * measures the `id` as empty so a request inside that 8-20 byte margin still
+ * reaches nostr-tools and throws there instead. Both mean the same thing to
+ * every caller, so both must answer the same question the same way — a surface
+ * that only knew about one of them would be right most of the time, which is
+ * the worst way to be wrong.
+ */
+export function bunkerRequestTooLarge(e: unknown): boolean {
+  return e instanceof BunkerRequestTooLargeError || isRequestTooLarge(e);
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(`Bunker ${label} timed out after ${ms}ms`)), ms);
+    const t = setTimeout(() => reject(new BunkerTimeoutError(`Bunker ${label} timed out after ${ms}ms`)), ms);
     p.then(
       (v) => { clearTimeout(t); resolve(v); },
       (e) => { clearTimeout(t); reject(e); },
@@ -539,20 +597,127 @@ function isSubscriptionClosed(e: unknown): boolean {
 // mistake this shape invites: passing `signer.signEvent(t)` instead of
 // `() => signer.signEvent(t)`, which would re-await a single settled rejection
 // in a tight loop until the budget expired.
-async function trackBunkerCall<T>(issue: () => Promise<T>, label: string): Promise<T> {
-  try {
-    const v = await withTimeout(issue(), BUNKER_CALL_TIMEOUT_MS, label);
-    if (bunkerStale) clearBunkerStale();
-    return v;
-  } catch (e) {
-    if (isRemoteSignerError(e)) {
+/**
+ * What a caller hands `trackBunkerCall` so it can tell a queued request from a
+ * dead link. Both are omitted during the handshake, where there is no session to
+ * ask about yet — and with both omitted this function behaves exactly as it did
+ * before they existed.
+ */
+type BunkerCallOpts = {
+  /**
+   * Ask the transport whether it is still there. Must never throw and never
+   * touch `bunkerStale` — see `pingBunkerAdapter`, whose rule this shares: the
+   * diagnosis may not move the state it is diagnosing.
+   */
+  probe?: () => Promise<boolean>;
+  /**
+   * Absolute deadline (ms) for the liveness-extended wait. `withApprovalWait`
+   * passes ITS deadline so the two budgets cannot stack into one call.
+   */
+  deadline?: number;
+};
+
+/**
+ * OUR TIMEOUT IS NOT EVIDENCE THE SIGNER IS GONE, and treating it as such is
+ * what put the reconnect banner over a working Clave.
+ *
+ * Clave changed in `dc59364` (2026-06-14): it used to answer `permission denied`
+ * at prompt-time and deliver the real result later on the same id, and it now
+ * HOLDS the request and sends nothing at all until the user taps approve —
+ * because a populated `error` field is terminal under NIP-46, so every compliant
+ * client stops listening the moment one arrives. See docs/signers.md, "Clave
+ * stopped answering at prompt-time".
+ *
+ * Against that signer the old shape failed twice over. The 30 s bound expired
+ * while the user was still walking to the notification, and the expiry is an
+ * `Error`, so `isRemoteSignerError` was false and `markBunkerStale()` ran: the
+ * account menu said *"Signer disconnected — your iPhone may have suspended the
+ * relay link."* over a link that was fine. Pressing Reconnect rebuilt a working
+ * transport, and the next action put the banner straight back. Reported from an
+ * iPhone on a `nostrconnect://` (auto-Clave) pairing, which shares this adapter
+ * with `bunker://` — the pairing differs, the signing path does not.
+ *
+ * TWO CHANGES, and the second depends on the first.
+ *
+ * 1. A timeout now ASKS before it accuses. `probe` is a `ping`, the one NIP-46
+ *    method whose answer is a fact about the link and nothing else: Clave
+ *    auto-allows it, so it costs no banner and no tap. A pong proves both
+ *    directions, so the flag stays clear and the banner never appears. Only
+ *    silence marks it stale. **This can only make the banner rarer, never more
+ *    common, and only on positive proof** — with no `probe` the old path runs
+ *    unchanged.
+ *
+ * 2. It then KEEPS WAITING on the request already in flight, rather than giving
+ *    up at 30 s. `inFlight` is issued ONCE and awaited again each slice, so no
+ *    second request reaches the signer. That distinction is the whole reason
+ *    this is not `withApprovalWait`'s re-issue: the original request is still
+ *    live on nostr-tools' side (no response means no `delete listeners[id]`), so
+ *    re-issuing on a new id would queue a SECOND approval at the signer, and the
+ *    user would be asked twice for one action.
+ */
+async function trackBunkerCall<T>(
+  issue: () => Promise<T>,
+  label: string,
+  { probe, deadline }: BunkerCallOpts = {},
+): Promise<T> {
+  // ISSUED ONCE, outside the loop. Awaiting a settled promise again is free and
+  // cannot re-send; calling `issue()` again would be the second approval.
+  const inFlight = issue();
+  const stop = deadline ?? Date.now() + BUNKER_CALL_TIMEOUT_MS;
+  for (;;) {
+    // Never longer than the old bound in one go, so a genuinely dead link is
+    // still noticed on the same schedule it always was.
+    const slice = Math.max(1, Math.min(BUNKER_CALL_TIMEOUT_MS, stop - Date.now()));
+    try {
+      const v = await withTimeout(inFlight, slice, label);
       if (bunkerStale) clearBunkerStale();
-    } else {
-      // No reason: nothing answered, so there is nothing to quote — and passing
-      // none is what drops a refusal an earlier failure had recorded.
-      markBunkerStale();
+      return v;
+    } catch (e) {
+      if (isRemoteSignerError(e)) {
+        // The signer answered. An error RESPONSE proves the round trip worked.
+        if (bunkerStale) clearBunkerStale();
+        throw e;
+      }
+      if (!(e instanceof BunkerTimeoutError)) {
+        // A LOCAL THROW, AND THEY ARE NOT ALL ABOUT THE TRANSPORT. This branch
+        // used to mark the session stale outright, on the argument that failing
+        // toward the reconnect is the right direction for a genuine
+        // disconnect. It is — for the throws that are evidence of one.
+        if (bunkerRequestTooLarge(e)) {
+          // Nothing was published, no relay was contacted and the signer was
+          // never told anything: this is the app asking for something NIP-44
+          // cannot carry. The flag is left exactly as it was — setting it
+          // accuses a working link, and clearing it would erase a real fault
+          // some earlier call recorded. See BunkerRequestTooLargeError.
+          throw e;
+        }
+        // Everything else still fails toward the reconnect, but ASKS FIRST, on
+        // the same rule the timeout below follows: a pong proves both
+        // directions of a link this failure only guessed about. A dead
+        // transport answers nothing here either, so the banner appears on the
+        // same schedule it always did — this can only make it rarer.
+        const answered = probe ? await probe() : false;
+        if (answered) { if (bunkerStale) clearBunkerStale(); } else markBunkerStale();
+        throw e;
+      }
+      const alive = probe ? await probe() : false;
+      if (!alive) {
+        // Nothing answered the ping either: this is what a dead transport looks
+        // like. No reason passed — there is nothing to quote, and passing none
+        // is what drops a refusal an earlier failure had recorded.
+        markBunkerStale();
+        throw e;
+      }
+      if (Date.now() >= stop) {
+        // Out of budget, but the link ANSWERED. The request failed and the
+        // caller must hear so; the transport is demonstrably fine, so the
+        // reconnect banner stays down.
+        if (bunkerStale) clearBunkerStale();
+        throw e;
+      }
+      // Alive, in budget, no answer yet: the signer is holding this request for
+      // its user. Wait on the same promise.
     }
-    throw e;
   }
 }
 
@@ -652,7 +817,11 @@ function waitBeforeReissue(ms: number, generation: number): Promise<void> {
  * `subscribeBunkerApproval` and `cancelBunkerApprovalWait` are for; narrowing
  * the patterns instead would risk missing the string this exists for.
  */
-async function withApprovalWait<T>(issue: () => Promise<T>, label: string): Promise<T> {
+async function withApprovalWait<T>(
+  issue: () => Promise<T>,
+  label: string,
+  opts: BunkerCallOpts = {},
+): Promise<T> {
   const generation = approvalGeneration;
   const token = Symbol(label);
   const started = Date.now();
@@ -661,7 +830,17 @@ async function withApprovalWait<T>(issue: () => Promise<T>, label: string): Prom
     for (;;) {
       attempt += 1;
       try {
-        return await trackBunkerCall(issue, label);
+        // ONE DEADLINE FOR BOTH WAITS. `trackBunkerCall` can now keep waiting on
+        // a request the signer is holding, and this loop can re-issue one the
+        // signer ANSWERED as pending — different signers, different eras. Giving
+        // the inner wait its own budget would let them stack: 90 s of re-issues
+        // and then a further 90 s on the last attempt, double the 120 s ceiling
+        // recorded for this path. Sharing the deadline keeps the worst case
+        // where it was.
+        return await trackBunkerCall(issue, label, {
+          ...opts,
+          deadline: started + BUNKER_APPROVAL_BUDGET_MS,
+        });
       } catch (e) {
         if (!isApprovalPending(e)) throw e;
         // A CANCEL IS READ BEFORE THE BANNER GOES BACK UP, and the order is the
@@ -796,24 +975,81 @@ export interface BunkerAdapter {
  * this app compares ciphertexts.
  */
 function adaptToWindowNostr(signer: BunkerSigner): NonNullable<Window['nostr']> {
+  /**
+   * The liveness probe every call on THIS session hands to `trackBunkerCall`.
+   *
+   * Same method and same rules as `pingBunkerAdapter` — never throws, never
+   * touches `bunkerStale` — but taking the signer directly, because here the
+   * session is the live one rather than an adapter being considered for rebuild.
+   * It is only ever reached after one of our own timeouts, so on a healthy call
+   * it costs nothing at all.
+   */
+  const probe = async (): Promise<boolean> => {
+    try {
+      await withTimeout(signer.ping(), BUNKER_PING_TIMEOUT_MS, 'ping');
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  /**
+   * MEASURE BEFORE SENDING, so the failure names itself.
+   *
+   * `sizedBy` reproduces the plaintext nostr-tools is about to encrypt — the
+   * `params` a NIP-46 request carries, which for `sign_event` is the template
+   * re-escaped as a JSON STRING inside another JSON document. Over the NIP-44
+   * ceiling it rejects here, where the request has cost nothing and the error
+   * can say which limit was hit, instead of inside the library, where the same
+   * fault arrives as a bare `Error` indistinguishable from a dead socket.
+   *
+   * IT IS A GUARD, NOT A GATE: under the limit it does not change a single
+   * call. And it deliberately does NOT try to shrink anything — a kind:3 is the
+   * user's whole follow list and dropping entries from it to fit would publish
+   * a list they never asked for, which CLAUDE.md forbids for reasons that
+   * outlast this one.
+   */
+  const sizedBy = <T>(method: string, params: string[], run: () => Promise<T>): Promise<T> => {
+    const bytes = nip46RequestBytes(method, params);
+    if (bytes > NIP46_MAX_REQUEST_BYTES) {
+      return Promise.reject(new BunkerRequestTooLargeError(bytes, NIP46_MAX_REQUEST_BYTES, method));
+    }
+    return run();
+  };
   return {
-    getPublicKey: () => withApprovalWait(() => signer.getPublicKey(), 'get_public_key'),
+    getPublicKey: () => withApprovalWait(() => signer.getPublicKey(), 'get_public_key', { probe }),
+    // The params are the ones nostr-tools itself builds for this method —
+    // `sendRequest('sign_event', [JSON.stringify(event)])` — so the measurement
+    // is of the real payload rather than of a shape that resembles it.
     signEvent: (template: EventTemplate): Promise<Event> =>
-      withApprovalWait(() => signer.signEvent(template), 'sign_event') as Promise<Event>,
+      sizedBy('sign_event', [JSON.stringify(template)], () =>
+        withApprovalWait(() => signer.signEvent(template), 'sign_event', { probe })) as Promise<Event>,
     nip04: {
       encrypt: (peerPubkey, plaintext) =>
-        withApprovalWait(() => signer.nip04Encrypt(peerPubkey, plaintext), 'nip04_encrypt'),
+        sizedBy('nip04_encrypt', [peerPubkey, plaintext], () =>
+          withApprovalWait(() => signer.nip04Encrypt(peerPubkey, plaintext), 'nip04_encrypt', { probe })),
       // No approval wait — capped at 10 s by withDecryptTimeout above this. See
       // the block comment.
+      //
+      // IT STILL GETS THE PROBE, and that is the half of the fix that reaches
+      // here. The outer 10 s race rejects long before this call's own bound, so
+      // extending the wait is unreachable exactly as the block comment says —
+      // but this call keeps running underneath, and when ITS clock expired it
+      // used to mark the transport stale. That is why the banner appeared on its
+      // own, with nobody touching anything: a private favorites half and a
+      // private mute list are decrypted on every load for a user who has
+      // unlocked them. The probe stops a capped decrypt from accusing a live
+      // signer; it does not make the decrypt succeed.
       decrypt: (peerPubkey, ciphertext) =>
-        trackBunkerCall(() => signer.nip04Decrypt(peerPubkey, ciphertext), 'nip04_decrypt'),
+        trackBunkerCall(() => signer.nip04Decrypt(peerPubkey, ciphertext), 'nip04_decrypt', { probe }),
     },
     nip44: {
       encrypt: (peerPubkey, plaintext) =>
-        withApprovalWait(() => signer.nip44Encrypt(peerPubkey, plaintext), 'nip44_encrypt'),
-      // No approval wait — capped at 10 s by decryptWithTimeout above this.
+        sizedBy('nip44_encrypt', [peerPubkey, plaintext], () =>
+          withApprovalWait(() => signer.nip44Encrypt(peerPubkey, plaintext), 'nip44_encrypt', { probe })),
+      // No approval wait — capped at 10 s by decryptWithTimeout above this, and
+      // the probe for the same reason as the NIP-04 half above.
       decrypt: (peerPubkey, ciphertext) =>
-        trackBunkerCall(() => signer.nip44Decrypt(peerPubkey, ciphertext), 'nip44_decrypt'),
+        trackBunkerCall(() => signer.nip44Decrypt(peerPubkey, ciphertext), 'nip44_decrypt', { probe }),
     },
   };
 }

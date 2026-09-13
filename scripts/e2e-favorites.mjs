@@ -331,8 +331,23 @@ if (last?.content) { plain = nip44.v2.decrypt(last.content, convo); tags = JSON.
 else { console.log('   (no private half to decrypt — skipping its assertions)'); }
 check('it decrypts to a tag array', Array.isArray(tags), true);
 check('the album is in it', tags.some((t) => t[1] === 'podcast:guid:fce40d63-ef30-5c85-af07-d99b3c759807'), true);
-check('the "?"-bearing track guid survived intact',
-  tags.some((t) => t[1] === 'podcast:item:guid:https://example.com/ep?id=42&utm=x'), true);
+// POSITION 1 IS THE FEED, NOT THE ITEM, and reading it as the item is what made
+// this assertion fail for months on correct code. An item entry is the
+// THREE-element tag `['i', <showId>, <itemId>]` — the feed-guid migration's
+// stages 2 + 4, which this app both reads and writes — so the item id is the
+// entry's LAST identifier. CLAUDE.md states the rule outright: "an entry is told
+// apart by LENGTH, never position 1, and its kind is its LAST identifier."
+// The guid was surviving intact the whole time, `?` and `&` and all; the test
+// was looking in the feed's slot for it.
+const ITEM_ID = 'podcast:item:guid:https://example.com/ep?id=42&utm=x';
+const itemEntry = tags.find((t) => t[0] === 'i' && t[t.length - 1] === ITEM_ID);
+check('the "?"-bearing track guid survived intact', !!itemEntry, true);
+// Asserting the SHAPE as well, because "the id is somewhere in the tags" would
+// pass against a two-element entry that had lost its parent — which is the
+// migration regression this format exists to prevent.
+check('...and it rides the three-element item tag, naming its parent feed',
+  itemEntry ? [itemEntry.length, itemEntry[1]] : null,
+  [3, 'podcast:guid:fce40d63-ef30-5c85-af07-d99b3c759807']);
 check('and the plaintext we signed carried no raw "?"', plain.includes('?'), false);
 
 // The mirror image, and the one that matters: the moment a private half
@@ -352,16 +367,35 @@ check('it says why instead', toolPanel.includes('set to Private'), true);
 
 
 
-// ---- the partial-acceptance notice ---------------------------------------
-console.log('\n--- 2b. PARTIAL ACCEPTANCE: one relay refuses, and it must be said ---');
+// ---- the partial acceptance must not read as a fault ----------------------
+//
+// THIS USED TO ASSERT A LINE THAT WAS DELETED ON PURPOSE. Two assertions here
+// required *"Saved to 1 of 2 relays"* on screen and the refusing relay named in
+// it. `components/favorites-sync-notice.tsx` records why that line went, on
+// request: a relay declining on its own write policy is an ordinary Nostr
+// outcome the user cannot act on — no retry could succeed and the list IS
+// stored — so a permanent informational box on the home page and the favorites
+// page read as a fault. The assertions were never updated, so they failed
+// against exactly the behaviour that was asked for.
+//
+// The scenario still earns its place, because the refusing relay is still here
+// and the thing worth proving is the other half of that decision: a partial
+// publish must leave NO alarm behind. `publishSignedEvent` still returns
+// `acceptedRelays`/`failedRelays` for any caller that wants the fact, and a
+// TOTAL refusal still surfaces as 'degraded' — which is what the third
+// assertion has always guarded and still does.
+console.log('\n--- 2b. PARTIAL ACCEPTANCE: one relay refuses, and it must NOT read as a fault ---');
 const reach = JSON.parse(await js(`JSON.stringify({
-  text: (document.body.innerText.match(/Saved to \\d+ of \\d+ relays[^]*?depend on one\\./) || [''])[0],
   degraded: /couldn.t (confirm|open)/i.test(document.body.innerText),
+  rows: document.querySelectorAll('main li').length,
 })`));
 console.log('    ', JSON.stringify(reach));
-check('the reach notice is on screen', /Saved to 1 of 2 relays/.test(reach.text), true);
-check('...and it names the relay that refused', /127\.0\.0\.1:/.test(reach.text), true);
-check('...and it does NOT raise a degraded warning', reach.degraded, false);
+check('a refused relay does NOT raise a degraded warning', reach.degraded, false);
+// `>= 2`, NOT `=== 2`: the private-favorites tool panel is still open from the
+// scenario above and its own entries are `main li` too, so an exact count here
+// pins the panel's markup rather than the thing under test. What must hold is
+// that a refused relay took nothing off the screen.
+check('...and the list did not vanish with it', reach.rows >= 2, true);
 
 
 console.log('\n--- 3. IDEMPOTENCE: reload twice, created_at must not move ---');
@@ -456,19 +490,118 @@ const ad = JSON.parse(adopted);
 // cache entry for it (`if (!feed.itemless && !hit) continue`): a group holding
 // a favorited item may exist only to NAME that item's parent, and reading it as
 // an album favorite manufactures albums the user never chose — 159 of 197
-// groups on the list that rule was written against. The album here holds the
-// track, so on a device with no cache it is placement, not a favorite. It
-// self-corrects the moment its last item goes; inventing a favorite never does.
-// The ITEM always renders — `part.items` has no such skip.
-check('the list renders on a device that has never seen it', ad.rows, 1);
-check('...and it is the ITEM, which is what a cacheless device can be sure of',
-  /example\.com\/ep/.test(ad.rowText[0] ?? ''), true);
-check('...and it reads as favorited', ad.favorited, 1);
+// groups on the list that rule was written against.
+//
+// TWO ROWS, AND THIS ASSERTED ONE — which is the fixture being misread, not the
+// rule. The fixture favorites the ALBUM in its own right AND a track from it, so
+// the planner emits TWO entries, and the dump proves it:
+//
+//   ["i","podcast:guid:fce40d63-…"]                        <- itemless: a real favorite
+//   ["i","podcast:guid:fce40d63-…","podcast:item:guid:…"]  <- the track, naming its parent
+//
+// **Only an ITEMLESS group is a feed favorite**, and the first entry is one. It
+// needs no local cache to be believed, because the wire states it outright — so
+// it renders on a device that has never seen this account, and that is correct.
+// The placement rule this comment used to invoke applies to the SECOND entry:
+// `if (!feed.itemless && !hit) continue;` skips that one, which is why the album
+// is not counted twice. Both halves of the hydrator are working.
+//
+// Scenario 6 below is the one that actually drives the placement rule, with a
+// list that has no itemless entry at all — which is what this scenario's older
+// comment believed it was testing.
+check('the list renders on a device that has never seen it', ad.rows, 2);
+check('...including the ITEM, which a cacheless device can be sure of',
+  ad.rowText.some((t) => /example\.com\/ep/.test(t)), true);
+check('...and both read as favorited', ad.favorited, 2);
 check('it does NOT claim the library is empty', ad.emptyClaim, false);
 check('and no degraded notice is up', ad.notice, false);
 // The adoption is RENDER-ONLY. Publishing an empty local list over a full relay
 // list is the wipe this guard exists for, and it stays refused.
 check('and it published NOTHING while adopting', published.length, beforeAdopt);
+
+
+console.log('\n--- 6. PLACEMENT-ONLY: a feed named only as an item\'s parent is NOT a favorite ---');
+// THE RULE SCENARIO 5 CANNOT REACH, and the one that costs a user most when it
+// breaks. CLAUDE.md: an item's group names its parent feed so the item can be
+// found, and reading that feed as a favorite "manufactures albums the user never
+// chose — 159 of 197 groups on the list this was written against". Inventing a
+// favorite never self-corrects; skipping one does, the moment its last item goes.
+//
+// WHICH GUARD THIS ACTUALLY PINS, because there are two and they cover different
+// wire shapes. A lone three-element `['i', show, item]` parses as an ITEM node,
+// not a group, and `partitionList`'s item branch is what refuses to manufacture a
+// `ListFeed` from it — "manufacturing one here would invent an album favorite out
+// of another app's saved track." The hydrator's `!feed.itemless && !hit` guard
+// covers the other shape, a real GROUP whose feed entry exists only to host its
+// items. **Disabling the hydrator guard does NOT fail this scenario** — measured,
+// not assumed, which is how the mis-attribution above was caught.
+//
+// PROVED AGAINST THE WRONG VERSION: with `partitionList`'s item branch pushing a
+// `ListFeed` as well, this scenario fails with exactly the symptom the rule
+// names — 2 rows and 2 filled hearts, the second being "Birdfeeder … - 2014
+// Release", an album nobody favorited.
+//
+// Scenario 5's fixture cannot drive it, because this harness favorites the album
+// in its own right, so an itemless entry is always on the wire beside the item's.
+// The only way to get a list with no itemless entry is to write one — which is
+// possible here and nowhere else, because this script holds the account's key
+// and can sign a kind:10333 itself. The app then reads a list exactly as another
+// app would have left it.
+//
+// PUBLIC tags, not the private half: the discriminator under test is the ENTRY
+// SHAPE, and encrypting it would only add a decrypt to the thing that can fail.
+// `created_at` is NOW rather than the future — it beats the events published
+// earlier in this run, and it leaves the app free to republish over it.
+const placementOnly = finalizeEvent({
+  kind: 10333,
+  created_at: Math.floor(Date.now() / 1000),
+  tags: [
+    ['alt', 'PC 2.0 Favorites'],
+    // NO itemless `['i', showId]` entry. That absence IS the fixture.
+    ['i', 'podcast:guid:fce40d63-ef30-5c85-af07-d99b3c759807', ITEM_ID],
+    ['k', 'podcast:item:guid'],
+  ],
+  content: '',
+}, sk);
+await new Promise((resolve, reject) => {
+  const w = new WebSocket(`ws://127.0.0.1:${PORT}`);
+  w.addEventListener('open', () => w.send(JSON.stringify(['EVENT', placementOnly])));
+  w.addEventListener('message', (m) => {
+    const msg = JSON.parse(m.data);
+    if (msg[0] !== 'OK') return;
+    w.close();
+    if (msg[2]) resolve();
+    else reject(new Error(`relay refused: ${msg[3]}`));
+  });
+  w.addEventListener('error', reject);
+  setTimeout(() => reject(new Error('relay never answered the placement-only seed')), 8000);
+});
+// A second cacheless device: the caches this device just rebuilt would otherwise
+// vouch for the album exactly as scenario 5's did.
+await js(`(() => {
+  for (const k of Object.keys(localStorage)) {
+    if (/^bmb:(favorites|favepisodes|favbaseline|fav_cleared|fav_privacy)/.test(k)) {
+      localStorage.removeItem(k);
+    }
+  }
+  return true;
+})()`);
+const beforePlacement = published.length;
+await send('Page.navigate', { url: `${APP}/favorites` }); await wait(14000);
+const placement = JSON.parse(await js(`JSON.stringify({
+  rows: document.querySelectorAll('main li').length,
+  rowText: [...document.querySelectorAll('main li')].map((li) => li.innerText.slice(0, 60)),
+  favorited: [...document.querySelectorAll('main li')]
+    .filter((li) => li.querySelector('[aria-label^="Unfavorite"]')).length,
+  emptyClaim: /nothing saved yet|nothing on this device/i.test(document.body.innerText),
+})`));
+console.log('    ', JSON.stringify(placement));
+check('the parent feed is NOT rendered as a favorite', placement.rows, 1);
+check('...and the row that survives is the ITEM',
+  placement.rowText.some((t) => /example\.com\/ep/.test(t)), true);
+check('...which still reads as favorited', placement.favorited, 1);
+check('...and it does not claim the library is empty', placement.emptyClaim, false);
+check('...and nothing was published over the read', published.length, beforePlacement);
 
 
 console.log('\n--- publish timeline ---');

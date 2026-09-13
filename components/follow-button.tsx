@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useReducer, useState } from 'react';
 import { useApp } from '@/lib/store';
+import { bunkerRequestTooLarge } from '@/lib/nostr';
 import {
   subscribeFollows,
   followsSnapshot,
@@ -32,7 +33,13 @@ export function FollowButton({ pubkey, className = '' }: { pubkey: string; class
   const identity = useApp((s) => s.identity);
   const { following, ok, loading } = useFollows();
   const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(false);
+  // NOT A BOOLEAN, and the reason is the one failure a retry cannot clear. A
+  // follow list past NIP-46's request ceiling can never be signed by a remote
+  // signer — no reconnect, no re-pairing and no number of taps changes it — so
+  // `↻ retry` there is an instruction that cannot be carried out, offered in
+  // place of the one fact the user needs. `terminal` is what stops the button
+  // asking for a tap it knows will fail. See lib/nostr/nip46-errors.ts.
+  const [failure, setFailure] = useState<{ text: string; terminal: boolean } | null>(null);
 
   if (!identity || identity.pubkey === pubkey) return null;
 
@@ -40,12 +47,13 @@ export function FollowButton({ pubkey, className = '' }: { pubkey: string; class
   // The list fetch itself failed (degraded relays) — distinct from a failed
   // toggle. Offer retry rather than sitting disabled on a misleading "loading".
   const fetchFailed = !ok && !loading;
-  const retry = err || fetchFailed;
+  const retry = (failure !== null && !failure.terminal) || fetchFailed;
+  const stuck = failure?.terminal === true;
 
   async function onClick(e: React.MouseEvent) {
     e.preventDefault();
     e.stopPropagation();
-    if (busy || loading) return;
+    if (busy || loading || stuck) return;
     if (fetchFailed) {
       // Re-run the one-time load (loadedFor is null after a degraded fetch, so
       // this actually re-queries instead of no-oping).
@@ -54,36 +62,60 @@ export function FollowButton({ pubkey, className = '' }: { pubkey: string; class
     }
     if (!ok) return;
     setBusy(true);
-    setErr(false);
+    setFailure(null);
     try {
       await toggleFollow(identity!, pubkey);
-    } catch {
-      setErr(true);
+    } catch (e2) {
+      setFailure(
+        bunkerRequestTooLarge(e2)
+          ? {
+            // THE COUNT IS IN IT because the limit is a count, and the number
+            // the user can see elsewhere is the only way to tell this apart
+            // from the vague failures that do deserve a retry. The remedy named
+            // is the honest one: nothing on this device can make a 65,535-byte
+            // NIP-46 request fit.
+            text: `Your follow list (${following.size} accounts) is too large for a remote signer`
+              + ' to sign — one NIP-46 request holds at most 64 KB. Change who you follow in an'
+              + ' app that holds your key itself.',
+            terminal: true,
+          }
+          : { text: 'Follow failed — tap to retry.', terminal: false },
+      );
     } finally {
       setBusy(false);
     }
   }
 
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={busy || loading}
-      aria-pressed={on}
-      className={`npub-follow-btn${on ? ' is-following' : ''} ${className}`}
-      title={
-        err
-          ? 'Failed — tap to retry'
-          : fetchFailed
-            ? "Couldn't load your follows — tap to retry"
-            : loading
-              ? 'Loading your follows…'
-              : on
-                ? 'Unfollow'
-                : 'Follow'
-      }
-    >
-      {retry ? '↻ retry' : busy || loading ? '…' : on ? '✓ Following' : '+ Follow'}
-    </button>
+    <>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={busy || loading || stuck}
+        aria-pressed={on}
+        className={`npub-follow-btn${on ? ' is-following' : ''} ${className}`}
+        title={
+          failure
+            ? failure.text
+            : fetchFailed
+              ? "Couldn't load your follows — tap to retry"
+              : loading
+                ? 'Loading your follows…'
+                : on
+                  ? 'Unfollow'
+                  : 'Follow'
+        }
+      >
+        {retry ? '↻ retry' : busy || loading ? '…' : on ? '✓ Following' : '+ Follow'}
+      </button>
+      {/* ITS OWN LINE, via `basis-full` in the wrapping flex row this button
+          sits in. A `title` is the only thing that carried this before and a
+          hover tooltip is not reachable on the phone the whole report came
+          from — a disabled control with no visible reason is the shape
+          CLAUDE.md calls indistinguishable from a broken one. */}
+      {failure && (
+        <span className="basis-full text-[10px] text-nostr/80 leading-snug">{failure.text}</span>
+      )}
+    </>
   );
 }

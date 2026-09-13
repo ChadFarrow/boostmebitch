@@ -31,6 +31,7 @@ export { isLikelyAndroid, isLikelyIOS, normalizeAmberPubkey } from './amber';
 export {
   isBunkerStale,
   bunkerRefusal,
+  bunkerRequestTooLarge,
   subscribeBunkerHealth,
   subscribeBunkerApproval,
   cancelBunkerApprovalWait,

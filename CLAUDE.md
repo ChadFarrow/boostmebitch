@@ -44,7 +44,7 @@ These docs hold the "this shipped broken once" reasoning that is not in the code
 | [`docs/security.md`](docs/security.md) | `lib/safe-fetch.ts`, `safe-url-attr.ts`, `sanitizeShowNotes`, `app/api/transcript`, `app/api/nostr/site-sign`, `next.config.mjs`, and **any input that accepts a Nostr identifier** (`lib/nostr/npub-input.ts` — `looksLikeSecretKey`) |
 | [`docs/ops.md`](docs/ops.md) | Google Cloud console, DNS, OAuth consent screen, Vercel env vars |
 | [`docs/android.md`](docs/android.md) | `app/.well-known/assetlinks.json/`, `lib/assetlinks.ts`, **both** `android/twa-manifest*.json` and `zapstore*.yaml`, `.github/workflows/android-release.yml`, and the Bubblewrap-consumed half of `public/manifest*.json` |
-| [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, **`app/sw.js/`**, and `<Player>`'s local-source branch — the worker is network-first, which is NOT precaching |
+| [`docs/downloads.md`](docs/downloads.md) | `lib/downloads/`, `download-button.tsx`, `app/downloads/`, **`app/sw.js/`**, and `<Player>`'s local-source branch |
 
 ## Names
 
@@ -91,7 +91,7 @@ npm run dev / build / start / lint
 | `check:assetlinks` | `lib/assetlinks.ts` — the Digital Asset Links statement | delegates the origin holding the NWC credential and the nsec |
 | `check:amber` | `lib/nostr/amber-callback-url.ts` — the `nostrsigner:` bytes and the returned fragment | signing breaks on Android — failed twice in production |
 | `check:ambersafe` | `lib/nostr/amber-safe-text.ts` — getting an NWC string past Amber | every NWC backup from Android fails, silently |
-| `check:nip46error` | `isApprovalPending` — refusal vs approval pending | Clave signs nothing; another signer's "no" hangs |
+| `check:nip46error` | `isApprovalPending` — refusal vs approval pending — **and `nip46RequestFits`, the 65535-byte NIP-44 ceiling one NIP-46 request may carry** | Clave signs nothing; another signer's "no" hangs; **a follow list over 849 is reported as a dead signer** |
 | `check:vpsummary` | `lib/nostr/value-playback-summary.ts` — the kind:33369 arithmetic and its publish predicate | two writers at ONE address rewrite each other forever |
 | `check:nwcbudget` | `parseNwcBudget`, `spendableSats` — a NIP-47 `get_budget` answer, and which number is spendable | advertises sats the budget will refuse, or blanks a wallet that can pay |
 | `check:musicl` | `parsePlaylistRemoteItems`, `isPlaylistMedium`, `playsAsTracks`, **`payableValue`** | a playlist publishes no `<item>`, so a mis-parse pays the CURATOR |
@@ -126,7 +126,7 @@ Each **imports the real module** via `node --experimental-strip-types`: a copy p
 
 **And make the replay TOTAL, not a hand-written second list.** `check-assetlinks.mjs` claimed every vector was asserted against `naive()` while naming six of twenty-nine, so a section sat green against nothing. Vectors are recorded as **calls** (`{ kind, args }`) and the replay walks the list, so a vector cannot be added without being proved. The must-still-work half is exempted **one vector at a time** with `{ alsoNaive: true }`, never by default.
 
-**`npm run check:claudemd`** guards this file's size (budget in the script), and **`check:conformance`** runs the spec's 31 vectors against the favorites merge (needs `../PC20-Nostr` or `PC20_NOSTR_DIR`). Neither pins a pure function. Run all with typecheck/lint/build before shipping.
+**`npm run check:claudemd`** guards this file's size (budget in the script), and **`check:conformance`** runs the spec's 31 vectors against the favorites merge. Neither pins a pure function. Run all with typecheck/lint/build before shipping.
 
 **Stop the dev server before `npm run build`** — the build rewrites `.next` and the running server then serves a mismatched chunk manifest. **And `rm -rf .next` before starting `dev` again, because the collision runs BOTH ways.** A dev server started on a `.next` a production build wrote inherits production manifests (`prerender-manifest.json` beside `static/development`) and serves a mismatched chunk graph, surfacing as **`undefined is not an object (evaluating 'originalFactory.call')`**, a React Refresh error that looks like an application bug. A phone or second browser **keeps serving those chunks from its own cache** and a plain reload will not evict them, so retest in a private tab.
 
