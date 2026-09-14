@@ -455,7 +455,8 @@ export function LivePage() {
 
           {data?.truncated && (
             <p className="text-muted text-xs mt-1">
-              More shows are live than this page checks at once — the newest are shown.
+              More shows have live items than this page checks at once — the ones on air are
+              checked first, newest broadcast before oldest.
             </p>
           )}
         </section>
