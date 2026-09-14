@@ -30,6 +30,13 @@ import type { Episode, NewEpisodeMarks } from '@/lib/types';
  * between this app and Podcast Index hold podcast records for seven days, so
  * any freshness field of ours would have reported "nothing new" confidently.
  *
+ * **THE PASS IS SEVERAL REQUESTS, NEVER ONE BIGGER ONE.** The route's feed cap
+ * guards an attacker-controlled list length, so a library past it is covered by
+ * successive requests of `MAX_FEEDS`, in series, inside the same pass — see
+ * `MAX_BATCHES`. Each request keeps its own `since`, its own `covered` set and
+ * its own `truncated` flag, so a request that fails costs its own feeds and
+ * nothing else.
+ *
  * **A NEGATIVE CLAIM IS ONLY MADE WHEN IT IS EARNED.** "Nothing new" appears
  * only when every feed asked about came back covered. A feed PI could not be
  * asked about is named, never counted as quiet — the same rule
@@ -45,25 +52,49 @@ import type { Episode, NewEpisodeMarks } from '@/lib/types';
  *    it painted an empty section over a full `bmb:newmarks` record.
  * 2. `advanceMarks` took the FETCHED rows, so a pass over a hundred shows
  *    marked several hundred episodes as seen and showed `FAV_NEW_CAP` of them.
- * 3. The "Nothing new" line required `deferred === 0`, which a library larger
- *    than `MAX_FEEDS` can never reach — so the page said nothing at all about
- *    the shows it HAD checked.
+ * 3. The "Nothing new" line required `deferred === 0`, which a one-request pass
+ *    over a library larger than `MAX_FEEDS` could never reach — so the page
+ *    said nothing at all about the shows it HAD checked.
  *
  * The rows now round-trip through `storage.newEpisodeMarks`, a pass MERGES into
  * that list rather than replacing it, and a mark may only describe a row the
  * merge kept. A row leaves by aging past the seven-day horizon, by its show
  * being unfavorited, or by the reader pressing CLEAR. Nothing else retires one.
+ *
+ * **THE TWO RULES MEET AT THE ORDER OF THE MARK UPDATE**, which is the one
+ * thing neither feature can decide alone. Requests are independent, so marks
+ * look like per-request work — but the list is CAPPED, so request 3's newer
+ * rows can push request 1's out of it. Advancing per request would mark those
+ * as seen and then drop them, which is bug 2 again by another route. So the
+ * marks are computed ONCE, against the final list, and `truncated` is carried
+ * per request through `advanceable`.
  */
 
 /** The freshness check runs at most this often. `checkedAt` lives on disk, so
  *  this survives a reload and is shared across tabs — a tab-switcher costs
  *  nothing. */
 const CHECK_MIN_MS = 15 * 60 * 1000;
-/** One request's worth of feeds; the route caps at the same number, so sending
- *  more would be silently truncated there instead of here. A library larger than
- *  this is covered over successive passes rather than partly for ever — see the
- *  stalest-first order in `check`. */
+/**
+ * One REQUEST's worth of feeds.
+ *
+ * The route caps at the same number and that cap is a SECURITY one — `feeds` is
+ * attacker-controlled length, and every id past it is one more Podcast Index
+ * call on our quota — so raising it there is not how a bigger library gets
+ * covered. A library larger than this is covered by successive REQUESTS inside
+ * one pass; see `MAX_BATCHES`.
+ */
 const MAX_FEEDS = 100;
+/**
+ * Requests one pass may issue, and they go out SEQUENTIALLY.
+ *
+ * `/api/new-episodes` allows 30 requests a minute per IP, a phone and a desktop
+ * share one household IP, and each request is already a bounded fan-out of its
+ * own upstream — so a pass may not spend that allowance in a parallel burst.
+ * Five requests cover 500 shows, which is past any real library. A library
+ * larger still is `deferred`, and the stalest-first order in `check` makes the
+ * next pass cover the part this one did not.
+ */
+const MAX_BATCHES = 5;
 /**
  * How long the ask set must hold still before the first check.
  *
@@ -91,14 +122,26 @@ export function FavoritesNewEpisodes() {
   const [rows, setRows] = useState<Episode[]>([]);
   const [uncovered, setUncovered] = useState(0);
   /** Askable shows this pass deliberately did not ask about, because the library
-   *  is larger than `MAX_FEEDS`. A DIFFERENT claim from `uncovered`: nothing
-   *  failed, we just have not got to them. Counted before the throttle can
-   *  return, so a throttled pass cannot say "nothing new" over them either. */
+   *  is larger than `MAX_FEEDS × MAX_BATCHES`. A DIFFERENT claim from
+   *  `uncovered`: nothing failed, we just have not got to them. Counted before
+   *  the throttle can return, so a throttled pass cannot say "nothing new" over
+   *  them either. */
   const [deferred, setDeferred] = useState(0);
   /** How many shows the last pass DID ask about. The counterpart to `deferred`,
    *  and what lets the "nothing new" line name its own scope instead of
-   *  withholding the result entirely. */
+   *  withholding the result entirely. Only a library past
+   *  `MAX_FEEDS × MAX_BATCHES` can now make the two disagree, but that is the
+   *  case the line exists for. */
   const [checked, setChecked] = useState(0);
+  /** Feeds asked about so far, out of the feeds this pass will ask about. A pass
+   *  over a large library is several requests in series, so "checking…" alone
+   *  sits there for seconds with nothing saying it is moving.
+   *
+   *  NOT the same number as `checked`, though both count feeds: this one moves
+   *  DURING a pass and resets at the next one, while `checked` is the settled
+   *  scope of the pass that produced what is on screen. A throttled pass writes
+   *  `checked` and issues no request at all. */
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
   const [record, setRecord] = useState<NewEpisodeMarks>({ checkedAt: 0, marks: {} });
   const [marksSaved, setMarksSaved] = useState(true);
   const [shown, setShown] = useState(PAGE);
@@ -165,21 +208,21 @@ export function FavoritesNewEpisodes() {
      * STALEST MARK FIRST, then slice.
      *
      * The slice used to be over `Object.values` insertion order, so a library
-     * over `MAX_FEEDS` had the same arbitrary hundred checked on every pass and
-     * the rest were never asked about at all. Ordering by mark makes the
+     * over the pass ceiling had the same arbitrary shows checked on every pass
+     * and the rest were never asked about at all. Ordering by mark makes the
      * truncation self-correcting: a feed just covered has the newest mark and
-     * goes to the back, so 227 favorites are fully covered in three passes and
-     * stay covered. A feed with NO mark sorts first, which is right — it is the
-     * one we know least about.
+     * goes to the back, so the tail of a library past `MAX_FEEDS × MAX_BATCHES`
+     * is covered by the next pass and stays covered. A feed with NO mark sorts
+     * first, which is right — it is the one we know least about.
      */
     const ordered = [...askable].sort(
       (a, b) => (stored.marks[a.podcastGuid] ?? 0) - (stored.marks[b.podcastGuid] ?? 0),
     );
-    const feeds = ordered.slice(0, MAX_FEEDS);
+    const asked = ordered.slice(0, MAX_FEEDS * MAX_BATCHES);
     // BEFORE the throttle can return, so a throttled pass cannot claim "nothing
     // new" over a tail it never asked about. These two need no request.
-    setDeferred(askable.length - feeds.length);
-    setChecked(feeds.length);
+    setDeferred(askable.length - asked.length);
+    setChecked(asked.length);
 
     if (!force && Date.now() - stored.checkedAt < CHECK_MIN_MS) {
       // Inside the throttle: repaint the stored list rather than re-asking.
@@ -194,99 +237,155 @@ export function FavoritesNewEpisodes() {
 
     running.current = true;
     setPhase('checking');
+    setProgress({ done: 0, total: asked.length });
+
+    const guidByFeedId: Record<number, string> = {};
+    for (const f of asked) guidByFeedId[f.id] = f.podcastGuid;
+
+    /**
+     * ONE PASS, SEVERAL REQUESTS — never one bigger request.
+     *
+     * The route's `MAX_FEEDS` is a security cap on an attacker-controlled list
+     * length, so the way to cover 217 shows is 3 requests of 100, not 1 request
+     * of 217. They run SEQUENTIALLY: the route allows 30 requests a minute per
+     * IP, a phone and a desktop share one household IP, and each request is
+     * already a bounded fan-out of its own upstream.
+     */
+    const batches: (typeof asked)[] = [];
+    for (let i = 0; i < asked.length; i += MAX_FEEDS) batches.push(asked.slice(i, i + MAX_FEEDS));
+
+    /**
+     * THE LIST, accumulated across every request of the pass.
+     *
+     * It starts from what is already on disk, because a pass ADDS to the list
+     * rather than replacing it, and it is what `advanceMarks` is handed below
+     * — a mark may only describe a row the merge kept.
+     */
+    let merged = stored.rows ?? [];
+    const coveredIds: number[] = [];
+    /**
+     * The guids a mark may advance over, collected per request.
+     *
+     * A request's `truncated` flag describes THAT request: PI's `max` is
+     * global across the chunk, so what it dropped lies between the mark and
+     * what it returned. Its feeds therefore stay out of this list and their
+     * marks hold, while the other requests' feeds settle normally. Collecting
+     * them rather than advancing per request is what lets the marks be
+     * computed once, against the FINAL list — see below.
+     */
+    const advanceable: string[] = [];
+    // Whether ANY request answered. It is what separates "we checked and there
+    // is nothing" from "we could not check" — a pass where every request failed
+    // is the `failed` phase, and a pass where one of three failed is a `done`
+    // phase carrying an `uncovered` count.
+    let answered = false;
+
     try {
-      const guidByFeedId: Record<number, string> = {};
-      for (const f of feeds) guidByFeedId[f.id] = f.podcastGuid;
-      const guids = feeds.map((f) => f.podcastGuid);
-      const since = sinceForBatch(stored.marks, guids, Date.now());
+      for (const batch of batches) {
+        const guids = batch.map((f) => f.podcastGuid);
+        // Per BATCH, not per pass. `sinceForBatch` returns the oldest mark in
+        // the set, so one floor over the whole library would ask every request
+        // for the least-recently-checked show's window.
+        const since = sinceForBatch(stored.marks, guids, Date.now());
+        try {
+          const res = await fetch(
+            `/api/new-episodes?feeds=${batch.map((f) => f.id).join(',')}&since=${since}`,
+          );
+          if (!res.ok) throw new Error(String(res.status));
+          const data = await res.json();
+          const episodes: Episode[] = Array.isArray(data.episodes) ? data.episodes : [];
+          const covered: number[] = Array.isArray(data.covered) ? data.covered : [];
+          const truncated = !!data.truncated;
+          answered = true;
+          coveredIds.push(...covered);
+          if (!truncated) {
+            advanceable.push(...covered.map((id) => guidByFeedId[id]).filter(Boolean));
+          }
 
-      const res = await fetch(
-        `/api/new-episodes?feeds=${feeds.map((f) => f.id).join(',')}&since=${since}`,
-      );
-      if (!res.ok) throw new Error(String(res.status));
-      const data = await res.json();
-      const episodes: Episode[] = Array.isArray(data.episodes) ? data.episodes : [];
-      const covered: number[] = Array.isArray(data.covered) ? data.covered : [];
-      const truncated = !!data.truncated;
-
-      const now = Date.now();
-      const found = selectNewEpisodes(episodes, stored.marks, guidByFeedId, now);
-      /**
-       * MERGE INTO THE CARRIED LIST, never replace it.
-       *
-       * One pass covers `MAX_FEEDS` shows and a library can be larger, so a
-       * replace made the second pass delete what the first one found — and the
-       * marks had already moved past it, so it was gone for good. The merge is
-       * also what `advanceMarks` is handed below, which is the rule that keeps
-       * a mark from describing a row the reader never got.
-       */
-      const merged = mergeNewEpisodeRows(stored.rows ?? [], found, now);
-      setRows(merged);
-      // Against the feeds ASKED ABOUT. The library's tail beyond `MAX_FEEDS` is
-      // `deferred`, counted above — folding the two together was how a
-      // 227-favorite library got told "Nothing new" about 127 shows no request
-      // was ever made for.
-      setUncovered(feeds.length - covered.length);
-
-      // The marks advance on EVIDENCE only — a feed that was not covered, a
-      // covered feed with no rows, and a truncated pass all leave theirs
-      // alone. That rule is `advanceMarks`, pinned by `check:favnew`.
-      //
-      // `merged`, NOT `episodes`. A pass over a hundred shows returns several
-      // hundred records and the list holds `FAV_NEW_CAP`; advancing over the
-      // fetched set marked every one of those as seen, so the overflow could
-      // never be offered again. A mark may only describe a row on the list.
-      const coveredGuids = covered.map((id) => guidByFeedId[id]).filter(Boolean);
-      let nextMarks = advanceMarks(stored.marks, merged, coveredGuids, guidByFeedId, truncated);
-      /**
-       * PRUNING IS A DELETION, so it needs a favorites list worth deleting
-       * against. Before this gate it ran against whatever snapshot the pass
-       * happened to see, and the pre-hydration snapshot is the cached subset —
-       * so a mark for a show still favorited was dropped, and this key's own doc
-       * says what that costs: "it re-announces a week of episodes as new."
-       *
-       * 'idle' and 'loading' both mean a read may still widen the list. For a
-       * signed-OUT reader the local cache IS the whole truth and 'idle' is the
-       * resting state, so that one prunes. 'degraded' does not: a half this
-       * signer could not open is a shorter list for a reason that has nothing to
-       * do with what is favorited. Skipping the prune costs only dead weight,
-       * which `pruneMarks`' own cap already bounds.
-       */
-      const sync = useApp.getState().favoritesSync;
-      let nextRows = merged;
-      if (!npub || sync === 'ok' || sync === 'off') {
-        nextMarks = pruneMarks(nextMarks, Object.keys(favs));
-        // The rows get the same gate for the same reason, and they need it
-        // MORE than the marks do: a stale mark is dead weight the cap bounds,
-        // while a row for an unfavorited show is a row on screen that the
-        // reader cannot get rid of.
-        nextRows = pruneNewRows(nextRows, Object.values(favs).map((f) => f.id));
-        setRows(nextRows);
+          // Selected against `stored.marks` — the marks as the pass STARTED —
+          // and merged into what the earlier requests found. Both halves
+          // matter: selecting against a running `marks` would empty the list as
+          // it filled, and replacing rather than merging would make request 3
+          // delete what request 1 found.
+          const now = Date.now();
+          merged = mergeNewEpisodeRows(
+            merged,
+            selectNewEpisodes(episodes, stored.marks, guidByFeedId, now),
+            now,
+          );
+          // Paint what the pass holds so far, before the next request goes out.
+          setRows(merged);
+        } catch {
+          // This request's feeds stay OUT of `covered`, exactly as a chunk the
+          // route could not ask about does. A request that failed is not a set
+          // of shows with nothing new, and the next request still goes out.
+        }
+        setProgress((p) => ({ done: p.done + batch.length, total: p.total }));
       }
-      const next = { checkedAt: Date.now(), marks: nextMarks, rows: nextRows };
+
+      // Against the feeds ASKED ABOUT. The library's tail beyond the pass
+      // ceiling is `deferred`, counted above — folding the two together was how
+      // a 227-favorite library got told "Nothing new" about 127 shows no
+      // request was ever made for.
+      setUncovered(asked.length - coveredIds.length);
+
+      /**
+       * MARKS ONCE, OVER THE FINAL LIST — not once per request.
+       *
+       * Two rules meet here and only this order satisfies both. A mark may
+       * only describe a row on the list, and the list is capped: request 3's
+       * newer rows can push request 1's out of it. Advancing per request would
+       * therefore mark request 1's rows as seen and then drop them, which is
+       * the silent consumption this whole file exists to prevent. `truncated`
+       * is still honoured per request, through `advanceable`.
+       */
+      let marks = advanceMarks(stored.marks, merged, advanceable, guidByFeedId, false);
+
+      let nextRows = merged;
+      if (answered) {
+        /**
+         * PRUNING IS A DELETION, so it needs a favorites list worth deleting
+         * against. Before this gate it ran against whatever snapshot the pass
+         * happened to see, and the pre-hydration snapshot is the cached subset —
+         * so a mark for a show still favorited was dropped, and this key's own
+         * doc says what that costs: "it re-announces a week of episodes as new."
+         *
+         * 'idle' and 'loading' both mean a read may still widen the list. For a
+         * signed-OUT reader the local cache IS the whole truth and 'idle' is the
+         * resting state, so that one prunes. 'degraded' does not: a half this
+         * signer could not open is a shorter list for a reason that has nothing
+         * to do with what is favorited. Skipping the prune costs only dead
+         * weight, which `pruneMarks`' own cap already bounds.
+         */
+        const sync = useApp.getState().favoritesSync;
+        if (!npub || sync === 'ok' || sync === 'off') {
+          marks = pruneMarks(marks, Object.keys(favs));
+          // The rows get the same gate for the same reason, and they need it
+          // MORE than the marks do: a stale mark is dead weight the cap bounds,
+          // while a row for an unfavorited show is a row on screen that the
+          // reader cannot get rid of.
+          nextRows = pruneNewRows(nextRows, Object.values(favs).map((f) => f.id));
+          setRows(nextRows);
+        }
+      }
+
+      // STAMP `checkedAt` EVEN WHEN EVERY REQUEST FAILED, with the marks
+      // untouched. The throttle reads that value, so leaving it alone meant a
+      // failed check armed nothing: with Podcast Index down, every heart toggle
+      // issued a fresh pass, no backoff. Bulk-editing twenty favorites during an
+      // outage was twenty passes. `running` guards concurrent runs, never
+      // sequential ones, and "try again" below ignores the throttle.
+      //
       // Do NOT drop `safeSet`'s answer. Marks held only in the memory mirror
       // work all session and are gone on the next load, so the same episodes
       // come back announced as new — which reads as the feature being broken,
       // never as a storage fault.
+      const next = { checkedAt: Date.now(), marks, rows: nextRows };
       setMarksSaved(storage.newEpisodeMarks.set(npub, next));
       setRecord(next);
-      setPhase('done');
-    } catch {
-      // Keep whatever is painted. A failed check is not an empty library.
-      //
-      // STAMP `checkedAt` ANYWAY, with the marks untouched. The throttle reads
-      // that value, so leaving it alone meant a failed check armed nothing: with
-      // Podcast Index down, every heart toggle issued a fresh request — two
-      // chunks of fifty feed ids each, no backoff. Bulk-editing twenty
-      // favorites during an outage was twenty requests and forty upstream calls.
-      // `running` guards concurrent runs, never sequential ones.
-      //
-      // The marks do NOT advance here, so nothing is claimed as seen. The
-      // fifteen minutes buys a backoff, and "try again" below ignores it.
-      const next = { ...stored, checkedAt: Date.now() };
-      setMarksSaved(storage.newEpisodeMarks.set(npub, next));
-      setRecord(next);
-      setPhase('failed');
+      // Keep whatever is painted on a total failure. A failed check is not an
+      // empty library.
+      setPhase(answered ? 'done' : 'failed');
     } finally {
       running.current = false;
     }
@@ -346,7 +445,13 @@ export function FavoritesNewEpisodes() {
           <span className="flex items-center gap-2">
             <span>NEW EPISODES</span>
             {rows.length > 0 && <span className="text-bolt">{rows.length}</span>}
-            {phase === 'checking' && <span className="text-muted normal-case">checking…</span>}
+            {phase === 'checking' && (
+              <span className="text-muted normal-case">
+                {progress.total > MAX_FEEDS
+                  ? `checking ${progress.done}/${progress.total}…`
+                  : 'checking…'}
+              </span>
+            )}
           </span>
         }
         collapsed={isCollapsed}
@@ -395,16 +500,17 @@ export function FavoritesNewEpisodes() {
             {/* THE RESULT COMES FIRST, then the caveat about its scope.
                 `deferred` used to suppress this line outright, on the reading
                 that a negative claim over an unasked show is unearned. The
-                claim was right and the remedy was wrong: a library larger than
-                `MAX_FEEDS` can never reach `deferred === 0`, so a 219-show
-                library got the caveat alone, with nothing said about the
-                hundred shows that WERE checked. That is not a withheld claim,
-                it is a blank section — which is what the reader reports as the
-                feature not working.
+                claim was right and the remedy was wrong: back when a pass was
+                ONE request, a 219-show library could never reach
+                `deferred === 0`, so it got the caveat alone with nothing said
+                about the hundred shows that WERE checked. That is not a
+                withheld claim, it is a blank section — which is what the reader
+                reports as the feature not working.
 
-                So the line names its own scope instead. "Nothing new from the
-                100 shows checked" is earned; bare "Nothing new" is kept for
-                the case where the scope is the whole library. */}
+                A pass now covers `MAX_FEEDS × MAX_BATCHES`, so `deferred` is 0
+                for any real library and this reads "Nothing new since …". The
+                scoped form is what a library past that ceiling gets, and it is
+                still earned: "Nothing new from the 500 shows checked". */}
             {phase === 'done' && rows.length === 0 && uncovered === 0 && (
               <p className="text-muted text-sm py-3">
                 {deferred > 0
@@ -419,13 +525,13 @@ export function FavoritesNewEpisodes() {
             )}
 
             {/* A THIRD claim, and it is not a failure: the library is larger
-                than one request's worth, so these shows were not asked about at
-                all. Saying "could not check" would blame Podcast Index for a cap
-                of ours. The check-the-rest press makes real progress, because
-                the ask list is ordered stalest-mark-first — the hundred just
-                covered now sort last. It carries the only press worth offering
-                while `deferred` stands, which is why the line above withholds
-                its own. */}
+                than a whole pass (`MAX_FEEDS × MAX_BATCHES`), so these shows
+                were not asked about at all. Saying "could not check" would
+                blame Podcast Index for a cap of ours. The check-the-rest press
+                makes real progress, because the ask list is ordered
+                stalest-mark-first — the shows just covered now sort last. It
+                carries the only press worth offering while `deferred` stands,
+                which is why the line above withholds its own. */}
             {phase === 'done' && deferred > 0 && (
               <p className="text-muted text-sm py-3">
                 {deferred} more {deferred === 1 ? 'show has' : 'shows have'} not been checked yet.{' '}
