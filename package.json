@@ -46,6 +46,7 @@
     "check:notelink": "node --experimental-strip-types scripts/check-note-episode-link.mjs",
     "check:claudemd": "node scripts/check-claudemd.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
+    "probe:liveroster": "node --experimental-strip-types scripts/probe-live-roster.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs",
     "probe:mutes": "node --experimental-strip-types scripts/probe-mutes.mjs",
@@ -69,7 +70,8 @@
     "check:cache": "node --experimental-strip-types scripts/check-bounded-cache.mjs",
     "check:relaysocket": "node --experimental-strip-types scripts/check-relay-socket.mjs",
     "check:livemerge": "node --experimental-strip-types scripts/check-live-merge.mjs",
-    "check:liveover": "node --experimental-strip-types scripts/check-live-over.mjs"
+    "check:liveover": "node --experimental-strip-types scripts/check-live-over.mjs",
+    "check:liveroster": "node --experimental-strip-types scripts/check-live-roster.mjs"
   },
   "dependencies": {
     "@buildonspark/spark-sdk": "^0.8.1",

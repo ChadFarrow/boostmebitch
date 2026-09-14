@@ -473,6 +473,91 @@ export function liveBroadcastIsOver(
   return false;
 }
 
+/**
+ * Which feeds, and in what order, `/api/live-shows` spends its verification
+ * budget on — Podcast Index's global roster reduced to an ordered feed list.
+ *
+ * WHY THIS IS NOT `[...byFeed.keys()]`. The route can only read so many feeds
+ * from RSS inside one function's time budget (`MAX_LIVE_FEEDS`, sized against
+ * `PI_TIMEOUT_MS`), and everything past that slice is dropped with PI's own row
+ * included — so a feed trimmed here is invisible on `/live` even when PI
+ * correctly says it is broadcasting. Which feeds get trimmed was therefore
+ * decided by `Map` insertion order, i.e. by whatever order Podcast Index
+ * happened to return `/episodes/live` in, which is not an order at all: the
+ * endpoint is documented as "all episodes that have been found in the
+ * podcast:liveitem" and `getGlobalLiveItems` keeps `pending` rows beside `live`
+ * ones, so a roster of scheduled broadcasts can spend the whole budget while a
+ * show that is on air right now sits at index 30 and never gets read. That is
+ * the shape of "X is live via RSS but is not in the live tab", and nothing on
+ * screen distinguishes it from PI never having heard of the show.
+ *
+ * `<LivePage>` also already tells the reader, when `truncated` is set, that
+ * "the newest are shown". Nothing made that true. This does.
+ *
+ * **LIVE BEFORE PENDING, and that is the half that matters.** A `live` row is a
+ * claim about right now and the page's primary list; a `pending` row is a
+ * schedule, it lands in a tab behind a press, and it is ACCUMULATED across
+ * polls client-side — so a pending feed missed by one request is picked up by
+ * the next, while a live feed missed by every request is simply absent for the
+ * length of the broadcast. The two are not equally worth a read.
+ *
+ * Within each band the order is {@link compareLiveShows}': live newest-start
+ * first (a broadcast that just started is the one a reader has not seen),
+ * pending soonest-start first (a show starting in ten minutes is worth reading;
+ * one in three days is not). A row with no start time sorts last in its band
+ * rather than first — absent is not "starting at the epoch", and reading
+ * `?? 0` as a time is how an unstamped row would win every live tie.
+ *
+ * Ties break on `feedId` so the slice is DETERMINISTIC. Two requests a second
+ * apart must not verify different halves of the same roster: `Array.prototype
+ * .sort` is stable, but the input order it would be stable about is PI's, which
+ * is the thing this function exists not to trust.
+ *
+ * `feedId` is coerced with `Number` because PI does not reliably send it as one
+ * and `buildEpisode` copies it through unconverted — the same coercion
+ * `getLiveItemsForFeed` needs for the same reason. Non-positive and
+ * non-integral ids are dropped here rather than at the call site, so one place
+ * decides what a feed id is.
+ */
+export function liveRosterFeedOrder(
+  roster: readonly { feedId?: unknown; liveStatus?: string; liveStartTime?: number }[],
+): number[] {
+  /** Per feed: 0 if any row is live, and the best start time in that band. */
+  const best = new Map<number, { band: number; start: number | undefined }>();
+  for (const e of roster) {
+    const id = Number(e.feedId);
+    if (!Number.isInteger(id) || id <= 0) continue;
+    const band = e.liveStatus === 'live' ? 0 : 1;
+    const start =
+      typeof e.liveStartTime === 'number' && Number.isFinite(e.liveStartTime)
+        ? e.liveStartTime
+        : undefined;
+    const held = best.get(id);
+    if (!held || band < held.band) {
+      best.set(id, { band, start });
+      continue;
+    }
+    if (band > held.band || start === undefined) continue;
+    // Same band: keep the row this band sorts FIRST by, so a feed carrying both
+    // a just-started broadcast and an older one is ranked by the newer.
+    if (held.start === undefined) held.start = start;
+    else held.start = band === 0 ? Math.max(held.start, start) : Math.min(held.start, start);
+  }
+
+  return [...best.entries()]
+    .sort(([aId, a], [bId, b]) => {
+      if (a.band !== b.band) return a.band - b.band;
+      // Undated sorts last within its band, both bands.
+      if (a.start === undefined || b.start === undefined) {
+        if (a.start === b.start) return aId - bId;
+        return a.start === undefined ? 1 : -1;
+      }
+      if (a.start !== b.start) return a.band === 0 ? b.start - a.start : a.start - b.start;
+      return aId - bId;
+    })
+    .map(([id]) => id);
+}
+
 export function compareLiveShows(a: LiveShow, b: LiveShow): number {
   const rank = (s: LiveShow) => (s.liveStatus === 'live' ? 0 : 1);
   if (rank(a) !== rank(b)) return rank(a) - rank(b);

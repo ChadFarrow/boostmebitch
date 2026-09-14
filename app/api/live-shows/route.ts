@@ -8,7 +8,9 @@ import {
   getPodcast,
 } from '@/lib/pi';
 import { createBoundedCache } from '@/lib/bounded-cache';
-import { compareLiveShows, mapLimit, mergeLiveOverPi, FEED_FANOUT, PI_FANOUT } from '@/lib/util';
+import {
+  compareLiveShows, liveRosterFeedOrder, mapLimit, mergeLiveOverPi, FEED_FANOUT, PI_FANOUT,
+} from '@/lib/util';
 import type { Episode, LiveShow, Podcast } from '@/lib/types';
 
 /**
@@ -80,8 +82,10 @@ const LIVE_XML_MAX_AGE_MS = 10_000;
  * return up to 1000 rows, and a capped COUNT is not a capped FAN-OUT, so both
  * bounds are here: this slice, and `mapLimit` on each stage.
  *
- * Going over is reported as `truncated` rather than hidden. Raise it only after
- * measuring a real roster.
+ * Going over is reported as `truncated` rather than hidden — and WHICH feeds go
+ * over is `liveRosterFeedOrder`'s job, not the order PI answered in. A cap over
+ * an unranked list is how a show that is genuinely on air gets trimmed in
+ * favour of somebody's schedule. Raise it only after measuring a real roster.
  */
 const MAX_LIVE_FEEDS = 24;
 
@@ -200,7 +204,14 @@ export async function GET(req: Request) {
       else byFeed.set(id, [e]);
     }
 
-    const rosterIds = [...byFeed.keys()];
+    // ORDERED, never `[...byFeed.keys()]`. The slice below drops a feed with
+    // PI's own row included, so whatever order this list is in decides which
+    // broadcasts are reachable at all — and insertion order is Podcast Index's
+    // response order, which ranks nothing. `liveRosterFeedOrder` puts feeds
+    // with a LIVE row ahead of feeds that only have a schedule, so a roster
+    // full of pending items cannot spend the budget while a show that is on
+    // air right now sits past the cap. See the function's own comment.
+    const rosterIds = liveRosterFeedOrder(roster);
     const fromRoster = rosterIds.slice(0, MAX_LIVE_FEEDS);
     const truncated = rosterIds.length > fromRoster.length;
 
