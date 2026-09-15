@@ -18,6 +18,36 @@ import {
 import { storeBoostMetadata } from './boostbox';
 import { storage } from '@/lib/storage';
 import { recipientOrder, isLnAddressRecipient, splitSats } from '@/lib/util';
+// Type-only, and deliberately so: `./zap` imports `pickRail` from HERE, so a
+// value import would close a cycle. The zap arm in `payOne` reaches the module
+// through `await import('./zap')`, the same way the NWC engine is reached.
+import type { LnurlPayMetadata } from './zap';
+
+/** One lnaddress leg that may be paid as a real NIP-57 zap. */
+export interface ZapLegTarget {
+  /** The payee's Nostr pubkey — the `p` tag on the kind:9734. */
+  recipientPubkey: string;
+  /**
+   * The provider's payRequest document, so the money path does not fetch it a
+   * second time. The zapper key the receipt is checked against is read from
+   * `meta.nostrPubkey` inside `sendZap` — deliberately NOT copied out to a field
+   * here, because two copies of one key is two things that can disagree, and the
+   * matcher would then be testing the copy nobody signed with.
+   */
+  meta: LnurlPayMetadata;
+}
+
+/**
+ * The zap legs of one boost, resolved BEFORE any payment.
+ *
+ * Keyed by lowercased Lightning address, because that is what a value block
+ * gives `payOne` and case is not significant in one.
+ */
+export interface ZapRouting {
+  byAddress: Map<string, ZapLegTarget>;
+  /** Where each kind:9734 asks for its receipt to be published. */
+  relays: string[];
+}
 
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
 // The boostagram JSON already carries `sender_id`, so we don't add a separate
@@ -289,6 +319,7 @@ async function payOne(
   rail: Rail,
   boostagram: Boostagram,
   canKeysend: KeysendCapability,
+  zap?: ZapRouting,
 ): Promise<BoostResult> {
   const base: BoostResult = { recipient, sats, ok: false };
   if (sats <= 0) return { ...base, ok: true };
@@ -312,6 +343,57 @@ async function payOne(
       );
       return await payKeysend(recipient, sats, rail, boostagram);
     }
+    // ── Real NIP-57 zap, when the caller resolved one for this address ──────
+    //
+    // AHEAD OF THE KEYSEND UPGRADE, and that ordering is the whole arm. A
+    // keysend cannot make the recipient's LN service publish a kind:9735, so an
+    // upgraded leg can never carry a receipt — and the receipt is the only thing
+    // Fountain reads to render a sat amount. Same rule the live-stream path has
+    // followed since it shipped: zaps stay LNURL.
+    //
+    // The caller decides WHETHER, not this function. `zap` is absent for every
+    // unattended payer — lib/v4v/streaming.ts calls the same sendBoost — and for
+    // an anonymous boost, because a zap request is signed by the user's key and
+    // the receipt republishes that pubkey as the payer.
+    const zapTarget = zap?.byAddress.get(recipient.address.toLowerCase());
+    if (zap && zapTarget) {
+      const zapMod = await import('./zap');
+      try {
+        console.info(
+          `[zap] ${recipient.address} → NIP-57 zap ${sats} sat ` +
+            '(receipt expected; skips the keysend upgrade)',
+        );
+        const sent = await zapMod.sendZap({
+          recipientPubkey: zapTarget.recipientPubkey,
+          recipientLud16: recipient.address,
+          amountSats: sats,
+          comment: boostagram.message,
+          relays: zap.relays,
+          rail,
+          meta: zapTarget.meta,
+          metadata: { boostagram, recipient, legMsat: sats * 1000 },
+        });
+        return {
+          recipient,
+          sats,
+          ok: true,
+          preimage: sent.preimage,
+          boostboxUrl: sent.boostboxUrl,
+          boostboxId: sent.boostboxUrl?.split('/').pop() || undefined,
+          zapPending: sent.pending,
+        };
+      } catch (e) {
+        // ONLY this class may fall through. It means the invoice was never
+        // handed to a wallet, so paying the leg the ordinary way below pays it
+        // once. Anything else is a leg that already went out; re-paying it here
+        // would be the double-pay invariant 11 exists to prevent.
+        if (!(e instanceof zapMod.ZapNotAttemptedError)) throw e;
+        console.info(
+          `[zap] ${recipient.address} → falling back, nothing was sent: ${e.message}`,
+        );
+      }
+    }
+
     const upgraded =
       canKeysend === 'no' ? null : await keysendRecipientFor(recipient);
     if (!upgraded) {
@@ -468,6 +550,37 @@ export function paidAny(results: BoostResult[]): boolean {
   return results.some((r) => r.ok && r.sats > 0);
 }
 
+/**
+ * Fill in each zap leg's receipt, once the provider has published it.
+ *
+ * Call this between `sendBoost` and the note: the receipts are what the note
+ * quotes, and they do not exist at the moment the invoices settle. It waits
+ * once for the whole boost, never rejects, and leaves a leg untouched when no
+ * receipt arrives — a missing receipt costs the quote, never the payment.
+ *
+ * Here rather than in the modals because both of them need it and neither
+ * should reach past `lib/v4v/boost.ts` to get it; the relay machinery is loaded
+ * on demand for the same reason the NWC engine is.
+ */
+export async function collectZapReceipts(
+  results: BoostResult[],
+): Promise<BoostResult[]> {
+  const pending = results.flatMap((r) => (r.zapPending ? [r.zapPending] : []));
+  if (pending.length === 0) return results;
+  try {
+    const { awaitZapReceipts } = await import('@/lib/nostr/zap-receipt-wait');
+    const found = await awaitZapReceipts(pending);
+    return results.map((r) => {
+      const receipt = r.zapPending ? found.get(r.zapPending.requestId) : undefined;
+      return receipt ? { ...r, zapReceipt: receipt } : r;
+    });
+  } catch {
+    // The note still publishes, just without the quote. Nothing here is worth
+    // failing a boost that has already paid.
+    return results;
+  }
+}
+
 export async function sendBoost(args: {
   value: ValueBlock;
   totalSats: number;
@@ -478,6 +591,15 @@ export async function sendBoost(args: {
   // must write `results[index]`, never push, or every ✓/✗ lands on the wrong
   // recipient mid-send.
   onProgress?: (r: BoostResult, index: number, total: number) => void;
+  /**
+   * Which lnaddress legs may go out as real NIP-57 zaps, and to whose pubkey.
+   *
+   * Optional, and absent is the default on purpose. `lib/v4v/streaming.ts`
+   * settles through this same function, unattended and on a timer — it must
+   * never acquire a signer prompt, a NIP-05 lookup or a relay subscription
+   * because a UI surface elsewhere wanted a quotable receipt.
+   */
+  zap?: ZapRouting;
 }): Promise<BoostResult[]> {
   // Before ANY leg: the retry arms below read the NWC error classes whichever
   // rail pays, and a payment engine that cannot load must fail the boost while
@@ -534,7 +656,7 @@ export async function sendBoost(args: {
   // Still strictly sequential: NWC is one relay connection, WebLN prompts per
   // payment, and streaming.ts settles serially by design. Never parallelize.
   for (const i of recipientOrder(recipients)) {
-    const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend);
+    const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend, args.zap);
     results[i] = r;
     args.onProgress?.(r, i, recipients.length);
   }

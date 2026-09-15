@@ -1,6 +1,8 @@
+import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
-import { httpUrl } from '../util';
+import { httpUrl, recipientOrder } from '../util';
+import type { QuotedZapReceipt } from './zap-receipt-wait';
 import { BRAND, clientTag } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
@@ -187,6 +189,70 @@ function withArt(content: string, art: string | null): string {
   return art ? `${content}\n\n${art}` : content;
 }
 
+/**
+ * Cap on quoted receipts. A boost with more zap legs than this still pays them
+ * all; the note just stops naming them, the same way it stops naming people.
+ */
+const MAX_QUOTED_RECEIPTS = 4;
+
+/**
+ * The zap receipts this note quotes, biggest share first.
+ *
+ * WHY QUOTE A RECEIPT AT ALL. Fountain renders a boost's sat amount off a quoted
+ * kind:9735, not off our `amount` tag and not off the prose — which is why our
+ * notes showed the sats as text and nothing else. This repo already reads that
+ * shape in the other direction (`buildNote` in ./discover.ts resolves a quoted
+ * receipt through `zapReceiptAmountMsat`), so a note we publish this way is read
+ * by our own explorer exactly as a Fountain wrapper is.
+ *
+ * ORDERED BY `recipientOrder`, not by feed order, for the same reason the legs
+ * are paid and stored that way: the first quote is the one a client that renders
+ * only one will pick, so it must be the artist's, never a 1-sat fee payee's.
+ */
+function quotedReceipts(results: BoostResult[]): QuotedZapReceipt[] {
+  // Holes are filtered FIRST, and that is not defensive tidiness. The modal's
+  // in-flight `results` state is `(BoostResult | undefined)[]` because legs
+  // settle biggest-share-first, and `totalMsat` above only walks this array when
+  // `value_msat_total` is absent — so a hole reaching here used to be harmless
+  // and now would throw inside the note builder, losing the whole note for a
+  // boost that had already paid.
+  const legs = results.filter((r): r is BoostResult => !!r);
+  const out: QuotedZapReceipt[] = [];
+  const seen = new Set<string>();
+  for (const i of recipientOrder(legs.map((r) => r.recipient))) {
+    const z = legs[i]?.zapReceipt;
+    if (!z || seen.has(z.id)) continue;
+    seen.add(z.id);
+    out.push(z);
+    if (out.length >= MAX_QUOTED_RECEIPTS) break;
+  }
+  return out;
+}
+
+/**
+ * Append the `nostr:nevent…` reference for each quoted receipt.
+ *
+ * The BODY reference is the half that matters for interop — Fountain writes its
+ * own quote that way and reads it that way, and `parseQuoteRefs` (./discover.ts)
+ * exists because a `q`-tag scan alone misses it. The `q` tag goes on the event
+ * too; neither replaces the other.
+ *
+ * Placed below the artwork and above the mention run, for the reason `withArt`
+ * gives: the trailing `nostr:npub…` run is what a compose box writes last.
+ */
+function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string {
+  if (receipts.length === 0) return content;
+  const refs = receipts.map(
+    (r) =>
+      `nostr:${nip19.neventEncode({
+        id: r.id,
+        relays: r.relays.slice(0, 3),
+        author: r.pubkey,
+      })}`,
+  );
+  return `${content}\n\n${refs.join('\n')}`;
+}
+
 /** Cap on how many people one boost note tags. */
 const MAX_NOTE_NPUBS = 4;
 
@@ -308,6 +374,15 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     tags.push(['imeta', `url ${banner}`, 'm image/png', 'dim 1200x300']);
   }
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
+  // Same shape `publishQuoteRepost` writes (./interactions.ts): id, relay hint,
+  // author. The author is the recipient's LNURL server, which is who signed the
+  // receipt — not the payee and not us.
+  //
+  // `amount` above deliberately stays `value_msat_total`, the whole boost before
+  // the value block divides it. A receipt's amount is this leg's settled figure,
+  // so the two numbers answer different questions and neither is wrong.
+  const receipts = quotedReceipts(args.results);
+  for (const r of receipts) tags.push(['q', r.id, r.relays[0] ?? '', r.pubkey]);
   tags.push(clientTag(boostagram.app_name));
   tags.push(['t', 'boostagram']);
   tags.push(['t', 'value4value']);
@@ -322,7 +397,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     content: (() => {
       const body = withArt(args.contentOverride ?? formatContent(args), banner);
       const { content: inlined, remaining } = inlineMentions(body, inBody);
-      return withMentionRun(inlined, remaining);
+      return withMentionRun(withZapReceipts(inlined, receipts), remaining);
     })(),
   };
 }

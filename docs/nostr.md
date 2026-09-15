@@ -1878,6 +1878,8 @@ wrapper `<div>` per item, so filtering only in the card leaves N empty rows unde
 a header reading `(N)`. The card keeps its own `useApp` selector regardless,
 because it is memoized and a mute arriving only through props is skipped.
 
+**This app is now a WRITER of that wrapper shape too, and the reading side needed no change.** A boost whose lnaddress leg qualified goes out as a real NIP-57 zap, and `buildBoostNoteTemplate` quotes the resulting receipt — a `q` tag (`['q', id, relayHint, zapperPubkey]`, the same shape `publishQuoteRepost` writes) and a `nostr:nevent1…` line in the body, placed below the artwork and above the mention run. Fountain reads the body reference; `parseQuoteRefs` reads it back here. Two consequences fall out of machinery that already existed: `quotedEventIds` dedupes our own wrapper against its receipt in `<BoostExplorer>`, exactly as it does Fountain's, so one payment stays one card; and `buildNote` leaves the amount alone, because it adopts a quoted receipt's figure only when the wrapper carries no `amount` tag and ours always does. Why the receipt rather than our own tag, and why the quoted figure is a per-leg number, is in [`money-boosts.md`](money-boosts.md) — that is the money side, and the rules that can lose funds or name the wrong payer live there.
+
 **`lib/nostr/zap-receipt.ts` has three live callers**: `buildNote` reads a quoted
 receipt's amount through `zapReceiptAmountMsat`, `<LiveChat>` renders receipts in
 a stream's chat, and `fetchZapsReceivedBy` parses the zaps section. It kept
