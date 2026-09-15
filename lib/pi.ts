@@ -588,9 +588,34 @@ export async function getEpisodes(feedId: number, max = 25): Promise<Episode[]> 
  * upstream call between them.
  */
 export async function getGlobalLiveItems(): Promise<Episode[]> {
+  return (await getGlobalLiveItemsDetailed()).items;
+}
+
+/**
+ * {@link getGlobalLiveItems} plus how many rows Podcast Index actually sent.
+ *
+ * `rawRows` is counted BEFORE either filter below, and it exists because an
+ * empty return from this function has two causes that need opposite fixes and
+ * are otherwise indistinguishable from any surface: PI sent nothing, or PI sent
+ * rows and the `status` test dropped every one of them. Measured in production
+ * 2026-09-14, with three podping shows on air, `/api/live-shows` answered
+ * `{"items":[],"unverifiedFeeds":0,"truncated":false}` — and nothing in that
+ * body, or on the page, said which cause it was.
+ *
+ * So the count is taken here rather than at the call site. The call site cannot
+ * take it: `data.items` is this function's local, and the whole point is to
+ * measure the payload as it arrived, not what survived. `/api/live-shows`
+ * passes both numbers through to its response.
+ *
+ * Same split, and same reason, as `getLiveItemsFromRssDetailed` beside
+ * `getLiveItemsFromRss`: the detailed one answers a question the bare array
+ * cannot express, and every existing caller keeps the simple shape.
+ */
+export async function getGlobalLiveItemsDetailed(): Promise<{ items: Episode[]; rawRows: number }> {
   const data = await pi<any>(`/episodes/live?max=1000`);
+  const rows: any[] = Array.isArray(data.items) ? data.items : [];
   const out: Episode[] = [];
-  for (const e of data.items ?? []) {
+  for (const e of rows) {
     const status = typeof e.status === 'string' ? e.status.toLowerCase() : undefined;
     if (status !== 'live' && status !== 'pending') continue;
     const startTime = typeof e.startTime === 'number' ? e.startTime : undefined;
@@ -615,7 +640,7 @@ export async function getGlobalLiveItems(): Promise<Episode[]> {
       liveEndTime: endTime,
     });
   }
-  return out;
+  return { items: out, rawRows: rows.length };
 }
 
 /**

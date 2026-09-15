@@ -4,9 +4,11 @@
 // Usage:
 //   npm run probe:liveroster -- <feedId | feedUrl | feed title>
 //
-// Needs PODCAST_INDEX_KEY / PODCAST_INDEX_SECRET in the environment, because
-// two of the four gates ARE Podcast Index:
-//   node --experimental-strip-types --env-file=.env.local scripts/probe-live-roster.mjs 4210
+// Needs PODCAST_INDEX_KEY / PODCAST_INDEX_SECRET, because two of the four gates
+// ARE Podcast Index. The npm script loads `.env.local` for you with
+// `--env-file-if-exists`, so `npm run probe:liveroster -- <target>` is the whole
+// of it — no exported variables, and no failure when that file is absent (the
+// script says what is missing instead, which is the more useful error).
 //
 // WHY THIS EXISTS. `/live` shows a `<podcast:liveItem>` only if some roster
 // nominated its feed for an RSS read, and there are four independent ways for a
@@ -43,7 +45,10 @@ import {
 /** Kept in step with `MAX_LIVE_FEEDS` in app/api/live-shows/route.ts. */
 const MAX_LIVE_FEEDS = 24;
 
-const target = process.argv.slice(2).find((a) => !a.startsWith('--'));
+// JOINED, not `find`. An unquoted `-- Planet Rage` arrives as two arguments,
+// and taking the first silently searches for "Planet" — a wrong answer that
+// reads like a real one, which is the opposite of what a probe is for.
+const target = process.argv.slice(2).filter((a) => !a.startsWith('--')).join(' ').trim();
 if (!target) {
   console.error('usage: npm run probe:liveroster -- <feedId | feedUrl | feed title>');
   process.exit(2);
@@ -55,9 +60,12 @@ function authHeaders() {
   const secret = process.env.PODCAST_INDEX_SECRET;
   if (!key || !secret) {
     console.error('Missing PODCAST_INDEX_KEY / PODCAST_INDEX_SECRET.');
-    console.error('Run it with your env file:');
-    console.error('  node --experimental-strip-types --env-file=.env.local \\');
-    console.error('    scripts/probe-live-roster.mjs ' + target);
+    console.error('They live in .env.local at the repo root, which the npm script loads:');
+    console.error('');
+    console.error('  cp .env.example .env.local     # then put your key and secret in it');
+    console.error(`  npm run probe:liveroster -- ${JSON.stringify(target)}`);
+    console.error('');
+    console.error('Get a free key at https://api.podcastindex.org/signup');
     process.exit(2);
   }
   const ts = Math.floor(Date.now() / 1000).toString();
@@ -137,7 +145,39 @@ const kept = statusOk.filter(
 );
 
 console.log(`\n── Podcast Index /episodes/live ─────────────────────────────`);
-console.log(`  roster holds ${roster.length} row(s) across ${new Set(roster.map((e) => Number(e.feedId))).size} feed(s)`);
+
+// THE NARROWING, GLOBALLY, AND IT IS THE HEADLINE OF THIS PROBE. An empty live
+// tab has two causes that need opposite fixes: PI sent nothing, or PI sent rows
+// and our own filters dropped every one. These four numbers separate them, and
+// they mirror `rosterRows` / `rosterKept` / `rosterFeeds` in the route's
+// response so the two can be read against each other.
+const liveOrPending = roster.filter((e) => {
+  const st = typeof e.status === 'string' ? e.status.toLowerCase() : undefined;
+  return st === 'live' || st === 'pending';
+});
+const rosterKept = liveOrPending.filter(
+  (e) =>
+    !liveBroadcastIsOver(
+      {
+        status: String(e.status).toLowerCase(),
+        startTime: typeof e.startTime === 'number' ? e.startTime : undefined,
+        endTime: typeof e.endTime === 'number' ? e.endTime : undefined,
+      },
+      nowSec,
+    ),
+);
+console.log(`  rows PI sent (rosterRows)      ${roster.length}`);
+console.log(`  after the status test          ${liveOrPending.length}`);
+console.log(`  after liveBroadcastIsOver      ${rosterKept.length}  (rosterKept)`);
+console.log(`  distinct feeds (rosterFeeds)   ${new Set(rosterKept.map((e) => Number(e.feedId))).size}`);
+if (roster.length === 0) {
+  console.log('  → PI SENT NOTHING. No filter of ours is involved. The global Live');
+  console.log('    tab cannot work at all, for any visitor, until a durable roster exists.');
+} else if (rosterKept.length === 0) {
+  console.log('  → PI SENT ROWS AND WE DROPPED EVERY ONE. This is our bug, in');
+  console.log('    getGlobalLiveItemsDetailed. A sample row, verbatim:');
+  console.log('    ' + JSON.stringify(roster[0]).slice(0, 600));
+}
 console.log(`  rows for this feed: ${mine.length}`);
 for (const e of mine) {
   console.log(`   · status=${e.status}  start=${clock(e.startTime)}  end=${clock(e.endTime)}  "${e.title}"`);

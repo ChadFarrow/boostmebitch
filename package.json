@@ -46,7 +46,7 @@
     "check:notelink": "node --experimental-strip-types scripts/check-note-episode-link.mjs",
     "check:claudemd": "node scripts/check-claudemd.mjs",
     "probe:live": "node --experimental-strip-types scripts/probe-live-item.mjs",
-    "probe:liveroster": "node --experimental-strip-types scripts/probe-live-roster.mjs",
+    "probe:liveroster": "node --experimental-strip-types --env-file-if-exists=.env.local scripts/probe-live-roster.mjs",
     "probe:npubs": "node --experimental-strip-types scripts/probe-npubs.mjs",
     "probe:favorites": "node --experimental-strip-types scripts/probe-favorites.mjs",
     "probe:mutes": "node --experimental-strip-types scripts/probe-mutes.mjs",
