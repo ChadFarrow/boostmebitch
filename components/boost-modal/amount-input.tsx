@@ -6,9 +6,16 @@ export const MIN_BOOST_SATS = 100;
 export function AmountInput({
   sats,
   onChange,
+  // Overridden only by <BoostAllModal>, where this number is PER TRACK and the
+  // send multiplies it by the track count. The default is the single modal's
+  // wording, where the number typed is the whole spend. It is a prop rather
+  // than a second component so the htmlFor/id association below — the reason
+  // this field has an accessible name at all — cannot be lost in a copy.
+  label = 'Amount to send (sats)',
 }: {
   sats: number;
   onChange: (n: number) => void;
+  label?: string;
 }) {
   const [raw, setRaw] = useState(sats > 0 ? String(sats) : '');
   // htmlFor/id, not a bare sibling <label>. The label was unassociated, so the
@@ -24,7 +31,7 @@ export function AmountInput({
   return (
     <div>
       <label htmlFor={id} className="text-[11px] uppercase tracking-widest text-muted">
-        Amount to send (sats)
+        {label}
       </label>
       <input
         id={id}

@@ -413,7 +413,17 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         // otherwise. `value` is the track's block in the first case, so this
         // pairing is the one thing that must stay together.
         totalSats: primarySats,
-        boostagram,
+        // Per LEG GROUP, not per boost. `boostagram` carries the whole typed
+        // amount, because that is what the NOTE must say (invariant 7: note
+        // amount is intent, not actual) — but a redirect pays this leg only
+        // `primarySats`, and the show's leg below already overrides its own
+        // total to `hostSats`. Passing the base object here left the two groups
+        // advertising `sats + hostSats` for a boost of `sats`, so anything
+        // reading TLV 7629169 saw a total larger than what arrived. <BoostAllModal>
+        // has always done this per group; this is the modal that did not.
+        boostagram: redirect
+          ? { ...boostagram, value_msat_total: primarySats * 1000 }
+          : boostagram,
         rail,
         // By index, never appended: legs settle biggest-share-first, so append
         // order is not recipient order and every ✓/✗ would land on the wrong

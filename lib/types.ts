@@ -317,7 +317,12 @@ export interface Boostagram {
   url?: string;
   ts?: number;            // playback timestamp in seconds
   value_msat?: number;    // per-leg amount in msats (set per recipient in v4v/boost.ts)
-  value_msat_total?: number; // total boost amount in msats (same on every leg)
+  // Total for THIS LEG GROUP in msats — same on every leg of one sendBoost call,
+  // NOT the whole boost. A valueTimeSplit redirect makes two calls, and their
+  // totals sum to the amount the user typed; reading this as "the whole boost"
+  // is what let the track and show legs advertise 110 sats for a 100-sat boost.
+  // The note and the StoredBoost carry the full amount. → docs/money-boosts.md
+  value_msat_total?: number;
   message?: string;
   sender_name?: string;
   sender_id?: string;     // nostr pubkey if signed in

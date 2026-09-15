@@ -21,6 +21,7 @@ import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
 import { RailPicker } from './rail-picker';
+import { BoostModalBalance } from './wallet-balance';
 
 interface Props {
   podcast: Podcast;
@@ -377,8 +378,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // Mirrors formatContent's attribution line, off the same `senderName` the
     // boostagrams carry — so an anonymous summary note reads as
     // DEFAULT_SENDER_NAME rather than attributing itself back to the user.
+    // `(N sats each)` is the reconcilable half, and it is the reason this line
+    // changed. This note is the ONLY artifact carrying the album total; every
+    // wire record carries one track's share, and nothing in a boostagram says
+    // it is 1 of N. So a reader holding both saw `totalSats` here and `sats`
+    // there and read the difference as sats that never left — reported as a
+    // boost that "only sent 10%" of a ten-track album. Naming the
+    // multiplicand lets the two numbers be checked against each other.
+    // Singular tracks skip it: "for 100 sats (100 each)" reads as a fault.
+    const each = successfulIdx.length > 1 ? ` (${sats} each)` : '';
     lines.push(
-      `${senderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats`,
+      `${senderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats${each}`,
     );
     if (trackList.length) {
       lines.push('');
@@ -445,7 +455,15 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
           <RailPicker rail={rail} onChange={setRail} />
 
-          <AmountInput sats={sats} onChange={setSats} />
+          {/* "per track", not the single modal's "Amount to send". This is the
+              one surface that MULTIPLIES the typed number by the track count,
+              and the only other disclosure — the `n × sats = total` footer line
+              — is gated behind `loadState === 'ready' && splits.length > 0`, so
+              it says nothing while the tracks resolve. Reported as a boost that
+              "only sent 10%": the album note carries `n × sats` while each
+              track's boostagram carries one track's share, and nothing on
+              screen connected the two numbers. */}
+          <AmountInput sats={sats} onChange={setSats} label="Amount per track (sats)" />
 
           {loadState === 'loading' && (
             <p className="text-muted text-sm">Loading tracks…</p>
@@ -568,13 +586,27 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
         <div className="flex justify-between items-center gap-3 p-5 border-t border-bone/15 sticky bottom-0 bg-ink">
           <button onClick={onClose} className="btn-ghost">{done ? 'Close' : 'Cancel'}</button>
-          <div className="flex items-center gap-3">
+          {/* `flex-wrap`, unlike the single modal's otherwise identical footer:
+              this one carries a fourth item, the `n × sats = total` line, and
+              the balance chip is `whitespace-nowrap` so nothing here can shrink.
+              At 390px the four would overflow a modal that cannot scroll
+              sideways, putting the BOOST button off-screen. */}
+          <div className="flex flex-wrap justify-end items-center gap-3">
             {!done && loadState === 'ready' && splits.length > 0 && (
               <>
                 {total > 0 && (
                   <span className="text-bolt text-sm font-mono">
                     {splits.length} × {sats} = {total} sats
                   </span>
+                )}
+                {/* `total`, never `sats`. The single modal's chip tests the
+                    number the user typed because that IS its spend; here the
+                    spend is that number times the track count, so a chip on
+                    `sats` would clear a boost the wallet goes on to refuse
+                    part-way through — after some artists are already paid. */}
+                {rail && <BoostModalBalance amountSats={total} rail={rail} />}
+                {sats < MIN_BOOST_SATS && (
+                  <span className="text-[11px] text-muted">min {MIN_BOOST_SATS} sats</span>
                 )}
                 <button
                   onClick={go}
