@@ -239,6 +239,12 @@ function quotedReceipts(results: BoostResult[]): QuotedZapReceipt[] {
  *
  * Placed below the artwork and above the mention run, for the reason `withArt`
  * gives: the trailing `nostr:npub…` run is what a compose box writes last.
+ *
+ * `kind: 9735` is carried in the nevent because Fountain's own wrapper notes carry
+ * it — read off a real one, event f0416267…50e0 — and it is the half a reader can
+ * act on without fetching anything: it says the quote is a payment receipt rather
+ * than another note. Fountain ships no relay hints there and we do; that direction
+ * is additive, so ours stay.
  */
 function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string {
   if (receipts.length === 0) return content;
@@ -248,6 +254,7 @@ function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string 
         id: r.id,
         relays: r.relays.slice(0, 3),
         author: r.pubkey,
+        kind: 9735,
       })}`,
   );
   return `${content}\n\n${refs.join('\n')}`;

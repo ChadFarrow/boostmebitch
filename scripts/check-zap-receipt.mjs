@@ -21,15 +21,30 @@
 // worse of the two — the receipt is real, correctly signed, and about the wrong
 // payment, so nothing downstream can tell.
 //
-// FIXTURE PROVENANCE, STATED PLAINLY. These receipts are NOT a relay capture:
-// this sandbox has no relay or nostr-API egress. The wire shape is NIP-57
+// FIXTURE PROVENANCE, STATED PLAINLY, BECAUSE IT IS PART REAL AND PART NOT.
+//
+// REAL, off a Fountain boost note captured 2026-09-15 (kind:1
+// f0416267299d021c78ca35b0ea15cabf9925016d3fe008d162dbf81a0c7850e0, whose body
+// carries one `nostr:nevent1…`):
+//
+//   ZAPPER     b866ce76…67a5  Fountain's zapper key — the pubkey Appendix F
+//                             makes a client test a receipt's author against,
+//                             and the single most important constant here.
+//   RECEIPT_ID 044da649…c59d  that note's quoted kind:9735.
+//
+// CONSTRUCTED: the receipt's own tag list, the invoice, the payee, and the
+// embedded kind:9734. The receipt EVENT could not be fetched — this sandbox has
+// no relay or nostr-API egress — so only its identity is real. Do not upgrade
+// this paragraph to "captured" without capturing the event itself.
+//
+// The constructed half is not invented freely. The wire shape is NIP-57
 // Appendix E (`p`, `bolt11`, `description`, and the optional `e`, `P`,
 // `preimage`, `amount`), cross-checked against the tags this repo already reads
 // off real receipts in production — `lib/nostr/zap-receipt.ts` resolves
 // `description` → kind:9734 → `pubkey`/`content`/`i`, and
 // `zapReceiptAmountMsat` reads `amount` then `bolt11` then the request, with a
 // comment recording that Fountain ships no explicit `amount` tag. Vector 9
-// exists because of that observation. When a real receipt can be captured,
+// exists because of that observation. When the receipt itself can be fetched,
 // replace these rather than adding to them.
 //
 // The vectors are adversarial by construction: each false case is a receipt that
@@ -64,7 +79,9 @@ const WRONG = [
 ];
 
 // ── The zap this app sent ─────────────────────────────────────────────────
-const ZAPPER = '79f00d3f5a19ec806189fcab03c1be4ff81d18ee4f653c88fac41fe03570f432';
+// REAL: Fountain's zapper key, and the id of a receipt it actually published.
+const ZAPPER = 'b866ce76be5b826695980248322b8df4c381608ffa5a5b47c4f3abe0d8f767a5';
+const RECEIPT_ID = '044da6499d5db5ee1fe6eac312b6bcf00d5e038c5effa45be1bd50555e7fc59d';
 const PAYEE = '3f770d65d3a764a9c5cb503ae123e62ec7598ad035d836e2a810f3877a745b24';
 const STRANGER = 'e88a691e98d9987c964521dff60025f60700378a4879180dcbbb4a5027850411';
 const REQ_ID = '1b7e5f2c0a9d4e6b8c3f1a5d7e9b2c4a6f8d0e2b4c6a8e0f2d4b6a8c0e2f4d6b';
@@ -105,6 +122,11 @@ const request = (id, over = {}) =>
 /** A receipt with the correct everything, then one field spoiled per vector. */
 const receipt = ({ extraTags = [], ...over } = {}) => ({
   kind: 9735,
+  // `id` is never read by zapReceiptAccepts — the matcher works on the author and
+  // the two correlators. It is carried anyway so the fixture is a whole event
+  // rather than the subset one function happens to touch, which is what lets the
+  // next person compare it against a real one.
+  id: RECEIPT_ID,
   pubkey: ZAPPER,
   created_at: 1_757_900_003,
   content: '',
