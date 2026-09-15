@@ -555,6 +555,27 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                             boost more to include everyone.
                           </div>
                         )}
+                        {/* How this track's amount divides. <BoostModal> shows
+                            the same fact as two <SplitsPreview> cards; this
+                            modal showed it nowhere, so a listener could not
+                            learn that a show taking 10% of a track boost would
+                            take 10% of theirs until a boost bot read out a
+                            number they did not expect. That is what the "it
+                            only sent 10%" report turned out to be, and the sats
+                            were never missing.
+                            Gated on `hostSats`, never on `remotePercentage`:
+                            splitTrackAndHost returns 0 when the show has no
+                            block to pay, and a row promising a share that will
+                            not be sent is the same silent omission pointed the
+                            other way. The show is NAMED, because the listener
+                            is reading this to decide whether the division is
+                            what they want. */}
+                        {trackLegs[i].hostSats > 0 && (
+                          <div className="text-[11px] text-muted truncate">
+                            {trackLegs[i].trackSats} → artist · {trackLegs[i].hostSats} →{' '}
+                            {podcast.title}
+                          </div>
+                        )}
                       </div>
                       {result && (
                         <span
