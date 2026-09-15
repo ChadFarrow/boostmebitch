@@ -3,7 +3,7 @@ import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import {
   PiHttpError,
-  getGlobalLiveItems,
+  getGlobalLiveItemsDetailed,
   getLiveItemsFromRssDetailed,
   getPodcast,
 } from '@/lib/pi';
@@ -193,7 +193,43 @@ export async function GET(req: Request) {
     // limiting, `withErrorHandling` turns that into 429/408/500 — never an
     // empty 200, which would tell the page nobody is broadcasting. An empty
     // list is a CLAIM, and this is the layer that must not make it falsely.
-    const roster = await getGlobalLiveItems();
+    const { items: roster, rawRows: rosterRows } = await getGlobalLiveItemsDetailed();
+
+    /**
+     * WHY THREE ROSTER COUNTS ARE IN THE RESPONSE.
+     *
+     * Measured in production 2026-09-14, with three podping shows on air:
+     * `{"items":[],"unverifiedFeeds":0,"truncated":false}`. That body is this
+     * route's early return, and it says the roster named NO feed at all — while
+     * the same three shows were reachable the whole time through
+     * `/api/live-status`, which reads RSS and never touches this roster.
+     *
+     * The body could not say which of two very different things happened, and
+     * they need opposite fixes:
+     *
+     *   rosterRows 0    Podcast Index sent us nothing. The fix is a durable
+     *                   roster of feeds known to publish live items.
+     *   rosterRows > 0  PI sent rows and `getGlobalLiveItemsDetailed` dropped
+     *                   every one — its `status` test, or the payload shape.
+     *                   That fix is small and restores the tab for everyone.
+     *
+     * So three numbers, narrowing: `rosterRows` is what PI sent, counted inside
+     * `getGlobalLiveItemsDetailed` before either of its filters; `rosterKept`
+     * is what survived them; `rosterFeeds` is how many distinct feeds those
+     * rows named. `rosterRows > 0` with `rosterKept === 0` names our filter as
+     * the culprit, and nothing else can.
+     *
+     * No amount of looking at the page distinguishes these, which is why this
+     * took a bug report, a merged PR against the wrong cause, and a hand-pasted
+     * response body to establish. `docs/feeds.md` attributes the same zero,
+     * measured 2026-08-07, to PI lag; five weeks is not lag, so that
+     * attribution is now marked unproven rather than repeated.
+     *
+     * They are COUNTS and nothing more: three integers about our own request to
+     * PI, with no feed, no title and nothing personal in any of them. The
+     * caller's own `?feeds=` list is deliberately not counted here — that would
+     * put a fact about the visitor's library in a body the CDN may cache.
+     */
 
     const byFeed = new Map<number, Episode[]>();
     for (const e of roster) {
@@ -271,7 +307,7 @@ export async function GET(req: Request) {
       // feeds of their own. That IS an answer, so it is cacheable — unlike
       // every branch where we could not ask.
       return NextResponse.json(
-        { items: [], unverifiedFeeds: 0, truncated: false },
+        { items: [], unverifiedFeeds: 0, truncated: false, rosterRows, rosterKept: roster.length, rosterFeeds: 0 },
         { headers: LIVE_SHOWS_CACHE },
       );
     }
@@ -378,7 +414,7 @@ export async function GET(req: Request) {
     rememberLiveFeeds(wentLive, now);
 
     return NextResponse.json(
-      { items, unverifiedFeeds, truncated },
+      { items, unverifiedFeeds, truncated, rosterRows, rosterKept: roster.length, rosterFeeds: rosterIds.length },
       { headers: couldNotAskPi ? NO_STORE : personal ? PERSONAL_CACHE : LIVE_SHOWS_CACHE },
     );
   }, 'live-shows fetch failed');

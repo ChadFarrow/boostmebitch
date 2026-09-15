@@ -107,6 +107,12 @@ interface LiveShowsResponse {
   items: LiveShow[];
   unverifiedFeeds: number;
   truncated: boolean;
+  /** Rows Podcast Index sent for `/episodes/live`, before any filter of ours. */
+  rosterRows?: number;
+  /** Those rows after `getGlobalLiveItemsDetailed`'s two filters. */
+  rosterKept?: number;
+  /** Distinct feeds those kept rows named — the global roster's real size. */
+  rosterFeeds?: number;
 }
 
 export function LivePage() {
@@ -320,6 +326,28 @@ export function LivePage() {
   const unverified = data?.unverifiedFeeds ?? 0;
 
   /**
+   * The global roster named nobody, so this page cannot speak for the world.
+   *
+   * MEASURED, not hypothetical. On 2026-09-14, with three podping shows on air,
+   * `/api/live-shows` answered `rosterFeeds: 0` — and the section said "Nothing
+   * is broadcasting on RSS right now." over a reader's own favorites, which
+   * were the only reason any row appeared at all. A visitor with no favorites
+   * got the sentence and an empty grid.
+   *
+   * That sentence is a CLAIM ABOUT THE WORLD, and this is the `<FavoritesPage>`
+   * failure arriving on a new surface: a surface may only say "there is
+   * nothing" once a read that could have found something has answered. Podcast
+   * Index holds the only global list of live items, so when it names no feed,
+   * the honest statement is about our REACH, which is what the Upcoming caption
+   * has always said and Live never did.
+   *
+   * `undefined` is NOT blind. An older deploy sends no such field, and a
+   * `?? 0` there would make every one of those responses claim blindness — so
+   * the test is an explicit `=== 0`, and an absent field keeps the old wording.
+   */
+  const rosterBlind = data?.rosterFeeds === 0;
+
+  /**
    * Land on content, without hiding the state.
    *
    * Opening on an empty Live tab while four shows sit one press away is a bad
@@ -418,8 +446,20 @@ export function LivePage() {
               hasData={!!data}
               // The one place this page may say a list is empty. It is scoped
               // to RSS, and only spoken once the route has answered — see
-              // ShowGroup.
-              emptyLine="Nothing is broadcasting on RSS right now."
+              // ShowGroup. Which sentence it is depends on whether the global
+              // roster answered at all: see `rosterBlind`.
+              emptyLine={
+                rosterBlind
+                  ? 'No global list of live shows answered just now, so this only covers ' +
+                    'the shows you have favorited or boosted.'
+                  : 'Nothing is broadcasting on RSS right now.'
+              }
+              caption={
+                rosterBlind && onAir.length > 0
+                  ? 'No global list of live shows answered just now. These are from the shows ' +
+                    'you have favorited or boosted, so others may be on air too.'
+                  : undefined
+              }
             />
           ) : (
             <ShowGroup
