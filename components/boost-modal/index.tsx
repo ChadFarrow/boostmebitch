@@ -9,7 +9,7 @@ import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, record
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, payableSplit, payableValue, splitSats, splitTrackAndHost, storedBoostLegs, randomId } from '@/lib/util';
+import { getErrorMessage, payableSplit, payableValue, splitTrackAndHost, storedBoostLegs, randomId } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -200,12 +200,39 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
 
   // The block the primary preview and the primary leg use: the artist's when
   // redirected, the show's otherwise.
-  const value = redirect?.value ?? hostValue;
+  const primaryValue = redirect?.value ?? hostValue;
   const primarySats = redirect ? trackSats : sats;
-  const splits = useMemo(
-    () => splitSats(primarySats, value.recipients),
-    [primarySats, value.recipients],
+  // `payableSplit`, not `splitSats` — on THIS leg too, not only the show's
+  // below. The rule used to exempt the primary leg as "the whole amount, gated
+  // by MIN_BOOST_SATS", and that stops being true the moment a redirect
+  // applies: `primarySats` is then floor(sats × remotePercentage / 100), and
+  // `remotePercentage` is authored by the host's FEED. A 2%-to-the-track window
+  // turns a gated 100-sat boost into a 2-sat leg over a four-payee artist
+  // block; `splitSats` honestly leaves two of them at 0, and `payOne`
+  // short-circuits `sats <= 0` to ok:true WITHOUT contacting anyone — a ✓ and a
+  // StoredBoost for a payment nobody received, on the LARGER of the two legs.
+  //
+  // Unconditional rather than `redirect ? … : …` on purpose. An unredirected
+  // boost is at least 100 sats and reaches any realistic block, and
+  // `payableSplit` returns the array it was handed when it drops nobody — so
+  // this is a no-op there, by reference, and no ordinary boost's wire bytes
+  // change. A conditional would leave the carve-out whose reasoning caused
+  // this bug for the next reader to re-derive.
+  const primaryLeg = useMemo(
+    () => payableSplit(primarySats, primaryValue.recipients),
+    [primarySats, primaryValue.recipients],
   );
+  // ONE object drives the preview and the send — re-deriving the trimmed set at
+  // send time would let the rows the user approved differ from the legs that go
+  // out. Same shape as the host leg's block below.
+  const value = useMemo(
+    () => ({ ...primaryValue, recipients: primaryLeg.recipients }),
+    [primaryValue, primaryLeg.recipients],
+  );
+  const splits = primaryLeg.splits;
+  // Recipients the feed lists but this leg is too small to pay — named on
+  // screen rather than silently absent, exactly as hostDropped is.
+  const primaryDropped = primaryValue.recipients.length - primaryLeg.recipients.length;
   // The show's leg. `payableSplit`, not `splitSats`: a small remainder can't
   // give every show recipient a whole sat, and a zero-sat leg is reported as
   // PAID (payOne short-circuits `sats <= 0` to ok:true), so it would render a ✓
@@ -651,6 +678,18 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             results={results}
             title={redirect ? splitTargetLabel(redirect) : 'Recipients'}
           />
+          {/* The same sentence as the show's share below, for the track's own
+              leg. It earned one the moment a redirect made this a DERIVED
+              amount: the 100-sat minimum gates what the user typed, not what
+              floor(sats × remotePercentage / 100) leaves for the artists. */}
+          {primaryDropped > 0 && (
+            <div className="text-[11px] text-muted -mt-2">
+              {primaryDropped} more {primaryDropped === 1 ? 'recipient' : 'recipients'} in
+              {' '}{redirect ? splitTargetLabel(redirect) : podcast.title}
+              &rsquo;s split — {primarySats} sat {primarySats === 1 ? 'doesn' : 'don'}&rsquo;t reach
+              {' '}{primaryValue.recipients.length} ways. Boost more to include everyone.
+            </div>
+          )}
           {showsHostLeg && (
             <>
               <SplitsPreview

@@ -1551,9 +1551,18 @@ export function splitTrackAndHost(args: {
  * one sat, so `kept.length <= total`, which is exactly the condition under
  * which `splitSats`' floor can satisfy everyone. The loop is bounded anyway.
  *
- * Deliberately NOT applied to a boost's primary leg, which is the whole amount
- * and is gated by the 100-sat minimum. This exists for the derived leg — a
- * `remotePercentage` remainder is arbitrarily small by construction.
+ * Applied to every leg whose amount is DERIVED — BOTH halves of a
+ * `<podcast:valueTimeSplit>` redirect, not only the show's remainder. This
+ * paragraph used to exempt "a boost's primary leg, which is the whole amount and
+ * is gated by the 100-sat minimum", and that reasoning is false the moment a
+ * redirect applies: the track leg is then floor(sats × remotePercentage / 100)
+ * and `remotePercentage` is authored by the HOST's feed, so a 2% window turns a
+ * gated 100-sat boost into a 2-sat leg over a four-payee artist block — the same
+ * ✓-for-nothing described above, on the LARGER of the two legs. Both modals now
+ * call this on both legs. The only leg the minimum genuinely covers is an
+ * unredirected boost's single block, and there this is a no-op: it returns the
+ * array it was handed when it drops nobody, so no ordinary boost changed.
+ * `check:vts` pins the composition of `splitTrackAndHost` with this.
  */
 export function payableSplit(
   totalSats: number,
