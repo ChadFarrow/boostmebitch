@@ -68,7 +68,7 @@ npm run dev / build / start / lint
 
 **No test runner, no formatter.** Checks are `npm run typecheck` (`tsc --noEmit`, strict), `npm run lint` (ESLint 9 flat config in `eslint.config.mjs` — `next/core-web-vitals` + `next/typescript`, `no-explicit-any` off for PI's untyped JSON), and `next build`. Path alias `@/*` → repo root.
 
-**Thirty-seven `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
+**Thirty-eight `check:*` scripts stand in for the tests this repo doesn't have.** Each guards a function whose silent breakage costs a user something irreversible; treat a failure as a stop. **Each script's header carries the full reasoning — the failure it was written against, the fixture provenance, the `naive()` it replays. Read it before editing the module it pins.** The table indexes; it does not argue.
 
 | Command | Pins | Cost of silent breakage |
 | --- | --- | --- |
@@ -99,6 +99,7 @@ npm run dev / build / start / lint
 | `check:art` | `artWidth`, `artCandidates`, `artTypeVerdict`, `playableAhead`, `artGateOpen` | a failing proxy blanks every cover on twelve surfaces |
 | `check:gif` | `lib/gif-first-frame.ts` — the block walk cutting an animated cover to frame one | attacker-chosen bytes on a truncated prefix |
 | `check:notelink` | `episodeLinkInNote` — which URL a note card unfurls to | an attacker's link sits under a real show's artwork |
+| `check:zapreceipt` | `zapReceiptAccepts` — which kind:9735 a boost note may quote | a stranger's payment published as this boost, under the user's key |
 | `check:cache` | `createBoundedCache` — the age, entry AND byte bounds both RSS caches share | an entry cap is not a memory bound |
 | `check:fanout` | `probeThenBatch`, `PI_FANOUT` — the bounded PI fan-out | a rate-limited burst repeats on every load, forever |
 | `check:playlistdb` | `dbValueBlock`, `dbRowToEpisode` — another app's DB row as a track we pay | a cast type-checks and pays the wrong payee |
@@ -282,6 +283,8 @@ These seven you can break from a file that has nothing to do with favorites:
     - **Two retry arms, two functions, two vector sets — never merge them.** `NwcNotAttemptedError` (`NOT_IMPLEMENTED`, `UNAUTHORIZED`, `RESTRICTED`) proves nothing moved and is the only thing `payOne` may retry over LNURL; `routingFailureProvesUnpaid` reads the failure REASON on an allowlist, exclusions first. Widening either to a timeout, or to the `PAYMENT_FAILED` **code**, is a double-pay. **`failureBlamesDestination` answers *whose fault*, never *did the sats move*.**
     - **Match the leaf class, not `Nip47TimeoutError`** — `Nip47PublishTimeoutError` shares that parent and means the opposite, so a plain failure is the honest answer there.
     - **Streaming deliberately still counts it as a failure** — the safe direction for an unattended payer, and the ledger was debited before the await. → [`docs/money-boosts.md`](docs/money-boosts.md)
+
+12. **A qualifying lnaddress leg pays as a real NIP-57 zap, and the note QUOTES its kind:9735** — that quote is the only thing Fountain reads for a sat amount; the `amount` tag and the prose are ignored. Qualifying is two answers from the payee's OWN domain, which also signs the receipt: `allowsNostr`/`nostrPubkey` (`lnaddrZapSupport`) and a NIP-05 pubkey (`resolveNip05`). **The gate is `shareNostr && shareAs === 'self'`, never `!anonymous`** — the request is signed by the user's key and the receipt republishes it as the payer, so "Don't post" must stop it too; the live-stream path shipped ungated. Zaps skip the keysend upgrade, only `ZapNotAttemptedError` may retry over `payLnurl`, and `sendBoost` gets no `zap` table by default — that is what keeps streaming out. → [`docs/money-boosts.md`](docs/money-boosts.md)
 
 **Anonymity applies to the payment, not just the Nostr note — and to EVERY identity field.** With the share picker's **"Anonymous"** active (`anonymous = !!identity && shareNostr && shareAs === 'site'`), every boostagram drops `sender_id` and `reply_address`, and substitutes `sender_name`. Each names the sender on its own: `sender_id` is the pubkey, which aggregators resolve to a profile — **omitted outright**. `sender_name` is displayed verbatim by recipients **and** printed into the note body by `formatContent`, so an "anonymous" note read *"Crimson Rook boosted 100 sats"* — **replaced, not omitted**, because `JSON.stringify` drops an `undefined` key, leaving presentation to each aggregator.
 

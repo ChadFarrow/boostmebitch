@@ -20,9 +20,18 @@ import { pickRail, type Rail } from './boost';
 import { storeBoostMetadata } from './boostbox';
 import { bolt11AmountMsat } from './bolt11';
 import { lnurlFetch } from './lnurl-fetch';
+import { createBoundedCache } from '@/lib/bounded-cache';
 import { activeNostr } from '@/lib/nostr/signer';
+import type { PendingZapReceipt } from '@/lib/nostr/zap-receipt-wait';
 
-interface LnurlPayMetadata {
+/**
+ * A provider's LUD-06 payRequest document, plus the two NIP-57 fields.
+ *
+ * Exported because this is the only place in the repo that types `allowsNostr` /
+ * `nostrPubkey`, and the boost modal now reads the document once and hands it
+ * back in rather than letting every zap leg fetch it twice.
+ */
+export interface LnurlPayMetadata {
   callback: string;
   minSendable: number;
   maxSendable: number;
@@ -30,6 +39,46 @@ interface LnurlPayMetadata {
   metadata?: string;
   allowsNostr?: boolean;
   nostrPubkey?: string;
+}
+
+/**
+ * Nothing was paid, so the caller may still pay this leg another way.
+ *
+ * The distinction is the same one `NwcNotAttemptedError` draws on the boost
+ * rails and it is load-bearing for the same reason: `payOne` falls back to an
+ * ordinary LNURL leg on this error and ONLY on this error. Widening it to cover
+ * a wallet failure would re-pay a leg that already went out.
+ */
+export class ZapNotAttemptedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ZapNotAttemptedError';
+  }
+}
+
+/** What `sendZap` hands back: the payment, and how to find its receipt. */
+export interface SendZapResult {
+  preimage: string;
+  /**
+   * The BoostBox landing page for this leg, when BoostBox accepted the metadata.
+   * Carried out so a zap leg's `<BoostCard>` row keeps the 📦 link an ordinary
+   * LNURL leg has — the POST happens either way, and dropping the URL would
+   * orphan a record that exists.
+   */
+  boostboxUrl?: string;
+  /**
+   * Everything needed to recognise this zap's kind:9735 once the provider
+   * publishes it. The receipt does not exist yet — see
+   * lib/nostr/zap-receipt-wait.ts.
+   */
+  pending: PendingZapReceipt;
+}
+
+interface PreparedZap {
+  invoice: string;
+  rail: Rail;
+  pending: PendingZapReceipt;
+  boostboxUrl?: string;
 }
 
 function lud06ToUrl(lud06: string): string {
@@ -46,8 +95,8 @@ function lnAddressToUrl(addr: string): string {
 async function fetchPayMetadata(url: string): Promise<LnurlPayMetadata> {
   // Through `lnurlFetch`, never a bare fetch — the same reason `lnaddr.ts` does.
   // A provider that sends no CORS header on this document is unreadable from
-  // the page, and here that also decides `lnaddrSupportsZaps`, i.e. whether the
-  // boost modal takes the zap path at all.
+  // the page, and here that also decides `lnaddrZapSupport`, i.e. whether a
+  // boost leg takes the zap path at all.
   const r = await lnurlFetch(url);
   if (!r.ok) throw new Error(`LNURL lookup failed (${r.status})`);
   let data: LnurlPayMetadata & { tag?: string };
@@ -96,7 +145,55 @@ export async function sendZap(args: {
    * second copy of the desc-plus-message rule living in the UI.
    */
   metadata?: { boostagram: Boostagram; recipient: ValueRecipient; legMsat: number };
-}): Promise<{ preimage: string }> {
+  /**
+   * The provider's payRequest document, when the caller already fetched it.
+   *
+   * The boost modal reads it while the user is still picking an amount, to
+   * decide whether this leg can be a zap at all — without threading it back in,
+   * every zap leg pays for the SAME document twice, once to decide and once
+   * here, on the money path.
+   */
+  meta?: LnurlPayMetadata;
+}): Promise<SendZapResult> {
+  let prepared: PreparedZap;
+  try {
+    prepared = await prepareZap(args);
+  } catch (e) {
+    // TOTAL by construction, and that is the point. Everything prepareZap does
+    // happens before any invoice is paid, so every failure it can raise proves
+    // nothing moved — which is what licenses the caller to fall back to an
+    // ordinary LNURL leg. Classifying throw sites one at a time is how the
+    // opposite mistake gets made: one unwrapped `throw` reads as a payment
+    // failure and the leg is dropped instead of paid. Same discipline as
+    // NwcNotAttemptedError; see boost invariant 11 in CLAUDE.md.
+    throw e instanceof ZapNotAttemptedError
+      ? e
+      : new ZapNotAttemptedError(e instanceof Error ? e.message : String(e));
+  }
+
+  let preimage: string;
+  try {
+    // Loaded here, not at module top: `sendZap` is reached from the boost modal,
+    // which is in every route's first load. See lib/v4v/nwc-state.ts.
+    if (prepared.rail === 'nwc') preimage = await (await import('./nwc')).nwcPayInvoice(prepared.invoice);
+    else if (prepared.rail === 'spark') preimage = await sparkPayInvoice(prepared.invoice);
+    else preimage = await weblnPayInvoice(prepared.invoice);
+  } catch (e) {
+    // NOT a ZapNotAttemptedError. The invoice was handed to a wallet, so this
+    // leg is finished either way and must never be re-paid over LNURL.
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`${prepared.rail} wallet rejected the zap invoice: ${msg}`);
+  }
+  return { preimage, pending: prepared.pending, boostboxUrl: prepared.boostboxUrl };
+}
+
+/**
+ * Everything up to and including the invoice, none of which spends anything.
+ *
+ * Split out of `sendZap` so the boundary between "nothing moved" and "the wallet
+ * has the invoice" is a scope rather than a convention.
+ */
+async function prepareZap(args: Parameters<typeof sendZap>[0]): Promise<PreparedZap> {
   const nostr = activeNostr();
   if (!nostr) {
     throw new Error('No Nostr signer available');
@@ -115,10 +212,15 @@ export async function sendZap(args: {
     throw new Error('Recipient has no Lightning address (lud16/lud06) on their Nostr profile');
   }
 
-  const meta = await fetchPayMetadata(lnurlSourceUrl);
+  const meta = args.meta ?? (await fetchPayMetadata(lnurlSourceUrl));
   if (!meta.allowsNostr || !meta.nostrPubkey) {
     throw new Error("Recipient's Lightning provider does not support Nostr zaps");
   }
+  // Kept, not just tested. This is the key NIP-57 Appendix F makes a client
+  // check the receipt's author against, so discarding it (which this function
+  // did for the life of the live-stream zap path) leaves nothing to tell a real
+  // receipt from one anybody published. See lib/nostr/zap-receipt-match.ts.
+  const zapperPubkey = meta.nostrPubkey;
 
   const amountMsat = args.amountSats * 1000;
   if (amountMsat < meta.minSendable || amountMsat > meta.maxSendable) {
@@ -128,9 +230,10 @@ export async function sendZap(args: {
   }
 
   const lnurl = lnurlBech32(lnurlSourceUrl);
+  const receiptRelays = args.relays.slice(0, 8);
 
   const tags: string[][] = [
-    ['relays', ...args.relays.slice(0, 8)],
+    ['relays', ...receiptRelays],
     ['amount', String(amountMsat)],
     ['lnurl', lnurl],
     ['p', args.recipientPubkey],
@@ -143,6 +246,10 @@ export async function sendZap(args: {
   // `comment` below, which is the machine-readable channel the recipient's LN
   // service reads — putting it here would print `rss::payment::boost <url>` in
   // the middle of every zap in every client.
+  //
+  // No `client` tag, and no NIP-73 `i`/`k` tags either. The recipient's LNURL
+  // server reads this event before any relay does, so a tag here is a money-path
+  // change, not a metadata one. scripts/check-claudemd.mjs asserts the omission.
   const template: EventTemplate = {
     kind: 9734,
     created_at: Math.floor(Date.now() / 1000),
@@ -231,30 +338,73 @@ export async function sendZap(args: {
     );
   }
 
-  let preimage: string;
-  try {
-    // Loaded here, not at module top: `sendZap` is reached from the boost modal,
-    // which is in every route's first load. See lib/v4v/nwc-state.ts.
-    if (rail === 'nwc') preimage = await (await import('./nwc')).nwcPayInvoice(invoice);
-    else if (rail === 'spark') preimage = await sparkPayInvoice(invoice);
-    else preimage = await weblnPayInvoice(invoice);
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`${rail} wallet rejected the zap invoice: ${msg}`);
-  }
-  return { preimage };
+  return {
+    invoice,
+    rail,
+    boostboxUrl: stored?.url || undefined,
+    pending: {
+      zapperPubkey,
+      recipientPubkey: args.recipientPubkey,
+      requestId: signed.id,
+      bolt11: invoice,
+      amountMsat,
+      relays: receiptRelays,
+    },
+  };
+}
+
+export interface ZapSupport {
+  nostrPubkey: string;
+  meta: LnurlPayMetadata;
 }
 
 /**
- * Does a Lightning address support NIP-57 zaps? Used to decide BEFORE any
- * payment whether to send a real zap (renders as a boost everywhere) or fall
- * back to a plain boostagram — so we never double-pay.
+ * Cached, because this is asked per RECIPIENT and the recipients repeat.
+ *
+ * A boost modal asks for every lnaddress in the value block the moment it
+ * opens, and a boost-all walks twenty tracks that routinely share one artist
+ * address — so the uncached version is a burst of payRequest fetches at a
+ * third-party host on every open. Short by the standards of
+ * lib/v4v/keysend-lookup.ts's six hours: the document carries `callback`,
+ * `minSendable` and `commentAllowed`, which the money path then uses, so this
+ * is sized to cover the open-then-send window and little more.
  */
-export async function lnaddrSupportsZaps(lud16: string): Promise<boolean> {
+const ZAP_SUPPORT_TTL_MS = 30 * 60 * 1000;
+/** A provider that has just turned zaps on should not wait out the hit TTL. */
+const ZAP_SUPPORT_MISS_TTL_MS = 5 * 60 * 1000;
+const zapSupportCache = createBoundedCache<ZapSupport | null>({
+  maxAgeMs: ZAP_SUPPORT_TTL_MS,
+  maxEntries: 200,
+});
+
+/**
+ * Is this address zappable, and by whose key?
+ *
+ * Answered BEFORE any payment, so a leg is never sent down the zap path and then
+ * re-paid when it turns out the provider cannot publish a receipt.
+ *
+ * It returns the `nostrPubkey` and the whole document rather than a boolean, and
+ * both halves earn their place: the pubkey is what the receipt is checked
+ * against later, and the document is what stops `sendZap` fetching the same URL
+ * a second time on the money path.
+ */
+export async function lnaddrZapSupport(
+  lud16: string,
+): Promise<ZapSupport | null> {
+  const key = lud16.trim().toLowerCase();
+  const now = Date.now();
+  const hit = zapSupportCache.get(key, now);
+  if (hit && !(hit.value === null && hit.ageMs >= ZAP_SUPPORT_MISS_TTL_MS)) return hit.value;
+
+  let answer: ZapSupport | null = null;
   try {
     const meta = await fetchPayMetadata(lnAddressToUrl(lud16));
-    return !!(meta.allowsNostr && meta.nostrPubkey);
+    if (meta.allowsNostr && meta.nostrPubkey) {
+      answer = { nostrPubkey: meta.nostrPubkey, meta };
+    }
   } catch {
-    return false;
+    answer = null;
   }
+  zapSupportCache.set(key, answer, now);
+  return answer;
 }
