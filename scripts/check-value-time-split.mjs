@@ -238,6 +238,54 @@ check('zero-weight recipient is dropped, not paid 0',
   names(payableSplit(10, [...SHOW, { name: 'ghost', address: 'g@x.com', type: 'lnaddress', split: 0 }])),
   ['candr show', 'ChadF', 'Reed', 'Podcastindex.org']);
 
+// ── splitTrackAndHost → payableSplit: the TRACK leg is derived too ─────────
+// Why the old exemption — "the primary leg is the whole amount, gated by the
+// 100-sat minimum" — was false, and why BOTH legs of a redirect go through
+// payableSplit now. `remotePercentage` is authored by the HOST's feed, so the
+// gate on the amount a user TYPES says nothing about the leg the redirect
+// leaves for the artists. This composes the two functions in the order both
+// modals call them; which leg each modal routes through payableSplit is React
+// wiring and still unpinned.
+//
+// The artist block is the KEYSEND_MULTI row captured in check-playlist-db.mjs
+// — a real value block off a playlist DB row, weights 5/1/5/1 as authored,
+// summing to 12 rather than 100. Real wire data carries the shapes nobody
+// thinks to invent: four payees behind a two-digit share is exactly the
+// arrangement a small track leg cannot pay.
+console.log('\nsplitTrackAndHost → payableSplit — the track leg is derived too');
+
+const TRACK = [
+  { fee: false, name: 'Music Side Project', type: 'node', split: 5, address: '030a58b8653d32b99200a2334cfe913e51dc7d155aa0116c176657a4f1722677a3' },
+  { fee: false, name: 'Fountain Boostbot', type: 'node', split: 1, address: '03b6f613e88bd874177c28c6ad83b3baba43c4c656f56be1f8df84669556054b79' },
+  { fee: false, name: 'IPFSPodcasting.net', type: 'node', split: 5, address: '028eb5be336f7fdf2a4e40c57ff55d3d5d71277bb4197ea14957f756bff249e623' },
+  { fee: true, name: 'Podcastindex.org', type: 'lnaddress', split: 1, address: 'podcastindex@getalby.com' },
+];
+
+// The postcondition, across every share a feed can ask for: whatever the
+// redirect leaves, no payee is carried at 0 and nothing is dropped on the floor.
+for (const pct of [1, 2, 3, 5, 25, 50, 97, 99, 100]) {
+  const { trackSats } = at(100, pct, SHOW.length);
+  const leg = payableSplit(trackSats, TRACK);
+  check(`100 sats @ ${pct}% → track leg emits no zero-sat leg`,
+    leg.splits.filter((s) => s <= 0).length, 0);
+  check(`100 sats @ ${pct}% → track leg spends its whole share`,
+    leg.splits.reduce((a, b) => a + b, 0), trackSats);
+}
+
+// The case the exemption let through. The button allowed this boost — 100 sats
+// is the minimum — and the window still reduced the artists' leg to 2 sats,
+// which cannot be four payments. Two payees, not four carried at zero.
+const twoPct = payableSplit(at(100, 2, SHOW.length).trackSats, TRACK);
+check('a gated 100-sat boost at 2% pays two of four artists', twoPct.splits.length, 2);
+check('a gated 100-sat boost at 2% still spends both sats', twoPct.splits, [1, 1]);
+// And the show's remainder is the LARGER half there, which is the shape that
+// makes the old reasoning read as safe: the leg it exempted was the small one.
+check('at 2% the show takes 98 of the 100', at(100, 2, SHOW.length).hostSats, 98);
+// A full redirect keeps every artist — trimming must not become a way to stop
+// paying the 1% payees whenever a window is involved.
+check('100% redirect keeps all four artists',
+  payableSplit(at(100, 100, SHOW.length).trackSats, TRACK).recipients.length, 4);
+
 // ── The obvious wrong implementations ───────────────────────────────────────
 // A vector that passes the moment it is written has proved nothing. When there
 // is no prior implementation to run against, run against the version someone
@@ -535,6 +583,8 @@ const naiveCaught = [
     naiveSplitAt([LIVE], 0) !== null],
   ['a bare splitSats leaves a zero-sat leg that payOne reports as paid',
     splitSats(3, SHOW).filter((s) => s <= 0).length > 0],
+  ['exempting the TRACK leg strands two artists at 0 sats on a gated 100-sat boost',
+    splitSats(at(100, 2, SHOW.length).trackSats, TRACK).filter((s) => s <= 0).length > 0],
   ['rounding hands the track a sat out of the show\'s share',
     naiveTrackAndHost({ totalSats: 350, remotePercentage: 97 }).trackSats === 340],
   ['no clamp lets a malformed percentage produce a negative host leg',
