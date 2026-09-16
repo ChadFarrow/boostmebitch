@@ -15,13 +15,14 @@ import {
   keysendRecentlyFailed,
   noteKeysendFailure,
 } from './keysend-lookup';
-import { storeBoostMetadata } from './boostbox';
+import { storeBoostMetadata, boostboxIdFromUrl } from './boostbox';
 import { storage } from '@/lib/storage';
 import { recipientOrder, isLnAddressRecipient, splitSats } from '@/lib/util';
 // Type-only, and deliberately so: `./zap` imports `pickRail` from HERE, so a
 // value import would close a cycle. The zap arm in `payOne` reaches the module
 // through `await import('./zap')`, the same way the NWC engine is reached.
-import type { LnurlPayMetadata } from './zap';
+import type { LnurlPayMetadata, StoredBoostMetadata } from './zap';
+import type { Nip73Refs } from '@/lib/nostr/zap-request';
 
 /** One lnaddress leg that may be paid as a real NIP-57 zap. */
 export interface ZapLegTarget {
@@ -47,6 +48,18 @@ export interface ZapRouting {
   byAddress: Map<string, ZapLegTarget>;
   /** Where each kind:9734 asks for its receipt to be published. */
   relays: string[];
+}
+
+/**
+ * The key `ZapRouting.byAddress` is written and read with. ONE normalizer: the
+ * hook wrote `trim().toLowerCase()` and `payOne` read `toLowerCase()`, so a
+ * feed address with a stray space resolved its pairing, paid for two lookups,
+ * and then never matched its own entry — the leg paid the ordinary way and
+ * quoted nothing, silently, for exactly the hand-authored feeds most likely to
+ * carry the space.
+ */
+export function zapRoutingKey(address: string): string {
+  return address.trim().toLowerCase();
 }
 
 // TLV custom record number for podcast boostagrams (Podcasting 2.0 spec).
@@ -169,8 +182,14 @@ async function payLnurl(
   sats: number,
   rail: Rail,
   boostagram: Boostagram,
+  /**
+   * A BoostBox record a zap attempt already filed for THIS leg, when the zap
+   * fell back here. Reused rather than filed again, or the recipient's BoostBox
+   * shows two entries for one payment. `undefined` means nobody has asked yet.
+   */
+  prior?: StoredBoostMetadata,
 ): Promise<BoostResult> {
-  const stored = await storeBoostMetadata({
+  const stored = prior ?? await storeBoostMetadata({
     boostagram,
     recipient,
     splitWeight: recipient.split,
@@ -199,7 +218,7 @@ async function payLnurl(
     ok: true,
     preimage,
     boostboxUrl: stored?.url,
-    boostboxId: stored?.url?.split('/').pop() || undefined,
+    boostboxId: boostboxIdFromUrl(stored?.url),
   };
 }
 
@@ -320,6 +339,7 @@ async function payOne(
   boostagram: Boostagram,
   canKeysend: KeysendCapability,
   zap?: ZapRouting,
+  zapRefs?: Nip73Refs,
 ): Promise<BoostResult> {
   const base: BoostResult = { recipient, sats, ok: false };
   if (sats <= 0) return { ...base, ok: true };
@@ -355,7 +375,7 @@ async function payOne(
     // unattended payer — lib/v4v/streaming.ts calls the same sendBoost — and for
     // an anonymous boost, because a zap request is signed by the user's key and
     // the receipt republishes that pubkey as the payer.
-    const zapTarget = zap?.byAddress.get(recipient.address.toLowerCase());
+    const zapTarget = zap?.byAddress.get(zapRoutingKey(recipient.address));
     if (zap && zapTarget) {
       const zapMod = await import('./zap');
       try {
@@ -372,6 +392,7 @@ async function payOne(
           rail,
           meta: zapTarget.meta,
           metadata: { boostagram, recipient, legMsat: sats * 1000 },
+          refs: zapRefs,
         });
         return {
           recipient,
@@ -379,7 +400,7 @@ async function payOne(
           ok: true,
           preimage: sent.preimage,
           boostboxUrl: sent.boostboxUrl,
-          boostboxId: sent.boostboxUrl?.split('/').pop() || undefined,
+          boostboxId: boostboxIdFromUrl(sent.boostboxUrl),
           zapPending: sent.pending,
         };
       } catch (e) {
@@ -391,6 +412,10 @@ async function payOne(
         console.info(
           `[zap] ${recipient.address} → falling back, nothing was sent: ${e.message}`,
         );
+        // The zap may have filed its BoostBox record before it failed; the
+        // LNURL leg reuses that record rather than filing a second one. An
+        // upgraded keysend skips BoostBox anyway, so only the LNURL arm needs it.
+        if (e.stored) return await payLnurl(recipient, sats, rail, boostagram, e.stored);
       }
     }
 
@@ -600,6 +625,13 @@ export async function sendBoost(args: {
    * because a UI surface elsewhere wanted a quotable receipt.
    */
   zap?: ZapRouting;
+  /**
+   * Which show and item every zap leg of THIS call is for — per call, not per
+   * routing table, because a redirected boost pays two blocks with two
+   * identities (the track's and the show's) and a boost-all pays one per track.
+   * Ignored without `zap`.
+   */
+  zapRefs?: Nip73Refs;
 }): Promise<BoostResult[]> {
   // Before ANY leg: the retry arms below read the NWC error classes whichever
   // rail pays, and a payment engine that cannot load must fail the boost while
@@ -656,7 +688,7 @@ export async function sendBoost(args: {
   // Still strictly sequential: NWC is one relay connection, WebLN prompts per
   // payment, and streaming.ts settles serially by design. Never parallelize.
   for (const i of recipientOrder(recipients)) {
-    const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend, args.zap);
+    const r = await payOne(recipients[i], splits[i], rail, args.boostagram, canKeysend, args.zap, args.zapRefs);
     results[i] = r;
     args.onProgress?.(r, i, recipients.length);
   }

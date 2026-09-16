@@ -1,7 +1,7 @@
 import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
-import { httpUrl, recipientOrder } from '../util';
+import { httpUrl } from '../util';
 import type { QuotedZapReceipt } from './zap-receipt-wait';
 import { BRAND, clientTag } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
@@ -205,9 +205,15 @@ const MAX_QUOTED_RECEIPTS = 4;
  * receipt through `zapReceiptAmountMsat`), so a note we publish this way is read
  * by our own explorer exactly as a Fountain wrapper is.
  *
- * ORDERED BY `recipientOrder`, not by feed order, for the same reason the legs
- * are paid and stored that way: the first quote is the one a client that renders
- * only one will pick, so it must be the artist's, never a 1-sat fee payee's.
+ * ORDERED BY SETTLED SATS, largest first — not by `recipientOrder`. The first
+ * quote is the one a client that renders only one will pick, so it must be the
+ * artist's and never a 1-sat fee payee's; but `recipientOrder` ranks by split
+ * WEIGHT, and a redirected boost hands this function legs from TWO value blocks
+ * whose weights are on different scales, so a show-block fee payee at
+ * `split=100` outranked a track artist at `split=50`. Settled sats are an
+ * absolute per-payee number and compare across blocks. The sort is stable, so
+ * equal legs keep the order they were paid in — which is `recipientOrder`
+ * within each block already.
  */
 function quotedReceipts(results: BoostResult[]): QuotedZapReceipt[] {
   // Holes are filtered FIRST, and that is not defensive tidiness. The modal's
@@ -216,12 +222,16 @@ function quotedReceipts(results: BoostResult[]): QuotedZapReceipt[] {
   // `value_msat_total` is absent — so a hole reaching here used to be harmless
   // and now would throw inside the note builder, losing the whole note for a
   // boost that had already paid.
-  const legs = results.filter((r): r is BoostResult => !!r);
+  const legs = results
+    .filter((r): r is BoostResult => !!r && !!r.zapReceipt)
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.sats - a.r.sats || a.i - b.i)
+    .map(({ r }) => r);
   const out: QuotedZapReceipt[] = [];
   const seen = new Set<string>();
-  for (const i of recipientOrder(legs.map((r) => r.recipient))) {
-    const z = legs[i]?.zapReceipt;
-    if (!z || seen.has(z.id)) continue;
+  for (const leg of legs) {
+    const z = leg.zapReceipt!;
+    if (seen.has(z.id)) continue;
     seen.add(z.id);
     out.push(z);
     if (out.length >= MAX_QUOTED_RECEIPTS) break;
@@ -333,14 +343,26 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     boostagram.value_msat_total ??
     results.reduce((sum, r) => sum + r.sats * 1000, 0);
 
-  // NIP-73 external content tags + boost-specific metadata
+  // NIP-73 external content tags + boost-specific metadata.
+  //
+  // The `i` tag carries the show's or item's page on this site as its optional
+  // third element — the URL hint NIP-73 allows and Fountain always writes (a
+  // fountain.fm show or episode page, on every boost note it publishes). It is
+  // a hint for a reader that does not index the guid; nothing here parses it
+  // back. `bmbLandingUrl` is the same restorable deep link the `r` tag carries.
   const tags: string[][] = [];
+  const showHint = bmbLandingUrl(podcast);
+  const itemHint = episode ? bmbLandingUrl(podcast, episode) : null;
   if (podcast.podcastGuid) {
-    tags.push(['i', `podcast:guid:${podcast.podcastGuid}`]);
+    tags.push(showHint
+      ? ['i', `podcast:guid:${podcast.podcastGuid}`, showHint]
+      : ['i', `podcast:guid:${podcast.podcastGuid}`]);
     tags.push(['k', 'podcast:guid']);
   }
   if (episode?.guid) {
-    tags.push(['i', `podcast:item:guid:${episode.guid}`]);
+    tags.push(itemHint
+      ? ['i', `podcast:item:guid:${episode.guid}`, itemHint]
+      : ['i', `podcast:item:guid:${episode.guid}`]);
     tags.push(['k', 'podcast:item:guid']);
   }
   const linkUrl = podcastLandingUrl(podcast, episode);

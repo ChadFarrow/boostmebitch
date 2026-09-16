@@ -21,6 +21,8 @@ import { storeBoostMetadata } from './boostbox';
 import { bolt11AmountMsat } from './bolt11';
 import { lnurlFetch } from './lnurl-fetch';
 import { createBoundedCache } from '@/lib/bounded-cache';
+import { zapRequestTags, type Nip73Refs } from '@/lib/nostr/zap-request';
+import { NwcIndeterminateError } from './nwc-errors';
 import { activeNostr } from '@/lib/nostr/signer';
 import type { PendingZapReceipt } from '@/lib/nostr/zap-receipt-wait';
 
@@ -50,11 +52,24 @@ export interface LnurlPayMetadata {
  * a wallet failure would re-pay a leg that already went out.
  */
 export class ZapNotAttemptedError extends Error {
-  constructor(message: string) {
+  /**
+   * The BoostBox record `prepareZap` had already filed when it failed, if any.
+   * The POST has to precede the invoice request — the descriptor rides in the
+   * LUD-21 comment — so a zap that fails AFTER it and falls back to `payLnurl`
+   * would otherwise file a second record for the same leg: the recipient's
+   * BoostBox then shows two entries for one payment, the first pointing at a
+   * payment that never happened. Carried out so the fallback reuses it.
+   */
+  readonly stored: StoredBoostMetadata | null;
+  constructor(message: string, stored: StoredBoostMetadata | null = null) {
     super(message);
     this.name = 'ZapNotAttemptedError';
+    this.stored = stored;
   }
 }
+
+/** What BoostBox hands back for one leg: the descriptor and its landing URL. */
+export type StoredBoostMetadata = NonNullable<Awaited<ReturnType<typeof storeBoostMetadata>>>;
 
 /** What `sendZap` hands back: the payment, and how to find its receipt. */
 export interface SendZapResult {
@@ -79,6 +94,15 @@ interface PreparedZap {
   rail: Rail;
   pending: PendingZapReceipt;
   boostboxUrl?: string;
+}
+
+/**
+ * What `prepareZap` has done so far, readable by `sendZap` after a throw. The
+ * BoostBox record is the one side effect that precedes the invoice, and a
+ * caller that falls back needs it to avoid filing another.
+ */
+interface PrepareContext {
+  stored?: StoredBoostMetadata | null;
 }
 
 function lud06ToUrl(lud06: string): string {
@@ -154,10 +178,17 @@ export async function sendZap(args: {
    * here, on the money path.
    */
   meta?: LnurlPayMetadata;
+  /**
+   * Which show and item this zap is for. Written onto the kind:9734 as NIP-73
+   * `k`/`i` pairs, which the recipient's server mirrors onto the receipt — the
+   * only place a receipt says what it paid for. See lib/nostr/zap-request.ts.
+   */
+  refs?: Nip73Refs;
 }): Promise<SendZapResult> {
   let prepared: PreparedZap;
+  const ctx: PrepareContext = {};
   try {
-    prepared = await prepareZap(args);
+    prepared = await prepareZap(args, ctx);
   } catch (e) {
     // TOTAL by construction, and that is the point. Everything prepareZap does
     // happens before any invoice is paid, so every failure it can raise proves
@@ -168,7 +199,7 @@ export async function sendZap(args: {
     // NwcNotAttemptedError; see boost invariant 11 in CLAUDE.md.
     throw e instanceof ZapNotAttemptedError
       ? e
-      : new ZapNotAttemptedError(e instanceof Error ? e.message : String(e));
+      : new ZapNotAttemptedError(e instanceof Error ? e.message : String(e), ctx.stored ?? null);
   }
 
   let preimage: string;
@@ -181,8 +212,19 @@ export async function sendZap(args: {
   } catch (e) {
     // NOT a ZapNotAttemptedError. The invoice was handed to a wallet, so this
     // leg is finished either way and must never be re-paid over LNURL.
+    //
+    // The wrapper must PRESERVE indeterminacy. `nwcPayInvoice` already mapped
+    // a reply timeout to `NwcIndeterminateError` — the request was published
+    // and the wallet may have paid — and `payOne`'s outer catch reads that
+    // class to render `?` instead of ✗. A plain Error here stripped it, so a
+    // zap leg on a wallet that never answered showed ✗, and a ✗ is what talks
+    // the user into boosting again and paying twice. Same rule, same shape, as
+    // the keysend→LNURL wrapper in boost.ts.
     const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`${prepared.rail} wallet rejected the zap invoice: ${msg}`);
+    const wrapped = `${prepared.rail} wallet rejected the zap invoice: ${msg}`;
+    throw e instanceof NwcIndeterminateError
+      ? new NwcIndeterminateError(wrapped)
+      : new Error(wrapped);
   }
   return { preimage, pending: prepared.pending, boostboxUrl: prepared.boostboxUrl };
 }
@@ -193,7 +235,10 @@ export async function sendZap(args: {
  * Split out of `sendZap` so the boundary between "nothing moved" and "the wallet
  * has the invoice" is a scope rather than a convention.
  */
-async function prepareZap(args: Parameters<typeof sendZap>[0]): Promise<PreparedZap> {
+async function prepareZap(
+  args: Parameters<typeof sendZap>[0],
+  ctx: PrepareContext,
+): Promise<PreparedZap> {
   const nostr = activeNostr();
   if (!nostr) {
     throw new Error('No Nostr signer available');
@@ -232,24 +277,36 @@ async function prepareZap(args: Parameters<typeof sendZap>[0]): Promise<Prepared
   const lnurl = lnurlBech32(lnurlSourceUrl);
   const receiptRelays = args.relays.slice(0, 8);
 
-  const tags: string[][] = [
-    ['relays', ...receiptRelays],
-    ['amount', String(amountMsat)],
-    ['lnurl', lnurl],
-    ['p', args.recipientPubkey],
-  ];
-  if (args.eventId) tags.push(['e', args.eventId]);
-  if (args.aTag) tags.push(['a', args.aTag]);
+  // The tag list is a pinned pure function, because the recipient's server
+  // mirrors it onto the receipt the note quotes — see lib/nostr/zap-request.ts
+  // for the two real Fountain requests it is checked against. It carries the
+  // NIP-73 `k`/`i` pairs naming the show and item; without them the receipt
+  // parses as no show and no episode, in our own explorer included.
+  //
+  // No `client` tag. The recipient's LNURL server reads this event before any
+  // relay does, so an app-identity claim here is a money-path change; that rule
+  // is about THAT tag, and reading it as "no tags at all" is what stripped the
+  // podcast linkage off every receipt this app produced.
+  //
+  // `p` is the payee's own pubkey when NIP-05 named one, else the provider's
+  // `nostrPubkey` — which is the key that signs the receipt, and exactly what
+  // Fountain writes for every zap it sends. Alby's callback issued an invoice
+  // for both shapes when asked (2026-09-16).
+  const tags = zapRequestTags({
+    relays: receiptRelays,
+    amountMsat,
+    lnurl,
+    recipientPubkey: args.recipientPubkey,
+    eventId: args.eventId,
+    aTag: args.aTag,
+    refs: args.refs,
+  });
 
   // The zap request's content is what Nostr clients RENDER as the zap message,
   // so it stays the human's prose. The descriptor belongs in the LUD-21
   // `comment` below, which is the machine-readable channel the recipient's LN
   // service reads — putting it here would print `rss::payment::boost <url>` in
   // the middle of every zap in every client.
-  //
-  // No `client` tag, and no NIP-73 `i`/`k` tags either. The recipient's LNURL
-  // server reads this event before any relay does, so a tag here is a money-path
-  // change, not a metadata one. scripts/check-claudemd.mjs asserts the omission.
   const template: EventTemplate = {
     kind: 9734,
     created_at: Math.floor(Date.now() / 1000),
@@ -276,6 +333,10 @@ async function prepareZap(args: Parameters<typeof sendZap>[0]): Promise<Prepared
         legMsat: args.metadata.legMsat,
       })
     : null;
+  // Visible to sendZap's catch from here on: a failure past this line has
+  // filed a record, and the LNURL fallback must reuse it rather than file
+  // another. See ZapNotAttemptedError.stored.
+  ctx.stored = stored;
 
   const commentArgs = { desc: stored?.desc, message: args.comment };
   const comment = buildLnurlComment(commentArgs, meta.commentAllowed);
@@ -387,9 +448,20 @@ export interface ZapSupport {
 const ZAP_SUPPORT_TTL_MS = 30 * 60 * 1000;
 /** A provider that has just turned zaps on should not wait out the hit TTL. */
 const ZAP_SUPPORT_MISS_TTL_MS = 5 * 60 * 1000;
+/**
+ * Byte bound, because an entry cap is not a memory bound (lib/bounded-cache.ts).
+ * The value is a whole payRequest document, keyed by a feed-supplied address,
+ * and LUD-06 `metadata` may legitimately embed a base64 image: `lnurlFetch`
+ * reads up to 256 KB per document, so 200 entries with no byte ceiling is
+ * ~51 MB retained for half an hour, on a key space a playlist chooses.
+ */
+const ZAP_SUPPORT_MAX_BYTES = 2 * 1024 * 1024;
 const zapSupportCache = createBoundedCache<ZapSupport | null>({
   maxAgeMs: ZAP_SUPPORT_TTL_MS,
   maxEntries: 200,
+  maxBytes: ZAP_SUPPORT_MAX_BYTES,
+  // The document's one variable-size field, plus a flat allowance for the rest.
+  sizeOf: (v) => (v?.meta.metadata?.length ?? 0) + 256,
 });
 
 /**
