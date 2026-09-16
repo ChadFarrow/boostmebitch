@@ -12,10 +12,18 @@ export function AmountInput({
   // than a second component so the htmlFor/id association below — the reason
   // this field has an accessible name at all — cannot be lost in a copy.
   label = 'Amount to send (sats)',
+  // Set while a send is in flight. The amount is not just an input here: both
+  // modals derive the per-leg allocation from it at RENDER time, while `go()`
+  // pays from the closure it captured at the tap. Editing it mid-send repainted
+  // every row with figures that differ from the sats actually going out — and
+  // ✓ glyphs land beside those rows as the legs settle. <ModalShell> already
+  // takes `dismissable={!running}` for the same reason.
+  disabled = false,
 }: {
   sats: number;
   onChange: (n: number) => void;
   label?: string;
+  disabled?: boolean;
 }) {
   const [raw, setRaw] = useState(sats > 0 ? String(sats) : '');
   // htmlFor/id, not a bare sibling <label>. The label was unassociated, so the
@@ -42,7 +50,8 @@ export function AmountInput({
         type="text"
         inputMode="numeric"
         pattern="[0-9]*"
-        className="input w-full mt-1.5 text-2xl text-center font-display tracking-wide"
+        className="input w-full mt-1.5 text-2xl text-center font-display tracking-wide disabled:opacity-50"
+        disabled={disabled}
         value={raw}
         placeholder="enter amount"
         onFocus={(e) => e.target.select()}

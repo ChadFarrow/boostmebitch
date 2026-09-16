@@ -9,7 +9,7 @@ import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, record
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './boost-modal/use-share-picker';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { getErrorMessage, hasValueRecipients, payableSplit, payableValue, splitTrackAndHost, storedBoostLegs, randomId } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableValue, redirectLegs, storedBoostLegs, randomId, targetWord } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
@@ -21,6 +21,7 @@ import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
 import { PodcastCover } from './podcast-cover';
 import { RailPicker } from './rail-picker';
+import { DroppedPayees } from './boost-modal/dropped-payees';
 import { BoostModalBalance } from './wallet-balance';
 
 interface Props {
@@ -169,38 +170,28 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // go(), because the per-track allocation below needs it at RENDER time.
   const hostValue = useMemo(() => payableValue(episode, podcast), [episode, podcast]);
 
-  // The per-track allocation, resolved once for the rows AND the loop. ONE
+  // BOTH legs of every track, resolved once for the rows AND the loop. ONE
   // object feeds what the screen claims and what goes out — the same rule
   // <BoostModal> follows — because a row that says "4 recipients" while the leg
-  // pays three is the silent omission `payableSplit` exists to stop.
+  // pays three is the silent omission `payableLeg` exists to stop. The HOST half
+  // is carried here too, not recomputed inside go(): the row renders
+  // `host.sats` from this memo, so a second independent computation down there
+  // is free to disagree with it the moment either side gains a rule.
   //
-  // The TRACK leg goes through `payableSplit` too, not only the host share
-  // below. `trackSats` is floor(sats × remotePercentage / 100) and
-  // `remotePercentage` is authored by the host's FEED, so the 100-sat minimum
-  // on the TYPED amount says nothing about whether this leg reaches every
-  // payee. `splitSats` honestly leaves the unreachable ones at 0 and `payOne`
-  // short-circuits `sats <= 0` to ok:true without contacting anyone — a ✓ on
-  // the row and a StoredBoost for a payment nobody received, on the LARGER of
-  // the two legs. It is a no-op wherever the share reaches everyone.
-  const trackLegs = useMemo(() => splits.map((split) => {
-    const { trackSats, hostSats } = splitTrackAndHost({
-      totalSats: sats,
-      remotePercentage: split.remotePercentage,
-      hostRecipientCount: hostValue?.recipients?.length ?? 0,
-    });
-    const listed = split.value?.recipients ?? [];
-    const payable = payableSplit(trackSats, listed);
-    return {
-      trackSats,
-      hostSats,
-      recipients: payable.recipients,
-      listed: listed.length,
-      // Guarded on `trackSats > 0`: payableSplit's `payable.length === 0` arm
-      // hands back every recipient with all-zero splits, so a zero-share track
-      // must not read as "nobody was dropped from a leg we are sending".
-      dropped: trackSats > 0 ? listed.length - payable.recipients.length : 0,
-    };
-  }), [splits, sats, hostValue]);
+  // `redirectLegs` is `splitTrackAndHost` composed with `payableLeg`, and it
+  // lives in lib/util.ts because <BoostModal> runs the same composition — two
+  // copies is how the same feed comes to be paid two different ways depending
+  // on which button was pressed — and because that file loads under
+  // --experimental-strip-types, so `check:vts` pins the shipping composition
+  // rather than a copy. Spec: `remotePercentage` is the share going to the
+  // remote (track) recipients, (100 − remotePercentage) to the host show,
+  // default 100.
+  const trackLegs = useMemo(() => splits.map((split) => redirectLegs({
+    totalSats: sats,
+    remotePercentage: split.remotePercentage,
+    trackRecipients: split.value?.recipients ?? [],
+    hostRecipients: hostValue?.recipients ?? [],
+  })), [splits, sats, hostValue]);
 
   async function go() {
     if (!rail || !splits.length) return;
@@ -224,16 +215,10 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     for (let i = 0; i < splits.length; i++) {
       if (cancelled.current) return;
       const split = splits[i];
-      // Read from the memo the rows rendered, never recomputed here: the
-      // allocation the user looked at and the legs that go out are one object.
-      // The arithmetic itself is `splitTrackAndHost` — spec: remotePercentage
-      // is the share going to the remote (track) recipients, (100 −
-      // remotePercentage) to the host show, default 100. Shared with
-      // <BoostModal>, because two copies of it is how the same feed comes to be
-      // paid two different ways depending on which button was pressed.
-      // `check:vts` pins it.
-      const leg = trackLegs[i];
-      const { trackSats, hostSats: showLegSats } = leg;
+      // Read from the memo the rows rendered, never recomputed here — BOTH
+      // halves: the allocation the user looked at and the legs that go out are
+      // one object. See the memo for why the composition lives in lib/util.ts.
+      const { track, host } = trackLegs[i];
       // Boostagram shape for valueTimeSplits: HOST episode in primary fields
       // (the album/playlist the listener is playing), TRACK in remote_*. The
       // recipient artist sees `podcast`/`episode` describing the listener's
@@ -250,7 +235,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         remote_feed_guid: split.remoteItem?.feedGuid,
         remote_item_guid: split.remoteItem?.itemGuid,
         ts: 0,
-        value_msat_total: trackSats * 1000,
+        value_msat_total: track.sats * 1000,
         message: msg || undefined,
         sender_name: senderName,
         sender_id: anonymous ? undefined : identity?.pubkey,
@@ -262,14 +247,19 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       // answered, so "this track didn't pay" is not a claim we can make.
       let trackUnknown = false;
       try {
-        if (trackSats > 0) {
+        // `payable`, not `trackSats > 0`. A window with remotePercentage="0"
+        // makes this leg 0 sats, and payableSplit's no-one-can-be-paid arm
+        // hands back EVERY artist with an all-zero split — sending that group
+        // puts a ✓ and a StoredBoost leg against each of them for a payment
+        // nobody attempted, while the show takes the whole amount.
+        if (track.payable) {
           const results = await sendBoost({
             // Trimmed to the payees this share can actually reach, exactly like
             // the host leg below. Handing over `split.value!` whole would
             // re-split inside sendBoost across payees it cannot pay, and a
             // 0-sat leg reports as ✓. Same object the row rendered.
-            value: { ...split.value!, recipients: leg.recipients },
-            totalSats: trackSats,
+            value: { ...split.value!, recipients: track.recipients },
+            totalSats: track.sats,
             boostagram: trackBoostagram,
             rail,
           });
@@ -285,7 +275,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               podcastImage: split.image ?? episode.image ?? podcast.image,
               episodeTitle: episode.title,
               episodeGuid: episode.guid,
-              sats: trackSats,
+              sats: track.sats,
               message: msg || undefined,
               senderName,
               legs: storedBoostLegs(results),
@@ -306,9 +296,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
 
       // Per-track host leg. Each one carries the same remote_* tags as its
       // sibling track leg so the host can see which track triggered it in
-      // their boostagram log. Skip if remotePct === 100 (no host share),
-      // hostValue is missing, or showLegSats rounded to 0.
-      if (showLegSats > 0 && hasValueRecipients(hostValue) && !cancelled.current) {
+      // their boostagram log. `host.payable` covers every skip this used to
+      // list separately — remotePct === 100 (no host share), a share that
+      // rounded to 0, and a block with nobody who can receive it — and it is
+      // the SAME object the row rendered, so the two cannot disagree.
+      if (host.payable && hasValueRecipients(hostValue) && !cancelled.current) {
         const hostBoostagram: Boostagram = {
           app_name: BRAND.wireName,
           app_version: '0.1.0',
@@ -321,7 +313,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           remote_feed_guid: split.remoteItem?.feedGuid,
           remote_item_guid: split.remoteItem?.itemGuid,
           ts: 0,
-          value_msat_total: showLegSats * 1000,
+          value_msat_total: host.sats * 1000,
           message: msg || undefined,
           sender_name: senderName,
           sender_id: anonymous ? undefined : identity?.pubkey,
@@ -330,14 +322,15 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
         };
         try {
           const hostResults = await sendBoost({
-            // Trimmed to the recipients this share can actually pay. A per-track
-            // host share is arbitrarily small — 3 sats across four payees leaves
-            // one at zero, and payOne reports a zero-sat leg as ok:true, so the
-            // boost log recorded a payment nobody received. Same helper the
-            // single boost modal uses. hostValue is non-null here, guaranteed by
-            // hasValueRecipients above.
-            value: { ...hostValue!, recipients: payableSplit(showLegSats, hostValue!.recipients).recipients },
-            totalSats: showLegSats,
+            // The trimmed set from the memo, NOT a second payableSplit call. A
+            // per-track host share is arbitrarily small — 3 sats across four
+            // payees leaves one at zero, and payOne reports a zero-sat leg as
+            // ok:true, so the boost log recorded a payment nobody received. The
+            // row above renders `host.sats`; computing the payees again here
+            // would let what the screen claims drift from what goes out.
+            // hostValue is non-null, guaranteed by hasValueRecipients above.
+            value: { ...hostValue!, recipients: host.recipients },
+            totalSats: host.sats,
             boostagram: hostBoostagram,
             rail,
           });
@@ -351,7 +344,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               podcastImage: episode.image ?? podcast.image,
               episodeTitle: episode.title,
               episodeGuid: episode.guid,
-              sats: showLegSats,
+              sats: host.sats,
               message: msg || undefined,
               senderName,
               legs: storedBoostLegs(hostResults),
@@ -414,15 +407,32 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // Mirrors formatContent's attribution line, off the same `senderName` the
     // boostagrams carry — so an anonymous summary note reads as
     // DEFAULT_SENDER_NAME rather than attributing itself back to the user.
-    // `(N sats each)` is the reconcilable half, and it is the reason this line
-    // changed. This note is the ONLY artifact carrying the album total; every
-    // wire record carries one track's share, and nothing in a boostagram says
-    // it is 1 of N. So a reader holding both saw `totalSats` here and `sats`
-    // there and read the difference as sats that never left — reported as a
-    // boost that "only sent 10%" of a ten-track album. Naming the
-    // multiplicand lets the two numbers be checked against each other.
-    // Singular tracks skip it: "for 100 sats (100 each)" reads as a fault.
-    const each = successfulIdx.length > 1 ? ` (${sats} each)` : '';
+    // The reconcilable half, and the reason this line changed. This note is the
+    // ONLY artifact carrying the album total; every wire record carries one
+    // track's share, and nothing in a boostagram says it is 1 of N. So a reader
+    // holding both saw `totalSats` here and one leg's amount there and read the
+    // difference as sats that never left — reported as a boost that "only sent
+    // 10%" of a ten-track album.
+    //
+    // It names the ARTIST's share, never `sats`. A feed taking a host share
+    // pays each artist floor(sats × remotePercentage / 100), and THAT is the
+    // number their boostagram carries: `(1000 each)` against a 900-sat wire
+    // record leaves the reader in front of the same 10% gap this line exists to
+    // close. The show's half is named too, so the two account for the whole.
+    //
+    // Omitted when the paid tracks divide differently from one another — a
+    // per-track `remotePercentage` makes that ordinary, and one number cannot
+    // describe them. Singular tracks skip it: "for 100 sats (100 each)" reads
+    // as a fault.
+    const paidLegs = successfulIdx.map((i) => trackLegs[i]);
+    const uniform = paidLegs.length > 1 && paidLegs.every(
+      (l) => l.track.sats === paidLegs[0].track.sats && l.host.sats === paidLegs[0].host.sats,
+    ) ? paidLegs[0] : null;
+    const each = !uniform
+      ? ''
+      : uniform.host.sats > 0
+        ? ` (${uniform.track.sats} to the artist + ${uniform.host.sats} to the show, each)`
+        : ` (${uniform.track.sats} each)`;
     lines.push(
       `${senderName} boosted ${successfulIdx.length} track${successfulIdx.length === 1 ? '' : 's'} on ${podcast.title} for ${totalSats} sats${each}`,
     );
@@ -499,7 +509,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
               "only sent 10%": the album note carries `n × sats` while each
               track's boostagram carries one track's share, and nothing on
               screen connected the two numbers. */}
-          <AmountInput sats={sats} onChange={setSats} label="Amount per track (sats)" />
+          <AmountInput
+            sats={sats}
+            onChange={setSats}
+            label="Amount per track (sats)"
+            // Locked while the loop runs: every row's figures are derived from
+            // `sats` at render time, while go() pays from the closure it
+            // captured at the tap. An edit mid-run repainted all N rows with
+            // numbers that differ from the sats going out — and the ✓ glyphs
+            // land beside those rows as each track settles.
+            disabled={running}
+          />
 
           {loadState === 'loading' && (
             <p className="text-muted text-sm">Loading tracks…</p>
@@ -536,25 +556,24 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                           {split.title ?? `Track ${i + 1}`}
                         </div>
                         <div className="text-xs text-muted">
-                          {trackLegs[i].listed} recipient
-                          {trackLegs[i].listed !== 1 ? 's' : ''}
+                          {trackLegs[i].track.listed} recipient
+                          {trackLegs[i].track.listed !== 1 ? 's' : ''}
                           {split.duration ? ` · ${Math.round(split.duration / 60)}m` : ''}
                         </div>
-                        {/* The count above is what the FEED lists. Say when
-                            this track's share cannot reach all of them, rather
-                            than leaving a payee silently absent from a number
-                            somebody is reading to check where their money
-                            went. A count and a reason, like <BoostModal>'s
-                            dropped-payee line — naming each artist across N
-                            tracks would be a wall of text. */}
-                        {trackLegs[i].dropped > 0 && (
-                          <div className="text-[11px] text-muted">
-                            {trackLegs[i].trackSats} sat
-                            {trackLegs[i].trackSats === 1 ? ' reaches ' : ' reach '}
-                            {trackLegs[i].recipients.length} of {trackLegs[i].listed} —
-                            boost more to include everyone.
-                          </div>
-                        )}
+                        {/* The count above is what the FEED lists. Say when this
+                            track's share cannot reach all of them, rather than
+                            leaving a payee silently absent from a number
+                            somebody is reading to check where their money went.
+                            The SAME component <BoostModal> uses: three
+                            hand-written copies of this sentence had drifted into
+                            three wordings for one fact. A count and a reason —
+                            naming each artist across N tracks would be a wall of
+                            text. */}
+                        <DroppedPayees
+                          leg={trackLegs[i].track}
+                          label={split.title ?? `track ${i + 1}`}
+                          className="text-[11px] text-muted"
+                        />
                         {/* How this track's amount divides. <BoostModal> shows
                             the same fact as two <SplitsPreview> cards; this
                             modal showed it nowhere, so a listener could not
@@ -563,18 +582,35 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                             number they did not expect. That is what the "it
                             only sent 10%" report turned out to be, and the sats
                             were never missing.
-                            Gated on `hostSats`, never on `remotePercentage`:
-                            splitTrackAndHost returns 0 when the show has no
-                            block to pay, and a row promising a share that will
-                            not be sent is the same silent omission pointed the
-                            other way. The show is NAMED, because the listener
-                            is reading this to decide whether the division is
-                            what they want. */}
-                        {trackLegs[i].hostSats > 0 && (
+                            Gated on the host leg's `payable`, never on
+                            `remotePercentage`: splitTrackAndHost returns 0 when
+                            the show has no block to pay, and a row promising a
+                            share that will not be sent is the same silent
+                            omission pointed the other way. The show is NAMED,
+                            because the listener is reading this to decide
+                            whether the division is what they want.
+                            The track half names the MEDIUM's word, not "artist":
+                            the row above may say "4 recipients", so naming one
+                            artist put three recipient counts on one row. */}
+                        {trackLegs[i].host.payable && (
                           <div className="text-[11px] text-muted truncate">
-                            {trackLegs[i].trackSats} → artist · {trackLegs[i].hostSats} →{' '}
-                            {podcast.title}
+                            {trackLegs[i].track.sats} → {targetWord('item', podcast).toLowerCase()}
+                            {' '}· {trackLegs[i].host.sats} → {podcast.title}
                           </div>
+                        )}
+                        {/* The show's own dropped payees. Its share is the
+                            arbitrarily small one, so it is the leg most likely
+                            to have some — and it was the half with no sentence
+                            on this screen at all. Gated on `payable` like the
+                            line above: a 100%-to-track window leaves the show
+                            nothing BY DESIGN, and saying so on every row of an
+                            ordinary album is noise, not disclosure. */}
+                        {trackLegs[i].host.payable && (
+                          <DroppedPayees
+                            leg={trackLegs[i].host}
+                            label={podcast.title}
+                            className="text-[11px] text-muted"
+                          />
                         )}
                       </div>
                       {result && (
