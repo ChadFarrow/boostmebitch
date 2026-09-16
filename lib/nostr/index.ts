@@ -77,6 +77,7 @@ export {
 } from './discover';
 
 export { parseZapReceipt, zapSats, type ZapReceipt } from './zap-receipt';
+export type { Nip73Refs } from './zap-request';
 
 export { useNostrFeed, useVisibleNotes } from './use-feed';
 

@@ -7,15 +7,18 @@ import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
+import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
+import { useZapRouting } from './boost-modal/use-zap-routing';
 import { loadValueSplits } from '@/lib/podcast-meta';
-import { getErrorMessage, hasValueRecipients, payableValue, redirectLegs, storedBoostLegs, randomId, targetWord } from '@/lib/util';
+import { getErrorMessage, hasValueRecipients, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId, targetWord } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from './icons';
 import { AmountInput, MIN_BOOST_SATS } from './boost-modal/amount-input';
 import { MessageInput } from './message-input';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
+import type { Nip73Refs } from '@/lib/nostr';
 import { SenderName } from './boost-modal/sender-name';
 import { PublishStatus, type PublishState } from './boost-modal/publish-status';
 import { ShareNostrPicker } from './boost-modal/share-nostr-picker';
@@ -94,6 +97,30 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
   // one aggregator and "Unknown" in the next. Applies to every leg — per-track,
   // host share, summary. Component scope because <SenderName> renders off it.
   const senderName = resolveSenderName(name, anonymous);
+
+  // Both halves of the share picker, not `!anonymous` — see <BoostModal> for
+  // why "Don't post" has to be tested separately. A zap request is signed by
+  // the user's key and the receipt republishes it as the payer.
+  const mayZap = !!identity && shareNostr && shareAs === 'self';
+
+  // Which legs across the whole album could be paid as real NIP-57 zaps. Every
+  // track's block plus the show's, deduped and capped inside the hook.
+  //
+  // The summary note does NOT quote these receipts, on purpose. It states the
+  // ALBUM total — "boosted 20 tracks for 2000 sats" — and a quoted receipt is
+  // one leg of one track, so Fountain would render a ~44-sat figure beside
+  // prose claiming 2000, which reads worse than no figure at all. The zap is
+  // still worth sending: the receipt lands in the artist's own zap feed, and
+  // its NIP-73 refs name the track it was for.
+  const zapCandidates = useMemo(
+    () => [
+      ...splits.flatMap((s) => s.value?.recipients ?? []),
+      ...(payableValue(episode, podcast)?.recipients ?? []),
+    ],
+    [splits, episode, podcast],
+  );
+  const zapRouting = useZapRouting(zapCandidates, relays, mayZap);
+
 
   // Portal to <body> so the overlay escapes the layout's `relative z-0` content
   // wrapper (app/layout.tsx). Inside that wrapper a `fixed` modal's z-index only
@@ -211,6 +238,18 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // across awaits, and we need the final list immediately for the
     // post-loop Nostr publish.
     const successfulIdx: number[] = [];
+    // Resolved here rather than at render: `activeNostr()` is not reactive, and
+    // an album walk is long enough that the share picker can move under it.
+    // `undefined`, never an empty table, so payOne grows no zap arm at all.
+    const zapLegs = mayZap && activeNostr() && zapRouting ? zapRouting : undefined;
+    // The show's identity for its per-track remainder legs; each track leg
+    // names its own feed and item below. See lib/nostr/zap-request.ts.
+    const hostRefs: Nip73Refs = {
+      podcastGuid: podcast.podcastGuid,
+      episodeGuid: episode.guid,
+      podcastUrl: showShareUrl(podcast.podcastGuid) ?? undefined,
+      episodeUrl: showShareUrl(podcast.podcastGuid, episode.guid) ?? undefined,
+    };
 
     for (let i = 0; i < splits.length; i++) {
       if (cancelled.current) return;
@@ -219,6 +258,14 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       // halves: the allocation the user looked at and the legs that go out are
       // one object. See the memo for why the composition lives in lib/util.ts.
       const { track, host } = trackLegs[i];
+      // The TRACK's own feed and item — the same guids the boostagram carries
+      // as remote_* — so the receipt says which song was paid, not the album.
+      const trackRefs: Nip73Refs = {
+        podcastGuid: split.remoteItem?.feedGuid,
+        episodeGuid: split.remoteItem?.itemGuid,
+        podcastUrl: showShareUrl(split.remoteItem?.feedGuid) ?? undefined,
+        episodeUrl: showShareUrl(split.remoteItem?.feedGuid, split.remoteItem?.itemGuid) ?? undefined,
+      };
       // Boostagram shape for valueTimeSplits: HOST episode in primary fields
       // (the album/playlist the listener is playing), TRACK in remote_*. The
       // recipient artist sees `podcast`/`episode` describing the listener's
@@ -262,6 +309,8 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             totalSats: track.sats,
             boostagram: trackBoostagram,
             rail,
+            zap: zapLegs,
+            zapRefs: trackRefs,
           });
           trackOk = paidAny(results);
           trackUnknown = results.some((r) => r?.indeterminate);
@@ -333,6 +382,8 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             totalSats: host.sats,
             boostagram: hostBoostagram,
             rail,
+            zap: zapLegs,
+            zapRefs: hostRefs,
           });
           if (paidAny(hostResults)) {
             const stored: StoredBoost = {
@@ -443,6 +494,13 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     const contentOverride = lines.join('\n');
 
     setPubState({ kind: 'publishing' });
+    // `results: []` on purpose, and no receipt wait. The summary's amount comes
+    // from `value_msat_total`, and it quotes NO kind:9735: a receipt is one leg
+    // of one track, and Fountain would render that leg's sats beside prose
+    // stating the album total. Not waiting also closes a window this modal
+    // briefly had — `running` is already false, so the overlay is dismissable,
+    // and a 4-second wait here followed by a `cancelled.current` return dropped
+    // the note for a boost that had already paid when the user pressed ×.
     try {
       // User's own key only when signed in AND they picked "Post to my Nostr
       // feed"; otherwise the site's Nostr identity (signed out, or the

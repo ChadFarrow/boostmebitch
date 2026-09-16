@@ -233,7 +233,39 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 //
 // The ~56 words left over are headroom, NOT a budget for the next rule. That one
 // displaces something.
-const BUDGET = 15150
+//
+// 15,150 -> 15,340, and the accounting splits in two because the two halves are
+// paid for differently.
+//
+// 1. A TABLE ROW, on the precedent this file has set four times: `check:zapreceipt`
+//    is the thirty-eighth script, the table names its own count in its first line,
+//    and a script that exists and is not listed makes the file wrong rather than
+//    merely incomplete. ~25 words, and the count in that line moved with it.
+// 2. ONE BOOST INVARIANT, which is not paid for by that precedent, so it is
+//    stated plainly instead. A qualifying lnaddress leg now pays as a real
+//    NIP-57 zap so the boost note can quote its kind:9735 — the only thing
+//    Fountain reads to render a sat amount, which is why our notes showed the
+//    figure as prose and nothing else. It is a money rule (the leg changes rail,
+//    and only `ZapNotAttemptedError` may retry over `payLnurl`) and a privacy
+//    rule (the zap request is signed by the user's key and the receipt
+//    republishes it as the payer, so the gate is `shareNostr && shareAs ===
+//    'self'`, never `!anonymous` — the live-stream path shipped ungated and was
+//    naming Anonymous senders on public relays). Both halves are reachable from
+//    a file nobody has opened yet, which is the (a)/(c) test.
+//
+// The invariant was written and then cut twice, which took it from ~150 words to
+// ~130: the `zapReceiptAccepts` clause came out (the new table row names that
+// function and `docs/money-boosts.md` owns the reasoning) and two phrases were
+// shortened. What was NOT done is a prose cut elsewhere to pay for it, and that
+// is the honest part of this note rather than a claim of thrift — every passage
+// read as a candidate still names a measured fact, and cutting one on judgement
+// is the thing every raise above says not to do.
+//
+// The ~50 words left over are headroom, NOT a budget for the next rule. That one
+// displaces something, and the structural move this file has not yet made is the
+// boost invariants: at 1,681 words they are the third-largest section and they
+// have their own `docs/money-boosts.md` already.
+const BUDGET = 15340
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')

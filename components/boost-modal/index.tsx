@@ -4,12 +4,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
-import { sendBoost, pickRail, paidAny, type BoostResult, type Rail } from '@/lib/v4v/boost';
+import { sendBoost, pickRail, paidAny, collectZapReceipts, type BoostResult, type Rail } from '@/lib/v4v/boost';
 import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr, noteNpubs } from '@/lib/nostr';
-import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
+import { sendZap, lnaddrZapSupport } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, payableLeg, payableValue, redirectLegs, storedBoostLegs, randomId } from '@/lib/util';
+import { getErrorMessage, payableLeg, payableValue, redirectLegs, showShareUrl, storedBoostLegs, randomId } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -18,12 +18,14 @@ import { RailPicker } from '../rail-picker';
 import { AmountInput, MIN_BOOST_SATS } from './amount-input';
 import { MessageInput } from '../message-input';
 import type { MentionNpub } from '@/lib/nostr/mention-tags';
+import type { Nip73Refs } from '@/lib/nostr';
 import { SenderName } from './sender-name';
 import { useReplyAddress } from './use-reply-address';
 import { SplitsPreview, LightningStatus } from './splits-preview';
 import { DroppedPayees } from './dropped-payees';
 import { LiveNowPlaying, NowPayingRow, splitTargetLabel } from '../live-now-playing';
 import { useActiveSplit } from './use-active-split';
+import { useZapRouting } from './use-zap-routing';
 import { liveTargetSnapshot } from '@/lib/v4v/live-value';
 import { PublishStatus, type PublishState } from './publish-status';
 import { ShareNostrPicker } from './share-nostr-picker';
@@ -241,6 +243,29 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // above the minimum, so every other gate reads as ready.
   const nothingPayable = !primaryLeg.payable && !showsHostLeg;
 
+  // MAY we pay a leg as a zap? Two separate questions, and testing only the
+  // first is the privacy inversion `streamingMayPublish()` exists to name.
+  //
+  // A zap request is signed by the user's key, and the receipt the provider
+  // publishes carries it — so the zap path attributes the payment on public
+  // relays, permanently. "Anonymous" (shareAs === 'site') must therefore not
+  // take it. Neither may "Don't post": that writes `shareNostr = false` and
+  // leaves `shareAs` alone, so a gate written as `!anonymous` would publish a
+  // signed, timestamped record naming the user who had just chosen to publish
+  // less. `activeNostr()` is checked at the send site — it is not reactive.
+  const mayZap = !!identity && shareNostr && shareAs === 'self';
+
+  // Which legs could be paid as real NIP-57 zaps, resolved while the user is
+  // still choosing an amount. Both blocks, because a redirected boost pays the
+  // track's recipients and the show's remainder and either may be zappable.
+  const hostLegRecipients = hostLeg?.recipients;
+  const zapCandidates = useMemo(
+    () => [...value.recipients, ...(hostLegRecipients ?? [])],
+    [value.recipients, hostLegRecipients],
+  );
+  const zapRouting = useZapRouting(zapCandidates, relays, mayZap);
+
+
   // A window covers this second but we don't yet know whose block it points at.
   // Blocking the button is the point: the window is known synchronously and the
   // target is not, so a tap landing here would pay the show while the modal was
@@ -387,9 +412,45 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         ? primaryValue.recipients[0].address
         : null;
     const hasSigner = !!activeNostr();
-    if (liveStreamId && identity && hasSigner && hostLnaddr && (await lnaddrSupportsZaps(hostLnaddr))) {
+
+    // Which show and item each zap request names, as NIP-73 `k`/`i` pairs the
+    // recipient's server mirrors onto the receipt — see lib/nostr/zap-request.ts.
+    // Per LEG GROUP: a redirect pays the TRACK's block, so its zaps name the
+    // track's own feed and item (the same guids the boostagram carries as
+    // remote_*), while the show's remainder names the show. A live stream's
+    // `episode.guid` is a Nostr stream id, not an item guid, so it names only
+    // the show there. The URL hints are this site's restorable deep links.
+    const showGuid = episode?.podcastGuid ?? podcast.podcastGuid;
+    const itemGuid = liveStreamId ? undefined : episode?.guid;
+    const hostRefs: Nip73Refs = {
+      podcastGuid: showGuid,
+      episodeGuid: itemGuid,
+      podcastUrl: showShareUrl(showGuid) ?? undefined,
+      episodeUrl: showShareUrl(showGuid, itemGuid) ?? undefined,
+    };
+    const trackRefs: Nip73Refs | undefined = redirect
+      ? {
+          podcastGuid: redirect.remoteItem?.feedGuid,
+          episodeGuid: redirect.remoteItem?.itemGuid,
+          podcastUrl: showShareUrl(redirect.remoteItem?.feedGuid) ?? undefined,
+          episodeUrl: showShareUrl(redirect.remoteItem?.feedGuid, redirect.remoteItem?.itemGuid) ?? undefined,
+        }
+      : undefined;
+    // `mayZap` is new here and it is a FIX, not a tightening. This branch used
+    // to ask only whether the user was signed in with a signer, so an Anonymous
+    // live-stream boost still signed a kind:9734 with their key — and the
+    // receipt the host's LN service publishes carries that pubkey as the payer,
+    // on public relays, for good. Anonymity applies to the payment, not just to
+    // the note. A boost that fails this falls through to the ordinary
+    // boostagram path below, which is what an anonymous one always wanted.
+    const liveZap =
+      liveStreamId && identity && hasSigner && mayZap && hostLnaddr
+        ? await lnaddrZapSupport(hostLnaddr)
+        : null;
+    if (liveZap && liveStreamId && hostLnaddr) {
+      let sent;
       try {
-        await sendZap({
+        sent = await sendZap({
           recipientPubkey: parseStreamId(liveStreamId)!.pubkey,
           recipientLud16: hostLnaddr,
           amountSats: sats,
@@ -397,6 +458,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           aTag: streamChatAddr(liveStreamId),
           relays: LIVE_STREAM_RELAYS,
           rail: rail ?? undefined,
+          // Already fetched by the support check above; handing it back keeps
+          // the money path from asking the same host for the same document
+          // twice.
+          meta: liveZap.meta,
+          refs: hostRefs,
           // So the LUD-21 comment carries the rss::payment descriptor, exactly
           // as an ordinary LNURL leg does. A single-recipient live block, so
           // the whole amount is this leg.
@@ -416,13 +482,30 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       setPaymentDone(true);
       setRunning(false);
       if (rail) recordLastRail(rail, identity);
-      logStoredBoost(boostagram, [
-        { recipient: hostLnaddr, recipientName: primaryValue.recipients[0].name, sats, ok: true },
-      ]);
+      // One BoostResult rather than a hand-built leg: `storedBoostLegs` is the
+      // one place that maps a result to a stored row, and this path is exactly
+      // the third hand-rolled copy CLAUDE.md names. It also carries the leg into
+      // the note, which is what lets this branch quote its own receipt.
+      // `primaryValue`, the feed's block, for the same reason the gate above
+      // reads it: `value` is trimmed by `payableLeg`.
+      const legs: BoostResult[] = [{
+        recipient: primaryValue.recipients[0],
+        sats,
+        ok: true,
+        preimage: sent.preimage,
+        boostboxUrl: sent.boostboxUrl,
+        zapPending: sent.pending,
+      }];
+      logStoredBoost(boostagram, storedBoostLegs(legs));
       setTimeout(() => onClose(), 1500);
-      await maybePublishNote(boostagram, []);
+      await maybePublishNote(boostagram, await collectZapReceipts(legs));
       return;
     }
+
+    // Resolved at send time, not at render: `activeNostr()` is not reactive, and
+    // the share picker can move while the modal is open. `undefined` — not an
+    // empty table — so `payOne` takes the ordinary path with no zap arm at all.
+    const zapLegs = mayZap && hasSigner && zapRouting ? zapRouting : undefined;
 
     let collected: BoostResult[] = [];
     // `payable`, not `primarySats > 0`. A redirect with remotePercentage="0"
@@ -451,6 +534,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
             ? { ...boostagram, value_msat_total: primaryLeg.sats * 1000 }
             : boostagram,
           rail,
+          zap: zapLegs,
+          zapRefs: redirect ? trackRefs : hostRefs,
           // By index, never appended: legs settle biggest-share-first, so append
           // order is not recipient order and every ✓/✗ would land on the wrong
           // row. `.slice()` preserves the holes and hands React a fresh ref.
@@ -489,6 +574,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           // approved are exactly the legs that go out.
           value: { ...hostValue, recipients: hostLeg!.recipients },
           totalSats: hostLeg!.sats,
+          zap: zapLegs,
+          zapRefs: hostRefs,
           // Its own uuid — it's a distinct payment and a recipient aggregator
           // dedupes on that field — but the same remote_* guids as the track
           // leg, which is what lets the host see which song earned their share.
@@ -538,11 +625,19 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     if (anyPaid) setTimeout(() => onClose(), 1500);
 
     // Fallback (non-zap) path only reaches here. A live-stream boost that
-    // didn't go out as a real zap (host doesn't support NIP-57, or signed out)
-    // posts into the stream's chat (kind:1311) so other viewers still see it —
-    // independent of the Share-on-Nostr toggle. Signed-in only (the message
-    // must be signed); non-fatal so a relay hiccup can't fail the boost.
-    if (anyPaid && identity && liveStreamId) {
+    // didn't go out as a real zap (host doesn't support NIP-57, or the user
+    // may not zap) posts into the stream's chat (kind:1311) so other viewers
+    // still see it. Non-fatal so a relay hiccup can't fail the boost.
+    //
+    // Gated on `mayZap`, the same `shareNostr && shareAs === 'self'` the zap
+    // path takes — NOT merely on being signed in, which is what this said
+    // before. A kind:1311 is signed by the user's key and carries their prose,
+    // so an Anonymous or "Don't post" boost that fell through here published
+    // a signed, timestamped attribution on LIVE_STREAM_RELAYS: the zap gate had
+    // relocated the leak rather than closed it. Same inversion
+    // `streamingMayPublish()` names — a user who chose to publish LESS must
+    // not end up publishing under their own key by a different door.
+    if (anyPaid && mayZap && liveStreamId) {
       const chatMsg = `⚡ Boosted ${sats.toLocaleString()} sats${msg ? `: ${msg}` : ''}`;
       publishLiveChat(liveStreamId, chatMsg).catch(() => { /* non-fatal */ });
     }
@@ -570,7 +665,16 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       // `boostagram.value_msat_total` is the full amount the user chose, so the
       // note reads "Boosted 100 sats" rather than naming one leg's share —
       // invariant 7, note amount is intent, not actual.
-      await maybePublishNote(boostagram, [...collected, ...hostCollected]);
+      // Wait briefly for the kind:9735 each zap leg earned, THEN publish. The
+      // receipts do not exist when the invoices settle, and the note quotes
+      // them — that quote is what makes Fountain render the sat amount. The
+      // user is already past the confetti and the modal is already closing, so
+      // this wait is invisible; a receipt that never lands costs the quote and
+      // nothing else.
+      await maybePublishNote(
+        boostagram,
+        await collectZapReceipts([...collected, ...hostCollected]),
+      );
     }
   }
 

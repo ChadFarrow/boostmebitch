@@ -122,6 +122,19 @@ function buildPayload(
  * `desc` + `url` pair on success. Returns null on any failure so callers
  * can degrade gracefully.
  */
+/**
+ * The BoostBox record id, read off the landing URL `storeBoostMetadata` returns.
+ *
+ * ONE derivation. `payLnurl` and the zap arm of `payOne` each took the last
+ * path segment themselves, so a BoostBox that ever appends a query string or a
+ * trailing slash would break the `<BoostCard>` 📦 link in two places at once
+ * and no type would say so. The id is what the card links by; the URL is what
+ * the wire carries.
+ */
+export function boostboxIdFromUrl(url: string | null | undefined): string | undefined {
+  return url?.split('/').pop() || undefined;
+}
+
 export async function storeBoostMetadata(args: {
   boostagram: Boostagram;
   recipient: ValueRecipient;

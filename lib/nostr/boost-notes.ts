@@ -1,6 +1,8 @@
+import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
 import { httpUrl } from '../util';
+import type { QuotedZapReceipt } from './zap-receipt-wait';
 import { BRAND, clientTag } from '../brand';
 import { DEFAULT_RELAYS } from './relays';
 import { signAndPublish, publishSignedEvent, type PublishedNote } from './publish';
@@ -187,6 +189,87 @@ function withArt(content: string, art: string | null): string {
   return art ? `${content}\n\n${art}` : content;
 }
 
+/**
+ * Cap on quoted receipts. A boost with more zap legs than this still pays them
+ * all; the note just stops naming them, the same way it stops naming people.
+ */
+const MAX_QUOTED_RECEIPTS = 4;
+
+/**
+ * The zap receipts this note quotes, biggest share first.
+ *
+ * WHY QUOTE A RECEIPT AT ALL. Fountain renders a boost's sat amount off a quoted
+ * kind:9735, not off our `amount` tag and not off the prose — which is why our
+ * notes showed the sats as text and nothing else. This repo already reads that
+ * shape in the other direction (`buildNote` in ./discover.ts resolves a quoted
+ * receipt through `zapReceiptAmountMsat`), so a note we publish this way is read
+ * by our own explorer exactly as a Fountain wrapper is.
+ *
+ * ORDERED BY SETTLED SATS, largest first — not by `recipientOrder`. The first
+ * quote is the one a client that renders only one will pick, so it must be the
+ * artist's and never a 1-sat fee payee's; but `recipientOrder` ranks by split
+ * WEIGHT, and a redirected boost hands this function legs from TWO value blocks
+ * whose weights are on different scales, so a show-block fee payee at
+ * `split=100` outranked a track artist at `split=50`. Settled sats are an
+ * absolute per-payee number and compare across blocks. The sort is stable, so
+ * equal legs keep the order they were paid in — which is `recipientOrder`
+ * within each block already.
+ */
+function quotedReceipts(results: BoostResult[]): QuotedZapReceipt[] {
+  // Holes are filtered FIRST, and that is not defensive tidiness. The modal's
+  // in-flight `results` state is `(BoostResult | undefined)[]` because legs
+  // settle biggest-share-first, and `totalMsat` above only walks this array when
+  // `value_msat_total` is absent — so a hole reaching here used to be harmless
+  // and now would throw inside the note builder, losing the whole note for a
+  // boost that had already paid.
+  const legs = results
+    .filter((r): r is BoostResult => !!r && !!r.zapReceipt)
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => b.r.sats - a.r.sats || a.i - b.i)
+    .map(({ r }) => r);
+  const out: QuotedZapReceipt[] = [];
+  const seen = new Set<string>();
+  for (const leg of legs) {
+    const z = leg.zapReceipt!;
+    if (seen.has(z.id)) continue;
+    seen.add(z.id);
+    out.push(z);
+    if (out.length >= MAX_QUOTED_RECEIPTS) break;
+  }
+  return out;
+}
+
+/**
+ * Append the `nostr:nevent…` reference for each quoted receipt.
+ *
+ * The BODY reference is the half that matters for interop — Fountain writes its
+ * own quote that way and reads it that way, and `parseQuoteRefs` (./discover.ts)
+ * exists because a `q`-tag scan alone misses it. The `q` tag goes on the event
+ * too; neither replaces the other.
+ *
+ * Placed below the artwork and above the mention run, for the reason `withArt`
+ * gives: the trailing `nostr:npub…` run is what a compose box writes last.
+ *
+ * `kind: 9735` is carried in the nevent because Fountain's own wrapper notes carry
+ * it — read off a real one, event f0416267…50e0 — and it is the half a reader can
+ * act on without fetching anything: it says the quote is a payment receipt rather
+ * than another note. Fountain ships no relay hints there and we do; that direction
+ * is additive, so ours stay.
+ */
+function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string {
+  if (receipts.length === 0) return content;
+  const refs = receipts.map(
+    (r) =>
+      `nostr:${nip19.neventEncode({
+        id: r.id,
+        relays: r.relays.slice(0, 3),
+        author: r.pubkey,
+        kind: 9735,
+      })}`,
+  );
+  return `${content}\n\n${refs.join('\n')}`;
+}
+
 /** Cap on how many people one boost note tags. */
 const MAX_NOTE_NPUBS = 4;
 
@@ -260,14 +343,26 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     boostagram.value_msat_total ??
     results.reduce((sum, r) => sum + r.sats * 1000, 0);
 
-  // NIP-73 external content tags + boost-specific metadata
+  // NIP-73 external content tags + boost-specific metadata.
+  //
+  // The `i` tag carries the show's or item's page on this site as its optional
+  // third element — the URL hint NIP-73 allows and Fountain always writes (a
+  // fountain.fm show or episode page, on every boost note it publishes). It is
+  // a hint for a reader that does not index the guid; nothing here parses it
+  // back. `bmbLandingUrl` is the same restorable deep link the `r` tag carries.
   const tags: string[][] = [];
+  const showHint = bmbLandingUrl(podcast);
+  const itemHint = episode ? bmbLandingUrl(podcast, episode) : null;
   if (podcast.podcastGuid) {
-    tags.push(['i', `podcast:guid:${podcast.podcastGuid}`]);
+    tags.push(showHint
+      ? ['i', `podcast:guid:${podcast.podcastGuid}`, showHint]
+      : ['i', `podcast:guid:${podcast.podcastGuid}`]);
     tags.push(['k', 'podcast:guid']);
   }
   if (episode?.guid) {
-    tags.push(['i', `podcast:item:guid:${episode.guid}`]);
+    tags.push(itemHint
+      ? ['i', `podcast:item:guid:${episode.guid}`, itemHint]
+      : ['i', `podcast:item:guid:${episode.guid}`]);
     tags.push(['k', 'podcast:item:guid']);
   }
   const linkUrl = podcastLandingUrl(podcast, episode);
@@ -308,6 +403,15 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     tags.push(['imeta', `url ${banner}`, 'm image/png', 'dim 1200x300']);
   }
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
+  // Same shape `publishQuoteRepost` writes (./interactions.ts): id, relay hint,
+  // author. The author is the recipient's LNURL server, which is who signed the
+  // receipt — not the payee and not us.
+  //
+  // `amount` above deliberately stays `value_msat_total`, the whole boost before
+  // the value block divides it. A receipt's amount is this leg's settled figure,
+  // so the two numbers answer different questions and neither is wrong.
+  const receipts = quotedReceipts(args.results);
+  for (const r of receipts) tags.push(['q', r.id, r.relays[0] ?? '', r.pubkey]);
   tags.push(clientTag(boostagram.app_name));
   tags.push(['t', 'boostagram']);
   tags.push(['t', 'value4value']);
@@ -322,7 +426,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     content: (() => {
       const body = withArt(args.contentOverride ?? formatContent(args), banner);
       const { content: inlined, remaining } = inlineMentions(body, inBody);
-      return withMentionRun(inlined, remaining);
+      return withMentionRun(withZapReceipts(inlined, receipts), remaining);
     })(),
   };
 }
