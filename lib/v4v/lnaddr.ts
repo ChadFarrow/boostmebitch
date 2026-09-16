@@ -5,7 +5,12 @@
 
 import { bolt11AmountMsat } from './bolt11';
 import { lnurlFetch } from './lnurl-fetch';
-import { buildLnurlComment, lnurlCommentRetry, lnurlErrorReason } from '@/lib/util';
+import {
+  buildLnurlComment,
+  lnurlCallbackRefused,
+  lnurlCommentRetry,
+  lnurlErrorReason,
+} from '@/lib/util';
 
 interface LnurlPayParams {
   callback: string;
@@ -94,18 +99,43 @@ export async function fetchLnInvoice(args: {
   // and hands back a SHORTER comment that keeps the descriptor whole — the
   // prose beside it is a second copy of a message already parked in the
   // BoostBox record the descriptor points at.
-  if (!cb.ok && comment) {
-    const retry = lnurlCommentRetry(args, lnurlErrorReason(cb.text), comment);
+  //
+  // It can also hand back `comment: undefined`, meaning ask with NO comment.
+  // That is the case where the descriptor itself is longer than the limit the
+  // service enforced and there is no prose to fall back to, so there is no
+  // shorter comment to build. Paying without metadata beats not paying.
+  //
+  // The gate is `lnurlCallbackRefused`, never `!cb.ok`. A service refuses with a
+  // 200 carrying `{status:"ERROR", reason}` as often as with a 4xx, and reading
+  // only the status skipped the retry for every one of those — the leg then
+  // fell through to "No invoice returned from LNURL callback", which names
+  // neither the refusal nor its reason.
+  if (lnurlCallbackRefused(cb.status, cb.text) && comment) {
+    const why = lnurlErrorReason(cb.text);
+    const retry = lnurlCommentRetry(args, why, comment);
     if (retry) {
-      console.info(
-        `[lnurl] ${args.address} → comment of ${comment.length} refused; retrying at ${
-          retry.comment.length
-        } (${retry.comment.startsWith('rss::payment') ? 'descriptor kept' : 'no descriptor'})`,
-      );
+      if (retry.comment === undefined) {
+        // A length refusal with nothing shorter to offer. The leg then carries
+        // NO metadata at all — no TLV boostagram on this rail, and now no
+        // descriptor either — so this is the loudest line in the file. It is
+        // still the right trade: the alternative is a leg that sends nothing,
+        // and the BoostBox record the descriptor points at was already written.
+        console.warn(
+          `[lnurl] ${args.address} → comment of ${comment.length} refused for length and ` +
+            `nothing shorter fits (${why ?? 'no reason given'}) — paying with NO comment. ` +
+            `This leg carries no rss::payment descriptor and no message.`,
+        );
+      } else {
+        console.info(
+          `[lnurl] ${args.address} → comment of ${comment.length} refused; retrying at ${
+            retry.comment.length
+          } (${retry.comment.startsWith('rss::payment') ? 'descriptor kept' : 'no descriptor'})`,
+        );
+      }
       cb = await ask(retry.comment);
     }
   }
-  if (!cb.ok) {
+  if (lnurlCallbackRefused(cb.status, cb.text)) {
     // The service usually says why. Reporting only the status turned a
     // comment-length refusal into an unexplained failed leg.
     const why = lnurlErrorReason(cb.text);
