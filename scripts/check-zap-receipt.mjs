@@ -644,14 +644,20 @@ for (const f of ['components/boost-modal/index.tsx', 'components/boost-all-modal
   }
 }
 
-// 5. The note is why any of this exists. A `q` tag that stops being emitted is
-//    invisible from the app — the boost still pays and the note still posts.
+// 5. The note is why any of this exists, and the quote is the `q` TAG ALONE.
+//    A `q` tag that stops being emitted is invisible from the app — the boost
+//    still pays and the note still posts. And a `nostr:nevent…` line that
+//    comes BACK is the regression the first production boost showed: every
+//    general client unfurls a body reference into an embedded zap card under
+//    the note, one per leg. Fountain reads the tag; nobody needs the body.
 const noteSrc = readFileSync('lib/nostr/boost-notes.ts', 'utf8');
-if (!/'q',/.test(noteSrc) || !/nostr:\$\{/.test(noteSrc)) {
-  fail('lib/nostr/boost-notes.ts no longer writes a `q` tag AND a `nostr:` body\n'
-    + '          reference. Fountain reads the body reference; both halves are needed.');
+if (!/'q',/.test(noteSrc)) {
+  fail('lib/nostr/boost-notes.ts no longer writes a `q` tag for each quoted receipt.');
+} else if (/nostr:\$\{/.test(noteSrc) || /neventEncode/.test(noteSrc)) {
+  fail('lib/nostr/boost-notes.ts writes a `nostr:nevent…` body reference again.\n'
+    + '          General clients render that as an embedded zap card per leg; the `q` tag is the quote.');
 } else {
-  ok('the boost note still quotes its receipts in the tags and the body');
+  ok('the boost note quotes its receipts with `q` tags and puts nothing in the body');
 }
 
 console.log(failures
