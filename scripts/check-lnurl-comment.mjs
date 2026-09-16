@@ -34,9 +34,20 @@
 // allowImportingTsExtensions. lib/util.ts has type-only imports, so it loads.
 // Keep it that way.
 
-import { buildLnurlComment, lnurlCommentRetry, lnurlErrorReason } from '../lib/util.ts';
+import {
+  buildLnurlComment,
+  lnurlCallbackRefused,
+  lnurlCommentRetry,
+  lnurlErrorReason,
+} from '../lib/util.ts';
 
 let failures = 0;
+
+// `{ comment: undefined }` and `{}` stringify identically, so the drop answer is
+// asserted by SHAPE. A retry that came back as a bare `{}` — or as `{ comment:
+// null }` — would otherwise pass for "ask again with no comment", which is the
+// one answer that must never be reached by accident: it spends the descriptor.
+const isDrop = (r) => !!r && 'comment' in r && r.comment === undefined;
 
 function check(label, actual, expected) {
   const ok = JSON.stringify(actual) === JSON.stringify(expected);
@@ -69,6 +80,12 @@ const MSG = 'great episode, thanks for the show';
 // which. Do not "correct" this fixture to a bare descriptor: the bare form is
 // DESC above, and this file needs both.
 const PADDED = `${DESC} ${MSG}`;
+// The 2026-09-16 refusal, which is about a descriptor that does not fit AT ALL.
+// The reason string below is verbatim from the failing screen; the descriptor
+// bytes are not, so this is the real shape padded to the length that incident
+// measured — 91 characters — rather than a URL invented whole. The length and
+// the limit are what the arithmetic turns on, and both are from the wire.
+const DESC_91 = `rss::payment::boost https://tardbox.com/boost/${'0'.repeat(91 - 'rss::payment::boost https://tardbox.com/boost/'.length)}`;
 
 console.log('buildLnurlComment — the descriptor survives whole or not at all');
 {
@@ -305,6 +322,40 @@ console.log('\nthe reason a service gave, out of four body shapes');
   check('a JSON body with nothing to say', lnurlErrorReason('{"status":"OK"}'), undefined);
 }
 
+console.log('\nwhether the callback refused at all — the gate the retry sits behind');
+{
+  // A refusal arrives as a 200 carrying the LUD-06 error body at least as often
+  // as it arrives as a 4xx. Reading only the status skips the retry for every
+  // one of those, so this predicate decides whether the comment-length fix runs.
+  check('LUD-06 error on a 200', lnurlCallbackRefused(200, '{"status":"ERROR","reason":"comment too long"}'), true);
+  check('Alby error body on a 400',
+    lnurlCallbackRefused(400, '{"error":true,"message":"length 105 exceeds limit 90"}'), true);
+  check('a bare 400 with no body at all', lnurlCallbackRefused(400, ''), true);
+  check('a 200 that says something but carries no invoice',
+    lnurlCallbackRefused(200, '{"message":"Length 91 exceeds limit 90"}'), true);
+  check('a plain-text 200', lnurlCallbackRefused(200, 'Comment is too long'), true);
+
+  // MUST-STILL-WORK. Treating a good answer as a refusal would retry a
+  // successful invoice request and then throw over an invoice we were handed.
+  check('a 200 carrying an invoice is not a refusal',
+    lnurlCallbackRefused(200, '{"pr":"lnbc10n1pjxyz","routes":[]}'), false);
+  check('...with successAction beside it', lnurlCallbackRefused(200,
+    '{"pr":"lnbc10n1pjxyz","successAction":{"tag":"message","message":"thanks!"}}'), false);
+  check('...and a 201 is still a success', lnurlCallbackRefused(201, '{"pr":"lnbc10n1pjxyz"}'), false);
+  check('a 200 with nothing to say and no invoice is left to the caller',
+    lnurlCallbackRefused(200, '{"status":"OK"}'), false);
+
+  // (naive) the status-only test both call sites used to share, which sendZap
+  // fixed and fetchLnInvoice did not.
+  const naive = (status) => status < 200 || status >= 300;
+  check('(naive) misses the 200-shaped refusal this exists for',
+    naive(200) !== lnurlCallbackRefused(200, '{"status":"ERROR","reason":"comment too long"}'), true);
+  check('(naive) agrees on an ordinary 4xx',
+    naive(400) === lnurlCallbackRefused(400, '{"status":"ERROR","reason":"comment too long"}'), true);
+  check('(naive) agrees on an ordinary success',
+    naive(200) === lnurlCallbackRefused(200, '{"pr":"lnbc10n1pjxyz"}'), true);
+}
+
 console.log('\nwhich refusals earn a retry, and with what');
 {
   // The measured case. Alby advertised commentAllowed 255, so the comment was
@@ -354,23 +405,76 @@ console.log('\nwhich refusals earn a retry, and with what');
     null,
   );
 
-  // Nothing left to send is NOT a retry. With no descriptor to preserve, a
-  // retry would drop the user's own prose in silence on a rail where the
-  // comment is the only copy — and failing already says that.
+  // THE 2026-09-16 INCIDENT, and the reason the third answer exists. A live
+  // Nostr stream zap to pearlwolf53@breez.tips sent the descriptor alone at 91
+  // characters against a service that enforced 90, with no typed message. The
+  // descriptor is whole-or-nothing and there was no prose to fall back to, so
+  // there is no shorter comment to build — and answering `null` there failed
+  // the whole zap over metadata the payment never needed.
+  const SENT_91 = buildLnurlComment({ desc: DESC_91 }, 255);
+  check('the incident sent exactly 91 characters', SENT_91.length, 91);
+  check('...and nothing shorter can be built at the enforced 90',
+    buildLnurlComment({ desc: DESC_91 }, 90), undefined);
   check(
-    'no retry when there is no descriptor to keep',
-    lnurlCommentRetry({ message: MSG }, 'comment too long', 'a'.repeat(105)),
-    null,
+    'a length refusal with nothing shorter to send asks again with NO comment',
+    isDrop(lnurlCommentRetry({ desc: DESC_91 }, 'Length 91 exceeds limit 90', SENT_91)),
+    true,
+  );
+  // The same branch on a wire-exact fixture: a real 72-char descriptor against
+  // a 64-char allowance, which is an ordinary LNURL setting.
+  check(
+    'a real descriptor too long for a real allowance drops the comment, not the payment',
+    isDrop(lnurlCommentRetry({ desc: DESC }, 'comment exceeds 64', DESC)),
+    true,
   );
 
-  // THE LOOP GUARD. A retry that is not SHORTER than the rejected comment is a
-  // guaranteed second refusal.
+  // Nothing left to BUILD is now a comment-less retry rather than a dead leg.
+  // It costs the user's prose on a rail where the comment is the only copy,
+  // which is why both call sites log it — but the leg pays, and a leg that
+  // does not pay communicates nothing to the recipient either.
+  check(
+    'no descriptor to keep: the comment goes, the payment does not',
+    isDrop(lnurlCommentRetry({ message: MSG }, 'comment too long', 'a'.repeat(105))),
+    true,
+  );
+
+  // THE LOOP GUARD, which moved rather than went away. A comment that is not
+  // SHORTER than the rejected one is still never sent a second time — it is
+  // answered with the drop instead of with a failure, and a comment-less ask
+  // is a different request, so this still cannot loop.
   const SHORT = 'rss::payment::boost https://x.co/b/1';
   check(
-    'no retry when the descriptor alone is not shorter',
-    lnurlCommentRetry({ desc: SHORT }, 'comment too long', SHORT),
-    null,
+    'a retry that is not shorter is never re-sent',
+    lnurlCommentRetry({ desc: SHORT }, 'comment too long', SHORT)?.comment,
+    undefined,
   );
+  check(
+    '...and it is the drop, not a refusal',
+    isDrop(lnurlCommentRetry({ desc: SHORT }, 'comment too long', SHORT)),
+    true,
+  );
+
+  // MUST-STILL-WORK, and the property the whole drop arm hangs on: it is only
+  // ever the answer to a LENGTH refusal. A wallet that is simply down must
+  // still get `null`, or every leg pays a second round trip to learn nothing.
+  let leaked = null;
+  for (const why of [
+    'insufficient balance',
+    'no route to destination',
+    'Recipient wallet error. Please contact the recipient.',
+    'invalid amount 1000',
+    undefined,
+  ]) {
+    if (lnurlCommentRetry({ desc: DESC_91 }, why, SENT_91) !== null) { leaked = why ?? '(none)'; break; }
+  }
+  check('the drop never answers a refusal that is not about length', leaked, null);
+
+  // And it never displaces a comment that WOULD have fitted: given a stated
+  // limit and prose to spend it on, the shorter comment still wins.
+  const SENT_FITS = buildLnurlComment({ desc: DESC, message: MSG }, 255);
+  const fitted = lnurlCommentRetry({ desc: DESC, message: MSG }, 'length 105 exceeds limit 90', SENT_FITS);
+  check('a buildable shorter comment is still preferred to dropping it', isDrop(fitted), false);
+  check('...and it is the descriptor that survives', fitted.comment.startsWith(DESC), true);
 }
 
 console.log('\n(naive) the leg that simply failed');
@@ -388,6 +492,16 @@ console.log('\n(naive) the leg that simply failed');
   check(
     '(naive) agrees on a refusal that is not about length',
     naive() === lnurlCommentRetry({ desc: DESC, message: MSG }, 'insufficient balance', SENT),
+    true,
+  );
+  // The 2026-09-16 half of the same absence. Before the drop arm this file's
+  // own shipping rule ALSO returned null here, so the zap died with the sats in
+  // the wallet — a second-generation version of the bug the retry was written
+  // against, arriving where no shorter comment exists.
+  const SENT_91 = buildLnurlComment({ desc: DESC_91 }, 255);
+  check(
+    '(naive) failed the zap where we now pay with no comment',
+    naive() !== lnurlCommentRetry({ desc: DESC_91 }, 'Length 91 exceeds limit 90', SENT_91),
     true,
   );
 }

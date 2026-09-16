@@ -997,10 +997,64 @@ export function lnurlErrorReason(body: string): string | undefined {
 }
 
 /**
- * A refusal that was about COMMENT LENGTH, and the shorter comment to retry on.
+ * Did an LNURL-pay callback REFUSE, whatever status it chose to say so with?
  *
- * Returns null for "do not retry" — including for every refusal that is about
- * anything else.
+ * LUD-06 specifies the BODY, not the status, so a refusal arrives as a 200
+ * carrying `{status:"ERROR", reason}` at least as often as it arrives as a 4xx.
+ * `!res.ok` alone therefore misses half of them — and missing one is not a
+ * cosmetic error: it skips the comment-length retry below, so a leg that a
+ * shorter comment would have paid dies instead, reporting "No invoice returned
+ * from LNURL callback" with the reason the service gave thrown away.
+ *
+ * `sendZap` consolidated this and `fetchLnInvoice` did not, which is exactly
+ * the drift a second copy produces. One predicate, both call sites.
+ *
+ * A 2xx with no `pr` and something that reads as a reason counts as a refusal
+ * too: an invoice is the only successful answer this callback has.
+ */
+export function lnurlCallbackRefused(status: number, body: string): boolean {
+  if (status < 200 || status >= 300) return true;
+  let data: Record<string, unknown> | null = null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      data = parsed as Record<string, unknown>;
+    }
+  } catch { /* non-JSON body: not an invoice either way */ }
+  if (data?.status === 'ERROR') return true;
+  return !!lnurlErrorReason(body) && !data?.pr;
+}
+
+/**
+ * A refusal that was about COMMENT LENGTH, and what to retry with.
+ *
+ * Three answers, not two. `null` is "do not retry" — every refusal that is
+ * about anything else. `{ comment }` is a shorter comment that keeps as much
+ * metadata as the stated limit holds. `{ comment: undefined }` is ASK AGAIN
+ * WITH NO COMMENT AT ALL, which is what the caller must do when the refusal is
+ * about length and nothing shorter can be built.
+ *
+ * THE THIRD ANSWER IS A MONEY FIX AND IT COSTS METADATA ON PURPOSE. Measured
+ * 2026-09-16 on a live Nostr stream zap to `pearlwolf53@breez.tips`: the
+ * descriptor alone was 91 characters, the service advertised room for it and
+ * then refused with "Length 91 exceeds limit 90", and the boost carried no
+ * typed message. `buildLnurlComment` at 90 can only drop a descriptor it
+ * cannot fit whole, so there was nothing shorter to offer — and returning
+ * `null` there failed the whole zap over a comment the payment never needed.
+ * The sats stayed in the wallet. Paying with no comment loses the descriptor;
+ * refusing to pay loses the payment, and only one of those is what the user
+ * pressed the button for.
+ *
+ * So the loop guard moved rather than went away. A comment that is not shorter
+ * than the rejected one is still never sent again — it is now answered with
+ * the drop instead of with a failure, and a comment-less ask is a DIFFERENT
+ * request, so it still cannot loop.
+ *
+ * THE CALLER MUST SAY WHAT IT DROPPED. The comment is the whole metadata
+ * channel on an LNURL leg, so a silent drop is a boost that arrives looking
+ * like an anonymous payment with nothing anywhere explaining why. Both call
+ * sites log it; `boostbox.ts`'s `noDesc` is the same sentence for the same
+ * loss arriving from the other side.
  *
  * WHY A RETRY IS SAFE HERE, AND WHY THAT DOES NOT GENERALISE. The service
  * refused before it minted anything, so no sats moved; asking again mints a
@@ -1022,7 +1076,7 @@ export function lnurlCommentRetry(
   args: { desc?: string; message?: string },
   reason: string | undefined,
   sentComment: string,
-): { comment: string } | null {
+): { comment: string | undefined } | null {
   if (!sentComment || !reason) return null;
   const r = reason.toLowerCase();
   // Narrow on purpose. The retry costs a round trip, and a refusal this does
@@ -1064,15 +1118,18 @@ export function lnurlCommentRetry(
     ? buildLnurlComment(args, budget)
     : descriptorOnly(args.desc?.trim() || undefined);
 
-  // Two refusals, and neither is a corner case.
+  // Two states where there is no shorter comment to offer, and they get the
+  // same answer: ask again carrying none.
   //
-  // Nothing left to send is NOT a retry. A leg carrying no metadata at all is
-  // what a failure already communicates, and on a rail where the comment is
-  // the only copy it would drop the user's own prose in silence.
+  // Nothing left to build — the descriptor does not fit the stated limit and
+  // there is no prose to fall back to. That is the measured case above.
   //
-  // And a comment that is not SHORTER than the rejected one is a guaranteed
-  // second refusal — the one way this turns into a loop.
-  if (!comment || comment.length >= sentComment.length) return null;
+  // And a comment that is not SHORTER than the rejected one, which sent again
+  // is a guaranteed second refusal.
+  //
+  // Neither is a reason to abandon the payment. It is the reason to abandon
+  // the COMMENT — see the note above, and say so at the call site.
+  if (!comment || comment.length >= sentComment.length) return { comment: undefined };
   return { comment };
 }
 

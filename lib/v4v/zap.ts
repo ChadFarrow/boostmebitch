@@ -13,7 +13,7 @@
 import { bech32 } from '@scure/base';
 import type { EventTemplate } from 'nostr-tools';
 import type { Boostagram, ValueRecipient } from '../types';
-import { buildLnurlComment, lnurlCommentRetry, lnurlErrorReason } from '../util';
+import { buildLnurlComment, lnurlCallbackRefused, lnurlCommentRetry, lnurlErrorReason } from '../util';
 import { sparkPayInvoice } from './spark';
 import { weblnPayInvoice } from './webln';
 import { pickRail, type Rail } from './boost';
@@ -187,7 +187,7 @@ export async function sendZap(args: {
     let data: Record<string, unknown> | null = null;
     try { data = JSON.parse(res.text); } catch { /* non-JSON body */ }
     const why = lnurlErrorReason(res.text);
-    return { res, data, why, failed: !res.ok || data?.status === 'ERROR' || (!!why && !data?.pr) };
+    return { res, data, why, failed: lnurlCallbackRefused(res.status, res.text) };
   };
 
   let out = await ask(comment);
@@ -205,11 +205,26 @@ export async function sendZap(args: {
   if (out.failed && comment) {
     const retry = lnurlCommentRetry(commentArgs, out.why, comment);
     if (retry) {
-      console.info(
-        `[zap] comment of ${comment.length} refused; retrying at ${retry.comment.length} (${
-          retry.comment.startsWith('rss::payment') ? 'descriptor kept' : 'no descriptor'
-        })`,
-      );
+      if (retry.comment === undefined) {
+        // Nothing shorter fits, so the choice is a zap with no descriptor or no
+        // zap at all. Take the zap — but never silently: the kind:9735 receipt
+        // still reaches the stream and the prose still rides in the kind:9734
+        // `content`, and what is lost is the one thing nobody can see is
+        // missing. Measured against a service enforcing 90 characters on a
+        // 91-character descriptor.
+        console.warn(
+          `[zap] comment of ${comment.length} refused for length and nothing shorter fits ` +
+            `(${out.why ?? 'no reason given'}) — paying with NO comment. The recipient gets ` +
+            `no rss::payment descriptor for this zap; the typed message still rides in the ` +
+            `kind:9734 content.`,
+        );
+      } else {
+        console.info(
+          `[zap] comment of ${comment.length} refused; retrying at ${retry.comment.length} (${
+            retry.comment.startsWith('rss::payment') ? 'descriptor kept' : 'no descriptor'
+          })`,
+        );
+      }
       out = await ask(retry.comment);
     }
   }
