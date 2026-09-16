@@ -1608,9 +1608,24 @@ export function splitTrackAndHost(args: {
  * one sat, so `kept.length <= total`, which is exactly the condition under
  * which `splitSats`' floor can satisfy everyone. The loop is bounded anyway.
  *
- * Deliberately NOT applied to a boost's primary leg, which is the whole amount
- * and is gated by the 100-sat minimum. This exists for the derived leg — a
- * `remotePercentage` remainder is arbitrarily small by construction.
+ * Applied to every leg whose amount is DERIVED — BOTH halves of a
+ * `<podcast:valueTimeSplit>` redirect, not only the show's remainder. This
+ * paragraph used to exempt "a boost's primary leg, which is the whole amount and
+ * is gated by the 100-sat minimum", and that reasoning is false the moment a
+ * redirect applies: the track leg is then floor(sats × remotePercentage / 100)
+ * and `remotePercentage` is authored by the HOST's feed, so a 2% window turns a
+ * gated 100-sat boost into a 2-sat leg over a four-payee artist block — the same
+ * ✓-for-nothing described above, on the LARGER of the two legs. Both modals now
+ * call this on both legs. The only leg the minimum genuinely covers is an
+ * unredirected boost's single block, and there it is a no-op ONLY while every
+ * listed payee has weight — it returns the array it was handed when it drops
+ * nobody. It is not a no-op on a block carrying a `split="0"` recipient: that
+ * payee has no weight at any amount, so this drops them from every leg,
+ * redirected or not. Dropping them is right (`splitSats` gives them 0 and
+ * `payOne` reports a 0-sat leg as PAID), but a caller that reports the
+ * shortfall as "boost more to include everyone" is giving advice nobody can
+ * act on — which is why `payableLeg` below separates the two reasons.
+ * `check:vts` pins the composition of `splitTrackAndHost` with this.
  */
 export function payableSplit(
   totalSats: number,
@@ -1624,6 +1639,113 @@ export function payableSplit(
     kept = payable;
   }
   return { recipients: kept, splits: splitSats(totalSats, kept) };
+}
+
+/**
+ * One leg of a boost: the sats, the payees it reaches, and WHY anyone listed by
+ * the feed is not among them.
+ *
+ * `payableSplit` answers "who can this amount pay", and two call sites read its
+ * answer wrong in ways no type catches. This is the whole answer, computed once.
+ *
+ * **`payable` is the send gate, and it is not `sats > 0`.** `payableSplit`'s
+ * `payable.length === 0` arm hands back EVERY recipient with an all-zero split
+ * — that is its honest answer for "nothing can be paid here", and it is
+ * reached by a 0-sat leg and by a block whose weights are all zero. A caller
+ * that reads the returned array as "the payees" then sends a group of zero-sat
+ * legs, and `payOne` short-circuits `sats <= 0` to `ok: true` WITHOUT
+ * contacting anyone: a ✓ per artist and a `StoredBoost` entry for a payment
+ * nobody attempted. A `<podcast:valueTimeSplit>` with `remotePercentage="0"` is
+ * exactly that leg, and the feed authors that number, not the user. So
+ * `recipients` is EMPTIED when nothing can be paid — a caller that forgets the
+ * gate sends no legs rather than a group of false ✓.
+ *
+ * **Two drop reasons, because only one of them is the user's to fix.** A payee
+ * the leg is too small to reach is included by a larger boost. A payee the feed
+ * lists at `split="0"` is reached by no amount ever, so telling the user to
+ * boost more is advice they cannot act on. `splitSats` clamps a weight with
+ * `Math.max(0, r.split || 0)`, so this reads the same weight it does.
+ *
+ * `listed` is what the FEED named — the denominator a user reads to check where
+ * their money went. Pinned by `check:vts`.
+ */
+export interface PayableLeg {
+  /** What this leg spends. Zero is a real value; see `payable`. */
+  sats: number;
+  /** The payees to hand `sendBoost`. EMPTY when `payable` is false. */
+  recipients: ValueRecipient[];
+  /** Allocation, positionally paired with `recipients`. Empty when unpayable. */
+  splits: number[];
+  /** False ⇒ send nothing and report nothing. Not the same as `sats > 0`. */
+  payable: boolean;
+  /** How many the feed listed, payable or not. */
+  listed: number;
+  /** Positive weight, but this leg cannot give them a whole sat. Boosting more fixes it. */
+  droppedTooSmall: number;
+  /** Listed at zero weight. No amount reaches them; boosting more does nothing. */
+  droppedZeroWeight: number;
+}
+
+export function payableLeg(totalSats: number, recipients: ValueRecipient[]): PayableLeg {
+  const listed = recipients.length;
+  const { recipients: kept, splits } = payableSplit(totalSats, recipients);
+  // The gate. `splits` all-zero is payableSplit saying "nobody here can be
+  // paid", whatever it returned as `recipients`.
+  if (!splits.some((s) => s > 0)) {
+    return {
+      sats: totalSats,
+      recipients: [],
+      splits: [],
+      payable: false,
+      listed,
+      droppedTooSmall: 0,
+      droppedZeroWeight: 0,
+    };
+  }
+  // Same clamp splitSats applies, so the two agree about who has weight.
+  const zeroWeight = recipients.filter((r) => !(Math.max(0, r.split || 0) > 0)).length;
+  return {
+    sats: totalSats,
+    recipients: kept,
+    splits,
+    payable: true,
+    listed,
+    // Every zero-weight recipient is dropped on this branch — splitSats gives
+    // them 0 and payableSplit filters them out — so the rest of the shortfall
+    // is payees a bigger boost would reach.
+    droppedTooSmall: listed - kept.length - zeroWeight,
+    droppedZeroWeight: zeroWeight,
+  };
+}
+
+/**
+ * Both legs of a `<podcast:valueTimeSplit>` redirect, in one call.
+ *
+ * `splitTrackAndHost` composed with `payableLeg`, twice. It exists because the
+ * composition was written out in two components and the halves drifted: one
+ * gated its track send on `trackSats > 0` and the other did not, so the same
+ * feed paid differently depending on which button was pressed — which is the
+ * argument that put `splitTrackAndHost` here in the first place.
+ *
+ * It lives in `lib/util.ts`, not `lib/v4v/`, because that is what makes it
+ * testable: this file loads under `node --experimental-strip-types`, so
+ * `check:vts` pins the shipping composition rather than a copy of it.
+ */
+export function redirectLegs(args: {
+  totalSats: number;
+  remotePercentage: number | undefined;
+  trackRecipients: ValueRecipient[];
+  hostRecipients: ValueRecipient[];
+}): { track: PayableLeg; host: PayableLeg } {
+  const { trackSats, hostSats } = splitTrackAndHost({
+    totalSats: args.totalSats,
+    remotePercentage: args.remotePercentage,
+    hostRecipientCount: args.hostRecipients.length,
+  });
+  return {
+    track: payableLeg(trackSats, args.trackRecipients),
+    host: payableLeg(hostSats, args.hostRecipients),
+  };
 }
 
 // FNV-1a hash → a stable non-negative 31-bit integer, for deterministic numeric

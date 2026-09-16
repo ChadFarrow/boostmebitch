@@ -9,7 +9,7 @@ import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, record
 import { sendZap, lnaddrSupportsZaps } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
-import { getErrorMessage, payableSplit, payableValue, splitSats, splitTrackAndHost, storedBoostLegs, randomId } from '@/lib/util';
+import { getErrorMessage, payableLeg, payableValue, redirectLegs, storedBoostLegs, randomId } from '@/lib/util';
 import { BRAND, resolveSenderName } from '@/lib/brand';
 import { fireConfetti, playBoostSound, primeBoostSound } from '@/lib/format';
 import { BoltIcon } from '../icons';
@@ -21,6 +21,7 @@ import type { MentionNpub } from '@/lib/nostr/mention-tags';
 import { SenderName } from './sender-name';
 import { useReplyAddress } from './use-reply-address';
 import { SplitsPreview, LightningStatus } from './splits-preview';
+import { DroppedPayees } from './dropped-payees';
 import { LiveNowPlaying, NowPayingRow, splitTargetLabel } from '../live-now-playing';
 import { useActiveSplit } from './use-active-split';
 import { liveTargetSnapshot } from '@/lib/v4v/live-value';
@@ -184,49 +185,61 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   const active = useActiveSplit(episode, positionSec);
   const redirect = active.state === 'ready' ? active.split : null;
 
-  // How the amount divides between the artist and the show: remotePercentage to
-  // the track, the remainder to the show, however small that remainder is. 100
-  // sats at 97% is 97 and 3.
-  const { trackSats, hostSats } = useMemo(
-    () => redirect
-      ? splitTrackAndHost({
-        totalSats: sats,
-        remotePercentage: redirect.remotePercentage,
-        hostRecipientCount: hostValue.recipients.length,
-      })
-      : { trackSats: 0, hostSats: sats },
-    [redirect, sats, hostValue.recipients.length],
-  );
-
   // The block the primary preview and the primary leg use: the artist's when
   // redirected, the show's otherwise.
-  const value = redirect?.value ?? hostValue;
-  const primarySats = redirect ? trackSats : sats;
-  const splits = useMemo(
-    () => splitSats(primarySats, value.recipients),
-    [primarySats, value.recipients],
-  );
-  // The show's leg. `payableSplit`, not `splitSats`: a small remainder can't
-  // give every show recipient a whole sat, and a zero-sat leg is reported as
-  // PAID (payOne short-circuits `sats <= 0` to ok:true), so it would render a ✓
-  // and enter the boost log for someone who received nothing. Dropping them
-  // from the leg spends the remainder on payees who can actually receive it.
+  const primaryValue = redirect?.value ?? hostValue;
+
+  // Both legs, resolved once: the sats, the payees each one reaches, and who it
+  // does not. `redirectLegs` (lib/util.ts) is `splitTrackAndHost` composed with
+  // `payableLeg`. It lives there rather than here for two reasons — it is the
+  // same composition <BoostAllModal> runs, and two copies of it is how the same
+  // feed comes to be paid two different ways depending on which button was
+  // pressed; and `lib/util.ts` loads under --experimental-strip-types, so
+  // `check:vts` pins the shipping composition instead of a copy.
   //
-  // ONE object drives both the preview and the send — re-deriving the trimmed
-  // set at send time would let the rows the user approved differ from the legs
-  // that go out.
-  const showsHostLeg = !!redirect && hostSats > 0;
-  const hostLeg = useMemo(
-    () => showsHostLeg
-      ? payableSplit(hostSats, hostValue.recipients)
-      : { recipients: [], splits: [] },
-    [showsHostLeg, hostSats, hostValue.recipients],
+  // `payableLeg`, never a bare `splitSats`, on BOTH legs. A redirect makes the
+  // track leg floor(sats × remotePercentage / 100), and `remotePercentage` is
+  // authored by the host's FEED — so the 100-sat minimum on what the user TYPES
+  // says nothing about whether this leg reaches every payee. A 2% window turns a
+  // gated 100-sat boost into 2 sats over a four-payee artist block; `splitSats`
+  // honestly leaves two of them at 0 and `payOne` short-circuits `sats <= 0` to
+  // ok:true WITHOUT contacting anyone — a ✓ and a StoredBoost for a payment
+  // nobody received, on the LARGER of the two legs.
+  //
+  // Unredirected it still applies, and it is NOT a no-op there: a block that
+  // lists a `split="0"` recipient has a payee no amount ever reaches, and the
+  // 0-sat leg it would be paid reports as ✓ the same way.
+  const { primaryLeg, hostLeg } = useMemo(() => {
+    if (!redirect) {
+      return { primaryLeg: payableLeg(sats, primaryValue.recipients), hostLeg: null };
+    }
+    const { track, host } = redirectLegs({
+      totalSats: sats,
+      remotePercentage: redirect.remotePercentage,
+      trackRecipients: primaryValue.recipients,
+      hostRecipients: hostValue.recipients,
+    });
+    return { primaryLeg: track, hostLeg: host };
+  }, [redirect, sats, primaryValue.recipients, hostValue.recipients]);
+
+  const primarySats = primaryLeg.sats;
+  const hostSats = hostLeg?.sats ?? 0;
+  // `payable`, never `hostSats > 0`. They differ on a block whose every payee
+  // is listed at zero weight, where there are sats and nobody to receive them.
+  const showsHostLeg = !!hostLeg?.payable;
+
+  // ONE object drives the preview and the send — re-deriving the trimmed set at
+  // send time would let the rows the user approved differ from the legs that go
+  // out. `recipients` is EMPTY when the leg is unpayable, so a caller that
+  // forgets the `payable` gate sends nothing rather than a group of false ✓.
+  const value = useMemo(
+    () => ({ ...primaryValue, recipients: primaryLeg.recipients }),
+    [primaryValue, primaryLeg.recipients],
   );
-  // Recipients the feed lists but this leg is too small to pay — named on
-  // screen rather than silently absent.
-  const hostDropped = showsHostLeg
-    ? hostValue.recipients.length - hostLeg.recipients.length
-    : 0;
+  const splits = primaryLeg.splits;
+  // Nothing to pay on either leg. The button has to say so: `sats` is at or
+  // above the minimum, so every other gate reads as ready.
+  const nothingPayable = !primaryLeg.payable && !showsHostLeg;
 
   // A window covers this second but we don't yet know whose block it points at.
   // Blocking the button is the point: the window is known synchronously and the
@@ -352,8 +365,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // Pre-sized so an out-of-order leg can be written at its own index without
     // leaving a length gap — sendBoost pays biggest share first, so the first
     // leg to settle is rarely recipients[0].
-    setResults(new Array(value.recipients.length));
-    setHostResults(showsHostLeg ? new Array(hostLeg.recipients.length) : []);
+    setResults(new Array(primaryLeg.recipients.length));
+    setHostResults(showsHostLeg ? new Array(hostLeg!.recipients.length) : []);
 
     // ── Live-stream zap path ────────────────────────────────────────────────
     // Boosting a Nostr live stream while signed in, when the host's Lightning
@@ -363,9 +376,15 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // support BEFORE paying so we never double-pay; on a real zap we skip the
     // kind:1311 text line (the receipt already renders as a boost).
     const liveStreamId = isLiveStreamId(episode?.guid) ? episode!.guid! : null;
+    // `primaryValue`, the block the FEED wrote — never `value`, which is trimmed
+    // to the payees this leg can reach. The question here is "does this block
+    // name a single lnaddress", and asking it of the trimmed list lets a
+    // two-recipient live block whose second payee is listed at 0% measure as
+    // one: the boost would silently leave sendBoost for sendZap, a different
+    // code path with a different comment, receipt and StoredBoost shape.
     const hostLnaddr =
-      value.recipients.length === 1 && value.recipients[0].type === 'lnaddress'
-        ? value.recipients[0].address
+      primaryValue.recipients.length === 1 && primaryValue.recipients[0].type === 'lnaddress'
+        ? primaryValue.recipients[0].address
         : null;
     const hasSigner = !!activeNostr();
     if (liveStreamId && identity && hasSigner && hostLnaddr && (await lnaddrSupportsZaps(hostLnaddr))) {
@@ -383,7 +402,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           // the whole amount is this leg.
           metadata: {
             boostagram,
-            recipient: value.recipients[0],
+            recipient: primaryValue.recipients[0],
             legMsat: sats * 1000,
           },
         });
@@ -398,7 +417,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       setRunning(false);
       if (rail) recordLastRail(rail, identity);
       logStoredBoost(boostagram, [
-        { recipient: hostLnaddr, recipientName: value.recipients[0].name, sats, ok: true },
+        { recipient: hostLnaddr, recipientName: primaryValue.recipients[0].name, sats, ok: true },
       ]);
       setTimeout(() => onClose(), 1500);
       await maybePublishNote(boostagram, []);
@@ -406,30 +425,48 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     }
 
     let collected: BoostResult[] = [];
-    try {
-      collected = await sendBoost({
-        value,
-        // The artist's share when a valueTimeSplit is in force, the whole boost
-        // otherwise. `value` is the track's block in the first case, so this
-        // pairing is the one thing that must stay together.
-        totalSats: primarySats,
-        boostagram,
-        rail,
-        // By index, never appended: legs settle biggest-share-first, so append
-        // order is not recipient order and every ✓/✗ would land on the wrong
-        // row. `.slice()` preserves the holes and hands React a fresh ref.
-        onProgress: (res, index) =>
-          setResults((prev) => {
-            const next = prev.slice();
-            next[index] = res;
-            return next;
-          }),
-      });
-      setResults(collected);
-    } catch (e) {
-      setSendErr(getErrorMessage(e, 'boost failed'));
-      setRunning(false);
-      return;
+    // `payable`, not `primarySats > 0`. A redirect with remotePercentage="0"
+    // leaves this leg 0 sats, and `payableSplit`'s no-one-can-be-paid arm hands
+    // back EVERY artist with an all-zero split — so sending it would put a ✓ and
+    // a StoredBoost leg against each of them for a payment nobody attempted,
+    // while the show's leg below takes the whole 100. The feed authors that
+    // percentage; the user never sees it.
+    if (primaryLeg.payable) {
+      try {
+        collected = await sendBoost({
+          value,
+          // The artist's share when a valueTimeSplit is in force, the whole boost
+          // otherwise. `value` is the track's block in the first case, so this
+          // pairing is the one thing that must stay together.
+          totalSats: primaryLeg.sats,
+          // Per LEG GROUP, not per boost. `boostagram` carries the whole typed
+          // amount, because that is what the NOTE must say (invariant 7: note
+          // amount is intent, not actual) — but a redirect pays this leg only
+          // `primarySats`, and the show's leg below already overrides its own
+          // total to `hostSats`. Passing the base object here left the two groups
+          // advertising `sats + hostSats` for a boost of `sats`, so anything
+          // reading TLV 7629169 saw a total larger than what arrived. <BoostAllModal>
+          // has always done this per group; this is the modal that did not.
+          boostagram: redirect
+            ? { ...boostagram, value_msat_total: primaryLeg.sats * 1000 }
+            : boostagram,
+          rail,
+          // By index, never appended: legs settle biggest-share-first, so append
+          // order is not recipient order and every ✓/✗ would land on the wrong
+          // row. `.slice()` preserves the holes and hands React a fresh ref.
+          onProgress: (res, index) =>
+            setResults((prev) => {
+              const next = prev.slice();
+              next[index] = res;
+              return next;
+            }),
+        });
+        setResults(collected);
+      } catch (e) {
+        setSendErr(getErrorMessage(e, 'boost failed'));
+        setRunning(false);
+        return;
+      }
     }
 
     // ── The show's share of a redirected boost ──────────────────────────────
@@ -450,12 +487,12 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           // full one would re-split inside sendBoost and could pay a recipient
           // zero, which reports as a ✓. Same object, so the rows the user
           // approved are exactly the legs that go out.
-          value: { ...hostValue, recipients: hostLeg.recipients },
-          totalSats: hostSats,
+          value: { ...hostValue, recipients: hostLeg!.recipients },
+          totalSats: hostLeg!.sats,
           // Its own uuid — it's a distinct payment and a recipient aggregator
           // dedupes on that field — but the same remote_* guids as the track
           // leg, which is what lets the host see which song earned their share.
-          boostagram: { ...boostagram, uuid: randomId(), value_msat_total: hostSats * 1000 },
+          boostagram: { ...boostagram, uuid: randomId(), value_msat_total: hostLeg!.sats * 1000 },
           rail,
           onProgress: (res, index) =>
             setHostResults((prev) => {
@@ -471,7 +508,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
         // paid and this one thrown, hostResults stays all holes, <LightningStatus>
         // simply counts fewer settled legs, and nothing on screen said the
         // show's share never went out. The modal already gets this right for the
-        // adjacent case (`hostDropped`); this is the same sentence for the
+        // adjacent case (<DroppedPayees>); this is the same sentence for the
         // thrown one.
         setHostErr(getErrorMessage(e, "the show's share could not be sent"));
       }
@@ -584,7 +621,11 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               the sticky-footer balance is reporting on, so it has to be
               answerable before the user reads that number. */}
           <RailPicker rail={rail} onChange={setRail} />
-          <AmountInput sats={sats} onChange={setSats} />
+          {/* Locked while a send is in flight: `value`, `splits` and both legs
+              are derived from `sats` at render time, while go() pays from the
+              closure it captured at the tap — so an edit mid-send repaints the
+              rows with figures that differ from the sats going out. */}
+          <AmountInput sats={sats} onChange={setSats} disabled={running} />
           <MessageInput
             value={msg}
             onChange={setMsg}
@@ -617,8 +658,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               label={splitTargetLabel(redirect)}
               detail={
                 showsHostLeg
-                  ? `${trackSats} sat · ${hostSats} sat to ${podcast.title}`
-                  : `${trackSats} sat`
+                  ? `${primarySats} sat · ${hostSats} sat to ${podcast.title}`
+                  : `${primarySats} sat`
               }
             />
           )}
@@ -635,31 +676,46 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
               ♪ Couldn&rsquo;t look up the track playing here — boosting {podcast.title} instead.
             </div>
           )}
-          <SplitsPreview
-            recipients={value.recipients}
-            splits={splits}
-            results={results}
-            title={redirect ? splitTargetLabel(redirect) : 'Recipients'}
+          {/* Gated on the trimmed list, not on `payable`: an unpayable leg has
+              no rows, and an empty card reads as a load that never finished.
+              <DroppedPayees> below says what happened instead.
+              `listed` is the FEED's list — the percentages are the authored
+              shares, so their denominator must be the authored weight total
+              even when the rows are trimmed. */}
+          {primaryLeg.recipients.length > 0 && (
+            <SplitsPreview
+              recipients={value.recipients}
+              splits={splits}
+              results={results}
+              listed={primaryValue.recipients}
+              title={redirect ? splitTargetLabel(redirect) : 'Recipients'}
+            />
+          )}
+          {/* The same component as the show's share below. It earned a sentence
+              the moment a redirect made this a DERIVED amount: the 100-sat
+              minimum gates what the user typed, not what
+              floor(sats × remotePercentage / 100) leaves for the artists. */}
+          <DroppedPayees
+            leg={primaryLeg}
+            label={redirect ? splitTargetLabel(redirect) : podcast.title}
+            className={primaryLeg.recipients.length > 0
+              ? 'text-[11px] text-muted -mt-2'
+              : 'text-[11px] text-muted'}
           />
           {showsHostLeg && (
             <>
               <SplitsPreview
-                recipients={hostLeg.recipients}
-                splits={hostLeg.splits}
+                recipients={hostLeg!.recipients}
+                splits={hostLeg!.splits}
                 results={hostResults}
+                listed={hostValue.recipients}
                 title={podcast.title}
               />
               {/* Say who the show's share was too small to reach. Without this
                   the recipient is simply absent from a list the user is reading
                   to check where their money went, and a silent omission on a
                   payment screen is indistinguishable from a bug. */}
-              {hostDropped > 0 && (
-                <div className="text-[11px] text-muted -mt-2">
-                  {hostDropped} more {hostDropped === 1 ? 'recipient' : 'recipients'} in {podcast.title}
-                  &rsquo;s split — {hostSats} sat {hostSats === 1 ? 'doesn' : 'don'}&rsquo;t reach
-                  {' '}{hostValue.recipients.length} ways. Boost more to include everyone.
-                </div>
-              )}
+              <DroppedPayees leg={hostLeg!} label={podcast.title} />
               {/* The thrown-host-leg case. The artist's legs above may show ✓
                   while this one never went out at all, so it has to say so
                   rather than just be missing from the count. */}
@@ -678,7 +734,7 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
           )}
           <LightningStatus
             results={[...results, ...hostResults]}
-            totalRecipients={value.recipients.length + hostLeg.recipients.length}
+            totalRecipients={value.recipients.length + (hostLeg?.recipients.length ?? 0)}
           />
           <PublishStatus state={pubState} />
         </div>
@@ -697,7 +753,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
                 // known to cover this second but its target isn't resolved yet,
                 // so a tap landing here would pay the show a moment before the
                 // modal promised the artist.
-                disabled={running || !rail || sats < MIN_BOOST_SATS || resolvingSplit}
+                // `nothingPayable` is its own gate: the amount clears the
+                // minimum and a rail is connected, so every other condition
+                // here reads as ready while there is nobody the block can pay.
+                disabled={running || !rail || sats < MIN_BOOST_SATS || resolvingSplit || nothingPayable}
                 className="btn-bolt disabled:opacity-40"
               >
                 <BoltIcon />

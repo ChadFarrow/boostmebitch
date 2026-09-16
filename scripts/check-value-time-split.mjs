@@ -47,8 +47,8 @@
  * ignored it and paid the show.
  */
 import {
-  mergeEpisodeContents, payableSplit, splitAtPosition, splitSats, splitTrackAndHost,
-  streamAction,
+  mergeEpisodeContents, payableLeg, payableSplit, redirectLegs, splitAtPosition, splitSats,
+  splitTrackAndHost, streamAction,
 } from '../lib/util.ts';
 
 let failures = 0;
@@ -237,6 +237,153 @@ check('no recipients', payableSplit(10, []), { recipients: [], splits: [] });
 check('zero-weight recipient is dropped, not paid 0',
   names(payableSplit(10, [...SHOW, { name: 'ghost', address: 'g@x.com', type: 'lnaddress', split: 0 }])),
   ['candr show', 'ChadF', 'Reed', 'Podcastindex.org']);
+
+// ── splitTrackAndHost → payableSplit: the TRACK leg is derived too ─────────
+// Why the old exemption — "the primary leg is the whole amount, gated by the
+// 100-sat minimum" — was false, and why BOTH legs of a redirect go through
+// payableSplit now. `remotePercentage` is authored by the HOST's feed, so the
+// gate on the amount a user TYPES says nothing about the leg the redirect
+// leaves for the artists. This composes the two functions in the order both
+// modals call them; which leg each modal routes through payableSplit is React
+// wiring and still unpinned.
+//
+// The artist block is the KEYSEND_MULTI row captured in check-playlist-db.mjs
+// — a real value block off a playlist DB row, weights 5/1/5/1 as authored,
+// summing to 12 rather than 100. Real wire data carries the shapes nobody
+// thinks to invent: four payees behind a two-digit share is exactly the
+// arrangement a small track leg cannot pay.
+console.log('\nsplitTrackAndHost → payableSplit — the track leg is derived too');
+
+const TRACK = [
+  { fee: false, name: 'Music Side Project', type: 'node', split: 5, address: '030a58b8653d32b99200a2334cfe913e51dc7d155aa0116c176657a4f1722677a3' },
+  { fee: false, name: 'Fountain Boostbot', type: 'node', split: 1, address: '03b6f613e88bd874177c28c6ad83b3baba43c4c656f56be1f8df84669556054b79' },
+  { fee: false, name: 'IPFSPodcasting.net', type: 'node', split: 5, address: '028eb5be336f7fdf2a4e40c57ff55d3d5d71277bb4197ea14957f756bff249e623' },
+  { fee: true, name: 'Podcastindex.org', type: 'lnaddress', split: 1, address: 'podcastindex@getalby.com' },
+];
+
+// The postcondition, across every share a feed can ask for: whatever the
+// redirect leaves, no payee is carried at 0 and nothing is dropped on the floor.
+for (const pct of [1, 2, 3, 5, 25, 50, 97, 99, 100]) {
+  const { trackSats } = at(100, pct, SHOW.length);
+  const leg = payableSplit(trackSats, TRACK);
+  check(`100 sats @ ${pct}% → track leg emits no zero-sat leg`,
+    leg.splits.filter((s) => s <= 0).length, 0);
+  check(`100 sats @ ${pct}% → track leg spends its whole share`,
+    leg.splits.reduce((a, b) => a + b, 0), trackSats);
+}
+
+// The case the exemption let through. The button allowed this boost — 100 sats
+// is the minimum — and the window still reduced the artists' leg to 2 sats,
+// which cannot be four payments. Two payees, not four carried at zero.
+const twoPct = payableSplit(at(100, 2, SHOW.length).trackSats, TRACK);
+check('a gated 100-sat boost at 2% pays two of four artists', twoPct.splits.length, 2);
+check('a gated 100-sat boost at 2% still spends both sats', twoPct.splits, [1, 1]);
+// And the show's remainder is the LARGER half there, which is the shape that
+// makes the old reasoning read as safe: the leg it exempted was the small one.
+check('at 2% the show takes 98 of the 100', at(100, 2, SHOW.length).hostSats, 98);
+// A full redirect keeps every artist — trimming must not become a way to stop
+// paying the 1% payees whenever a window is involved.
+check('100% redirect keeps all four artists',
+  payableSplit(at(100, 100, SHOW.length).trackSats, TRACK).recipients.length, 4);
+
+// ── payableLeg ─ the send gate, and WHY a payee is missing ────────────────
+// `payableSplit` answers "who can this amount pay", and two call sites read
+// that answer wrong in ways no type catches. Both shipped.
+//
+// 1. THE SEND GATE IS NOT `sats > 0`. payableSplit's `payable.length === 0` arm
+//    hands back EVERY recipient with an all-zero split — its honest answer for
+//    "nobody here can be paid". A caller reading that array as "the payees"
+//    sends a group of zero-sat legs, and payOne short-circuits `sats <= 0` to
+//    ok:true WITHOUT contacting anyone: a ✓ per artist and a StoredBoost entry
+//    for a payment nobody attempted. A `remotePercentage="0"` window is exactly
+//    that leg, and the HOST's feed authors that number — the user never sees it
+//    and the 100-sat minimum does not gate it.
+// 2. THE TWO DROP REASONS ARE DIFFERENT ADVICE. A payee this leg is too small
+//    to reach is included by a bigger boost. A payee the feed lists at
+//    `split="0"` is reached by NO amount, so "boost more to include everyone"
+//    is a sentence that cannot come true. The modal printed it at one.
+console.log('\npayableLeg — the send gate and the two drop reasons');
+
+const GHOST = { fee: false, name: 'ghost', type: 'node', split: 0, address: 'ghost' };
+
+// (1) The zero-share window. Nothing is sent and nobody is reported.
+const zeroShare = payableLeg(at(100, 0, SHOW.length).trackSats, TRACK);
+check('a 0% window makes the track leg unpayable', zeroShare.payable, false);
+check('an unpayable leg carries NO recipients to send', zeroShare.recipients.length, 0);
+check('an unpayable leg carries no splits', zeroShare.splits, []);
+check('an unpayable leg still reports what the feed listed', zeroShare.listed, 4);
+// Neither drop reason applies: nothing was dropped FROM A LEG, the leg is off.
+check('an unpayable leg claims nobody was dropped', [zeroShare.droppedTooSmall, zeroShare.droppedZeroWeight], [0, 0]);
+
+// A block whose every payee is listed at zero weight, with real sats to spend.
+// Same verdict, a different sentence on screen.
+check('sats with no weighted payee is unpayable too',
+  payableLeg(100, [GHOST, { ...GHOST, name: 'ghost2' }]).payable, false);
+check('an empty recipient list is unpayable', payableLeg(100, []).payable, false);
+
+// (2) The two reasons, told apart.
+const tooSmall = payableLeg(at(100, 2, SHOW.length).trackSats, TRACK);
+check('2 sat over four payees: two dropped as too small', tooSmall.droppedTooSmall, 2);
+check('2 sat over four payees: none dropped for zero weight', tooSmall.droppedZeroWeight, 0);
+check('2 sat over four payees: the leg is still sent', tooSmall.payable, true);
+
+const zeroWeight = payableLeg(1000, [...SHOW, GHOST]);
+check('a split="0" payee is dropped for ZERO WEIGHT, not for size', zeroWeight.droppedZeroWeight, 1);
+check('a split="0" payee is not counted as too small', zeroWeight.droppedTooSmall, 0);
+check('a split="0" payee does not stop the leg', zeroWeight.payable, true);
+// And no amount changes that — which is the whole reason the two are separate.
+check('a thousand times the boost still drops the split="0" payee',
+  payableLeg(1_000_000, [...SHOW, GHOST]).droppedZeroWeight, 1);
+
+// Both at once, on one leg.
+const both = payableLeg(at(100, 2, SHOW.length).trackSats, [...TRACK, GHOST]);
+check('one leg can carry both reasons at once',
+  [both.droppedTooSmall, both.droppedZeroWeight], [2, 1]);
+check('both reasons still account for every listed payee',
+  both.recipients.length + both.droppedTooSmall + both.droppedZeroWeight, both.listed);
+
+// ── redirectLegs ─ the composition both modals run ──────────────────────
+// splitTrackAndHost composed with payableLeg, twice. It is pinned here because
+// the composition used to be written out in two React components, and the
+// halves drifted: one gated its track send on `trackSats > 0` and the other did
+// not, so the same feed paid differently depending on which button was pressed.
+console.log('\nredirectLegs — both halves of a redirect, one call');
+
+const legs = (pct) => redirectLegs({
+  totalSats: 100,
+  remotePercentage: pct,
+  trackRecipients: TRACK,
+  hostRecipients: SHOW,
+});
+
+// The live case: 97 to Matt Finlay, 3 to a four-payee show block.
+check('97%: the track takes 97', legs(97).track.sats, 97);
+check('97%: the show takes 3', legs(97).host.sats, 3);
+check('97%: the show pays three of its four', legs(97).host.recipients.length, 3);
+check('97%: the show names the fourth as too small', legs(97).host.droppedTooSmall, 1);
+
+// The bug this section exists for, end to end.
+check('0%: the track leg is off', legs(0).track.payable, false);
+check('0%: the show takes the whole 100', legs(0).host.sats, 100);
+check('0%: the show leg is on', legs(0).host.payable, true);
+
+// The postcondition across every share a feed can ask for — INCLUDING 0, which
+// is the one value the earlier loop omitted and the one where it fails.
+for (const pct of [0, 1, 2, 3, 5, 25, 50, 97, 99, 100]) {
+  const { track, host } = legs(pct);
+  check(`${pct}%: the two legs sum to the boost`, track.sats + host.sats, 100);
+  for (const [who, leg] of [['track', track], ['show', host]]) {
+    // A sent leg never carries a zero-sat payment, and spends its whole share.
+    check(`${pct}%: the ${who} leg emits no zero-sat leg`,
+      leg.payable ? leg.splits.filter((x) => x <= 0).length : 0, 0);
+    check(`${pct}%: the ${who} leg spends its whole share`,
+      leg.payable ? leg.splits.reduce((a, b) => a + b, 0) : 0, leg.payable ? leg.sats : 0);
+    // An unsent leg hands over nobody, so a caller that forgets the gate sends
+    // nothing rather than a group of false ✓.
+    check(`${pct}%: an unsent ${who} leg hands over no recipients`,
+      leg.payable ? -1 : leg.recipients.length, leg.payable ? -1 : 0);
+  }
+}
 
 // ── The obvious wrong implementations ───────────────────────────────────────
 // A vector that passes the moment it is written has proved nothing. When there
@@ -535,6 +682,15 @@ const naiveCaught = [
     naiveSplitAt([LIVE], 0) !== null],
   ['a bare splitSats leaves a zero-sat leg that payOne reports as paid',
     splitSats(3, SHOW).filter((s) => s <= 0).length > 0],
+  ['exempting the TRACK leg strands two artists at 0 sats on a gated 100-sat boost',
+    splitSats(at(100, 2, SHOW.length).trackSats, TRACK).filter((s) => s <= 0).length > 0],
+  ['reading payableSplit\'s recipients as "the payees" sends four zero-sat legs on a 0% window',
+    payableSplit(at(100, 0, SHOW.length).trackSats, TRACK).recipients.length === TRACK.length],
+  ['gating the send on `sats > 0` is the same bug one level up, since 0 > 0 is the only case it catches',
+    at(100, 0, SHOW.length).trackSats === 0
+      && payableSplit(0, TRACK).splits.length === TRACK.length],
+  ['counting the shortfall alone tells a split="0" payee\'s user to boost more, forever',
+    payableSplit(1_000_000, [...SHOW, GHOST]).recipients.length < SHOW.length + 1],
   ['rounding hands the track a sat out of the show\'s share',
     naiveTrackAndHost({ totalSats: 350, remotePercentage: 97 }).trackSats === 340],
   ['no clamp lets a malformed percentage produce a negative host leg',

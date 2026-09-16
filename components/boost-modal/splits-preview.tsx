@@ -18,6 +18,7 @@ export function SplitsPreview({
   splits,
   results,
   title = 'Recipients',
+  listed,
 }: {
   recipients: ValueRecipient[];
   splits: number[];
@@ -28,11 +29,22 @@ export function SplitsPreview({
   // "Recipients" cards would leave the user to guess which was which while
   // deciding whether to press the button.
   title?: string;
+  // Every recipient the FEED listed, when `recipients` has been trimmed to the
+  // ones this leg can pay (`payableLeg`). The percentages are the feed's
+  // AUTHORED shares, so their denominator is the authored weight total: a block
+  // of 5/1/5/1 trimmed to its two 5s rendered 50% each where the feed said
+  // 41.7%, directly above a line saying two more payees exist. The card would
+  // assert that two payees are entitled to half each while naming four.
+  // Defaults to `recipients`, so an untrimmed caller is unchanged.
+  listed?: ValueRecipient[];
 }) {
-  const totalWeight = recipients.reduce((sum, r) => sum + (r.split ?? 0), 0);
+  const authored = listed ?? recipients;
+  const totalWeight = authored.reduce((sum, r) => sum + (r.split ?? 0), 0);
   // Why the shares below can carry a decimal and not add to 100: a fee's weight
-  // is in that total like any other. See `feeNote`.
-  const note = feeNote(recipients);
+  // is in that total like any other. See `feeNote`. Read off the authored list
+  // for the same reason the denominator is — a dropped fee recipient's weight
+  // is still in the total it explains.
+  const note = feeNote(authored);
   return (
     <div className="card p-3">
       <div className="text-[11px] uppercase tracking-widest text-muted mb-2">{title}</div>
