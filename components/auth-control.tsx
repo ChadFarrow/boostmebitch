@@ -187,7 +187,13 @@ export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
               {/* A peer of the option above, not a detail inside it. This used to
                   live only INSIDE the sign-in modal, which meant the people it
                   exists for had to first pick "Sign in with Nostr" to reach the
-                  thing that exists precisely because they don't have Nostr. */}
+                  thing that exists precisely because they don't have Nostr.
+
+                  It is back on that modal's method list as well now — last,
+                  under a rule — because this dropdown renders on four routes
+                  and the modal opens on every one. Two entry points into one
+                  screen, not two screens: the wording is shared verbatim, so
+                  change it in one place and change it in both. */}
               {googleConfigured && (
                 <button
                   role="menuitem"
