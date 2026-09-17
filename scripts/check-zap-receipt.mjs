@@ -684,13 +684,11 @@ for (const f of ['components/boost-modal/index.tsx', 'components/boost-all-modal
 //    general client unfurls a body reference into an embedded zap card under
 //    the note, one per leg. Fountain reads the tag; nobody needs the body.
 const noteSrc = readFileSync('lib/nostr/boost-notes.ts', 'utf8');
-if (!/'q',/.test(noteSrc)) {
-  fail('lib/nostr/boost-notes.ts no longer writes a `q` tag for each quoted receipt.');
-} else if (/nostr:\$\{/.test(noteSrc) || /neventEncode/.test(noteSrc)) {
-  fail('lib/nostr/boost-notes.ts writes a `nostr:nevent…` body reference again.\n'
-    + '          General clients render that as an embedded zap card per leg; the `q` tag is the quote.');
+// TEST BRANCH: both forms are written while Fountain's badge reader is measured.
+if (!/'q',/.test(noteSrc) || !/nostr:\$\{/.test(noteSrc)) {
+  fail('lib/nostr/boost-notes.ts must write BOTH a `q` tag and a `nostr:nevent…` body reference on this test branch.');
 } else {
-  ok('the boost note quotes its receipts with `q` tags and puts nothing in the body');
+  ok('TEST: the boost note quotes its receipts with `q` tags AND body references');
 }
 
 console.log(failures

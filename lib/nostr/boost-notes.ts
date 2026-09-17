@@ -1,3 +1,4 @@
+import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
 import { httpUrl } from '../util';
@@ -239,6 +240,39 @@ function quotedReceipts(results: BoostResult[]): QuotedZapReceipt[] {
 }
 
 
+/**
+ * TEST BRANCH — the body reference, restored to learn one fact.
+ *
+ * #405 dropped this because every general client unfurls a `nostr:nevent…`
+ * into an embedded zap card per leg. After it shipped, Fountain rendered the
+ * episode-level note (918e7cd0…) with its episode card and WITHOUT the ⚡
+ * amount badge that Fountain's own boosts carry. Fountain's own writer emits
+ * only this body form, with `kind: 9735` inside the nevent, so the hypothesis
+ * is that Fountain's badge reader takes the body reference and not the `q`
+ * tag. One episode boost from this branch's preview answers it:
+ *
+ *   badge appears  → the body form is what Fountain needs; decide between the
+ *                    cards elsewhere and asking Fountain to read `q` for a 9735.
+ *   still no badge → the receipt itself is the cause (Alby's signer, or the
+ *                    NIP-73 pair living only inside `description`).
+ *
+ * The relay hints are the delivering relays (`receiptRelayHints`), so this
+ * nevent points at a relay that holds the receipt — unlike the first version.
+ */
+function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string {
+  if (receipts.length === 0) return content;
+  const refs = receipts.map(
+    (r) =>
+      `nostr:${nip19.neventEncode({
+        id: r.id,
+        relays: r.relays.slice(0, 3),
+        author: r.pubkey,
+        kind: 9735,
+      })}`,
+  );
+  return `${content}\n\n${refs.join('\n')}`;
+}
+
 /** Cap on how many people one boost note tags. */
 const MAX_NOTE_NPUBS = 4;
 
@@ -372,7 +406,8 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     tags.push(['imeta', `url ${banner}`, 'm image/png', 'dim 1200x300']);
   }
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
-  // THE `q` TAG IS THE WHOLE QUOTE. No `nostr:nevent…` line goes in the body.
+  // TEST BRANCH: the `q` tag AND a body reference — see withZapReceipts above.
+  // The paragraph below is #405's reasoning for the tag alone, kept verbatim.
   //
   // The first production boost through the zap rail (2026-09-16, note
   // 0be1c9a5…, two zapped legs) wrote both halves, and every general client
@@ -409,7 +444,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     content: (() => {
       const body = withArt(args.contentOverride ?? formatContent(args), banner);
       const { content: inlined, remaining } = inlineMentions(body, inBody);
-      return withMentionRun(inlined, remaining);
+      return withMentionRun(withZapReceipts(inlined, receipts), remaining);
     })(),
   };
 }
