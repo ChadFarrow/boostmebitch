@@ -26,7 +26,7 @@
 
 import type { Event } from 'nostr-tools';
 import { newPool, withExtraRelays } from './pool';
-import { zapReceiptAccepts, type ZapReceiptExpectation } from './zap-receipt-match';
+import { receiptRelayHints, zapReceiptAccepts, type ZapReceiptExpectation } from './zap-receipt-match';
 
 /** One zap this app paid, waiting for its receipt. */
 export interface PendingZapReceipt extends ZapReceiptExpectation {
@@ -39,7 +39,12 @@ export interface QuotedZapReceipt {
   id: string;
   /** The provider's key. Goes in the `q` tag and the `nevent` author hint. */
   pubkey: string;
-  /** Hints, so a reader can find it. Never more than three. */
+  /**
+   * Hints, so a reader can find it. The relay that DELIVERED it comes first —
+   * a relay the request merely asked for may never have taken the receipt, and
+   * a hint naming one of those sends every reader to an empty answer. Never
+   * more than three. See `receiptRelayHints`.
+   */
   relays: string[];
 }
 
@@ -75,6 +80,9 @@ export async function awaitZapReceipts(
   if (relays.length === 0 || recipients.length === 0) return found;
 
   const pool = newPool();
+  // Record which relay each event arrived from (`seenOn`, filled before
+  // `onevent` fires), so the receipt's hint can name a relay known to hold it.
+  pool.trackRelays = true;
   // Base is empty on purpose: every relay here is an "extra", so `withExtraRelays`
   // closes all of them in its own `finally`. This pool is built for one wait and
   // must not outlive it — an unclosed socket per boost is how the tab runs out.
@@ -101,7 +109,10 @@ export async function awaitZapReceipts(
           found.set(p.requestId, {
             id: e.id,
             pubkey: e.pubkey,
-            relays: p.relays.slice(0, 3),
+            relays: receiptRelayHints(
+              [...(pool.seenOn.get(e.id) ?? [])].map((r) => r.url),
+              p.relays,
+            ),
           });
           break;
         }

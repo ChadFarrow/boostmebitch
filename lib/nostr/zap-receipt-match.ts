@@ -134,3 +134,30 @@ export function zapReceiptAccepts(
 
   return true;
 }
+
+/**
+ * The relay hints a quoted receipt carries: the relays that actually DELIVERED
+ * it first, then the ones the zap request asked for, at most three, each once.
+ *
+ * WHY NOT `request.relays.slice(0, 3)`, which is what shipped. A provider is
+ * asked to publish to every relay in the request's `relays` tag and publishes
+ * to the ones that take it. On the first production boost the request named
+ * seven, the user's own NIP-65 write relay first, and Alby's receipt landed on
+ * four of them — not the first. The `q` tag's hint therefore pointed at a relay
+ * holding the note and neither receipt, which is a hint that sends every reader
+ * that follows it to an empty answer. The waiter sees which relay each receipt
+ * arrived from; that relay is known to hold it.
+ *
+ * Only `wss://` strings survive, in first-seen order. Pinned by
+ * `check:zapreceipt`.
+ */
+export function receiptRelayHints(deliveredBy: readonly unknown[], requested: readonly unknown[]): string[] {
+  const out: string[] = [];
+  for (const r of [...deliveredBy, ...requested]) {
+    if (typeof r !== 'string' || !r.startsWith('wss://')) continue;
+    if (out.includes(r)) continue;
+    out.push(r);
+    if (out.length === 3) break;
+  }
+  return out;
+}

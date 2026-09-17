@@ -1,4 +1,3 @@
-import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
 import { httpUrl } from '../util';
@@ -239,36 +238,6 @@ function quotedReceipts(results: BoostResult[]): QuotedZapReceipt[] {
   return out;
 }
 
-/**
- * Append the `nostr:nevent…` reference for each quoted receipt.
- *
- * The BODY reference is the half that matters for interop — Fountain writes its
- * own quote that way and reads it that way, and `parseQuoteRefs` (./discover.ts)
- * exists because a `q`-tag scan alone misses it. The `q` tag goes on the event
- * too; neither replaces the other.
- *
- * Placed below the artwork and above the mention run, for the reason `withArt`
- * gives: the trailing `nostr:npub…` run is what a compose box writes last.
- *
- * `kind: 9735` is carried in the nevent because Fountain's own wrapper notes carry
- * it — read off a real one, event f0416267…50e0 — and it is the half a reader can
- * act on without fetching anything: it says the quote is a payment receipt rather
- * than another note. Fountain ships no relay hints there and we do; that direction
- * is additive, so ours stay.
- */
-function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string {
-  if (receipts.length === 0) return content;
-  const refs = receipts.map(
-    (r) =>
-      `nostr:${nip19.neventEncode({
-        id: r.id,
-        relays: r.relays.slice(0, 3),
-        author: r.pubkey,
-        kind: 9735,
-      })}`,
-  );
-  return `${content}\n\n${refs.join('\n')}`;
-}
 
 /** Cap on how many people one boost note tags. */
 const MAX_NOTE_NPUBS = 4;
@@ -403,6 +372,20 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     tags.push(['imeta', `url ${banner}`, 'm image/png', 'dim 1200x300']);
   }
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
+  // THE `q` TAG IS THE WHOLE QUOTE. No `nostr:nevent…` line goes in the body.
+  //
+  // The first production boost through the zap rail (2026-09-16, note
+  // 0be1c9a5…, two zapped legs) wrote both halves, and every general client
+  // unfurled each body reference into an embedded zap card under the note —
+  // two cards reading "Sent 33 sats to …" beneath a note that said 100. A
+  // general client cannot know a quoted kind:9735 is there for Fountain's
+  // parser; the body form is what it renders, and the tag form is what it
+  // leaves alone. Fountain reads the `q` tag (confirmed by Fountain,
+  // 2026-09-16), and our own `parseQuoteRefs` (./discover.ts) reads `q` and
+  // body alike, so the explorer's wrapper-vs-receipt dedupe is unchanged.
+  // Fountain's OWN notes carry the body form and no `q` — that is their
+  // writer; their reader takes either.
+  //
   // Same shape `publishQuoteRepost` writes (./interactions.ts): id, relay hint,
   // author. The author is the recipient's LNURL server, which is who signed the
   // receipt — not the payee and not us.
@@ -426,7 +409,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     content: (() => {
       const body = withArt(args.contentOverride ?? formatContent(args), banner);
       const { content: inlined, remaining } = inlineMentions(body, inBody);
-      return withMentionRun(withZapReceipts(inlined, receipts), remaining);
+      return withMentionRun(inlined, remaining);
     })(),
   };
 }
