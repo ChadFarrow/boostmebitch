@@ -21,9 +21,17 @@ import { ThemeMenuRow, ThemeToggle } from './theme-toggle';
 // sits right after this in the header; both modals' open-state lives in the
 // store (walletOpen / signInOpen) so triggering either from here just flips a
 // flag. <WalletModal> itself is rendered by <WalletModalHost> in the root
-// layout, not here — this component only renders on the three <AppHeader>
-// routes, and the tab bar's Wallet tab opens the modal from every route.
-export function AuthControl() {
+// layout, not here.
+//
+// TWO HOSTS, NOT ONE. <AppHeader> renders it on `/`, `/live`, `/favorites` and
+// `/playlists`; <FullscreenPlayer> renders a second instance with `overlay`,
+// because that overlay is `fixed z-50` and covers <TabBar> (`z-30`) — so on
+// `/live/<npub>`, `/npub/<npub>` and `/stream/<naddr>`, where there is no
+// header at all, neither login had a trigger. Google was the visible half of
+// that: this dropdown is the only place the "Continue with Google" row has
+// ever existed. Two mounted instances are safe — nothing here is module-level,
+// and `useWalletChange`/`useMenuKeys` are per-instance.
+export function AuthControl({ overlay = false }: { overlay?: boolean } = {}) {
   const identity = useApp((s) => s.identity);
   // Read once on the client, like <SignInModal>'s own flags, so `navigator`
   // stays off the server render. They name the signer in the Nostr row's
@@ -91,8 +99,20 @@ export function AuthControl() {
         >
           <span className="text-bolt">⚡</span>
           {/* Renders null until a balance is known (or for rails that expose
-              none, e.g. WebLN) — the lit ⚡ still reads as "connected". */}
-          <WalletBalanceChip />
+              none, e.g. WebLN) — the lit ⚡ still reads as "connected".
+
+              THE OVERLAY FORM DROPS THE NUMBER, and that is a money-path
+              decision rather than a layout one. `useWalletBalance` re-reads on
+              every `payment_sent` notification and each read opens a NIP-47
+              connection; wallet-balance.tsx records that burst as "the single
+              largest contributor to the socket leak that took payments down
+              mid-session", which is why it is debounced and why the number of
+              MOUNTED instances matters. Header chip + boost modal is two; a
+              third, mounted for the rest of the session once the player has
+              been opened, would make every leg of a boost sent from the
+              fullscreen player three reads instead of two. The lone ⚡ is what
+              reads as "connected" anyway — see the null case above. */}
+          {!overlay && <WalletBalanceChip />}
         </button>
       )}
 
@@ -217,9 +237,15 @@ export function AuthControl() {
                   hasn't got one — the same reason the tab bar's Favorites tab is not gated
                   on `identity`. Leaves the menu open: you want to see the
                   palette land. */}
-              <div className="border-t border-bone/15 mt-1 pt-1">
-                <ThemeMenuRow />
-              </div>
+              {/* Not in the overlay form: the fullscreen player is a media
+                  surface with its own chrome, and a palette switch inside it
+                  was asked to go. Every route that renders this menu without
+                  `overlay` still carries it. */}
+              {!overlay && (
+                <div className="border-t border-bone/15 mt-1 pt-1">
+                  <ThemeMenuRow />
+                </div>
+              )}
             </div>
           )}
         </>
@@ -249,7 +275,9 @@ export function AuthControl() {
           <AccountMenu> needs an identity and the combined sign-in menu only
           renders when nothing at all is connected. So the bare theme icon
           comes back here, and only here — moving a control into a menu is an
-          improvement only where the menu exists. */}
+          improvement only where the menu exists. The overlay form drops it
+          with the rest of the theme control; the header on `/` is one tap
+          away and still carries it. */}
       {walletConnected && needNostr && (
         <>
           <button
@@ -259,7 +287,7 @@ export function AuthControl() {
             <span className="text-nostr">◆</span>
             <span className="hidden sm:inline">Sign in</span>
           </button>
-          <ThemeToggle />
+          {!overlay && <ThemeToggle />}
         </>
       )}
     </div>
