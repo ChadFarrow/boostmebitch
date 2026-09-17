@@ -142,8 +142,9 @@ export function zapRequestTags(args: {
 // can pay would be a fabricated payment record, which is a different thing
 // from an attestation. The amount rides in the request's `amount` tag and in
 // an `amount` tag on the receipt (the optional one Appendix E allows and this
-// repo's own reader takes first). Whether Fountain's reader takes an amount
-// without a bolt11 is the one thing a boost has to prove.
+// repo's own reader takes first). Fountain's reader takes it: the first boost
+// through this path (note 81802c0c…, receipt 470f0fa0…, 2026-09-17) rendered
+// "⚡ 100" for a 100-sat boost split four ways — measured, not assumed.
 //
 // WHAT BOUNDS THE ORACLE. `/api/nostr/zap-receipt-sign` is unauthenticated,
 // like site-sign. It never signs a caller-supplied receipt: it takes a kind:9734
