@@ -38,6 +38,7 @@ import { ValueSplitRows } from './value-split-rows';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
 import { LiveChat } from './live-chat';
+import { AuthControl } from './auth-control';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
 
@@ -328,8 +329,6 @@ export function FullscreenPlayer({
   const episodeQueue = useApp((s) => s.episodeQueue);
   const play = useApp((s) => s.play);
   const togglePlay = useApp((s) => s.togglePlay);
-  const identity = useApp((s) => s.identity);
-  const setSignInOpen = useApp((s) => s.setSignInOpen);
   const [valueOpen, setValueOpen] = useState(false);
 
   // Lock the page behind the overlay. This used to be a local `overflow:
@@ -493,15 +492,21 @@ export function FullscreenPlayer({
           <span className="text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
         </div>
         <div className="flex items-center gap-2">
-          {!identity && (
-            <button
-              onClick={() => setSignInOpen(true)}
-              className="btn-ghost text-xs"
-              aria-label="Sign in with Nostr"
-            >
-              <span className="text-nostr">◆</span> Sign in
-            </button>
-          )}
+          {/* THE HEADER'S OWN AUTH CONTROL, not a second copy of it. This was a
+              bare "◆ Sign in" button, and it offered exactly one of the app's
+              two logins: the Nostr one, opened with no intent, so its modal
+              could not reach Google — the row lives in <AuthControl>'s
+              dropdown and nowhere else. The wallet had no trigger here at all,
+              because the only other one is <TabBar> and this overlay (`z-50`)
+              covers it (`z-30`). On `/live/<npub>` that left a listener with a
+              BOOST button, a boost modal telling them to "connect one with ⚡
+              Connect wallet (top right)", and no such control on the route.
+
+              `overlay` drops the theme row and the balance number; see
+              <AuthControl>. With BOTH logins set this renders nothing, exactly
+              as the old button did (it was gated on `!identity`) — the account
+              menu belongs to <NostrAuth>, which these routes mount hidden. */}
+          <AuthControl overlay />
           <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
             ✕
           </button>
