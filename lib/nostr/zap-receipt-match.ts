@@ -148,15 +148,24 @@ export function zapReceiptAccepts(
  * that follows it to an empty answer. The waiter sees which relay each receipt
  * arrived from; that relay is known to hold it.
  *
- * Only `wss://` strings survive, in first-seen order. Pinned by
+ * Only `wss://` strings survive, in first-seen order, each relay ONCE. "Once"
+ * is spelled out because the two lists spell a relay differently: nostr-tools
+ * reports a delivering relay as `wss://chadf.nostr1.com/` (its `normalizeURL`
+ * adds the slash) while the request's `relays` tag says `wss://chadf.nostr1.com`.
+ * A string compare called those two relays, so the first test note carried
+ * the same relay twice and let a relay holding nothing back into slot two —
+ * seen on note b88137ca…, 2026-09-16. Compared and written with the trailing
+ * slash removed, which is how every other writer spells a hint. Pinned by
  * `check:zapreceipt`.
  */
 export function receiptRelayHints(deliveredBy: readonly unknown[], requested: readonly unknown[]): string[] {
   const out: string[] = [];
   for (const r of [...deliveredBy, ...requested]) {
-    if (typeof r !== 'string' || !r.startsWith('wss://')) continue;
-    if (out.includes(r)) continue;
-    out.push(r);
+    if (typeof r !== 'string') continue;
+    const relay = r.trim().replace(/\/+$/, '').toLowerCase();
+    if (!relay.startsWith('wss://') || relay.length <= 'wss://'.length) continue;
+    if (out.includes(relay)) continue;
+    out.push(relay);
     if (out.length === 3) break;
   }
   return out;
