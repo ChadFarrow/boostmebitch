@@ -265,7 +265,43 @@ const words = (s) => s.split(/\s+/).filter(Boolean).length
 // displaces something, and the structural move this file has not yet made is the
 // boost invariants: at 1,681 words they are the third-largest section and they
 // have their own `docs/money-boosts.md` already.
-const BUDGET = 15340
+//
+// LOWERED, 15,340 -> 15,000, and the reason this is a trim rather than a raise is
+// the symptom that prompted it: the file had come to rest at 15,339 against a
+// 15,340 budget, so EVERY edit failed the check regardless of size. That is the
+// exact state the third raise above says a budget must not be in — "a limit that
+// fires on every edit regardless of size is not a limit anyone can act on". It
+// had reached it again, so the answer was the structural move, not a fifth raise.
+//
+// The structural move: `docs/testing.md` now exists and owns the local-testing
+// material — the `.next` collision in both directions, the local relay and the
+// two e2e harnesses, and the squash-merge branch fact. CLAUDE.md keeps the two
+// rules that must be in mind before you know which file you are opening (do not
+// build over a running dev server; a dev server on localhost still publishes to
+// the public relays under the signed-in npub) plus a pointer. That is ~600 words
+// out for ~135 back, and it is the same shape as the `docs/nostr-index.md` move.
+//
+// The rest came from holding ~20 bullets to the format the file states for
+// itself — a rule plus one clause naming the consequence — where the narrative
+// they carried is already owned by a docs/ file or a check-script header.
+//
+// **Nothing was cut on judgement.** Every distinctive token in the file before
+// the pass — 1,108 of them, each `code span` and each measured number — was
+// recorded first, and the pass was not accepted until every one still appeared
+// in CLAUDE.md or in docs/, scripts/ or README.md. Passages whose facts lived
+// nowhere else were left alone.
+//
+// The ~300 words of slack are deliberate, and they are NOT a budget for the next
+// rule — that one still displaces something. They exist so that fixing a typo or
+// adding a table row does not require a budget argument, which is what the
+// one-word ceiling had made every edit into.
+//
+// The lever NOT spent, if this is needed again: the `check:*` table's third
+// column is ~379 words of "cost of silent breakage", and every script's header
+// already opens with its own "Why this earns a check script" paragraph saying
+// the same thing. Dropping it would leave the table indexing rather than
+// arguing, which is what the line above the table already claims it does.
+const BUDGET = 15000
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const path = join(root, 'CLAUDE.md')
