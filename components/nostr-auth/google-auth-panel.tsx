@@ -392,10 +392,16 @@ export function GoogleAuthPanel({
     createAccount();
   }
 
-  /** Every non-destructive stage needs a way out. <SignInModal> collapses the
-   *  tab strip while this panel is mounted, so without this a user who tapped
+  /** Every non-destructive stage needs a way out. <SignInModal> hides the
+   *  method list while this panel is mounted, so without this a user who tapped
    *  "Continue with Google" by mistake can only escape by closing the whole
-   *  modal. */
+   *  modal.
+   *
+   *  `onCancel` LANDS ON THAT LIST, which is what the label below has always
+   *  said and did not do: it was the modal's close handler, so the one control
+   *  promising the other sign-in methods was the control that threw them away.
+   *  The list is reachable from every route now, so there is nothing left to
+   *  protect anyone from. */
   function goBack() {
     if (stage.s === 'confirmPin') {
       setConfirm('');
@@ -404,7 +410,7 @@ export function GoogleAuthPanel({
       return;
     }
     // setupPin/enterPin reached from a picker fall back to it; otherwise
-    // leaving the panel is what restores the tab strip.
+    // leaving the panel is what restores the method list.
     if ((stage.s === 'setupPin' || stage.s === 'enterPin') && blobsRef.current.length > 0) {
       setPin('');
       setPinErr(null);
@@ -504,8 +510,13 @@ export function GoogleAuthPanel({
             <button onClick={tapBegin} className="btn-bolt text-[11px] py-1 px-3">
               Retry
             </button>
+            {/* Names the destination, like the back control at the foot of
+                the panel, and for the reason `backToPicker` exists there: a
+                label may not promise one place while the handler goes to
+                another. It said "Cancel" while `onCancel` closed the modal;
+                `onCancel` is the method list now. */}
             <button onClick={onCancel} className="btn-ghost text-[11px] py-1 px-3">
-              Cancel
+              ← Other sign-in options
             </button>
           </div>
         </>
