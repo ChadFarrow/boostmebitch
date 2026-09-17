@@ -1,3 +1,4 @@
+import { nip19 } from 'nostr-tools';
 import type { Event, EventTemplate } from 'nostr-tools';
 import type { Boostagram, Episode, FeedNpub, Podcast, BoostResult } from '../types';
 import { httpUrl } from '../util';
@@ -13,6 +14,14 @@ interface PublishArgs {
   boostagram: Boostagram;
   results: BoostResult[];
   relays?: string[];
+  /**
+   * The ONE receipt this note quotes: the site-signed summary for the sats the
+   * boost actually paid (`mintSummaryReceipt`), or on a live-stream zap the
+   * host provider's own receipt for the whole. Per-leg receipts are never
+   * quoted — Fountain renders the FIRST quote and nothing else, and a leg's
+   * figure under a note stating the total reads as a contradiction.
+   */
+  summaryReceipt?: QuotedZapReceipt;
   /** Override the note body. Otherwise we auto-format. */
   contentOverride?: string;
   /**
@@ -189,55 +198,49 @@ function withArt(content: string, art: string | null): string {
 }
 
 /**
- * Cap on quoted receipts. A boost with more zap legs than this still pays them
- * all; the note just stops naming them, the same way it stops naming people.
- */
-const MAX_QUOTED_RECEIPTS = 4;
-
-/**
- * The zap receipts this note quotes, biggest share first.
+ * The receipts this note quotes: the summary receipt, or nothing.
  *
- * WHY QUOTE A RECEIPT AT ALL. Fountain renders a boost's sat amount off a quoted
- * kind:9735, not off our `amount` tag and not off the prose — which is why our
- * notes showed the sats as text and nothing else. This repo already reads that
- * shape in the other direction (`buildNote` in ./discover.ts resolves a quoted
- * receipt through `zapReceiptAmountMsat`), so a note we publish this way is read
- * by our own explorer exactly as a Fountain wrapper is.
- *
- * ORDERED BY SETTLED SATS, largest first — not by `recipientOrder`. The first
- * quote is the one a client that renders only one will pick, so it must be the
- * artist's and never a 1-sat fee payee's; but `recipientOrder` ranks by split
- * WEIGHT, and a redirected boost hands this function legs from TWO value blocks
- * whose weights are on different scales, so a show-block fee payee at
- * `split=100` outranked a track artist at `split=50`. Settled sats are an
- * absolute per-payee number and compare across blocks. The sort is stable, so
- * equal legs keep the order they were paid in — which is `recipientOrder`
- * within each block already.
+ * ONE, and it is the summary. Fountain renders a boost's ⚡ figure off the
+ * first quoted kind:9735 — measured 2026-09-16: two 33-sat leg receipts
+ * quoted under a 100-sat note rendered "⚡ 33". A client-side split can never
+ * hand Fountain a provider receipt for the whole, so the note quotes the
+ * site-signed summary for the sats actually paid (lib/nostr/zap-request.ts),
+ * and the per-leg receipts stay unquoted — they still reach the artist's own
+ * zap feed on their own. When there is no summary (Anonymous, signed out, the
+ * oracle off, no relay took it) the note quotes nothing rather than a leg.
  */
-function quotedReceipts(results: BoostResult[]): QuotedZapReceipt[] {
-  // Holes are filtered FIRST, and that is not defensive tidiness. The modal's
-  // in-flight `results` state is `(BoostResult | undefined)[]` because legs
-  // settle biggest-share-first, and `totalMsat` above only walks this array when
-  // `value_msat_total` is absent — so a hole reaching here used to be harmless
-  // and now would throw inside the note builder, losing the whole note for a
-  // boost that had already paid.
-  const legs = results
-    .filter((r): r is BoostResult => !!r && !!r.zapReceipt)
-    .map((r, i) => ({ r, i }))
-    .sort((a, b) => b.r.sats - a.r.sats || a.i - b.i)
-    .map(({ r }) => r);
-  const out: QuotedZapReceipt[] = [];
-  const seen = new Set<string>();
-  for (const leg of legs) {
-    const z = leg.zapReceipt!;
-    if (seen.has(z.id)) continue;
-    seen.add(z.id);
-    out.push(z);
-    if (out.length >= MAX_QUOTED_RECEIPTS) break;
-  }
-  return out;
+function quotedReceipts(args: PublishArgs): QuotedZapReceipt[] {
+  return args.summaryReceipt ? [args.summaryReceipt] : [];
 }
 
+/**
+ * Append the `nostr:nevent…` reference for the quoted receipt.
+ *
+ * BOTH FORMS, AND THIS IS THE ONE FOUNTAIN'S BADGE READS. #405 dropped the body
+ * form because every general client unfurls it into an embedded zap card. The
+ * next test (note b88137ca…, 2026-09-16) settled what each form buys: a note
+ * with `q` tags alone LISTS in Fountain, with its episode card, and draws no ⚡
+ * figure; the same note with a body reference draws it. Fountain's own writer
+ * emits only the body form, with `kind: 9735` in the nevent. So the body line
+ * is the price of the figure, and there is exactly one of it now.
+ *
+ * Placed below the artwork and above the mention run, for the reason `withArt`
+ * gives: the trailing `nostr:npub…` run is what a compose box writes last. The
+ * relay hints are `receiptRelayHints`' — relays known to hold the receipt.
+ */
+function withZapReceipts(content: string, receipts: QuotedZapReceipt[]): string {
+  if (receipts.length === 0) return content;
+  const refs = receipts.map(
+    (r) =>
+      `nostr:${nip19.neventEncode({
+        id: r.id,
+        relays: r.relays.slice(0, 3),
+        author: r.pubkey,
+        kind: 9735,
+      })}`,
+  );
+  return `${content}\n\n${refs.join('\n')}`;
+}
 
 /** Cap on how many people one boost note tags. */
 const MAX_NOTE_NPUBS = 4;
@@ -372,28 +375,17 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     tags.push(['imeta', `url ${banner}`, 'm image/png', 'dim 1200x300']);
   }
   if (totalMsat > 0) tags.push(['amount', String(totalMsat)]);
-  // THE `q` TAG IS THE WHOLE QUOTE. No `nostr:nevent…` line goes in the body.
+  // The `q` tag half of the quote; `withZapReceipts` below writes the body
+  // half, which is the one Fountain's badge reads. Same shape
+  // `publishQuoteRepost` writes (./interactions.ts): id, relay hint, author —
+  // the author is the site for a summary receipt, the host's LNURL server for a
+  // live-stream zap. `parseQuoteRefs` (./discover.ts) reads either form, so the
+  // explorer's wrapper-vs-receipt dedupe holds.
   //
-  // The first production boost through the zap rail (2026-09-16, note
-  // 0be1c9a5…, two zapped legs) wrote both halves, and every general client
-  // unfurled each body reference into an embedded zap card under the note —
-  // two cards reading "Sent 33 sats to …" beneath a note that said 100. A
-  // general client cannot know a quoted kind:9735 is there for Fountain's
-  // parser; the body form is what it renders, and the tag form is what it
-  // leaves alone. Fountain reads the `q` tag (confirmed by Fountain,
-  // 2026-09-16), and our own `parseQuoteRefs` (./discover.ts) reads `q` and
-  // body alike, so the explorer's wrapper-vs-receipt dedupe is unchanged.
-  // Fountain's OWN notes carry the body form and no `q` — that is their
-  // writer; their reader takes either.
-  //
-  // Same shape `publishQuoteRepost` writes (./interactions.ts): id, relay hint,
-  // author. The author is the recipient's LNURL server, which is who signed the
-  // receipt — not the payee and not us.
-  //
-  // `amount` above deliberately stays `value_msat_total`, the whole boost before
-  // the value block divides it. A receipt's amount is this leg's settled figure,
-  // so the two numbers answer different questions and neither is wrong.
-  const receipts = quotedReceipts(args.results);
+  // `amount` above stays `value_msat_total`, the whole boost as INTENDED; the
+  // summary receipt carries the sats actually PAID. They differ only when a
+  // leg failed, and then the receipt is the one telling the truth.
+  const receipts = quotedReceipts(args);
   for (const r of receipts) tags.push(['q', r.id, r.relays[0] ?? '', r.pubkey]);
   tags.push(clientTag(boostagram.app_name));
   tags.push(['t', 'boostagram']);
@@ -409,7 +401,7 @@ function buildBoostNoteTemplate(args: PublishArgs, selfSigned: boolean): EventTe
     content: (() => {
       const body = withArt(args.contentOverride ?? formatContent(args), banner);
       const { content: inlined, remaining } = inlineMentions(body, inBody);
-      return withMentionRun(inlined, remaining);
+      return withMentionRun(withZapReceipts(inlined, receipts), remaining);
     })(),
   };
 }

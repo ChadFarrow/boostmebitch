@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { finalizeEvent, type EventTemplate } from 'nostr-tools/pure';
 import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
-import { siteSecretKey } from '@/lib/nostr/site-key';
+import { siteSecretKey, sitePubkey } from '@/lib/nostr/site-key';
 import { httpUrl } from '@/lib/util';
 import { BRAND } from '@/lib/brand';
 
@@ -56,7 +56,18 @@ const BOOST_CONTENT_PREFIX = '⚡ Boost ⚡';
 //
 // If buildBoostNoteTemplate ever emits a new tag, add it here in the same
 // change or site-signed notes start failing.
-const ALLOWED_TAG_NAMES = new Set(['i', 'k', 'r', 'p', 'amount', 'client', 't', 'imeta']);
+const ALLOWED_TAG_NAMES = new Set(['i', 'k', 'r', 'p', 'amount', 'client', 't', 'imeta', 'q']);
+
+// One `q` (NIP-18), and ONLY when the quoted event's author is the site itself.
+// A site-published boost note quotes its summary receipt — a kind:9735 this
+// same key signed through /api/nostr/zap-receipt-sign — and that is the whole
+// reason `q` is here. Bound to the site's own pubkey as author, it cannot be
+// what an `e` tag would have been: a signed instruction from a verified
+// identity to render some stranger's note beneath the site's words. The check
+// is on the tag's author field, which is the only thing this oracle can see;
+// a reader that fetches the event checks the signature itself.
+const MAX_Q_TAGS = 1;
+const HEX64_RE = /^[0-9a-f]{64}$/;
 
 // One `imeta` (NIP-92), because the note names one piece of artwork. The cap is
 // the same reasoning as MAX_P_TAGS one level down: the tag carries a URL a
@@ -97,7 +108,7 @@ const BANNER_PREFIX = `url ${BRAND.origin}/api/og/boost.png?`;
 
 // Bound the signing oracle: this endpoint must only ever sign boost-shaped
 // kind:1 notes as the site, never arbitrary events (DMs, kind:0 hijack, etc.).
-function validateBoostTemplate(body: unknown): EventTemplate {
+function validateBoostTemplate(body: unknown, site: string): EventTemplate {
   if (!body || typeof body !== 'object') throw new Error('bad template');
   const t = body as Record<string, unknown>;
   if (t.kind !== 1) throw new Error('only kind:1 boost notes may be signed');
@@ -140,6 +151,15 @@ function validateBoostTemplate(body: unknown): EventTemplate {
   if (imeta && !(imeta[1] ?? '').startsWith(BANNER_PREFIX)) {
     throw new Error('invalid imeta tag');
   }
+  const qTags = strTags.filter((tag) => tag[0] === 'q');
+  if (qTags.length > MAX_Q_TAGS) throw new Error('too many q tags');
+  for (const q of qTags) {
+    const [, id, relay, author] = q;
+    if (q.length !== 4 || !HEX64_RE.test(id ?? '') || author !== site) {
+      throw new Error('a site-signed note may only quote the site’s own receipt');
+    }
+    if (relay !== '' && !relay.startsWith('wss://')) throw new Error('invalid q relay');
+  }
   const hasT = (v: string) => strTags.some((tag) => tag[0] === 't' && tag[1] === v);
   // The two markers publishBoostNote always emits — proves this is a boost note.
   if (!hasT('boostagram') || !hasT('value4value')) {
@@ -166,7 +186,8 @@ export async function POST(req: Request) {
   if (notJson) return notJson;
 
   const sk = siteSecretKey();
-  if (!sk) {
+  const site = sitePubkey();
+  if (!sk || !site) {
     return NextResponse.json(
       { error: 'site Nostr identity not configured' },
       { status: 503 },
@@ -192,7 +213,7 @@ export async function POST(req: Request) {
     }
     let template: EventTemplate;
     try {
-      template = validateBoostTemplate(body);
+      template = validateBoostTemplate(body, site);
     } catch (e) {
       return NextResponse.json(
         { error: e instanceof Error ? e.message : 'invalid template' },

@@ -5,7 +5,7 @@ import { ModalShell } from '../modal-shell';
 import type { Episode, Podcast, Boostagram, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, collectZapReceipts, type BoostResult, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr, noteNpubs } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, publishLiveChat, LIVE_STREAM_RELAYS, isLiveStreamId, parseStreamId, streamChatAddr, noteNpubs, mintSummaryReceipt, type QuotedZapReceipt } from '@/lib/nostr';
 import { sendZap, lnaddrZapSupport } from '@/lib/v4v/zap';
 import { storage } from '@/lib/storage';
 import { useSharePicker } from './use-share-picker';
@@ -298,17 +298,24 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
   // picked "Post to my Nostr feed"; otherwise by the site's Nostr identity
   // server-side (publishBoostNoteViaSite) — the signed-out path and the
   // signed-in "Post via boostmebitch.com" choice. Shared by both payment paths.
-  async function maybePublishNote(boostagram: Boostagram, results: BoostResult[]) {
+  async function maybePublishNote(
+    boostagram: Boostagram,
+    results: BoostResult[],
+    // The one receipt the note quotes — see PublishArgs.summaryReceipt. Both
+    // paths carry it: a self-signed note's request was signed by the user, a
+    // site-published note's by the site, so neither names anyone it shouldn't.
+    summaryReceipt?: QuotedZapReceipt,
+  ) {
     if (!shareNostr) return;
     setPubState({ kind: 'publishing' });
     try {
       const note = identity && shareAs === 'self'
-        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions })
+        ? await publishBoostNote({ podcast, episode, boostagram, results, relays, mentions, summaryReceipt })
         // Mentions are passed on BOTH paths on purpose. noteMentionTags decides
         // what each may do with them — the body always, the `p` tags only when
         // the user's own key signs — and that decision belongs there, not in a
         // caller that would have to remember it at every site.
-        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions });
+        : await publishBoostNoteViaSite({ podcast, episode, boostagram, results, mentions, summaryReceipt });
       setPubState({ kind: 'done', note });
       storage.boosts.update(identity?.npub, boostagram.uuid!, { noteId: note.id });
       bumpBoosts();
@@ -498,7 +505,10 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       }];
       logStoredBoost(boostagram, storedBoostLegs(legs));
       setTimeout(() => onClose(), 1500);
-      await maybePublishNote(boostagram, await collectZapReceipts(legs));
+      // A live-stream zap is ONE payment for the whole boost, so the host
+      // provider's own receipt is the total — quote that, no summary needed.
+      const [withReceipt] = await collectZapReceipts(legs);
+      await maybePublishNote(boostagram, legs, withReceipt?.zapReceipt);
       return;
     }
 
@@ -671,10 +681,23 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       // user is already past the confetti and the modal is already closing, so
       // this wait is invisible; a receipt that never lands costs the quote and
       // nothing else.
-      await maybePublishNote(
-        boostagram,
-        await collectZapReceipts([...collected, ...hostCollected]),
-      );
+      // The site-signed summary receipt for the sats that actually settled —
+      // both groups, ok legs only — is the one thing the note quotes. For EVERY
+      // boost that posts ("Don't post" is the only thing that skips it): the
+      // user signs its request when their key publishes the note, the site
+      // does when the note is site-published, so an Anonymous boost's receipt
+      // names the site and not the user. Never throws; null quotes nothing.
+      // The per-leg receipts are not waited for: they are not quoted, and they
+      // reach the artist's feed on their own.
+      const allLegs = [...collected, ...hostCollected];
+      const paidSats = allLegs.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);
+      const summaryReceipt = shareNostr
+        ? await mintSummaryReceipt({
+            paidSats, refs: hostRefs, relays,
+            as: identity && shareAs === 'self' && hasSigner ? 'self' : 'site',
+          })
+        : null;
+      await maybePublishNote(boostagram, allLegs, summaryReceipt ?? undefined);
     }
   }
 

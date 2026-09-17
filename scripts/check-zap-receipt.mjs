@@ -55,7 +55,10 @@
 // differs from the true one in exactly one field, which is what gives them teeth
 // a round-trip fixture would not have.
 import { zapReceiptAccepts, requestIdInDescription, receiptRelayHints } from '../lib/nostr/zap-receipt-match.ts';
-import { zapRequestTags, nip73Tags } from '../lib/nostr/zap-request.ts';
+import {
+  zapRequestTags, nip73Tags, validateSummaryRequest, summaryReceiptTemplate,
+  summaryRequestTemplateFromSpec, SUMMARY_MAX_MSAT,
+} from '../lib/nostr/zap-request.ts';
 import { importFreeProblems } from './import-free.mjs';
 import { readFileSync } from 'node:fs';
 
@@ -609,6 +612,99 @@ if (JSON.stringify(ASKED.slice(0, 3)) === JSON.stringify(receiptRelayHints(HELD.
   ok('rejected: `request.relays.slice(0, 3)` (the hint that pointed at podtards.com)');
 }
 
+// ── The summary receipt: validateSummaryRequest / summaryReceiptTemplate ──
+// The site signs ONE kind:9735 for the sats a boost paid, derived from a
+// kind:9734 the sender (or the site) signed, and the boost note quotes it —
+// because Fountain renders the FIRST quoted receipt's amount and a client-side
+// split never yields a provider receipt for the whole (lib/nostr/zap-request.ts).
+// The rules below are what stands between an unauthenticated POST and a
+// receipt under the site's key. Fountain's own real request is the must-accept
+// vector, with Fountain's key standing in as the site.
+console.log('\nsummary receipt — what the site will and will not sign');
+
+const SITE = ZAPPER;                       // Fountain's key stands in as "the site"
+const T = REAL_REQUEST.created_at;
+const valid = validateSummaryRequest(REAL_REQUEST, SITE, T);
+eq('MUST STILL WORK: Fountain’s own real request passes the rules, its key as the site', valid.ok, true);
+if (valid.ok) {
+  eq('the request comes back rebuilt from exactly its seven fields',
+    Object.keys(valid.request).sort(), ['content', 'created_at', 'id', 'kind', 'pubkey', 'sig', 'tags']);
+  eq('a stray field a caller appended never reaches the description',
+    Object.keys(validateSummaryRequest({ ...REAL_REQUEST, evil: 'x' }, SITE, T).request ?? {}).includes('evil'), false);
+  const tpl = summaryReceiptTemplate(valid.request, SITE, T + 3);
+  eq('the receipt is a kind:9735 with empty content', [tpl.kind, tpl.content], [9735, '']);
+  eq('`p` is the site and `P` is the sender — Fountain’s shape', [tagOf(tpl, 'p')[1], tagOf(tpl, 'P')[1]], [SITE, REAL_REQUEST.pubkey]);
+  eq('`p` and `P` match the REAL receipt Fountain published for this request',
+    [tagOf(tpl, 'p')[1], tagOf(tpl, 'P')[1]], [tagOf(RECEIPT_1, 'p')[1], tagOf(RECEIPT_1, 'P')[1]]);
+  // Key order differs between our serializer and Fountain's, and the id is a
+  // hash over a canonical form that ignores it — so compare with sorted keys.
+  const canon = (o) => JSON.stringify(o, Object.keys(o).sort());
+  eq('`description` is the request, field-for-field equal to the real receipt’s',
+    canon(JSON.parse(tagOf(tpl, 'description')[1])), canon(JSON.parse(tagOf(RECEIPT_1, 'description')[1])));
+  eq('the NIP-73 pairs are mirrored onto the receipt, as Fountain’s server mirrors them',
+    tpl.tags.filter((t) => t[0] === 'i' || t[0] === 'k').map((t) => t.join('|')).sort(),
+    RECEIPT_1.tags.filter((t) => t[0] === 'i' || t[0] === 'k').map((t) => t.join('|')).sort());
+  eq('`amount` rides on the receipt (Appendix E’s optional tag; our reader takes it first)',
+    tagOf(tpl, 'amount')[1], String(AMOUNT_MSAT));
+  eq('no bolt11 and no preimage — there is no invoice for the whole, and none is minted',
+    [tagOf(tpl, 'bolt11'), tagOf(tpl, 'preimage')], [undefined, undefined]);
+  eq('no `e`, no `client`, no prose can reach the receipt', tpl.tags.some((t) => ['e', 'client'].includes(t[0])), false);
+}
+
+const withTags = (tags) => ({ ...REAL_REQUEST, tags });
+const reject = (name, input, reason) => {
+  const r = validateSummaryRequest(input, SITE, T);
+  if (r.ok) fail(`${name} — ACCEPTED, must refuse`);
+  else if (reason && !r.reason.includes(reason)) fail(`${name} — refused for "${r.reason}", expected "${reason}"`);
+  else ok(`refused: ${name} (${r.reason})`);
+};
+reject('`p` that is not the site', withTags(REAL_REQUEST.tags.map((t) => (t[0] === 'p' ? ['p', STRANGER] : t))), 'site key');
+reject('two `p` tags', withTags([...REAL_REQUEST.tags, ['p', STRANGER]]), 'site key');
+reject('an `e` tag — the receipt would look like a zap on somebody’s note', withTags([...REAL_REQUEST.tags, ['e', 'f'.repeat(64)]]), 'unsupported');
+reject('a `client` tag', withTags([...REAL_REQUEST.tags, ['client', 'x']]), 'unsupported');
+reject('an amount that is not whole sats', withTags(REAL_REQUEST.tags.map((t) => (t[0] === 'amount' ? ['amount', '100500'] : t))), 'range');
+reject('an amount over the ceiling', withTags(REAL_REQUEST.tags.map((t) => (t[0] === 'amount' ? ['amount', String(SUMMARY_MAX_MSAT + 1000)] : t))), 'range');
+reject('no amount at all', withTags(REAL_REQUEST.tags.filter((t) => t[0] !== 'amount')), 'amount');
+reject('prose in content — that is the other oracle’s risk, not this one’s', { ...REAL_REQUEST, content: 'hello' }, 'content');
+reject('a request from the future', { ...REAL_REQUEST, created_at: T + 3600 }, 'range');
+reject('a request from the past', { ...REAL_REQUEST, created_at: T - 3600 }, 'range');
+reject('no relays tag', withTags(REAL_REQUEST.tags.filter((t) => t[0] !== 'relays')), 'relays');
+reject('a non-wss relay', withTags(REAL_REQUEST.tags.map((t) => (t[0] === 'relays' ? ['relays', 'http://evil.example'] : t))), 'relays');
+reject('an `i` with no matching `k`', withTags(REAL_REQUEST.tags.filter((t) => t[0] !== 'k')), 'i without k');
+reject('an `i` hint that is not http(s)', withTags(REAL_REQUEST.tags.map((t) => (t[0] === 'i' ? [t[0], t[1], 'javascript:alert(1)'] : t))), 'hint');
+reject('an `i` outside the podcast namespace', withTags(REAL_REQUEST.tags.map((t) => (t[0] === 'i' && t[1].startsWith('podcast:guid:') ? ['i', 'isbn:123'] : t))), 'i tag');
+reject('a kind:1', { ...REAL_REQUEST, kind: 1 }, 'zap request');
+reject('a malformed sig', { ...REAL_REQUEST, sig: 'zz' }, 'sig');
+reject('not an object', 'nope', 'event');
+reject('too many tags', withTags(Array.from({ length: 17 }, () => ['k', 'podcast:guid'])), 'tags');
+
+// The site-authored request, from a spec (signed out / Anonymous). Built by the
+// leaf so nothing a caller sends reaches the tags except three facts.
+const spec = summaryRequestTemplateFromSpec(
+  { amountMsat: 100_000, relays: ['wss://nos.lol', 'wss://nos.lol', 'http://evil', 'wss://relay.damus.io'], refs: refsOf(REAL_REQUEST) },
+  SITE, T,
+);
+eq('a spec builds a kind:9734 with empty content', [spec?.kind, spec?.content], [9734, '']);
+eq('relays are deduped and non-wss ones dropped', tagOf(spec, 'relays').slice(1), ['wss://nos.lol', 'wss://relay.damus.io']);
+eq('the spec’s `p` is the site', tagOf(spec, 'p')[1], SITE);
+eq('the spec’s refs come out as the same pairs Fountain’s request carries',
+  spec.tags.filter((t) => t[0] === 'i' || t[0] === 'k'), REAL_REQUEST.tags.filter((t) => t[0] === 'i' || t[0] === 'k'));
+eq('a spec-built request passes the same rules a sender-signed one does',
+  validateSummaryRequest({ ...spec, id: 'a'.repeat(64), pubkey: SITE, sig: 'b'.repeat(128) }, SITE, T).ok, true);
+eq('a spec with a fractional-sat amount is refused', summaryRequestTemplateFromSpec({ amountMsat: 100_500, relays: ['wss://x.example'] }, SITE, T), null);
+eq('a spec over the ceiling is refused', summaryRequestTemplateFromSpec({ amountMsat: SUMMARY_MAX_MSAT + 1000, relays: ['wss://x.example'] }, SITE, T), null);
+eq('a spec with no usable relay is refused', summaryRequestTemplateFromSpec({ amountMsat: 1000, relays: ['http://x.example'] }, SITE, T), null);
+eq('a spec cannot smuggle tags', summaryRequestTemplateFromSpec({ amountMsat: 1000, relays: ['wss://x.example'], tags: [['e', 'f'.repeat(64)]] }, SITE, T).tags.some((t) => t[0] === 'e'), false);
+eq('garbage is null', summaryRequestTemplateFromSpec('x', SITE, T), null);
+
+// The obvious wrong oracle: sign whatever receipt tags the caller sends.
+const naiveOracle = (tags) => ({ kind: 9735, tags });
+if (naiveOracle([['p', STRANGER], ['P', STRANGER], ['amount', '999999999999']]).tags.some((t) => t[0] === 'P' && t[1] === STRANGER)) {
+  ok('rejected: a template oracle would sign a receipt naming any sender for any amount');
+} else {
+  fail('the naive comparison is broken');
+}
+
 // `requestIdInDescription` has THREE answers and the middle one is the whole
 // point: an unreadable description is a contradiction, not a missing field. A
 // refactor that collapses null into undefined turns every vector above that
@@ -693,20 +789,55 @@ for (const f of ['components/boost-modal/index.tsx', 'components/boost-all-modal
   }
 }
 
-// 5. The note is why any of this exists, and the quote is the `q` TAG ALONE.
+// 4b. The oracle derives the receipt; it never signs caller-supplied tags. And
+//     site-sign lets a site-published note quote ONE event, only if the site
+//     authored it — the `q` rule that keeps that oracle from becoming an `e`.
+const oracleSrc = readFileSync('app/api/nostr/zap-receipt-sign/route.ts', 'utf8');
+for (const must of ['verifyEvent(', 'validateSummaryRequest(', 'summaryReceiptTemplate(', 'summaryRequestTemplateFromSpec(']) {
+  if (!oracleSrc.includes(must)) fail(`app/api/nostr/zap-receipt-sign/route.ts no longer calls ${must}`);
+}
+if (/finalizeEvent\(\s*(body|input|checked\.request)\b/.test(oracleSrc)) {
+  fail('zap-receipt-sign signs something the caller sent — it must only sign templates the leaf built');
+} else {
+  ok('zap-receipt-sign derives every receipt from a validated request');
+}
+const siteSignSrc = readFileSync('app/api/nostr/site-sign/route.ts', 'utf8');
+if (!/'q'/.test(siteSignSrc) || !/author !== site/.test(siteSignSrc) || !/MAX_Q_TAGS = 1/.test(siteSignSrc)) {
+  fail('site-sign no longer bounds `q` to ONE tag authored by the site’s own key.');
+} else {
+  ok('site-sign allows one `q`, and only one authored by the site');
+}
+const mintSrc = readFileSync('lib/nostr/zap-summary-receipt.ts', 'utf8');
+if (!/acceptedRelays\.length === 0\) return null/.test(mintSrc)) {
+  fail('mintSummaryReceipt quotes a receipt no relay accepted.');
+} else {
+  ok('mintSummaryReceipt quotes nothing when no relay took the receipt');
+}
+for (const f of ['components/boost-modal/index.tsx', 'components/boost-all-modal.tsx']) {
+  const src = readFileSync(f, 'utf8');
+  if (!/mintSummaryReceipt\(/.test(src)) fail(`${f} no longer mints the summary receipt.`);
+  else if (/mintSummaryReceipt\(\{[^}]*\}\)/s.test(src) && !/as: identity && shareAs === 'self'/.test(src)) {
+    fail(`${f} does not choose the request's author by the note's signer.`);
+  } else ok(`${f} mints the summary receipt, self or site, by the note's signer`);
+}
+
+// 5. The note is why any of this exists, and the quote is BOTH forms of ONE receipt.
 //    A `q` tag that stops being emitted is invisible from the app — the boost
 //    still pays and the note still posts. And a `nostr:nevent…` line that
 //    comes BACK is the regression the first production boost showed: every
 //    general client unfurls a body reference into an embedded zap card under
 //    the note, one per leg. Fountain reads the tag; nobody needs the body.
+//    Fountain lists a note off the `q` tag and draws its ⚡ figure off the BODY
+//    reference (measured: notes 918e7cd0… and b88137ca…, 2026-09-16), so both
+//    are written — for the summary receipt only. The body line is the one card
+//    a general client renders, and there is exactly one of it.
 const noteSrc = readFileSync('lib/nostr/boost-notes.ts', 'utf8');
-if (!/'q',/.test(noteSrc)) {
-  fail('lib/nostr/boost-notes.ts no longer writes a `q` tag for each quoted receipt.');
-} else if (/nostr:\$\{/.test(noteSrc) || /neventEncode/.test(noteSrc)) {
-  fail('lib/nostr/boost-notes.ts writes a `nostr:nevent…` body reference again.\n'
-    + '          General clients render that as an embedded zap card per leg; the `q` tag is the quote.');
+if (!/'q',/.test(noteSrc) || !/nostr:\$\{/.test(noteSrc)) {
+  fail('lib/nostr/boost-notes.ts must write BOTH a `q` tag and a `nostr:nevent…` body reference for the summary receipt.');
+} else if (!/args\.summaryReceipt \? \[args\.summaryReceipt\] : \[\]/.test(noteSrc)) {
+  fail('lib/nostr/boost-notes.ts quotes something other than the ONE summary receipt.');
 } else {
-  ok('the boost note quotes its receipts with `q` tags and puts nothing in the body');
+  ok('the boost note quotes exactly one receipt, in the tag and in the body');
 }
 
 console.log(failures
