@@ -54,7 +54,7 @@
 // The vectors are adversarial by construction: each false case is a receipt that
 // differs from the true one in exactly one field, which is what gives them teeth
 // a round-trip fixture would not have.
-import { zapReceiptAccepts, requestIdInDescription } from '../lib/nostr/zap-receipt-match.ts';
+import { zapReceiptAccepts, requestIdInDescription, receiptRelayHints } from '../lib/nostr/zap-receipt-match.ts';
 import { zapRequestTags, nip73Tags } from '../lib/nostr/zap-request.ts';
 import { importFreeProblems } from './import-free.mjs';
 import { readFileSync } from 'node:fs';
@@ -569,6 +569,30 @@ for (const [name, caught] of naiveTagsCaught) {
   else fail('a wrong builder survives: ' + name);
 }
 
+// ── receiptRelayHints: the hint names a relay that HOLDS the receipt ───────
+// The first production boost (note 0be1c9a5…, 2026-09-16) asked its provider
+// for seven relays, the user's own write relay first; Alby's receipt landed on
+// four of them and not the first, and the `q` tag's hint named the first. These
+// are those seven, and the four measured to hold the receipt.
+console.log('\nreceiptRelayHints — deliver before request, three at most');
+const ASKED = ['wss://podtards.com', 'wss://chadf.nostr1.com', 'wss://relay.damus.io', 'wss://hist.nostr.land', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://relay.fountain.fm'];
+const HELD = ['wss://relay.fountain.fm', 'wss://relay.primal.net', 'wss://nos.lol', 'wss://chadf.nostr1.com'];
+eq('the production case: the delivering relays lead, the asked-for tail follows',
+  receiptRelayHints(HELD.slice(0, 1), ASKED), ['wss://relay.fountain.fm', 'wss://podtards.com', 'wss://chadf.nostr1.com']);
+eq('every delivering relay outranks every merely-asked one',
+  receiptRelayHints(HELD, ASKED), HELD.slice(0, 3));
+eq('nothing delivered yet → the request’s own order, so a hint still exists',
+  receiptRelayHints([], ASKED), ASKED.slice(0, 3));
+eq('a relay seen in both lists is written once', receiptRelayHints(['wss://nos.lol'], ['wss://nos.lol', 'wss://a.example']), ['wss://nos.lol', 'wss://a.example']);
+eq('non-wss and non-string entries are dropped',
+  receiptRelayHints([null, 'ws://plain.example', 42], ['https://not-a-relay.example', 'wss://ok.example']), ['wss://ok.example']);
+eq('empty in, empty out', receiptRelayHints([], []), []);
+if (JSON.stringify(ASKED.slice(0, 3)) === JSON.stringify(receiptRelayHints(HELD.slice(0, 1), ASKED))) {
+  fail('receiptRelayHints is `requested.slice(0, 3)` — the hint points at a relay without the receipt');
+} else {
+  ok('rejected: `request.relays.slice(0, 3)` (the hint that pointed at podtards.com)');
+}
+
 // `requestIdInDescription` has THREE answers and the middle one is the whole
 // point: an unreadable description is a contradiction, not a missing field. A
 // refactor that collapses null into undefined turns every vector above that
@@ -618,6 +642,15 @@ if (!/zapReceiptAccepts\(/.test(waitSrc)) {
   fail('lib/nostr/zap-receipt-wait.ts no longer calls zapReceiptAccepts.');
 } else {
   ok('the receipt waiter still runs every candidate through the matcher');
+}
+
+// 2b. The waiter names the DELIVERING relay. Without `trackRelays` the pool
+//     records nothing in `seenOn`, and the helper silently degrades to the
+//     request's order — the shipped bug, with a green build.
+if (!/trackRelays\s*=\s*true/.test(waitSrc) || !/receiptRelayHints\(/.test(waitSrc) || !/seenOn\.get\(/.test(waitSrc)) {
+  fail('lib/nostr/zap-receipt-wait.ts no longer tracks which relay delivered the receipt (trackRelays + seenOn → receiptRelayHints).');
+} else {
+  ok('the receipt waiter records the delivering relay and hints with it');
 }
 
 // 3. The tag list `sendZap` signs is the pinned builder, with the refs the
