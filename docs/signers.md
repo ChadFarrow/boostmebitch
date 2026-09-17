@@ -919,11 +919,12 @@ races above them and this module cannot see it. Closing that still means teachin
 ### A follow list past 849 accounts cannot be signed by ANY remote signer
 
 **FIXED 2026-09-13 for the misdiagnosis and the message; the limit itself is
-NIP-44's and cannot be fixed here.** Reported from an iPhone: tapping **Follow**
-put *"Signer disconnected — your iPhone may have suspended the relay link."* in
-the account menu, **on Clave and on Primal**, on both pairing flows. Two
-different signers giving one symptom for one action is the tell — the fault is
-on this side of the wire, and no signer can change it.
+NIP-44's and cannot be fixed here.** Reported from an iPhone with
+**877 follows**: tapping **Follow** put *"Signer disconnected — your iPhone
+may have suspended the relay link."* in the account menu, **on Clave and on
+Primal**, on both pairing flows. Two different signers giving one symptom for
+one action is the tell — the fault is on this side of the wire, and no signer
+can change it.
 
 **What actually happens.** nostr-tools 2.19.4 `sendRequest` builds the plaintext
 `JSON.stringify({ id, method, params })` and hands it to NIP-44 `encrypt`. NIP-44
