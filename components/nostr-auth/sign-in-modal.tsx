@@ -28,7 +28,7 @@ import {
 } from '@/lib/nostr';
 import { openAppLink } from '@/lib/app-link';
 import { getLatestPendingAmber, submitManualAmberResult } from '@/lib/nostr/amber';
-import { isGoogleAuthConfigured, preloadGis } from '@/lib/nostr/google-auth';
+import { isGoogleAuthConfigured, preloadGis, startGoogleSignIn } from '@/lib/nostr/google-auth';
 import { useApp } from '@/lib/store';
 import { getErrorMessage } from '@/lib/util';
 import { AmberCompletion } from './login-methods';
@@ -54,8 +54,16 @@ import { KeyIcon, PuzzleIcon, QrIcon } from '../icons';
  * named methods, each opening a detail view with `← Back`. Ours filters that
  * list by platform, which theirs does not: they offer *Amber (Android)* on a
  * desktop and on an iPhone, and a row that cannot work is worse than no row.
+ *
+ * `'google'` IS A SCREEN AND NOT A METHOD. Every other view prepares a pairing
+ * on the way in, because reaching it IS the choice to use that signer. This one
+ * prepares nothing — it mints a key for somebody who owns no signer at all, and
+ * what its row starts instead is a parked consent request, inside the click.
+ * It is a view rather than a flag beside one so that `goto` governs it like the
+ * rest: no listener survives behind it, and the iOS Clave pairing re-arms when
+ * it hands the modal back.
  */
-type View = 'menu' | 'qr' | 'bunker' | 'primal';
+type View = 'menu' | 'qr' | 'bunker' | 'primal' | 'google';
 
 // How long a Clave tap sits with no return signal before the box says the app
 // may not be installed. Long enough to cover a cold launch of a signer that has
@@ -106,19 +114,27 @@ export function SignInModal({
   // and the deferral is what keeps `navigator` off the server render.
   const [ios] = useState(() => isLikelyIOS());
   // Google onboarding is a SEPARATE path, not a Nostr sign-in method: it mints
-  // a key for someone who has none. So it is reachable ONLY by opening this
-  // modal with signInIntent === 'google' (the header dropdown lists it as a
-  // peer of "Sign in with Nostr"); the Nostr entry point never shows it. When
-  // it's open it owns the whole modal — no tab strip, no extension/bunker
-  // options — and backing out closes the modal rather than dropping the user
-  // into the signer tabs they didn't ask for.
+  // a key for someone who has none. It is a SCREEN of this modal all the same —
+  // `view === 'google'` — reached either by opening the modal with
+  // signInIntent === 'google' (the header dropdown) or by picking the row at
+  // the foot of the method list. While it is showing it owns the modal: no
+  // method list, no detail screens.
   //
-  // Read once via the lazy initializer: this is the view the modal OPENED on,
-  // and subscribing would let a late store write yank the user out mid-PIN.
+  // IT USED TO BE A BOOLEAN WITH NO SETTER, and that made it unreachable from
+  // every surface except one dropdown. <AuthControl> renders on the <AppHeader>
+  // routes only, so on `/live/<npub>` the player's own Sign in button and the
+  // live chat's "sign in to join" both opened this modal with the default
+  // intent — three signer methods, all of them "already have a key", for a
+  // listener who has none. Reported from a live show.
+  //
+  // A SCREEN RATHER THAN A FLAG BESIDE ONE is what keeps the pairings honest.
+  // Every effect that prepares one is guarded on `view`, so 'google' falls
+  // through all of them and nothing subscribes behind the panel; and `goto`
+  // tears the previous screen's listener down on the way in and re-arms the
+  // iOS Clave row on the way back. A boolean would have left a live pairing
+  // under the panel and, because that effect is keyed on `[ios, view]`, no
+  // re-subscribe afterwards — a Clave row whose anchor nothing listens to.
   const [googleConfigured] = useState(() => isGoogleAuthConfigured());
-  const [googleOpen] = useState(
-    () => googleConfigured && useApp.getState().signInIntent === 'google',
-  );
   // "Neither phone box renders here." Not a claim that a mouse is present — an
   // unknown mobile lands here too, and a code it can scan with a SECOND device
   // is the right offer for it as well. What it gates is the one thing that
@@ -136,8 +152,16 @@ export function SignInModal({
   // signer is inline on it and prepares on open — so the menu resumes it. On a
   // desktop nothing on the menu subscribes, so a pending pairing has to land on
   // the QR view or the ack it is waiting for reaches nobody.
+  //
+  // The Google intent is read here, ONCE, through the same lazy initializer —
+  // never a subscription, since a late store write would yank someone out of a
+  // half-entered PIN. It outranks the pending-pairing rule because it is an
+  // explicit request for a different path, which is what the boolean it
+  // replaced did too.
   const [view, setView] = useState<View>(() =>
-    (hasPendingNostrConnect() && desktop ? 'qr' : 'menu'),
+    (googleConfigured && useApp.getState().signInIntent === 'google'
+      ? 'google'
+      : hasPendingNostrConnect() && desktop ? 'qr' : 'menu'),
   );
 
   // Browser-extension flow.
@@ -273,9 +297,16 @@ export function SignInModal({
   // user taps "Continue with Google" — a cold fetch inside the click path burns
   // its transient activation and the consent popup gets blocked. See
   // preloadGis().
+  //
+  // ON OPEN, NOT ON THE GOOGLE VIEW. It used to run only when the modal opened
+  // straight onto the panel, which was the only way to reach it. The row at the
+  // foot of the method list is now the other way, and the gesture that buys the
+  // script is opening this modal — the same one gesture earlier <AuthControl>
+  // spends on its dropdown. Waiting until the row is tapped puts the fetch
+  // inside the click path, which is the bug this exists to avoid.
   useEffect(() => {
-    if (googleOpen) preloadGis();
-  }, [googleOpen]);
+    if (googleConfigured) preloadGis();
+  }, [googleConfigured]);
 
 
   async function onExtension() {
@@ -1009,6 +1040,13 @@ export function SignInModal({
    * `ink` for the QR, because a real QR is dark on light and that is what makes
    * it readable as one at 20px; `nostr` for the bunker key, the accent this app
    * already uses for identity.
+   *
+   * ◉ IS THE ONE CHARACTER HERE, and it is not a walk-back of "never as a new
+   * image" — it is not an image. The Google row carries the same ◉ the header
+   * dropdown gives it, because a Google wordmark is a fetched bitmap under a
+   * brand guideline, and the two menus offering the same thing under two marks
+   * is the drift this tile exists to stop. It is a glyph, not an emoji, so it
+   * takes the tile's `text-ink` like the SVGs do.
    */
   function MethodTile({ tone, children }: { tone: string; children: React.ReactNode }) {
     return (
@@ -1125,7 +1163,7 @@ export function SignInModal({
         </button>
 
         <div className="p-5 border-b border-bone/15">
-          {googleOpen ? (
+          {view === 'google' ? (
             <>
               <div className="stamp text-bolt border-bolt/60 mb-2">◆ GOOGLE</div>
               <h3 className="font-display text-2xl leading-tight">Continue with Google</h3>
@@ -1149,19 +1187,26 @@ export function SignInModal({
           )}
         </div>
 
-        {googleOpen && (
+        {view === 'google' && (
           <div className="p-5 border-b border-bone/15 flex flex-col gap-2">
             <GoogleAuthPanel
               onSuccess={(id) => {
                 onSuccess(id, 'local');
                 onClose();
               }}
-              onCancel={handleClose}
+              // Back to the method list, not out of the modal. The panel's own
+              // label says "← Other sign-in options" and there are some now, on
+              // every route — it closed the whole modal before, which was the
+              // only thing it could do while this was the modal's opening view
+              // and the list was a tab strip nobody had asked for. Through
+              // `goto` rather than `setView` so the teardown runs: it re-arms
+              // the iOS Clave pairing the menu prepares on open.
+              onCancel={() => goto('menu')}
             />
           </div>
         )}
 
-        {!googleOpen && (
+        {view !== 'google' && (
           <div className="p-5 flex flex-col gap-3">
             {view === 'menu' && (
               <>
@@ -1366,6 +1411,50 @@ export function SignInModal({
                   />
                 )}
                 {extErr && <span className="text-[11px] text-nostr/80">{extErr}</span>}
+
+                {/* LAST, AND UNDER A RULE, because it is not a fourth signer.
+                    Every row above it says "I already have a key"; this one
+                    MINTS one for somebody who has none, which is exactly why
+                    <AuthControl>'s dropdown may list it as a peer of "Sign in
+                    with Nostr" without being a second door into the same room.
+                    The same argument one level down puts it below the rule
+                    rather than among them.
+
+                    IT WAS NOT REACHABLE FROM HERE AT ALL, and that is the bug
+                    this fixes. <AuthControl> renders in <AppHeader>, which is
+                    four routes — so on /live/<npub> the fullscreen player's own
+                    Sign in button and the live chat's "sign in to join the
+                    chat" both opened this modal with the default intent, and a
+                    listener with no key was offered three ways to use the key
+                    they do not have. Reported from a live show.
+
+                    `startGoogleSignIn()` RUNS FIRST AND SYNCHRONOUSLY. This
+                    click is the only moment the browser will let the consent
+                    popup open; <GoogleAuthPanel> mounts in a later task and
+                    picks the parked request up from there, and cannot start one
+                    of its own. A `false` return is not a failure — it means the
+                    script has not landed, and the panel falls back to its own
+                    `needsTap` stage and asks for one more tap. That is what the
+                    preload effect above is for.
+
+                    THE SUBTITLE IS <AuthControl>'s, WORD FOR WORD, for the same
+                    reason the panel's own header paragraph is: a wallet
+                    promised in one place and unmentioned in the other reads as
+                    a promise withdrawn. Change one, change all three. */}
+                {googleConfigured && (
+                  <div className="border-t border-bone/15 pt-3">
+                    <MethodRow
+                      icon={
+                        <MethodTile tone="bg-bolt text-ink">
+                          <span className="text-[11px] leading-none">◉</span>
+                        </MethodTile>
+                      }
+                      title="Continue with Google"
+                      subtitle="New here? Creates an account and wallet for you"
+                      onClick={() => { startGoogleSignIn(); goto('google'); }}
+                    />
+                  </div>
+                )}
               </>
             )}
 

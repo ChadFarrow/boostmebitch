@@ -77,6 +77,12 @@ function useThemeMode() {
  * direct "Sign in" button instead of a dropdown and `<AccountMenu>` does not
  * exist. Moving a control into a menu is only an improvement if the menu is
  * always there.
+ *
+ * Neither form renders in `<AuthControl overlay />`, the copy the fullscreen
+ * player carries — so the three routes with no `<AppHeader>` have no theme
+ * control at all. That is a deliberate trade and it is recorded in
+ * [`docs/ui.md`](../docs/ui.md), not here, because it is a decision about a
+ * surface rather than about this button.
  */
 export function ThemeToggle() {
   const { goingLight, toggle } = useThemeMode();
