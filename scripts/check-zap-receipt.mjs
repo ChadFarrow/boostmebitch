@@ -587,6 +587,22 @@ eq('a relay seen in both lists is written once', receiptRelayHints(['wss://nos.l
 eq('non-wss and non-string entries are dropped',
   receiptRelayHints([null, 'ws://plain.example', 42], ['https://not-a-relay.example', 'wss://ok.example']), ['wss://ok.example']);
 eq('empty in, empty out', receiptRelayHints([], []), []);
+// The dedupe bug the first test note showed (b88137ca…): nostr-tools spells the
+// delivering relay with a trailing slash, the request without, and a string
+// compare wrote the same relay twice with podtards.com back in slot two.
+eq('a delivering relay spelled with a trailing slash is the SAME relay as the request’s',
+  receiptRelayHints(['wss://chadf.nostr1.com/'], ASKED),
+  ['wss://chadf.nostr1.com', 'wss://podtards.com', 'wss://relay.damus.io']);
+eq('hints are written without the trailing slash, however they arrived',
+  receiptRelayHints(['wss://relay.primal.net/'], []), ['wss://relay.primal.net']);
+eq('case and surrounding whitespace do not make a second relay',
+  receiptRelayHints([' wss://NOS.lol/ '], ['wss://nos.lol']), ['wss://nos.lol']);
+eq('a bare scheme is not a relay', receiptRelayHints(['wss://', 'wss:///'], []), []);
+if (receiptRelayHints(['wss://chadf.nostr1.com/'], ASKED).filter((r) => r.includes('chadf')).length !== 1) {
+  fail('receiptRelayHints still writes a relay twice when the two lists spell it differently');
+} else {
+  ok('rejected: exact-string dedupe (the same relay twice, from note b88137ca…)');
+}
 if (JSON.stringify(ASKED.slice(0, 3)) === JSON.stringify(receiptRelayHints(HELD.slice(0, 1), ASKED))) {
   fail('receiptRelayHints is `requested.slice(0, 3)` — the hint points at a relay without the receipt');
 } else {
