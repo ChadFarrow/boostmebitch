@@ -5,7 +5,7 @@ import { ModalShell } from './modal-shell';
 import type { Episode, Podcast, Boostagram, ValueTimeSplit, StoredBoost } from '@/lib/types';
 import { useApp } from '@/lib/store';
 import { sendBoost, pickRail, paidAny, type Rail } from '@/lib/v4v/boost';
-import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs } from '@/lib/nostr';
+import { publishBoostNote, publishBoostNoteViaSite, resolvePublishRelays, recordLastRail, noteNpubs, mintSummaryReceipt } from '@/lib/nostr';
 import { storage } from '@/lib/storage';
 import { activeNostr } from '@/lib/nostr/signer';
 import { useSharePicker } from './boost-modal/use-share-picker';
@@ -238,6 +238,9 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     // across awaits, and we need the final list immediately for the
     // post-loop Nostr publish.
     const successfulIdx: number[] = [];
+    // Sats that actually settled, both legs of every track, ok legs only —
+    // what the summary receipt attests. Never `sats × tracks`, which is intent.
+    let paidSats = 0;
     // Resolved here rather than at render: `activeNostr()` is not reactive, and
     // an album walk is long enough that the share picker can move under it.
     // `undefined`, never an empty table, so payOne grows no zap arm at all.
@@ -314,6 +317,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
           });
           trackOk = paidAny(results);
           trackUnknown = results.some((r) => r?.indeterminate);
+          paidSats += results.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);
           if (trackOk) {
             const stored: StoredBoost = {
               uuid: trackBoostagram.uuid!,
@@ -385,6 +389,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
             zap: zapLegs,
             zapRefs: hostRefs,
           });
+          paidSats += hostResults.filter((r) => r?.ok).reduce((sum, r) => sum + r.sats, 0);
           if (paidAny(hostResults)) {
             const stored: StoredBoost = {
               uuid: hostBoostagram.uuid!,
@@ -494,13 +499,17 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
     const contentOverride = lines.join('\n');
 
     setPubState({ kind: 'publishing' });
-    // `results: []` on purpose, and no receipt wait. The summary's amount comes
-    // from `value_msat_total`, and it quotes NO kind:9735: a receipt is one leg
-    // of one track, and Fountain would render that leg's sats beside prose
-    // stating the album total. Not waiting also closes a window this modal
-    // briefly had — `running` is already false, so the overlay is dismissable,
-    // and a 4-second wait here followed by a `cancelled.current` return dropped
-    // the note for a boost that had already paid when the user pressed ×.
+    // `results: []` on purpose: the summary's `amount` comes from
+    // `value_msat_total`. The ONE receipt it quotes is the site-signed summary
+    // for `paidSats` — the album's settled total, so what Fountain renders is
+    // the figure the note states, not one track's leg. Per-leg receipts are
+    // never waited for or quoted (a 4-second wait here once dropped the note
+    // when × was pressed during it). Null quotes nothing; nothing throws.
+    // Every posting boost, self or site — see <BoostModal> for the rule.
+    const summaryReceipt = await mintSummaryReceipt({
+      paidSats, refs: hostRefs, relays,
+      as: identity && shareAs === 'self' && activeNostr() ? 'self' : 'site',
+    });
     try {
       // User's own key only when signed in AND they picked "Post to my Nostr
       // feed"; otherwise the site's Nostr identity (signed out, or the
@@ -508,11 +517,11 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       const note = identity && shareAs === 'self'
         ? await publishBoostNote({
             podcast, episode, boostagram: summaryBoostagram, results: [], relays, contentOverride,
-            mentions,
+            mentions, summaryReceipt: summaryReceipt ?? undefined,
           })
         : await publishBoostNoteViaSite({
             podcast, episode, boostagram: summaryBoostagram, results: [], contentOverride,
-            mentions,
+            mentions, summaryReceipt: summaryReceipt ?? undefined,
           });
       if (cancelled.current) return;
       setPubState({ kind: 'done', note });
