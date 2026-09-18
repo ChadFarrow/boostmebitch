@@ -44,16 +44,11 @@
 // chapters JSON with per-chapter images and an episode cover of its own — the
 // assertions are about which of those two is on screen, not about this show.
 //
-// CHROME_PATH overrides the browser; without it this looks for Chrome where
-// macOS puts it, the same convention as scripts/e2e-keyboard.mjs.
-import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
-import { rmSync } from 'node:fs';
+// The browser comes from scripts/cdp.mjs: CHROME_PATH, else the usual install
+// paths; muted, on a free debug port, and closed on any exit.
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
-const CDP = 9255;
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
-const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const headed = process.argv.includes('--headed');
 
 /** Bowl After Bowl 456: 12 chapters, every one with its own `img`, and an
  *  episode cover that is not any of them — so "chapter art" and "the show's
@@ -67,54 +62,16 @@ const UNBUFFERED = 15500;
 const CHAPTER_ART = /behind-the-curtain/;
 const EPISODE_ART = /episode-456/;
 
-const appUp = await fetch(`${APP}/privacy`).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
-  process.exit(1);
-}
+await requireApp(`${APP}/privacy`,
+  `Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
 
-const profile = `${tmpdir()}/bmb-e2e-artgate`;
-rmSync(profile, { recursive: true, force: true });
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [
-  `--remote-debugging-port=${CDP}`, `--user-data-dir=${profile}`,
-  ...(headed ? [] : ['--headless=new']), '--no-first-run',
-  ...(asRoot ? ['--no-sandbox'] : []),
-  // The player never gets a click on its own play button here, and a parked
-  // element buffers nothing — so there would be no buffer to measure.
-  '--autoplay-policy=no-user-gesture-required', '--mute-audio',
-  '--window-size=1200,900', 'about:blank',
-], { stdio: 'ignore' });
+// Autoplay: the player never gets a click on its own play button here, and a
+// parked element buffers nothing — so there would be no buffer to measure.
+const { page } = await launchChrome({ name: 'artgate', autoplay: true, args: ['--window-size=1200,900'] });
+const { send, js } = page;
 
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-let target;
-for (let i = 0; i < 40 && !target; i++) {
-  await wait(250);
-  try {
-    const l = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
-    target = l.find((t) => t.type === 'page');
-  } catch { /* chrome is still coming up */ }
-}
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((r) => (ws.onopen = r));
-let id = 0;
-const pending = new Map();
-ws.onmessage = (m) => {
-  const d = JSON.parse(m.data);
-  if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); }
-};
-const send = (method, params = {}) => new Promise((res) => {
-  const n = ++id;
-  pending.set(n, res);
-  ws.send(JSON.stringify({ id: n, method, params }));
-});
-const js = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value;
-
-let fails = 0;
-const check = (label, ok, detail) => {
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}${ok ? '' : `\n         ${detail}`}`);
-  if (!ok) fails++;
-};
+const t = checker();
+const check = (label, ok, detail) => t.ok(label, ok, detail);
 
 // The fullscreen cover: a big square that is not the page's fixed background
 // layer. Selected by shape rather than by a test id, so this asserts against
@@ -171,6 +128,5 @@ await wait(2500);
 const afterWaiting = await seen();
 check('the hero yields to the episode cover', EPISODE_ART.test(afterWaiting), `saw: ${afterWaiting}`);
 
-chrome.kill();
-console.log(fails ? `\n${fails} art-gate check(s) FAILED.` : '\nAll art-gate checks passed.');
-process.exit(fails ? 1 : 0);
+console.log(t.fails ? `\n${t.fails} art-gate check(s) FAILED.` : '\nAll art-gate checks passed.');
+await exit(t.fails ? 1 : 0);

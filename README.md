@@ -75,7 +75,7 @@ npm run dev
 
 Get Podcast Index keys at <https://api.podcastindex.org/>.
 
-**Checks — there is no test runner.** `npm run typecheck` (`tsc --noEmit`, strict) · `npm run lint` (ESLint 9 flat config) · `npm run build`, plus **37 `check:*` scripts** that stand in for the tests this repo doesn't have (seven of them below; `package.json` has the rest), `npm run check:conformance`, which runs the cross-app favorites spec's own vectors, and `npm run check:claudemd`, which guards the size of `CLAUDE.md` itself. Each imports the **real** module (`node --experimental-strip-types`) and pins a function whose silent breakage costs a user something irreversible — treat a failure as a stop, and fix the code rather than the vector:
+**Checks — there is no test runner.** `npm run typecheck` (`tsc --noEmit`, strict) · `npm run lint` (ESLint 9 flat config) · `npm run build`, plus **39 `check:*` scripts** that stand in for the tests this repo doesn't have (seven of them below; `package.json` has the rest), `npm run check:conformance`, which runs the cross-app favorites spec's own vectors, and `npm run check:claudemd`, which guards the size of `CLAUDE.md` itself. **`npm run check` runs all of them** and reports conformance without gating on it. Each imports the **real** module (`node --experimental-strip-types`) and pins a function whose silent breakage costs a user something irreversible — treat a failure as a stop, and fix the code rather than the vector:
 
 | Command | Guards |
 | --- | --- |

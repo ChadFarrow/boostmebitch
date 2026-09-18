@@ -43,48 +43,19 @@
 // about bunkers, and would have reported a failure in code that is correct.
 
 import { createRelay } from './local-relay.mjs';
-import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, nip04 } from 'nostr-tools';
 
-const PORT = 7456, CDP = 9224, APP = 'http://localhost:3000';
-const HEADED = process.argv.includes('--headed');
+const APP = 'http://localhost:3000';
 const KEEP = process.argv.includes('--keep');
 
-const appUp = await fetch(APP).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.`);
-  console.error('(and `rm -rf .next` first if you have just run a production build)');
-  process.exit(1);
-}
+await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
+(and \`rm -rf .next\` first if you have just run a production build)`);
 
-const CHROME = process.env.CHROME_PATH
-  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const profile = `${tmpdir()}/bmb-e2e-mutes`;
-rmSync(profile, { recursive: true, force: true });
-// Chrome refuses to start as root without this, and a container (or CI) is
-// exactly where this runs as root. Gated on actually BEING root rather than
-// passed always: on a developer's own machine the sandbox should stay on, and
-// an unconditional --no-sandbox is the kind of flag that gets copied onward.
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [
-  ...(HEADED ? [] : ['--headless=new']),
-  ...(asRoot ? ['--no-sandbox'] : []),
-  `--remote-debugging-port=${CDP}`,
-  `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--disable-gpu',
-  'about:blank',
-], { stdio: 'ignore' });
-const stopChrome = () => { if (!KEEP) chrome.kill(); };
-process.on('exit', stopChrome);
-
-let ready = false;
-for (let i = 0; i < 60 && !ready; i += 1) {
-  ready = await fetch(`http://127.0.0.1:${CDP}/json/version`).then((r) => r.ok).catch(() => false);
-  if (!ready) await new Promise((r) => setTimeout(r, 250));
-}
-if (!ready) { console.error(`Chrome never opened its debug port on ${CDP}.`); process.exit(1); }
+// The browser comes from scripts/cdp.mjs: muted, on a free debug port, closed
+// on any exit, `--no-sandbox` only when actually running as root, and left
+// open by `--keep`.
+const { page } = await launchChrome({ name: 'mutes', args: ['--disable-gpu'] });
 
 const sk = generateSecretKey();
 const pk = getPublicKey(sk);
@@ -98,11 +69,14 @@ const PRIVATE_MUTE = '2'.repeat(64);
 const FOREIGN_WORD = 'a?iv=b'; // the trap: a keyword mute holding the NIP-04 separator
 
 const published = [];
-const { events } = createRelay({
-  port: PORT,
+const relay = createRelay({
+  port: 0,
   log: null,
   onEvent: (e) => { if (e.kind === 10000) published.push(e); },
 });
+const { events } = relay;
+// Port 0 and read back, never a fixed port: another run can already hold one.
+const PORT = await relay.ready;
 
 // Seed the relay directly rather than dialling it — `events` is exposed for
 // exactly this. Each scenario replaces the last, which is what a replaceable
@@ -130,24 +104,8 @@ const privateTags = [['p', PRIVATE_MUTE], ['word', FOREIGN_WORD]];
 const privateJson = JSON.stringify(privateTags);
 
 // ---- CDP -----------------------------------------------------------------
-const list = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
-const page = list.find((t) => t.type === 'page');
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0; const pending = new Map();
-const handlers = [];
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method) handlers.forEach((h) => h(m));
-});
-await new Promise((r) => ws.addEventListener('open', r));
-const send = (method, params = {}) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params })); });
-const js = async (expr) => {
-  const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? 'eval failed');
-  return r.result?.result?.value;
-};
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const { send } = page;
+const js = page.jsOrThrow;
 // @noble/hashes does not export ./utils in this version's `exports` map, so
 // this stays local rather than dragging in a dependency for eight characters.
 const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -190,7 +148,7 @@ async function bannerInAccountMenu() {
 
 await send('Page.enable'); await send('Runtime.enable');
 const pageLog = [];
-handlers.push((m) => {
+page.on((m) => {
   if (m.method === 'Runtime.exceptionThrown') {
     pageLog.push('EXCEPTION: ' + (m.params.exceptionDetails?.exception?.description ?? '').slice(0, 300));
     return;
@@ -207,7 +165,7 @@ handlers.push((m) => {
 // nip04_decrypt at a NIP-44 payload" becomes an assertion instead of a guess.
 const calls = [];
 await send('Runtime.addBinding', { name: 'bmbSigner' });
-handlers.push(async (m) => {
+page.on(async (m) => {
   if (m.method !== 'Runtime.bindingCalled' || m.params.name !== 'bmbSigner') return;
   const { rid, fn, args } = JSON.parse(m.params.payload);
   calls.push(fn);
@@ -241,12 +199,8 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   })();
 ` });
 
-let fails = 0;
-const check = (l, a, b) => {
-  const ok = JSON.stringify(a) === JSON.stringify(b);
-  console.log(`  ${ok ? 'ok   ' : 'FAIL '} ${l}`);
-  if (!ok) { fails++; console.log('        expected', JSON.stringify(b), '\n        actual  ', JSON.stringify(a)); }
-};
+const t = checker();
+const check = (l, a, b) => t.equal(l, a, b);
 
 // Everything the app needs to consider itself signed in with a NIP-07
 // extension, minus any favorites, so nothing else publishes during the run.
@@ -959,8 +913,6 @@ published.forEach((e, i) => {
 console.log('\n--- page log ---');
 pageLog.filter((l) => /mute|nostr|relay|error|warn/i.test(l)).slice(-30).forEach((l) => console.log('  ' + l));
 
-ws.close();
-stopChrome();
 if (KEEP) console.log(`\nbrowser left open on ${APP} (--keep)`);
-console.log(fails ? `\n${fails} FAILED` : '\nall end-to-end checks passed — nothing left this machine');
-process.exit(fails ? 1 : 0);
+console.log(t.fails ? `\n${t.fails} FAILED` : '\nall end-to-end checks passed — nothing left this machine');
+await exit(t.fails ? 1 : 0);

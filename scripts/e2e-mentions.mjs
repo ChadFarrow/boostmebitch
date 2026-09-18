@@ -14,19 +14,17 @@
 // calls it, whether the two publish functions pass the right selfSigned, or
 // whether withMentions runs after contentOverride.
 //
-// The extensionless-import resolver in .e2e-loader.mjs only appends an
+// The extensionless-import resolver in e2e-resolve-hook.mjs only appends an
 // extension and expands `@/`, so the graph it builds is the one webpack builds.
 
 import { register } from 'node:module';
 register('./e2e-resolve-hook.mjs', import.meta.url);
 
 import { createRelay } from './local-relay.mjs';
+import { checker, exit, wait } from './cdp.mjs';
 import {
   finalizeEvent, generateSecretKey, getPublicKey, nip19, SimplePool,
 } from 'nostr-tools';
-
-const PORT = 7458;
-const RELAY = `ws://127.0.0.1:${PORT}`;
 
 // --- the signer, as an extension would present it --------------------------
 const sk = generateSecretKey();
@@ -102,7 +100,9 @@ if (ISOLATED) {
 }
 
 const received = [];
-const relay = createRelay({ port: PORT, log: null, onEvent: (e) => received.push(e) });
+const relay = createRelay({ port: 0, log: null, onEvent: (e) => received.push(e) });
+// Port 0 and read back, never a fixed port: another run can already hold one.
+const RELAY = `ws://127.0.0.1:${await relay.ready}`;
 
 const { publishBoostNote, publishBoostNoteViaSite } =
   await import('../lib/nostr/boost-notes.ts');
@@ -110,13 +110,8 @@ const { publishReply } = await import('../lib/nostr/interactions.ts');
 const { publishLiveChat, streamChatAddr } = await import('../lib/nostr/live-chat.ts');
 const { BRAND } = await import('../lib/brand.ts');
 
-let fails = 0;
-const check = (l, a, b) => {
-  const ok = JSON.stringify(a) === JSON.stringify(b);
-  console.log(`  ${ok ? 'ok   ' : 'FAIL '} ${l}`);
-  if (!ok) { fails++; console.log('        expected', JSON.stringify(b), '\n        actual  ', JSON.stringify(a)); }
-};
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const t = checker();
+const check = (l, a, b) => t.equal(l, a, b);
 
 // --- fixtures --------------------------------------------------------------
 // Two people the FEED declares, and two the SENDER picks. Real, well-known
@@ -410,5 +405,5 @@ if (!ISOLATED) {
 relay.close?.();
 // A partial run must not read as a full one. `ok` alone is the claim that
 // everything here passed; when a section was skipped the line says which.
-console.log(`\n${fails ? `${fails} FAILED` : 'ok'}${skipped ? ` (${skipped} section(s) SKIPPED — not isolated)` : ''}`);
-process.exit(fails ? 1 : 0);
+console.log(`\n${t.fails ? `${t.fails} FAILED` : 'ok'}${skipped ? ` (${skipped} section(s) SKIPPED — not isolated)` : ''}`);
+await exit(t.fails ? 1 : 0);

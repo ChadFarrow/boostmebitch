@@ -32,50 +32,20 @@
 //   2. Asserting before React has hydrated reads as "the page did nothing".
 //      `settled()` waits for the effect to have run rather than sleeping a
 //      guessed interval.
-import { spawn } from 'node:child_process';
+import { checker, exit, launchChrome, wait } from './cdp.mjs';
 
-const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const PORT = 9333; // a debugging port unlikely to collide with a real one
 const ORIGIN = process.env.ORIGIN || 'http://localhost:3000';
 const PUBKEY = 'f7922a0adb3fa4dda5eecaa62f6f7ee6159f7f55e08036686c68e08382c34788';
 const RID = '0123456789abcdef0123456789abcdef';
 const OTHER_RID = 'ffffffffffffffffffffffffffffffff';
 
-const dir = `/tmp/amber-cdp-${Date.now()}`;
-const chrome = spawn(CHROME, [
-  `--remote-debugging-port=${PORT}`, '--headless=new', '--no-first-run',
-  '--disable-gpu', `--user-data-dir=${dir}`,
-], { stdio: 'ignore' });
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-async function json(path, tries = 80) {
-  for (let i = 0; i < tries; i++) {
-    try { const r = await fetch(`http://127.0.0.1:${PORT}${path}`); if (r.ok) return r.json(); } catch {}
-    await sleep(200);
-  }
-  throw new Error(`CDP timeout ${path}`);
-}
-
-const targets = await json('/json/list');
-const page = targets.find((t) => t.type === 'page') || (await json('/json/new?about:blank'));
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
-
-let id = 0;
-const pendingCalls = new Map();
-ws.onmessage = (m) => {
-  const msg = JSON.parse(m.data);
-  if (msg.id && pendingCalls.has(msg.id)) { pendingCalls.get(msg.id)(msg); pendingCalls.delete(msg.id); }
-};
-function send(method, params = {}) {
-  const myId = ++id;
-  return new Promise((res) => { pendingCalls.set(myId, res); ws.send(JSON.stringify({ id: myId, method, params })); });
-}
-async function evaluate(expression) {
-  const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (r.result?.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails));
-  return r.result?.result?.value;
-}
+// The browser comes from scripts/cdp.mjs: CHROME_PATH (this script used to
+// hard-code the macOS path, so it could not run on Linux at all), muted, on a
+// free debug port, and closed with its profile on any exit.
+const browser = await launchChrome({ name: 'amber-callback', args: ['--disable-gpu'] });
+const { send } = browser.page;
+const evaluate = browser.page.jsOrThrow;
+const sleep = wait;
 async function goto(url) {
   // Bounce through another route first. Page.navigate to a URL that differs
   // from the current one ONLY by fragment is a same-document navigation, so the
@@ -117,12 +87,8 @@ async function settled() {
 await send('Page.enable');
 await send('Runtime.enable');
 
-let failures = 0;
-function check(label, actual, expected) {
-  const ok = JSON.stringify(actual) === JSON.stringify(expected);
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${label}`);
-  if (!ok) { failures++; console.log(`          expected ${JSON.stringify(expected)}\n          got      ${JSON.stringify(actual)}`); }
-}
+const t = checker();
+const check = (label, actual, expected) => t.equal(label, actual, expected);
 
 const CB = (rid) => `${ORIGIN}/amber-callback#r=${rid};event=${PUBKEY}`;
 
@@ -184,22 +150,24 @@ console.log('\n5b. THE CASE THIS DESIGN EXISTS FOR: the callback lands in a DIFF
   // sessionStorage must NOT be visible to the tab the callback lands in.
   await evaluate("sessionStorage.setItem('probe', 'dispatching-tab'); true");
 
-  const fresh = await (await fetch(`http://127.0.0.1:${PORT}/json/new?${encodeURIComponent(CB(RID))}`, { method: 'PUT' })).json();
-  const ws2 = new WebSocket(fresh.webSocketDebuggerUrl);
-  await new Promise((res, rej) => { ws2.onopen = res; ws2.onerror = rej; });
-  let id2 = 0; const calls2 = new Map();
-  ws2.onmessage = (msg) => { const d = JSON.parse(msg.data); if (d.id && calls2.has(d.id)) { calls2.get(d.id)(d); calls2.delete(d.id); } };
-  const send2 = (method, params = {}) => new Promise((res) => { const i = ++id2; calls2.set(i, res); ws2.send(JSON.stringify({ id: i, method, params })); });
-  const ev2 = async (x) => (await send2('Runtime.evaluate', { expression: x, returnByValue: true, awaitPromise: true })).result?.result?.value;
+  const tab2 = await browser.openTab(CB(RID));
+  const send2 = tab2.send;
+  const ev2 = tab2.js;
   await send2('Runtime.enable'); await send2('Page.enable');
   for (let i = 0; i < 60; i++) { await sleep(250); if (await ev2("location.pathname !== '/amber-callback'")) break; }
-  await sleep(1200);
+  // Wait for the sign-in to be RECORDED, not a guessed interval. The redirect
+  // lands first and the resume signs in after the route has hydrated, which on
+  // a dev server's first compile of /favorites took longer than the 1.2 s this
+  // used to sleep — the check below then read null over a sign-in that was
+  // still on its way. Bounded, so a sign-in that never happens still fails it.
+  await tab2.until("localStorage.getItem('bmb:signer') !== null", 10000, 250);
+  await sleep(300);
 
   check('the new tab really has its own sessionStorage', await ev2("sessionStorage.getItem('probe')"), null);
   check('the callback completed in the tab it landed in', await ev2('location.pathname'), '/favorites');
   check('and signed the user in there', await ev2("localStorage.getItem('bmb:signer')"), 'amber');
   check('the pending record was consumed', await ev2("localStorage.getItem('bmb:amber_pending')"), null);
-  ws2.close();
+  await tab2.close();
 }
 
 console.log('\n6. a callback naming a DIFFERENT account than the signed-in one is refused');
@@ -213,7 +181,5 @@ check('bmb:npub was NOT switched to the other account', npubAfter?.startsWith('n
 check('the signed-in npub is unchanged', await evaluate("localStorage.getItem('bmb:npub')"), npubAfter);
 check('the stale result was consumed, not left to replay', await evaluate("localStorage.getItem('bmb:amber_result')"), null);
 
-ws.close();
-chrome.kill();
-console.log(failures ? `\n${failures} browser check(s) FAILED.` : '\nAll browser checks passed.');
-process.exit(failures ? 1 : 0);
+console.log(t.fails ? `\n${t.fails} browser check(s) FAILED.` : '\nAll browser checks passed.');
+await exit(t.fails ? 1 : 0);

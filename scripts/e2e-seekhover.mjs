@@ -19,84 +19,27 @@
 //   npm run e2e:seekhover               # add --headed to watch it
 //
 // Needs the network (the episode's enclosure and chapters JSON, and Podcast
-// Index through the app's routes). CHROME_PATH overrides the browser; the debug
-// port is random and the tab muted, as in scripts/e2e-resume.mjs.
-import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
-import { rmSync } from 'node:fs';
+// Index through the app's routes). The browser comes from scripts/cdp.mjs:
+// CHROME_PATH, else the usual install paths; muted, on a free debug port.
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
-const CDP = 9400 + Math.floor(Math.random() * 500);
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
-const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const headed = process.argv.includes('--headed');
 
 /** Bowl After Bowl 456: over four hours, a chapters JSON with 12 chapters. */
 const POD = '2d418249-453a-5714-8abc-5b657570b641';
 const EPISODE_GUID = 'https://bowlafterbowl.com/episodes/episode-456/';
 
-const appUp = await fetch(`${APP}/privacy`).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
-  process.exit(1);
-}
+await requireApp(`${APP}/privacy`,
+  `Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
 
-const profile = `${tmpdir()}/bmb-e2e-seekhover`;
-rmSync(profile, { recursive: true, force: true });
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [
-  `--remote-debugging-port=${CDP}`, `--user-data-dir=${profile}`,
-  ...(headed ? [] : ['--headless=new']), '--no-first-run',
-  ...(asRoot ? ['--no-sandbox'] : []),
-  '--autoplay-policy=no-user-gesture-required', '--mute-audio',
-  '--window-size=1200,900', 'about:blank',
-], { stdio: 'ignore' });
+const { page } = await launchChrome({ name: 'seekhover', autoplay: true, args: ['--window-size=1200,900'] });
+const { send, js, until } = page;
 
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-let target;
-for (let i = 0; i < 40 && !target; i++) {
-  await wait(250);
-  try {
-    const l = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
-    target = l.find((t) => t.type === 'page');
-  } catch { /* chrome is still coming up */ }
-}
-if (!target) {
-  chrome.kill();
-  console.error(`Chrome did not come up on port ${CDP}. Set CHROME_PATH.`);
-  process.exit(1);
-}
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((r) => (ws.onopen = r));
-let id = 0;
-const pending = new Map();
-ws.onmessage = (m) => {
-  const d = JSON.parse(m.data);
-  if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); }
-};
-const send = (method, params = {}) => new Promise((res) => {
-  const n = ++id;
-  pending.set(n, res);
-  ws.send(JSON.stringify({ id: n, method, params }));
-});
-const js = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value;
-
-let fails = 0;
-const check = (label, ok, detail) => {
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}${ok ? '' : `\n         ${detail}`}`);
-  if (!ok) fails++;
-};
+const t = checker();
+const check = (label, ok, detail) => t.ok(label, ok, detail);
 const finish = async () => {
-  await send('Target.closeTarget', { targetId: target.id }).catch(() => {});
-  chrome.kill();
-  console.log(fails ? `\n${fails} seek-hover check(s) FAILED.` : '\nAll seek-hover checks passed.');
-  process.exit(fails ? 1 : 0);
-};
-const until = async (expr, ms = 20000) => {
-  for (let t = 0; t < ms; t += 250) {
-    if (await js(expr)) return true;
-    await wait(250);
-  }
-  return false;
+  console.log(t.fails ? `\n${t.fails} seek-hover check(s) FAILED.` : '\nAll seek-hover checks passed.');
+  await exit(t.fails ? 1 : 0);
 };
 
 const mouse = (type, x, y) => send('Input.dispatchMouseEvent', {

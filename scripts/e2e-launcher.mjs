@@ -16,24 +16,18 @@
 //   npm run build && npm start          # in another terminal
 //   npm run e2e:launcher
 //
-// CHROME_PATH overrides the browser; without it this looks for Chrome where
-// macOS puts it, the same convention as e2e-keyboard.mjs.
-import { spawn } from 'node:child_process'; import { tmpdir } from 'node:os'; import { rmSync } from 'node:fs';
-const CDP = 9240;
+// The browser comes from scripts/cdp.mjs: CHROME_PATH, else the usual install
+// paths; muted, on a free debug port, and closed on any exit.
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
-const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const appUp = await fetch(`${APP}/privacy`).then((r) => r.ok).catch(() => false);
-if (!appUp) { console.error(`Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`); process.exit(1); } const profile = `${tmpdir()}/bmb-e2e-launcher`; rmSync(profile, { recursive: true, force: true });
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [`--remote-debugging-port=${CDP}`, `--user-data-dir=${profile}`, '--headless=new', '--no-first-run', ...(asRoot ? ['--no-sandbox'] : []), '--window-size=1200,900', 'about:blank'], { stdio: 'ignore' });
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-let target; for (let i = 0; i < 40 && !target; i++) { await wait(250); try { const l = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json(); target = l.find((t) => t.type === 'page'); } catch {} }
-const ws = new WebSocket(target.webSocketDebuggerUrl); await new Promise((r) => (ws.onopen = r));
-let id = 0; const pending = new Map(); const exceptions = [];
-ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); } if (d.method === 'Runtime.exceptionThrown') exceptions.push(d.params.exceptionDetails?.exception?.description ?? ''); };
-const send = (method, params = {}) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params })); });
-const js = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value;
-let fails = 0; const check = (l, a, b) => { const ok = JSON.stringify(a) === JSON.stringify(b); console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${l}${ok ? '' : `\n        expected ${JSON.stringify(b)}\n        actual   ${JSON.stringify(a)}`}`); if (!ok) fails++; };
+await requireApp(`${APP}/privacy`,
+  `Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
+const { page } = await launchChrome({ name: 'launcher', args: ['--window-size=1200,900'] });
+const { send, js } = page;
+const exceptions = [];
+page.on((d) => { if (d.method === 'Runtime.exceptionThrown') exceptions.push(d.params.exceptionDetails?.exception?.description ?? ''); });
+const t = checker();
+const check = (l, a, b) => t.equal(l, a, b);
 await send('Page.enable'); await send('Runtime.enable');
 // CDP cannot make `document.referrer` an `android-app://` value (Chrome exposes
 // only http(s) referrers to a CDP-driven navigation), so the SOURCE is faked
@@ -82,5 +76,5 @@ console.log('6. a plain browser visit: no notice');
 await fresh(); await nav(`${APP}/`, null); await wait(3500);
 check('no notice without a referrer', await notice(), null);
 check('no uncaught exceptions', exceptions.length, 0);
-console.log(fails ? `\nSMOKE FAILED (${fails})` : '\nSMOKE OK');
-chrome.kill(); process.exit(fails ? 1 : 0);
+console.log(t.fails ? `\nSMOKE FAILED (${t.fails})` : '\nSMOKE OK');
+await exit(t.fails ? 1 : 0);

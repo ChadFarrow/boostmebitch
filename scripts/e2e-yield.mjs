@@ -83,7 +83,7 @@
 //
 // THE PUMP IS PURPOSE-BUILT, AND `local-relay.mjs` WOULD BE WRONG HERE
 // -------------------------------------------------------------------
-// CLAUDE.md says an e2e must import `createRelay` from `local-relay.mjs` rather
+// docs/testing.md says an e2e must import `createRelay` from `local-relay.mjs` rather
 // than carry its own — because those tests put replaceable-event SEMANTICS under
 // test, and a second copy drifts from the tool a human runs by hand. Nothing
 // about relay semantics is under test here; the DRAIN RATE is. `createRelay`
@@ -139,16 +139,15 @@
 // believing it, and do not delete this script — a passing control arm with a
 // clean stock arm is upstream news, not a reason to stop measuring.
 
-import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:https';
 import { tmpdir } from 'node:os';
 import { WebSocketServer } from 'ws';
 import { finalizeEvent, generateSecretKey } from 'nostr-tools';
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
 const APP = process.env.APP_URL ?? 'http://localhost:3000';
-const HEADED = process.argv.includes('--headed');
-const KEEP = process.argv.includes('--keep');
 const LIVE = process.argv.includes('--live');
 
 // The same N as the Node measurement (`check-yield.mjs:34`), so the two halves
@@ -169,20 +168,9 @@ const LIVE_MS = 300_000;
 // `check-yield.mjs` states: it must not pass by accident or fail on a slow box.
 const MIN_RATIO = 10;
 
-const appUp = await fetch(APP).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.`);
-  console.error('(and `rm -rf .next` first if you have just run a production build)');
-  process.exit(1);
-}
+await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
+(and \`rm -rf .next\` first if you have just run a production build)`);
 
-// macOS default, because that is where this is usually run. `CHROME_PATH`
-// overrides it, which is what lets this run on Linux and in CI at all.
-const CHROME = process.env.CHROME_PATH
-  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Every relay host the app can dial, from `lib/nostr/relays.ts` (DEFAULT_RELAYS,
 // PROFILE_RELAYS) and `lib/nostr/live-streams.ts` (LIVE_STREAM_RELAYS). Keep in
@@ -276,6 +264,12 @@ function startPump(port, cap) {
   let pumping = false;
   const server = createServer(selfSignedCert());
   server.listen(port, '127.0.0.1');
+  // The port actually bound: measure() starts the pump on port 0, then hands
+  // this to Chrome's resolver rules.
+  const ready = new Promise((resolve, reject) => {
+    server.once('listening', () => resolve(server.address().port));
+    server.once('error', reject);
+  });
   const wss = new WebSocketServer({ server });
   wss.on('connection', (ws) => {
     ws.on('message', (raw) => {
@@ -314,6 +308,7 @@ function startPump(port, cap) {
     ws.on('close', () => { pumping = false; });
   });
   return {
+    ready,
     get sent() { return sentTotal; },
     get reqs() { return reqs; },
     stop() { stopped = true; },
@@ -376,73 +371,45 @@ const probeSource = (closing) => `
 `;
 
 // ---- one arm ---------------------------------------------------------------
-async function measure({ mode, cdpPort, pumpPort, hermetic }) {
-  const profile = `${tmpdir()}/bmb-e2e-yield-${mode}`;
-  rmSync(profile, { recursive: true, force: true });
-  const chrome = spawn(CHROME, [
-    ...(HEADED ? [] : ['--headless=new']),
-    ...(asRoot ? ['--no-sandbox'] : []),
-    // The page calls this directly; `HeapProfiler.collectGarbage` alone does not
-    // reliably run FinalizationRegistry callbacks.
-    '--js-flags=--expose-gc',
-    // Redirect every relay the app knows to the local pump. This is what makes
-    // the run hermetic AND controllable; see the header on why `bmb:relays`
-    // cannot do it. `--ignore-certificate-errors` is what lets the throwaway
-    // cert answer for those hostnames.
-    ...(hermetic ? [
-      `--host-resolver-rules=${RELAY_HOSTS.map((h) => `MAP ${h} 127.0.0.1:${pumpPort}`).join(',')}`,
-      '--ignore-certificate-errors',
-    ] : []),
-    `--remote-debugging-port=${cdpPort}`,
-    `--user-data-dir=${profile}`,
-    '--no-first-run', '--no-default-browser-check', '--disable-gpu',
-    'about:blank',
-  ], { stdio: 'ignore' });
-  const stopChrome = () => { if (!KEEP) chrome.kill(); };
-  process.on('exit', stopChrome);
-
-  // Wait for the debug port rather than sleeping a guessed amount.
-  let ready = false;
-  for (let i = 0; i < 80 && !ready; i += 1) {
-    ready = await fetch(`http://127.0.0.1:${cdpPort}/json/version`).then((r) => r.ok).catch(() => false);
-    if (!ready) await wait(250);
-  }
-  if (!ready) { console.error(`Chrome never opened its debug port on ${cdpPort}.`); process.exit(1); }
-
-  const list = await (await fetch(`http://127.0.0.1:${cdpPort}/json/list`)).json();
-  const page = list.find((t) => t.type === 'page');
-  const ws = new WebSocket(page.webSocketDebuggerUrl);
-  let id = 0; const pending = new Map(); const handlers = [];
-  ws.addEventListener('message', (e) => {
-    const m = JSON.parse(e.data);
-    if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-    else if (m.method) handlers.forEach((h) => h(m));
+async function measure({ mode, hermetic }) {
+  // The pump starts BEFORE Chrome, on a free port, because the resolver rules
+  // below have to name the port it actually bound. Nothing dials it until the
+  // page loads, so starting it earlier changes nothing it measures.
+  const pump = hermetic ? startPump(0, TARGET_YIELDS) : null;
+  const pumpPort = pump ? await pump.ready : 0;
+  const browser = await launchChrome({
+    name: `yield-${mode}`,
+    args: [
+      // The page calls this directly; `HeapProfiler.collectGarbage` alone does not
+      // reliably run FinalizationRegistry callbacks.
+      '--js-flags=--expose-gc',
+      // Redirect every relay the app knows to the local pump. This is what makes
+      // the run hermetic AND controllable; see the header on why `bmb:relays`
+      // cannot do it. `--ignore-certificate-errors` is what lets the throwaway
+      // cert answer for those hostnames.
+      ...(hermetic ? [
+        `--host-resolver-rules=${RELAY_HOSTS.map((h) => `MAP ${h} 127.0.0.1:${pumpPort}`).join(',')}`,
+        '--ignore-certificate-errors',
+      ] : []),
+      '--disable-gpu',
+    ],
   });
-  await new Promise((r) => ws.addEventListener('open', r));
-  const send = (method, params = {}) => new Promise((res) => {
-    const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params }));
-  });
-  const js = async (expr) => {
-    const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-    if (r.result?.exceptionDetails) {
-      throw new Error(r.result.exceptionDetails.exception?.description ?? 'eval failed');
-    }
-    return r.result?.result?.value;
-  };
+  const profile = browser.profile;
+  const { page } = browser;
+  const { send } = page;
+  const js = page.jsOrThrow;
 
   await send('Page.enable');
   await send('Runtime.enable');
   await send('HeapProfiler.enable');
   const exceptions = [];
-  handlers.push((m) => {
+  page.on((m) => {
     if (m.method === 'Runtime.exceptionThrown') {
       exceptions.push((m.params.exceptionDetails?.exception?.description ?? '').slice(0, 200));
     }
   });
 
   await send('Page.addScriptToEvaluateOnNewDocument', { source: probeSource(mode === 'closing') });
-
-  const pump = hermetic ? startPump(pumpPort, TARGET_YIELDS) : null;
 
   await send('Page.navigate', { url: APP });
   await wait(2500);
@@ -499,9 +466,8 @@ async function measure({ mode, cdpPort, pumpPort, hermetic }) {
 
   const pumpSent = pump?.sent ?? 0;
   const pumpReqs = pump?.reqs ?? 0;
-  ws.close();
   pump?.close();
-  stopChrome();
+  await browser.close();
   await wait(300);
 
   return {
@@ -528,12 +494,9 @@ async function measure({ mode, cdpPort, pumpPort, hermetic }) {
 }
 
 // ---- report ----------------------------------------------------------------
-let failures = 0;
-let checks = 0;
+const t = checker();
 function ok(cond, what) {
-  checks += 1;
-  console.log(`  ${cond ? 'ok   ' : 'FAIL '} ${what}`);
-  if (!cond) failures += 1;
+  t.ok(what, cond);
 }
 const row = (r) => `  ${r.mode.padEnd(8)} yields=${String(r.created).padStart(6)}`
   + `  retained=${String(r.retainedPorts).padStart(6)} ports`
@@ -552,7 +515,7 @@ if (LIVE) {
   // there are none here. Multiply this rate by the retention below to decide
   // whether a fix is worth applying to a frozen dependency.
   console.log(`\nlive session rate — ${APP}, signed out, ${LIVE_MS / 1000}s, real relays\n`);
-  const live = await measure({ mode: 'live', cdpPort: 9245, pumpPort: 0, hermetic: false });
+  const live = await measure({ mode: 'live', hermetic: false });
   console.log(row(live));
   // Cold load versus steady state. These answer different questions and the
   // gap between them is large: the first is what one page load costs, the
@@ -576,12 +539,12 @@ if (LIVE) {
   console.log('  The memory columns are not meaningful on this half — only the counts are.');
   console.log('  This is a SIGNED-OUT HOMEPAGE. Live chat holds a subscription open and');
   console.log('  polls every 12s (lib/nostr/live-chat.ts), and is not covered by this run.');
-  process.exit(0);
+  await exit(0);
 }
 
 console.log(`\nnostr-tools yield retention in Chrome — ${APP}, local pump, target ${TARGET_YIELDS} yields\n`);
-const stock = await measure({ mode: 'stock', cdpPort: 9243, pumpPort: 7461, hermetic: true });
-const closing = await measure({ mode: 'closing', cdpPort: 9244, pumpPort: 7462, hermetic: true });
+const stock = await measure({ mode: 'stock', hermetic: true });
+const closing = await measure({ mode: 'closing', hermetic: true });
 console.log(row(stock));
 console.log(row(closing));
 
@@ -644,6 +607,8 @@ for (const r of [stock, closing]) {
   ok(r.exceptions.length === 0, `${r.mode} raised no page exceptions${r.exceptions.length ? `: ${r.exceptions[0]}` : ''}`);
 }
 
-console.log(`\n${checks} checks`);
-if (failures) { console.error(`${failures} FAILED`); process.exit(1); }
+console.log(`\n${t.count} checks`);
+if (t.fails) { console.error(`${t.fails} FAILED`); await exit(1); }
 console.log('ok');
+// Explicitly: an open pump or CDP socket would otherwise keep a GREEN run alive.
+await exit(0);

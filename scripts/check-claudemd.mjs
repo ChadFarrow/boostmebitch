@@ -7,7 +7,7 @@
 //
 // Run it after ANY edit to CLAUDE.md.
 //
-// Why this earns a check script — and why it is NOT one of the twenty-one.
+// Why this earns a check script — and why it is NOT one of the others.
 // Those pin a pure function whose silent breakage costs a user something
 // irreversible. This one guards a document, and the thing it guards against is
 // not a bug but a ratchet: of the 60 commits before this script existed, 59 grew

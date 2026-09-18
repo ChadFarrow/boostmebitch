@@ -62,8 +62,12 @@ function matches(filter, e) {
 }
 
 /**
- * Start the relay. Returns `{ events, close }` — `events` is the live id→event
- * map, so a caller can seed it directly instead of dialling itself.
+ * Start the relay. Returns `{ events, close, ready }` — `events` is the live
+ * id→event map, so a caller can seed it directly instead of dialling itself,
+ * and `ready` resolves with the port actually bound. Pass `port: 0` for a free
+ * one, which is what every e2e script does: a fixed port is one another run
+ * can already hold. `ready` REJECTS if the port cannot be bound, rather than
+ * the relay dying later on an unhandled `error` event.
  *
  * `onEvent(e)` fires for every accepted EVENT and `onReq(filters, hits)` for
  * every REQ, which is how a test builds a timeline without parsing log lines.
@@ -157,7 +161,15 @@ export function createRelay({ port = 7447, host = '127.0.0.1', onEvent, onReq, l
     });
   });
 
-  return { events, close: () => wss.close() };
+  const ready = new Promise((resolve, reject) => {
+    wss.once('listening', () => resolve(wss.address().port));
+    wss.once('error', reject);
+  });
+  // A bind failure is reported through `ready`; without a listener of its own
+  // the same `error` event would also crash the process before anyone awaits it.
+  wss.on('error', () => {});
+
+  return { events, close: () => wss.close(), ready };
 }
 
 // --- CLI ---------------------------------------------------------------------
@@ -168,8 +180,11 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     const i = argv.indexOf(`--${name}`);
     return i >= 0 && argv[i + 1] ? argv[i + 1] : fallback;
   };
-  const port = Number(arg('port', 7447));
-  createRelay({ port, verbose: argv.includes('--verbose') });
+  const relay = createRelay({ port: Number(arg('port', 7447)), verbose: argv.includes('--verbose') });
+  const port = await relay.ready.catch((e) => {
+    console.error(`local relay could not listen: ${e.message}`);
+    process.exit(1);
+  });
   console.log(`local relay listening on ws://127.0.0.1:${port}  (in-memory; Ctrl-C forgets everything)`);
   console.log('point the app at it from the browser console:');
   console.log(`  localStorage.setItem('bmb:relays', JSON.stringify(['ws://127.0.0.1:${port}']))`);
