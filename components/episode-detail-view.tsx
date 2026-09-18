@@ -3,7 +3,8 @@ import { cloneElement, useCallback, useEffect, useRef, useState } from 'react';
 import { useMenuKeys } from './use-menu-keys';
 import { createPortal } from 'react-dom';
 import { useApp } from '@/lib/store';
-import { fmtDate, fmtDuration } from '@/lib/format';
+import { fmt, fmtDate, fmtDuration } from '@/lib/format';
+import { useSavedPosition } from '@/lib/resume-position';
 import { episodeContentsLabel, hasValueRecipients, httpUrl, payableValue, showShareUrl, stripHtml } from '@/lib/util';
 import { ValueSplitRows } from './value-split-rows';
 import { useChapters } from '@/lib/chapters';
@@ -183,6 +184,9 @@ export function EpisodeDetailView() {
   // Callback ref for the show-notes container: injects Follow buttons after each
   // npub when signed in. No-op signed out.
   const notesFollowRef = useNotesFollows(episode?.id);
+  // Where this episode was left, if the listener started it and did not finish.
+  // `handlePlay` needs nothing for it: `play()` starts there by itself.
+  const saved = useSavedPosition(episode, podcast);
 
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'instant' });
@@ -324,9 +328,9 @@ export function EpisodeDetailView() {
             type="button"
             onClick={handlePlay}
             className={`h-11 w-full ${isThisPlaying ? 'btn-bolt-soft' : 'btn'} ${hasValue ? '' : 'col-span-2'}`}
-            aria-label={isThisPlaying && isPlaying ? 'Pause' : isThisPlaying ? 'Resume' : 'Play'}
+            aria-label={isThisPlaying && isPlaying ? 'Pause' : isThisPlaying ? 'Resume' : saved ? `Resume at ${fmt(saved.t)}` : 'Play'}
           >
-            {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : '▶ PLAY'}
+            {isThisPlaying && isPlaying ? '❚❚ PAUSE' : isThisPlaying ? '▶ RESUME' : saved ? `▶ RESUME ${fmt(saved.t)}` : '▶ PLAY'}
           </button>
           {hasValue && (
             <button

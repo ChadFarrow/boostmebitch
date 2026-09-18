@@ -119,6 +119,7 @@ const KEYS = {
   streamOn: 'bmb:stream_on',          // '1' on | '0' off | absent = no opinion. Absent at global scope means OFF (streaming is opt-in); absent at show scope means "follow the global rate", while an explicit '0' means "never stream this show" and outranks a global rate raised later.
   streamPending: 'bmb:stream_pending', // unsent StreamLedger, so closing the tab mid-accrual doesn't silently discard sats the user already owes
   streamedPrefix: 'bmb:streamed',     // + ':<npub>' — settled-stream log. Deliberately NOT bmb:boosts (see the accessor note).
+  resume: 'bmb:resume',               // Record<resumeKey, ResumeEntry> — where each unfinished podcast episode was left, capped at RESUME_CAP newest. DEVICE-wide, not per-npub. Not a cache: nothing can rebuild it, so deliberately absent from EVICTABLE_PREFIXES.
 } as const;
 
 /** An Amber request we dispatched and are waiting on across a page load.
@@ -227,6 +228,20 @@ const DEFAULT_FAV_VIEW: FavView = { tab: 'all', sort: 'recent', split: 'all' };
 
 const BOOSTS_CAP = 200;
 const STREAMED_CAP = 100;
+const RESUME_CAP = 200;
+
+/** Where one episode was left. `t` and `d` are seconds, `at` is epoch ms. `d`
+ *  is 0 when neither the media element nor the feed gave a duration. The rules
+ *  for what may be written live in lib/resume-position.ts, not here. */
+export interface ResumeEntry { t: number; d: number; at: number }
+
+function isResumeEntry(v: unknown): v is ResumeEntry {
+  if (!v || typeof v !== 'object') return false;
+  const { t, d, at } = v as Record<string, unknown>;
+  return typeof t === 'number' && Number.isFinite(t) && t >= 0
+    && typeof d === 'number' && Number.isFinite(d) && d >= 0
+    && typeof at === 'number' && Number.isFinite(at);
+}
 
 const isBrowser = () => typeof window !== 'undefined';
 
@@ -1612,6 +1627,49 @@ export const storage = {
         identityKey(KEYS.streamedPrefix, npub),
         JSON.stringify([entry, ...list].slice(0, STREAMED_CAP)),
       );
+    },
+  },
+
+  /**
+   * Where each unfinished podcast episode was left, keyed by `resumeKey` in
+   * lib/resume-position.ts — the only caller, and the place the rules live.
+   * This layer validates and caps, nothing more.
+   *
+   * **Device-wide, not per-npub.** Where a file stopped playing describes this
+   * device's player, the way `bmb:ep_order` describes its list, and a position
+   * saved while signed out must still be there after a sign-in.
+   *
+   * **Not a cache, so not evictable.** No request can rebuild it. The cap keeps
+   * it small (about 150 bytes an entry), and a full store evicts note blobs
+   * before it touches this.
+   *
+   * A malformed entry is DROPPED on read rather than failing the whole map: one
+   * bad field must not cost the listener every other episode's place.
+   */
+  resumePositions: {
+    get: (): Record<string, ResumeEntry> => {
+      const raw = safeGet(KEYS.resume);
+      if (!raw) return {};
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        const out: Record<string, ResumeEntry> = {};
+        for (const [k, v] of Object.entries(parsed)) {
+          if (isResumeEntry(v)) out[k] = { t: v.t, d: v.d, at: v.at };
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    },
+    /** Keeps the RESUME_CAP most recently written entries. Returns whether the
+     *  value reached disk. */
+    set: (map: Record<string, ResumeEntry>): boolean => {
+      const entries = Object.entries(map);
+      const kept = entries.length > RESUME_CAP
+        ? entries.sort((a, b) => b[1].at - a[1].at).slice(0, RESUME_CAP)
+        : entries;
+      return safeSet(KEYS.resume, JSON.stringify(Object.fromEntries(kept)));
     },
   },
 

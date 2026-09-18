@@ -9,6 +9,7 @@ import { storage } from './storage';
 import { resolvePublishRelays } from './nostr/relays';
 import { schedulePublishMuteList, unionMutedPubkeys, type MuteListState } from './nostr/mutes';
 import { nextPlayableIndex } from './util';
+import { savedStartSec } from './resume-position';
 
 /** Which view the sign-in modal opens on. See `signInIntent` below. */
 export type SignInIntent = 'default' | 'google';
@@ -28,6 +29,9 @@ interface AppState {
   positionSec: number;
   episodeQueue: Episode[];
 
+  /** `startSec` omitted = resume where this episode was left (0 if never, or
+   *  if it never resumes — see lib/resume-position.ts). An explicit start, 0
+   *  included, always wins: a chapter tap or a `?t=` link names its second. */
   play: (episode: Episode, podcast: Podcast, startSec?: number) => void;
   togglePlay: () => void;
   setPlaying: (b: boolean) => void;
@@ -454,10 +458,12 @@ function stepTo(s: AppState, step: 1 | -1): Partial<AppState> | null {
   const idx = s.episodeQueue.findIndex((e) => e.id === s.current!.episode.id);
   const to = nextPlayableIndex(s.episodeQueue, idx, step);
   if (to < 0) return null;
+  const episode = s.episodeQueue[to];
   return {
-    current: { episode: s.episodeQueue[to], podcast: s.current.podcast },
+    current: { episode, podcast: s.current.podcast },
     isPlaying: true,
-    positionSec: 0,
+    // Same resume rule as `play()`. A `playsAsTracks` queue gets 0 from it.
+    positionSec: savedStartSec(episode, s.current.podcast),
     videoMode: false,
   };
 }
@@ -471,8 +477,13 @@ export const useApp = create<AppState>((set, get) => ({
   positionSec: 0,
   episodeQueue: [],
 
-  play: (episode, podcast, startSec = 0) =>
-    set({ current: { episode, podcast }, isPlaying: true, positionSec: startSec, videoMode: false }),
+  play: (episode, podcast, startSec) =>
+    set({
+      current: { episode, podcast },
+      isPlaying: true,
+      positionSec: startSec ?? savedStartSec(episode, podcast),
+      videoMode: false,
+    }),
   togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
   setPlaying: (b) => set({ isPlaying: b }),
   setPosition: (s) => set({ positionSec: s }),

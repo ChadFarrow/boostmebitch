@@ -9,6 +9,7 @@ import {
 import type Hls from 'hls.js';
 import { useApp } from '@/lib/store';
 import { useMediaSession } from './player/use-media-session';
+import { useResumePosition } from './player/use-resume-position';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
 import { artGateOpen, hasValueRecipients, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
@@ -865,6 +866,10 @@ export function Player() {
     audio, video, isVideoRef, lastTick,
     setPosition, setPlaying, skipBy,
   });
+
+  // Saves where each episode was left, so the next play() of it resumes there.
+  // See ./player/use-resume-position and lib/resume-position.ts.
+  useResumePosition({ audio, video, isVideoRef });
 
   if (!current) return null;
   const { episode, podcast } = current;

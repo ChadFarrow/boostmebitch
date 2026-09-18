@@ -33,6 +33,18 @@ export function fmt(t: number): string {
   return `${m}:${s}`;
 }
 
+/** Time remaining in words, e.g. "23 min left", "1 h 5 min left". '' for
+ *  invalid/zero values. For the resume label on an unfinished episode. */
+export function fmtTimeLeft(t: number): string {
+  if (!isFinite(t) || t <= 0) return '';
+  const min = Math.round(t / 60);
+  if (min < 1) return '<1 min left';
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h === 0) return `${m} min left`;
+  return m ? `${h} h ${m} min left` : `${h} h left`;
+}
+
 /** Time-of-day clock, e.g. "3:45 PM". Accepts unix seconds. */
 export function fmtClock(unixSec: number): string {
   return new Date(unixSec * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
