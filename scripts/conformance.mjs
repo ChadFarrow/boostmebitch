@@ -78,9 +78,17 @@
 // So 28 pass / 3 fail is this branch's expected result. A NEW red is a
 // regression; these three are not.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+
+// The revision the counts above were measured against, and how many vectors it
+// has. A checkout older than this runs a DIFFERENT suite: on 2026-09-18 a
+// sibling checkout still on a merged-and-deleted branch ran 28 vectors, one of
+// them the pre-#47 version of 16, and reported 24/4 — which reads exactly like
+// a regression here and was nothing of the kind.
+const MEASURED_AT = 'de7a5ce';
+const MEASURED_VECTORS = 31;
 
 const dir = process.env.PC20_NOSTR_DIR ?? path.resolve('..', 'PC20-Nostr');
 const suite = path.join(dir, 'conformance', 'vectors.test.mjs');
@@ -93,8 +101,28 @@ if (!existsSync(suite)) {
   process.exit(2);
 }
 
+// Say WHICH spec ran, and say loudly when it is not the one the counts above
+// describe. Nothing here pins a revision (the suite is found by directory), so
+// this is the only place a stale checkout can be told apart from a regression.
+const git = (...args) => spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+const head = git('rev-parse', '--short', 'HEAD').stdout?.trim() || 'unknown';
+const branch = git('rev-parse', '--abbrev-ref', 'HEAD').stdout?.trim() || 'unknown';
+const vectors = (readFileSync(suite, 'utf8').match(/^test\(/gm) ?? []).length;
+const hasMeasured = git('merge-base', '--is-ancestor', MEASURED_AT, 'HEAD').status === 0;
+const stale = vectors < MEASURED_VECTORS || !hasMeasured;
+const warning = stale
+  ? `conformance: WARNING spec checkout ${head} (${branch}) has ${vectors} vectors`
+    + `${hasMeasured ? '' : ` and predates ${MEASURED_AT}`} — the expected 28/3 is measured against`
+    + ` ${MEASURED_AT} with ${MEASURED_VECTORS}. Update ${dir} (git switch main && git pull) before`
+    + ' reading a new red as a regression.'
+  : null;
+console.log(`conformance: spec ${head} (${branch}), ${vectors} vectors`);
+if (warning) console.error(warning);
+
 const r = spawnSync(process.execPath, ['--experimental-strip-types', '--test', suite], {
   stdio: 'inherit',
   env: { ...process.env, PC20_FAVORITES_ADAPTER: path.resolve('scripts/conformance-adapter.mjs') },
 });
+// Again at the end, where someone reading the tally will see it.
+if (warning) console.error(`\n${warning}`);
 process.exit(r.status ?? 1);
