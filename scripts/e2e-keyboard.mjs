@@ -28,14 +28,11 @@
 //   npm run build && npm start          # in another terminal
 //   npm run e2e:keyboard                # add --headed to watch it
 //
-// CHROME_PATH overrides the browser; without it this looks for Chrome where
-// macOS puts it, the same convention as e2e-favorites.mjs.
+// The browser comes from scripts/cdp.mjs: CHROME_PATH, else the usual install
+// paths; muted, on a free debug port, and closed on any exit.
 
-import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
-const CDP = 9231;
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
 const HEADED = process.argv.includes('--headed');
 
@@ -53,54 +50,12 @@ const SHORT_KB = 162;
 // after a reply, rounded off the screenshot: 68.3 CSS px on an 874px screen.
 const STRANDED = 68;
 
-const appUp = await fetch(`${APP}/privacy`).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
-  process.exit(1);
-}
+await requireApp(`${APP}/privacy`,
+  `Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
 
-const CHROME = process.env.CHROME_PATH
-  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const profile = `${tmpdir()}/bmb-e2e-keyboard`;
-rmSync(profile, { recursive: true, force: true });
-// See e2e-favorites.mjs: Chrome refuses to start as root without --no-sandbox,
-// and a container is exactly where this runs as root. Gated on actually being
-// root so a developer's own machine keeps the sandbox.
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [
-  ...(HEADED ? [] : ['--headless=new']),
-  ...(asRoot ? ['--no-sandbox'] : []),
-  `--remote-debugging-port=${CDP}`,
-  `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--disable-gpu',
-  'about:blank',
-], { stdio: 'ignore' });
-const stopChrome = () => chrome.kill();
-process.on('exit', stopChrome);
-
-let ready = false;
-for (let i = 0; i < 60 && !ready; i++) {
-  await new Promise((r) => setTimeout(r, 250));
-  ready = await fetch(`http://127.0.0.1:${CDP}/json/version`).then((r) => r.ok).catch(() => false);
-}
-if (!ready) { console.error(`Chrome never opened its debug port on ${CDP}.`); process.exit(1); }
-
-const list = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
-const target = list.find((t) => t.type === 'page');
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-let id = 0; const pending = new Map();
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-});
-await new Promise((r) => ws.addEventListener('open', r));
-const send = (method, params = {}) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params })); });
-const js = async (expression) => {
-  const r = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-  if (r.result?.exceptionDetails) throw new Error(JSON.stringify(r.result.exceptionDetails).slice(0, 400));
-  return r.result?.result?.value;
-};
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const { page } = await launchChrome({ name: 'keyboard', args: ['--disable-gpu'], headed: HEADED });
+const { send } = page;
+const js = page.jsOrThrow;
 
 await send('Page.enable');
 await send('Runtime.enable');
@@ -182,12 +137,8 @@ const read = async () => {
   })()`));
 };
 
-let fails = 0;
-const check = (l, a, b) => {
-  const ok = JSON.stringify(a) === JSON.stringify(b);
-  console.log(`  ${ok ? 'ok   ' : 'FAIL '} ${l}`);
-  if (!ok) { fails++; console.log('        expected', JSON.stringify(b), '\n        actual  ', JSON.stringify(a)); }
-};
+const t = checker();
+const check = (l, a, b) => t.equal(l, a, b);
 
 console.log(`\n1. at rest — the dock sits on the bottom of the viewport`);
 let s = await read();
@@ -397,7 +348,5 @@ check('the tab bar has not moved', s.navBottom, restBottom);
 await js(`(() => { const t = document.getElementById('c'); t.dispatchEvent(new FocusEvent('focusout', { bubbles: true })); t.blur(); })()`);
 await js(`window.__vv(${LAYOUT_H})`);
 
-ws.close();
-stopChrome();
-console.log(fails ? `\n${fails} FAILED` : '\nall keyboard-inset checks passed');
-process.exit(fails ? 1 : 0);
+console.log(t.fails ? `\n${t.fails} FAILED` : '\nall keyboard-inset checks passed');
+await exit(t.fails ? 1 : 0);

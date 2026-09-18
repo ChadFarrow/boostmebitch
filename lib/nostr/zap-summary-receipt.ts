@@ -24,7 +24,7 @@ import { nip19, type Event } from 'nostr-tools';
 import { BRAND } from '@/lib/brand';
 import { activeNostr } from './signer';
 import { publishSignedEvent } from './publish';
-import { zapRequestTags, type Nip73Refs } from './zap-request';
+import { zapRequestTags, type Nip73Refs, type SummarySpec } from './zap-request';
 import type { QuotedZapReceipt } from './zap-receipt-wait';
 
 /** The site's pubkey in hex, from the per-brand pinned npub. */
@@ -55,7 +55,7 @@ export async function mintSummaryReceipt(args: {
     if (relays.length === 0) return null;
     const amountMsat = Math.floor(args.paidSats) * 1000;
 
-    let payload: { request: Event } | { spec: { amountMsat: number; relays: string[]; refs: Nip73Refs } };
+    let payload: { request: Event } | { spec: SummarySpec };
     if (args.as === 'self') {
       const nostr = activeNostr();
       if (!nostr) return null;

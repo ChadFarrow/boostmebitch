@@ -1,5 +1,6 @@
 import type { Event } from 'nostr-tools';
 import { bolt11AmountMsat } from '../v4v/bolt11';
+import { nip73GuidsFromTags } from './zap-request';
 
 /**
  * NIP-57 kind:9735 zap receipt, parsed.
@@ -104,14 +105,7 @@ export function parseZapReceipt(e: Event): ZapReceipt | null {
 
   // NIP-73 refs ride on the zap REQUEST (the podcast client wrote it), never on
   // the receipt the LNURL server generated.
-  const podcastGuid =
-    reqTags
-      .find((t) => t[0] === 'i' && t[1]?.startsWith('podcast:guid:'))
-      ?.[1]
-      ?.slice('podcast:guid:'.length) ?? null;
-  const episodeGuids = reqTags
-    .filter((t) => t[0] === 'i' && t[1]?.startsWith('podcast:item:guid:'))
-    .map((t) => t[1].slice('podcast:item:guid:'.length));
+  const { podcastGuid, episodeGuids } = nip73GuidsFromTags(reqTags);
 
   return {
     id: e.id,

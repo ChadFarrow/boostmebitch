@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestJson, requireJsonBody } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { readCappedText, readCappedJson } from '@/lib/capped-body';
 
@@ -61,17 +61,10 @@ export async function POST(req: Request) {
     // check, which allocates the whole body first and measures after — the
     // thing the note below about `upstream.text()` correctly refuses to do,
     // on the inbound side of the same handler.
-    const raw = await readCappedRequestText(req, MAX_REQUEST_BYTES);
-    if (raw === null) {
-      return NextResponse.json({ error: 'payload too large' }, { status: 400 });
-    }
-    let payload: unknown;
-    try {
-      payload = JSON.parse(raw);
-    } catch {
-      // A malformed body is the client's fault — 400, not a 500 via the handler.
-      return NextResponse.json({ error: 'invalid JSON body' }, { status: 400 });
-    }
+    // A malformed body is the client's fault — 400, not a 500 via the handler.
+    const read = await readCappedRequestJson(req, MAX_REQUEST_BYTES);
+    if (!read.ok) return read.response;
+    const payload = read.body;
     // Shape check before forwarding. Without one this route relays ANY JSON
     // under 10 KB to a third party stamped with our API key — an open relay
     // whose consequences land on the upstream's trust in that key, not on us.

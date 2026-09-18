@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { PodcastCover } from './podcast-cover';
 import { liveTargetSnapshot, subscribeLiveTarget } from '@/lib/v4v/live-value';
 import type { Episode, ValueBlock } from '@/lib/types';
 
@@ -90,11 +91,12 @@ export function NowPayingRow({
     <div className={`flex items-center gap-2 text-[11px] text-muted ${className ?? ''}`}>
       {/* The block's own cover. This is the surface where a wrong target costs
           the most — the user is about to press BOOST — and art is recognised
-          faster than a title is read. <img> not next/image: the host is
-          whatever the block names, which is any domain at all. */}
+          faster than a title is read. <PodcastCover>, not next/image: the host
+          is whatever the block names, which is any domain at all, and this is
+          the /api/art path every other cover takes — with the raw URL behind
+          it. Low priority, because it sits beside a stream that is playing. */}
       {image && (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img src={image} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
+        <PodcastCover image={image} title={label} w={160} lowPriority className="w-8 h-8 rounded shrink-0" />
       )}
       <span>
         <span className="text-bolt">{badge}</span>{' '}

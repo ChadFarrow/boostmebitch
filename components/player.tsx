@@ -12,7 +12,7 @@ import { useMediaSession } from './player/use-media-session';
 import { useResumePosition } from './player/use-resume-position';
 import { usePlayerHotkeys } from './player/use-player-hotkeys';
 import { fmt } from '@/lib/format';
-import { artGateOpen, hasValueRecipients, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
+import { artGateOpen, boostButtonTitle, boostGate, isHlsUrl, pickVideoAlternate, pipNeedsOwnButton, pipSupported, playableAhead, playsAsTracks, togglePip } from '@/lib/util';
 import { useChapters, chapterUrlFor, chapterState, buildChapterNav } from '@/lib/chapters';
 import { useResolvedSplits, splitArtAt, nowPlayingArt } from '@/lib/track-art';
 import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
@@ -26,6 +26,7 @@ import { BoltIcon, PipIcon } from './icons';
 import { FullscreenPlayer } from './fullscreen-player';
 import { TransportControls } from './transport-controls';
 import { VideoToggle } from './video-toggle';
+import { LiveBadge } from './live-badge';
 
 /** How long the now-playing art must hold still before the OS is told about it.
  *  Long enough that a run of ⏭ presses issues no lock-screen fetch at all —
@@ -873,7 +874,12 @@ export function Player() {
 
   if (!current) return null;
   const { episode, podcast } = current;
-  const hasValue = hasValueRecipients(episode.value);
+  // The same question <FullscreenPlayer> asks, and the one <BoostModal> assumes
+  // was asked: `payableValue`, not `episode.value`. They used to differ, so a
+  // show-level block gave an enabled fullscreen BOOST that opened nothing,
+  // because the modal's render below was gated on this surface's answer.
+  const boost = boostGate(episode, podcast);
+  const hasValue = boost.hasValue;
   const isLive = episode.liveStatus === 'live';
 
   function seekMedia(v: number) {
@@ -1162,7 +1168,7 @@ export function Player() {
             )}
             {isLive ? (
               <div className="flex items-center gap-2 mt-1">
-                <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+                <LiveBadge status="live" />
                 <span className="text-[10px] text-muted">streaming now</span>
               </div>
             ) : (
@@ -1231,8 +1237,8 @@ export function Player() {
               onClick={() => setBoostOpen(true)}
               disabled={!hasValue}
               className="btn-bolt btn-compact flex-shrink-0 min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0 disabled:opacity-40 disabled:cursor-not-allowed"
-              title={hasValue ? 'Send a boost' : 'Episode has no value block'}
-              aria-label={hasValue ? 'Send a boost' : 'Episode has no value block'}
+              title={boostButtonTitle(boost, 'Episode')}
+              aria-label={boostButtonTitle(boost, 'Episode')}
             >
               <BoltIcon />
               <span className="hidden sm:inline">BOOST</span>

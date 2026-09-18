@@ -21,7 +21,6 @@
 //   isBunkerActive()               — true while bunker adapter is active
 //   activateLocalSigner(skHex)     — install LocalSigner as window.nostr
 //   deactivateLocalSigner()        — restore the original window.nostr
-//   isLocalActive()                — true while LocalSigner is active
 //   canSignUnattended()            — signer won't prompt or hang on a timer
 //   unattendedDecryptOk()          — may we decrypt on a cycle nobody asked for
 
@@ -188,10 +187,6 @@ export function isAmberActive(): boolean {
   return amberInstance !== null;
 }
 
-export function getActiveAmber(): AmberSigner | null {
-  return amberInstance;
-}
-
 /**
  * Install the BunkerAdapter as window.nostr. The adapter's `nostrApi`
  * already matches the expected shape, so we install it directly.
@@ -351,10 +346,6 @@ export function deactivateLocalSigner() {
   }
 }
 
-export function isLocalActive(): boolean {
-  return localInstance !== null;
-}
-
 /**
  * Can this signer be asked for a signature with nobody looking at the screen?
  *
@@ -466,9 +457,9 @@ export function listDecryptOnLoadOk(npub: string | null | undefined): boolean {
   return unattendedDecryptOk() || storage.listUnlock.get(npub);
 }
 
-// Deliberately NO getActiveLocal() accessor, unlike getActiveAmber /
-// getActiveBunker. Those hand out adapters that talk to a signer living
-// elsewhere; a LocalSigner holds the raw key in-process. `private sk` is erased
+// Deliberately NO getActiveLocal() accessor, unlike getActiveBunker, which
+// hands out an adapter that talks to a signer living elsewhere; a LocalSigner
+// holds the raw key in-process. `private sk` is erased
 // at runtime, so a general-purpose accessor for the instance is a standing
 // offer of the secret key to anything that imports it — three lines below the
 // comment explaining why activateLocalSigner publishes `nostrApi` and not the

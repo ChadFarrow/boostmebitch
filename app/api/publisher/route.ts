@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling } from '@/lib/api-handler';
+import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getPublisherAlbumUrls } from '@/lib/musicl-resolver';
-import { PiHttpError, getFeedFromRss, getPodcastByFeedUrl } from '@/lib/pi';
+import { getFeedFromRss, getPodcastByFeedUrl } from '@/lib/pi';
+import { piCouldNotAskStatus } from '@/lib/pi-error';
 import { mergeRssOverPi, piRecordIsBlank, mapLimit, PI_FANOUT, FEED_FANOUT } from '@/lib/util';
 import type { Podcast } from '@/lib/types';
 
@@ -16,7 +17,7 @@ const PUBLISHER_CACHE = { 'Cache-Control': 'public, s-maxage=300, stale-while-re
 // document — but it is missing the feed ids and guids only PI can supply, and
 // caching it would serve that thinner record to everyone for five minutes after
 // PI came back. Same rule /api/playlist applies when `couldNotAsk` is non-zero.
-const NO_STORE = { 'Cache-Control': 'no-store' };
+// (`NO_STORE` is the shared spelling in lib/api-handler.ts.)
 
 // Hard ceiling on the PI fan-out. The album list comes from a third-party
 // publisher feed, so its length is attacker-chosen: without a cap, one cheap
@@ -91,7 +92,8 @@ export async function GET(req: Request) {
       );
       fromPi = [probe, ...rest];
     } catch (e) {
-      if (!(e instanceof PiHttpError) || (e.status !== 429 && e.status !== 408)) throw e;
+      // A PI 429/408 means we could not ask, not that there is nothing.
+      if (piCouldNotAskStatus(e) === null) throw e;
       couldNotAskPi = true;
       fromPi = albumUrls.map(() => null);
     }

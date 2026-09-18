@@ -33,18 +33,12 @@
 // the feed, pick any long episode with a chapters JSON and update the constants;
 // if the music feed goes, any `medium=music` feed will do.
 //
-// CHROME_PATH overrides the browser; without it this looks for Chrome where
-// macOS puts it, the same convention as scripts/e2e-artgate.mjs. The debug port
-// is random and the tab muted, so a leftover browser can neither answer for
-// this run nor be heard.
-import { spawn } from 'node:child_process';
-import { tmpdir } from 'node:os';
-import { rmSync } from 'node:fs';
+// The browser comes from scripts/cdp.mjs: CHROME_PATH, else the usual install
+// paths. It is muted and on a free debug port, so a leftover browser can
+// neither answer for this run nor be heard, and it is closed on any exit.
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 
-const CDP = 9400 + Math.floor(Math.random() * 500);
 const APP = process.env.APP_URL ?? 'http://127.0.0.1:3000';
-const CHROME = process.env.CHROME_PATH || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const headed = process.argv.includes('--headed');
 
 /** Bowl After Bowl 456: over two hours, with a chapters JSON. */
 const POD = '2d418249-453a-5714-8abc-5b657570b641';
@@ -54,71 +48,17 @@ const CHAPTER_START = 9521.629;
 /** A Wavlake single — `medium=music`, so `playsAsTracks`. */
 const MUSIC = '225fa8a9-abc4-53ec-a133-2d3f10f1486e';
 
-const appUp = await fetch(`${APP}/privacy`).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
-  process.exit(1);
-}
+await requireApp(`${APP}/privacy`,
+  `Nothing is serving ${APP}. Start it with \`npm start\` (after \`npm run build\`) in another terminal.`);
 
-const profile = `${tmpdir()}/bmb-e2e-resume`;
-rmSync(profile, { recursive: true, force: true });
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [
-  `--remote-debugging-port=${CDP}`, `--user-data-dir=${profile}`,
-  ...(headed ? [] : ['--headless=new']), '--no-first-run',
-  ...(asRoot ? ['--no-sandbox'] : []),
-  '--autoplay-policy=no-user-gesture-required', '--mute-audio',
-  '--window-size=1200,900', 'about:blank',
-], { stdio: 'ignore' });
+const { page } = await launchChrome({ name: 'resume', autoplay: true, args: ['--window-size=1200,900'] });
+const { send, js, until } = page;
 
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-let target;
-for (let i = 0; i < 40 && !target; i++) {
-  await wait(250);
-  try {
-    const l = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
-    target = l.find((t) => t.type === 'page');
-  } catch { /* chrome is still coming up */ }
-}
-if (!target) {
-  chrome.kill();
-  console.error(`Chrome did not come up on port ${CDP}. Set CHROME_PATH.`);
-  process.exit(1);
-}
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((r) => (ws.onopen = r));
-let id = 0;
-const pending = new Map();
-ws.onmessage = (m) => {
-  const d = JSON.parse(m.data);
-  if (d.id && pending.has(d.id)) { pending.get(d.id)(d); pending.delete(d.id); }
-};
-const send = (method, params = {}) => new Promise((res) => {
-  const n = ++id;
-  pending.set(n, res);
-  ws.send(JSON.stringify({ id: n, method, params }));
-});
-const js = async (e) => (await send('Runtime.evaluate', { expression: e, awaitPromise: true, returnByValue: true })).result?.result?.value;
-
-let fails = 0;
-const check = (label, ok, detail) => {
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}${ok ? '' : `\n         ${detail}`}`);
-  if (!ok) fails++;
-};
+const t = checker();
+const check = (label, ok, detail) => t.ok(label, ok, detail);
 const finish = async () => {
-  await send('Target.closeTarget', { targetId: target.id }).catch(() => {});
-  chrome.kill();
-  console.log(fails ? `\n${fails} resume check(s) FAILED.` : '\nAll resume checks passed.');
-  process.exit(fails ? 1 : 0);
-};
-
-/** Poll a page expression until it is truthy, or give up after `ms`. */
-const until = async (expr, ms = 20000) => {
-  for (let t = 0; t < ms; t += 250) {
-    if (await js(expr)) return true;
-    await wait(250);
-  }
-  return false;
+  console.log(t.fails ? `\n${t.fails} resume check(s) FAILED.` : '\nAll resume checks passed.');
+  await exit(t.fails ? 1 : 0);
 };
 const go = async (url) => { await send('Page.navigate', { url }); await wait(1500); };
 

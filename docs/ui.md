@@ -672,7 +672,7 @@ Two things about that boundary:
 
 **A stall is also SAYABLE now.** `onWaiting`/`onStalled` set `stalled`, `onPlaying` clears it, and the mini-bar shows a muted "buffering" line — not an error, and nothing on that path calls `pause()`. Pressing play on a stalled element re-sources it through the same `reloadNonce` the live-resume path uses, resuming from `positionSec`; before this, "the play button does nothing until I reload the page" was the honest description. The readout deliberately names no cause: the artwork case is now mitigated, so a stall that still reaches the user is a plain slow network.
 
-**The fetch goes through `/api/chapters?url=<encoded>`, not directly.** Many chapter hosts (notably `feeds.fountain.fm`) serve the JSON with **no `Access-Control-Allow-Origin`**, so a direct browser fetch is CORS-blocked and the hook's `.catch()` silently rendered no chapters. `app/api/chapters/route.ts` is the proxy: `rateLimit` → `safeFetch` with timeout → upstream JSON verbatim, `Cache-Control` on the 200 only. The client parser stays the single source of truth.
+**The fetch goes through `/api/chapters?url=<encoded>`, not directly.** Many chapter hosts (notably `feeds.fountain.fm`) serve the JSON with **no `Access-Control-Allow-Origin`**, so a direct browser fetch is CORS-blocked and the hook's `.catch()` silently rendered no chapters. `app/api/chapters/route.ts` is the proxy, and its fetch half — `rateLimit` → `safeFetch` with timeout → capped read — is `proxyFeedDocument` (`lib/feed-document-proxy.ts`), shared with `/api/transcript`; the route itself parses the body (`parseChaptersJson`) and sets `Cache-Control` on the 200 only.
 
 ## Transcripts (Podcasting 2.0 `<podcast:transcript>`) — a near-clone of Chapters
 
@@ -684,7 +684,7 @@ Two things about that boundary:
 
 **In-transcript search** lives entirely inside `<TranscriptPanel>` — component-internal `query` state, no new props — so the detail view and the fullscreen player both get it with no caller changes. A non-empty query filters timed cues case-insensitively on `text` **or** `speaker`, keeping each cue's **original index** so the `i === activeIdx` highlight still lines up. Match-count badge, `No matches.` empty state, per-line highlighting via a local `highlight(text, query)` helper that is **`indexOf`-based, never regex**, so a query containing `.`/`(`/`*` is literal and can't throw or inject a pattern; hits get a `bg-bolt/30` `<mark>`. Filtered rows stay tap-to-seek. Clearing: the `×` button, `Escape`, or delete. **The follow-the-playing-line effect is guarded on `!query`** — while filtering, the active line may be filtered out, so chasing it would be wrong; it re-runs when the query clears. Search shows only in the timed-list branch.
 
-**`app/api/transcript/route.ts`** clones `/api/chapters` but returns **text**, always served as inert **`Content-Type: text/plain; charset=utf-8` + `X-Content-Type-Options: nosniff`** — deliberately not reflecting the upstream Content-Type. Transcript URLs come from third-party RSS, so a malicious host serving `text/html` with a `<script>`, opened directly as `/api/transcript?url=…`, would execute in **our** origin and read `localStorage` (the NWC spending credential, the bunker `clientSk`). The client parser branches on the `?type=` hint — load-bearing, because hosts serve SRT as `application/octet-stream` — so the real upstream MIME is never needed.
+**`app/api/transcript/route.ts`** shares `/api/chapters`' fetch half (`proxyFeedDocument`) but returns **text**, always served as inert **`Content-Type: text/plain; charset=utf-8` + `X-Content-Type-Options: nosniff`** — deliberately not reflecting the upstream Content-Type. Transcript URLs come from third-party RSS, so a malicious host serving `text/html` with a `<script>`, opened directly as `/api/transcript?url=…`, would execute in **our** origin and read `localStorage` (the NWC spending credential, the bunker `clientSk`). The client parser branches on the `?type=` hint — load-bearing, because hosts serve SRT as `application/octet-stream` — so the real upstream MIME is never needed.
 
 **Tap-to-seek plumbing (chapters + transcripts).** The detail view can't touch the audio element, so a store signal bridges: `store.requestSeek(t)` sets `seekReq: { t, n }` and a `<Player>` effect applies it. `play(episode, podcast, startSec?)` takes an optional start position (applied on `loadedmetadata`) so tapping a line/chapter for a **not-current** episode starts it there; when it IS current, `requestSeek` seeks in place. **Omitting `startSec` means "resume"**, not 0 — see below. An explicit start, 0 included, always wins.
 
@@ -1059,7 +1059,12 @@ hand-rolled copies had already drifted into two z-indexes, two backdrop
 opacities, two centring idioms and `pb-28` on four of six, and none of them had
 dialog semantics or a focus trap at all. Pass `dismissable={false}` while a
 payment is in flight — Escape and backdrop-click must not take the per-leg
-results off screen while legs are still settling.
+results off screen while legs are still settling. **Pass `closeButton` for the
+×**, never a hand-drawn one: six modals drew their own and two had drifted under
+the 24×24 floor (an ~11px-wide glyph with no padding). The shell's is a 35×44
+box (wide × tall) in the corner, the card's first child — so initial focus lands on it — and
+it is deliberately NOT gated on `dismissable`: that flag stops an accidental
+exit, and the × is a deliberate one every payment modal kept live mid-send.
 
 - **Modals must portal to `document.body` — the layout traps `fixed` overlays.**
   `app/layout.tsx` wraps page content in `<div className="relative z-0">` (to sit
@@ -1123,7 +1128,8 @@ behind all of them is the same: a second implementation drifts, and the drift
 shows up on a screen nobody was looking at.
 
 - **`useWalletChange`** — five components hand-rolled the subscribe/unsubscribe-all
-  effect and had drifted into **three different subscription sets**. A rail with
+  effect and had drifted into **three different subscription sets**; the header
+  balance chip (`wallet-balance.tsx`) was the last copy, and uses the hook now. A rail with
   no subscription is unofferable rather than merely stale, which is why the rail
   picker's own rule (a surface must subscribe to every rail `availableRails()`
   reads) is enforced through this hook and not per component. `railPref` is
@@ -1145,6 +1151,26 @@ shows up on a screen nobody was looking at.
   string rather than as markup — which is what keeps that separation true. Why
   the sentence exists at all is in
   [`money-boosts.md`](money-boosts.md) ("A `fee` is inside the split").
+- **`<LegStatusGlyph>`** (`components/leg-status-glyph.tsx`) — the ✓ / ? / ✗
+  beside a payment leg was drawn by the split preview, the boost-all modal and
+  the stored `<BoostCard>`, in **three failure colours** (one of them
+  `red-400`, not in the palette), and only two of them could be heard by a
+  screen reader. It tests `ok` first and `indeterminate` second, so a leg whose
+  wallet never answered can never render ✗ — the mark that talks someone into
+  paying twice.
+- **`useFlash`** (`lib/use-flash.ts`) — the "Copied" flash, with its timer
+  cleared on every flash and on unmount. `<CopyLinkButton>` had that fix and
+  four other copies (both wallet receive panels, the key export, the sign-in
+  QR link) did not. The clipboard write stays in each caller, so what is copied
+  and when is visible where it happens — the key export copies the nsec.
+- **`boostGate` / `boostButtonTitle`** (`lib/util.ts`) — whether BOOST is open
+  and what to say when it is not, for the mini-bar and both fullscreen
+  buttons. The mini-bar asked `hasValueRecipients(episode.value)` while the
+  fullscreen player asked `payableValue`, and `<Player>` gated the modal's
+  render on the mini-bar's answer — so an episode whose block came from its
+  show had an ENABLED fullscreen BOOST that opened nothing. `reason` keeps "no
+  value block" for the one case where it is true; a live stream whose host
+  kind:0 is pending or unread says so instead.
 - **`<CopyLinkButton>`** — it owns the flash timing and the `clearTimeout` on
   unmount that neither hand-rolled copy had. **There was a THIRD copy on the
   episode page**, carrying both faults the merge had already fixed elsewhere —

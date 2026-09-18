@@ -38,6 +38,32 @@ export async function readCappedRequestText(
 }
 
 /**
+ * Read a request body with `readCappedRequestText` and parse it as JSON — the
+ * block every POST route here wrote out for itself, with five different
+ * spellings of the same two 400s.
+ *
+ * Returns `{ ok: true, body }`, or `{ ok: false, response }` holding the 400 to
+ * return: `payload too large` over the cap, `invalid JSON` when it does not
+ * parse. It never throws, so each route still answers these with its own
+ * literal 400 — the deliberate-message path `withErrorHandling` never sees —
+ * and calls this exactly where it read the body before.
+ */
+export async function readCappedRequestJson(
+  req: Request,
+  maxBytes: number,
+): Promise<{ ok: true; body: unknown } | { ok: false; response: NextResponse }> {
+  const raw = await readCappedRequestText(req, maxBytes);
+  if (raw === null) {
+    return { ok: false, response: NextResponse.json({ error: 'payload too large' }, { status: 400 }) };
+  }
+  try {
+    return { ok: true, body: JSON.parse(raw) as unknown };
+  } catch {
+    return { ok: false, response: NextResponse.json({ error: 'invalid JSON' }, { status: 400 }) };
+  }
+}
+
+/**
  * 415 unless the request declares a JSON body; null when it does.
  *
  * Call it right after `rateLimit`, before the body is read. The four POST
@@ -101,3 +127,16 @@ export async function withErrorHandling(
     return NextResponse.json({ error: fallback }, { status: piCouldNotAskStatus(e) ?? 500 });
   }
 }
+
+/**
+ * `Cache-Control: no-store`, for an answer that must not be cached anywhere.
+ *
+ * One spelling, not a policy: each route still decides for itself WHEN to use
+ * it, and says why beside the call — an answer Podcast Index could not be
+ * fully asked for (publisher, playlist, live-shows), a signature (site-sign,
+ * zap-receipt-sign), an LNURL reply. The positive caching presets are
+ * deliberately NOT shared the same way: each route's `s-maxage` is its own
+ * recorded decision (docs/feeds.md), and two values that happen to be equal
+ * today are not one thing.
+ */
+export const NO_STORE = { 'Cache-Control': 'no-store' } as const;

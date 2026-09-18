@@ -36,20 +36,19 @@
 // canned body, so this needs no Podcast Index key, no database and no network.
 // It asserts on the REQUEST GRAPH, which is what was wrong; the bodies exist
 // only to get the client to the next step.
-import { spawn } from 'node:child_process';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { checker, exit, launchChrome, requireApp } from './cdp.mjs';
 
 const APP = 'http://localhost:3000';
-const CDP = 9224;
 const GUID = 'bdf5a0f9-d803-5d6d-81b6-d99bfba58e4e';
 const FEED_URL = 'https://example.com/greatest-hits.xml';
 const BLANK = process.argv.includes('--blank');
 const HEADED = process.argv.includes('--headed');
 
-let failures = 0;
-const ok = (m) => console.log(`  ok   ${m}`);
-const fail = (m) => { failures += 1; console.log(`  FAIL ${m}`); };
+const t = checker();
+const ok = (m) => t.pass(m);
+const fail = (m) => t.fail(m);
 
 // Podcast Index's ACTUAL record for feed 7683902, captured from the live index
 // and shared with scripts/check-musicl-playlist.mjs: no title, a derived guid,
@@ -126,57 +125,16 @@ const SHOW_EPISODE = {
 // pattern already in place covers it.
 const AUDIO = readFileSync(new URL('../public/boost.mp3', import.meta.url));
 
-const appUp = await fetch(APP).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm run build && npm run start\`.`);
-  console.error('A production build matters here: the preload tag is what this measures.');
-  process.exit(1);
-}
+await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run build && npm run start\`.
+A production build matters here: the preload tag is what this measures.`);
 
-// Same contract as scripts/e2e-favorites.mjs — `CHROME_PATH` is what lets this
-// run anywhere but a Mac, and `--no-sandbox` is gated on actually being root.
-const CHROME = process.env.CHROME_PATH
-  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const profile = `${tmpdir()}/bmb-e2e-playlist`;
-rmSync(profile, { recursive: true, force: true });
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [
-  ...(HEADED ? [] : ['--headless=new']),
-  ...(asRoot ? ['--no-sandbox'] : []),
-  // The autoplay scenario starts playback from a scripted click, which is not a
-  // user gesture as far as the media policy is concerned. Nothing under test
-  // depends on the policy — the app is always started by a real tap — so this
-  // removes a variable rather than papering over one.
-  '--autoplay-policy=no-user-gesture-required',
-  `--remote-debugging-port=${CDP}`, `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--disable-gpu', 'about:blank',
-], { stdio: 'ignore' });
-process.on('exit', () => chrome.kill());
-
-let ready = false;
-for (let i = 0; i < 80 && !ready; i += 1) {
-  ready = await fetch(`http://127.0.0.1:${CDP}/json/version`).then((r) => r.ok).catch(() => false);
-  if (!ready) await new Promise((r) => setTimeout(r, 250));
-}
-if (!ready) { console.error(`Chrome never opened its debug port on ${CDP}.`); process.exit(1); }
-
-const list = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
-const target = list.find((t) => t.type === 'page');
-const ws = new WebSocket(target.webSocketDebuggerUrl);
-let id = 0; const pending = new Map(); const handlers = [];
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method) handlers.forEach((h) => h(m));
-});
-await new Promise((r) => ws.addEventListener('open', r));
-const send = (method, params = {}) => new Promise((res) => {
-  const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params }));
-});
-const js = async (expression) => {
-  const r = await send('Runtime.evaluate', { expression, returnByValue: true });
-  return r.result?.result?.value;
-};
+// The autoplay scenario starts playback from a scripted click, which is not a
+// user gesture as far as the media policy is concerned. Nothing under test
+// depends on the policy — the app is always started by a real tap — so this
+// removes a variable rather than papering over one. The tab is muted: it used
+// not to be, and this script played public/boost.mp3 out loud.
+const { page } = await launchChrome({ name: 'playlist', autoplay: true, args: ['--disable-gpu'], headed: HEADED });
+const { send, js } = page;
 
 const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64');
 function answer(pathname, search) {
@@ -203,7 +161,7 @@ function answer(pathname, search) {
 const t0 = Date.now();
 const seen = [];
 await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Request' }] });
-handlers.push(async (m) => {
+page.on(async (m) => {
   if (m.method !== 'Fetch.requestPaused') return;
   const { requestId, request } = m.params;
   const u = new URL(request.url);
@@ -253,7 +211,7 @@ if (BLANK) {
   // removed, so `--blank` keeps demonstrating the cost rather than rotting.
   console.log(`  (blank-record path: ${feed} /api/feed and ${playlist} /api/playlist requests)`);
   console.log('  Run without --blank for the assertions.');
-  process.exit(0);
+  await exit(0);
 }
 
 // **Two assertions, because either one alone passes while the hint does
@@ -422,5 +380,5 @@ await mounts(
   '<DiscussionView>',
 );
 
-console.log(failures ? `\n${failures} failure(s)` : '\nall good');
-process.exit(failures ? 1 : 0);
+console.log(t.fails ? `\n${t.fails} failure(s)` : '\nall good');
+await exit(t.fails ? 1 : 0);

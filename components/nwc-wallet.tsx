@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useFlash } from '@/lib/use-flash';
 import dynamic from 'next/dynamic';
 // Lazy-loaded, matching <SparkWallet>: this card is itself reached only
 // through the wallet modal, but qrcode.react has no business in the chunk a
@@ -81,7 +82,7 @@ function ReceivePanel() {
   const [amount, setAmount] = useState('');
   const [generating, setGenerating] = useState(false);
   const [inv, setInv] = useState<NwcInvoice | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied, clearCopied] = useFlash<true>(1500);
   const [err, setErr] = useState<string | null>(null);
   const [paidSats, setPaidSats] = useState<number | null>(null);
 
@@ -114,7 +115,7 @@ function ReceivePanel() {
     setGenerating(true);
     setErr(null);
     setPaidSats(null);
-    setCopied(false);
+    clearCopied();
     try {
       const res = await nwcMakeInvoice({
         amountSats: Number(amount),
@@ -132,8 +133,7 @@ function ReceivePanel() {
     if (!inv) return;
     try {
       await navigator.clipboard.writeText(inv.invoice);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      flashCopied(true);
     } catch { /* ignore */ }
   }
 
@@ -209,7 +209,7 @@ function ReceivePanel() {
               <div className="flex gap-3">
                 <button onClick={copy} className="btn-ghost">{copied ? 'Copied' : 'Copy'}</button>
                 <button
-                  onClick={() => { setInv(null); setAmount(''); setCopied(false); }}
+                  onClick={() => { setInv(null); setAmount(''); clearCopied(); }}
                   className="text-[11px] text-muted hover:text-nostr min-h-6"
                 >
                   New amount

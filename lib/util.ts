@@ -828,6 +828,51 @@ export function payableValue(
 }
 
 /**
+ * Whether BOOST is open for this item, and what to say when it is not.
+ *
+ * ONE answer for every surface that shows a BOOST button or opens
+ * `<BoostModal>` — the modal asserts `value!` on the assumption that whoever
+ * opened it asked this same question. The mini-bar used to ask a different
+ * one (`hasValueRecipients(episode.value)`) while the fullscreen player asked
+ * `payableValue`, so an episode whose block comes from its show got an ENABLED
+ * fullscreen BOOST that opened nothing, because `<Player>` gated the modal's
+ * render on the mini-bar's answer.
+ *
+ * `reason` separates the three ways BOOST is closed. `'none'` is the only one
+ * that may be described as "no value block": a Nostr live stream reaches this
+ * before its host's kind:0 has answered (`'pending'`), and again when that read
+ * was too degraded to believe (`'unread'`), and `value` is null in all three.
+ * Saying "no value block" over either of those tells a listener a payable show
+ * cannot be paid. See `Episode.liveValueState`.
+ */
+export interface BoostGate {
+  value: ValueBlock | null | undefined;
+  hasValue: boolean;
+  reason: 'ok' | 'pending' | 'unread' | 'none';
+}
+
+export function boostGate(
+  episode: Pick<Episode, 'value' | 'podcastGuid' | 'liveValueState'> | null | undefined,
+  podcast: Pick<Podcast, 'value' | 'podcastGuid' | 'medium'> | null | undefined,
+): BoostGate {
+  const value = payableValue(episode, podcast);
+  if (hasValueRecipients(value)) return { value, hasValue: true, reason: 'ok' };
+  const reason = episode?.liveValueState ?? 'none';
+  return { value, hasValue: false, reason };
+}
+
+/** The BOOST button's title for a gate. `noun` names what has no value block —
+ *  "Episode" or "Stream" — and is used only when that is the true reason. */
+export function boostButtonTitle(gate: BoostGate, noun: 'Episode' | 'Stream'): string {
+  switch (gate.reason) {
+    case 'ok': return 'Send a boost';
+    case 'pending': return 'Checking for a value block…';
+    case 'unread': return 'Could not read the value block for this stream — reload to try again';
+    default: return `${noun} has no value block`;
+  }
+}
+
+/**
  * Whether a recipient pays over LNURL rather than keysend.
  *
  * `type` alone is not the answer, because an address containing an `@` is a

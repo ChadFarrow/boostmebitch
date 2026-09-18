@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useFlash } from '@/lib/use-flash';
 import { ShareIcon } from './icons';
 
 const COPIED_FLASH_MS = 1800;
@@ -22,9 +22,10 @@ const COPIED_FLASH_MS = 1800;
  * nothing, which is what both originals did via an early return.
  *
  * The timeout is cleared on unmount, which NEITHER original did: both could
- * fire `setCopied(false)` after the component was gone. Harmless in React 18
- * (the warning was removed) but a real leak of a pending timer, and the
- * fullscreen player unmounts on every collapse.
+ * reset the flash after the component was gone. Harmless in React 18 (the
+ * warning was removed) but a real leak of a pending timer, and the fullscreen
+ * player unmounts on every collapse. That fix now lives in `useFlash`
+ * (lib/use-flash.ts), which the wallet panels and the key export share.
  */
 export function CopyLinkButton({
   url,
@@ -48,26 +49,21 @@ export function CopyLinkButton({
   word?: string;
   className?: string;
 }) {
-  const [copied, setCopied] = useState<'ok' | 'failed' | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  const [copied, flash] = useFlash<'ok' | 'failed'>(COPIED_FLASH_MS);
 
   if (!url) return null;
 
   async function onClick() {
-    if (timer.current) clearTimeout(timer.current);
     try {
       await navigator.clipboard.writeText(url!);
-      setCopied('ok');
+      flash('ok');
     } catch {
       // Clipboard blocked (insecure context, denied permission). There is no
       // recovery to offer, but a button that does NOTHING is indistinguishable
       // from one that worked — so the failure flashes in the same slot, for
       // the same time, and then the button reads SHARE again.
-      setCopied('failed');
+      flash('failed');
     }
-    timer.current = setTimeout(() => setCopied(null), COPIED_FLASH_MS);
   }
 
   return (

@@ -60,6 +60,8 @@ The second signing oracle for the site's key, and it is narrower than the first.
 
 `readCappedText` now accepts a `Request` as well as a `Response` (`CappableBody` is the three members the loop actually touches), so there is **one capping loop for both directions** rather than a second copy of it. `readCappedRequestText` wraps it and returns **`null` rather than throwing**, so each route answers with its own literal 400 — the deliberate-message path `withErrorHandling` never sees. A stream that errors mid-read is also `null`: either way the honest answer is that the body was not usable.
 
+**Every JSON route reads through `readCappedRequestJson`**, which is `readCappedRequestText` plus the parse, and returns `{ ok: true, body }` or `{ ok: false, response }` with the 400 to send — `payload too large` or `invalid JSON`. The five POST routes had written that block out five times, with five spellings of the two messages; no client reads the text, so they are now one. It never throws either, so each route still answers these with its own 400 at the point it always read the body.
+
 ### Feed-supplied URLs rendered as `href`
 
 **`safeUrlAttr` guards show-notes HTML. It does not guard a URL a component passes to `href={...}` directly, and three of those had no guard at all.** React does **not** block a `javascript:` href — it only warns in dev — and this origin's `localStorage` holds the NWC spending credential and the nsec. So a feed that writes `<podcast:funding url="javascript:…">` got a live script link under the SUPPORT button, and one press ran the feed author's code against the user's wallet.

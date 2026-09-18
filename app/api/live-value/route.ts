@@ -1,13 +1,8 @@
 import { NextResponse } from 'next/server';
-import { getPodcast, getLiveItemsFromRss, resolveLiveSplit } from '@/lib/pi';
+import { getPodcast, getLiveItemsFromRss, resolveLiveSplit, LIVE_XML_MAX_AGE_MS } from '@/lib/pi';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 
-// How stale the feed XML may be when answering. A live music show turns over
-// every few minutes, so the shared 60 s RSS window is too coarse — but this
-// override applies to THIS call only (see fetchFeedXml), so the normal feed
-// path keeps its cheaper cache.
-const LIVE_XML_MAX_AGE_MS = 10_000;
 
 /**
  * What is a live item playing right now?

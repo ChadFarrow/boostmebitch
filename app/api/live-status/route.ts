@@ -1,13 +1,9 @@
 import { NextResponse } from 'next/server';
-import { getPodcast, getLiveItemsFromRssDetailed } from '@/lib/pi';
+import { getPodcast, getLiveItemsFromRssDetailed, LIVE_XML_MAX_AGE_MS } from '@/lib/pi';
 import { withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import type { LiveStatusItem } from '@/lib/live-status';
 
-// How stale the feed XML may be when answering. Mirrors /api/live-value: the
-// override applies to THIS call only (see fetchFeedXml), so /api/feed keeps its
-// cheaper shared 60 s window.
-const LIVE_XML_MAX_AGE_MS = 10_000;
 
 /**
  * What is the status of this feed's live items right now?
@@ -22,7 +18,7 @@ const LIVE_XML_MAX_AGE_MS = 10_000;
  * record fetch per poll would buy nothing.
  */
 export async function GET(req: Request) {
-  // Polled, so the same budget /api/live-value gets rather than the default 30.
+  // Polled, so the same budget /api/live-value gets.
   const limited = rateLimit(req, 'live-status', 60);
   if (limited) return limited;
   const { searchParams } = new URL(req.url);

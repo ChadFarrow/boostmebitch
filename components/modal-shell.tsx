@@ -79,9 +79,26 @@ export interface ModalShellProps {
   /**
    * Set while a modal is mid-flight on something the user shouldn't be able to
    * walk away from by accident — an in-progress payment. Suppresses Escape and
-   * backdrop-click; the caller's own close button stays in charge.
+   * backdrop-click; the × close button (below) stays in charge.
    */
   dismissable?: boolean;
+  /**
+   * Render the × in the card's top-right corner, calling `onClose`.
+   *
+   * One button, because six modals each drew their own and two of them had
+   * drifted under WCAG 2.5.8's 24×24 floor (an ~11px-wide glyph with no
+   * padding). The padding IS the tap target: `px-3 py-2` at `top-0 right-0`
+   * is a 35×44 box (wide × tall) with the glyph 12px in and 8px down.
+   *
+   * **Not gated on `dismissable`.** That flag stops an ACCIDENTAL exit — a
+   * stray Escape or backdrop tap mid-payment. The × is a deliberate one, and
+   * every modal that had its own kept it live during a send; the running send
+   * reports its own results.
+   *
+   * It is the card's first child, so it is where initial focus lands, as the
+   * hand-drawn ones were.
+   */
+  closeButton?: boolean;
   /**
    * Leave room at the bottom for the fixed mini-player bar so a centred card
    * doesn't sit on top of it. Default on; `<SignInModal>` and `<WalletModal>`
@@ -97,6 +114,7 @@ export function ModalShell({
   className = '',
   dismissable = true,
   clearsPlayer = true,
+  closeButton = false,
 }: ModalShellProps) {
   const [mounted, setMounted] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -222,6 +240,16 @@ export function ModalShell({
         // outward to the nearest scrollable ancestor and stops here.
         className={`card bg-ink relative max-h-full overflow-y-auto overscroll-contain outline-none ${className}`}
       >
+        {closeButton && (
+          <button
+            type="button"
+            onClick={onClose}
+            className="absolute top-0 right-0 px-3 py-2 text-muted hover:text-bone text-lg z-10"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        )}
         {children}
       </div>
     </div>,

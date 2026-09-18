@@ -57,53 +57,19 @@
 // not mark one green without finding out which.
 
 import { createRelay } from './local-relay.mjs';
-import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44, nip04 } from 'nostr-tools';
 
-const PORT = 7455, CDP = 9223, APP = 'http://localhost:3000';
-const HEADED = process.argv.includes('--headed');
+const APP = 'http://localhost:3000';
 const KEEP = process.argv.includes('--keep');
 
-const appUp = await fetch(APP).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.`);
-  console.error('(and `rm -rf .next` first if you have just run a production build)');
-  process.exit(1);
-}
+await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
+(and \`rm -rf .next\` first if you have just run a production build)`);
 
-// macOS default, because that is where this is usually run. `CHROME_PATH`
-// overrides it, which is what lets this script run on Linux and in CI at all —
-// hardcoded, it exits before the first assertion on any other platform.
-const CHROME = process.env.CHROME_PATH
-  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const profile = `${tmpdir()}/bmb-e2e-favorites`;
-rmSync(profile, { recursive: true, force: true });
-// Chrome refuses to start as root without this, and a container (or CI) is
-// exactly where this runs as root — without it the script dies at "Chrome never
-// opened its debug port", which reads as a port clash rather than a refusal.
-// Gated on actually BEING root: on a developer's own machine the sandbox stays
-// on, and an unconditional --no-sandbox is the kind of flag that gets copied.
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [
-  ...(HEADED ? [] : ['--headless=new']),
-  ...(asRoot ? ['--no-sandbox'] : []),
-  `--remote-debugging-port=${CDP}`,
-  `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--disable-gpu',
-  'about:blank',
-], { stdio: 'ignore' });
-const stopChrome = () => { if (!KEEP) chrome.kill(); };
-process.on('exit', stopChrome);
-
-// Wait for the debug port rather than sleeping a guessed amount.
-let ready = false;
-for (let i = 0; i < 60 && !ready; i += 1) {
-  ready = await fetch(`http://127.0.0.1:${CDP}/json/version`).then((r) => r.ok).catch(() => false);
-  if (!ready) await new Promise((r) => setTimeout(r, 250));
-}
-if (!ready) { console.error(`Chrome never opened its debug port on ${CDP}.`); process.exit(1); }
+// The browser comes from scripts/cdp.mjs: CHROME_PATH (which is what lets this
+// run anywhere but a Mac), muted, on a free debug port, closed on any exit, and
+// `--no-sandbox` only when actually running as root. `--keep` leaves it open.
+const { page } = await launchChrome({ name: 'favorites', args: ['--disable-gpu'] });
 const sk = generateSecretKey();
 const pk = getPublicKey(sk);
 const npub = nip19.npubEncode(pk);
@@ -120,11 +86,13 @@ const convo = nip44.v2.utils.getConversationKey(sk, pk);
 // comparing `created_at`, so an OLDER event replaced a newer one — the exact
 // opposite of NIP-01, in the file whose job is to prove replacement works.
 const published = [];
-createRelay({
-  port: PORT,
+const relay = createRelay({
+  port: 0,
   log: null, // this script's own output is the report
   onEvent: (e) => { if (e.kind === 10333) published.push(e); },
 });
+// Port 0 and read back, never a fixed port: another run can already hold one.
+const PORT = await relay.ready;
 
 
 // ---- a relay that REFUSES, so the publish is genuinely partial -------------
@@ -141,38 +109,24 @@ createRelay({
 // things then get proved that one relay cannot: the whole cycle still succeeds
 // when a relay refuses, and `<FavoritesSyncNotice>` says so (scenario 2b).
 import { WebSocketServer } from 'ws';
-const BAD_PORT = PORT + 1;
-new WebSocketServer({ host: '127.0.0.1', port: BAD_PORT }).on('connection', (sock) => {
+const bad = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+bad.on('connection', (sock) => {
   sock.on('message', (raw) => {
     let m; try { m = JSON.parse(raw.toString()); } catch { return; }
     if (m[0] === 'EVENT') sock.send(JSON.stringify(['OK', m[1].id, false, 'blocked: test policy']));
     if (m[0] === 'REQ') sock.send(JSON.stringify(['EOSE', m[1]]));
   });
 });
+await new Promise((resolve, reject) => { bad.once('listening', resolve); bad.once('error', reject); });
+const BAD_PORT = bad.address().port;
 
 // ---- CDP -----------------------------------------------------------------
-const list = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
-const page = list.find((t) => t.type === 'page');
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0; const pending = new Map();
-const handlers = [];
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method) handlers.forEach((h) => h(m));
-});
-await new Promise((r) => ws.addEventListener('open', r));
-const send = (method, params = {}) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params })); });
-const js = async (expr) => {
-  const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? 'eval failed');
-  return r.result?.result?.value;
-};
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const { send } = page;
+const js = page.jsOrThrow;
 
 await send('Page.enable'); await send('Runtime.enable');
 const pageLog = [];
-handlers.push((m) => {
+page.on((m) => {
   if (m.method === 'Runtime.exceptionThrown') {
     pageLog.push('EXCEPTION: ' + (m.params.exceptionDetails?.exception?.description ?? '').slice(0, 300));
     return;
@@ -185,7 +139,7 @@ handlers.push((m) => {
   pageLog.push(`${m.params.type}: ${text.slice(0, 300)}`);
 });
 await send('Runtime.addBinding', { name: 'bmbSigner' });
-handlers.push(async (m) => {
+page.on(async (m) => {
   if (m.method !== 'Runtime.bindingCalled' || m.params.name !== 'bmbSigner') return;
   const { rid, fn, args } = JSON.parse(m.params.payload);
   let out, err = null;
@@ -219,7 +173,7 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `
   })();
 ` });
 
-let fails = 0;
+const t = checker();
 async function chooseMode(label) {
   // Dismiss whatever is open first. The first-favorite prompt and a switch
   // confirmation can both be up, and clicking "the first Switch button in a
@@ -244,7 +198,7 @@ async function chooseMode(label) {
 // `aria-label`, which is `${label}: ${triggerText}` and reads "Favorites are:
 // Not set" for an account that has not chosen.
 const modeControlSays = () => js(`(() => { const t=document.querySelector('button[aria-haspopup="menu"][aria-label^="Favorites are"]'); return t ? t.getAttribute('aria-label') : null; })()`);
-const check = (l, a, b) => { const ok = JSON.stringify(a) === JSON.stringify(b); console.log(`  ${ok ? 'ok   ' : 'FAIL '} ${l}`); if (!ok) { fails++; console.log('        expected', JSON.stringify(b), '\n        actual  ', JSON.stringify(a)); } };
+const check = (l, a, b) => t.equal(l, a, b);
 
 // Is the private-half control on screen, and what does its panel say?
 //
@@ -267,7 +221,7 @@ const pressPrivateTool = () => js(`(() => {
 
 await send('Page.navigate', { url: APP }); await wait(2500);
 await js(`(() => { localStorage.clear();
-  localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`, `ws://127.0.0.1:${PORT + 1}`]))});
+  localStorage.setItem('bmb:relays', ${JSON.stringify(JSON.stringify([`ws://127.0.0.1:${PORT}`, `ws://127.0.0.1:${BAD_PORT}`]))});
   localStorage.setItem('bmb:fav_private_optin', '1');
   localStorage.setItem('bmb:npub', ${JSON.stringify(npub)});
   localStorage.setItem('bmb:signer', 'nip07');
@@ -614,8 +568,6 @@ published.forEach((e, i) => {
 console.log('\n--- page log ---');
 pageLog.filter((l) => /favorites|nostr|relay|error|warn/i.test(l)).slice(-30).forEach((l) => console.log('  ' + l));
 
-ws.close();
-stopChrome();
 if (KEEP) console.log(`\nbrowser left open on ${APP} (--keep)`);
-console.log(fails ? `\n${fails} FAILED` : '\nall end-to-end checks passed — nothing left this machine');
-process.exit(fails ? 1 : 0);
+console.log(t.fails ? `\n${t.fails} FAILED` : '\nall end-to-end checks passed — nothing left this machine');
+await exit(t.fails ? 1 : 0);

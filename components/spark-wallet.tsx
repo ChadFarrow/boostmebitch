@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useFlash } from '@/lib/use-flash';
 import { useConfirm } from './confirm-dialog';
 import dynamic from 'next/dynamic';
 // Lazy-loaded (reached only through the wallet modal's Spark tab) so
@@ -286,7 +287,7 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
   const [generating, setGenerating] = useState(false);
   const [invoice, setInvoice] = useState<string | null>(null);
   const [feeSats, setFeeSats] = useState<number | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied, clearCopied] = useFlash<true>(1500);
 
   const refresh = useCallback(async () => {
     setRefreshing(true); setErr(null);
@@ -334,7 +335,7 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
   }, [refresh]);
 
   async function generate() {
-    setGenerating(true); setErr(null); setInvoice(null); setFeeSats(null); setCopied(false);
+    setGenerating(true); setErr(null); setInvoice(null); setFeeSats(null); clearCopied();
     try {
       const amt = amountSats.trim() ? Math.max(1, Math.floor(Number(amountSats))) : undefined;
       const { invoice: inv, feeSats: fee } = await sparkReceiveInvoice({ amountSats: amt });
@@ -347,7 +348,7 @@ function ReadyPanel({ owner, onDisconnect }: { owner: string | null; onDisconnec
 
   async function copy() {
     if (!invoice) return;
-    try { await navigator.clipboard.writeText(invoice); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    try { await navigator.clipboard.writeText(invoice); flashCopied(true); }
     catch { /* ignore */ }
   }
 

@@ -713,16 +713,11 @@ function ZapDialog({
       label={`Zap ${zapTarget}`}
       className="p-4 max-w-sm w-full"
       dismissable={state !== 'busy'}
+      closeButton
     >
-        <header className="flex items-center justify-between mb-3">
+        {/* `pr-8` keeps the title clear of the shell's × in the corner. */}
+        <header className="mb-3 pr-8">
           <h3 className="font-display text-lg">⚡ Zap {zapTarget}</h3>
-          <button
-            onClick={onClose}
-            aria-label="Close"
-            className="text-muted hover:text-bone text-xl leading-none"
-          >
-            ×
-          </button>
         </header>
         {!canZap && (
           <p className="text-sm text-red-400">

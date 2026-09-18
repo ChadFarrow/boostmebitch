@@ -9,7 +9,7 @@
 // It is for e2e ONLY. A check:* script must keep importing an import-free leaf
 // under plain `node --experimental-strip-types`: that constraint is what stops
 // a pinned module quietly acquiring dependencies, and a resolver that hides the
-// problem would take the guarantee away from all twenty-nine of them.
+// problem would take the guarantee away from every one of them.
 //
 // Registered by the script that uses it:
 //   import { register } from 'node:module';

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { finalizeEvent, type EventTemplate } from 'nostr-tools/pure';
-import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestJson, requireJsonBody, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { siteSecretKey, sitePubkey } from '@/lib/nostr/site-key';
 import { httpUrl } from '@/lib/util';
@@ -201,16 +201,9 @@ export async function POST(req: Request) {
     // the instance's heap. The bound is far above any real template: the
     // validator below already refuses content over 2000 characters and total
     // tag bytes over 4096.
-    const rawBody = await readCappedRequestText(req, MAX_REQUEST_BYTES);
-    if (rawBody === null) {
-      return NextResponse.json({ error: 'payload too large' }, { status: 400 });
-    }
-    let body: unknown;
-    try {
-      body = JSON.parse(rawBody);
-    } catch {
-      return NextResponse.json({ error: 'invalid JSON' }, { status: 400 });
-    }
+    const read = await readCappedRequestJson(req, MAX_REQUEST_BYTES);
+    if (!read.ok) return read.response;
+    const body = read.body;
     let template: EventTemplate;
     try {
       template = validateBoostTemplate(body, site);
@@ -223,7 +216,7 @@ export async function POST(req: Request) {
     const signed = finalizeEvent(template, sk);
     return NextResponse.json(
       { event: signed },
-      { headers: { 'Cache-Control': 'no-store' } },
+      { headers: NO_STORE },
     );
   }, 'site-sign failed');
 }

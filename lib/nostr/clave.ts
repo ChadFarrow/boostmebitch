@@ -154,7 +154,3 @@ export function claveUniversalLink(uri: string): string {
 export function claveOpenLink(uri: string): string {
   return `clave://connect?uri=${encodeURIComponent(uri)}`;
 }
-
-/** Open Clave without handing it a pairing URI — for the `bunker://` fallback,
- *  where the user goes to the app to COPY a URI and brings it back here. */
-export const CLAVE_OPEN_URL = 'clave://';

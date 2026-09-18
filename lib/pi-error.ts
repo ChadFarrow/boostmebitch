@@ -55,3 +55,20 @@ export function piCouldNotAskStatus(e: unknown): number | null {
   if (!(e instanceof PiHttpError)) return null;
   return e.status === 429 || e.status === 408 ? e.status : null;
 }
+
+/**
+ * Whether a Podcast Index failure is a MISS — "PI does not hold that" — rather
+ * than an outage. PI answers an unknown feed URL, an unindexed episode pair
+ * and an unsupported medium with **400** (404 on some endpoints), so every
+ * wrapper in `lib/pi.ts` turns this into its own empty answer (`null` or `[]`)
+ * and rethrows everything else.
+ *
+ * **The mapping belongs in the WRAPPER, never the route.** A route cannot tell
+ * a miss from an outage once the wrapper has thrown, and a miss answered as a
+ * 500 trips the client-side PI breaker for the life of the tab: one unindexed
+ * track took 227 favorites to 0 that way. Auth (401/403) and 5xx must still
+ * throw — those really are breaker-worthy.
+ */
+export function isPiMiss(e: unknown): boolean {
+  return e instanceof PiHttpError && (e.status === 400 || e.status === 404);
+}

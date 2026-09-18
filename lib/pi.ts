@@ -1,6 +1,6 @@
 // Server-side Podcast Index client. Never import from a client component.
 import crypto from 'node:crypto';
-import { PiHttpError } from './pi-error';
+import { PiHttpError, isPiMiss } from './pi-error';
 import type { Podcast, Episode, ValueBlock, ValueRecipient, ValueTimeSplit, ValueTimeSplitRemoteItem, SocialInteract, PodrollItem, FundingLink, AlternateEnclosure, FeedNpub } from './types';
 import {
   readAttr,
@@ -107,7 +107,7 @@ async function pi<T>(path: string, maxBytes?: number): Promise<T> {
   // which reads as an app bug rather than as "you are rate limited".
   //
   // Losing the status is not cosmetic. `getPodcastByFeedUrl` and every sibling
-  // wrapper turn a 400/404 into a MISS by testing `e instanceof PiHttpError`,
+  // wrapper turn a 400/404 into a MISS with `isPiMiss`, which tests the class,
   // and `piCouldNotAskStatus` (lib/pi-error.ts) reads 429/408 off the same
   // class so `withErrorHandling` can answer with that status instead of 500.
   // THAT is what puts a PI rate limit into `lib/podcast-meta.ts`'s
@@ -263,7 +263,7 @@ export async function searchMusicPodcasts(query: string, max = 50): Promise<Podc
     );
     return (data.feeds ?? []).map(buildPodcast);
   } catch (e) {
-    if (e instanceof PiHttpError && (e.status === 400 || e.status === 404)) return [];
+    if (isPiMiss(e)) return [];
     throw e;
   }
 }
@@ -286,7 +286,7 @@ async function getFeedsByMedium(medium: string, max: number): Promise<Podcast[]>
     );
     return (data.feeds ?? []).map(buildPodcast);
   } catch (e) {
-    if (e instanceof PiHttpError && (e.status === 400 || e.status === 404)) return [];
+    if (isPiMiss(e)) return [];
     throw e;
   }
 }
@@ -403,8 +403,14 @@ export async function searchPlaylistFeeds(query: string, limit: number): Promise
 }
 
 export async function getPodcast(feedId: number): Promise<Podcast | null> {
-  const data = await pi<any>(`/podcasts/byfeedid?id=${feedId}`);
-  return podcastFromPiFeed(data.feed);
+  try {
+    const data = await pi<any>(`/podcasts/byfeedid?id=${feedId}`);
+    return podcastFromPiFeed(data.feed);
+  } catch (e) {
+    // A miss, not an outage — see `isPiMiss`. Every caller already handles null.
+    if (isPiMiss(e)) return null;
+    throw e;
+  }
 }
 
 export async function getPodcastByFeedUrl(feedUrl: string): Promise<Podcast | null> {
@@ -420,14 +426,23 @@ export async function getPodcastByFeedUrl(feedUrl: string): Promise<Podcast | nu
     // tab — so one unresolvable podroll feedUrl would take out favorites
     // hydration and the feed's podcast chips. Auth (401/403) and 5xx still
     // throw: those really are breaker-worthy.
-    if (e instanceof PiHttpError && (e.status === 400 || e.status === 404)) return null;
+    if (isPiMiss(e)) return null;
     throw e;
   }
 }
 
 export async function getPodcastByGuid(guid: string): Promise<Podcast | null> {
-  const data = await pi<any>(`/podcasts/byguid?guid=${encodeURIComponent(guid)}`);
-  return podcastFromPiFeed(data.feed);
+  try {
+    const data = await pi<any>(`/podcasts/byguid?guid=${encodeURIComponent(guid)}`);
+    return podcastFromPiFeed(data.feed);
+  } catch (e) {
+    // A miss, not an outage — see `isPiMiss`. Today PI answers an unknown or
+    // malformed guid with 200 and an empty feed, so this arm is defensive:
+    // docs/feeds.md's probe-first-then-batch argument already assumes it, and
+    // a 400 here would otherwise be a 500 that trips the client breaker.
+    if (isPiMiss(e)) return null;
+    throw e;
+  }
 }
 
 // PI exposes valueTimeSplits as a flat top-level `timesplits` array on each
@@ -703,6 +718,18 @@ const rssXmlCache = createBoundedCache<string>({
   maxBytes: RSS_CACHE_MAX_BYTES,
   sizeOf: (xml) => xml.length,
 });
+
+/**
+ * How stale a feed's XML may be when a LIVE route answers from it:
+ * `/api/live-status`, `/api/live-value` and `/api/live-shows` all pass this as
+ * `maxAgeMs`. A live item's status and its now-playing turn over inside a
+ * minute, so the shared 60 s window is too coarse for them — but the override
+ * applies to THOSE calls only, so `/api/feed` and every other reader keep the
+ * cheaper shared window. One number, because the three routes mirror each
+ * other on purpose: a live show must not read as live on one and ended on
+ * another for the same poll.
+ */
+export const LIVE_XML_MAX_AGE_MS = 10_000;
 
 // `maxAgeMs` shortens the fresh window for ONE caller without shortening it for
 // everyone. The live-value poller needs the current "now playing", which turns
@@ -1723,7 +1750,7 @@ export async function getEpisodeByGuid(
     // Observed against a real shared list: 227 episode favorites, 0 rendered,
     // because the first entry was a music feed PI has never crawled.
     // Auth (401/403) and 5xx still throw — those are genuinely breaker-worthy.
-    if (e instanceof PiHttpError && (e.status === 400 || e.status === 404)) return null;
+    if (isPiMiss(e)) return null;
     throw e;
   }
 }

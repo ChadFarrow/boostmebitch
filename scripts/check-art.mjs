@@ -430,8 +430,8 @@ section('every vector replayed against the wrong implementations');
 // rejects type-only relative imports on purpose, and util.ts has one —
 // `import type { Podcast, ... } from './types'`. It is fine: type-only imports
 // are erased by type stripping, so the module loads under plain Node, which is
-// all this script needs. The eight modules the scan does enforce are ones with
-// NO imports at all; util.ts is not one of them. check:vts imports util.ts the
+// all this script needs. The modules the scan does enforce are ones with NO
+// imports at all, or bare npm ones only; util.ts is not one of them. check:vts imports util.ts the
 // same way and does not scan it either.
 
 if (failures) {

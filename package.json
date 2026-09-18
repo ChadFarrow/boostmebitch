@@ -12,6 +12,7 @@
     "android:config": "cd android && npx --yes @bubblewrap/cli@1.25.0 updateConfig --jdkPath \"$JAVA_HOME\" --androidSdkPath \"$ANDROID_HOME\"",
     "android:update": "cd android && npx --yes @bubblewrap/cli@1.25.0 update --skipVersionUpgrade",
     "android:release": "cd android && npx --yes @bubblewrap/cli@1.25.0 build --skipPwaValidation",
+    "check": "node scripts/run-checks.mjs",
     "check:spark": "node --experimental-strip-types scripts/check-spark-derivation.mjs",
     "check:sanitizer": "node --experimental-strip-types scripts/check-sanitizer.mjs",
     "check:ssrf": "node --experimental-strip-types scripts/check-ssrf-guard.mjs",
@@ -106,6 +107,7 @@
     "eslint-config-next": "^15.5.19",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.17",
-    "typescript": "^5.7.3"
+    "typescript": "^5.7.3",
+    "ws": "^8.21.0"
   }
 }

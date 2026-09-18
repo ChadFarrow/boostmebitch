@@ -5,6 +5,8 @@ import { shortNpub } from '@/lib/nostr';
 import { linkify, timeAgo } from '@/lib/format';
 import { elideAddress } from '@/lib/util';
 import { Avatar } from './avatar';
+import { LegStatusGlyph } from './leg-status-glyph';
+import { PodcastCover } from './podcast-cover';
 
 /**
  * Renders one of the user's locally-saved sent boosts. Visual sibling to
@@ -50,12 +52,16 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
         </div>
 
         <div className="flex items-center gap-2 mt-1.5 text-[11px] text-muted">
+          {/* Through <PodcastCover>, like every other cover: the /api/art proxy
+              first, the raw URL behind it, and an initial tile rather than a
+              broken-image icon when neither loads. Nothing at all when the
+              boost stored no image, as before. */}
           {boost.podcastImage ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={boost.podcastImage}
-              alt=""
-              className="w-4 h-4 object-cover border border-bone/20 flex-shrink-0"
+            <PodcastCover
+              image={boost.podcastImage}
+              title={boost.podcastTitle}
+              w={160}
+              className="w-4 h-4 border border-bone/20 flex-shrink-0 text-[8px]"
             />
           ) : null}
           <span className="truncate">
@@ -80,9 +86,7 @@ export function BoostCard({ boost }: { boost: StoredBoost }) {
                   and is what someone reads weeks later deciding whether a
                   recipient was ever paid — recording a guess as a fact is the
                   one thing it must not do. */}
-              <span className={leg.ok ? 'text-bolt' : leg.indeterminate ? 'text-muted' : 'text-red-400'}>
-                {leg.ok ? '✓' : leg.indeterminate ? '?' : '✗'}
-              </span>
+              <LegStatusGlyph ok={leg.ok} indeterminate={leg.indeterminate} />
               <span className="text-bone">{leg.recipientName || elideAddress(leg.recipient)}</span>
               <span>· {leg.sats} sats</span>
               {leg.boostboxUrl && (

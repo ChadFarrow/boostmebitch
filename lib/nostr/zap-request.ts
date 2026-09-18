@@ -86,6 +86,26 @@ export function nip73Tags(refs: Nip73Refs | undefined): string[][] {
 }
 
 /**
+ * The NIP-73 podcast refs a note or a zap request CARRIES — the reader beside
+ * `nip73Tags`, the writer. The first `podcast:guid:` `i` tag names the show and
+ * every `podcast:item:guid:` one names an episode. `k` tags are not read: they
+ * say what KIND of identifier follows, not which one.
+ *
+ * `lib/nostr/discover.ts` (a boost note) and `lib/nostr/zap-receipt.ts` (the
+ * zap request inside a receipt) had the same eight lines each.
+ */
+export function nip73GuidsFromTags(tags: string[][]): { podcastGuid: string | null; episodeGuids: string[] } {
+  const podcastGuid = tags
+    .find((t) => t[0] === 'i' && t[1]?.startsWith('podcast:guid:'))
+    ?.[1]
+    ?.slice('podcast:guid:'.length) ?? null;
+  const episodeGuids = tags
+    .filter((t) => t[0] === 'i' && t[1]?.startsWith('podcast:item:guid:'))
+    .map((t) => t[1].slice('podcast:item:guid:'.length));
+  return { podcastGuid, episodeGuids };
+}
+
+/**
  * Every tag a kind:9734 this app signs carries. NIP-57 Appendix D: `relays`,
  * `amount`, optional `lnurl`, exactly one `p`, optional `e` or `a`. Then the
  * NIP-73 pairs. No `client` tag — see the file header.

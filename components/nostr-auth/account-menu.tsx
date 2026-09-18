@@ -11,6 +11,7 @@ import { ProfileEditor } from '../profile-editor';
 import { ThemeMenuLink } from '../theme-toggle';
 import { BunkerApprovalNotice } from '../bunker-approval-notice';
 import { BunkerRestoreNotice } from '../bunker-restore-notice';
+import { Avatar } from '../avatar';
 
 // Surfaced inside AccountMenu when the NIP-46 bunker subscription has
 // gone stale (typically because iOS suspended the PWA's WebSocket while
@@ -260,13 +261,15 @@ export function AccountMenu({
             <AppHeader> is pinned against. Positioned over the avatar it costs
             zero layout, at any width. */}
         <span className="relative inline-flex flex-shrink-0">
+          {/* <Avatar>, not a bare <img>: a picture that fails to load gives the
+              generated 20x20 avatar in the same box, where the old one hid
+              itself and left the name with no mark beside it. */}
           {pic ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={pic}
-              alt=""
-              className="w-5 h-5 rounded-full object-cover border border-nostr/40"
-              onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+            <Avatar
+              pubkey={identity.pubkey}
+              picture={pic}
+              name={name}
+              className="w-5 h-5 rounded-full border border-nostr/40"
             />
           ) : (
             <span className="text-nostr">◆</span>

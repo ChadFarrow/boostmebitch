@@ -1,13 +1,10 @@
 // Shared guard for the modules that must stay loadable by a `check:*` script.
 //
-// Several modules are deliberately import-free — `lib/nostr/favorites-list.ts`,
-// `lib/nostr/read-trust.ts`, `lib/v4v/lease.ts`, `lib/assetlinks.ts`,
-// `lib/nostr/amber-callback-url.ts`, `lib/nostr/amber-safe-text.ts`,
-// `lib/gif-first-frame.ts`, `lib/chapters-json.ts`,
-// `lib/nostr/value-playback-summary.ts`, `lib/brand.ts`, `lib/capped-body.ts`,
-// `lib/nostr/zap-receipt-match.ts`, `lib/nostr/zap-request.ts` — and one is
-// allowed bare npm specifiers
-// only (`lib/v4v/nwc-errors.ts`). The rule exists because the check
+// Nineteen modules are deliberately import-free and three may import bare npm
+// specifiers only. The list is not repeated here, because a count in a comment
+// is the first thing to go stale: each check script names the modules it
+// guards where it calls `importFreeProblems`, and CLAUDE.md lists them all.
+// The rule exists because the check
 // scripts import the REAL shipping module under
 // `node --experimental-strip-types`; a reimplemented copy in the script would
 // stay green while the shipping code drifted, which is the exact failure being
@@ -70,8 +67,8 @@ export function importFreeProblems(path, { allowBare = false } = {}) {
 }
 
 /**
- * Print the standard explanation for a violation. Kept here so all three check
- * scripts say the same thing, and specifically so nobody "fixes" a failure by
+ * Print the standard explanation for a violation. Kept here so every check
+ * script says the same thing, and specifically so nobody "fixes" a failure by
  * reimplementing the module inside the script.
  */
 export function explainImportFree(path, problems) {

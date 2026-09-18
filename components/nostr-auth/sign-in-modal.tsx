@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useFlash } from '@/lib/use-flash';
 import { ModalShell } from '../modal-shell';
 import dynamic from 'next/dynamic';
 import Image from 'next/image';
@@ -90,6 +91,245 @@ function connectionDropped(msg: string): boolean {
 }
 
 
+
+// ---- the method list's pieces ------------------------------------------------
+//
+// MODULE-LEVEL, NEVER INSIDE `<SignInModal>`. These were defined in its body,
+// which makes each one a NEW component type on every render of a modal holding
+// thirty-odd pieces of state — so React unmounted and remounted every row on
+// each keystroke or tick: the DOM nodes replaced, keyboard focus dropped from a
+// row the user had tabbed to. Whatever they need from the modal comes in as a
+// prop.
+
+/**
+ * A signer's own app mark, vendored into `public/`. See `<MethodTile>` for
+ * why the rows that have no app still get a tile.
+ */
+function AppMark({ src }: { src: string }) {
+  return (
+    <Image src={src} alt="" aria-hidden width={20} height={20}
+      className="w-5 h-5 shrink-0 rounded object-contain" />
+  );
+}
+
+/**
+ * The same 20x20 rounded square, drawn rather than fetched, for the methods
+ * that are not an app.
+ *
+ * WHY IT IS A TILE AND NOT A GLYPH. Clave and Primal arrive as filled rounded
+ * squares — that is what an app icon is — and beside them a bare ◈ in the
+ * accent colour read as a different KIND of thing: lighter, smaller, and
+ * visibly not a peer of the two rows above it. Reported from a phone. The
+ * fix is to match the silhouette, not to strip the logos back: the logos are
+ * the whole reason someone finds their signer at a glance.
+ *
+ * Drawn from `components/icons.tsx` and the palette in `tailwind.config.ts`,
+ * never as a new image: an inline SVG on a token background costs no request,
+ * scales, and cannot go stale the way a bitmap of a QR code would. The colours
+ * are chosen to mean something rather than to fill the square — `bone` on
+ * `ink` for the QR, because a real QR is dark on light and that is what makes
+ * it readable as one at 20px; `nostr` for the bunker key, the accent this app
+ * already uses for identity.
+ *
+ * ◉ IS THE ONE CHARACTER HERE, and it is not a walk-back of "never as a new
+ * image" — it is not an image. The Google row carries the same ◉ the header
+ * dropdown gives it, because a Google wordmark is a fetched bitmap under a
+ * brand guideline, and the two menus offering the same thing under two marks
+ * is the drift this tile exists to stop. It is a glyph, not an emoji, so it
+ * takes the tile's `text-ink` like the SVGs do.
+ */
+function MethodTile({ tone, children }: { tone: string; children: React.ReactNode }) {
+  return (
+    <span
+      aria-hidden
+      className={`w-5 h-5 shrink-0 rounded flex items-center justify-center ${tone}`}
+    >
+      {children}
+    </span>
+  );
+}
+
+/**
+ * One row of the method list: what you own, named, with a reason to pick it.
+ *
+ * EVERY ROW'S MARK IS THE SAME 20x20 ROUNDED SQUARE, whether it is an app's
+ * own icon or one we draw. That is the fix for a real complaint: the two
+ * signer rows arrived as filled tiles — which is what an app icon is — and
+ * beside them a bare glyph in the accent colour read as a different KIND of
+ * thing, lighter and visibly not a peer. Matching the silhouette is the
+ * answer, not stripping the logos back; the logos are the whole reason
+ * someone finds their own signer at a glance.
+ *
+ * The column is fixed-width so every title starts at the same x, and the mark
+ * is centred against the WHOLE row rather than pinned to the title's line.
+ *
+ * That is a departure from `<AuthControl>`'s menu, which uses `items-start`
+ * plus `leading-5`, and the difference is what the mark IS. There the mark is
+ * a text glyph, so it has a line box that has to be made to match the title's
+ * or it drifts down beside the subtitle. A 20x20 tile has no baseline to
+ * align, so `items-start` just parks it against the first line and leaves it
+ * looking top-heavy over a two-line subtitle. Do not "restore consistency"
+ * with that menu by copying the rule across — the rule is about glyphs.
+ *
+ * NO EMOJI EITHER WAY. StableKraft use 🔌 🔑 📇 beside their app logos; a
+ * colour emoji in this palette reads as a sticker next to ◆ and ⚡, the family
+ * that menu and this modal's header already use. Ours are inline SVG from
+ * `components/icons.tsx` on a palette background — see `<MethodTile>`.
+ *
+ * App marks are **vendored into `public/`**, never hot-linked: an install page
+ * that goes down, changes its art or logs the request must not reach into this
+ * modal. Clave's comes from Conduit, who vendored it for that exact reason
+ * ("so the offline-capable apps never fetch it from clave.casa"); Primal's
+ * from StableKraft's own `public/primal-logo.png`.
+ */
+function MethodRow({
+  icon, title, subtitle, onClick, href, disabled,
+}: {
+  /** The 20x20 mark. `<AppMark>` for a signer, `<MethodTile>` for the rest. */
+  icon: React.ReactNode;
+  title: string;
+  /** A node, not a string, so a row can carry its own live state — see the
+   *  Clave row, whose subtitle turns magenta while the handshake finishes. */
+  subtitle: React.ReactNode;
+  onClick: () => void;
+  /** Renders an `<a>` instead of a `<button>`. ONE row component either way:
+   *  Clave's control must be a real anchor with a live `href`, because a
+   *  Universal Link opens the app only from a genuine tap on one, and a
+   *  second row component styled to match is how the two drift apart. */
+  href?: string;
+  disabled?: boolean;
+}) {
+  const cls = 'w-full text-left border border-bone/15 p-3 flex items-center gap-3 transition hover:border-nostr/50 hover:bg-bone/5 disabled:opacity-40 disabled:hover:border-bone/15 disabled:hover:bg-transparent';
+  const inner = (
+    <>
+      {icon}
+      <span className="flex flex-col min-w-0 gap-0.5">
+        <span className="text-sm leading-5">{title}</span>
+        <span className="text-[11px] text-muted">{subtitle}</span>
+      </span>
+    </>
+  );
+  if (href) {
+    return (
+      <a href={href} target="_self" rel="noopener" onClick={onClick} className={`${cls} no-underline`}>
+        {inner}
+      </a>
+    );
+  }
+  return (
+    <button onClick={onClick} disabled={disabled} className={cls}>
+      {inner}
+    </button>
+  );
+}
+
+/** A detail screen's title and its way back. Back is a teardown — see `goto`
+ *  in `<SignInModal>`, which is what `onBack` calls. */
+function DetailHeader({ title, onBack }: { title: string; onBack: () => void }) {
+  return (
+    <div className="flex flex-col gap-2">
+      <button
+        onClick={onBack}
+        className="btn-ghost self-start text-[11px] py-1.5 px-3"
+      >
+        ← Back
+      </button>
+      <h4 className="font-display text-sm">{title}</h4>
+    </div>
+  );
+}
+
+/**
+ * THE PRIMARY CONTROL, AND IT IS AN `<a href>` ON PURPOSE.
+ *
+ * A Universal Link opens the app only from a genuine tap on a real anchor;
+ * dispatched from script it is an ordinary https navigation and clave.casa's
+ * web page loads instead. That is not a browser quirk to route around — it is
+ * the mechanism — so the control has to BE the anchor rather than a button
+ * that builds one.
+ *
+ * Which is why the pairing is prepared before this renders. An anchor's href
+ * has to exist at render time, so there is no "mint the URI inside the click"
+ * step left; the effect below does it when the box opens, and this shows a
+ * disabled button for the moment in between.
+ *
+ * Conduit (github.com/Conduit-BTC, `packages/ui/src/components`) ships exactly
+ * this — `<ClaveConnectButton>` is an `<a>` around `clave.casa/connect/?uri=`,
+ * fed by a pairing their `useSignerPairing` prepares on mount — and it is what
+ * a user compared this against: tap, Clave opens, switch back, signed in. Ours
+ * asked them to tap a scripted `clave://` instead, which shows an "Open in
+ * Clave?" sheet on the way out and could not use the Universal Link at all.
+ *
+ * `prepareClave()` runs in the same click, but ONLY when nothing is already
+ * listening. The anchor is worth no more than the subscription behind it, and
+ * an attempt that has already timed out would let the ack arrive with nobody
+ * home — but re-subscribing over a live attempt just opens a second socket on
+ * one pairing, so `claveBusy` decides.
+ */
+function ClaveConnectLink({ uri, returned, busy, sent, onTap }: {
+  uri: string | null;
+  returned: boolean;
+  busy: boolean;
+  sent: boolean;
+  /** Marks the trip and, when nothing is already listening, prepares the
+   *  pairing — `markClaveSent()` then `prepareClave()`, in that order. */
+  onTap: () => void;
+}) {
+  // THE STATE LIVES IN THE SUBTITLE, which is what lets this be a row like
+  // every other one. It used to be a full-width yellow button with a
+  // paragraph under it, and that carried a rule of its own: while the
+  // handshake was finishing the button dropped to `btn-ghost`, because the
+  // loudest thing on screen telling someone who had just come back to go back
+  // again was wrong at exactly the moment it was wrongest. A row has no
+  // emphasis to drop — the three states read out of one line instead, and the
+  // rule survives as the magenta pulse rather than as a class swap.
+  const subtitle = !uri
+    ? 'Preparing connection…'
+    : returned && busy
+      ? <span className="text-nostr animate-bolt">◆ Finishing sign-in…</span>
+      : sent
+        ? 'Approve in Clave, then come back — this page finishes on its own.'
+        : 'Sign in with the Clave app on this phone.';
+  // No `href` until the pairing exists: an anchor whose link is not yet live
+  // is a tap that goes nowhere, and the Universal Link is the one mechanism
+  // here that cannot be built inside the click.
+  if (!uri) {
+    return <MethodRow icon={<AppMark src="/clave-logo.png" />} title="Clave" subtitle={subtitle} onClick={() => {}} disabled />;
+  }
+  return (
+    <MethodRow
+      icon={<AppMark src="/clave-logo.png" />}
+      title="Clave"
+      subtitle={subtitle}
+      href={claveUniversalLink(uri)}
+      onClick={onTap}
+    />
+  );
+}
+
+/**
+ * The escape hatch, and it is the custom scheme precisely because the primary
+ * is not.
+ *
+ * A Universal Link can be switched off by the user without their realising
+ * it: one tap on the "clave.casa" breadcrumb in Safari's top-right and iOS
+ * opens the web page for that domain from then on, permanently, with no UI to
+ * undo it and nothing on the page able to detect it. `clave://` is unaffected,
+ * which makes this the only cure for the one failure the primary cannot
+ * report. It is a scripted click, which is fine — a custom scheme, unlike a
+ * Universal Link, is dispatched from one.
+ */
+function ClaveSchemeButton({ uri, label, onTap }: { uri: string | null; label: string; onTap: () => void }) {
+  if (!uri) return null;
+  return (
+    <button
+      onClick={() => { onTap(); openAppLink(claveOpenLink(uri)); }}
+      className="btn-ghost text-[10px] py-1 px-2"
+    >
+      {label}
+    </button>
+  );
+}
 
 // Single sign-in surface: one "Sign in with Nostr" button opens this modal,
 // which lists the sign-in methods that can work on THIS device — the phone's own
@@ -283,7 +523,7 @@ export function SignInModal({
   const [genBusy, setGenBusy] = useState(false);
   const [genErr, setGenErr] = useState<string | null>(null);
   const [genAuthUrl, setGenAuthUrl] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied, clearCopied] = useFlash<true>(1500);
   // THE RAW URI IS COLLAPSED, NOT DELETED, and the difference is a real
   // fallback. `copyGenUri` swallows a failed clipboard write — no permission,
   // no transient activation, a browser that does not implement it — and shows
@@ -603,89 +843,11 @@ export function SignInModal({
     }
   }
 
-  /**
-   * THE PRIMARY CONTROL, AND IT IS AN `<a href>` ON PURPOSE.
-   *
-   * A Universal Link opens the app only from a genuine tap on a real anchor;
-   * dispatched from script it is an ordinary https navigation and clave.casa's
-   * web page loads instead. That is not a browser quirk to route around — it is
-   * the mechanism — so the control has to BE the anchor rather than a button
-   * that builds one.
-   *
-   * Which is why the pairing is prepared before this renders. An anchor's href
-   * has to exist at render time, so there is no "mint the URI inside the click"
-   * step left; the effect below does it when the box opens, and this shows a
-   * disabled button for the moment in between.
-   *
-   * Conduit (github.com/Conduit-BTC, `packages/ui/src/components`) ships exactly
-   * this — `<ClaveConnectButton>` is an `<a>` around `clave.casa/connect/?uri=`,
-   * fed by a pairing their `useSignerPairing` prepares on mount — and it is what
-   * a user compared this against: tap, Clave opens, switch back, signed in. Ours
-   * asked them to tap a scripted `clave://` instead, which shows an "Open in
-   * Clave?" sheet on the way out and could not use the Universal Link at all.
-   *
-   * `prepareClave()` runs in the same click, but ONLY when nothing is already
-   * listening. The anchor is worth no more than the subscription behind it, and
-   * an attempt that has already timed out would let the ack arrive with nobody
-   * home — but re-subscribing over a live attempt just opens a second socket on
-   * one pairing, so `claveBusy` decides.
-   */
-  function ClaveConnectLink() {
-    // THE STATE LIVES IN THE SUBTITLE, which is what lets this be a row like
-    // every other one. It used to be a full-width yellow button with a
-    // paragraph under it, and that carried a rule of its own: while the
-    // handshake was finishing the button dropped to `btn-ghost`, because the
-    // loudest thing on screen telling someone who had just come back to go back
-    // again was wrong at exactly the moment it was wrongest. A row has no
-    // emphasis to drop — the three states read out of one line instead, and the
-    // rule survives as the magenta pulse rather than as a class swap.
-    const subtitle = !claveUri
-      ? 'Preparing connection…'
-      : claveReturned && claveBusy
-        ? <span className="text-nostr animate-bolt">◆ Finishing sign-in…</span>
-        : claveSent
-          ? 'Approve in Clave, then come back — this page finishes on its own.'
-          : 'Sign in with the Clave app on this phone.';
-    // No `href` until the pairing exists: an anchor whose link is not yet live
-    // is a tap that goes nowhere, and the Universal Link is the one mechanism
-    // here that cannot be built inside the click.
-    if (!claveUri) {
-      return <MethodRow icon={<AppMark src="/clave-logo.png" />} title="Clave" subtitle={subtitle} onClick={() => {}} disabled />;
-    }
-    return (
-      <MethodRow
-        icon={<AppMark src="/clave-logo.png" />}
-        title="Clave"
-        subtitle={subtitle}
-        href={claveUniversalLink(claveUri)}
-        onClick={() => { markClaveSent(); if (!claveBusy) void prepareClave(); }}
-      />
-    );
-  }
 
-  /**
-   * The escape hatch, and it is the custom scheme precisely because the primary
-   * is not.
-   *
-   * A Universal Link can be switched off by the user without their realising
-   * it: one tap on the "clave.casa" breadcrumb in Safari's top-right and iOS
-   * opens the web page for that domain from then on, permanently, with no UI to
-   * undo it and nothing on the page able to detect it. `clave://` is unaffected,
-   * which makes this the only cure for the one failure the primary cannot
-   * report. It is a scripted click, which is fine — a custom scheme, unlike a
-   * Universal Link, is dispatched from one.
-   */
-  function ClaveSchemeButton({ label }: { label: string }) {
-    if (!claveUri) return null;
-    return (
-      <button
-        onClick={() => { markClaveSent(); if (!claveBusy) void prepareClave(); openAppLink(claveOpenLink(claveUri)); }}
-        className="btn-ghost text-[10px] py-1 px-2"
-      >
-        {label}
-      </button>
-    );
-  }
+
+  // What a tap on either Clave control does before the link opens: record the
+  // trip, and prepare the pairing unless an attempt is already listening.
+  const onClaveTap = () => { markClaveSent(); if (!claveBusy) void prepareClave(); };
 
   /**
    * Record that the user left for Clave, and start the only clock that can
@@ -714,7 +876,7 @@ export function SignInModal({
     setGenAuthUrl(null);
     // Don't clear genUri — loginWithNostrConnect's session memo returns the
     // same URI on retry, so the QR the user already scanned stays valid.
-    setCopied(false);
+    clearCopied();
     try {
       const { uri, ready } = startPairing((url) => setGenAuthUrl(url));
       setGenUri(uri);
@@ -747,8 +909,7 @@ export function SignInModal({
     if (!genUri) return;
     try {
       await navigator.clipboard.writeText(genUri);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      flashCopied(true);
     } catch {
       // Reveal the block rather than failing in silence: the user has just
       // asked for the link and this is the only other way to hand it over.
@@ -1011,156 +1172,12 @@ export function SignInModal({
     onClose();
   }
 
-  /**
-   * A signer's own app mark, vendored into `public/`. See `<MethodTile>` for
-   * why the rows that have no app still get a tile.
-   */
-  function AppMark({ src }: { src: string }) {
-    return (
-      <Image src={src} alt="" aria-hidden width={20} height={20}
-        className="w-5 h-5 shrink-0 rounded object-contain" />
-    );
-  }
 
-  /**
-   * The same 20x20 rounded square, drawn rather than fetched, for the methods
-   * that are not an app.
-   *
-   * WHY IT IS A TILE AND NOT A GLYPH. Clave and Primal arrive as filled rounded
-   * squares — that is what an app icon is — and beside them a bare ◈ in the
-   * accent colour read as a different KIND of thing: lighter, smaller, and
-   * visibly not a peer of the two rows above it. Reported from a phone. The
-   * fix is to match the silhouette, not to strip the logos back: the logos are
-   * the whole reason someone finds their signer at a glance.
-   *
-   * Drawn from `components/icons.tsx` and the palette in `tailwind.config.ts`,
-   * never as a new image: an inline SVG on a token background costs no request,
-   * scales, and cannot go stale the way a bitmap of a QR code would. The colours
-   * are chosen to mean something rather than to fill the square — `bone` on
-   * `ink` for the QR, because a real QR is dark on light and that is what makes
-   * it readable as one at 20px; `nostr` for the bunker key, the accent this app
-   * already uses for identity.
-   *
-   * ◉ IS THE ONE CHARACTER HERE, and it is not a walk-back of "never as a new
-   * image" — it is not an image. The Google row carries the same ◉ the header
-   * dropdown gives it, because a Google wordmark is a fetched bitmap under a
-   * brand guideline, and the two menus offering the same thing under two marks
-   * is the drift this tile exists to stop. It is a glyph, not an emoji, so it
-   * takes the tile's `text-ink` like the SVGs do.
-   */
-  function MethodTile({ tone, children }: { tone: string; children: React.ReactNode }) {
-    return (
-      <span
-        aria-hidden
-        className={`w-5 h-5 shrink-0 rounded flex items-center justify-center ${tone}`}
-      >
-        {children}
-      </span>
-    );
-  }
 
-  /**
-   * One row of the method list: what you own, named, with a reason to pick it.
-   *
-   * EVERY ROW'S MARK IS THE SAME 20x20 ROUNDED SQUARE, whether it is an app's
-   * own icon or one we draw. That is the fix for a real complaint: the two
-   * signer rows arrived as filled tiles — which is what an app icon is — and
-   * beside them a bare glyph in the accent colour read as a different KIND of
-   * thing, lighter and visibly not a peer. Matching the silhouette is the
-   * answer, not stripping the logos back; the logos are the whole reason
-   * someone finds their own signer at a glance.
-   *
-   * The column is fixed-width so every title starts at the same x, and the mark
-   * is centred against the WHOLE row rather than pinned to the title's line.
-   *
-   * That is a departure from `<AuthControl>`'s menu, which uses `items-start`
-   * plus `leading-5`, and the difference is what the mark IS. There the mark is
-   * a text glyph, so it has a line box that has to be made to match the title's
-   * or it drifts down beside the subtitle. A 20x20 tile has no baseline to
-   * align, so `items-start` just parks it against the first line and leaves it
-   * looking top-heavy over a two-line subtitle. Do not "restore consistency"
-   * with that menu by copying the rule across — the rule is about glyphs.
-   *
-   * NO EMOJI EITHER WAY. StableKraft use 🔌 🔑 📇 beside their app logos; a
-   * colour emoji in this palette reads as a sticker next to ◆ and ⚡, the family
-   * that menu and this modal's header already use. Ours are inline SVG from
-   * `components/icons.tsx` on a palette background — see `<MethodTile>`.
-   *
-   * App marks are **vendored into `public/`**, never hot-linked: an install page
-   * that goes down, changes its art or logs the request must not reach into this
-   * modal. Clave's comes from Conduit, who vendored it for that exact reason
-   * ("so the offline-capable apps never fetch it from clave.casa"); Primal's
-   * from StableKraft's own `public/primal-logo.png`.
-   */
-  function MethodRow({
-    icon, title, subtitle, onClick, href, disabled,
-  }: {
-    /** The 20x20 mark. `<AppMark>` for a signer, `<MethodTile>` for the rest. */
-    icon: React.ReactNode;
-    title: string;
-    /** A node, not a string, so a row can carry its own live state — see the
-     *  Clave row, whose subtitle turns magenta while the handshake finishes. */
-    subtitle: React.ReactNode;
-    onClick: () => void;
-    /** Renders an `<a>` instead of a `<button>`. ONE row component either way:
-     *  Clave's control must be a real anchor with a live `href`, because a
-     *  Universal Link opens the app only from a genuine tap on one, and a
-     *  second row component styled to match is how the two drift apart. */
-    href?: string;
-    disabled?: boolean;
-  }) {
-    const cls = 'w-full text-left border border-bone/15 p-3 flex items-center gap-3 transition hover:border-nostr/50 hover:bg-bone/5 disabled:opacity-40 disabled:hover:border-bone/15 disabled:hover:bg-transparent';
-    const inner = (
-      <>
-        {icon}
-        <span className="flex flex-col min-w-0 gap-0.5">
-          <span className="text-sm leading-5">{title}</span>
-          <span className="text-[11px] text-muted">{subtitle}</span>
-        </span>
-      </>
-    );
-    if (href) {
-      return (
-        <a href={href} target="_self" rel="noopener" onClick={onClick} className={`${cls} no-underline`}>
-          {inner}
-        </a>
-      );
-    }
-    return (
-      <button onClick={onClick} disabled={disabled} className={cls}>
-        {inner}
-      </button>
-    );
-  }
 
-  /** A detail screen's title and its way back. Back is a teardown — see goto. */
-  function DetailHeader({ title }: { title: string }) {
-    return (
-      <div className="flex flex-col gap-2">
-        <button
-          onClick={() => goto('menu')}
-          className="btn-ghost self-start text-[11px] py-1.5 px-3"
-        >
-          ← Back
-        </button>
-        <h4 className="font-display text-sm">{title}</h4>
-      </div>
-    );
-  }
 
   return (
-    <ModalShell onClose={handleClose} label="Sign in" className="w-full max-w-md">
-        {/* The padding IS the tap target — the glyph does not move. It was
-            `top-2 right-3` with no padding, i.e. an ~11px-wide box, under WCAG
-            2.5.8's 24x24 floor. `px-3 py-2` at `top-0 right-0` puts the x
-            exactly where it was (12px in, 8px down) inside a 44x35 button. */}
-        <button
-          onClick={handleClose}
-          className="absolute top-0 right-0 px-3 py-2 text-muted hover:text-bone text-lg z-10"
-          aria-label="Close"
-        >
-          ×
-        </button>
+    <ModalShell onClose={handleClose} label="Sign in" className="w-full max-w-md" closeButton>
 
         <div className="p-5 border-b border-bone/15">
           {view === 'google' ? (
@@ -1260,7 +1277,7 @@ export function SignInModal({
                 )}
                 {ios && (
                   <>
-                    <ClaveConnectLink />
+                    <ClaveConnectLink uri={claveUri} returned={claveReturned} busy={claveBusy} sent={claveSent} onTap={onClaveTap} />
                     {claveAuthUrl && (
                       <div className="flex flex-col items-start gap-1 border border-nostr/40 bg-nostr/10 p-2">
                         <span className="text-[10px] text-bone">
@@ -1300,7 +1317,7 @@ export function SignInModal({
                             ? 'Still waiting on Clave. Approve the request if it is showing, or go back and pick Bunker URI, copying the link from Clave.'
                             : 'Still nothing? Clave may not be installed, or this browser may not be handing it the link.'}
                         </span>
-                        <ClaveSchemeButton label="Open the Clave app directly" />
+                        <ClaveSchemeButton uri={claveUri} label="Open the Clave app directly" onTap={onClaveTap} />
                         {!claveReturned && (
                           <span className="text-[11px] text-muted">
                             Don&apos;t have Clave?{' '}
@@ -1340,7 +1357,7 @@ export function SignInModal({
                             same-device iOS path, so it must stay one sentence
                             away — but a duplicate of that screen inside this box
                             is not how you keep it reachable. */}
-                        <ClaveSchemeButton label="Nothing opened? Open the Clave app directly" />
+                        <ClaveSchemeButton uri={claveUri} label="Nothing opened? Open the Clave app directly" onTap={onClaveTap} />
                       </div>
                     )}
 
@@ -1460,7 +1477,7 @@ export function SignInModal({
 
             {view === 'qr' && (
               <>
-                <DetailHeader title="Scan a QR code" />
+                <DetailHeader title="Scan a QR code" onBack={() => goto('menu')} />
                 {/* IT STAYS SIGNER-NEUTRAL, and that is the half of the earlier
                     experiment worth keeping. Heading this "Scan with Clave" was
                     tried for one commit and named one signer on the one platform
@@ -1562,7 +1579,7 @@ export function SignInModal({
 
             {view === 'primal' && (
               <>
-                <DetailHeader title="Sign in with Primal" />
+                <DetailHeader title="Sign in with Primal" onBack={() => goto('menu')} />
                 <div className="border border-bone/15 p-3 flex flex-col gap-2">
                   <button
                     onClick={() => onPrimalConnect()}
@@ -1614,7 +1631,7 @@ export function SignInModal({
 
             {view === 'bunker' && (
               <>
-                <DetailHeader title="Paste a bunker URI" />
+                <DetailHeader title="Paste a bunker URI" onBack={() => goto('menu')} />
                 {/* Paste a bunker:// URI the signer generated. */}
                 <div className="border border-bone/15 p-3 flex flex-col gap-2">
                   <p className="text-[11px] text-muted">

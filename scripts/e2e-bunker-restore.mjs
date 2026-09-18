@@ -37,50 +37,24 @@
 //      a notice on every cold load is its own bug.
 
 import { createRelay } from './local-relay.mjs';
-import { spawn } from 'node:child_process';
-import { rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { checker, exit, launchChrome, requireApp, wait } from './cdp.mjs';
 import { finalizeEvent, generateSecretKey, getPublicKey, nip19, nip44 } from 'nostr-tools';
 
-const PORT = 7457, CDP = 9225, APP = 'http://localhost:3000';
-const HEADED = process.argv.includes('--headed');
-const KEEP = process.argv.includes('--keep');
+const APP = 'http://localhost:3000';
 
-const appUp = await fetch(APP).then((r) => r.ok).catch(() => false);
-if (!appUp) {
-  console.error(`Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.`);
-  console.error('(and `rm -rf .next` first if you have just run a production build)');
-  process.exit(1);
-}
+await requireApp(APP, `Nothing is serving ${APP}. Start it with \`npm run dev\` in another terminal.
+(and \`rm -rf .next\` first if you have just run a production build)`);
 
-const CHROME = process.env.CHROME_PATH
-  || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const profile = `${tmpdir()}/bmb-e2e-bunker-restore`;
-rmSync(profile, { recursive: true, force: true });
-const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-const chrome = spawn(CHROME, [
-  ...(HEADED ? [] : ['--headless=new']),
-  ...(asRoot ? ['--no-sandbox'] : []),
-  `--remote-debugging-port=${CDP}`,
-  `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--disable-gpu',
-  'about:blank',
-], { stdio: 'ignore' });
-const stopChrome = () => { if (!KEEP) chrome.kill(); };
-process.on('exit', stopChrome);
-
-let ready = false;
-for (let i = 0; i < 60 && !ready; i += 1) {
-  ready = await fetch(`http://127.0.0.1:${CDP}/json/version`).then((r) => r.ok).catch(() => false);
-  if (!ready) await new Promise((r) => setTimeout(r, 250));
-}
-if (!ready) { console.error(`Chrome never opened its debug port on ${CDP}.`); process.exit(1); }
+// The browser comes from scripts/cdp.mjs: muted, on a free debug port, closed
+// on any exit, `--no-sandbox` only as root, and left open by `--keep`.
+const { page } = await launchChrome({ name: 'bunker-restore', args: ['--disable-gpu'] });
 
 const sk = generateSecretKey();
 const pk = getPublicKey(sk);
 const npub = nip19.npubEncode(pk);
 
-createRelay({ port: PORT, log: null });
+// Port 0 and read back, never a fixed port: another run can already hold one.
+const PORT = await createRelay({ port: 0, log: null }).ready;
 
 // ---- the stub signer -------------------------------------------------------
 //
@@ -144,30 +118,12 @@ function send46(reply) {
 }
 
 // ---- CDP -------------------------------------------------------------------
-const list = await (await fetch(`http://127.0.0.1:${CDP}/json/list`)).json();
-const page = list.find((t) => t.type === 'page');
-const ws = new WebSocket(page.webSocketDebuggerUrl);
-let id = 0; const pending = new Map();
-ws.addEventListener('message', (e) => {
-  const m = JSON.parse(e.data);
-  if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-});
-await new Promise((r) => ws.addEventListener('open', r));
-const send = (method, params = {}) => new Promise((res) => { const n = ++id; pending.set(n, res); ws.send(JSON.stringify({ id: n, method, params })); });
-const js = async (expr) => {
-  const r = await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true });
-  if (r.result?.exceptionDetails) throw new Error(r.result.exceptionDetails.exception?.description ?? 'eval failed');
-  return r.result?.result?.value;
-};
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const { send } = page;
+const js = page.jsOrThrow;
 const hex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
 
-let failures = 0;
-function check(label, got, want) {
-  const ok = JSON.stringify(got) === JSON.stringify(want);
-  if (!ok) failures += 1;
-  console.log(`  ${ok ? 'ok  ' : 'FAIL'}  ${label}${ok ? '' : `\n          got ${JSON.stringify(got)}, want ${JSON.stringify(want)}`}`);
-}
+const t = checker();
+const check = (label, got, want) => t.equal(label, got, want);
 
 // THE NOTICE RENDERS OUTSIDE THE MENU, which is the point of it, so this reads
 // the whole document rather than `[role="menu"]`. The elapsed count comes back
@@ -340,5 +296,5 @@ check('a late approval completes the signature that was waiting', signed?.ok, tr
 check('...and the banner never went up', await staleBanner(), false);
 await closeAccountMenu();
 
-console.log(failures === 0 ? '\nAll bunker-restore checks passed.\n' : `\n${failures} FAILED\n`);
-process.exit(failures === 0 ? 0 : 1);
+console.log(t.fails === 0 ? '\nAll bunker-restore checks passed.\n' : `\n${t.fails} FAILED\n`);
+await exit(t.fails === 0 ? 0 : 1);

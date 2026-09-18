@@ -62,6 +62,33 @@ NEWER event with an older one, in the file whose job is to prove replacement wor
 must be in the PAST, or the app's own republish is the older event and the relay
 rejects it.
 
+## Every `e2e:*` script drives Chrome through `scripts/cdp.mjs` — never a copy
+
+Eleven scripts each carried their own Chrome-and-CDP boilerplate, and the copies
+had drifted in exactly the places that cost something. The harness now owns
+those, and a new script imports it rather than pasting a twelfth copy:
+
+- **Always muted.** `e2e-playlist` turned on autoplay without `--mute-audio` and
+  played `public/boost.mp3` out loud; an earlier throwaway driver played a live
+  stream through the speakers from tabs a previous run had left behind.
+- **Port 0, never a fixed port.** `launchChrome` passes
+  `--remote-debugging-port=0` and reads the port Chrome bound from
+  `<profile>/DevToolsActivePort`. With fixed ports two scripts shared 9224, and a
+  leftover Chrome on a fixed port answers `/json/list` for the NEXT run — which
+  then drives the wrong browser and kills a process that owns nothing. The
+  relays the e2e scripts start are on port 0 for the same reason
+  (`createRelay` returns `ready`, a promise of the bound port); `npm run relay`
+  keeps 7447 for a human.
+- **Always `exit(code)` at the end.** A script holding a relay or a socket open
+  does not return on its own, and only a GREEN run hangs, because the failure
+  path already exited. `exit` closes every browser first; the `exit`, SIGINT and
+  SIGTERM hooks close them on any other way out, and `close()` sweeps `ps` for
+  anything still holding the profile before deleting it.
+
+`checker()` keeps both assertion shapes the scripts already used —
+`equal(label, actual, expected)` and `ok(label, cond, detail)` — so a migrated
+assertion keeps its meaning, and every result line starts `ok` or `FAIL`.
+
 ## A branch "N commits ahead of `main`" is NOT unfinished work
 
 A squash merge changes the patch id, so `git log main..`, `git cherry` and
