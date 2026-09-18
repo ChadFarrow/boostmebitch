@@ -19,7 +19,7 @@ import { startStreamingEngine, stopStreamingEngine } from '@/lib/v4v/streaming';
 import { startLiveValueWatcher, stopLiveValueWatcher } from '@/lib/v4v/live-value';
 import { useLiveBlockImage } from './live-now-playing';
 import { useTranscript, transcriptSourceFor, transcriptIndexAt } from '@/lib/transcript';
-import { ChapterTicks, ChapterLabel } from './chapter-ui';
+import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
 import { BoostModal } from './boost-modal';
 import { StreamPulse } from './streaming-settings';
 import { BoltIcon, PipIcon } from './icons';
@@ -1171,6 +1171,7 @@ export function Player() {
                   <span className="text-[10px] text-muted tabular-nums">{fmt(positionSec)}</span>
                   <div className="relative flex-1 flex items-center">
                     <ChapterTicks chapters={chapters} duration={duration} />
+                    <ChapterHoverTip chapters={chapters} duration={duration} />
                     <input
                       type="range"
                       className="seek block w-full relative"
