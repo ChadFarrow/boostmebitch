@@ -566,13 +566,35 @@ console.log('\n--- 5. A REAL NIP-46 bunker: no cold-start decrypt, and an error 
   await send('Page.navigate', { url: APP }); await wait(20000);
 
   check('after a reload the notice does NOT come back', await noticeText(), null);
-  // The gate is unchanged — this must still cost no prompt. If the fix worked by
-  // simply asking again, this is the check that says so.
+  // No prompt, even though pressing load granted a standing permission to
+  // decrypt on load (`listDecryptOnLoadOk`): these are the bytes this device
+  // already decoded, and `fetchMutedPubkeys` asks `alreadyOpened` before the
+  // signer. Red on main from #316 until that check existed — every cold start
+  // decrypted the unchanged half again.
   check('...and the bunker was not asked to decrypt again',
     seen.some((m) => m.endsWith('_decrypt')), false);
   const reloaded = await readMuted();
   check('...and the private mute survived the reload',
     reloaded?.privatePubkeys?.includes(PRIVATE_MUTE), true);
+
+  // THE OTHER HALF, and what stops "never ask again" passing this scenario.
+  // Another client rewrites the private half — same entries, but encryption is
+  // non-deterministic, so the bytes are new — and that is a document this
+  // device has never read. With the permission granted above it must be
+  // DECRYPTED, not reused and not parked, and the new bytes become the ones
+  // remembered.
+  const rewritten = nip44.v2.encrypt(privateJson, convo);
+  seedMuteList(rewritten, T0 + 800);
+  seen.length = 0;
+  await send('Page.navigate', { url: APP }); await wait(20000);
+  check('a REWRITTEN private half is decrypted, not reused',
+    seen.includes('nip44_decrypt'), true);
+  const afterRewrite = await readMuted();
+  check('...and the new ciphertext is the one remembered now',
+    afterRewrite?.knownPrivateContent, rewritten);
+  check('...with the private mute still applied',
+    afterRewrite?.privatePubkeys?.includes(PRIVATE_MUTE), true);
+  check('...and no notice, since the permission covered it', await noticeText(), null);
 
   console.log('\n  5d. a QUEUED approval is asked again, on a NEW request id');
   // THE CLAVE SHAPE, and the only automated proof of it there can be.

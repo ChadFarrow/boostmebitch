@@ -72,7 +72,10 @@ flips the sync status and unmounts the notice mid-await.
 
 **The risk this accepts, so it is not rediscovered as a bug:** a signer set to
 approve *each* request manually now prompts on cold start instead of showing a
-notice. That is a worse trade for that user. `<ListUnlockSection>` in the account
+notice — for the favorites half on every cold start, and for the mutes half only
+when its ciphertext changed since this device last opened it (the mutes read
+asks `alreadyOpened` before the signer; see "A half we have opened once" in
+nostr.md). That is a worse trade for that user. `<ListUnlockSection>` in the account
 menu is the way back, and it renders **only when the flag is set** — granting it
 removes both notices, so the surface it was granted from is gone, and nothing
 else would mention the setting. The failure is visible and one tap from

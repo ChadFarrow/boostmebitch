@@ -102,14 +102,28 @@ function partitionTags(tags: string[][]): { pubkeys: string[]; other: string[][]
  * CALL, never hardcoded here — see the note on `decryptWithTimeout`.
  *
  * A half we DID open records the ciphertext it came from in
- * `knownPrivateContent`, so a later load that is not allowed to ask the signer
- * can recognize the same document and reuse this device's plaintext instead of
- * parking it again. See `privateHalfAlreadyOpened` in ./mute-state.
+ * `knownPrivateContent`, so a later load can recognize the same document and
+ * reuse this device's plaintext instead of asking again. See
+ * `privateHalfAlreadyOpened` in ./mute-state.
+ *
+ * `alreadyOpened(content)` is asked BEFORE the signer is, and a yes parks the
+ * blob without decrypting it — the hydrator's reopen path then takes this
+ * device's plaintext, exactly as it does on a load that may not decrypt at all.
+ * It matters on the loads that MAY: since a user's unlock became a standing
+ * permission (`listDecryptOnLoadOk`), every cold start decrypted the same
+ * unchanged ciphertext again, which is a prompt on every start for a signer
+ * that approves each request by hand. A callback, not a value read up front:
+ * it is evaluated after the relay answered, with nothing awaited between it
+ * and the hydrator's own read of the cache, so the two cannot disagree.
  */
 export async function fetchMutedPubkeys(
   pubkey: string,
   queryRelays?: string[],
-  opts?: { decryptPrivate?: boolean; purpose?: DecryptPurpose },
+  opts?: {
+    decryptPrivate?: boolean;
+    purpose?: DecryptPurpose;
+    alreadyOpened?: (content: string) => boolean;
+  },
 ): Promise<MuteListState | null> {
   const decryptPrivate = opts?.decryptPrivate ?? true;
   const purpose: DecryptPurpose = opts?.purpose ?? 'unattended';
@@ -159,6 +173,10 @@ export async function fetchMutedPubkeys(
         }
       } else if (privateCipher === 'unknown') {
         park('this app does not recognize the shape of its content');
+      } else if (opts?.alreadyOpened?.(newest.content)) {
+        // Not a failure to read: the exact bytes this device decoded before.
+        // Parked so the hydrator's reopen path reuses that plaintext.
+        park('this device already opened this exact ciphertext — reusing it, not asking the signer');
       } else if (!decryptPrivate) {
         park('not spending a signer prompt here — the local cache still filters');
       } else {
