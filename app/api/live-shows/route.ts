@@ -1,13 +1,14 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling } from '@/lib/api-handler';
+import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import {
-  PiHttpError,
   getGlobalLiveItemsDetailed,
   getLiveItemsFromRssDetailed,
   getPodcast,
+  LIVE_XML_MAX_AGE_MS,
 } from '@/lib/pi';
 import { createBoundedCache } from '@/lib/bounded-cache';
+import { piCouldNotAskStatus } from '@/lib/pi-error';
 import {
   compareLiveShows, liveRosterFeedOrder, mapLimit, mergeLiveOverPi, FEED_FANOUT, PI_FANOUT,
 } from '@/lib/util';
@@ -48,9 +49,9 @@ import type { Episode, LiveShow, Podcast } from '@/lib/types';
 const LIVE_SHOWS_CACHE = { 'Cache-Control': 'public, max-age=30, s-maxage=30' };
 
 // An answer PI could not be fully asked for is never cached — the same rule
-// /api/publisher and /api/playlist apply. Caching it would serve the thin
-// version for the whole window after PI came back.
-const NO_STORE = { 'Cache-Control': 'no-store' };
+// /api/publisher and /api/playlist apply (`NO_STORE`, lib/api-handler.ts).
+// Caching it would serve the thin version for the whole window after PI came
+// back.
 
 /**
  * The header for an answer that depends on WHO ASKED.
@@ -65,11 +66,6 @@ const NO_STORE = { 'Cache-Control': 'no-store' };
  */
 const PERSONAL_CACHE = { 'Cache-Control': 'private, max-age=30' };
 
-// The per-caller freshness override on the shared RSS cache, matching
-// /api/live-status. A live item's status is the one field on a feed that goes
-// stale inside a minute, and the 60 s window /api/feed depends on must not be
-// dragged down to serve this route.
-const LIVE_XML_MAX_AGE_MS = 10_000;
 
 /**
  * Hard ceiling on how many feeds one request will verify.
@@ -330,7 +326,8 @@ export async function GET(req: Request) {
       const resolved = await mapLimit(needsPi, PI_FANOUT, (id) => getPodcast(id));
       resolved.forEach((p, i) => { if (p) piByFeed.set(needsPi[i], p); });
     } catch (e) {
-      if (!(e instanceof PiHttpError) || (e.status !== 429 && e.status !== 408)) throw e;
+      // A PI 429/408 means we could not ask, not that there is nothing.
+      if (piCouldNotAskStatus(e) === null) throw e;
       couldNotAskPi = true;
     }
 

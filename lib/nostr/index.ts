@@ -21,7 +21,7 @@ export {
   type ProfileMetadata,
 } from './auth';
 
-export { isAmberActive, isBunkerActive, isLocalActive, canSignUnattended, getNip44 } from './signer';
+export { isAmberActive, canSignUnattended, getNip44 } from './signer';
 // Exported for abandonRestoredSession: dropping the polyfill without wiping
 // the stored key (which is what clearLocalSigner does).
 export { deactivateLocalSigner } from './signer';
@@ -29,7 +29,6 @@ export { isKeyEphemeral } from './local-key-store';
 export { isGoogleAuthConfigured } from './google-auth';
 export { isLikelyAndroid, isLikelyIOS, normalizeAmberPubkey } from './amber';
 export {
-  isBunkerStale,
   bunkerRefusal,
   bunkerRequestTooLarge,
   subscribeBunkerHealth,
@@ -42,17 +41,15 @@ export {
   hasPendingNostrConnect,
   type BunkerApprovalStage,
   type BunkerRestoreStage,
-  type BunkerRestorePhase,
 } from './bunker';
 export {
   claveOpenLink,
   claveUniversalLink,
   CLAVE_APP_STORE_URL,
-  CLAVE_OPEN_URL,
 } from './clave';
 export { primalConnectUrl, PRIMAL_PLAY_URL } from './primal';
 
-export { fetchProfile, fetchRawProfile, publishProfile, type RawProfile } from './profile';
+export { fetchProfile, fetchRawProfile, publishProfile } from './profile';
 
 export {
   DEFAULT_RELAYS,
@@ -94,10 +91,9 @@ export {
   indexedBoostsReceivedBy,
   indexedZapsReceivedBy,
   indexedLiveStreams,
-  indexAvailable,
 } from './index-client';
 
-export { fetchViewerReposts, useViewerReposts } from './viewer-state';
+export { useViewerReposts } from './viewer-state';
 
 export {
   publishBoostNote,
@@ -151,7 +147,6 @@ export {
 // queue was a second way in. Use `requestFavoritesSync`.
 export {
   favoritesMode,
-  setFavoritesMode,
   seedFavoritesMode,
   privateFavoritesEnabled,
   unattendedDecryptOk,
@@ -161,14 +156,10 @@ export {
   requestFavoritesSync,
   serializeFavoritesCycle,
   syncFavoritesNow,
-  syncOptionsFor,
   withdrawThisDevice,
 } from './favorites-sync';
 
 export {
-  WALLET_BACKUP_KIND,
-  WALLET_BACKUP_D_TAG,
-  WALLET_NWC_D_TAG,
   fetchEncryptedMnemonic,
   fetchEncryptedMnemonicDetailed,
   publishEncryptedMnemonic,
@@ -179,13 +170,10 @@ export {
 } from './wallet-backup';
 
 export {
-  SETTINGS_D_TAG,
   fetchSettings,
-  publishSettings,
   applySyncedSettings,
   recordLastRail,
   recordFavoritesPrivacy,
-  type SyncedSettings,
 } from './settings-backup';
 
 export { hydrateFavorites } from './favorites-hydrator';

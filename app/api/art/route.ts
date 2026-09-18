@@ -50,7 +50,8 @@ export const runtime = 'nodejs';
  */
 const MAX_ART_BYTES = 12 * 1024 * 1024;
 
-/** Same 2048-char bound every other proxy parameter in this app carries. */
+/** The 2048-char bound the guid routes carry on a URL parameter. (The chapters
+ *  and transcript proxy allows 2000.) */
 const MAX_URL_LEN = 2048;
 
 export async function GET(req: Request) {

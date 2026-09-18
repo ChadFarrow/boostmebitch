@@ -243,10 +243,6 @@ function setBunkerStale(stale: boolean) {
   }
 }
 
-export function isBunkerStale(): boolean {
-  return bunkerStale;
-}
-
 /**
  * "This session's signer cannot serve it — say so and offer the way back."
  *
@@ -464,9 +460,19 @@ class BunkerTimeoutError extends Error {}
  * See lib/nostr/nip46-errors.ts.
  */
 export class BunkerRequestTooLargeError extends Error {
-  constructor(readonly bytes: number, readonly limit: number, label: string) {
+  // Declared and assigned, never `constructor(readonly bytes: number, …)`: a
+  // parameter property emits runtime code, so `node --experimental-strip-types`
+  // refuses the whole module — and `npm run e2e:mentions` loads this file that
+  // way. It could not run at all while this read the tidier way. Same trap as
+  // `PiHttpError` in lib/pi-error.ts.
+  readonly bytes: number;
+  readonly limit: number;
+
+  constructor(bytes: number, limit: number, label: string) {
     super(`Bunker ${label}: request is ${bytes} bytes, and NIP-46 allows at most ${limit}`);
     this.name = 'BunkerRequestTooLargeError';
+    this.bytes = bytes;
+    this.limit = limit;
   }
 }
 

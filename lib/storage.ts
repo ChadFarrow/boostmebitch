@@ -510,6 +510,53 @@ function coerceToMuteState(parsed: unknown): MuteListState {
   };
 }
 
+/**
+ * Read a cached `DiscoveredNote[]` — the shape `feedNotes` and `socialThread`
+ * both store — or null when absent or unreadable. Tolerates the legacy
+ * `{ t, v }` wrapper, and normalizes `replies` recursively, because notes
+ * cached before that field existed on the type would crash any consumer that
+ * iterates `note.replies`.
+ */
+function readCachedNotes(fullKey: string): DiscoveredNote[] | null {
+  const raw = safeGet(fullKey);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    const arr: unknown = Array.isArray(parsed)
+      ? parsed
+      : parsed && Array.isArray(parsed.v)
+        ? parsed.v
+        : null;
+    if (!arr) return null;
+    const normalize = (n: DiscoveredNote): DiscoveredNote => ({
+      ...n,
+      replies: Array.isArray(n.replies) ? n.replies.map(normalize) : [],
+    });
+    return (arr as DiscoveredNote[]).map(normalize);
+  } catch {
+    return null;
+  }
+}
+
+/** A `string[]` of COLLAPSED heading keys — the shape both collapse settings
+ *  share. An empty set removes the key rather than storing '[]': nothing
+ *  collapsed is the default. */
+function collapsedKeys(key: string) {
+  return {
+    get: (): string[] => {
+      const raw = safeGet(key);
+      if (!raw) return [];
+      try {
+        const arr = JSON.parse(raw);
+        return Array.isArray(arr) ? arr.filter((k): k is string => typeof k === 'string') : [];
+      } catch {
+        return [];
+      }
+    },
+    set: (v: string[]) => (v.length ? safeSet(key, JSON.stringify(v)) : safeRemove(key)),
+  };
+}
+
 export const storage = {
   npub: {
     get: () => safeGet(KEYS.npub),
@@ -663,21 +710,6 @@ export const storage = {
   },
 
   /**
-   * "This account turned Spark off" — **per-npub**, `:guest` when signed out.
-   *
-   * This was a single global key, which conflated device with identity: the
-   * flag answers a per-account question ("does THIS user want Spark?") but was
-   * stored once per browser. Two ways that bit:
-   *   - a Google signup for a brand-new key was suppressed by an opt-out some
-   *     other identity had made, leaving new users with no wallet at all;
-   *   - clearing it on that new account's behalf resurrected Spark for the
-   *     identity that had deliberately turned it off.
-   *
-   * The legacy global value is migrated on first read (below) rather than
-   * dropped, so an existing user's deliberate opt-out isn't silently undone by
-   * this refactor.
-   */
-  /**
    * Has this account explicitly opened its private list halves on this device?
    *
    * Set only from a control the user pressed. It is consent, not a cache, so it
@@ -702,12 +734,26 @@ export const storage = {
       safeGet(identityKey(KEYS.listUnlockPrefix, npub)) === '1',
     set: (npub: string | null | undefined, on: boolean): void => {
       const key = identityKey(KEYS.listUnlockPrefix, npub);
-      if (!key) return;
       if (on) safeSet(key, '1');
       else safeRemove(key);
     },
   },
 
+  /**
+   * "This account turned Spark off" — **per-npub**, `:guest` when signed out.
+   *
+   * This was a single global key, which conflated device with identity: the
+   * flag answers a per-account question ("does THIS user want Spark?") but was
+   * stored once per browser. Two ways that bit:
+   *   - a Google signup for a brand-new key was suppressed by an opt-out some
+   *     other identity had made, leaving new users with no wallet at all;
+   *   - clearing it on that new account's behalf resurrected Spark for the
+   *     identity that had deliberately turned it off.
+   *
+   * The legacy global value is deliberately NOT read, and `get` says why: it
+   * recorded that some identity once turned Spark off, and inheriting it cost
+   * a real user their wallet.
+   */
   sparkOptOut: {
     get: (npub: string | null | undefined): boolean => {
       // Tri-state on purpose: '1' = opted out, '0' = explicitly opted IN,
@@ -913,21 +959,7 @@ export const storage = {
    * 'npub:recv'), so two surfaces adding a "received" section don't collapse
    * each other's. Stale keys are harmless and left alone.
    */
-  sectionCollapsed: {
-    get: (): string[] => {
-      const raw = safeGet(KEYS.sectionCollapsed);
-      if (!raw) return [];
-      try {
-        const arr = JSON.parse(raw);
-        return Array.isArray(arr) ? arr.filter((k): k is string => typeof k === 'string') : [];
-      } catch {
-        return [];
-      }
-    },
-    /** Empty set removes the key rather than storing '[]' — nothing collapsed is the default. */
-    set: (v: string[]) =>
-      (v.length ? safeSet(KEYS.sectionCollapsed, JSON.stringify(v)) : safeRemove(KEYS.sectionCollapsed)),
-  },
+  sectionCollapsed: collapsedKeys(KEYS.sectionCollapsed),
 
   /**
    * Which favorites group headings the user has collapsed.
@@ -948,20 +980,7 @@ export const storage = {
    * on write would mean a device that momentarily resolved nothing — a PI
    * outage, mid-hydration — silently forgetting the user's choice.
    */
-  favCollapsed: {
-    get: (): string[] => {
-      const raw = safeGet(KEYS.favCollapsed);
-      if (!raw) return [];
-      try {
-        const arr = JSON.parse(raw);
-        return Array.isArray(arr) ? arr.filter((k): k is string => typeof k === 'string') : [];
-      } catch {
-        return [];
-      }
-    },
-    /** Empty set removes the key rather than storing '[]' — nothing collapsed is the default. */
-    set: (v: string[]) => (v.length ? safeSet(KEYS.favCollapsed, JSON.stringify(v)) : safeRemove(KEYS.favCollapsed)),
-  },
+  favCollapsed: collapsedKeys(KEYS.favCollapsed),
 
   /**
    * How the user last left the `/favorites` controls: medium tab, sort order,
@@ -1137,28 +1156,7 @@ export const storage = {
    * global feed, 'podcast:<guid>' per podcast.
    */
   feedNotes: {
-    get: (key: string): DiscoveredNote[] | null => {
-      const raw = safeGet(`${KEYS.feedNotesPrefix}:${key}`);
-      if (!raw) return null;
-      try {
-        const parsed = JSON.parse(raw);
-        const arr: unknown = Array.isArray(parsed)
-          ? parsed
-          : parsed && Array.isArray(parsed.v)
-            ? parsed.v
-            : null;
-        if (!arr) return null;
-        // Notes cached before `replies` was added on the type would crash any
-        // consumer that iterates `note.replies`. Normalize recursively here.
-        const normalize = (n: DiscoveredNote): DiscoveredNote => ({
-          ...n,
-          replies: Array.isArray(n.replies) ? n.replies.map(normalize) : [],
-        });
-        return (arr as DiscoveredNote[]).map(normalize);
-      } catch {
-        return null;
-      }
-    },
+    get: (key: string): DiscoveredNote[] | null => readCachedNotes(`${KEYS.feedNotesPrefix}:${key}`),
     set: (key: string, v: DiscoveredNote[]) =>
       safeSet(`${KEYS.feedNotesPrefix}:${key}`, JSON.stringify(v)),
   },
@@ -1167,31 +1165,12 @@ export const storage = {
    * Last DiscoveredNote[] per `podcast:socialInteract` URI. Same
    * stale-while-revalidate paint as `feedNotes` (returned regardless of age;
    * every mount of `EpisodeSocialThread` revalidates). Keyed by the raw
-   * `nostr:` URI, which is stable per episode. Reuses the recursive `replies`
-   * normalizer + legacy `{ t, v }` tolerance so a note cached before any field
-   * existed won't crash a consumer iterating `note.replies`.
+   * `nostr:` URI, which is stable per episode. Reads through the same
+   * `readCachedNotes` as `feedNotes` — the recursive `replies` normalizer and
+   * the legacy `{ t, v }` tolerance.
    */
   socialThread: {
-    get: (uri: string): DiscoveredNote[] | null => {
-      const raw = safeGet(`${KEYS.socialThreadPrefix}:${uri}`);
-      if (!raw) return null;
-      try {
-        const parsed = JSON.parse(raw);
-        const arr: unknown = Array.isArray(parsed)
-          ? parsed
-          : parsed && Array.isArray(parsed.v)
-            ? parsed.v
-            : null;
-        if (!arr) return null;
-        const normalize = (n: DiscoveredNote): DiscoveredNote => ({
-          ...n,
-          replies: Array.isArray(n.replies) ? n.replies.map(normalize) : [],
-        });
-        return (arr as DiscoveredNote[]).map(normalize);
-      } catch {
-        return null;
-      }
-    },
+    get: (uri: string): DiscoveredNote[] | null => readCachedNotes(`${KEYS.socialThreadPrefix}:${uri}`),
     set: (uri: string, v: DiscoveredNote[]) =>
       safeSet(`${KEYS.socialThreadPrefix}:${uri}`, JSON.stringify(v)),
   },
@@ -1878,12 +1857,6 @@ export const storage = {
   },
 
   /**
-   * Client-side circuit breaker for Podcast Index metadata resolution.
-   *
-   * sessionStorage for the same reason as above — it should survive a reload
-   * (a PI outage doesn't end because someone refreshed) but not outlive the tab.
-   */
-  /**
    * The in-flight Amber (NIP-55) request, and the result it comes back with.
    *
    * These exist because Amber returns a `callbackUrl` result by NAVIGATING to
@@ -2054,6 +2027,13 @@ export const storage = {
     },
   },
 
+  /**
+   * Client-side circuit breaker for Podcast Index metadata resolution.
+   *
+   * sessionStorage for the same reason as `nwcSessionUri` — it should survive a
+   * reload (a PI outage doesn't end because someone refreshed) but not outlive
+   * the tab.
+   */
   piBreaker: {
     /** True while PI is considered usable. Fails OPEN: unreadable storage must not disable resolution. */
     isAlive: (): boolean => {

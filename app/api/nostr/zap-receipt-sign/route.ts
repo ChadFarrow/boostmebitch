@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { finalizeEvent, verifyEvent } from 'nostr-tools/pure';
 import type { Event } from 'nostr-tools';
-import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestJson, requireJsonBody, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { siteSecretKey, sitePubkey } from '@/lib/nostr/site-key';
 import { summaryReceiptTemplate, summaryRequestTemplateFromSpec, validateSummaryRequest } from '@/lib/nostr/zap-request';
@@ -48,16 +48,9 @@ export async function POST(req: Request) {
   }
 
   return withErrorHandling(async () => {
-    const rawBody = await readCappedRequestText(req, MAX_REQUEST_BYTES);
-    if (rawBody === null) {
-      return NextResponse.json({ error: 'payload too large' }, { status: 400 });
-    }
-    let body: unknown;
-    try {
-      body = JSON.parse(rawBody);
-    } catch {
-      return NextResponse.json({ error: 'invalid JSON' }, { status: 400 });
-    }
+    const read = await readCappedRequestJson(req, MAX_REQUEST_BYTES);
+    if (!read.ok) return read.response;
+    const body = read.body;
     const now = Math.floor(Date.now() / 1000);
     const b = body && typeof body === 'object' ? (body as { request?: unknown; spec?: unknown }) : {};
     let input: unknown = b.request;
@@ -82,7 +75,7 @@ export async function POST(req: Request) {
     const signed = finalizeEvent(summaryReceiptTemplate(checked.request, site, now), sk);
     return NextResponse.json(
       { event: signed },
-      { headers: { 'Cache-Control': 'no-store' } },
+      { headers: NO_STORE },
     );
   }, 'zap-receipt-sign failed');
 }

@@ -38,10 +38,6 @@ export const INDEX_FEED_LIMIT = 50;
  */
 let indexOffForTab = false;
 
-export function indexAvailable(): boolean {
-  return !indexOffForTab;
-}
-
 async function ask<T>(path: string, params?: Record<string, string>): Promise<T | null> {
   if (indexOffForTab) return null;
   const qs = new URLSearchParams({ path, ...(params ?? {}) });

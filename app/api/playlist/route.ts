@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling } from '@/lib/api-handler';
+import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getFeedTitle, getPlaylistChannel, getPodcastByFeedUrl } from '@/lib/pi';
 import { resolvePlaylistTracks } from '@/lib/playlist-db';
@@ -298,7 +298,7 @@ export async function GET(req: Request) {
           // paying a full page of Podcast Index lookups again. Nothing is
           // withheld by caching it — those rows are as valued as any retry could
           // make them.
-          couldNotAsk > 0 || unaskedValues > 0 ? { 'Cache-Control': 'no-store' } : PLAYLIST_CACHE,
+          couldNotAsk > 0 || unaskedValues > 0 ? NO_STORE : PLAYLIST_CACHE,
       },
     );
   }, 'playlist fetch failed');

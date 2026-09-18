@@ -5,8 +5,9 @@
 //
 // Deliberately carries NO runtime imports beyond `nostr-tools` and no Node
 // APIs — same reasoning as lib/v4v/stream-ledger.ts and lib/v4v/spark-derive.ts.
-// pi.ts itself can't be strip-typed (PiHttpError uses a parameter property) and
-// pulls in safe-fetch, so keeping parseNostrTxtNpubs here means
+// pi.ts itself can't be loaded that way — it imports `node:crypto`, safe-fetch
+// and a dozen app modules through extensionless paths — so keeping
+// parseNostrTxtNpubs here means
 // `npm run check:npub` pins the REAL production parser rather than a copy of
 // it. A copy stays green while the shipping parser drifts, which is the exact
 // failure the check exists to catch.

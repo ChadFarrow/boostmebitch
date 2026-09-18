@@ -6,6 +6,7 @@ import { parseProfileContent, type ProfileMetadata } from './auth';
 import { collectEventsByAuthors } from './event-queries';
 import { warmRelays } from './relay-health';
 import { parseZapReceipt, zapReceiptAmountMsat, type ZapReceipt } from './zap-receipt';
+import { nip73GuidsFromTags } from './zap-request';
 import { stripNostrUris, extractImages, mentionedPubkeys } from '../format';
 
 export interface DiscoveredNote {
@@ -200,14 +201,7 @@ function buildNote(
     e.tags.some((t) => t[0] === 't' && (t[1] === 'boostagram' || t[1] === 'value4value')) ||
     (amountMsat !== null && amountMsat > 0) ||
     viaZapReceipt;
-  const podcastGuid =
-    e.tags
-      .find((t) => t[0] === 'i' && t[1]?.startsWith('podcast:guid:'))
-      ?.[1]
-      ?.slice('podcast:guid:'.length) ?? null;
-  const episodeGuids = e.tags
-    .filter((t) => t[0] === 'i' && t[1]?.startsWith('podcast:item:guid:'))
-    .map((t) => t[1].slice('podcast:item:guid:'.length));
+  const { podcastGuid, episodeGuids } = nip73GuidsFromTags(e.tags);
   return {
     id: e.id,
     pubkey: e.pubkey,

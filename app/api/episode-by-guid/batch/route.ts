@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestJson, requireJsonBody } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { batchEpisodes, MAX_BATCH, type EpisodeRef } from '@/lib/pi-batch';
 
@@ -30,16 +30,9 @@ export async function POST(req: Request) {
   // Capped read, then parse — see `readCappedRequestText`. Sized against the
   // widest legitimate call: MAX_REFS entries, each an itemGuid of up to 2048
   // characters plus a feedGuid, with room to spare for JSON punctuation.
-  const rawBody = await readCappedRequestText(req, MAX_REQUEST_BYTES);
-  if (rawBody === null) {
-    return NextResponse.json({ error: 'payload too large' }, { status: 400 });
-  }
-  let body: unknown;
-  try {
-    body = JSON.parse(rawBody);
-  } catch {
-    return NextResponse.json({ error: 'invalid json' }, { status: 400 });
-  }
+  const read = await readCappedRequestJson(req, MAX_REQUEST_BYTES);
+  if (!read.ok) return read.response;
+  const body = read.body;
   const rawRefs = (body as { refs?: unknown })?.refs;
   if (!Array.isArray(rawRefs)) {
     return NextResponse.json({ error: 'refs must be an array' }, { status: 400 });

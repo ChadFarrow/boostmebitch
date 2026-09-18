@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling } from '@/lib/api-handler';
+import { withErrorHandling, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { askIndex, indexConfigured } from '@/lib/nostr-index-server';
 
@@ -116,7 +116,7 @@ export async function GET(req: Request) {
     return NextResponse.json(data, {
       headers: match.sMaxAge
         ? { 'Cache-Control': `public, s-maxage=${match.sMaxAge}, stale-while-revalidate=300` }
-        : { 'Cache-Control': 'no-store' },
+        : NO_STORE,
     });
   }, 'index request failed');
 }

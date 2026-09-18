@@ -49,9 +49,10 @@ function getSharedPool(): SimplePool {
  * tab's WebSocket budget until sockets stop opening at all.
  *
  * The install is a prototype patch, so one call covers every pool in the tab.
- * Routing all five construction sites through here anyway is what keeps that
- * true when a sixth is added: the shared pool here, the live-chat pool, and the
- * three short-lived NIP-46 pools in `bunker.ts` — which need it most, since a
+ * Routing every construction site through here anyway is what keeps that true
+ * when another is added: the shared pool here, the live-chat pool, the one
+ * `zap-receipt-wait.ts` opens, and the three short-lived NIP-46 pools in
+ * `bunker.ts` — which need it most, since a
  * `nostrconnect://` pairing waits out its whole window against relays a phone
  * may never reach.
  */

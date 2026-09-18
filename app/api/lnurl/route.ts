@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling, readCappedRequestText, requireJsonBody } from '@/lib/api-handler';
+import { withErrorHandling, readCappedRequestJson, requireJsonBody, NO_STORE } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { safeFetch } from '@/lib/safe-fetch';
 import { readCappedText } from '@/lib/capped-body';
@@ -65,16 +65,9 @@ export async function POST(req: Request) {
   // Capped read, then parse — see `readCappedRequestText`. The only field
   // this route uses is a URL already bounded by MAX_URL_LENGTH below, so
   // anything approaching this ceiling is not a request we were going to serve.
-  const rawBody = await readCappedRequestText(req, MAX_REQUEST_BYTES);
-  if (rawBody === null) {
-    return NextResponse.json({ error: 'invalid body' }, { status: 400 });
-  }
-  let body: unknown;
-  try {
-    body = JSON.parse(rawBody);
-  } catch {
-    return NextResponse.json({ error: 'invalid body' }, { status: 400 });
-  }
+  const read = await readCappedRequestJson(req, MAX_REQUEST_BYTES);
+  if (!read.ok) return read.response;
+  const body = read.body;
   const url = typeof (body as { url?: unknown })?.url === 'string'
     ? (body as { url: string }).url.trim()
     : '';
@@ -120,7 +113,7 @@ export async function POST(req: Request) {
     const text = await readCappedText(res, MAX_LNURL_BYTES);
     return NextResponse.json(
       { status: res.status, text },
-      { headers: { 'Cache-Control': 'no-store' } },
+      { headers: NO_STORE },
     );
   }, 'lnurl fetch failed');
 }
