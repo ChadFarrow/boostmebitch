@@ -155,6 +155,11 @@ function answer(pathname, search) {
       nextOffset: null, notFound: 0, couldNotAsk: 0, sourceShow: null, playGroups: PLAY_GROUPS,
     };
   }
+  // /live, for the code-split scenario: the route's own empty answer. The
+  // catch-all `{}` below is not a shape that route ever sends, and /live
+  // iterates `items` — so it threw, the error boundary replaced the page, and
+  // `<NostrLiveStreams>` read as never having mounted.
+  if (pathname === '/api/live-shows') return { items: [], unverifiedFeeds: 0, truncated: false };
   return {};
 }
 
@@ -347,10 +352,10 @@ if (await srcHas('t=0', 5000)) {
 // normal one for most visitors.
 //
 // Four surfaces were split out of the first-load bundle (329 kB → 307 kB): the
-// two home-page Nostr sections, the episode detail view and the discussion
-// view. Each is gated by a condition that is false on the first commit, which
-// is exactly why the split is free — and exactly why nobody would notice one of
-// them never coming back. So each is mounted here, once.
+// two Nostr sections, the episode detail view and the discussion view. Each is
+// gated by a condition that is false on the first commit, which is exactly why
+// the split is free — and exactly why nobody would notice one of them never
+// coming back. So each is mounted here, once, on the route that renders it.
 console.log('\nCode-split surfaces');
 const mounts = async (url, needle, what) => {
   await send('Page.navigate', { url });
@@ -362,12 +367,14 @@ const mounts = async (url, needle, what) => {
   fail(`${what} never appeared — check its dynamic() import resolves the named export`);
 };
 
-// The home page, where both Nostr sections sit below the hero. Their own
-// skeletons carry these headings, so this does not wait on a relay.
-await mounts(`${APP}/`, 'Live on Nostr', '<NostrLiveStreams>');
-if (!(await js('document.body.innerText.includes("Global boost feed")'))) {
-  fail('<GlobalNostrFeed> never appeared — check its dynamic() import resolves the named export');
-} else ok('<GlobalNostrFeed> mounts');
+// `<NostrLiveStreams>` lives on /live, not the home page — it moved there when
+// /live gained a dock tab (#347), and this check kept looking on `/` and
+// failing on a component that was fine. Its skeleton carries the heading, so
+// this does not wait on a relay; /live renders the words nowhere else, so the
+// text is still proof the dynamic() import resolved.
+await mounts(`${APP}/live`, 'Live on Nostr', '<NostrLiveStreams>');
+// The home page's own Nostr section, below the hero. Same skeleton rule.
+await mounts(`${APP}/`, 'Global boost feed', '<GlobalNostrFeed>');
 
 await mounts(
   `${APP}/?podcast=${SHOW_GUID}&episode=${encodeURIComponent(EPISODE_GUID)}`,
