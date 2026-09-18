@@ -32,6 +32,9 @@ for (const name of names) {
     } else {
       const tally = [...out.matchAll(/^# (pass|fail) (\d+)$/gm)].map((m) => `${m[1]} ${m[2]}`).join(', ');
       console.log(`REPORTED  ${name} (${secs} s) — ${tally || `exit ${r.status}`}; never gating`);
+      // A stale spec checkout makes the tally meaningless; pass its warning on.
+      const warn = out.match(/^conformance: WARNING .*$/m);
+      if (warn) console.log(`          ${warn[0]}`);
     }
     continue;
   }

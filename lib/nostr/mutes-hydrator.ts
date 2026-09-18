@@ -82,7 +82,15 @@ export async function hydrateMutes(
   // an empty mute list. Same fix, same reason, as `fetchFavoritesList` requiring
   // its relay set rather than defaulting to one.
   const relays = resolvePublishRelays(identity);
-  const muteEvent = await fetchMutedPubkeys(identity.pubkey, relays, { decryptPrivate, purpose });
+  // `alreadyOpened` spares the signer a decrypt of bytes this device has
+  // already decoded — which, since an unlock became a standing permission, was
+  // every cold start. It reads the cache at the moment of the decision; see
+  // `fetchMutedPubkeys`.
+  const muteEvent = await fetchMutedPubkeys(identity.pubkey, relays, {
+    decryptPrivate,
+    purpose,
+    alreadyOpened: (content) => storage.muted.get(identity.npub).knownPrivateContent === content,
+  });
 
   // READ THE CACHE AFTER THE AWAIT, NEVER BEFORE IT. This used to be the first
   // line of the function, and the gap it left is not small: this hydration does

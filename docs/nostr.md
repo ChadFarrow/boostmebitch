@@ -1137,7 +1137,23 @@ Three properties, each a way to get it wrong:
   which is the same bug wearing a different hat.
 - **A rewrite by another client must bring the notice back.** The bytes differ,
   the match fails, the half parks. That is correct: there is a new document this
-  device has not read.
+  device has not read. (Once the user has granted the standing permission below,
+  the new bytes are decrypted instead of parked — still a fresh read, never a
+  reuse.)
+
+**The match is asked BEFORE the signer, not only when the signer may not be
+asked.** It began as the answer for a load that may not decrypt. Then an unlock
+became a standing permission (`listDecryptOnLoadOk`, see signers.md), and every
+cold start after it decrypted the same unchanged ciphertext again — a round trip
+each load, and a prompt each load on a signer that approves every request by
+hand. `fetchMutedPubkeys` now takes `alreadyOpened(content)` and asks it first;
+a yes parks the blob without decrypting, and the reopen path above takes this
+device's plaintext exactly as it does when decrypting is not allowed. It is a
+**callback, not a value read up front**: it runs after the relay answered, with
+nothing awaited between it and the hydrator's own read of the cache, so the two
+cannot disagree. `e2e:mutes` 5c pins both halves — no decrypt on a reload of the
+same bytes, and a decrypt (with the new bytes remembered) after another client
+rewrites them. The first half was red on main from #316 until this existed.
 
 **Dropping the park also fixes a silent half nobody had reported.** While
 `unreadablePrivateContent` is set, `publishMuteList` writes the blob verbatim
