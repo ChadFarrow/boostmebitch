@@ -27,6 +27,7 @@ import { DeferredOnScroll } from '../deferred-on-scroll';
 import { FavEpisodeHeart, FavHeart } from '../fav-heart';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
+import { ResumeLeft } from './resume-left';
 
 /**
  * The two surfaces below the list, deferred in BYTES as well as on screen.
@@ -958,6 +959,7 @@ export function EpisodeList({
                     )
                   )}
                   {e.duration && <span className="whitespace-nowrap">· {fmtDuration(e.duration)}</span>}
+                  {data.podcast && <ResumeLeft episode={e} podcast={data.podcast} />}
                   {e.value && <span className="text-bolt whitespace-nowrap">· ⚡ V4V</span>}
                 </div>
                 {/* These were bare inline <span>s carrying `mt-0.5`, which does
