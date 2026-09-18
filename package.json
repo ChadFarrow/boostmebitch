@@ -58,6 +58,7 @@
     "e2e:favorites": "node scripts/e2e-favorites.mjs",
     "e2e:keyboard": "node scripts/e2e-keyboard.mjs",
     "e2e:artgate": "node scripts/e2e-artgate.mjs",
+    "e2e:seekhover": "node scripts/e2e-seekhover.mjs",
     "e2e:resume": "node scripts/e2e-resume.mjs",
     "e2e:mutes": "node scripts/e2e-mutes.mjs",
     "e2e:bunkerrestore": "node scripts/e2e-bunker-restore.mjs",

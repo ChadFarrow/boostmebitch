@@ -7,7 +7,7 @@ import { fmt } from '@/lib/format';
 import { chapterState, buildChapterNav, type ChapterEntry } from '@/lib/chapters';
 import { nowPlayingArt } from '@/lib/track-art';
 import { lockScroll } from '@/lib/scroll-lock';
-import { ChapterTicks, ChapterLabel } from './chapter-ui';
+import { ChapterTicks, ChapterHoverTip, ChapterLabel } from './chapter-ui';
 import type { TranscriptCue } from '@/lib/transcript';
 import { TranscriptPanel } from './transcript-ui';
 import { EpisodeContents } from './episode-contents';
@@ -792,6 +792,7 @@ export function FullscreenPlayer({
               <div className="flex flex-col gap-1.5">
                 <div className="relative flex items-center">
                   <ChapterTicks chapters={chapters} duration={duration} />
+                  <ChapterHoverTip chapters={chapters} duration={duration} />
                   <input
                     type="range"
                     className="seek block w-full relative"

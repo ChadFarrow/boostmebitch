@@ -1,6 +1,7 @@
 'use client';
+import { useEffect, useRef, useState } from 'react';
 import { fmt } from '@/lib/format';
-import type { ChapterEntry } from '@/lib/chapters';
+import { chapterState, type ChapterEntry } from '@/lib/chapters';
 
 /**
  * The 36–40px thumbnail on a chapter or track row, with the two-URL-then-hide
@@ -78,6 +79,13 @@ export function RowThumb({
  * positioned spans (no wrapper) so each player keeps its own
  * `relative flex items-center` wrapper around the <input>. Skips the 0s start so
  * a tick doesn't sit under the thumb at rest. Shared by both players.
+ *
+ * **Placed with the thumb inset, not as a plain percentage.** A range input
+ * keeps its thumb inside the box, so a value maps to `thumb/2 + (width -
+ * thumb) * fraction`; a plain `left: n%` put each tick up to half a thumb from
+ * the point that seeks to it, which on a four-hour episode is minutes.
+ * `--seek-thumb` (app/globals.css) is the one width the thumb, the ticks and
+ * `<ChapterHoverTip>` all read.
  */
 export function ChapterTicks({
   chapters,
@@ -94,13 +102,89 @@ export function ChapterTicks({
           <span
             key={`${c.startTime}-${i}`}
             aria-hidden
-            title={c.title}
             className="pointer-events-none absolute top-1/2 -translate-x-1/2 -translate-y-1/2 w-px h-2.5 bg-bone/45"
-            style={{ left: `${(c.startTime / duration) * 100}%` }}
+            style={{ left: `calc(var(--seek-thumb) / 2 + (100% - var(--seek-thumb)) * ${c.startTime / duration})` }}
           />
         ) : null,
       )}
     </>
+  );
+}
+
+/**
+ * The chapter under the MOUSE on a seek bar: hover anywhere along it and a tip
+ * above the pointer reads `12:34 · Chapter title`. Rendered inside the same
+ * `relative` wrapper as `<ChapterTicks>`, and it listens on that wrapper, so a
+ * player adds one element and no handlers. Shared by both players.
+ *
+ * **Mouse only.** A touch has no hover, and a finger dragging the thumb
+ * already covers the place a tip would show. `pointerType !== 'mouse'` is
+ * ignored rather than hidden with CSS, so a touch never mounts it at all.
+ *
+ * **The time it names is where a click seeks**, using the same thumb inset as
+ * the input itself and `<ChapterTicks>` (see there). Pointing at a tick names
+ * the chapter that tick starts.
+ *
+ * **Text only — no chapter art.** Chapter images are arbitrary third-party
+ * media, often tens of megabytes on the audio's own host, and `<Player>`'s
+ * `artOk` gate exists to keep them from starving playback. A tip that fetched
+ * one per chapter hovered would go around that gate.
+ *
+ * **Kept inside the bar by its own transform.** It shifts left by the fraction
+ * of the bar the pointer is at — 0% at the start, 50% in the middle, 100% at
+ * the end — so it never needs measuring, and it never hangs past either end of
+ * a bar wider than the tip.
+ *
+ * `aria-hidden`: the input's own `aria-valuetext` is what a screen reader
+ * hears, and a pointer-position readout is not something to announce.
+ */
+export function ChapterHoverTip({
+  chapters,
+  duration,
+}: {
+  chapters: ChapterEntry[] | null;
+  duration: number;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const [hover, setHover] = useState<{ x: number; f: number } | null>(null);
+  const on = Number.isFinite(duration) && duration > 0 && !!chapters?.length;
+
+  useEffect(() => {
+    const wrap = ref.current?.parentElement;
+    const input = wrap?.querySelector<HTMLInputElement>('input[type="range"]');
+    if (!on || !wrap || !input) return;
+    const move = (e: PointerEvent) => {
+      if (e.pointerType !== 'mouse') return;
+      const box = input.getBoundingClientRect();
+      const thumb = parseFloat(getComputedStyle(input).getPropertyValue('--seek-thumb')) || 0;
+      const travel = box.width - thumb;
+      if (!(travel > 0)) return;
+      const f = Math.min(1, Math.max(0, (e.clientX - box.left - thumb / 2) / travel));
+      setHover({ x: e.clientX - wrap.getBoundingClientRect().left, f });
+    };
+    const leave = () => setHover(null);
+    wrap.addEventListener('pointermove', move);
+    wrap.addEventListener('pointerleave', leave);
+    return () => {
+      wrap.removeEventListener('pointermove', move);
+      wrap.removeEventListener('pointerleave', leave);
+      setHover(null);
+    };
+  }, [on]);
+
+  if (!on || !hover) return <span ref={ref} hidden />;
+  const t = hover.f * duration;
+  const { chapter } = chapterState(chapters, t, duration);
+  return (
+    <span
+      ref={ref}
+      aria-hidden
+      className="pointer-events-none absolute bottom-full z-10 mb-2 max-w-[18rem] truncate whitespace-nowrap border border-bone/30 bg-ink px-2 py-1 text-[11px] leading-tight text-bone"
+      style={{ left: hover.x, transform: `translateX(${-hover.f * 100}%)` }}
+    >
+      <span className="tabular-nums text-muted">{fmt(t)}</span>
+      {chapter?.title ? ` · ${chapter.title}` : null}
+    </span>
   );
 }
 
