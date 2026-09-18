@@ -1059,7 +1059,12 @@ hand-rolled copies had already drifted into two z-indexes, two backdrop
 opacities, two centring idioms and `pb-28` on four of six, and none of them had
 dialog semantics or a focus trap at all. Pass `dismissable={false}` while a
 payment is in flight — Escape and backdrop-click must not take the per-leg
-results off screen while legs are still settling.
+results off screen while legs are still settling. **Pass `closeButton` for the
+×**, never a hand-drawn one: six modals drew their own and two had drifted under
+the 24×24 floor (an ~11px-wide glyph with no padding). The shell's is a 35×44
+box (wide × tall) in the corner, the card's first child — so initial focus lands on it — and
+it is deliberately NOT gated on `dismissable`: that flag stops an accidental
+exit, and the × is a deliberate one every payment modal kept live mid-send.
 
 - **Modals must portal to `document.body` — the layout traps `fixed` overlays.**
   `app/layout.tsx` wraps page content in `<div className="relative z-0">` (to sit
@@ -1123,7 +1128,8 @@ behind all of them is the same: a second implementation drifts, and the drift
 shows up on a screen nobody was looking at.
 
 - **`useWalletChange`** — five components hand-rolled the subscribe/unsubscribe-all
-  effect and had drifted into **three different subscription sets**. A rail with
+  effect and had drifted into **three different subscription sets**; the header
+  balance chip (`wallet-balance.tsx`) was the last copy, and uses the hook now. A rail with
   no subscription is unofferable rather than merely stale, which is why the rail
   picker's own rule (a surface must subscribe to every rail `availableRails()`
   reads) is enforced through this hook and not per component. `railPref` is
@@ -1145,6 +1151,26 @@ shows up on a screen nobody was looking at.
   string rather than as markup — which is what keeps that separation true. Why
   the sentence exists at all is in
   [`money-boosts.md`](money-boosts.md) ("A `fee` is inside the split").
+- **`<LegStatusGlyph>`** (`components/leg-status-glyph.tsx`) — the ✓ / ? / ✗
+  beside a payment leg was drawn by the split preview, the boost-all modal and
+  the stored `<BoostCard>`, in **three failure colours** (one of them
+  `red-400`, not in the palette), and only two of them could be heard by a
+  screen reader. It tests `ok` first and `indeterminate` second, so a leg whose
+  wallet never answered can never render ✗ — the mark that talks someone into
+  paying twice.
+- **`useFlash`** (`lib/use-flash.ts`) — the "Copied" flash, with its timer
+  cleared on every flash and on unmount. `<CopyLinkButton>` had that fix and
+  four other copies (both wallet receive panels, the key export, the sign-in
+  QR link) did not. The clipboard write stays in each caller, so what is copied
+  and when is visible where it happens — the key export copies the nsec.
+- **`boostGate` / `boostButtonTitle`** (`lib/util.ts`) — whether BOOST is open
+  and what to say when it is not, for the mini-bar and both fullscreen
+  buttons. The mini-bar asked `hasValueRecipients(episode.value)` while the
+  fullscreen player asked `payableValue`, and `<Player>` gated the modal's
+  render on the mini-bar's answer — so an episode whose block came from its
+  show had an ENABLED fullscreen BOOST that opened nothing. `reason` keeps "no
+  value block" for the one case where it is true; a live stream whose host
+  kind:0 is pending or unread says so instead.
 - **`<CopyLinkButton>`** — it owns the flash timing and the `clearTimeout` on
   unmount that neither hand-rolled copy had. **There was a THIRD copy on the
   episode page**, carrying both faults the merge had already fixed elsewhere —

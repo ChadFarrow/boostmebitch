@@ -242,14 +242,8 @@ export function ProfileEditor({
       label="Edit profile"
       className="w-full max-w-md"
       dismissable={!busy}
+      closeButton
     >
-        <button
-          onClick={onClose}
-          className="absolute top-2 right-3 text-muted hover:text-bone text-lg z-10"
-          aria-label="Close"
-        >
-          ×
-        </button>
 
         <div className="p-5 border-b border-bone/15">
           <div className="stamp text-nostr border-nostr/60 mb-2">◆ NOSTR PROFILE</div>

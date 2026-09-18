@@ -28,10 +28,9 @@ import type { Rail } from '@/lib/v4v/boost';
 import {
   hasSpark,
   sparkGetInfo,
-  subscribeSpark,
   subscribeSparkEvents,
 } from '@/lib/v4v/spark';
-import { hasNwc, subscribeNwc } from '@/lib/v4v/nwc-state';
+import { hasNwc } from '@/lib/v4v/nwc-state';
 import type { NwcBudget } from '@/lib/util';
 import {
   isWeblnEnabled,
@@ -39,7 +38,8 @@ import {
   weblnGetBalance,
 } from '@/lib/v4v/webln';
 import { useApp } from '@/lib/store';
-import { storage, subscribeRailPref } from '@/lib/storage';
+import { storage } from '@/lib/storage';
+import { useWalletChange } from '@/lib/use-wallet-change';
 
 /**
  * How long to sit on event-driven balance refreshes before firing one.
@@ -85,15 +85,17 @@ export function useWalletBalance(
 
   const [, setPrefTick] = useState(0);
 
-  useEffect(() => {
-    const unsubSpark = subscribeSpark(() => setSparkReady(hasSpark()));
-    const unsubNwc = subscribeNwc(() => setNwcReady(hasNwc()));
-    const unsubWebln = subscribeWebln(() => setWeblnReady(isWeblnEnabled()));
-    // Rail-pref switches change the effective rail without any readiness
-    // flag moving — bump so the chip re-resolves and refetches.
-    const unsubPref = subscribeRailPref(() => setPrefTick((t) => t + 1));
-    return () => { unsubSpark(); unsubNwc(); unsubWebln(); unsubPref(); };
-  }, []);
+  // One subscription set, through the hook every wallet surface uses — this
+  // chip was the last hand-rolled copy (see lib/use-wallet-change.ts), and a
+  // rail added there reaches it without anyone editing this file. The tick is
+  // for rail-pref switches, which change the effective rail without any
+  // readiness flag moving, so the chip re-resolves and refetches.
+  useWalletChange(() => {
+    setSparkReady(hasSpark());
+    setNwcReady(hasNwc());
+    setWeblnReady(isWeblnEnabled());
+    setPrefTick((t) => t + 1);
+  }, { railPref: true });
 
   // Resolve effective rail. If the caller forced one, we still gate on it
   // being actually available; an override that points at a disconnected

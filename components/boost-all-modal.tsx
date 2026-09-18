@@ -26,6 +26,7 @@ import { PodcastCover } from './podcast-cover';
 import { RailPicker } from './rail-picker';
 import { DroppedPayees } from './boost-modal/dropped-payees';
 import { BoostModalBalance } from './wallet-balance';
+import { LegStatusGlyph } from './leg-status-glyph';
 
 interface Props {
   podcast: Podcast;
@@ -543,14 +544,8 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
       label={`Boost all tracks — ${podcast.title}`}
       className="w-full max-w-xl [scrollbar-gutter:stable]"
       dismissable={!running}
+      closeButton
     >
-        <button
-          onClick={onClose}
-          // `px-3 py-2`, the same as <WalletModal>'s close: with no padding the
-          // glyph's hit box was ~10×28, under the 24px floor.
-          className="absolute top-0 right-1 px-3 py-2 text-muted hover:text-bone text-lg z-10"
-          aria-label="Close"
-        >×</button>
 
         <div className="p-5 border-b border-bone/15">
           <div className="stamp text-bolt border-bolt/60 mb-2">⚡ BOOST ALL TRACKS</div>
@@ -681,28 +676,7 @@ export function BoostAllModal({ podcast, episode, onClose }: Props) {
                         )}
                       </div>
                       {result && (
-                        <span
-                          className={
-                            result.ok
-                              ? 'text-bolt text-sm'
-                              : result.indeterminate
-                                ? 'text-muted text-sm'
-                                : 'text-nostr/80 text-sm'
-                          }
-                          title={result.indeterminate ? 'Wallet did not answer — this may still have been sent' : undefined}
-                        >
-                          {result.ok ? '✓' : result.indeterminate ? '?' : '✗'}
-                          {/* Same reason as <SplitsPreview>: colour plus glyph
-                              is not a status a reader can hear, and `title` is
-                              unreachable on touch. */}
-                          <span className="sr-only">
-                            {result.ok
-                              ? ' sent'
-                              : result.indeterminate
-                                ? ' wallet did not answer — this may still have been sent'
-                                : ' failed'}
-                          </span>
-                        </span>
+                        <LegStatusGlyph ok={result.ok} indeterminate={result.indeterminate} className="text-sm" />
                       )}
                       {running && !result && i >= (progress.length) && (
                         <span className="text-muted text-xs animate-pulse">…</span>

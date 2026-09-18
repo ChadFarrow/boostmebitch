@@ -1,6 +1,7 @@
 'use client';
 import type { ValueRecipient, BoostResult } from '@/lib/types';
 import { feeNote, recipientAddress, recipientOrder } from '@/lib/util';
+import { LegStatusGlyph } from '../leg-status-glyph';
 
 // Format a weight as a percentage of the total weight. Integer when it rounds
 // cleanly (50%, 90%, 1%), one decimal otherwise (33.3%, 16.7%) — most value
@@ -87,25 +88,8 @@ export function SplitsPreview({
                 )}
               </span>
               <span className="tabular-nums flex items-center gap-2 flex-shrink-0">
-                {/* Three states, not two. A leg whose wallet never answered
-                    must not show ✗ — the sats may have gone out, and a ✗ is
-                    what talks someone into boosting again and paying twice. */}
-                {/* Each glyph carries an sr-only word. The mark alone is
-                    colour-and-symbol only, and the ? in particular means
-                    something a reader cannot guess — its explanation used to
-                    live in `title`, which is unreachable on touch and
-                    unreliably announced. */}
-                {res?.ok && (
-                  <span className="text-bolt">✓<span className="sr-only"> sent</span></span>
-                )}
-                {res && !res.ok && res.indeterminate && (
-                  <span className="text-muted" title="Wallet did not answer — this may still have been sent">
-                    ?<span className="sr-only"> wallet did not answer — this may still have been sent</span>
-                  </span>
-                )}
-                {res && !res.ok && !res.indeterminate && (
-                  <span className="text-nostr">✗<span className="sr-only"> failed</span></span>
-                )}
+                {/* Three states, not two — see <LegStatusGlyph>. */}
+                {res && <LegStatusGlyph ok={res.ok} indeterminate={res.indeterminate} />}
                 {splits[i]} sat
               </span>
             </li>

@@ -20,6 +20,8 @@ import {
   episodeContentsLabel,
   hasValueRecipients,
   payableValue,
+  boostGate,
+  boostButtonTitle,
   isMusicMedium,
   showShareUrl,
   targetWord,
@@ -41,6 +43,7 @@ import { LiveChat } from './live-chat';
 import { AuthControl } from './auth-control';
 import { StreamMeter, useStreamPanel } from './streaming-settings';
 import { useLiveBlockImage } from './live-now-playing';
+import { LiveBadge } from './live-badge';
 
 // About-this-episode text + the episode's tracks + Podcasting 2.0 chapters +
 // transcript, toggled by a tab strip. Tabs show only for sections with real
@@ -411,24 +414,12 @@ export function FullscreenPlayer({
   const infoPane = isVideo ? 'sm:w-1/2 lg:w-2/5' : 'sm:w-1/2';
   // NOT `episode.value ?? podcast.value`. On a PLAYLIST the container's block
   // is the curator's, and this one expression decides both the BOOST button and
-  // (through useStreamPanel above) the unattended streaming payer.
-  const value = payableValue(episode, podcast);
-  const hasValue = hasValueRecipients(value);
-  // "no value block" IS A CLAIM, and a disabled BOOST button is the same
-  // control in three different situations. A Nostr live stream reaches it
-  // before its host's kind:0 has answered at all, and again when that read was
-  // too degraded to believe — and "Stream has no value block" over either one
-  // tells the listener a payable show cannot be paid. The button stays
-  // disabled in all three; only the sentence moves. See Episode.liveValueState,
-  // which is the only thing that can tell them apart, because `value` is null
-  // in every one of them. Null here, so each surface keeps its own noun below.
-  const boostTitle = hasValue
-    ? 'Send a boost'
-    : episode.liveValueState === 'pending'
-      ? 'Checking for a value block…'
-      : episode.liveValueState === 'unread'
-        ? 'Could not read the value block for this stream — reload to try again'
-        : null;
+  // (through useStreamPanel above) the unattended streaming payer. `boostGate`
+  // is the same question <Player> asks before it renders the modal, and it
+  // keeps "no value block" for the one case where that is true — see its note.
+  const boost = boostGate(episode, podcast);
+  const value = boost.value;
+  const hasValue = boost.hasValue;
   const description = episode.description ? stripHtml(episode.description) : '';
   const { index: activeIdx, chapter: activeChapter, end: activeChapterEnd } = chapterState(
     chapters,
@@ -722,7 +713,7 @@ export function FullscreenPlayer({
             <div className="flex-shrink-0 flex flex-col gap-3 min-w-0">
               <div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+                  <LiveBadge status="live" />
                   <span className="text-xs text-muted">streaming now</span>
                 </div>
                 <h1 className="font-display text-xl sm:text-2xl lg:text-3xl leading-tight mt-2">{episode.title}</h1>
@@ -742,7 +733,7 @@ export function FullscreenPlayer({
                   onClick={onBoost}
                   disabled={!hasValue}
                   className="btn-bolt flex-1 min-w-[7rem] disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={boostTitle ?? 'Stream has no value block'}
+                  title={boostButtonTitle(boost, 'Stream')}
                 >
                   <BoltIcon /> BOOST
                 </button>
@@ -785,7 +776,7 @@ export function FullscreenPlayer({
 
             {isLive ? (
               <div className="flex items-center gap-2">
-                <span className="stamp text-nostr border-nostr/60 bg-nostr/10 animate-bolt">● LIVE</span>
+                <LiveBadge status="live" />
                 <span className="text-xs text-muted">streaming now</span>
               </div>
             ) : (
@@ -846,7 +837,7 @@ export function FullscreenPlayer({
                   onClick={onBoost}
                   disabled={!hasValue}
                   className="btn-bolt basis-full sm:basis-auto sm:flex-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                  title={boostTitle ?? 'Episode has no value block'}
+                  title={boostButtonTitle(boost, 'Episode')}
                 >
                   <BoltIcon /> BOOST
                 </button>

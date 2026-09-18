@@ -23,6 +23,7 @@
 // not remember.
 
 import { useEffect, useState } from 'react';
+import { useFlash } from '@/lib/use-flash';
 import { nip19 } from 'nostr-tools';
 import { hexToBytes } from '@noble/hashes/utils.js';
 import { getKey } from '@/lib/nostr/local-key-store';
@@ -32,7 +33,7 @@ import { getErrorMessage } from '@/lib/util';
 export function ExportKeySection() {
   const [nsec, setNsec] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied, flashCopied] = useFlash<true>(1500);
   const [err, setErr] = useState<string | null>(null);
 
   // Don't leave the key in a component that's merely hidden — a closed menu is
@@ -62,8 +63,7 @@ export function ExportKeySection() {
     if (!nsec) return;
     try {
       await navigator.clipboard.writeText(nsec);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
+      flashCopied(true);
     } catch (e) {
       setErr(getErrorMessage(e, 'could not copy'));
     }

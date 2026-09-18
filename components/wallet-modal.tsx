@@ -270,18 +270,7 @@ export function WalletModal({ onClose }: Props) {
   }
 
   return (
-    <ModalShell onClose={onClose} label={headerTitle} className="w-full max-w-md">
-      {/* The padding IS the tap target — the glyph does not move. It was
-          `top-2 right-3` with no padding, i.e. an ~11px-wide box, under WCAG
-          2.5.8's 24x24 floor. `px-3 py-2` at `top-0 right-0` puts the x
-          exactly where it was (12px in, 8px down) inside a 44x35 button. */}
-      <button
-        onClick={onClose}
-        className="absolute top-0 right-0 px-3 py-2 text-muted hover:text-bone text-lg z-10"
-        aria-label="Close"
-      >
-        ×
-      </button>
+    <ModalShell onClose={onClose} label={headerTitle} className="w-full max-w-md" closeButton>
       <div className="p-5 border-b border-bone/15">
         <div className="stamp text-bolt border-bolt/60 mb-2">⚡ LIGHTNING WALLET</div>
         <h3 className="font-display text-2xl leading-tight">{headerTitle}</h3>

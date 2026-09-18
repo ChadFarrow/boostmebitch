@@ -705,8 +705,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
     // NOT dismissable while `running`: Escape or a stray backdrop click in the
     // middle of a multi-leg send would take the per-leg results off screen
     // while sats are still moving, and the legs settle sequentially so there is
-    // no single moment it's safe to lose sight of. The Cancel/x controls stay
-    // in charge either way.
+    // no single moment it's safe to lose sight of. The Cancel and × controls
+    // stay in charge either way.
     //
     // scrollbar-gutter reserves the scrollbar's width even while it's not
     // shown, so content growing (a wrapped desc line, status rows appearing)
@@ -716,14 +716,8 @@ export function BoostModal({ episode, podcast, positionSec = 0, onClose }: Props
       label={episode?.title ?? podcast.title}
       className="w-full max-w-xl [scrollbar-gutter:stable]"
       dismissable={!running}
+      closeButton
     >
-        <button
-          onClick={onClose}
-          // `px-3 py-2`, the same as <WalletModal>'s close: with no padding the
-          // glyph's hit box was ~10×28, under the 24px floor.
-          className="absolute top-0 right-1 px-3 py-2 text-muted hover:text-bone text-lg z-10"
-          aria-label="Close"
-        >×</button>
 
         <div className="p-5 border-b border-bone/15">
           <div className="stamp text-bolt border-bolt/60 mb-2">
