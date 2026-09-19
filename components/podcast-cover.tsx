@@ -182,7 +182,7 @@ function PodcastCoverImpl({
  * visible row. Without this, each of those re-renders reconciled a cover whose
  * inputs had not changed.
  *
- * `image`, `artwork`, `title`, `seed`, `className`, `w`, `fit` and
+ * `image`, `artwork`, `localSrc`, `title`, `seed`, `className`, `w`, `fit` and
  * `lowPriority` are all strings, numbers or booleans, so the default shallow
  * comparison is exactly right here — there is no object or callback prop for a
  * caller to hand over a fresh reference of by accident, which is the usual way a
@@ -190,8 +190,9 @@ function PodcastCoverImpl({
  *
  * Deliberately NOT a fix for the row itself. Extracting `<EpisodeList>`'s row
  * into a memoized component would mean stabilising about fifteen props including
- * callbacks, on a surface carrying the boost control and the hearts — and a memo
- * whose props are not all stable does nothing while looking like it does. That
- * is a change worth measuring first, not bundling into an audit.
+ * callbacks, on a surface carrying the boost control, the hearts and the
+ * download button — and a memo whose props are not all stable does nothing while
+ * looking like it does. That is a change worth measuring first, not bundling into
+ * an audit.
  */
 export const PodcastCover = memo(PodcastCoverImpl);
