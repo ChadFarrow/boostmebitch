@@ -35,6 +35,7 @@ import { DeferredOnScroll } from '../deferred-on-scroll';
 import { FavEpisodeHeart, FavHeart } from '../fav-heart';
 import { DownloadButton } from '../download-button';
 import { AlbumDownload } from '../album-download';
+import { QueueButton } from '../queue-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 import { ResumeLeft } from './resume-left';
@@ -1037,6 +1038,9 @@ export function EpisodeList({
                   only; below it they are in the `⋯` menu. */}
               <div className="hidden lg:flex self-center flex-shrink-0 items-center gap-3">
                 <DownloadButton episode={e} podcast={data.podcast} />
+                <span className="hidden sm:inline-flex">
+                  <QueueButton episode={e} podcast={data.podcast} />
+                </span>
                 <FavEpisodeHeart episode={e} podcast={data.podcast} />
               </div>
               <EpisodeRowMenu episode={e} podcast={data.podcast} className="lg:hidden self-center" />

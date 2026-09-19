@@ -1,6 +1,7 @@
 'use client';
 import { useApp } from '@/lib/store';
-import { nextPlayableIndex } from '@/lib/util';
+import { epKey, nextPlayableIndex, nextPlayableIndexBy } from '@/lib/util';
+import type { QueueItem } from '@/lib/types';
 import { SkipBackIcon, SkipForwardIcon } from './icons';
 
 type NavOverride = { onClick: () => void; disabled: boolean; label: string };
@@ -59,6 +60,10 @@ const SKIP_FORWARD_SEC = 30;
  * the mini-bar is itself a button that opens the fullscreen player, and that
  * player carries all five at every width.
  */
+/** Shared with `stepTo` so the transport and the step cannot disagree about
+ *  which queued rows are landable. */
+const queuedEpisode = (i: QueueItem) => i.episode;
+
 export function TransportControls({
   size = 'sm',
   prev,
@@ -81,21 +86,52 @@ export function TransportControls({
   const playNext = useApp((s) => s.playNext);
   const playPrev = useApp((s) => s.playPrev);
   const episodeQueue = useApp((s) => s.episodeQueue);
+  const listenQueue = useApp((s) => s.listenQueue);
   if (!current) return null;
 
   const idx = episodeQueue.findIndex((e) => e.id === current.episode.id);
+  // -1 whenever the listen queue is empty or does not hold what is playing,
+  // which is what collapses every expression below back to the two lines it
+  // replaced. The `.length` short-circuit means an empty queue does not even
+  // run `epKey`.
+  const qIdx = listenQueue.length
+    ? listenQueue.findIndex((i) => epKey(i.episode) === epKey(current.episode))
+    : -1;
+  const qNext = nextPlayableIndexBy(listenQueue, qIdx, 1, queuedEpisode);
+  const qPrev = nextPlayableIndexBy(listenQueue, qIdx, -1, queuedEpisode);
   // **Enabled means "there is a row this press can land on", which is not the
   // same as "there is a row".** A playlist queue holds one entry per
   // `<podcast:remoteItem>`, including the ones Podcast Index could not resolve,
   // and those have an empty enclosure — so `idx < length - 1` lit ⏭ up over a
   // step `playNext` now refuses to take, which is a control that looks live and
   // does nothing. Both read `nextPlayableIndex`, so they cannot disagree.
-  const onPrev = prev?.onClick ?? (() => playPrev());
-  const prevDisabled = prev ? prev.disabled : nextPlayableIndex(episodeQueue, idx, -1) < 0;
-  const prevLabel = prev?.label ?? 'Previous track';
-  const onNext = next?.onClick ?? (() => playNext());
-  const nextDisabled = next ? next.disabled : nextPlayableIndex(episodeQueue, idx, 1) < 0;
-  const nextLabel = next?.label ?? 'Next track';
+  //
+  // **A SPENT chapter override falls through to the listen queue, and to
+  // nothing else.** `<Player>` passes `buildChapterNav`'s buttons as overrides,
+  // so on a chaptered episode these step chapters — and on the LAST chapter of
+  // a queued episode ⏭ was simply dead, because the override is disabled there
+  // and an override outranks the default. It never falls through to
+  // `episodeQueue`: a chaptered show whose ⏭ silently left the episode is not
+  // what that button has ever meant.
+  //
+  // The `nextDisabled` half is the subtler one, and it is the MIRROR of the bug
+  // the comment above is about. A queued item is usually not in `episodeQueue`,
+  // so `idx === -1` and `nextPlayableIndex` returns -1 by its `from < 0` guard —
+  // the button would draw disabled while `playNext()` would in fact advance the
+  // queue. So the disabled test consults the queue too, through the same walk
+  // `stepTo` uses.
+  const queueTakesPrev = qPrev >= 0 && !(prev && !prev.disabled);
+  const queueTakesNext = qNext >= 0 && !(next && !next.disabled);
+  const onPrev = queueTakesPrev ? (() => playPrev()) : (prev?.onClick ?? (() => playPrev()));
+  const prevDisabled = queueTakesPrev
+    ? false
+    : prev ? prev.disabled : nextPlayableIndex(episodeQueue, idx, -1) < 0;
+  const prevLabel = queueTakesPrev ? 'Previous in queue' : (prev?.label ?? 'Previous track');
+  const onNext = queueTakesNext ? (() => playNext()) : (next?.onClick ?? (() => playNext()));
+  const nextDisabled = queueTakesNext
+    ? false
+    : next ? next.disabled : nextPlayableIndex(episodeQueue, idx, 1) < 0;
+  const nextLabel = queueTakesNext ? 'Next in queue' : (next?.label ?? 'Next track');
 
   // `hidden sm:flex` rather than `flex` when the sides are desktop-only. Both
   // are display utilities, so this can't be expressed by appending a class to a
