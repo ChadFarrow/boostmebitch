@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
-import { withErrorHandling } from '@/lib/api-handler';
+import { NO_STORE, withErrorHandling } from '@/lib/api-handler';
 import { rateLimit } from '@/lib/rate-limit';
 import { getEpisodesSinceForFeeds } from '@/lib/pi';
-import { mapLimit, PI_FANOUT } from '@/lib/util';
+import { isPiMiss } from '@/lib/pi-error';
+import { mapLimit, NEW_EPISODES_MAX_FEEDS, PI_FANOUT } from '@/lib/util';
 import type { Episode } from '@/lib/types';
 
 /**
@@ -34,9 +35,23 @@ import type { Episode } from '@/lib/types';
  * does not just return rows. A chunk that THREW is not a chunk with no new
  * episodes. Its ids are absent from `covered`, their marks stay put, and the
  * section says it could not check them — never "nothing new".
+ *
+ * **PROBE FIRST, and let the probe throw** (CLAUDE.md, "a route that fans out
+ * to PI"). The first chunk runs alone. If it fails with anything but a MISS,
+ * Podcast Index is down or our key is bad, and that reaches the client as a
+ * 5xx — or verbatim as 429/408 through `withErrorHandling`, so nothing reads a
+ * rate limit as an outage — and it reaches the server log. Swallowing it, as
+ * every chunk used to be, made an expired key look like "could not check" on
+ * every pass with nothing logged anywhere. The caller loses nothing: it treats
+ * any non-OK answer as "these shows were not checked", per request, never as
+ * "nothing new". A miss (`isPiMiss`, a 400/404) is an answer about those ids,
+ * not an outage, so it stays out of `covered` and the rest are still asked.
+ * After a good probe the rest run bounded and are swallowed per chunk, as
+ * before: one bad chunk after a good probe is not an outage.
  */
 const CHUNK = 50;
-const MAX_FEEDS = 100;
+/** A security cap, shared with the section that batches by it — see the constant. */
+const MAX_FEEDS = NEW_EPISODES_MAX_FEEDS;
 /** Per chunk. Generous for a personal library, and bounded so one request
  *  cannot pull an unbounded body. */
 const MAX_ROWS = 200;
@@ -77,16 +92,26 @@ export async function GET(req: Request) {
     const episodes: Episode[] = [];
     const covered: number[] = [];
     let truncated = false;
+    const take = (ids: number[], res: { episodes: Episode[]; truncated: boolean }) => {
+      episodes.push(...res.episodes);
+      covered.push(...ids);
+      if (res.truncated) truncated = true;
+    };
+
+    // The probe — see the header. Only a miss is caught here.
+    const [probe, ...rest] = chunks;
+    try {
+      take(probe!, await getEpisodesSinceForFeeds(probe!, since, MAX_ROWS));
+    } catch (e) {
+      if (!isPiMiss(e)) throw e;
+    }
 
     // Bounded concurrency, not `Promise.all`. A count is not a cap on the
     // fan-out — `mapLimit` at `PI_FANOUT` is what composes, and it is the same
     // number every other route protecting Podcast Index uses.
-    await mapLimit(chunks, PI_FANOUT, async (ids) => {
+    await mapLimit(rest, PI_FANOUT, async (ids) => {
       try {
-        const res = await getEpisodesSinceForFeeds(ids, since, MAX_ROWS);
-        episodes.push(...res.episodes);
-        covered.push(...ids);
-        if (res.truncated) truncated = true;
+        take(ids, await getEpisodesSinceForFeeds(ids, since, MAX_ROWS));
       } catch {
         // Deliberately swallowed, and the ids stay OUT of `covered`. A chunk
         // that could not be asked is not a chunk with nothing new, and the
@@ -104,9 +129,9 @@ export async function GET(req: Request) {
         // for exactly this. Short, because the point is freshness — and
         // `no-store` when anything went unasked, so a partial answer is never
         // the one a reload gets back.
-          'Cache-Control': covered.length === feeds.length && !truncated
-            ? 'private, max-age=30'
-            : 'no-store',
+          ...(covered.length === feeds.length && !truncated
+            ? { 'Cache-Control': 'private, max-age=30' }
+            : NO_STORE),
         },
       },
     );

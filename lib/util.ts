@@ -281,14 +281,30 @@ export const FAV_NEW_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 export const FAV_NEW_CAP = 50;
 
 /**
+ * Feeds one `/api/new-episodes` request may name — ONE number for both ends.
+ *
+ * The route slices `feeds` to it, and that is a SECURITY cap: the list is
+ * attacker-controlled length, and every id past it is one more Podcast Index
+ * call on our quota. The section batches its library by it. Two copies of the
+ * number would let the client send ids the route drops without a word — and a
+ * dropped id is never in `covered`, so those shows would read as "could not
+ * check" on every pass, for ever.
+ */
+export const NEW_EPISODES_MAX_FEEDS = 100;
+
+/**
  * PI's own ceiling on a comma-separated feed-id list, and the reason this
  * constant exists rather than being inlined.
  *
- * It TRUNCATES at 200 without a word — measured above. That is the same failure
+ * **PI truncates at exactly 200 and says nothing.** Measured 2026-09-12 three
+ * ways: a known-good feed at position 200 is answered, the same feed at
+ * position 201 is not, and moving it to position 1 of that same 201-id list
+ * brings it back. The response is a 200 OK either way. That is the failure
  * `probeThenBatch`'s comment records ("shipping only the first is what made a
- * 231-track list resolve four"), except here the response is a 200 OK with a
- * feed silently missing, so nothing downstream can notice. Anything building
- * that list slices to this.
+ * 231-track list resolve four"), except here nothing errors, so nothing
+ * downstream can notice. Anything building that list slices to this — and it
+ * lives HERE, not in `lib/pi.ts`, so `check:favnew` can pin it and the wrapper
+ * imports the same number.
  */
 export const PI_FEED_IDS_MAX = 200;
 
