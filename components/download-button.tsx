@@ -17,7 +17,10 @@ import { useDownloadsVersion } from '@/lib/downloads/use-downloads';
  *
  * SIZES MATCH `<FavHeart>` because they share a cluster: 'sm' is the slim list-row
  * chip whose word collapses below sm:, 'md' matches `.btn-ghost`, 'tile' is the
- * `.tile` grid shape the action rows are built from.
+ * `.tile` grid shape the action rows are built from. 'header' has no heart beside
+ * it: it is the fullscreen player's top bar, `.btn-ghost`'s height at every width
+ * so the bar is no taller than the ⚡ chip next to it, and the glyph alone below
+ * sm: like 'sm'.
  *
  * THE WORD DOES NOT CHANGE WITH STATE. Same layout rule as the heart, and the
  * same reason: this control sits in right-aligned clusters, so a word that grows
@@ -29,7 +32,7 @@ import { useDownloadsVersion } from '@/lib/downloads/use-downloads';
  * → docs/downloads.md
  */
 
-type Size = 'sm' | 'md' | 'tile';
+type Size = 'sm' | 'md' | 'tile' | 'header';
 
 export function DownloadButton({
   episode,
@@ -103,7 +106,7 @@ export function DownloadButton({
         : sizeText ?? '';
 
   return (
-    <span className="inline-flex flex-col items-stretch gap-1">
+    <span className={`inline-flex flex-col items-stretch gap-1 ${size === 'header' ? 'relative' : ''}`}>
       <button
         type="button"
         onClick={onClick}
@@ -129,9 +132,15 @@ export function DownloadButton({
             glyphs are not the same width and none of them is in JetBrains Mono,
             so each falls back per glyph. Without the box, every state change
             resizes the chip. */}
+        {/* 'header' sets the glyph on `leading-5`, the line box of `.btn-ghost`'s
+            `text-sm`: with the word hidden below sm: the glyph is the only
+            line, and a `leading-none` one would leave this chip 2px shorter
+            than the ⚡ chip beside it. */}
         <span
-          className={`relative inline-block w-[0.9em] text-center leading-none ${
-            size === 'sm' ? 'text-base' : 'text-lg'
+          className={`relative inline-block w-[0.9em] text-center ${
+            size === 'sm' ? 'text-base leading-none'
+              : size === 'header' ? 'text-base leading-5'
+                : 'text-lg leading-none'
           } ${state.status === 'downloading' || state.status === 'queued' ? 'animate-bolt' : ''}`}
         >
           {glyph}
@@ -139,17 +148,23 @@ export function DownloadButton({
         {/* 'sm' collapses to the glyph below sm: — at 390px a list row is ~314px
             and already holds BOOST, the heart and the title. The aria-label
             above carries the full meaning, so nothing is lost. */}
-        <span className={`relative ${size === 'sm' ? 'hidden sm:inline' : undefined}`}>
+        <span className={`relative ${size === 'sm' || size === 'header' ? 'hidden sm:inline' : undefined}`}>
           DOWNLOAD
         </span>
         {/* `.tile` is 52px tall and already stacks a glyph over a word, so the
             third line goes only on the inline sizes; at 'tile' the size stays in
             the accessible name. `tabular-nums` and a reserved width are what
-            make "162 MB" and "47%" occupy the same box. */}
+            make "162 MB" and "47%" occupy the same box.
+            5.5ch DOES NOT HOLD SIX tracked characters, so on 'sm' and 'md' a
+            size wraps to two lines — and on the desktop list chip that second
+            line IS its height (26px, no `py`), which is why it stays. 'header'
+            sits beside a one-line ⚡ chip, so it gets the width six need. */}
         {size !== 'tile' && meta && (
           <span
             aria-hidden
-            className={`relative w-[5.5ch] text-right tabular-nums opacity-70 ${size === 'sm' ? 'hidden sm:inline-block' : 'inline-block'}`}
+            className={`relative text-right tabular-nums opacity-70 ${
+              size === 'header' ? 'w-[6.5ch] whitespace-nowrap' : 'w-[5.5ch]'
+            } ${size === 'sm' || size === 'header' ? 'hidden sm:inline-block' : 'inline-block'}`}
           >
             {meta}
           </span>
@@ -159,9 +174,20 @@ export function DownloadButton({
           phone, and a red glyph alone says something went wrong without saying
           what — "no space" and "this host does not allow downloads" need
           different things from the listener. The message wraps under the chip
-          rather than inside it, so it cannot resize the control. */}
+          rather than inside it, so it cannot resize the control.
+          In the 'header' it FLOATS under the chip instead: in the flow it would
+          make the player's top bar taller, and that bar's height is part of the
+          reserve that keeps the tile row on a phone's screen. Right-aligned,
+          because the chip sits near the right edge of the bar. */}
       {state.status === 'error' && state.error && (
-        <span role="alert" className="max-w-[22ch] text-[11px] leading-tight text-red-400">
+        <span
+          role="alert"
+          className={`max-w-[22ch] text-[11px] leading-tight text-red-400 ${
+            size === 'header'
+              ? 'absolute right-0 top-full z-10 mt-1 w-max border border-red-400/60 bg-ink px-2 py-1'
+              : ''
+          }`}
+        >
           {state.error}
         </span>
       )}
@@ -235,6 +261,8 @@ function classesFor(size: Size, tone: Tone): string {
   return `inline-flex items-center justify-center font-mono uppercase tracking-wider border transition active:translate-y-px flex-shrink-0 ${
     size === 'md'
       ? 'gap-1.5 px-2.5 py-2 text-sm sm:gap-2 sm:px-4'
-      : 'gap-1.5 px-3 text-xs leading-none min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0'
+      : size === 'header'
+        ? 'gap-1.5 px-3 py-2 text-sm sm:gap-2 sm:px-4'
+        : 'gap-1.5 px-3 text-xs leading-none min-h-[44px] min-w-[44px] sm:min-h-0 sm:min-w-0'
   } ${colour}`;
 }

@@ -167,6 +167,16 @@ characters, so reserving the width once means no state change can move anything.
 `.tile` is excluded — 52 px cannot hold a third line — and keeps the size in its
 accessible name only.
 
+**The slot is `5.5ch`, and that does NOT hold six tracked characters** — so on
+`'sm'` and `'md'` a size such as "267 MB" wraps onto two lines. On the desktop
+list chip that is load-bearing rather than cosmetic: `'sm'` has no `py`, so the
+second line IS its 26px height, and a slot wide enough for one line would take the
+chip to 14px, under WCAG 2.5.8's floor. `'header'` — the fullscreen player's top
+bar, where DOWNLOAD lives because the tile row there is full (see `docs/ui.md`,
+the cover's reserve) — sits beside a one-line 38px ⚡ chip, so it alone gets a
+`6.5ch` slot and `whitespace-nowrap`. Its error message floats under the chip
+instead of wrapping beneath it, because that bar's height is part of the reserve.
+
 ## `roomVerdict` has a blast radius outside this feature
 
 The obvious version — `usage + bytes <= quota` — is wrong twice, and both are

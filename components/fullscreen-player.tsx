@@ -525,12 +525,19 @@ export function FullscreenPlayer({
       {everOpened && (<>
       <div className="flex items-center justify-between px-5 pt-4 pb-2 flex-shrink-0 border-b border-bone/10">
         <div className="flex items-center gap-3">
-          <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs" aria-label="Back">
+          <button onClick={onClose} className="btn-ghost px-2 py-1 text-xs flex-shrink-0" aria-label="Back">
             ← back
           </button>
           <span className="text-[11px] text-muted uppercase tracking-widest">Now Playing</span>
         </div>
-        <div className="flex items-center gap-2">
+        {/* `flex-shrink-0`, here and on ← BACK, because neither may grow
+            taller. Signed out below ~400px this cluster holds ↓, SIGN IN ▾ and
+            ✕, and SIGN IN wrapped onto two lines and took the bar from 63px to
+            83px — 20px off the cover's reserve. The squeeze lands on NOW
+            PLAYING instead, which folds onto two 16px lines and so stays inside
+            the 38px the chips already set. Not `whitespace-nowrap`: that is
+            inherited, and the SIGN IN menu opens inside this cluster. */}
+        <div className="flex items-center gap-2 flex-shrink-0">
           {/* THE HEADER'S OWN AUTH CONTROL, not a second copy of it. This was a
               bare "◆ Sign in" button, and it offered exactly one of the app's
               two logins: the Nostr one, opened with no intent, so its modal
@@ -545,6 +552,14 @@ export function FullscreenPlayer({
               <AuthControl>. With BOTH logins set this renders nothing, exactly
               as the old button did (it was gated on `!identity`) — the account
               menu belongs to <NostrAuth>, which these routes mount hidden. */}
+          {/* DOWNLOAD IS UP HERE, NOT IN THE TILE ROW, because the tile row
+              is out of room and this bar is not out of height: the chip is
+              `.btn-ghost`'s height, the same as the ⚡ chip beside it, so the
+              bar does not grow and the cover's reserve below stays true. Glyph
+              only on a phone; the size is in its accessible name. It renders
+              nothing for a live item or an HLS stream, so a Nostr stream's bar
+              is unchanged. */}
+          <DownloadButton episode={episode} podcast={podcast} size="header" />
           <AuthControl overlay />
           <button onClick={onClose} className="btn-ghost px-2 py-1 text-base leading-none" aria-label="Close fullscreen player">
             ✕
@@ -905,11 +920,15 @@ export function FullscreenPlayer({
                   One row of equal `.tile`s, the same shape as the episode
                   page's action row: five peers, glyph over word. They were
                   five .btn-ghost chips of five different widths wrapping onto
-                  two lines at 390px. */}
+                  two lines at 390px.
+                  FIVE IS THE MOST ONE LINE HOLDS ON A PHONE, and DOWNLOAD is
+                  in the header for that reason. As a sixth tile it wrapped
+                  ≋ STREAM onto a second line, and the cover's reserve counts
+                  one line of tiles, so that one sat under the bottom of an
+                  iPhone's screen with its word cut off. */}
               <div className="grid grid-cols-[repeat(auto-fit,minmax(56px,1fr))] gap-2">
                 <FavHeart podcast={podcast} size="tile" nameTarget />
                 <FavEpisodeHeart episode={episode} podcast={podcast} size="tile" nameTarget />
-                <DownloadButton episode={episode} podcast={podcast} size="tile" />
                 <ShareTargets podcast={podcast} episode={episode} />
                 {/* The meter below says what streaming is DOING; this is the
                     only place in the player you can change it. Without it the
