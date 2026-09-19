@@ -11,6 +11,10 @@ import type { DiscoveredNote, FavoritesBaseline, FavoritesPrivacy, MuteListState
 // './nostr' barrel: the barrel pulls in relays.ts, which imports this module,
 // and unlike the type-only line above a value import does NOT erase.
 import { emptyMuteState, type MuteCipher } from './nostr/mute-state';
+// `lib/util.ts` imports nothing at runtime (its one import line is type-only,
+// which is what lets the check scripts load it under plain Node), so taking a
+// value import from it here cannot close a cycle.
+import { httpUrl } from './util';
 import type { StreamLedger } from './v4v/stream-ledger';
 import {
   DEFAULT_STREAM_AMOUNT_PER_TRACK,
@@ -228,6 +232,40 @@ const DEFAULT_FAV_VIEW: FavView = { tab: 'all', sort: 'recent', split: 'all' };
 
 const BOOSTS_CAP = 200;
 const STREAMED_CAP = 100;
+
+/**
+ * Re-validate a stored boost's ONE href-bearing field on the way back off disk.
+ *
+ * `lib/v4v/boostbox.ts` runs BoostBox's `url` through `httpUrl` when it arrives,
+ * and that is the right place for it — but this log is persisted and capped by
+ * COUNT, never by age, so an entry written before that guard existed survives
+ * until 200 newer boosts push it out. For most people that is indefinitely.
+ * `<BoostCard>` renders the field as a live `href`, and React does not block a
+ * `javascript:` href — it only warns in dev — in the origin that holds the NWC
+ * spending credential, the bunker `clientSk` and, since Google onboarding, the
+ * local nsec. One press of "📦 boostbox" in the user's own boost history is the
+ * whole exploit, and it needs no new response from the service.
+ *
+ * So the disk is treated as a SECOND parse boundary, exactly as
+ * `storage.profile.get` treats its cell — a value already on disk from an older
+ * build must not become safe merely because the writer was later fixed.
+ *
+ * Narrow on purpose: `boostboxUrl` is the only field here that becomes an
+ * `href`. `message` goes through `linkify`, whose pattern is anchored to
+ * `https?://`, and `podcastImage` is an image source, which cannot execute.
+ * A rejected url is dropped rather than rendered inert, because the link is
+ * decoration over the descriptor and a missing one costs nothing.
+ */
+function coerceStoredBoost(b: StoredBoost): StoredBoost {
+  if (!b || !Array.isArray(b.legs)) return b;
+  if (!b.legs.some((l) => l?.boostboxUrl)) return b;
+  return {
+    ...b,
+    legs: b.legs.map((l) =>
+      l?.boostboxUrl ? { ...l, boostboxUrl: httpUrl(l.boostboxUrl) ?? undefined } : l,
+    ),
+  };
+}
 const RESUME_CAP = 200;
 
 /** Where one episode was left. `t` and `d` are seconds, `at` is epoch ms. `d`
@@ -1186,7 +1224,8 @@ export const storage = {
       if (!raw) return [];
       try {
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as StoredBoost[]) : [];
+        if (!Array.isArray(parsed)) return [];
+        return (parsed as StoredBoost[]).map(coerceStoredBoost);
       } catch {
         return [];
       }
