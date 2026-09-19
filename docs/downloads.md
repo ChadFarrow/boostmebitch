@@ -210,6 +210,19 @@ page has no recipients and cannot be boosted correctly. This app stores `value` 
 `valueTimeSplits` with the record specifically to avoid that. The stored block is a
 **cache** and never outranks a live read.
 
+**The record keeps the id the episode was LISTED under (`episodeId`), because `id`
+is a money key, not a React key.** `/api/value-splits` and the streaming split cache
+look an episode up by it, and every boostagram carries it as `itemID`. The first
+version rebuilt `id` from the FEED id on the belief that only React read it.
+Measured on Homegrown Hits 149, which has twelve value time splits: the route
+answered all twelve for the real id and 404 for the feed id — and the 404 is cached
+as "no splits", so every song window of a downloaded episode streamed to the host,
+while each boostagram named the feed as the item. `downloadEpisodeId` (`lib/util.ts`,
+pinned by `check:downloads`) is the one decision: the stored id, or `-fnvHash(guid)`
+for a record written before the field existed — the id the RSS path already gives an
+episode Podcast Index has not indexed. Those records are upgraded by guid once per
+load, and only when PI answers for the SAME feed.
+
 ---
 
 ## The `/downloads` page, and the two handoffs it must get right
