@@ -23,7 +23,7 @@ import { resolveRemoteItemFromRss } from './musicl-resolver';
 import { safeFetch } from './safe-fetch';
 import { readCappedText, MAX_BODY_BYTES } from './capped-body';
 import { escapeHtmlAttr, safeUrlAttr } from './safe-url-attr';
-import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT } from './util';
+import { fnvHash, httpUrl, compareEpisodeOrder, splitOnBareUrls, isPlaylistMedium, filterPlaylistsByQuery, liveBroadcastIsOver, PLAYLIST_MEDIUMS, mapLimit, PI_FANOUT, PI_FEED_IDS_MAX } from './util';
 import { createBoundedCache } from './bounded-cache';
 import { BRAND } from './brand';
 
@@ -565,6 +565,56 @@ function buildEpisode(e: any): Episode {
  * than this is the one case the app still truncates; see docs/feeds.md.
  */
 export const PI_EPISODE_MAX = 1000;
+
+/**
+ * What came out on these feeds since `since` — one call, many feeds.
+ *
+ * `/episodes/byfeedid` takes a comma-separated id list, which is the primitive
+ * the "new episodes from your favorites" section is built on: it collapses
+ * "did anything change" and "what changed" into one question, so there is no
+ * freshness field to keep warm and no seven-day cache to read it through.
+ *
+ * **`since` is EXCLUSIVE** (measured): an item whose `datePublished` equals it
+ * is omitted. So the caller stores the exact `datePublished` of the newest row
+ * it showed, with no off-by-one.
+ *
+ * **`max` is GLOBAL, not per feed**, and applied after a newest-first sort — so
+ * hitting it drops the OLDEST rows across every feed at once. The caller has to
+ * know when that happened, because the rows it did not see lie between its mark
+ * and the ones it did; `truncated` is that signal, and `advanceMarks` refuses
+ * to move any mark in a truncated batch.
+ *
+ * **No `fulltext`.** This list is a set of headlines, not reading material, and
+ * `fulltext` scales the body with the ask — the trap `getEpisodes` documents
+ * one function down.
+ *
+ * **A miss is NOT turned into an empty answer here**, unlike every other wrapper
+ * in this file, and on purpose. An empty answer would put the ids in the
+ * route's `covered`, and the section would then say "nothing new" about shows
+ * Podcast Index did not answer for — the one claim that feature must earn. So
+ * this throws, and `/api/new-episodes` tells a miss from an outage itself
+ * (`isPiMiss` on its probe): a missed chunk stays out of `covered`, an outage
+ * becomes a 5xx.
+ */
+export async function getEpisodesSinceForFeeds(
+  feedIds: readonly number[],
+  since: number,
+  max = 200,
+): Promise<{ episodes: Episode[]; truncated: boolean }> {
+  const ids = Array.from(new Set(feedIds.filter((n) => Number.isInteger(n) && n > 0)))
+    .slice(0, PI_FEED_IDS_MAX);
+  if (!ids.length) return { episodes: [], truncated: false };
+  const data = await pi<any>(
+    `/episodes/byfeedid?id=${ids.join(',')}&since=${Math.floor(since)}&max=${max}`,
+  );
+  const rows: any[] = Array.isArray(data?.items) ? data.items : [];
+  return {
+    episodes: rows.map(buildEpisode),
+    // `max` is the only lever PI gives here, so a full answer is
+    // indistinguishable from a truncated one except by counting.
+    truncated: rows.length >= max,
+  };
+}
 
 /**
  * Ceiling on how many `<item>` blocks one RSS document is walked for.

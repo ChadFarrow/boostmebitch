@@ -26,6 +26,7 @@ import {
   warmEpisodeCache, warmPodcastCache,
 } from '@/lib/podcast-meta';
 import { FavoritesSyncNotice } from '@/components/favorites-sync-notice';
+import { FavoritesNewEpisodes } from '@/components/favorites-new-episodes';
 import { MutesSyncNotice } from '@/components/mutes-sync-notice';
 import { FavoritesPrivacyControl } from '@/components/favorites-privacy';
 import { SelectMenu, type SelectOption } from '@/components/select-menu';
@@ -449,6 +450,15 @@ export function FavoritesPage() {
           undo that (see its comment: deleted as clutter once, restored the same
           night). */}
       <FavoritesPrivacyControl trailing={<RelayTools />} />
+
+      {/* BELOW the sync notices and ABOVE the loading/empty/rows split.
+          Not above the notices: those explain why the library is short, and
+          they stay the topmost thing. Not inside the rows branch either — but
+          it self-hides when no favorite has a resolved feed id, so an empty
+          library never gets a "new episodes" heading over "Nothing saved yet."
+          It is NOT part of the tab / sort / split state: those describe the
+          library, this describes the wire. */}
+      <FavoritesNewEpisodes />
 
       {/* `checking` shares this branch with the pre-mount gate, and it is not
           cosmetic. Without it a signed-in user whose read was still in flight
