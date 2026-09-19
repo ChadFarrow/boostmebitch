@@ -35,8 +35,8 @@ current directory, so it cannot be run from a worktree. → [`ops.md`](ops.md)
 `verify/check-ingest.mjs` follows the same total-replay-against-`naive()` shape as
 the repo's `check:*` scripts; `check-api.mjs`, `check-search.mjs` and
 `check-indexer.mjs` need a Postgres, and the indexer one drives a scripted local
-relay (`verify/mock-relay.mjs`). `verify:ingest` and `verify:yield` run with no
-database.
+relay (`verify/mock-relay.mjs`). `verify:ingest`, `verify:yield` and
+`verify:rejections` run with no database.
 
 ## A `void` on a background loop ends the process
 
@@ -53,6 +53,19 @@ Both loops now back off and continue across a database fault, and both `void`
 calls carry a `.catch(logErr(...))` as the backstop. **Any new background loop
 here needs both halves** — the local guard so a blip is survivable, and the
 `.catch` so an escape is loud rather than fatal.
+
+**There is now exactly one `process.on('unhandledRejection')`, and it is for
+rejections nobody in this service can hold** (`src/relay-rejections.ts`).
+nostr-tools 2.19.4 makes two inside a relay: `send()` is async and throws
+`SendingOnClosedConnection`, which the try/catch in `Subscription.close()` never
+sees, and while a connect is pending it hangs `connectionPromise.then(...)` off
+it with no catch, so a timeout rejects a promise with no owner. Seven crashes
+from 2026-09-03 to 2026-09-18 were all one of those, each a restart that
+re-downloaded every subscription and spent one of `restartPolicyMaxRetries`.
+The handler survives a bare-string reason (every `connect()` rejection is one)
+or that error by name, and **exits 1 on anything else** — it is not a licence
+to skip the two halves above, and `check-rejections.mjs` proves a pg timeout
+still ends the process.
 
 ## An empty page is not evidence
 
@@ -118,6 +131,60 @@ database is what let this service sit stalled for hours reporting `{ok:true}`.
   not an array, so both clauses of the miss test passed it through and it was
   cached as a resolved feed for `piTtlHours` (default a week). The app's own
   reader guards this with `feed.id == null`, which is why it never surfaced there.
+
+## The tracked set grows from the corpus, never from itself
+
+`tracked_pubkeys` scopes the kind:0 / 6 / 5 / 9735 subscriptions, and its
+window is the 5,000 rows with the newest `seen_at`. `trackedFrom` used to add
+the author and every `p` tag of ANY stored event — including the reposts and zap
+receipts the tracked subscription itself delivers. A repost p-tags whoever wrote
+the reposted note, so the subscription widened its own scope: a stranger in,
+someone out, a new fingerprint, all 30 tracked subscriptions rebuilt on every
+relay with no `since`, and the re-downloaded history p-tagging more strangers.
+Production rebuilt the tracked group 74 to 405 times a day from its deploy on
+2026-09-03; from 2026-09-18 19:00 UTC it was about 35 times an hour (666 in 19
+hours), index CPU went 0.08 → 0.38 vCPU and egress 0.06 → 0.29 GB/h, and it
+did not settle on its own.
+
+`TRACKED_SOURCE_KINDS` (kind:1 and kind:30311) is the rule now, pinned by
+`check-ingest.mjs`, and `check-indexer.mjs` drives a repost through the real
+subscription. `004_tracked_from_corpus.sql` rebuilt the table to match, because
+the loop's rows would otherwise have held the window for months. This is the
+SECOND road to the #301 rebuild storm — the first was an order-sensitive
+fingerprint (`fingerprintOf`) — so **anything that changes what enters
+`tracked_pubkeys` is a relay-load decision**: after it ships, count the
+`tracked subscriptions rebuilt` lines in the log.
+
+## A relay keeps 20 subscriptions live, and a refused one still answers
+
+nos.lol and relay.primal.net keep **20** subscriptions live per connection
+(measured 2026-09-19, 60 REQs on one socket: 40 NOTICEs). A REQ past that gets
+`NOTICE: ERROR: too many concurrent REQs` **and** its stored matches **and** an
+EOSE, then never a live event. nostr-tools only sees the EOSE, so it holds the
+refused REQ as open, `/health` counts it, and nothing reports it. The indexer
+held 37 per relay, one per filter, and a rebuild opened the new set BESIDE the
+old one — so on those two relays the whole tracked set was dead from its first
+rebuild, behind 943 to over 1,000 refusals in each of five three-hour windows
+sampled from the log between 2026-09-05 and 2026-09-18.
+
+Two rules now, both in `src/indexer.ts`:
+
+- **Every filter of a group rides ONE REQ** (`subscribeFilters`, over
+  `subscribeMap`): 14 per relay, `PLANNED_SUBS_PER_RELAY`, which
+  `check-indexer.mjs` holds at least two under `RELAY_SUB_CAP` for the ping
+  and a backfill page. Each relay gets its own copy of each filter, because
+  nostr-tools writes a reconnect's `since` INTO the filter object.
+- **A group closes before it reopens** (`replaceSubs`), waiting for the CLOSEs
+  to be sent. None of these filters carries a `since` the gap could fall
+  behind.
+
+**A REQ also has a size ceiling, and missing it costs the socket**: nos.lol drops
+the connection on 134,064 bytes, taking every other subscription with it. A
+tracked REQ is 100,590 bytes, under `MAX_REQ_BYTES`. So raising `PUBKEY_CHUNK`,
+`MAX_TRACKED_IN_FILTERS` or the filters per REQ is a budget change on BOTH
+axes. `check-indexer.mjs` drives a full-size index against a mock relay that
+enforces both limits (`startMockRelay(…, { maxSubsPerConnection,
+maxMessageBytes })`); the previous code fails it with 35 refusals.
 
 ## The forbidden kinds are enforced in code, not in a filter
 

@@ -93,6 +93,12 @@ const liveStream = sign({ kind: 30311, tags: [['d', 'stream1']] });
 // no longer describes, and "anything not on the list is dropped at the door"
 // would be asserted nowhere.
 const longFormPost = sign({ kind: 30023, tags: [['d', 'an-article']] });
+// A tracked author reposting somebody else's note: the tracked subscription
+// asks for EVERY kind:6 by its authors, so the reposted author is a stranger to
+// the corpus. Tracking that p-tag is the loop measured in production.
+const repostOfStranger = sign({ kind: 6, tags: [['e', 'ab'.repeat(32)], ['p', P2]] });
+const noteWithUpperP = sign({ kind: 1, tags: [['p', P1], ['P', P2]] });
+const liveWithHost = sign({ kind: 30311, tags: [['d', 'stream1'], ['p', P1, '', 'host']] });
 const itemOnly = sign({ kind: 1, tags: [['i', 'podcast:item:guid:orphan-item']] });
 // Tag ORDER is not guaranteed on the wire. A note may name the item before the
 // feed it belongs to, and a parser that pairs an item against "whatever feed I
@@ -201,9 +207,20 @@ const VECTORS = [
   { fn: 'trackedFrom', args: [boost],
     expect: [{ pubkey: PK, reason: 'author' }, { pubkey: P1, reason: 'p-tagged' }],
     why: 'p-tagged pubkeys are tracked too, or a boost recipient never gets their zaps indexed' },
-  { fn: 'trackedFrom', args: [zapReceipt],
+  { fn: 'trackedFrom', args: [noteWithUpperP],
     expect: [{ pubkey: PK, reason: 'author' }, { pubkey: P1, reason: 'p-tagged' }],
-    why: 'uppercase P is not a p tag; only the lowercase recipient counts' },
+    why: 'uppercase P is not a p tag; only the lowercase one counts' },
+  { fn: 'trackedFrom', args: [liveWithHost],
+    expect: [{ pubkey: PK, reason: 'author' }, { pubkey: P1, reason: 'p-tagged' }],
+    why: 'a live activity is corpus: /feed/live sends its author profiles' },
+
+  // trackedFrom - what the TRACKED subscription delivers must never widen it.
+  // Replayed against the shipping module before this change, both of these
+  // failed: it returned the author and the p-tag for every stored kind.
+  { fn: 'trackedFrom', args: [repostOfStranger], expect: [],
+    why: 'a repost p-tags whoever wrote the reposted note - anybody on the network' },
+  { fn: 'trackedFrom', args: [zapReceipt], expect: [],
+    why: 'a zap receipt adds nothing: its p was matched BY the tracked filter, its author is an LNURL server' },
 ];
 
 // --- the obvious wrong implementation --------------------------------------

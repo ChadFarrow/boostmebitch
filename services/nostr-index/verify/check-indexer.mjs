@@ -94,6 +94,27 @@ ok(
   'the p-tagged pubkey is tracked, so its zaps can be indexed later',
 );
 
+// --- what the tracked subscription delivers must not widen it ---------------
+//
+// PK is tracked now (it wrote `live`), so the tracked subscription asks for its
+// reposts — ALL of them, whatever they repost. A repost p-tags the reposted
+// note's author. Letting that join the set is the loop production ran from its
+// first deploy: a stranger in, someone out, a full rebuild, more strangers.
+// The repost itself is stored; only its p-tag must not be tracked.
+const strangerPk = 'cd'.repeat(32);
+const repostOfStranger = sign({
+  kind: 6, created_at: NOW + 1, content: '',
+  tags: [['e', 'ef'.repeat(32)], ['p', strangerPk]],
+});
+await waitFor(async () => {
+  relay.push(repostOfStranger);
+  return (await count('select count(*)::int as n from events where id = $1', [repostOfStranger.id])) === 1;
+}, 'a repost by a tracked author arrived through the tracked subscription and was stored', 12_000);
+ok(
+  (await count('select count(*)::int as n from tracked_pubkeys where pubkey = $1', [strangerPk])) === 0,
+  'and the stranger it p-tags is NOT tracked',
+);
+
 // --- replies -----------------------------------------------------------------
 //
 // A reply is a kind:1 with an `e` tag to its parent and NOTHING else naming it
@@ -213,6 +234,140 @@ ok(h.subscriptions > 0, 'health reports live subscriptions');
 
 indexer.stop();
 await relay.close();
+
+// --- 004_tracked_from_corpus.sql ---------------------------------------------
+//
+// The migration that clears what the loop left behind. It already ran on the
+// empty database at the top of this file, which proves nothing, so it is run
+// again here over a table seeded the way production looked: every pubkey the
+// loop touched stamped `now()`, corpus and stranger alike.
+{
+  await db.query('truncate events, event_tags, profiles, tracked_pubkeys cascade');
+  const T = NOW - 30 * 86_400;
+  const skA = generateSecretKey(), A = getPublicKey(skA);    // corpus author
+  const skZ = generateSecretKey(), Z = getPublicKey(skZ);    // LNURL server
+  const skL = generateSecretKey(), L = getPublicKey(skL);    // live host
+  const skF = generateSecretKey(), F = getPublicKey(skF);    // future-dated note
+  const skD = generateSecretKey(), D = getPublicKey(skD);    // deleted note
+  const B = '1b'.repeat(32), C = '1c'.repeat(32), H = '1d'.repeat(32), X = '1e'.repeat(32);
+  const at = (sk, tpl) => finalizeEvent({ content: '', tags: [], ...tpl }, sk);
+  const deletedNote = at(skD, { kind: 1, created_at: T + 50, tags: [['k', 'podcast:guid']] });
+  const seed = [
+    at(skA, { kind: 1, created_at: T, tags: [['k', 'podcast:guid'], ['p', B]] }),
+    // LATER than A's note, and must not count: a repost is not corpus.
+    at(skA, { kind: 6, created_at: T + 100, tags: [['e', 'ef'.repeat(32)], ['p', C]] }),
+    at(skZ, { kind: 9735, created_at: T + 200, tags: [['p', A]] }),
+    at(skL, { kind: 30311, created_at: T + 300, tags: [['d', 's'], ['p', H, '', 'host']] }),
+    at(skF, { kind: 1, created_at: NOW + 10 * 86_400, tags: [['k', 'podcast:guid']] }),
+    deletedNote,
+    at(skD, { kind: 5, created_at: T + 60, tags: [['e', deletedNote.id]] }),
+  ];
+  const { ingestEvent, emptyStats } = await import('../src/store.ts');
+  for (const e of seed) await ingestEvent(db, e, emptyStats());
+  ok((await count(`select count(*)::int as n from events where id = $1 and deleted_at is not null`, [deletedNote.id])) === 1,
+     'seed: the kind:5 tombstoned its own note');
+
+  // The state the loop left: everyone the old rule would have written, all "now".
+  await db.query(
+    `insert into tracked_pubkeys (pubkey, reason) select unnest($1::text[]), 'author'
+     on conflict (pubkey) do update set seen_at = now()`,
+    [[A, B, C, Z, L, H, F, D, X]],
+  );
+
+  const { readFile } = await import('node:fs/promises');
+  const sql = await readFile(new URL('../migrations/004_tracked_from_corpus.sql', import.meta.url), 'utf8');
+  const client = await db.connect();
+  try {
+    await client.query('begin');
+    await client.query(sql);
+    await client.query('commit');
+  } finally {
+    client.release();
+  }
+
+  const rows = new Map((await db.query(
+    'select pubkey, extract(epoch from seen_at)::bigint as s from tracked_pubkeys',
+  )).rows.map((r) => [r.pubkey, Number(r.s)]));
+  const kept = (pk) => rows.has(pk);
+  ok(kept(A) && kept(B), '004 keeps a corpus note\'s author and the pubkey it p-tags');
+  ok(kept(L) && kept(H), '004 keeps a live activity\'s author and its p-tagged host');
+  ok(kept(D), '004 keeps the author of a DELETED note - a tombstone does not un-see them');
+  ok(!kept(C), '004 drops the stranger a repost p-tagged - the loop\'s own rows');
+  ok(!kept(Z), '004 drops a zap receipt\'s LNURL-server author');
+  ok(!kept(X), '004 drops a pubkey no stored event names at all');
+  ok(rows.get(A) === T,
+     `004 dates A by its NOTE (${T}), not by the later repost or the "now" the loop stamped (got ${rows.get(A)})`);
+  ok(rows.get(H) === T + 300, '004 dates a p-tagged host by the event that tagged it');
+  ok(kept(F) && rows.get(F) <= Math.floor(Date.now() / 1000) + 1,
+     '004 clamps a future-dated event to now(), so it cannot pin a pubkey to the top of the window');
+}
+
+// --- the relay budget ---------------------------------------------------------
+//
+// nos.lol and relay.primal.net keep 20 subscriptions live per connection and
+// answer the 21st with a NOTICE and an EOSE — so it looks open and never
+// delivers. The indexer held 37, and opened a rebuilt group BESIDE the old one,
+// so the whole tracked set went dead on those two relays at its first rebuild.
+// This drives a FULL-size index — 5,000 tracked pubkeys, 2,000 watched notes —
+// against a relay that enforces both limits the way they do, through a start
+// and a rebuild of both dynamic groups.
+{
+  const { RELAY_SUB_CAP, MAX_REQ_BYTES, PLANNED_SUBS_PER_RELAY, trackedReqs, replyReqs } =
+    await import('../src/indexer.ts');
+  const hexN = (n, pad = '0') => n.toString(16).padStart(64, pad);
+  // The bytes nostr-tools puts on the wire for one subscription.
+  const reqBytes = (filters) => JSON.stringify(['REQ', 'sub:99999', ...filters]).length;
+
+  ok(PLANNED_SUBS_PER_RELAY + 2 <= RELAY_SUB_CAP,
+     `plan: ${PLANNED_SUBS_PER_RELAY} REQs per relay, plus a ping and a backfill page, fit under ${RELAY_SUB_CAP}`);
+  const biggestTracked = Math.max(...trackedReqs(Array.from({ length: 5000 }, (_, i) => hexN(i))).map(reqBytes));
+  const biggestReply = Math.max(...replyReqs(Array.from({ length: 2000 }, (_, i) => hexN(i))).map(reqBytes));
+  ok(biggestTracked <= MAX_REQ_BYTES && biggestReply <= MAX_REQ_BYTES,
+     `the largest REQs (tracked ${biggestTracked} B, replies ${biggestReply} B) fit MAX_REQ_BYTES`);
+  ok(MAX_REQ_BYTES < 134_064, 'MAX_REQ_BYTES is under the 134,064-byte REQ that made nos.lol drop the socket');
+
+  await db.query('truncate events, event_tags, profiles, tracked_pubkeys, indexer_state cascade');
+  await db.query(
+    `insert into tracked_pubkeys (pubkey, reason, seen_at)
+     select lpad(to_hex(g), 64, '0'), 'author', now() - make_interval(secs => g) from generate_series(1, 5000) g`,
+  );
+  await db.query(
+    `insert into events (id, pubkey, kind, created_at, content, tags, sig)
+     select lpad(to_hex(g), 64, '0'), repeat('a', 64), 1, $1::bigint - g, '', '[]'::jsonb, repeat('0', 128)
+       from generate_series(1, 2000) g`,
+    [NOW],
+  );
+
+  const capped = await startMockRelay([], { maxSubsPerConnection: RELAY_SUB_CAP, maxMessageBytes: 131_072 });
+  const full = new Indexer(db, { ...cfg, relays: [capped.url()], profileRelays: [] });
+  await full.start();
+  await sleep(1000);
+
+  // One pubkey in at the top (the oldest falls out) and one newer note: both
+  // dynamic groups must rebuild on the next 300 ms tick — and the proof that
+  // the rebuilt REQs are LIVE, not refused-but-answered, is the relay holding a
+  // filter that names each newcomer.
+  const newPubkey = hexN(1, 'c');
+  const newNote = hexN(1, 'd');
+  await db.query(`insert into tracked_pubkeys (pubkey, reason, seen_at) values ($1, 'author', now() + interval '1 second')`, [newPubkey]);
+  await db.query(
+    `insert into events (id, pubkey, kind, created_at, content, tags, sig) values ($1, $2, 1, $3, '', '[]'::jsonb, $4)`,
+    [newNote, 'a'.repeat(64), NOW + 100, '0'.repeat(128)],
+  );
+  const liveNames = (key, value) => capped.liveFilters().some((f) => f[key]?.includes(value));
+  await waitFor(async () => liveNames('authors', newPubkey) && liveNames('#p', newPubkey) && liveNames('#e', newNote),
+    'both dynamic groups rebuilt, and the relay holds the newcomers LIVE (authors, #p and #e)');
+
+  ok(capped.oversize() === 0, 'no REQ was big enough for the relay to drop the socket');
+  ok(capped.refusals() === 0,
+     `the relay refused NO REQ through start and rebuild (refused ${capped.refusals()}, peak ${capped.peakSubs()} live on one connection)`);
+  ok(capped.peakSubs() <= PLANNED_SUBS_PER_RELAY + 2,
+     `peak ${capped.peakSubs()} live subscriptions on the connection, never old and new together`);
+
+  full.stop();
+  await capped.close();
+}
+
 await closePool();
 
 // ---------------------------------------------------------------------------

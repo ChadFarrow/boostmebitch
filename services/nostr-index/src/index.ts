@@ -6,6 +6,12 @@
 // yield path over its MessageChannel one, which leaks a native handle per
 // message received. See the module for the measurement. (#301)
 import './node-yield.ts';
+// SECOND, also before any relay opens: nostr-tools rejects promises inside a
+// relay that no caller holds, and each one ended the process — seven times from
+// 2026-09-03 to 2026-09-18. Those are logged and survived; anything else still
+// exits. See the module.
+import { guardRelayRejections } from './relay-rejections.ts';
+guardRelayRejections();
 
 import { config } from './config.ts';
 import { closePool, getPool } from './db.ts';
