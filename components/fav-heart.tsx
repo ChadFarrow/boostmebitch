@@ -304,6 +304,27 @@ export function FavFeedRowHeart({
   );
 }
 
+/**
+ * Whether `<FavEpisodeHeart>` would draw this episode filled — the same
+ * expression, so a surface that shows the state without the control (the
+ * episode row's ♥ mark on a phone, where the heart is inside its `⋯` menu)
+ * cannot disagree with the heart.
+ */
+/**
+ * Whether `<FavEpisodeHeart>` renders at all: both halves of the identifier,
+ * the item guid to name it and the feed guid to find it. Exported so the
+ * episode row's `⋯` menu can tell it would open empty without mounting the
+ * heart to find out.
+ */
+export function canFavoriteEpisode(episode: Episode, podcast?: Podcast | null): boolean {
+  return !!episode.guid && !!(episode.podcastGuid || podcast?.podcastGuid);
+}
+
+export function useEpisodeFavorited(episode: Episode): boolean {
+  const itemGuid = episode.guid;
+  return useApp((s) => !!itemGuid && !!s.favoriteEpisodes[itemGuid]);
+}
+
 export function FavEpisodeHeart({
   episode,
   podcast,
@@ -339,14 +360,14 @@ export function FavEpisodeHeart({
    * is silent and unrecoverable.
    */
   const containerIsParent = !!podcast?.podcastGuid && podcast.podcastGuid === feedGuid;
-  const isFav = useApp((s) => !!itemGuid && !!s.favoriteEpisodes[itemGuid]);
+  const isFav = useEpisodeFavorited(episode);
   const addFavoriteEpisode = useApp((s) => s.addFavoriteEpisode);
   const removeFavoriteEpisode = useApp((s) => s.removeFavoriteEpisode);
   const identity = useApp((s) => s.identity);
 
   // Same rule as <FavHeart>: no canonical identifier, no heart. An episode
   // needs both halves — the item guid to name it and the feed guid to find it.
-  if (!itemGuid || !feedGuid) return null;
+  if (!canFavoriteEpisode(episode, podcast) || !itemGuid || !feedGuid) return null;
 
   function toggle(e: React.MouseEvent) {
     e.stopPropagation();

@@ -37,6 +37,7 @@ import { DownloadButton } from '../download-button';
 import { ValueSplitRows } from '../value-split-rows';
 import { useStreamPanel } from '../streaming-settings';
 import { ResumeLeft } from './resume-left';
+import { EpisodeRowMarks, EpisodeRowMenu } from './episode-row-menu';
 
 /**
  * The two surfaces below the list, deferred in BYTES as well as on screen.
@@ -861,6 +862,14 @@ export function EpisodeList({
               }`}
               onClick={openRow}
             >
+              {/* BELOW lg: THE ROW IS BOOST AND A `⋯`, and the rest is in the
+                  menu (<EpisodeRowMenu>). The title column pays for every
+                  button on this line: ⚡, DOWNLOAD and ♡ at 44px each left it
+                  108px at 390px — "Episode 459 ..." with its date, duration and
+                  V4V stacked on three lines. From sm: the three take their
+                  words, and the title measured 91px at 640, 219 at 768 and 475
+                  at 1024, which is why the break is lg: and not sm:. From lg:
+                  up the row carries all three, as before. */}
               <div className="flex gap-2 sm:gap-3 py-3 pr-1 sm:pr-3">
               {/* An unresolved playlist row has an empty enclosure, so the
                   play control is SUPPRESSED rather than disabled — a disabled
@@ -943,7 +952,12 @@ export function EpisodeList({
               >
                 <div className="flex items-center gap-2 min-w-0">
                   {e.liveStatus && <LiveBadge status={e.liveStatus} />}
-                  <div className={`text-base font-display font-medium leading-tight truncate ${e.unresolved ? 'text-muted italic' : ''}`}>
+                  {/* Two lines below lg:, where the menu gave it the width
+                      to use them, and one from lg: up. `max-lg:` rather than
+                      overriding at lg:, because `truncate` and
+                      `line-clamp-none` both set `overflow` and would resolve by
+                      stylesheet order. */}
+                  <div className={`text-base font-display font-medium leading-tight max-lg:line-clamp-2 max-lg:break-words lg:truncate ${e.unresolved ? 'text-muted italic' : ''}`}>
                     {e.unresolved
                       ? (e.unresolved === 'not-found' ? 'Track not in Podcast Index' : 'Track not looked up')
                       : e.title}
@@ -970,6 +984,11 @@ export function EpisodeList({
                   {e.duration && <span className="whitespace-nowrap">· {fmtDuration(e.duration)}</span>}
                   {data.podcast && <ResumeLeft episode={e} podcast={data.podcast} />}
                   {e.value && <span className="text-bolt whitespace-nowrap">· ⚡ V4V</span>}
+                  {/* Below lg: the state of what the `⋯` menu holds. From lg:
+                      the controls are on the row and say it themselves. */}
+                  <span className="contents lg:hidden">
+                    <EpisodeRowMarks episode={e} />
+                  </span>
                 </div>
                 {/* These were bare inline <span>s carrying `mt-0.5`, which does
                     nothing on a non-replaced inline element, and they abutted
@@ -1001,12 +1020,15 @@ export function EpisodeList({
                   <span className="hidden sm:inline">BOOST</span>
                 </button>
               )}
-              <div className="self-center flex-shrink-0">
+              {/* SIBLINGS of the row's tap targets, never children of them —
+                  a button may not contain a button. Every one is
+                  `flex-shrink-0` so none squashes the title column. From lg:
+                  only; below it they are in the `⋯` menu. */}
+              <div className="hidden lg:flex self-center flex-shrink-0 items-center gap-3">
                 <DownloadButton episode={e} podcast={data.podcast} />
-              </div>
-              <div className="self-center flex-shrink-0">
                 <FavEpisodeHeart episode={e} podcast={data.podcast} />
               </div>
+              <EpisodeRowMenu episode={e} podcast={data.podcast} className="lg:hidden self-center" />
               </div>
             </li>
             </Fragment>

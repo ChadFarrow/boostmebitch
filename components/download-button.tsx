@@ -145,9 +145,11 @@ export function DownloadButton({
         >
           {glyph}
         </span>
-        {/* 'sm' collapses to the glyph below sm: — at 390px a list row is ~314px
-            and already holds BOOST, the heart and the title. The aria-label
-            above carries the full meaning, so nothing is lost. */}
+        {/* 'sm' collapses to the glyph below sm:. Its one consumer, the
+            episode row, shows it from lg: only now — below that DOWNLOAD is a
+            'tile' in the row's `⋯` menu — but a list row on a phone has no
+            width for the word, so the collapse stays for the next one. The
+            aria-label above carries the full meaning, so nothing is lost. */}
         <span className={`relative ${size === 'sm' || size === 'header' ? 'hidden sm:inline' : undefined}`}>
           DOWNLOAD
         </span>
@@ -191,6 +193,33 @@ export function DownloadButton({
           {state.error}
         </span>
       )}
+    </span>
+  );
+}
+
+/**
+ * The download state as a few words for a line of text, or nothing when there
+ * is no download. For a surface that shows the state without the control — the
+ * episode row on a phone, where DOWNLOAD is inside its `⋯` menu and a download
+ * running for minutes would otherwise show progress nowhere. Reads the manager
+ * exactly as the button does, and says nothing about an idle episode: a mark on
+ * every row would be noise.
+ */
+export function DownloadMark({ episode, className = '' }: { episode: Episode; className?: string }) {
+  useDownloadsVersion();
+  if (!downloadManager.canDownload(episode)) return null;
+  const state = downloadManager.getEpisodeState(episode);
+  const pct = state.fraction === null ? null : Math.round(state.fraction * 100);
+  const text =
+    state.status === 'downloaded' ? '✓ downloaded'
+      : state.status === 'downloading' ? (pct === null ? '↓ downloading' : `↓ ${pct}%`)
+        : state.status === 'queued' ? '↓ waiting'
+          : state.status === 'error' ? '! download failed'
+            : null;
+  if (!text) return null;
+  return (
+    <span className={`whitespace-nowrap tabular-nums ${state.status === 'error' ? 'text-red-400' : 'text-bone/80'} ${className}`}>
+      · {text}
     </span>
   );
 }

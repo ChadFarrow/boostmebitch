@@ -354,7 +354,7 @@ Seven properties are load-bearing, and most of them are only visible from a driv
 
 ## `.tile` — a secondary action in a row of peers
 
-**Glyph over a one-word label, 52px, full width of its grid cell** (`app/globals.css`). Three surfaces are built from it: the show header, the episode page and the fullscreen player, each an auto-fit `grid-cols-[repeat(auto-fit,minmax(56px,1fr))]` so a conditional member changes the row's width and not its shape.
+**Glyph over a one-word label, 52px, full width of its grid cell** (`app/globals.css`). Four surfaces are built from it: the show header, the episode page, the fullscreen player and the episode row's `⋯` menu below `lg:`, each an auto-fit `grid-cols-[repeat(auto-fit,minmax(56px,1fr))]` so a conditional member changes the row's width and not its shape.
 
 It exists because those rows were the same set of actions rendered at three or four sizes each — `.btn`, `.btn-ghost text-xs`, `text-[11px]`, a `.stamp` — competing as equals, and the eye read a pile rather than a row. One shape at one size is what makes it scan; **that is also what makes keeping every control affordable**, which matters because `docs/ui.md` requires the show header's five to stay and none to hide behind a menu.
 
@@ -433,6 +433,23 @@ A `<Chip>` above the list: `↓ NEWEST FIRST` / `↑ OLDEST FIRST`. Per show, re
 **On the live-stream card ONLY the pause toggles, and the resume deliberately does not.** The first version sent both through `togglePlay()`, reasoning that the `[isPlaying]` effect flags a paused live item and bumps `reloadNonce`, so the stream re-sources at the live edge either way. It does — but it re-sources from `current.episode.enclosureUrl`, which was seeded when playback started. `onPlay()` is `play(streamToEpisode(stream, …))`, rebuilt from the newest kind:30311, and a host who restarts mid-broadcast republishes that event with a NEW `streaming` tag: the card refreshes, `current` does not, and the toggle replays a dead URL. So the branch is `isCurrentStream && isPlaying ? togglePlay() : onPlay()` — everything except the pause goes through the re-seed, which costs nothing because it reaches the same live edge. **`disabled` carries the same asymmetry**: `stream.status` and `streamUrl` are live-refreshed, so a host dropping the `streaming` tag mid-broadcast would otherwise disable the only control that can stop audio that is still playing.
 
 **The word moves with the glyph.** That button rendered `{… ? '❚❚' : '▶'} PLAY` — a pause icon beside the word PLAY — and carried no `aria-label`, so its accessible name was the text content and a screen reader announced a pause control as "play". It is PAUSE / RESUME / PLAY now, the same vocabulary `<EpisodeDetailView>` uses, with a matching `aria-label`. `title` is not an accessible name; the BOOST button beside it already says so in a comment.
+
+### Below `lg:` the episode row is BOOST and a `⋯`, and the rest is in the menu
+
+**The title was paying for every button, and at two widths it had nothing left.** The row is one flex line — cover, title column, then the controls, each `flex-shrink-0` — so `min-w-0 flex-1` on the title makes it absorb the whole shortfall. DOWNLOAD's 44px on a phone took the title to **108px at 390px**: "Episode 459 ..." with the date, duration and ⚡ V4V stacked on three lines, reported from an iPhone. From `sm:` BOOST, DOWNLOAD and FAVORITE take their words, measured on Bowl After Bowl with all three on the line: **91px at 640**, 219 at 768, 351 at 900, 475 at 1024. So the break is `lg:`, not `sm:`.
+
+**Below `lg:` the row keeps BOOST and gains a `⋯` (`<EpisodeRowMenu>`, `components/lists/episode-row-menu.tsx`); FAV and DOWNLOAD are in its menu. From `lg:` up they are on the row as before.** The title takes two lines below `lg:` (`max-lg:line-clamp-2`, and `lg:truncate` — not `truncate` overridden at `lg:`, because `truncate` and `line-clamp-none` both set `overflow` and would resolve by stylesheet order). Measured: 168px at 390, where a row is 100px; 331 at 640; 459 at 768.
+
+**The buttons on a line of their own, under the text, was tried first and rejected.** The title got 264px at 390, but a phone row grew from 98px to 125–135px and a music track row from ~73px to 124px — fewer episodes on the screen, which is what the menu answers.
+
+Four things the menu does that are each a way to get it wrong:
+
+- **Its contents are the shared controls as `.tile`s**, never menu items that re-implement them — `<FavEpisodeHeart>` carries the container-is-not-the-parent rule, `<DownloadButton>` five states. It stays open after a press, so the tile's own state change is the confirmation.
+- **Its clicks stop at the menu.** React propagates a synthetic event through a PORTAL to the component that rendered it, so a press on the menu's padding reached the row's `<li onClick>` and opened the episode. The tiles stop their own; the container stops the rest.
+- **No trigger when the menu would open empty**, asked through each control's own refusal — `canFavoriteEpisode`, `downloadManager.canDownload` — never a copy of it. An unresolved playlist row has no enclosure, so DOWNLOAD refuses it while its heart may still render off the remote item's guids; hiding `⋯` on `e.unresolved` would have dropped that heart.
+- **The row says what the menu hides** (`<EpisodeRowMarks>`): `· ♥`, `· ✓ downloaded` or `· ↓ 47%` on the date line, below `lg:` only. Without it a phone showed neither state, and a download running for minutes showed its progress nowhere. Each mark reads the SAME expression as its control — `useEpisodeFavorited`, `<DownloadMark>` — exported from the control's own module.
+
+**The menu's portal, placement and dismissal are `useAnchoredMenu` (`components/use-anchored-menu.ts`)**, shared with the episode page's `⋯ MORE`; the reasons (the `relative z-0` stacking context, the `?.` outside-click test) are in its header.
 
 ## Players (mini + fullscreen)
 
