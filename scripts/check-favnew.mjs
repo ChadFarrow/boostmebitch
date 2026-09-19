@@ -41,6 +41,19 @@
 //
 // `pruneMarks` is the bound.
 //
+// `mergeNewEpisodeRows` and `pruneNewRows` came later, with the list itself.
+// The rows used to live only in React state while the marks went to disk, so
+// the CHECK consumed the list rather than the reader: a pass advanced every
+// mark and the rows died with the component. The list is the persisted thing
+// now, and these two are what carry it — a pass ADDS to it, and a row leaves
+// only by aging past the window or by its show being unfavorited.
+//
+// The `merge → advance` pipeline is pinned as a vector of its own, because the
+// bug it fixes lives BETWEEN two functions that are each correct. Handing
+// `advanceMarks` the FETCHED rows rather than the kept ones marks episodes as
+// seen that the cap had already dropped, and nothing downstream can tell: the
+// reader is simply never offered them again.
+//
 // All four live in lib/util.ts, whose only import is type-only, so this script
 // imports the REAL module under `--experimental-strip-types`. It does NOT run
 // `importFreeProblems`: that scan rejects type-only relative imports and
@@ -54,8 +67,10 @@ import {
   advanceMarks,
   FAV_NEW_CAP,
   FAV_NEW_WINDOW_MS,
+  mergeNewEpisodeRows,
   PI_FEED_IDS_MAX,
   pruneMarks,
+  pruneNewRows,
   selectNewEpisodes,
   sinceForBatch,
 } from '../lib/util.ts';
@@ -90,6 +105,25 @@ function checkAdvance(label, args, expected, { alsoNaive = false } = {}) {
 function checkPrune(label, args, expected, { alsoNaive = false } = {}) {
   compare(label, pruneMarks(...args), expected);
   vectors.push({ label, kind: 'prune', args, alsoNaive });
+}
+/** Titles again, in order — the list as the reader reads it. */
+function checkMerge(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, mergeNewEpisodeRows(...args).map((e) => e.title), expected);
+  vectors.push({ label, kind: 'merge', args, alsoNaive });
+}
+function checkPruneRows(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, pruneNewRows(...args).map((e) => e.title), expected);
+  vectors.push({ label, kind: 'pruneRows', args, alsoNaive });
+}
+/**
+ * The COMPOSITION, which is where the bug was: merge first, then let
+ * `advanceMarks` see only what the merge kept.
+ */
+const markPipeline = (prev, prevRows, found, covered, byId, nowMs) =>
+  advanceMarks(prev, mergeNewEpisodeRows(prevRows, found, nowMs), covered, byId, false);
+function checkPipeline(label, args, expected, { alsoNaive = false } = {}) {
+  compare(label, markPipeline(...args), expected);
+  vectors.push({ label, kind: 'pipeline', args, alsoNaive });
 }
 
 // A fixed clock, so the window is arithmetic rather than a race.
@@ -198,6 +232,71 @@ checkPrune('over the cap, the most recent marks are the ones kept',
   [{ a: 1, b: 2, c: 3 }, ['a', 'b', 'c'], 2], { c: 3, b: 2 });
 
 // ---------------------------------------------------------------------------
+section('mergeNewEpisodeRows: a pass ADDS to the list, it does not replace it');
+// ---------------------------------------------------------------------------
+// THE ONE THIS FUNCTION EXISTS FOR. One pass covers MAX_FEEDS shows and a
+// library can be larger, so a replace makes pass 2 delete what pass 1 found —
+// and the marks have already moved past it, so it is gone for good.
+checkMerge('a row from an earlier pass survives a pass that did not find it',
+  [[ep('carried', 1, NOW_S - 2 * DAY)], [ep('fresh', 2, NOW_S - 1 * DAY)], NOW_MS],
+  ['fresh', 'carried']);
+// Age is the only thing that retires a row nobody cleared, so both halves are
+// asserted at once: the stale carried row goes and the fresh one stays.
+checkMerge('a carried row past the horizon is retired, a fresh one is carried',
+  [[ep('stale', 1, NOW_S - 9 * DAY), ep('carried', 1, NOW_S - 2 * DAY)], [], NOW_MS],
+  ['carried']);
+checkMerge('a FOUND row past the horizon goes too — the window is the window',
+  [[], [ep('stale', 1, NOW_S - 9 * DAY)], NOW_MS], []);
+checkMerge('a re-fetched episode updates in place rather than appearing twice',
+  [[ep('dup', 1, NOW_S - 1 * DAY)], [ep('dup', 1, NOW_S - 1 * DAY)], NOW_MS],
+  ['dup'], { alsoNaive: true });
+checkMerge('an undated row cannot ride in on the carry',
+  [[ep('undated', 1, undefined), ep('carried', 1, NOW_S - 2 * DAY)], [], NOW_MS],
+  ['carried']);
+{
+  const carried = Array.from({ length: 40 }, (_, i) => ep(`c${i}`, 1, NOW_S - 100 - i));
+  const found = Array.from({ length: 40 }, (_, i) => ep(`f${i}`, 2, NOW_S - i));
+  const expected = [...found.map((e) => e.title), ...carried.map((e) => e.title)]
+    .slice(0, FAV_NEW_CAP);
+  checkMerge('the cap holds across the carry, newest first', [carried, found, NOW_MS], expected);
+}
+
+// ---------------------------------------------------------------------------
+section('pruneNewRows: unfavoriting a show takes its rows off the list too');
+// ---------------------------------------------------------------------------
+checkPruneRows('a row whose show is no longer favorited is dropped',
+  [[ep('kept', 1, NOW_S), ep('gone', 9, NOW_S)], [1]], ['kept']);
+checkPruneRows('everything still favorited survives',
+  [[ep('kept', 1, NOW_S), ep('also', 2, NOW_S)], [1, 2]], ['kept', 'also'],
+  { alsoNaive: true });
+
+// ---------------------------------------------------------------------------
+section('merge → advance: a mark may only describe a row on the LIST');
+// ---------------------------------------------------------------------------
+{
+  // A pass returns more rows than the list can hold. Feed B's are the newest,
+  // so they fill the cap and feed A's single old row is dropped — and feed A's
+  // mark must therefore NOT move. Handing `advanceMarks` the fetched rows
+  // instead marks that episode as seen, and the reader is never offered it.
+  const bRows = Array.from({ length: FAV_NEW_CAP }, (_, i) => ep(`b${i}`, 2, NOW_S - i));
+  // Above feed A's mark, so it is a genuinely new episode — and below every
+  // feed-B row, so the cap drops it. Exactly the row the old wiring consumed.
+  const aRow = ep('a-dropped', 1, NOW_S - 1 * DAY);
+  checkPipeline('a row the cap dropped does NOT advance its feed mark',
+    [PREV, [], [...bRows, aRow], ['guid-a', 'guid-b'], BY_ID, NOW_MS],
+    { 'guid-a': NOW_S - 2 * DAY, 'guid-b': NOW_S });
+}
+checkPipeline('a row that survives DOES advance it',
+  [PREV, [], [ep('a-new', 1, NOW_S - 1 * DAY)], ['guid-a', 'guid-b'], BY_ID, NOW_MS],
+  { 'guid-a': NOW_S - 1 * DAY, 'guid-b': NOW_S - 6 * DAY }, { alsoNaive: true });
+// The carry is not inert. A truncated pass advances NOTHING, so a row it found
+// sits on the list above its own mark — and the next untruncated pass must
+// settle it, even though that pass found nothing itself.
+checkPipeline('a carried row still above its mark settles it on a later pass',
+  [PREV, [ep('carried', 1, NOW_S - 1 * DAY)], [], ['guid-a', 'guid-b'], BY_ID, NOW_MS],
+  { 'guid-a': NOW_S - 1 * DAY, 'guid-b': NOW_S - 6 * DAY });
+
+// ---------------------------------------------------------------------------
 section('The constants this repo states rather than passes around');
 // ---------------------------------------------------------------------------
 compare('FAV_NEW_WINDOW_MS is seven days', FAV_NEW_WINDOW_MS, 7 * 24 * 60 * 60 * 1000);
@@ -237,6 +336,21 @@ section('Every vector above is replayed against the obvious wrong version');
   // No prune at all.
   const naivePrune = (marks) => ({ ...marks });
 
+  // REPLACE rather than merge — what the section shipped with. Correct on a
+  // library that fits in one pass, and it deletes pass 1's rows on every
+  // library that does not.
+  const naiveMerge = (_prev, found) => [...found]
+    .sort((a, b) => (b.datePublished ?? 0) - (a.datePublished ?? 0))
+    .slice(0, FAV_NEW_CAP);
+
+  // No prune at all, again — a row for an unfavorited show the reader cannot
+  // get rid of.
+  const naivePruneRows = (rows) => [...rows];
+
+  // THE ORIGINAL BUG: advance over what was FETCHED rather than what was kept.
+  const naivePipeline = (prev, _prevRows, found, covered, byId) =>
+    advanceMarks(prev, found, covered, byId, false);
+
   const call = (impl, v) => {
     try {
       const real = impl === 'real';
@@ -249,6 +363,12 @@ section('Every vector above is replayed against the obvious wrong version');
           return JSON.stringify(real ? advanceMarks(...v.args) : naiveAdvance(...v.args));
         case 'prune':
           return JSON.stringify(real ? pruneMarks(...v.args) : naivePrune(...v.args));
+        case 'merge':
+          return JSON.stringify((real ? mergeNewEpisodeRows(...v.args) : naiveMerge(...v.args)).map((e) => e.title));
+        case 'pruneRows':
+          return JSON.stringify((real ? pruneNewRows(...v.args) : naivePruneRows(...v.args)).map((e) => e.title));
+        case 'pipeline':
+          return JSON.stringify(real ? markPipeline(...v.args) : naivePipeline(...v.args));
         default: throw new Error(`unknown vector kind ${v.kind}`);
       }
       // A wrong implementation is allowed to throw where the real one returns.

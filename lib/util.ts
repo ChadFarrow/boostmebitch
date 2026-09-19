@@ -357,6 +357,18 @@ export function selectNewEpisodes(
 /**
  * The marks to store after a pass, and the three states it has to tell apart.
  *
+ * **`rows` is the list the reader KEEPS, never everything the pass fetched.**
+ * The caller passes `mergeNewEpisodeRows`' output, and the difference is not
+ * bookkeeping. A pass over a hundred shows returns several hundred records
+ * while the list holds `FAV_NEW_CAP`; handing this the fetched set advanced
+ * every feed's mark past rows the section had already thrown away, so those
+ * episodes were marked as seen and could never come back. A mark may only
+ * describe a row that is on the list.
+ *
+ * Per feed the kept rows are a date-PREFIX of that feed's own rows — the merge
+ * sorts newest-first across every feed and slices the top — so the newest kept
+ * row of a feed is also its newest row, and no middle is skipped.
+ *
  * 1. A feed **not covered** — PI could not be asked about it — keeps its mark.
  *    Advancing it would skip whatever it published while we were failing.
  * 2. A covered feed with **no rows** keeps its mark. `since` is exclusive, so
@@ -405,6 +417,64 @@ export function pruneMarks(
   const kept = Object.entries(marks).filter(([g]) => live.has(g));
   if (kept.length <= cap) return Object.fromEntries(kept);
   return Object.fromEntries(kept.sort((a, b) => b[1] - a[1]).slice(0, cap));
+}
+
+/**
+ * The list the section carries from one pass to the next.
+ *
+ * **A pass ADDS to the list; it does not replace it.** One pass covers
+ * `MAX_FEEDS` shows and a library can be larger, so a replace made pass 2
+ * delete what pass 1 found — and, because the marks had already advanced over
+ * it, deleted it for good. That is also why this runs BEFORE `advanceMarks`
+ * and feeds it: what survives here is what a mark is allowed to describe.
+ *
+ * Two rules do the work. A row past the seven-day horizon is dropped, which is
+ * the only thing that retires a row nobody cleared — an unbounded list would
+ * otherwise carry a show's whole back catalogue for as long as the reader
+ * ignored it. And the union is keyed by `epKey`, with the NEW record winning,
+ * so a re-fetched episode updates in place rather than appearing twice: PI
+ * corrects a title or a duration after a crawl, and the stale copy is the one
+ * worth losing.
+ *
+ * Newest-first, and capped at `FAV_NEW_CAP`. The cap keeps the persisted
+ * record bounded — this list is written to `bmb:newmarks:<npub>`, which is not
+ * evictable, so its size is this function's problem and nobody else's.
+ */
+export function mergeNewEpisodeRows(
+  prev: readonly Episode[],
+  found: readonly Episode[],
+  nowMs: number,
+): Episode[] {
+  const horizon = Math.floor((nowMs - FAV_NEW_WINDOW_MS) / 1000);
+  const byKey = new Map<string, Episode>();
+  for (const e of prev) byKey.set(epKey(e), e);
+  for (const e of found) byKey.set(epKey(e), e);
+  return [...byKey.values()]
+    .filter((e) => typeof e.datePublished === 'number' && e.datePublished > horizon)
+    .sort((a, b) => (b.datePublished ?? 0) - (a.datePublished ?? 0))
+    .slice(0, FAV_NEW_CAP);
+}
+
+/**
+ * Drop carried rows whose show is no longer favorited.
+ *
+ * The companion to `pruneMarks`, and it runs under the same gate: a prune is a
+ * DELETION, so it needs a favorites list worth deleting against rather than
+ * whatever pre-hydration subset a pass happened to see. Unfavoriting a show
+ * must take its rows off this list too — the alternative is a row the reader
+ * cannot get rid of, on a section whose whole promise is that it drains.
+ *
+ * It matches on `feedId`, not `podcastGuid`, because that is the identifier
+ * every row carries: `buildEpisode` fills `podcastGuid` from Podcast Index's
+ * record and PI leaves it out often enough that a guid match would silently
+ * empty the list.
+ */
+export function pruneNewRows(
+  rows: readonly Episode[],
+  liveFeedIds: readonly number[],
+): Episode[] {
+  const live = new Set(liveFeedIds);
+  return rows.filter((e) => live.has(e.feedId));
 }
 
 /**
