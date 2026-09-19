@@ -224,6 +224,48 @@ const VECTORS = [
     alsoEndFinal: true,
   },
   {
+    name: 'THE FOURTH FAILURE: Podcast Index\'s `endTime: 0` is NO end, not an end in 1970',
+    // PI omits no field — an absent string comes back `""` and an absent number
+    // comes back `0` (which is why `buildEpisode` reads `season` as `> 0`). A
+    // live row for a broadcast that declares no `end` therefore arrives with
+    // `endTime: 0`, six hours past its end since 1970, and this function dropped
+    // it. It dropped every such row in the same pass, so the global roster named
+    // no feed at all and `/live` reported nothing broadcasting over shows that
+    // were on air. `liveStampSecs` reads a non-positive stamp as absent.
+    args: [{ status: 'live', startTime: NOW - 2 * HOUR, endTime: 0 }, NOW],
+    expect: false,
+    alsoNaive: true,
+  },
+  {
+    name: 'a zero end falls through to the ceiling, which still bites at 25h',
+    // The must-still-work half of the same fix: reading `0` as absent must not
+    // buy a forgotten flag more time than declaring no end at all buys it.
+    args: [{ status: 'live', startTime: NOW - MAX_UNBOUNDED_LIVE_SECS - HOUR, endTime: 0 }, NOW],
+    expect: true,
+    alsoEndFinal: true,
+  },
+  {
+    name: 'a zero START is absent too — it is not a broadcast that began in 1970',
+    args: [{ status: 'live', startTime: 0 }, NOW],
+    expect: false,
+    alsoNaive: true,
+  },
+  {
+    name: 'a PENDING row PI stamped with no end is still coming',
+    // `pending` has no overrun grace, so a `0` read as a time ends a scheduled
+    // broadcast the instant PI hands it over — the same one-line failure aimed
+    // at Upcoming instead of Live.
+    args: [{ status: 'pending', startTime: NOW + 2 * HOUR, endTime: 0 }, NOW],
+    expect: false,
+    alsoNaive: true,
+  },
+  {
+    name: 'a negative stamp is absent as well',
+    args: [{ status: 'live', startTime: -1, endTime: -1 }, NOW],
+    expect: false,
+    alsoNaive: true,
+  },
+  {
     name: 'the status attribute is matched case-insensitively',
     // PI lowercases its own, the RSS parser lowercases the attribute, and a
     // third caller that forgets would silently lose the grace.
@@ -304,6 +346,28 @@ if (withStatus < 2) {
     + '          dropped at its scheduled end again.');
 } else {
   ok('`status` is passed through at both call sites');
+}
+
+// The stamps have to be cleaned at the PARSE boundary too, not only inside the
+// decision. `liveBroadcastIsOver` coerces defensively, so a raw `0` reaching it
+// is judged correctly — but a `0` that gets PAST it is stored as
+// `Episode.liveStartTime`, where `liveRosterFeedOrder` bands it, `compareLive-
+// Shows` orders by it and `<ShowCard>` renders "started 01/01/1970" off it.
+// Both sources: PI's roster and the RSS parser.
+const stamps = (pi.match(/liveStampSecs\(/g) ?? []).length;
+if (stamps < 4) {
+  fail(`lib/pi.ts calls liveStampSecs ${stamps}x — it must clean the start AND end\n`
+    + '          of BOTH sources (PI\'s roster and the RSS parser), or a Podcast Index\n'
+    + '          zero is stored as a 1970 broadcast time and rendered as one.');
+} else {
+  ok('both live sources clean their stamps through liveStampSecs');
+}
+if (/typeof e\.(start|end)Time === 'number'/.test(pi)) {
+  fail('lib/pi.ts reads a PI live stamp with a bare `typeof === \'number\'` again.\n'
+    + '          PI sends 0 for a number it does not hold, so that accepts an end in\n'
+    + '          1970 and drops every live row it was sent.');
+} else {
+  ok('no bare typeof test re-admits Podcast Index\'s zero stamps');
 }
 
 console.log(failures
