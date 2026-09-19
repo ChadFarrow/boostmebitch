@@ -36,7 +36,9 @@ current directory, so it cannot be run from a worktree. → [`ops.md`](ops.md)
 the repo's `check:*` scripts; `check-api.mjs`, `check-search.mjs` and
 `check-indexer.mjs` need a Postgres, and the indexer one drives a scripted local
 relay (`verify/mock-relay.mjs`). `verify:ingest`, `verify:yield` and
-`verify:rejections` run with no database.
+`verify:rejections` run with no database. No Postgres on the machine and no
+Docker? `embedded-postgres` from npm, installed in a scratch directory, runs a
+real one without root — the whole suite ran green that way on 2026-09-19.
 
 ## A `void` on a background loop ends the process
 
