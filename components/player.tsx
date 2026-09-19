@@ -146,6 +146,14 @@ export function Player() {
   // every consumer renders whole seconds (fmt(), step=1 seek bars, chapter
   // highlighting) — gating on the floor cuts store-driven re-renders to 1 Hz.
   const lastTick = useRef(-1);
+  // True while a DOWNLOADED episode's local source is being resolved. Until
+  // `attach()` runs, `el.src` is still the PREVIOUS episode, and its
+  // `timeupdate`s would be written into the store as the NEW episode's position —
+  // which the resume writer (#414) then saves under the new episode, with the old
+  // file's duration. Near the old file's end that even FORGETS the new episode's
+  // saved place. So the audio element's position is ignored until the source it
+  // is reporting on is the one `current` names.
+  const pendingLocalSrc = useRef(false);
 
   // Video plays through a <video> + (for HLS) hls.js instead of the native
   // <audio>. Two sources feed the <video>: (1) an HLS (.m3u8) enclosure — a
@@ -630,6 +638,7 @@ export function Player() {
     let cancelled = false;
 
     const attach = (src: string) => {
+      pendingLocalSrc.current = false;
       revokeLocalSrc();
       if (src.startsWith('blob:')) localSrcRef.current = src;
       el.src = src;
@@ -667,6 +676,7 @@ export function Player() {
     if (localKey === null) {
       attach(episode.enclosureUrl);
     } else {
+      pendingLocalSrc.current = true;
       void (localKey === undefined
         ? downloadManager.resolveSource(episode)
         : downloadManager.objectUrlFor(localKey)
@@ -704,6 +714,7 @@ export function Player() {
     // megabytes per episode switch, on a phone.
     return () => {
       cancelled = true;
+      pendingLocalSrc.current = false;
       el.removeEventListener('loadedmetadata', seekOnLoad);
       revokeLocalSrc();
     };
@@ -1170,6 +1181,8 @@ export function Player() {
         <audio
           ref={audio}
           onTimeUpdate={(e) => {
+            // The previous episode, still playing while a download resolves.
+            if (pendingLocalSrc.current) return;
             const t = e.currentTarget.currentTime;
             const tick = Math.floor(t);
             if (tick !== lastTick.current) {
